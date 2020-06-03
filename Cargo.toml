@@ -1,0 +1,10 @@
+[package]
+name = "langc"
+version = "0.1.0"
+authors = ["Shuzo Kashihara <suma@users.sourceforge.jp>"]
+edition = "2018"
+license = "MIT"
+description = "Toy language compiler"
+
+[dependencies]
+frontend = { path = "./frontend" }

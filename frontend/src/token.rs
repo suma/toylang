@@ -36,4 +36,7 @@ pub enum Token {
     Integer(String),
 
     Identifier(String),
+
+    NewLine,
+    EOF,
 }

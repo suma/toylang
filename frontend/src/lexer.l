@@ -3,6 +3,7 @@ use crate::token::Token;
 %%
 %class Lexer
 %result_type Token
+%field u64 line_count
 
 "if"     return Ok(Token::If);
 "else"   return Ok(Token::Else);
@@ -49,6 +50,9 @@ use crate::token::Token;
 [A-Za-z_][A-Za-z_0-9]*  return Ok(Token::Identifier(self.yytext()));
 
 " "      /* skip ws (TODO: count and return ws)  */
+\t       /* skip tab */
+\n       self.line_count += 1; return Ok(Token::NewLine);
+<<EOF>>  return Ok(Token::EOF);
 
 %%
 

@@ -11,7 +11,7 @@ mod tests {
 
     #[test]
     fn lexer_simple_keyword() {
-        let s = " if else while for class fn";
+        let s = " if else while for class fn val var";
         let mut l = lexer::Lexer::new(&s);
         assert_eq!(l.yylex().unwrap(), Token::If);
         assert_eq!(l.yylex().unwrap(), Token::Else);
@@ -19,6 +19,8 @@ mod tests {
         assert_eq!(l.yylex().unwrap(), Token::For);
         assert_eq!(l.yylex().unwrap(), Token::Class);
         assert_eq!(l.yylex().unwrap(), Token::Function);
+        assert_eq!(l.yylex().unwrap(), Token::Val);
+        assert_eq!(l.yylex().unwrap(), Token::Var);
         assert_eq!(l.yylex().is_err(), true); // EOF
     }
 
@@ -35,7 +37,7 @@ mod tests {
 
     #[test]
     fn lexer_simple_symbol() {
-        let s = " ( ) { } [ ] , . :: :";
+        let s = " ( ) { } [ ] , . :: : =";
         let mut l = lexer::Lexer::new(&s);
         assert_eq!(l.yylex().unwrap(), Token::ParenOpen);
         assert_eq!(l.yylex().unwrap(), Token::ParenClose);
@@ -47,6 +49,7 @@ mod tests {
         assert_eq!(l.yylex().unwrap(), Token::Dot);
         assert_eq!(l.yylex().unwrap(), Token::DoubleColon);
         assert_eq!(l.yylex().unwrap(), Token::Colon);
+        assert_eq!(l.yylex().unwrap(), Token::Equal);
     }
 
     #[test]

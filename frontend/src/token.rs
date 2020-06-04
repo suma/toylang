@@ -6,6 +6,8 @@ pub enum Token {
     While,
     Class,
     Function,
+    Val,
+    Var,
 
     ParenOpen,
     ParenClose,
@@ -17,6 +19,8 @@ pub enum Token {
     Dot,
     DoubleColon,
     Colon,
+
+    Equal,
 
     IAdd,
     ISub,

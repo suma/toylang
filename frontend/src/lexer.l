@@ -10,6 +10,8 @@ use crate::token::Token;
 "while"  return Ok(Token::While);
 "class"  return Ok(Token::Class);
 "fn"     return Ok(Token::Function);
+"val"    return Ok(Token::Val);
+"var"    return Ok(Token::Var);
 
 "("      return Ok(Token::ParenOpen);
 ")"      return Ok(Token::ParenClose);
@@ -21,6 +23,8 @@ use crate::token::Token;
 "."      return Ok(Token::Dot);
 "::"     return Ok(Token::DoubleColon);
 ":"      return Ok(Token::Colon);
+
+"="      return Ok(Token::Equal);
 
 "+"      return Ok(Token::IAdd);
 "-"      return Ok(Token::ISub);

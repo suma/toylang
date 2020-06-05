@@ -7,10 +7,17 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq)]
 pub enum Operator {
-    Add,
-    Sub,
-    Mul,
-    Div,
+    IAdd,
+    ISub,
+    IMul,
+    IDiv,
+
+    DoubleEqual,    // ==
+    NotEqual,       // !=
+    LT, // <
+    LE, // <=
+    GT, // >
+    GE, // >=
 }
 
 #[derive(Debug, PartialEq)]

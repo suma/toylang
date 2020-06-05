@@ -27,6 +27,13 @@ use crate::token::Token;
 
 "="      return Ok(Token::Equal);
 
+"=="     return Ok(Token::DoubleEqual);
+"!="     return Ok(Token::NotEqual);
+"<="     return Ok(Token::LE);
+"<"      return Ok(Token::LT);
+">="     return Ok(Token::GE);
+">"      return Ok(Token::GT);
+
 "+"      return Ok(Token::IAdd);
 "-"      return Ok(Token::ISub);
 "*"      return Ok(Token::IMul);

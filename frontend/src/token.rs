@@ -22,6 +22,13 @@ pub enum Token {
 
     Equal,
 
+    DoubleEqual,    // ==
+    NotEqual,       // !=
+    LT, // <
+    LE, // <=
+    GT, // >
+    GE, // >=
+
     IAdd,
     ISub,
     IMul,

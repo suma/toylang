@@ -248,4 +248,23 @@ mod tests {
             }
         )), res);
     }
+
+    #[test]
+    fn parser_simple_expr_mul() {
+        let mut p = Parser::new("(1u64) + 2u64 * 3u64");
+        let res = p.parse_expr().unwrap();
+        assert_eq!(Expr::Binary(Box::new(
+            BinaryExpr {
+                op: Operator::Add,
+                lhs: Expr::UInt64(1),
+                rhs: Expr::Binary(Box::new(
+                    BinaryExpr {
+                        op: Operator::Mul,
+                        lhs: Expr::UInt64(2),
+                        rhs: Expr::UInt64(3),
+                    }
+                )),
+            }
+        )), res);
+    }
 }

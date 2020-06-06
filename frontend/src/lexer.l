@@ -34,6 +34,9 @@ use crate::token::Token;
 ">="     return Ok(Token::GE);
 ">"      return Ok(Token::GT);
 
+"&&"     return Ok(Token::DoubleAnd);
+"||"     return Ok(Token::DoubleOr);
+
 "+"      return Ok(Token::IAdd);
 "-"      return Ok(Token::ISub);
 "*"      return Ok(Token::IMul);

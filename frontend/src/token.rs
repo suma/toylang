@@ -29,6 +29,9 @@ pub enum Token {
     GT, // >
     GE, // >=
 
+    DoubleAnd, // &&
+    DoubleOr,  // ||
+
     IAdd,
     ISub,
     IMul,

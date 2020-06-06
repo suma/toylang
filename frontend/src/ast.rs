@@ -18,6 +18,9 @@ pub enum Operator {
     LE, // <=
     GT, // >
     GE, // >=
+
+    LogicalAnd,
+    LogicalOr,
 }
 
 #[derive(Debug, PartialEq)]

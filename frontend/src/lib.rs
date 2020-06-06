@@ -87,7 +87,27 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expr(&mut self) -> Result<Expr, ()> {
-        return self.parse_equality();
+        return self.parse_logical_expr();
+    }
+
+    fn parse_logical_expr(&mut self) -> Result<Expr, ()> {
+        let mut lhs = self.parse_equality()?;
+
+        loop {
+            match self.peek() {
+                Some(Token::DoubleAnd) => {
+                    self.next();
+                    let rhs = self.parse_relational()?;
+                    lhs = Self::new_binary(Operator::LogicalAnd, lhs, rhs);
+                }
+                Some(Token::DoubleAnd) => {
+                    self.next();
+                    let rhs = self.parse_relational()?;
+                    lhs = Self::new_binary(Operator::LogicalOr, lhs, rhs);
+                }
+                _ => return Ok(lhs),
+            }
+        }
     }
 
     fn parse_equality(&mut self) -> Result<Expr, ()> {
@@ -342,6 +362,25 @@ mod tests {
                         op: Operator::IAdd,
                         lhs: Expr::UInt64(2),
                         rhs: Expr::UInt64(4),
+                    }
+                )),
+            }
+        )), res);
+    }
+
+    #[test]
+    fn parser_simple_logical_expr() {
+        let mut p = Parser::new("1u64 && 2u64 < 3u64");
+        let res = p.parse_expr().unwrap();
+        assert_eq!(Expr::Binary(Box::new(
+            BinaryExpr {
+                op: Operator::LogicalAnd,
+                lhs: Expr::UInt64(1),
+                rhs: Expr::Binary(Box::new(
+                    BinaryExpr {
+                        op: Operator::LT,
+                        lhs: Expr::UInt64(2),
+                        rhs: Expr::UInt64(3),
                     }
                 )),
             }

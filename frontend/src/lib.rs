@@ -10,6 +10,7 @@ mod lexer {
 pub struct Parser<'a> {
     lexer: lexer::Lexer<'a>,
     token: Option<Token>,
+    current_id: u64,
 }
 
 impl<'a> Parser<'a> {
@@ -18,6 +19,7 @@ impl<'a> Parser<'a> {
         Parser {
             lexer,
             token: None,
+            current_id: 0,
         }
     }
 
@@ -196,6 +198,14 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn fresh_ty(&mut self) -> VarType {
+        self.current_id += 1;
+        return VarType {
+            id: self.current_id,
+            ty: Type::Unknown,
+        }
+    }
+
     fn parse_primary(&mut self) -> Result<Expr, ()> {
         match self.peek() {
             Some(Token::ParenOpen) => {
@@ -203,6 +213,25 @@ impl<'a> Parser<'a> {
                 let node = self.parse_expr()?;
                 self.expect_err(&Token::ParenClose);
                 return Ok(node);
+            }
+            Some(Token::Identifier(s)) => {
+                let s = s.to_string();
+                self.next();
+                return match self.peek() {
+                    Some(Token::ParenOpen) => {
+                        // function call
+                        self.next();
+                        let ty = Type::Variable(Box::new(self.fresh_ty()));
+                        let args = self.parse_expr_list(vec![])?;
+                        self.expect_err(&Token::ParenClose);
+                        Ok(Expr::Apply(TVar{ s, ty }, args))
+                    }
+                    _ => {
+                        // identifier
+                        let ty = Type::Variable(Box::new(self.fresh_ty()));
+                        Ok(Expr::Identifier(TVar{ s, ty }))
+                    }
+                }
             }
             _ => {
                 let e = match self.peek() {
@@ -220,6 +249,23 @@ impl<'a> Parser<'a> {
                 self.next();
                 return e;
             }
+        }
+    }
+
+    fn parse_expr_list(&mut self, mut args: Vec<Expr>) -> Result<Vec<Expr>, ()> {
+        let expr = self.parse_expr();
+        if expr.is_ok() {
+            args.push(expr.unwrap());
+        } else {
+            return Ok(args);
+        }
+
+        match self.peek() {
+            Some(Token::Comma) => {
+                self.next();
+                return Ok(self.parse_expr_list(args)?);
+            }
+            _ => return Ok(args),
         }
     }
 }
@@ -394,5 +440,49 @@ mod tests {
         assert!(Parser::new("1u64 && 2u64 < 3u64").parse_expr().is_ok());
         assert!(Parser::new("1u64 || 2u64 < 3u64").parse_expr().is_ok());
         assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64").parse_expr().is_ok());
+
+        assert!(Parser::new("variable").parse_expr().is_ok());
+        assert!(Parser::new("a + b").parse_expr().is_ok());
+        assert!(Parser::new("a + 1u64").parse_expr().is_ok());
+
+        assert!(Parser::new("a() + 1u64").parse_expr().is_ok());
+        assert!(Parser::new("a(b,c) + 1u64").parse_expr().is_ok());
+    }
+
+    #[test]
+    fn parser_simple_ident_expr() {
+        let res = Parser::new("abc + 1u64").parse_expr().unwrap();;
+        assert_eq!(Expr::Binary(Box::new(
+                BinaryExpr {
+                    op: Operator::IAdd,
+                    lhs: Expr::Identifier(TVar {
+                        s: "abc".to_string(),
+                        ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown })),
+                    }),
+                    rhs: Expr::UInt64(1),
+                }
+            ),
+        ), res);
+    }
+
+    #[test]
+    fn parser_simple_apply_empty() {
+        let res = Parser::new("abc()").parse_expr().unwrap();;
+        assert_eq!(Expr::Apply {
+            0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
+            1: vec![],
+        }, res);
+    }
+
+    #[test]
+    fn parser_simple_apply_expr() {
+        let res = Parser::new("abc(1u64,2u64)").parse_expr().unwrap();;
+        assert_eq!(Expr::Apply {
+            0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
+            1: vec![
+                Expr::UInt64(1),
+                Expr::UInt64(2),
+            ],
+        }, res);
     }
 }

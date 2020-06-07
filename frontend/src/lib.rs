@@ -386,4 +386,13 @@ mod tests {
             }
         )), res);
     }
+
+    #[test]
+    fn parser_expr_accept() {
+        assert!(Parser::new("1u64").parse_expr().is_ok());
+        assert!(Parser::new("(1u64 + 2u64)").parse_expr().is_ok());
+        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_expr().is_ok());
+        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_expr().is_ok());
+        assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64").parse_expr().is_ok());
+    }
 }

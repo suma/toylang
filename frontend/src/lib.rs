@@ -97,7 +97,7 @@ impl<'a> Parser<'a> {
                     let rhs = self.parse_relational()?;
                     lhs = Self::new_binary(Operator::LogicalAnd, lhs, rhs);
                 }
-                Some(Token::DoubleAnd) => {
+                Some(Token::DoubleOr) => {
                     self.next();
                     let rhs = self.parse_relational()?;
                     lhs = Self::new_binary(Operator::LogicalOr, lhs, rhs);

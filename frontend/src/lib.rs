@@ -9,7 +9,7 @@ mod lexer {
 
 pub struct Parser<'a> {
     lexer: lexer::Lexer<'a>,
-    token: Option<Token>,
+    ahead: Vec<Token>,
     current_id: u64,
 }
 
@@ -18,58 +18,54 @@ impl<'a> Parser<'a> {
         let lexer = lexer::Lexer::new(&input, 1u64);
         Parser {
             lexer,
-            token: None,
+            ahead: Vec::new(),
             current_id: 0,
         }
     }
 
     fn peek(&mut self) -> Option<&Token> {
-        let tk = if self.token.is_none() {
+        if self.ahead.is_empty() {
             match self.lexer.yylex() {
                 Ok(t) => {
-                    self.token = Some(t);
-                    self.token.as_ref()
+                    self.ahead.push(t);
+                    self.ahead.get(0)
                 }
                 _ => return None,
             }
         } else {
-            self.token.as_ref()
-        };
-        return tk;
+            self.ahead.get(0)
+        }
+    }
+
+    // pos: 0-origin
+    fn peek_n(&mut self, pos: usize) -> Option<&Token> {
+        while self.ahead.len() < pos + 1 {
+            match self.lexer.yylex() {
+                Ok(t) => self.ahead.push(t),
+                _ => return None,
+            }
+        }
+        return self.ahead.get(pos);
+    }
+
+    // public for testing
+    fn consume(&mut self, count: usize) -> usize{
+        return self.ahead.drain(0..count).count();
     }
 
     fn next(&mut self) {
-        self.token = None;
+        self.ahead.remove(0);
     }
 
     pub fn expect(&mut self, accept: &Token) -> bool {
-        let tk = if self.token.is_none() {
-            match self.lexer.yylex() {
-                Ok(t) => {
-                    self.token = Some(t);
-                    self.token.as_ref()
-                }
-                _ => return false,
-            }
-        } else {
-            self.token.as_ref()
-        };
+        let tk = self.peek();
         if *tk.unwrap() == *accept {
-            self.token = None;
+            self.next();
             true
         } else {
+            self.next();
             false
         }
-    }
-
-    fn token(&mut self) -> Result<Token, ()> {
-        if self.token.is_none() {
-            let res = self.lexer.yylex();
-            if !res.is_err() {
-                return Ok(res.unwrap());
-            }
-        }
-        return Ok(self.token.take().unwrap());
     }
 
     fn new_binary(op: Operator, lhs: Expr, rhs: Expr) -> Expr {
@@ -84,7 +80,7 @@ impl<'a> Parser<'a> {
 
     pub fn expect_err(&mut self, accept: &Token) {
         if !self.expect(accept) {
-            println!("{:?} expected but {:?}", accept, self.token)
+            println!("{:?} expected but {:?}", accept, self.ahead.get(0))
         }
     }
 
@@ -361,6 +357,21 @@ mod tests {
         assert_eq!(l.yylex().unwrap(), Token::NewLine);
         assert_eq!(l.yylex().unwrap(), Token::Identifier("B".to_string()));
         assert_eq!(*l.get_line_count(), 2);
+    }
+
+    #[test]
+    fn parser_util_lookahead() {
+        let mut p = Parser::new("1u64 + 2u64");;
+        let t1 = p.peek_n(1).unwrap();
+        assert_eq!(Token::IAdd, *t1);
+        assert_eq!(2, p.consume(2));
+
+        let t2 = p.peek().unwrap();
+        assert_eq!(Token::UInt64(2), *t2);
+
+        let t3 = p.peek_n(2);
+        assert!(t3.is_some());
+        assert_eq!(Token::EOF, *(t3.unwrap()));
     }
 
     #[test]

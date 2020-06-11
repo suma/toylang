@@ -48,7 +48,6 @@ impl<'a> Parser<'a> {
         return self.ahead.get(pos);
     }
 
-    // public for testing
     fn consume(&mut self, count: usize) -> usize{
         return self.ahead.drain(0..count).count();
     }

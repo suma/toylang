@@ -219,7 +219,7 @@ impl<'a> Parser<'a> {
                         let ty = Type::Variable(Box::new(self.fresh_ty()));
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Token::ParenClose);
-                        Ok(Expr::Apply(TVar{ s, ty }, args))
+                        Ok(Expr::Call(TVar{ s, ty }, args))
                     }
                     _ => {
                         // identifier
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn parser_simple_apply_empty() {
         let res = Parser::new("abc()").parse_expr().unwrap();;
-        assert_eq!(Expr::Apply {
+        assert_eq!(Expr::Call {
             0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
             1: vec![],
         }, res);
@@ -487,7 +487,7 @@ mod tests {
     #[test]
     fn parser_simple_apply_expr() {
         let res = Parser::new("abc(1u64,2u64)").parse_expr().unwrap();;
-        assert_eq!(Expr::Apply {
+        assert_eq!(Expr::Call {
             0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
             1: vec![
                 Expr::UInt64(1),

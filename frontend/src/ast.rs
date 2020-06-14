@@ -4,7 +4,7 @@ pub enum Expr {
     Int64(i64),
     UInt64(u64),
     Identifier(TVar),
-    Apply(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
+    Call(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
 }
 
 #[derive(Debug, PartialEq)]

@@ -8,8 +8,7 @@ use inkwell::context::Context;
 use inkwell::builder::Builder;
 use inkwell::passes::PassManager;
 use inkwell::module::Module;
-use inkwell::basic_block::BasicBlock;
-use std::path::{PathBuf, Path};
+use std::path::Path;
 
 struct Compiler<'a, 'ctx> {
     pub context: &'ctx Context,
@@ -80,7 +79,7 @@ fn main() -> std::io::Result<()> {
     let mut parser = frontend::Parser::new(contents.as_str());
     let expr = parser.parse_expr();
     if expr.is_err() {
-        println!("parser_expr faild");
+        println!("parser_expr failed");
         return Ok(());
     }
 
@@ -107,7 +106,11 @@ fn main() -> std::io::Result<()> {
     builder.position_at_end(basic_block);
 
     let expr = &expr.unwrap();
-    Compiler::compile(&context, &builder, &fpm, &module, expr);
+    let res = Compiler::compile(&context, &builder, &fpm, &module, expr);
+    if res.is_err() {
+        println!("compile error: {}", res.unwrap_err());
+        return Ok(());
+    }
     let filename = args[1].to_string() + ".ll";
     let path = Path::new(filename.as_str());
     module.print_to_file(path);

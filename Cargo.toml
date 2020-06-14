@@ -8,3 +8,4 @@ description = "Toy language compiler"
 
 [dependencies]
 frontend = { path = "./frontend" }
+inkwell = { git = "https://github.com/TheDan64/inkwell", branch = "llvm10-0" }

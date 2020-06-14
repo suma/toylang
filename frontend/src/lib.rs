@@ -1,5 +1,5 @@
-mod token;
-mod ast;
+pub mod token;
+pub mod ast;
 use crate::token::Token;
 use crate::ast::*;
 

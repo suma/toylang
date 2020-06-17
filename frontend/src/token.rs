@@ -5,9 +5,19 @@ pub enum Token {
     For,
     While,
     Class,
+    Struct,
     Function,
+    Return,
+    Extern,
+    Public,
     Val,
     Var,
+
+    U64,
+    I64,
+    USize,
+    Ptr,
+    Null,
 
     ParenOpen,
     ParenClose,
@@ -19,6 +29,7 @@ pub enum Token {
     Dot,
     DoubleColon,
     Colon,
+    Arrow,  // ->
 
     Equal,
 

@@ -10,7 +10,11 @@ use crate::token::Token;
 "for"    return Ok(Token::For);
 "while"  return Ok(Token::While);
 "class"  return Ok(Token::Class);
+"struct" return Ok(Token::Struct);
 "fn"     return Ok(Token::Function);
+"return" return Ok(Token::Return);
+"extern" return Ok(Token::Extern);
+"pub"    return Ok(Token::Public);
 "val"    return Ok(Token::Val);
 "var"    return Ok(Token::Var);
 
@@ -24,6 +28,7 @@ use crate::token::Token;
 "."      return Ok(Token::Dot);
 "::"     return Ok(Token::DoubleColon);
 ":"      return Ok(Token::Colon);
+"->"     return Ok(Token::Arrow);
 
 "="      return Ok(Token::Equal);
 
@@ -56,6 +61,11 @@ use crate::token::Token;
 -?[0-9]+            return Ok(Token::Integer(self.yytext()));
                     /* TODO: hold original text in lexer as used for lint */
 
+"u64"      return Ok(Token::U64);
+"i64"      return Ok(Token::I64);
+"ptr"      return Ok(Token::Ptr);
+"usize"    return Ok(Token::USize);
+"null"     return Ok(Token::Null);
 
 [A-Za-z_][A-Za-z_0-9]*  return Ok(Token::Identifier(self.yytext()));
 

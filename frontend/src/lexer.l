@@ -62,7 +62,6 @@ use crate::token::Token;
 " "      /* skip ws (TODO: count and return ws)  */
 \t       /* skip tab */
 \n       self.line_count += 1; return Ok(Token::NewLine);
-<<EOF>>  return Ok(Token::EOF);
 
 %%
 

@@ -239,6 +239,9 @@ impl<'a> Parser<'a> {
                     Some(Token::Integer(num)) => {
                         Ok(Expr::Int64(0))  // FIXME
                     }
+                    Some(&Token::Null) => {
+                        Ok(Expr::Null)
+                    }
                     _ => return Err(()),
                 };
                 self.next();
@@ -489,5 +492,11 @@ mod tests {
                 Expr::UInt64(2),
             ],
         }, res);
+    }
+
+    #[test]
+    fn parser_simple_expr_null_value() {
+        let res = Parser::new("null").parse_expr().unwrap();;
+        assert_eq!(Expr::Null, res);
     }
 }

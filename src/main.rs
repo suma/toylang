@@ -37,6 +37,10 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             Expr::UInt64(u) => Ok(self.context.i64_type().const_int(*u, false)),
             Expr::Identifier(_) => Err("not implemented yet (Identifier)"),
             Expr::Call(_, _) => Err("not implemented yet (Call)"),
+            Expr::Null => {
+                Err("not implemented yet (Null)")
+                //Ok(self.context.ptr_sized_int_type(0, None))
+            }
         }
     }
 

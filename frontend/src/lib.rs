@@ -282,7 +282,6 @@ mod tests {
         assert_eq!(l.yylex().unwrap(), Token::Function);
         assert_eq!(l.yylex().unwrap(), Token::Val);
         assert_eq!(l.yylex().unwrap(), Token::Var);
-        assert_eq!(l.yylex().unwrap(), Token::EOF);
     }
 
     #[test]
@@ -367,10 +366,6 @@ mod tests {
 
         let t2 = p.peek().unwrap();
         assert_eq!(Token::UInt64(2), *t2);
-
-        let t3 = p.peek_n(2);
-        assert!(t3.is_some());
-        assert_eq!(Token::EOF, *(t3.unwrap()));
     }
 
     #[test]

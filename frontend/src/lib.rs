@@ -115,12 +115,12 @@ impl<'a> Parser<'a> {
                 Some(Token::DoubleEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::DoubleEqual, lhs, rhs);
+                    lhs = Self::new_binary(Operator::EQ, lhs, rhs);
                 }
                 Some(Token::NotEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::NotEqual, lhs, rhs);
+                    lhs = Self::new_binary(Operator::NE, lhs, rhs);
                 }
                 _ => return Ok(lhs),
             }

@@ -15,8 +15,9 @@ pub enum Operator {
     IMul,
     IDiv,
 
-    DoubleEqual,    // ==
-    NotEqual,       // !=
+    // Comparison operator
+    EQ, // ==
+    NE, // !=
     LT, // <
     LE, // <=
     GT, // >

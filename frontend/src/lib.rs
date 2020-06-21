@@ -83,7 +83,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // expr := logical_expr
+    // expr := assign
+    // parse_assign := identifier "=" logical_expr | logical_expr
     // logical_expr := equality ("&&" relational | "||" relational)*
     // equality := relational ("==" relational | "!=" relational)*
     // relational := add ("<" add | "<=" add | ">" add | ">=" add")*
@@ -94,7 +95,18 @@ impl<'a> Parser<'a> {
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
-        return self.parse_logical_expr();
+        return self.parse_assign();
+    }
+
+    pub fn parse_assign(&mut self) -> Result<Expr, String> {
+        let lhs = self.parse_logical_expr()?;
+        match self.peek() {
+            Some(Token::Equal) => {
+                self.next();
+                return Ok(Self::new_binary(Operator::Assign, lhs, self.parse_logical_expr()?))
+            }
+            _ => return Ok(lhs),
+        }
     }
 
     fn parse_logical_expr(&mut self) -> Result<Expr, String> {
@@ -515,6 +527,16 @@ mod tests {
     fn parser_simple_expr_null_value() {
         let res = Parser::new("null").parse_expr().unwrap();
         assert_eq!(Expr::Null, res);
+    }
+
+    #[test]
+    fn parser_simple_assign() {
+        let res = Parser::new("a = 1u64").parse_expr().unwrap();
+        assert_eq!(Expr::Binary(Box::new(BinaryExpr {
+            op: Operator::Assign,
+            lhs: Expr::Identifier(TVar { s: "a".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown}))}),
+            rhs: Expr::UInt64(1)
+        })), res);
     }
 
     #[test]

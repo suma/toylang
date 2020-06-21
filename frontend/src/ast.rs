@@ -10,6 +10,7 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq)]
 pub enum Operator {
+    Assign, // =
     IAdd,
     ISub,
     IMul,

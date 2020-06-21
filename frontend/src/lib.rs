@@ -93,11 +93,11 @@ impl<'a> Parser<'a> {
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
-    pub fn parse_expr(&mut self) -> Result<Expr, ()> {
+    pub fn parse_expr(&mut self) -> Result<Expr, String> {
         return self.parse_logical_expr();
     }
 
-    fn parse_logical_expr(&mut self) -> Result<Expr, ()> {
+    fn parse_logical_expr(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_equality()?;
 
         loop {
@@ -117,7 +117,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_equality(&mut self) -> Result<Expr, ()> {
+    fn parse_equality(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_relational()?;
 
         loop {
@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_relational(&mut self) -> Result<Expr, ()> {
+    fn parse_relational(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_add()?;
 
         loop {
@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_add(&mut self) -> Result<Expr, ()> {
+    fn parse_add(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_mul()?;
 
         loop {
@@ -183,7 +183,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_mul(&mut self) -> Result<Expr, ()> {
+    fn parse_mul(&mut self) -> Result<Expr, String> {
         let mut lhs = self.parse_primary()?;
 
         loop {
@@ -211,7 +211,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, ()> {
+    fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek() {
             Some(Token::ParenOpen) => {
                 self.next();
@@ -252,7 +252,9 @@ impl<'a> Parser<'a> {
                     Some(&Token::Null) => {
                         Ok(Expr::Null)
                     }
-                    _ => return Err(()),
+                    x => {
+                        return Err(format!("parse_primary: unexpected token {:?}", x))
+                    }
                 };
                 self.next();
                 return e;
@@ -260,21 +262,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_expr_list(&mut self, mut args: Vec<Expr>) -> Result<Vec<Expr>, ()> {
-        let expr = self.parse_expr();
-        if expr.is_ok() {
-            args.push(expr.unwrap());
-        } else {
-            return Ok(args);
+    fn parse_expr_list(&mut self, mut args: Vec<Expr>) -> Result<Vec<Expr>, String> {
+        match self.peek() {
+            Some(Token::ParenClose) => return Ok(args),
+            _ => (),
         }
+
+        let expr = self.parse_expr();
+        if expr.is_err() {
+            return Err(format!("parse_expr_list: expected expr: {}", expr.unwrap_err()));
+        }
+        args.push(expr.unwrap());
 
         match self.peek() {
             Some(Token::Comma) => {
                 self.next();
-                return Ok(self.parse_expr_list(args)?);
+                return self.parse_expr_list(args);
             }
             Some(Token::ParenClose) => return Ok(args),
-            _ => return Ok(args),   // TODO: error
+            x => return Err(format!("parse_expr_list: unexpected token {:?}", x)),
         }
     }
 }
@@ -507,7 +513,21 @@ mod tests {
 
     #[test]
     fn parser_simple_expr_null_value() {
-        let res = Parser::new("null").parse_expr().unwrap();;
+        let res = Parser::new("null").parse_expr().unwrap();
         assert_eq!(Expr::Null, res);
+    }
+
+    #[test]
+    fn parser_err_primary() {
+        let res = Parser::new(".").parse_expr();
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("parse_primary"));
+    }
+
+    #[test]
+    fn parser_err_call_expr_list() {
+        let res = Parser::new("hoge(a,,)").parse_expr();
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("parse_expr_list"));
     }
 }

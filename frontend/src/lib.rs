@@ -83,6 +83,16 @@ impl<'a> Parser<'a> {
         }
     }
 
+    // expr := logical_expr
+    // logical_expr := equality ("&&" relational | "||" relational)*
+    // equality := relational ("==" relational | "!=" relational)*
+    // relational := add ("<" add | "<=" add | ">" add | ">=" add")*
+    // add := mul ("+" mul | "-" mul)*
+    // mul := primary ("*" mul | "/" mul)*
+    // primary := "(" expr ")" | identifier "(" expr_list ")" |
+    //            identifier |
+    //            UInt64 | Int64 | Integer | Null
+    // expr_list = expr ("," expr_list)*
     pub fn parse_expr(&mut self) -> Result<Expr, ()> {
         return self.parse_logical_expr();
     }

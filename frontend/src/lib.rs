@@ -92,7 +92,7 @@ impl<'a> Parser<'a> {
     // primary := "(" expr ")" | identifier "(" expr_list ")" |
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
-    // expr_list = expr ("," expr_list)*
+    // expr_list = "" | expr | expr "," expr_list
     pub fn parse_expr(&mut self) -> Result<Expr, ()> {
         return self.parse_logical_expr();
     }
@@ -273,7 +273,8 @@ impl<'a> Parser<'a> {
                 self.next();
                 return Ok(self.parse_expr_list(args)?);
             }
-            _ => return Ok(args),
+            Some(Token::ParenClose) => return Ok(args),
+            _ => return Ok(args),   // TODO: error
         }
     }
 }

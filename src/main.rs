@@ -41,6 +41,9 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 Err("not implemented yet (Null)")
                 //Ok(self.context.ptr_sized_int_type(0, None))
             }
+            Expr::Val(_tvar, _expr) => {
+                Err("not implemented yet (Val)")
+            }
         }
     }
 

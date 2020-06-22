@@ -3,6 +3,7 @@ pub enum Expr {
     Binary(Box<BinaryExpr>),
     Int64(i64),
     UInt64(u64),
+    Val(TVar, Option<Box<Expr>>),
     Identifier(TVar),
     Null,
     Call(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
@@ -53,4 +54,5 @@ pub struct TVar {
 pub struct VarType {
     pub(crate) id: u64,
     pub(crate) ty: Type,
+    //pub(crate) ptr: bool,
 }

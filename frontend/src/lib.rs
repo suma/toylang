@@ -76,15 +76,17 @@ impl<'a> Parser<'a> {
         ))
     }
 
-    pub fn expect_err(&mut self, accept: &Token) {
+    pub fn expect_err(&mut self, accept: &Token) -> Result<(), String>{
         if !self.expect(accept) {
             return Err(format!("{:?} expected but {:?}", accept, self.ahead.get(0)))
         }
         Ok(())
     }
 
-    // expr := assign
-    // parse_assign := identifier "=" logical_expr | logical_expr
+    // expr := assign NewLine
+    // assign := val_def | identifier "=" logical_expr | logical_expr
+    // val_def := "val" identifier (":" def_ty)? ("=" logical_expr)
+    // def_ty := Int64 | UInt64 | identifier
     // logical_expr := equality ("&&" relational | "||" relational)*
     // equality := relational ("==" relational | "!=" relational)*
     // relational := add ("<" add | "<=" add | ">" add | ">=" add")*
@@ -112,14 +114,63 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_assign(&mut self) -> Result<Expr, String> {
-        let lhs = self.parse_logical_expr()?;
         match self.peek() {
+            Some(Token::Val) => {
+                self.next();
+                return self.parse_val_def();
+            }
+            _ => {
+                let lhs = self.parse_logical_expr()?;
+                match self.peek() {
+                    Some(Token::Equal) => {
+                        self.next();
+                        return Ok(Self::new_binary(Operator::Assign, lhs, self.parse_logical_expr()?))
+                    }
+                    _ => return Ok(lhs),
+                }
+            }
+        }
+    }
+
+    pub fn parse_val_def(&mut self) -> Result<Expr, String> {
+        let mut ident: String;
+        match self.peek() {
+            Some(Token::Identifier(s)) => {
+                ident = s.to_string();
+                self.next();
+            }
+            x => return Err(format!("parse_val_def: expected identifier but {:?}", x)),
+        }
+        let mut def_ty: Type = match self.peek() {
+            Some(Token::Colon) => {
+                self.next();
+                self.parse_def_ty()?
+            }
+            _ => Type::Unknown,
+        };
+
+        let rhs: Option<Box<Expr>> = match self.peek() {
             Some(Token::Equal) => {
                 self.next();
-                return Ok(Self::new_binary(Operator::Assign, lhs, self.parse_logical_expr()?))
+                Some(Box::new(self.parse_logical_expr()?))
             }
-            _ => return Ok(lhs),
-        }
+            _ => None,
+        };
+        return Ok(Expr::Val(TVar{ s: ident, ty: def_ty }, rhs))
+    }
+
+    pub fn parse_def_ty(&mut self) -> Result<Type, String> {
+        let ty = match self.peek() {
+            Some(Token::U64) => Type::UInt64,
+            Some(Token::I64) => Type::UInt64,   // FIXME: Add integer type
+            Some(Token::Identifier(s)) => {
+                Type::Variable(Box::new(self.fresh_ty()))
+            }
+            x => return Err(format!("parse_def_ty: expected type but {:?}", x)),
+        };
+        eprintln!("DBG Type: {:?}", ty);
+        self.next();
+        return Ok(ty);
     }
 
     fn parse_logical_expr(&mut self) -> Result<Expr, String> {
@@ -554,15 +605,36 @@ mod tests {
 
     #[test]
     fn parser_err_primary() {
-        let res = Parser::new(".").parse_expr();
+        let res = Parser::new(".").parse_expr_line();
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("parse_primary"));
     }
 
     #[test]
     fn parser_err_call_expr_list() {
-        let res = Parser::new("hoge(a,,)").parse_expr();
+        let res = Parser::new("hoge(a,,)").parse_expr_line();
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("parse_expr_list"));
+    }
+
+    #[test]
+    fn parser_val_simple_expr() {
+        let res = Parser::new("val hoge = 10u64").parse_expr_line().unwrap();
+        assert_eq!(Expr::Val(TVar{ s: "hoge".to_string(), ty: Type::Unknown },
+                      Some(Box::new(Expr::UInt64(10)))),
+                      res);
+    }
+
+    #[test]
+    fn parser_val_simple_expr_with_type() {
+        let res = Parser::new("val hoge: u64 = 30u64").parse_expr_line().unwrap();
+        assert_eq!(Expr::Val(TVar{ s: "hoge".to_string(), ty: Type::UInt64 }, Some(Box::new(Expr::UInt64(30)))),
+                   res);
+    }
+    #[test]
+    fn parser_val_simple_expr_without_type() {
+        let res = Parser::new("val fuga = 20u64").parse_expr_line().unwrap();
+        assert_eq!(Expr::Val(TVar{ s: "fuga".to_string(), ty: Type::Unknown }, Some(Box::new(Expr::UInt64(20)))),
+                   res);
     }
 }

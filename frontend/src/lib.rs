@@ -62,7 +62,6 @@ impl<'a> Parser<'a> {
             self.next();
             true
         } else {
-            self.next();
             false
         }
     }
@@ -228,7 +227,7 @@ impl<'a> Parser<'a> {
             Some(Token::ParenOpen) => {
                 self.next();
                 let node = self.parse_expr()?;
-                self.expect_err(&Token::ParenClose);
+                self.expect_err(&Token::ParenClose)?;
                 return Ok(node);
             }
             Some(Token::Identifier(s)) => {
@@ -240,7 +239,7 @@ impl<'a> Parser<'a> {
                         self.next();
                         let ty = Type::Variable(Box::new(self.fresh_ty()));
                         let args = self.parse_expr_list(vec![])?;
-                        self.expect_err(&Token::ParenClose);
+                        self.expect_err(&Token::ParenClose)?;
                         Ok(Expr::Call(TVar{ s, ty }, args))
                     }
                     _ => {
@@ -286,13 +285,13 @@ impl<'a> Parser<'a> {
         }
         args.push(expr.unwrap());
 
-        match self.peek() {
+        return match self.peek() {
             Some(Token::Comma) => {
                 self.next();
-                return self.parse_expr_list(args);
+                self.parse_expr_list(args)
             }
-            Some(Token::ParenClose) => return Ok(args),
-            x => return Err(format!("parse_expr_list: unexpected token {:?}", x)),
+            Some(Token::ParenClose) => Ok(args),
+            x => Err(format!("parse_expr_list: unexpected token {:?}", x)),
         }
     }
 }

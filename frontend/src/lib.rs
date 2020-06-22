@@ -78,8 +78,9 @@ impl<'a> Parser<'a> {
 
     pub fn expect_err(&mut self, accept: &Token) {
         if !self.expect(accept) {
-            println!("{:?} expected but {:?}", accept, self.ahead.get(0))
+            return Err(format!("{:?} expected but {:?}", accept, self.ahead.get(0)))
         }
+        Ok(())
     }
 
     // expr := assign
@@ -93,6 +94,19 @@ impl<'a> Parser<'a> {
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
+    pub fn parse_expr_line(&mut self) -> Result<Expr, String> {
+        let lhs = self.parse_expr();
+        if lhs.is_err() {
+            return lhs;
+        }
+        match self.peek() {
+            Some(Token::NewLine) => self.next(),
+            None => (),
+            x => return Err(format!("parse_expr: expected NewLine or EOF(None) but {:?}", x)),
+        }
+        return lhs;
+    }
+
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
         return self.parse_assign();
     }
@@ -402,7 +416,7 @@ mod tests {
     #[test]
     fn parser_simple_expr() {
         let mut p = Parser::new("1u64 + 2u64 ");
-        let res = p.parse_expr().unwrap();
+        let res = p.parse_expr_line().unwrap();
         assert_eq!(Expr::Binary(Box::new(
             BinaryExpr {
                 op: Operator::IAdd,
@@ -415,7 +429,7 @@ mod tests {
     #[test]
     fn parser_simple_expr_mul() {
         let mut p = Parser::new("(1u64) + 2u64 * 3u64");
-        let res = p.parse_expr().unwrap();
+        let res = p.parse_expr_line().unwrap();
         assert_eq!(Expr::Binary(Box::new(
             BinaryExpr {
                 op: Operator::IAdd,
@@ -434,7 +448,7 @@ mod tests {
     #[test]
     fn parser_simple_relational_expr() {
         let mut p = Parser::new("0u64 < 2u64 + 4u64");
-        let res = p.parse_expr().unwrap();
+        let res = p.parse_expr_line().unwrap();
         assert_eq!(Expr::Binary(Box::new(
             BinaryExpr {
                 op: Operator::LT,
@@ -453,7 +467,7 @@ mod tests {
     #[test]
     fn parser_simple_logical_expr() {
         let mut p = Parser::new("1u64 && 2u64 < 3u64");
-        let res = p.parse_expr().unwrap();
+        let res = p.parse_expr_line().unwrap();
         assert_eq!(Expr::Binary(Box::new(
             BinaryExpr {
                 op: Operator::LogicalAnd,
@@ -471,23 +485,23 @@ mod tests {
 
     #[test]
     fn parser_expr_accept() {
-        assert!(Parser::new("1u64").parse_expr().is_ok());
-        assert!(Parser::new("(1u64 + 2u64)").parse_expr().is_ok());
-        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_expr().is_ok());
-        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_expr().is_ok());
-        assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64").parse_expr().is_ok());
+        assert!(Parser::new("1u64").parse_expr_line().is_ok());
+        assert!(Parser::new("(1u64 + 2u64)").parse_expr_line().is_ok());
+        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_expr_line().is_ok());
+        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_expr_line().is_ok());
+        assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64").parse_expr_line().is_ok());
 
-        assert!(Parser::new("variable").parse_expr().is_ok());
-        assert!(Parser::new("a + b").parse_expr().is_ok());
-        assert!(Parser::new("a + 1u64").parse_expr().is_ok());
+        assert!(Parser::new("variable").parse_expr_line().is_ok());
+        assert!(Parser::new("a + b").parse_expr_line().is_ok());
+        assert!(Parser::new("a + 1u64").parse_expr_line().is_ok());
 
-        assert!(Parser::new("a() + 1u64").parse_expr().is_ok());
-        assert!(Parser::new("a(b,c) + 1u64").parse_expr().is_ok());
+        assert!(Parser::new("a() + 1u64").parse_expr_line().is_ok());
+        assert!(Parser::new("a(b,c) + 1u64").parse_expr_line().is_ok());
     }
 
     #[test]
     fn parser_simple_ident_expr() {
-        let res = Parser::new("abc + 1u64").parse_expr().unwrap();;
+        let res = Parser::new("abc + 1u64").parse_expr_line().unwrap();;
         assert_eq!(Expr::Binary(Box::new(
                 BinaryExpr {
                     op: Operator::IAdd,
@@ -503,7 +517,7 @@ mod tests {
 
     #[test]
     fn parser_simple_apply_empty() {
-        let res = Parser::new("abc()").parse_expr().unwrap();;
+        let res = Parser::new("abc()").parse_expr_line().unwrap();;
         assert_eq!(Expr::Call {
             0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
             1: vec![],
@@ -512,7 +526,7 @@ mod tests {
 
     #[test]
     fn parser_simple_apply_expr() {
-        let res = Parser::new("abc(1u64,2u64)").parse_expr().unwrap();;
+        let res = Parser::new("abc(1u64,2u64)").parse_expr_line().unwrap();;
         assert_eq!(Expr::Call {
             0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
             1: vec![
@@ -524,13 +538,13 @@ mod tests {
 
     #[test]
     fn parser_simple_expr_null_value() {
-        let res = Parser::new("null").parse_expr().unwrap();
+        let res = Parser::new("null").parse_expr_line().unwrap();
         assert_eq!(Expr::Null, res);
     }
 
     #[test]
     fn parser_simple_assign() {
-        let res = Parser::new("a = 1u64").parse_expr().unwrap();
+        let res = Parser::new("a = 1u64").parse_expr_line().unwrap();
         assert_eq!(Expr::Binary(Box::new(BinaryExpr {
             op: Operator::Assign,
             lhs: Expr::Identifier(TVar { s: "a".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown}))}),

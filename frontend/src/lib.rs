@@ -133,20 +133,20 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_val_def(&mut self) -> Result<Expr, String> {
-        let mut ident: String;
-        match self.peek() {
+        let mut ident: String = match self.peek() {
             Some(Token::Identifier(s)) => {
-                ident = s.to_string();
+                let s = s.to_string();
                 self.next();
+                s
             }
             x => return Err(format!("parse_val_def: expected identifier but {:?}", x)),
-        }
-        let mut def_ty: Type = match self.peek() {
+        };
+        let mut def_ty: TVar = match self.peek() {
             Some(Token::Colon) => {
                 self.next();
                 self.parse_def_ty()?
             }
-            _ => Type::Unknown,
+            _ => TVar{ s: String::new(), ty: Type::Unknown },
         };
 
         let rhs: Option<Box<Expr>> = match self.peek() {
@@ -156,21 +156,22 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        return Ok(Expr::Val(TVar{ s: ident, ty: def_ty }, rhs))
+        return Ok(Expr::Val(ident, def_ty, rhs))
     }
 
-    pub fn parse_def_ty(&mut self) -> Result<Type, String> {
+    pub fn parse_def_ty(&mut self) -> Result<TVar, String> {
+        let mut ident = String::new();
         let ty = match self.peek() {
             Some(Token::U64) => Type::UInt64,
             Some(Token::I64) => Type::UInt64,   // FIXME: Add integer type
             Some(Token::Identifier(s)) => {
+                ident = s.to_string();
                 Type::Variable(Box::new(self.fresh_ty()))
             }
             x => return Err(format!("parse_def_ty: expected type but {:?}", x)),
         };
-        eprintln!("DBG Type: {:?}", ty);
         self.next();
-        return Ok(ty);
+        return Ok(TVar{ s: ident, ty });
     }
 
     fn parse_logical_expr(&mut self) -> Result<Expr, String> {
@@ -620,7 +621,7 @@ mod tests {
     #[test]
     fn parser_val_simple_expr() {
         let res = Parser::new("val hoge = 10u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val(TVar{ s: "hoge".to_string(), ty: Type::Unknown },
+        assert_eq!(Expr::Val("hoge".to_string(), TVar{ s: "".to_string(), ty: Type::Unknown },
                       Some(Box::new(Expr::UInt64(10)))),
                       res);
     }
@@ -628,13 +629,20 @@ mod tests {
     #[test]
     fn parser_val_simple_expr_with_type() {
         let res = Parser::new("val hoge: u64 = 30u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val(TVar{ s: "hoge".to_string(), ty: Type::UInt64 }, Some(Box::new(Expr::UInt64(30)))),
+        assert_eq!(Expr::Val("hoge".to_string(), TVar{ s: "".to_string(), ty: Type::UInt64 }, Some(Box::new(Expr::UInt64(30)))),
                    res);
     }
     #[test]
-    fn parser_val_simple_expr_without_type() {
+    fn parser_val_simple_expr_without_type1() {
         let res = Parser::new("val fuga = 20u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val(TVar{ s: "fuga".to_string(), ty: Type::Unknown }, Some(Box::new(Expr::UInt64(20)))),
+        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "".to_string(), ty: Type::Unknown }, Some(Box::new(Expr::UInt64(20)))),
+                   res);
+    }
+
+    #[test]
+    fn parser_val_simple_expr_without_type2() {
+        let res = Parser::new("val fuga: ty = 20u64").parse_expr_line().unwrap();
+        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "ty".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown})) }, Some(Box::new(Expr::UInt64(20)))),
                    res);
     }
 }

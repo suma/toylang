@@ -2,6 +2,8 @@ pub mod token;
 pub mod ast;
 use crate::token::Token;
 use crate::ast::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -67,13 +69,13 @@ impl<'a> Parser<'a> {
     }
 
     fn new_binary(op: Operator, lhs: Expr, rhs: Expr) -> Expr {
-        Expr::Binary(Box::new(
+        Expr::Binary(Rc::new(RefCell::new(
             BinaryExpr {
                 op,
                 lhs,
                 rhs,
             }
-        ))
+        )))
     }
 
     pub fn expect_err(&mut self, accept: &Token) -> Result<(), String>{
@@ -149,10 +151,10 @@ impl<'a> Parser<'a> {
             _ => TVar{ s: String::new(), ty: Type::Unknown },
         };
 
-        let rhs: Option<Box<Expr>> = match self.peek() {
+        let rhs = match self.peek() {
             Some(Token::Equal) => {
                 self.next();
-                Some(Box::new(self.parse_logical_expr()?))
+                Some(Rc::new(RefCell::new(self.parse_logical_expr()?)))
             }
             _ => None,
         };
@@ -166,7 +168,7 @@ impl<'a> Parser<'a> {
             Some(Token::I64) => Type::Int64,
             Some(Token::Identifier(s)) => {
                 ident = s.to_string();
-                Type::Variable(Box::new(self.fresh_ty()))
+                Type::Variable(Rc::new(RefCell::new(self.fresh_ty())))
             }
             x => return Err(format!("parse_def_ty: expected type but {:?}", x)),
         };
@@ -303,14 +305,14 @@ impl<'a> Parser<'a> {
                     Some(Token::ParenOpen) => {
                         // function call
                         self.next();
-                        let ty = Type::Variable(Box::new(self.fresh_ty()));
+                        let ty = Type::Variable(Rc::new(RefCell::new(self.fresh_ty())));
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Token::ParenClose)?;
                         Ok(Expr::Call(TVar{ s, ty }, args))
                     }
                     _ => {
                         // identifier
-                        let ty = Type::Variable(Box::new(self.fresh_ty()));
+                        let ty = Type::Variable(Rc::new(RefCell::new(self.fresh_ty())));
                         Ok(Expr::Identifier(TVar{ s, ty }))
                     }
                 }
@@ -469,70 +471,70 @@ mod tests {
     fn parser_simple_expr() {
         let mut p = Parser::new("1u64 + 2u64 ");
         let res = p.parse_expr_line().unwrap();
-        assert_eq!(Expr::Binary(Box::new(
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(
             BinaryExpr {
                 op: Operator::IAdd,
                 lhs: Expr::UInt64(1),
                 rhs: Expr::UInt64(2),
             }
-        )), res);
+        ))), res);
     }
 
     #[test]
     fn parser_simple_expr_mul() {
         let mut p = Parser::new("(1u64) + 2u64 * 3u64");
         let res = p.parse_expr_line().unwrap();
-        assert_eq!(Expr::Binary(Box::new(
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(
             BinaryExpr {
                 op: Operator::IAdd,
                 lhs: Expr::UInt64(1),
-                rhs: Expr::Binary(Box::new(
+                rhs: Expr::Binary(Rc::new(RefCell::new(
                     BinaryExpr {
                         op: Operator::IMul,
                         lhs: Expr::UInt64(2),
                         rhs: Expr::UInt64(3),
                     }
-                )),
+                ))),
             }
-        )), res);
+        ))), res);
     }
 
     #[test]
     fn parser_simple_relational_expr() {
         let mut p = Parser::new("0u64 < 2u64 + 4u64");
         let res = p.parse_expr_line().unwrap();
-        assert_eq!(Expr::Binary(Box::new(
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(
             BinaryExpr {
                 op: Operator::LT,
                 lhs: Expr::UInt64(0),
-                rhs: Expr::Binary(Box::new(
+                rhs: Expr::Binary(Rc::new(RefCell::new(
                     BinaryExpr {
                         op: Operator::IAdd,
                         lhs: Expr::UInt64(2),
                         rhs: Expr::UInt64(4),
                     }
-                )),
+                ))),
             }
-        )), res);
+        ))), res);
     }
 
     #[test]
     fn parser_simple_logical_expr() {
         let mut p = Parser::new("1u64 && 2u64 < 3u64");
         let res = p.parse_expr_line().unwrap();
-        assert_eq!(Expr::Binary(Box::new(
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(
             BinaryExpr {
                 op: Operator::LogicalAnd,
                 lhs: Expr::UInt64(1),
-                rhs: Expr::Binary(Box::new(
+                rhs: Expr::Binary(Rc::new(RefCell::new(
                     BinaryExpr {
                         op: Operator::LT,
                         lhs: Expr::UInt64(2),
                         rhs: Expr::UInt64(3),
                     }
-                )),
+                ))),
             }
-        )), res);
+        ))), res);
     }
 
     #[test]
@@ -554,16 +556,16 @@ mod tests {
     #[test]
     fn parser_simple_ident_expr() {
         let res = Parser::new("abc + 1u64").parse_expr_line().unwrap();;
-        assert_eq!(Expr::Binary(Box::new(
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(
                 BinaryExpr {
                     op: Operator::IAdd,
                     lhs: Expr::Identifier(TVar {
                         s: "abc".to_string(),
-                        ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown })),
+                        ty: Type::Variable(Rc::new(RefCell::new(VarType{ id: 1, ty: Type::Unknown }))),
                     }),
                     rhs: Expr::UInt64(1),
                 }
-            ),
+            )),
         ), res);
     }
 
@@ -571,7 +573,7 @@ mod tests {
     fn parser_simple_apply_empty() {
         let res = Parser::new("abc()").parse_expr_line().unwrap();;
         assert_eq!(Expr::Call {
-            0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
+            0: TVar { s: "abc".to_string(), ty: Type::Variable(Rc::new(RefCell::new(VarType{ id: 1, ty: Type::Unknown })))},
             1: vec![],
         }, res);
     }
@@ -580,7 +582,7 @@ mod tests {
     fn parser_simple_apply_expr() {
         let res = Parser::new("abc(1u64,2u64)").parse_expr_line().unwrap();;
         assert_eq!(Expr::Call {
-            0: TVar { s: "abc".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown }))},
+            0: TVar { s: "abc".to_string(), ty: Type::Variable(Rc::new(RefCell::new(VarType{ id: 1, ty: Type::Unknown })))},
             1: vec![
                 Expr::UInt64(1),
                 Expr::UInt64(2),
@@ -597,11 +599,11 @@ mod tests {
     #[test]
     fn parser_simple_assign() {
         let res = Parser::new("a = 1u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Binary(Box::new(BinaryExpr {
+        assert_eq!(Expr::Binary(Rc::new(RefCell::new(BinaryExpr {
             op: Operator::Assign,
-            lhs: Expr::Identifier(TVar { s: "a".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown}))}),
+            lhs: Expr::Identifier(TVar { s: "a".to_string(), ty: Type::Variable(Rc::new(RefCell::new(VarType{ id: 1, ty: Type::Unknown})))}),
             rhs: Expr::UInt64(1)
-        })), res);
+        }))), res);
     }
 
     #[test]
@@ -622,27 +624,27 @@ mod tests {
     fn parser_val_simple_expr() {
         let res = Parser::new("val hoge = 10u64").parse_expr_line().unwrap();
         assert_eq!(Expr::Val("hoge".to_string(), TVar{ s: "".to_string(), ty: Type::Unknown },
-                      Some(Box::new(Expr::UInt64(10)))),
+                      Some(Rc::new(RefCell::new(Expr::UInt64(10))))),
                       res);
     }
 
     #[test]
     fn parser_val_simple_expr_with_type() {
         let res = Parser::new("val hoge: u64 = 30u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val("hoge".to_string(), TVar{ s: "".to_string(), ty: Type::UInt64 }, Some(Box::new(Expr::UInt64(30)))),
+        assert_eq!(Expr::Val("hoge".to_string(), TVar{ s: "".to_string(), ty: Type::UInt64 }, Some(Rc::new(RefCell::new(Expr::UInt64(30))))),
                    res);
     }
     #[test]
     fn parser_val_simple_expr_without_type1() {
         let res = Parser::new("val fuga = 20u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "".to_string(), ty: Type::Unknown }, Some(Box::new(Expr::UInt64(20)))),
+        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "".to_string(), ty: Type::Unknown }, Some(Rc::new(RefCell::new(Expr::UInt64(20))))),
                    res);
     }
 
     #[test]
     fn parser_val_simple_expr_without_type2() {
         let res = Parser::new("val fuga: ty = 20u64").parse_expr_line().unwrap();
-        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "ty".to_string(), ty: Type::Variable(Box::new(VarType{ id: 1, ty: Type::Unknown})) }, Some(Box::new(Expr::UInt64(20)))),
+        assert_eq!(Expr::Val("fuga".to_string(), TVar{ s: "ty".to_string(), ty: Type::Variable(Rc::new(RefCell::new(VarType{ id: 1, ty: Type::Unknown}))) }, Some(Rc::new(RefCell::new(Expr::UInt64(20))))),
                    res);
     }
 }

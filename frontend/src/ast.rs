@@ -1,9 +1,12 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 #[derive(Debug, PartialEq)]
 pub enum Expr {
-    Binary(Box<BinaryExpr>),
+    Binary(Rc<RefCell<BinaryExpr>>),
     Int64(i64),
     UInt64(u64),
-    Val(String, TVar, Option<Box<Expr>>),
+    Val(String, TVar, Option<Rc<RefCell<Expr>>>),
     Identifier(TVar),
     Null,
     Call(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
@@ -41,7 +44,7 @@ pub enum Type {
     Unknown,
     Int64,
     UInt64,
-    Variable(Box<VarType>),
+    Variable(Rc<RefCell<VarType>>),
 }
 
 #[derive(Debug, PartialEq)]

@@ -9,6 +9,8 @@ use inkwell::builder::Builder;
 use inkwell::passes::PassManager;
 use inkwell::module::Module;
 use std::path::Path;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 struct Compiler<'a, 'ctx> {
     pub context: &'ctx Context,
@@ -23,6 +25,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn compile_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>, &'static str> {
         match expr {
             Expr::Binary(bop) => {
+                let bop = bop.borrow();
                 let lhs = self.compile_expr(&bop.lhs)?;
                 let rhs = self.compile_expr(&bop.rhs)?;
                 match bop.op {
@@ -65,7 +68,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
             //variables: HashMap::new()
         };
 
-        let ret = compiler.compile_expr(&expr)?;
+        let ret = compiler.compile_expr(expr)?;
         let ret = ret.const_cast(context.i32_type(), true);
         builder.build_return(Some(&ret));
         Ok(())

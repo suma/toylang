@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
         let mut ident = String::new();
         let ty = match self.peek() {
             Some(Token::U64) => Type::UInt64,
-            Some(Token::I64) => Type::UInt64,   // FIXME: Add integer type
+            Some(Token::I64) => Type::Int64,
             Some(Token::Identifier(s)) => {
                 ident = s.to_string();
                 Type::Variable(Box::new(self.fresh_ty()))

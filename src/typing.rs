@@ -41,25 +41,19 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
     let t1 = norm(t1);
     let t2 = norm(t2);
     match (t1, t2) {
-    (Type::Variable(box tv1), Type::Variable(box tv2)) => {
-        if tv1.ty == Type::Unknown && tv2.ty == Type::Unknown {
-            tv1.id = tv2.id;
+        (Type::Variable(box VarType { id: i1, ty: Type::Unknown}), Type::Variable(box VarType { id: i2, ty: Type::Unknown})) => {
+            *i1 = *i2;
         }
-    }
-    (Type::Variable(box tv1), ref t2) => {
-        if tv1.ty == Type::Unknown {
-            tv1.ty = copy_type(t2);
+        (Type::Variable(box VarType { id: _, ty: ty}), ref t2) if *ty == Type::Unknown => {
+            *ty = copy_type(t2);
         }
-    }
-    (ref t1, Type::Variable(box tv2)) => {
-        if tv2.ty == Type::Unknown {
+        (ref t1, Type::Variable(box tv2)) if tv2.ty == Type::Unknown => {
             tv2.ty = copy_type(t1);
         }
-    }
-    (Type::Int64, Type::Int64) => (),
-    (Type::UInt64, Type::UInt64) => (),
-    (Type::Bool, Type::Bool) => (),
-    (lhs, rhs) => return Err(format!("{:?} {:?} failed", lhs, rhs)),
+        (Type::Int64, Type::Int64) => (),
+        (Type::UInt64, Type::UInt64) => (),
+        (Type::Bool, Type::Bool) => (),
+        (lhs, rhs) => return Err(format!("{:?} {:?} failed", lhs, rhs)),
     }
     Ok(())
 }

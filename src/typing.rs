@@ -53,7 +53,7 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
         (Type::Int64, Type::Int64) => (),
         (Type::UInt64, Type::UInt64) => (),
         (Type::Bool, Type::Bool) => (),
-        (lhs, rhs) => return Err(format!("{:?} {:?} failed", lhs, rhs)),
+        (lhs, rhs) => return Err(format!("{:?} {:?} unify failed", lhs, rhs)),
     }
     Ok(())
 }
@@ -81,7 +81,7 @@ match expr {
             let uint_res = unify(&mut ty_uint, &mut t1);    // int64
 
             // check
-            if int_res.is_err() || uint_res.is_ok() {
+            if int_res.is_ok() || uint_res.is_ok() {
                 // OK
             } else {
                 int_res?;

@@ -59,50 +59,50 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
 }
 
 pub fn typing(expr: &mut Expr, env: &mut Environment) -> Result<Type, String> {
-match expr {
-    Expr::Binary(box x) => {
-        let mut t1 = typing(&mut x.lhs, env)?;
-        let mut t2 = typing(&mut x.rhs, env)?;
-        let mut ty_op = typing_op(x.op.clone());
-        if ty_op == Type::Bool {
-            if t1 != Type::Bool || t2 != Type::Bool {
-                return Err(format!("bool op but {:?} {:?}", t1, t2));
+    match expr {
+        Expr::Binary(box x) => {
+            let mut t1 = typing(&mut x.lhs, env)?;
+            let mut t2 = typing(&mut x.rhs, env)?;
+            let mut ty_op = typing_op(x.op.clone());
+            if ty_op == Type::Bool {
+                if t1 != Type::Bool || t2 != Type::Bool {
+                    return Err(format!("bool op but {:?} {:?}", t1, t2));
+                } else {
+                    return Ok(Type::Bool);
+                }
+            } else if ty_op == Type::Int64 {
+                unify(&mut t1, &mut t2)?;
+
+                // int64
+                let int_res = unify(&mut ty_op, &mut t1);    // int64
+
+                // uint64
+                let mut ty_uint = Type::UInt64;
+                let uint_res = unify(&mut ty_uint, &mut t1);    // int64
+
+                // check
+                if int_res.is_ok() || uint_res.is_ok() {
+                    // OK
+                } else {
+                    int_res?;
+                    uint_res?;
+                }
             } else {
-                return Ok(Type::Bool);
+                unify(&mut t1, &mut t2)?;
+                unify(&mut ty_op, &mut t1)?;
             }
-        } else if ty_op == Type::Int64 {
-            unify(&mut t1, &mut t2)?;
-
-            // int64
-            let int_res = unify(&mut ty_op, &mut t1);    // int64
-
-            // uint64
-            let mut ty_uint = Type::UInt64;
-            let uint_res = unify(&mut ty_uint, &mut t1);    // int64
-
-            // check
-            if int_res.is_ok() || uint_res.is_ok() {
-                // OK
-            } else {
-                int_res?;
-                uint_res?;
-            }
-        } else {
-            unify(&mut t1, &mut t2)?;
-            unify(&mut ty_op, &mut t1)?;
+            Ok(t1)
         }
-        Ok(t1)
+        Expr::Int64(_) => Ok(Type::Int64),
+        Expr::UInt64(_) => Ok(Type::UInt64),
+        /*
+        Expr::Val(_, _, _) => {},
+        Expr::Identifier(_) => {},
+        Expr::Null => {},
+        Expr::Call(_, _) => {},
+         */
+        _ => Err(format!("err")),
     }
-    Expr::Int64(_) => Ok(Type::Int64),
-    Expr::UInt64(_) => Ok(Type::UInt64),
-    /*
-    Expr::Val(_, _, _) => {},
-    Expr::Identifier(_) => {},
-    Expr::Null => {},
-    Expr::Call(_, _) => {},
-     */
-    _ => Err(format!("err")),
-}
 }
 
 pub fn typing_op(op: Operator) -> Type {

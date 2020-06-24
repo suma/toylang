@@ -1,16 +1,17 @@
+mod typing;
+
 use std::fs::File;
 use std::io::prelude::*;
 
 use frontend;
 use frontend::ast::*;
+use typing::*;
 use inkwell::values::{IntValue, FunctionValue};
 use inkwell::context::Context;
 use inkwell::builder::Builder;
 use inkwell::passes::PassManager;
 use inkwell::module::Module;
 use std::path::Path;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 struct Compiler<'a, 'ctx> {
     pub context: &'ctx Context,
@@ -115,8 +116,16 @@ fn main() -> std::io::Result<()> {
     let basic_block = context.append_basic_block(function, "entry");
     builder.position_at_end(basic_block);
 
-    let expr = &expr.unwrap();
-    let res = Compiler::compile(&context, &builder, &fpm, &module, expr);
+    let mut expr = expr.unwrap();
+
+    let mut env = Environment::new();
+    let ty = typing(&mut expr, &mut env);
+    if ty.is_err() {
+        println!("{}", ty.unwrap_err());
+        return Ok(());
+    }
+
+    let res = Compiler::compile(&context, &builder, &fpm, &module, &expr);
     if res.is_err() {
         println!("compile error: {}", res.unwrap_err());
         return Ok(());

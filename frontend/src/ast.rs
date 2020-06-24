@@ -12,7 +12,7 @@ pub enum Expr {
     Call(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
     Assign, // =
     IAdd,
@@ -45,17 +45,19 @@ pub enum Type {
     Int64,
     UInt64,
     Variable(Rc<RefCell<VarType>>),
+    Unit,
+    Bool,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct TVar {
-    pub(crate) s: String,
-    pub(crate) ty: Type,
+    pub s: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct VarType {
-    pub(crate) id: u64,
-    pub(crate) ty: Type,
+    pub id: u64,
+    pub ty: Type,
     //pub(crate) ptr: bool,
 }

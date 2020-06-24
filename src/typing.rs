@@ -1,7 +1,6 @@
 use frontend;
 use frontend::ast::*;
 use std::collections::HashMap;
-use std::borrow::Borrow;
 
 pub struct Environment {
     context: HashMap<String, Type>,
@@ -17,7 +16,10 @@ impl Environment {
 
 fn norm(t: &mut Type) -> &mut Type {
     match t {
-        Type::Variable(box VarType{ id: _, ty: Type::Unknown}) => t,
+        Type::Variable(box VarType {
+            id: _,
+            ty: Type::Unknown,
+        }) => t,
         Type::Variable(_) => norm(t),
         ty => ty,
     }
@@ -27,12 +29,19 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
     let t1 = norm(t1);
     let t2 = norm(t2);
     match (t1, t2) {
-        (Type::Variable(box VarType { id: i1, ty: Type::Unknown}), Type::Variable(box VarType { id: i2, ty: Type::Unknown})) => {
+        (
+            Type::Variable(box VarType {
+                id: i1,
+                ty: Type::Unknown,
+            }),
+            Type::Variable(box VarType {
+                id: i2,
+                ty: Type::Unknown,
+            }),
+        ) => {
             *i1 = *i2;
         }
-        (Type::Variable(box VarType { id: _, ty: ty}), ty2) if *ty == Type::Unknown => {
-            //let cloned = *t2.clone();
-            //*ty = *cloned;
+        (Type::Variable(box VarType { id: _, ty: ty }), ty2) if *ty == Type::Unknown => {
             *ty = ty2.clone();
         }
         (ty1, Type::Variable(box tv2)) if tv2.ty == Type::Unknown => {
@@ -63,11 +72,11 @@ pub fn typing(expr: &mut Expr, env: &mut Environment) -> Result<Type, String> {
                 unify(&mut t1, &mut t2)?;
 
                 // int64
-                let int_res = unify(&mut ty_op, &mut t1);    // int64
+                let int_res = unify(&mut ty_op, &mut t1); // int64
 
                 // uint64
                 let mut ty_uint = Type::UInt64;
-                let uint_res = unify(&mut ty_uint, &mut t1);    // int64
+                let uint_res = unify(&mut ty_uint, &mut t1); // int64
 
                 // check
                 if int_res.is_ok() || uint_res.is_ok() {

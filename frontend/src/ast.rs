@@ -1,4 +1,3 @@
-
 #[derive(Debug, PartialEq)]
 pub enum Expr {
     Binary(Box<BinaryExpr>),
@@ -7,7 +6,7 @@ pub enum Expr {
     Val(String, TVar, Option<Box<Expr>>),
     Identifier(TVar),
     Null,
-    Call(TVar, Vec<Expr> /* type of arguments */)    // apply, function call, etc
+    Call(TVar, Vec<Expr> /* type of arguments */), // apply, function call, etc
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,7 +49,10 @@ pub enum Type {
 impl Clone for Type {
     fn clone(&self) -> Self {
         match self {
-            Type::Variable(v) => Type::Variable(Box::new(VarType { id: v.id, ty: v.ty.clone() })),
+            Type::Variable(v) => Type::Variable(Box::new(VarType {
+                id: v.id,
+                ty: v.ty.clone(),
+            })),
             Type::Unknown => Type::Unknown,
             Type::Int64 => Type::Int64,
             Type::UInt64 => Type::UInt64,

@@ -6,13 +6,13 @@ use std::io::prelude::*;
 
 use frontend;
 use frontend::ast::*;
-use typing::*;
-use inkwell::values::{IntValue, FunctionValue};
-use inkwell::context::Context;
 use inkwell::builder::Builder;
-use inkwell::passes::PassManager;
+use inkwell::context::Context;
 use inkwell::module::Module;
+use inkwell::passes::PassManager;
+use inkwell::values::{FunctionValue, IntValue};
 use std::path::Path;
+use typing::*;
 
 struct Compiler<'a, 'ctx> {
     pub context: &'ctx Context,
@@ -23,7 +23,6 @@ struct Compiler<'a, 'ctx> {
 }
 
 impl<'a, 'ctx> Compiler<'a, 'ctx> {
-
     fn compile_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>, &'static str> {
         match expr {
             Expr::Binary(bop) => {
@@ -36,7 +35,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                     Operator::IDiv => Ok(self.builder.build_int_unsigned_div(lhs, rhs, "tmpdiv")),
                     _ => Err("not implemented yet (Binary Operator)"),
                 }
-            },
+            }
             Expr::Int64(i) => Ok(self.context.i64_type().const_int(*i as u64, true)),
             Expr::UInt64(u) => Ok(self.context.i64_type().const_int(*u, false)),
             Expr::Identifier(_) => Err("not implemented yet (Identifier)"),
@@ -45,9 +44,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 Err("not implemented yet (Null)")
                 //Ok(self.context.ptr_sized_int_type(0, None))
             }
-            Expr::Val(_name, _tvar, _expr) => {
-                Err("not implemented yet (Val)")
-            }
+            Expr::Val(_name, _tvar, _expr) => Err("not implemented yet (Val)"),
         }
     }
 
@@ -56,9 +53,8 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
         builder: &'a Builder<'ctx>,
         pass_manager: &'a PassManager<FunctionValue<'ctx>>,
         module: &'a Module<'ctx>,
-        expr: &Expr
+        expr: &Expr,
     ) -> Result<(), &'static str> {
-
         let mut compiler = Compiler {
             context,
             builder,

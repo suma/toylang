@@ -29,16 +29,16 @@ pub enum Token {
     Dot,
     DoubleColon,
     Colon,
-    Arrow,  // ->
+    Arrow, // ->
 
     Equal,
 
-    DoubleEqual,    // ==
-    NotEqual,       // !=
-    LT, // <
-    LE, // <=
-    GT, // >
-    GE, // >=
+    DoubleEqual, // ==
+    NotEqual,    // !=
+    LT,          // <
+    LE,          // <=
+    GT,          // >
+    GE,          // >=
 
     DoubleAnd, // &&
     DoubleOr,  // ||

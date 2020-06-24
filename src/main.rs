@@ -1,3 +1,4 @@
+#![feature(box_patterns)]
 mod typing;
 
 use std::fs::File;
@@ -26,7 +27,6 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn compile_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>, &'static str> {
         match expr {
             Expr::Binary(bop) => {
-                let bop = bop.borrow();
                 let lhs = self.compile_expr(&bop.lhs)?;
                 let rhs = self.compile_expr(&bop.rhs)?;
                 match bop.op {

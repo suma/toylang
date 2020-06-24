@@ -47,6 +47,19 @@ pub enum Type {
     Bool,
 }
 
+impl Clone for Type {
+    fn clone(&self) -> Self {
+        match self {
+            Type::Variable(v) => Type::Variable(Box::new(VarType { id: v.id, ty: v.ty.clone() })),
+            Type::Unknown => Type::Unknown,
+            Type::Int64 => Type::Int64,
+            Type::UInt64 => Type::UInt64,
+            Type::Unit => Type::Unit,
+            Type::Bool => Type::Bool,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct TVar {
     pub s: String,

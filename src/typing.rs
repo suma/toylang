@@ -1,7 +1,7 @@
 use frontend;
 use frontend::ast::*;
 use std::collections::HashMap;
-use std::borrow::{BorrowMut, Borrow};
+use std::borrow::Borrow;
 
 pub struct Environment {
     context: HashMap<String, Type>,
@@ -18,22 +18,8 @@ impl Environment {
 fn norm(t: &mut Type) -> &mut Type {
     match t {
         Type::Variable(box VarType{ id: _, ty: Type::Unknown}) => t,
-        Type::Variable(box _) => norm(t),
+        Type::Variable(_) => norm(t),
         ty => ty,
-    }
-}
-
-fn copy_type(t: &Type) -> Type {
-    // enum `Type` cannot be implemented `Copy`
-    match t {
-        Type::Variable(v) => {
-            Type::Variable(Box::new(VarType { id: v.id.clone(), ty: copy_type((*&v.ty).borrow()) }))
-        }
-        Type::Unknown => Type::Unknown,
-        Type::Int64 => Type::Int64,
-        Type::UInt64 => Type::UInt64,
-        Type::Unit => Type::Unit,
-        Type::Bool => Type::Bool
     }
 }
 
@@ -44,11 +30,14 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
         (Type::Variable(box VarType { id: i1, ty: Type::Unknown}), Type::Variable(box VarType { id: i2, ty: Type::Unknown})) => {
             *i1 = *i2;
         }
-        (Type::Variable(box VarType { id: _, ty: ty}), ref t2) if *ty == Type::Unknown => {
-            *ty = copy_type(t2);
+        (Type::Variable(box VarType { id: _, ty: ty}), ty2) if *ty == Type::Unknown => {
+            //let cloned = *t2.clone();
+            //*ty = *cloned;
+            *ty = ty2.clone();
         }
-        (ref t1, Type::Variable(box tv2)) if tv2.ty == Type::Unknown => {
-            tv2.ty = copy_type(t1);
+        (ty1, Type::Variable(box tv2)) if tv2.ty == Type::Unknown => {
+            let cloned = ty1.clone();
+            tv2.ty = cloned;
         }
         (Type::Int64, Type::Int64) => (),
         (Type::UInt64, Type::UInt64) => (),

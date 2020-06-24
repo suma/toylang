@@ -51,10 +51,9 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
             tv1.ty = copy_type(t2);
         }
     }
-    (_, Type::Variable(box tv2)) => {
-        //let mut tv2 = tv2.as_ref().borrow_mut();
+    (ref t1, Type::Variable(box tv2)) => {
         if tv2.ty == Type::Unknown {
-            //tv2.ty = copy_type(&t1);
+            tv2.ty = copy_type(t1);
         }
     }
     (Type::Int64, Type::Int64) => (),

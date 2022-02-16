@@ -10,7 +10,6 @@ mod lexer {
 pub struct Parser<'a> {
     lexer: lexer::Lexer<'a>,
     ahead: Vec<Token>,
-    current_id: u64,
 }
 
 impl<'a> Parser<'a> {
@@ -19,7 +18,6 @@ impl<'a> Parser<'a> {
         Parser {
             lexer,
             ahead: Vec::new(),
-            current_id: 0,
         }
     }
 
@@ -80,7 +78,7 @@ impl<'a> Parser<'a> {
     // expr := assign NewLine
     // assign := val_def | identifier "=" logical_expr | logical_expr
     // val_def := "val" identifier (":" def_ty)? ("=" logical_expr)
-    // def_ty := Int64 | UInt64 | identifier
+    // def_ty := Int64 | UInt64 | identifier | Unknown
     // logical_expr := equality ("&&" relational | "||" relational)*
     // equality := relational ("==" relational | "!=" relational)*
     // relational := add ("<" add | "<=" add | ">" add | ">=" add")*
@@ -144,17 +142,18 @@ impl<'a> Parser<'a> {
             }
             x => return Err(format!("parse_val_def: expected identifier but {:?}", x)),
         };
-        let mut def_ty: TVar = match self.peek() {
+
+        let ty: Type = match self.peek() {
             Some(Token::Colon) => {
                 self.next();
                 self.parse_def_ty()?
             }
-            _ => TVar {
-                s: String::new(),
-                ty: Type::Unknown,
-            },
+            _ => {
+                Type::Unknown
+            }
         };
 
+        // "=" logical_expr
         let rhs = match self.peek() {
             Some(Token::Equal) => {
                 self.next();
@@ -162,22 +161,23 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        return Ok(Expr::Val(ident, def_ty, rhs));
+        return Ok(Expr::Val(ident, Some(ty), rhs));
     }
 
-    pub fn parse_def_ty(&mut self) -> Result<TVar, String> {
+
+    fn parse_def_ty(&mut self) -> Result<Type, String> {
         let mut ident = String::new();
-        let ty = match self.peek() {
+        let ty: Type = match self.peek() {
             Some(Token::U64) => Type::UInt64,
             Some(Token::I64) => Type::Int64,
             Some(Token::Identifier(s)) => {
                 ident = s.to_string();
-                Type::Variable(Box::new(self.fresh_ty()))
+                Type::Identifier(ident)
             }
-            x => return Err(format!("parse_def_ty: expected type but {:?}", x)),
+            _ => Type::Unknown
         };
         self.next();
-        return Ok(TVar { s: ident, ty });
+        return Ok(ty);
     }
 
     fn parse_logical_expr(&mut self) -> Result<Expr, String> {
@@ -286,14 +286,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn fresh_ty(&mut self) -> VarType {
-        self.current_id += 1;
-        return VarType {
-            id: self.current_id,
-            ty: Type::Unknown,
-        };
-    }
-
     fn parse_primary(&mut self) -> Result<Expr, String> {
         match self.peek() {
             Some(Token::ParenOpen) => {
@@ -309,15 +301,13 @@ impl<'a> Parser<'a> {
                     Some(Token::ParenOpen) => {
                         // function call
                         self.next();
-                        let ty = Type::Variable(Box::new(self.fresh_ty()));
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Token::ParenClose)?;
-                        Ok(Expr::Call(TVar { s, ty }, args))
+                        Ok(Expr::Call(s, args))
                     }
                     _ => {
                         // identifier
-                        let ty = Type::Variable(Box::new(self.fresh_ty()));
-                        Ok(Expr::Identifier(TVar { s, ty }))
+                        Ok(Expr::Identifier(s))
                     }
                 };
             }
@@ -561,13 +551,7 @@ mod tests {
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::IAdd,
-                lhs: Expr::Identifier(TVar {
-                    s: "abc".to_string(),
-                    ty: Type::Variable(Box::new(VarType {
-                        id: 1,
-                        ty: Type::Unknown
-                    })),
-                }),
+                lhs: Expr::Identifier("abc".to_string()),
                 rhs: Expr::UInt64(1),
             }),),
             res
@@ -578,16 +562,10 @@ mod tests {
     fn parser_simple_apply_empty() {
         let res = Parser::new("abc()").parse_expr_line().unwrap();
         assert_eq!(
-            Expr::Call {
-                0: TVar {
-                    s: "abc".to_string(),
-                    ty: Type::Variable(Box::new(VarType {
-                        id: 1,
-                        ty: Type::Unknown
-                    }))
-                },
-                1: vec![],
-            },
+            Expr::Call(
+                "abc".to_string(),
+                vec![],
+            ),
             res
         );
     }
@@ -596,16 +574,10 @@ mod tests {
     fn parser_simple_apply_expr() {
         let res = Parser::new("abc(1u64,2u64)").parse_expr_line().unwrap();
         assert_eq!(
-            Expr::Call {
-                0: TVar {
-                    s: "abc".to_string(),
-                    ty: Type::Variable(Box::new(VarType {
-                        id: 1,
-                        ty: Type::Unknown
-                    }))
-                },
-                1: vec![Expr::UInt64(1), Expr::UInt64(2),],
-            },
+            Expr::Call(
+                "abc".to_string(),
+                vec![Expr::UInt64(1), Expr::UInt64(2),],
+            ),
             res
         );
     }
@@ -622,13 +594,7 @@ mod tests {
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::Assign,
-                lhs: Expr::Identifier(TVar {
-                    s: "a".to_string(),
-                    ty: Type::Variable(Box::new(VarType {
-                        id: 1,
-                        ty: Type::Unknown
-                    }))
-                }),
+                lhs: Expr::Identifier("a".to_string()),
                 rhs: Expr::UInt64(1)
             })),
             res
@@ -655,12 +621,8 @@ mod tests {
         assert_eq!(
             Expr::Val(
                 "hoge".to_string(),
-                TVar {
-                    s: "".to_string(),
-                    ty: Type::Unknown
-                },
-                Some(Box::new(Expr::UInt64(10)))
-            ),
+                Some(Type::Unknown),
+                Some(Box::new(Expr::UInt64(10)))),
             res
         );
     }
@@ -673,12 +635,8 @@ mod tests {
         assert_eq!(
             Expr::Val(
                 "hoge".to_string(),
-                TVar {
-                    s: "".to_string(),
-                    ty: Type::UInt64
-                },
-                Some(Box::new(Expr::UInt64(30)))
-            ),
+                Some(Type::UInt64),
+                Some(Box::new(Expr::UInt64(30)))),
             res
         );
     }
@@ -688,10 +646,7 @@ mod tests {
         assert_eq!(
             Expr::Val(
                 "fuga".to_string(),
-                TVar {
-                    s: "".to_string(),
-                    ty: Type::Unknown
-                },
+                Some(Type::Unknown),
                 Some(Box::new(Expr::UInt64(20)))
             ),
             res
@@ -706,13 +661,7 @@ mod tests {
         assert_eq!(
             Expr::Val(
                 "fuga".to_string(),
-                TVar {
-                    s: "ty".to_string(),
-                    ty: Type::Variable(Box::new(VarType {
-                        id: 1,
-                        ty: Type::Unknown
-                    }))
-                },
+                Some(Type::Identifier("ty".to_string())),
                 Some(Box::new(Expr::UInt64(20)))
             ),
             res

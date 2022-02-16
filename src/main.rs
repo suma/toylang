@@ -44,7 +44,7 @@ impl<'a, 'ctx> Compiler<'a, 'ctx> {
                 Err("not implemented yet (Null)")
                 //Ok(self.context.ptr_sized_int_type(0, None))
             }
-            Expr::Val(_name, _tvar, _expr) => Err("not implemented yet (Val)"),
+            Expr::Val(_name, _ty, _expr) => Err("not implemented yet (Val)"),
         }
     }
 
@@ -115,11 +115,11 @@ fn main() -> std::io::Result<()> {
     let mut expr = expr.unwrap();
 
     let mut env = Environment::new();
-    let ty = typing(&mut expr, &mut env);
-    if ty.is_err() {
-        println!("{}", ty.unwrap_err());
-        return Ok(());
-    }
+    //let ty = typing(&mut expr, &mut env);
+    //if ty.is_err() {
+    //    println!("{}", ty.unwrap_err());
+    //    return Ok(());
+    //}
 
     let res = Compiler::compile(&context, &builder, &fpm, &module, &expr);
     if res.is_err() {

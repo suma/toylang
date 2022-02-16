@@ -14,6 +14,7 @@ impl Environment {
     }
 }
 
+/*
 fn norm(t: &mut Type) -> &mut Type {
     match t {
         Type::Variable(box VarType {
@@ -45,8 +46,7 @@ fn unify(t1: &mut Type, t2: &mut Type) -> Result<(), String> {
             *ty = ty2.clone();
         }
         (ty1, Type::Variable(box tv2)) if tv2.ty == Type::Unknown => {
-            let cloned = ty1.clone();
-            tv2.ty = cloned;
+            tv2.ty = ty1.clone();
         }
         (Type::Int64, Type::Int64) => (),
         (Type::UInt64, Type::UInt64) => (),
@@ -120,3 +120,5 @@ pub fn typing_op(op: Operator) -> Type {
         Operator::LogicalOr => Type::Bool,
     }
 }
+
+ */

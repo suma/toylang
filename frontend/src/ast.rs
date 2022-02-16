@@ -3,10 +3,10 @@ pub enum Expr {
     Binary(Box<BinaryExpr>),
     Int64(i64),
     UInt64(u64),
-    Val(String, TVar, Option<Box<Expr>>),
-    Identifier(TVar),
+    Val(String, Option<Type>, Option<Box<Expr>>),
+    Identifier(String),
     Null,
-    Call(TVar, Vec<Expr> /* type of arguments */), // apply, function call, etc
+    Call(String, Vec<Expr> /* type of arguments */), // apply, function call, etc
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,11 +41,12 @@ pub enum Type {
     Unknown,
     Int64,
     UInt64,
-    Variable(Box<VarType>),
+    Identifier(String),
     Unit,
     Bool,
 }
 
+/*
 impl Clone for Type {
     fn clone(&self) -> Self {
         match self {
@@ -74,3 +75,4 @@ pub struct VarType {
     pub ty: Type,
     //pub(crate) ptr: bool,
 }
+*/

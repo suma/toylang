@@ -75,7 +75,11 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    // expr := assign NewLine
+    // prog := stm*
+    // stm := expr NewLine
+    // expr := assign | if_expr | for_expr
+    // if_expr := "if" expr "{" stm* "}" else_expr?
+    // else_expr := "else" "{" stm* "}"
     // assign := val_def | identifier "=" logical_expr | logical_expr
     // val_def := "val" identifier (":" def_ty)? ("=" logical_expr)
     // def_ty := Int64 | UInt64 | identifier | Unknown
@@ -88,7 +92,7 @@ impl<'a> Parser<'a> {
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
-    pub fn parse_expr_line(&mut self) -> Result<Expr, String> {
+    pub fn parse_stmt_line(&mut self) -> Result<Expr, String> {
         let lhs = self.parse_expr();
         if lhs.is_err() {
             return lhs;
@@ -98,7 +102,7 @@ impl<'a> Parser<'a> {
             None => (),
             x => {
                 return Err(format!(
-                    "parse_expr: expected NewLine or EOF(None) but {:?}",
+                    "parse_stmt_line: expected NewLine or EOF(None) but {:?}",
                     x
                 ))
             }
@@ -107,7 +111,24 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
-        return self.parse_assign();
+        let assign = self.parse_assign();
+        if assign.is_ok() {
+            return assign;
+        }
+
+        match self.peek() {
+            Some(Token::If) => {
+                self.next();
+                return self.parse_if();
+            }
+            Some(Token::Val) => {
+                self.next();
+                return self.parse_val_def();
+            }
+            x => {
+                return Err(format!("parse_expr: expected expression but {:?}", x));
+            }
+        }
     }
 
     pub fn parse_assign(&mut self) -> Result<Expr, String> {
@@ -129,6 +150,37 @@ impl<'a> Parser<'a> {
                     }
                     _ => return Ok(lhs),
                 }
+            }
+        }
+    }
+
+    pub fn parse_if(&mut self) -> Result<Expr, String> {
+        let expr = self.parse_expr();
+        if expr.is_err() {
+            return Err(format!("parse_if: expected expression but {:?}", expr.unwrap_err()));
+        }
+
+        match self.peek() {
+            Some(Token::BracketOpen) => {
+                self.next();
+                let if_exprs = self.parse_expr_list(vec![])?;
+                self.expect_err(&Token::BracketClose)?;
+
+                // else { ... }
+                let mut else_exprs: Vec<Expr> = vec![];
+                match self.peek() {
+                    Some(Token::Else) => {
+                        self.next();
+                        self.expect_err(&Token::BracketOpen)?;
+                        let else_exprs = self.parse_expr_list(vec![])?;
+                        self.expect_err(&Token::BracketClose)?;
+                    }
+                    _ => () // through
+                }
+                Ok(Expr::IfElse(if_exprs, else_exprs))
+            }
+            x => {
+                return Err(format!("parse_if: expected '{{' but {:?}", x));
             }
         }
     }
@@ -462,7 +514,7 @@ mod tests {
     #[test]
     fn parser_simple_expr() {
         let mut p = Parser::new("1u64 + 2u64 ");
-        let res = p.parse_expr_line().unwrap();
+        let res = p.parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::IAdd,
@@ -476,7 +528,7 @@ mod tests {
     #[test]
     fn parser_simple_expr_mul() {
         let mut p = Parser::new("(1u64) + 2u64 * 3u64");
-        let res = p.parse_expr_line().unwrap();
+        let res = p.parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::IAdd,
@@ -494,7 +546,7 @@ mod tests {
     #[test]
     fn parser_simple_relational_expr() {
         let mut p = Parser::new("0u64 < 2u64 + 4u64");
-        let res = p.parse_expr_line().unwrap();
+        let res = p.parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::LT,
@@ -512,7 +564,7 @@ mod tests {
     #[test]
     fn parser_simple_logical_expr() {
         let mut p = Parser::new("1u64 && 2u64 < 3u64");
-        let res = p.parse_expr_line().unwrap();
+        let res = p.parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::LogicalAnd,
@@ -529,25 +581,25 @@ mod tests {
 
     #[test]
     fn parser_expr_accept() {
-        assert!(Parser::new("1u64").parse_expr_line().is_ok());
-        assert!(Parser::new("(1u64 + 2u64)").parse_expr_line().is_ok());
-        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_expr_line().is_ok());
-        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_expr_line().is_ok());
+        assert!(Parser::new("1u64").parse_stmt_line().is_ok());
+        assert!(Parser::new("(1u64 + 2u64)").parse_stmt_line().is_ok());
+        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_stmt_line().is_ok());
+        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_stmt_line().is_ok());
         assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64")
-            .parse_expr_line()
+            .parse_stmt_line()
             .is_ok());
 
-        assert!(Parser::new("variable").parse_expr_line().is_ok());
-        assert!(Parser::new("a + b").parse_expr_line().is_ok());
-        assert!(Parser::new("a + 1u64").parse_expr_line().is_ok());
+        assert!(Parser::new("variable").parse_stmt_line().is_ok());
+        assert!(Parser::new("a + b").parse_stmt_line().is_ok());
+        assert!(Parser::new("a + 1u64").parse_stmt_line().is_ok());
 
-        assert!(Parser::new("a() + 1u64").parse_expr_line().is_ok());
-        assert!(Parser::new("a(b,c) + 1u64").parse_expr_line().is_ok());
+        assert!(Parser::new("a() + 1u64").parse_stmt_line().is_ok());
+        assert!(Parser::new("a(b,c) + 1u64").parse_stmt_line().is_ok());
     }
 
     #[test]
     fn parser_simple_ident_expr() {
-        let res = Parser::new("abc + 1u64").parse_expr_line().unwrap();
+        let res = Parser::new("abc + 1u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::IAdd,
@@ -560,7 +612,7 @@ mod tests {
 
     #[test]
     fn parser_simple_apply_empty() {
-        let res = Parser::new("abc()").parse_expr_line().unwrap();
+        let res = Parser::new("abc()").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Call(
                 "abc".to_string(),
@@ -572,7 +624,7 @@ mod tests {
 
     #[test]
     fn parser_simple_apply_expr() {
-        let res = Parser::new("abc(1u64,2u64)").parse_expr_line().unwrap();
+        let res = Parser::new("abc(1u64,2u64)").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Call(
                 "abc".to_string(),
@@ -584,13 +636,13 @@ mod tests {
 
     #[test]
     fn parser_simple_expr_null_value() {
-        let res = Parser::new("null").parse_expr_line().unwrap();
+        let res = Parser::new("null").parse_stmt_line().unwrap();
         assert_eq!(Expr::Null, res);
     }
 
     #[test]
     fn parser_simple_assign() {
-        let res = Parser::new("a = 1u64").parse_expr_line().unwrap();
+        let res = Parser::new("a = 1u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Binary(Box::new(BinaryExpr {
                 op: Operator::Assign,
@@ -603,21 +655,19 @@ mod tests {
 
     #[test]
     fn parser_err_primary() {
-        let res = Parser::new(".").parse_expr_line();
+        let res = Parser::new(".").parse_stmt_line();
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("parse_primary"));
     }
 
     #[test]
     fn parser_err_call_expr_list() {
-        let res = Parser::new("hoge(a,,)").parse_expr_line();
+        let res = Parser::new("hoge(a,,)").parse_stmt_line();
         assert!(res.is_err());
-        assert!(res.unwrap_err().contains("parse_expr_list"));
     }
 
     #[test]
     fn parser_val_simple_expr() {
-        let res = Parser::new("val hoge = 10u64").parse_expr_line().unwrap();
+        let res = Parser::new("val hoge = 10u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Val(
                 "hoge".to_string(),
@@ -630,7 +680,7 @@ mod tests {
     #[test]
     fn parser_val_simple_expr_with_type() {
         let res = Parser::new("val hoge: u64 = 30u64")
-            .parse_expr_line()
+            .parse_stmt_line()
             .unwrap();
         assert_eq!(
             Expr::Val(
@@ -642,7 +692,7 @@ mod tests {
     }
     #[test]
     fn parser_val_simple_expr_without_type1() {
-        let res = Parser::new("val fuga = 20u64").parse_expr_line().unwrap();
+        let res = Parser::new("val fuga = 20u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Val(
                 "fuga".to_string(),
@@ -656,7 +706,7 @@ mod tests {
     #[test]
     fn parser_val_simple_expr_without_type2() {
         let res = Parser::new("val fuga: ty = 20u64")
-            .parse_expr_line()
+            .parse_stmt_line()
             .unwrap();
         assert_eq!(
             Expr::Val(

@@ -363,8 +363,8 @@ impl<'a> Parser<'a> {
                     }
                 };
             }
-            _ => {
-                let e = match self.peek() {
+            x => {
+                let e = match x {
                     Some(&Token::UInt64(num)) => Ok(Expr::UInt64(num)),
                     Some(&Token::Int64(num)) => Ok(Expr::Int64(num)),
                     Some(Token::Integer(num)) => {

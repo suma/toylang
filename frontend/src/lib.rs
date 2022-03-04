@@ -78,8 +78,9 @@ impl<'a> Parser<'a> {
     // prog := stm*
     // stm := expr NewLine
     // expr := assign | if_expr | for_expr
-    // if_expr := "if" expr "{" stm* "}" else_expr?
-    // else_expr := "else" "{" stm* "}"
+    // block := "{" stm* "}"
+    // if_expr := "if" expr block else_expr?
+    // else_expr := "else" block
     // assign := val_def | identifier "=" logical_expr | logical_expr
     // val_def := "val" identifier (":" def_ty)? ("=" logical_expr)
     // def_ty := Int64 | UInt64 | identifier | Unknown
@@ -99,7 +100,7 @@ impl<'a> Parser<'a> {
         }
         match self.peek() {
             Some(Token::NewLine) => self.next(),
-            None => (),
+            Some(Token::BraceClose) | None => (),
             x => {
                 return Err(format!(
                     "parse_stmt_line: expected NewLine or EOF(None) but {:?}",
@@ -108,6 +109,24 @@ impl<'a> Parser<'a> {
             }
         }
         return lhs;
+    }
+
+    pub fn parse_some_stmt(&mut self) -> Result<Vec<Expr>, String> {
+        let mut stmts = vec![];
+        loop {
+            match self.peek() {
+                Some(Token::BraceClose) => break,
+                x => (),
+            }
+            let x = self.parse_stmt_line();
+            match x {
+                Ok(expr) => {
+                    stmts.push(expr)
+                },
+                _ => break,
+            }
+        }
+        return Ok(stmts);
     }
 
     pub fn parse_expr(&mut self) -> Result<Expr, String> {
@@ -155,34 +174,25 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_if(&mut self) -> Result<Expr, String> {
-        let expr = self.parse_expr();
-        if expr.is_err() {
-            return Err(format!("parse_if: expected expression but {:?}", expr.unwrap_err()));
-        }
+        let cond = self.parse_logical_expr()?;
+        let if_block = self.parse_block()?;
 
+        let mut else_block = vec![];
         match self.peek() {
-            Some(Token::BracketOpen) => {
+            Some(Token::Else) => {
                 self.next();
-                let if_exprs = self.parse_expr_list(vec![])?;
-                self.expect_err(&Token::BracketClose)?;
-
-                // else { ... }
-                let mut else_exprs: Vec<Expr> = vec![];
-                match self.peek() {
-                    Some(Token::Else) => {
-                        self.next();
-                        self.expect_err(&Token::BracketOpen)?;
-                        let else_exprs = self.parse_expr_list(vec![])?;
-                        self.expect_err(&Token::BracketClose)?;
-                    }
-                    _ => () // through
-                }
-                Ok(Expr::IfElse(if_exprs, else_exprs))
+                else_block = self.parse_block()?;
             }
-            x => {
-                return Err(format!("parse_if: expected '{{' but {:?}", x));
-            }
+            _ => () // through
         }
+        return Ok(Expr::IfElse(Box::new(cond), if_block, else_block));
+    }
+
+    pub fn parse_block(&mut self) -> Result<Vec<Expr>, String> {
+        self.expect_err(&Token::BraceOpen)?;
+        let block = self.parse_some_stmt()?;
+        self.expect_err(&Token::BraceClose)?;
+        return Ok(block);
     }
 
     pub fn parse_val_def(&mut self) -> Result<Expr, String> {
@@ -387,10 +397,8 @@ impl<'a> Parser<'a> {
 
         let expr = self.parse_expr();
         if expr.is_err() {
-            return Err(format!(
-                "parse_expr_list: expected expr: {}",
-                expr.unwrap_err()
-            ));
+            // there is no expr in this context
+            return Ok(args);
         }
         args.push(expr.unwrap());
 
@@ -407,6 +415,8 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use crate::Expr::Identifier;
+    use crate::Expr::IfElse;
     use super::*;
     use crate::token::Token;
 
@@ -713,6 +723,32 @@ mod tests {
                 "fuga".to_string(),
                 Some(Type::Identifier("ty".to_string())),
                 Some(Box::new(Expr::UInt64(20)))
+            ),
+            res
+        );
+    }
+
+    #[test]
+    fn parser_if_expr() {
+        let res = Parser::new("if condition { }").parse_stmt_line().unwrap();
+        assert_eq!(
+            Expr::IfElse(
+                Box::new(Expr::Identifier("condition".to_string())),
+                vec![],
+                vec![],
+            ),
+            res
+        );
+    }
+
+    #[test]
+    fn parser_if_else_expr() {
+        let res = Parser::new("if condition { a } else { b }").parse_stmt_line().unwrap();
+        assert_eq!(
+            Expr::IfElse(
+                Box::new(Expr::Identifier("condition".to_string())),
+                vec![Expr::Identifier("a".to_string())],
+                vec![Expr::Identifier("b".to_string())],
             ),
             res
         );

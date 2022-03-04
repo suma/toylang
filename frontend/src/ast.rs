@@ -1,6 +1,6 @@
 #[derive(Debug, PartialEq)]
 pub enum Expr {
-    IfElse(Vec<Expr>, Vec<Expr>),
+    IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>),
     Binary(Box<BinaryExpr>),
     Int64(i64),
     UInt64(u64),

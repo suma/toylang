@@ -25,7 +25,7 @@ struct Compiler<'a, 'ctx> {
 impl<'a, 'ctx> Compiler<'a, 'ctx> {
     fn compile_expr(&mut self, expr: &Expr) -> Result<IntValue<'ctx>, &'static str> {
         match expr {
-            Expr::IfElse(_, _) => Err("IfElse is no implemented"),
+            Expr::IfElse(_, _, _) => Err("IfElse is not implemented"),
             Expr::Binary(bop) => {
                 let lhs = self.compile_expr(&bop.lhs)?;
                 let rhs = self.compile_expr(&bop.rhs)?;

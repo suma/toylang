@@ -4,6 +4,8 @@ pub enum Token {
     Else,
     For,
     While,
+    Break,
+    Continue,
     Class,
     Struct,
     Function,
@@ -30,6 +32,7 @@ pub enum Token {
     DoubleColon,
     Colon,
     Arrow, // ->
+    Exclamation, // !
 
     Equal,
 

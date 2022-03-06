@@ -9,6 +9,8 @@ use crate::token::Token;
 "else"   return Ok(Token::Else);
 "for"    return Ok(Token::For);
 "while"  return Ok(Token::While);
+"break"  return Ok(Token::Break);
+"continue"  return Ok(Token::Continue);
 "class"  return Ok(Token::Class);
 "struct" return Ok(Token::Struct);
 "fn"     return Ok(Token::Function);
@@ -29,6 +31,7 @@ use crate::token::Token;
 "::"     return Ok(Token::DoubleColon);
 ":"      return Ok(Token::Colon);
 "->"     return Ok(Token::Arrow);
+"!"      return Ok(Token::Exclamation);
 
 "="      return Ok(Token::Equal);
 

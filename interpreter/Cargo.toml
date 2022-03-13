@@ -1,0 +1,10 @@
+[package]
+name = "interpreter"
+version = "0.1.0"
+edition = "2021"
+authors = ["Shuzo Kashihara <suma@users.sourceforge.jp>"]
+license = "MIT"
+description = "interpreter"
+
+[dependencies]
+frontend = { path = "../frontend" }

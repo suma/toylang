@@ -377,7 +377,7 @@ impl<'a> Parser<'a> {
                     Some(&Token::UInt64(num)) => Ok(Expr::UInt64(num)),
                     Some(&Token::Int64(num)) => Ok(Expr::Int64(num)),
                     Some(Token::Integer(num)) => {
-                        Ok(Expr::Int64(0)) // FIXME
+                        Ok(Expr::Int(num.clone()))
                     }
                     Some(&Token::Null) => Ok(Expr::Null),
                     x => return Err(format!("parse_primary: unexpected token {:?}", x)),

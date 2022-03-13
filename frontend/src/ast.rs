@@ -4,6 +4,7 @@ pub enum Expr {
     Binary(Box<BinaryExpr>),
     Int64(i64),
     UInt64(u64),
+    Int(String),
     Val(String, Option<Type>, Option<Box<Expr>>),
     Identifier(String),
     Null,

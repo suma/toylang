@@ -116,7 +116,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 Some(Token::BraceClose) => break,
-                x => (),
+                _ => (),
             }
             let x = self.parse_stmt_line();
             match x {
@@ -196,7 +196,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_val_def(&mut self) -> Result<Expr, String> {
-        let mut ident: String = match self.peek() {
+        let ident: String = match self.peek() {
             Some(Token::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
@@ -228,12 +228,11 @@ impl<'a> Parser<'a> {
 
 
     fn parse_def_ty(&mut self) -> Result<Type, String> {
-        let mut ident = String::new();
         let ty: Type = match self.peek() {
             Some(Token::U64) => Type::UInt64,
             Some(Token::I64) => Type::Int64,
             Some(Token::Identifier(s)) => {
-                ident = s.to_string();
+                let ident = s.to_string();
                 Type::Identifier(ident)
             }
             _ => Type::Unknown

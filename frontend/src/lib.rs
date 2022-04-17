@@ -36,6 +36,7 @@ impl<'a> Parser<'a> {
     }
 
     // pos: 0-origin
+    #[allow(dead_code)]
     fn peek_n(&mut self, pos: usize) -> Option<&Token> {
         while self.ahead.len() < pos + 1 {
             match self.lexer.yylex() {
@@ -46,6 +47,7 @@ impl<'a> Parser<'a> {
         return self.ahead.get(pos);
     }
 
+    #[allow(dead_code)]
     fn consume(&mut self, count: usize) -> usize {
         return self.ahead.drain(0..count).count();
     }
@@ -77,7 +79,7 @@ impl<'a> Parser<'a> {
 
     // prog := stm*
     // stm := expr NewLine
-    // expr := assign | if_expr | for_expr
+    // expr := assign | if_expr
     // block := "{" stm* "}"
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
@@ -120,9 +122,7 @@ impl<'a> Parser<'a> {
             }
             let x = self.parse_stmt_line();
             match x {
-                Ok(expr) => {
-                    stmts.push(expr)
-                },
+                Ok(expr) => stmts.push(expr),
                 _ => break,
             }
         }
@@ -183,7 +183,7 @@ impl<'a> Parser<'a> {
                 self.next();
                 else_block = self.parse_block()?;
             }
-            _ => () // through
+            _ => (), // through
         }
         return Ok(Expr::IfElse(Box::new(cond), if_block, else_block));
     }
@@ -210,9 +210,7 @@ impl<'a> Parser<'a> {
                 self.next();
                 self.parse_def_ty()?
             }
-            _ => {
-                Type::Unknown
-            }
+            _ => Type::Unknown,
         };
 
         // "=" logical_expr
@@ -226,7 +224,6 @@ impl<'a> Parser<'a> {
         return Ok(Expr::Val(ident, Some(ty), rhs));
     }
 
-
     fn parse_def_ty(&mut self) -> Result<Type, String> {
         let ty: Type = match self.peek() {
             Some(Token::U64) => Type::UInt64,
@@ -235,7 +232,7 @@ impl<'a> Parser<'a> {
                 let ident = s.to_string();
                 Type::Identifier(ident)
             }
-            _ => Type::Unknown
+            _ => Type::Unknown,
         };
         self.next();
         return Ok(ty);
@@ -376,9 +373,7 @@ impl<'a> Parser<'a> {
                 let e = match x {
                     Some(&Token::UInt64(num)) => Ok(Expr::UInt64(num)),
                     Some(&Token::Int64(num)) => Ok(Expr::Int64(num)),
-                    Some(Token::Integer(num)) => {
-                        Ok(Expr::Int(num.clone()))
-                    }
+                    Some(Token::Integer(num)) => Ok(Expr::Int(num.clone())),
                     Some(&Token::Null) => Ok(Expr::Null),
                     x => return Err(format!("parse_primary: unexpected token {:?}", x)),
                 };
@@ -414,10 +409,10 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::Expr::Identifier;
-    use crate::Expr::IfElse;
     use super::*;
     use crate::token::Token;
+    use crate::Expr::Identifier;
+    use crate::Expr::IfElse;
 
     #[test]
     fn lexer_simple_keyword() {
@@ -625,23 +620,14 @@ mod tests {
     #[test]
     fn parser_simple_apply_empty() {
         let res = Parser::new("abc()").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Call(
-                "abc".to_string(),
-                vec![],
-            ),
-            res
-        );
+        assert_eq!(Expr::Call("abc".to_string(), vec![],), res);
     }
 
     #[test]
     fn parser_simple_apply_expr() {
         let res = Parser::new("abc(1u64,2u64)").parse_stmt_line().unwrap();
         assert_eq!(
-            Expr::Call(
-                "abc".to_string(),
-                vec![Expr::UInt64(1), Expr::UInt64(2),],
-            ),
+            Expr::Call("abc".to_string(), vec![Expr::UInt64(1), Expr::UInt64(2),],),
             res
         );
     }
@@ -684,7 +670,8 @@ mod tests {
             Expr::Val(
                 "hoge".to_string(),
                 Some(Type::Unknown),
-                Some(Box::new(Expr::UInt64(10)))),
+                Some(Box::new(Expr::UInt64(10)))
+            ),
             res
         );
     }
@@ -698,7 +685,8 @@ mod tests {
             Expr::Val(
                 "hoge".to_string(),
                 Some(Type::UInt64),
-                Some(Box::new(Expr::UInt64(30)))),
+                Some(Box::new(Expr::UInt64(30)))
+            ),
             res
         );
     }
@@ -745,7 +733,9 @@ mod tests {
 
     #[test]
     fn parser_if_else_expr() {
-        let res = Parser::new("if condition { a } else { b }").parse_stmt_line().unwrap();
+        let res = Parser::new("if condition { a } else { b }")
+            .parse_stmt_line()
+            .unwrap();
         assert_eq!(
             Expr::IfElse(
                 Box::new(Expr::Identifier("condition".to_string())),

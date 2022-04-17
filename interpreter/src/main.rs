@@ -1,9 +1,14 @@
+#![feature(box_patterns)]
+
+mod processor;
+
+use std::io;
 use frontend;
 use frontend::ast::*;
-use std::io;
+use processor::*;
 
 fn main() {
-
+    let mut p = Processor::new();
     loop {
         println!("Input toylang expression:");
         let mut line = String::new();
@@ -15,6 +20,8 @@ fn main() {
             println!("parser_expr failed {}", expr.unwrap_err());
             return;
         }
-        println!("print AST: {:?}", expr.unwrap());
+        println!("print AST: {:?}", expr.as_ref().unwrap());
+        let expr = expr.unwrap();
+        println!("Evaluate expression: {:?}", p.evaluate(&expr));
     }
 }

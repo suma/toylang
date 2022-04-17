@@ -31,7 +31,7 @@ pub enum Token {
     Dot,
     DoubleColon,
     Colon,
-    Arrow, // ->
+    Arrow,       // ->
     Exclamation, // !
 
     Equal,

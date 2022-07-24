@@ -21,7 +21,7 @@ fn main() {
             return;
         }
         let expr = expr.unwrap();
-        let codes: Vec<BCode> = compiler.compile(&expr);
+        let codes: Vec<BCode> = compiler.compile(&expr).clone();
         for c in &codes {
             println!("{:?}", c);
         }

@@ -10,7 +10,7 @@ pub enum Code {
 }
 
 #[allow(non_camel_case_types)]
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BCode {
     OP_NOP,
     OP_PUSH_NULL,
@@ -25,6 +25,8 @@ pub enum BCode {
     OP_SUB,
     OP_MUL,
     OP_DIV,
+
+    OP_PRINT,
 }
 
 pub struct Compiler {
@@ -43,9 +45,24 @@ impl Compiler {
 
     // TODO: Change 2-pass or more pass compiler
 
+    pub fn get_program(&mut self) -> &Vec<BCode> {
+        return &self.codes;
+    }
+
+    pub fn compile_code(&mut self, expr: &Expr) {
+        self.codes = self.compile(expr);
+    }
+
+    pub fn append(&mut self, expr: &Expr) {
+        let mut codes = self.compile(expr);
+        self.codes.append(&mut codes);
+    }
+
     pub fn compile(&mut self, expr: &Expr) -> Vec<BCode> {
-        match expr {
-            Expr::IfElse(_, _, _) => (),
+        let PrintString = "print".to_string();
+
+        let codes: Vec<BCode> = match expr {
+            Expr::IfElse(_, _, _) => vec![],
             Expr::Binary(bop) => {
                 let mut codes = Vec::new();
                 let mut lhs = self.compile(&bop.lhs);
@@ -60,21 +77,29 @@ impl Compiler {
                     Operator::IDiv => codes.push(BCode::OP_DIV),
                     _ => panic!("not implemented yet (Binary Operator)"),
                 }
-                return codes;
+                codes
             }
-            Expr::Int64(i) => return vec![BCode::OP_PUSH_INT(*i)],
-            Expr::UInt64(u) => return vec![BCode::OP_PUSH_UINT(*u)],
-            Expr::Int(_) => return vec![BCode::OP_PUSH_INT(0xDEADBEEF)], // TODO: implement
+            Expr::Int64(i) => vec![BCode::OP_PUSH_INT(*i)],
+            Expr::UInt64(u) => vec![BCode::OP_PUSH_UINT(*u)],
+            Expr::Int(_) => vec![BCode::OP_PUSH_INT(0xDEADBEEF)], // TODO: implement
             Expr::Identifier(name) => {
                 let id = self.names.get(name);
                 if id.is_none() {
                     panic!("error, variable/constant name is invalid: `{}`", name);
                 }
                 let id = id.unwrap() as &u32;
-                return vec![BCode::OP_LOAD_IDENT(*id)];
+                vec![BCode::OP_LOAD_IDENT(*id)]
             }
-            Expr::Call(_, _) => (),
-            Expr::Null => return vec![BCode::OP_PUSH_NULL],
+            Expr::Call(print_string, a) => {
+                let mut codes: Vec<BCode> = vec![];
+                for e in a {
+                    let mut res = self.compile(&e);
+                    codes.append(&mut res);
+                }
+                vec![BCode::OP_PRINT]
+            }
+            Expr::Call(_, _) => vec![],
+            Expr::Null => vec![BCode::OP_PUSH_NULL],
             Expr::Val(name, _ty, expr) => {
                 match expr {
                     Some(expr) => {
@@ -87,13 +112,15 @@ impl Compiler {
 
                         let mut inst: Vec<BCode> = vec![BCode::OP_PUSH_CONST(id)];
                         let mut val = self.compile(expr);
-                        inst.append(&mut val);
-                        return inst;
+                        val.append(&mut inst);
+                        val
                     }
                     _ => panic!("value is not set: {}", name), // error
                 }
             }
-        }
-        return vec![];    // TODO
+        };
+
+        return codes;
     }
+    //self.codes.append(&mut codes);
 }

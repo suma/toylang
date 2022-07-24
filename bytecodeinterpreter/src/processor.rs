@@ -76,6 +76,26 @@ impl Processor {
                     i += 1;
                 }
 
+                BCode::OP_PRINT => {
+                    let top = self.stack.pop();
+                    match top {
+                        Some(Object::UInt64(u)) => println!("OP_PRINT u64 {}", u),
+                        Some(Object::Int64(int)) => println!("OP_PRINT i64 {}", int),
+                        Some(Object::Ident(id)) => {
+                            // TODO: identify id for const(val) or variable
+                            let val = self.val.get(&id);
+                            match val {
+                                Some(Object::UInt64(u)) => println!("OP_PRINT u64 val {}", u),
+                                Some(Object::Int64(int)) => println!("OP_PRINT i64 val {}", int),
+                                Some(Object::Null) => println!("OP_PRINT i64 val Null"),
+                                _ => println!("OP_PRINT {} const does not found", id)
+                            }
+                        }
+                        x => todo!("OP_PRINT (not implemented yet) : {:?}", x),
+                    }
+                    i += 1;
+                }
+
                 BCode::OP_ADD => {
                     let lhs = self.stack.pop();
                     let rhs = self.stack.pop();

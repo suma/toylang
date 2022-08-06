@@ -1,6 +1,6 @@
 #![feature(box_patterns)]
 
-use std::io;
+use std::io::{self, Write};
 use frontend;
 use bytecodeinterpreter::compiler::*;
 use bytecodeinterpreter::processor::Processor;
@@ -10,7 +10,9 @@ fn main() {
     let mut interpreter = Processor::new();
 
     loop {
-        print!("Input toylang expression:\n>>> ");
+        println!("Input toylang expression:");
+        print!(">>> ");
+        io::stdout().flush().unwrap();
         let mut line = String::new();
         io::stdin().read_line(&mut line).expect("Failed to read line `read_line`");
 

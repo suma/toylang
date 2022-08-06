@@ -10,7 +10,7 @@ fn main() {
     let mut interpreter = Processor::new();
 
     loop {
-        println!("Input toylang expression:");
+        print!("Input toylang expression:\n>>> ");
         let mut line = String::new();
         io::stdin().read_line(&mut line).expect("Failed to read line `read_line`");
 
@@ -22,9 +22,6 @@ fn main() {
         }
         let expr = expr.unwrap();
         let codes: Vec<BCode> = compiler.compile(&expr).clone();
-        for c in &codes {
-            println!("{:?}", c);
-        }
         interpreter.append(codes);
         interpreter.evaluate();
         println!("Evaluate expression: {:?}", interpreter);

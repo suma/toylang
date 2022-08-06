@@ -12,21 +12,40 @@ pub enum Code {
 #[allow(non_camel_case_types)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BCode {
-    OP_NOP,
-    OP_PUSH_NULL,
-    OP_PUSH_INT(i64),
-    OP_PUSH_UINT(u64),
-    OP_PUSH_IDENT(u32),  // push(variable['ident'])
-    OP_PUSH_CONST(u32),  // push(value['ident'])
+    NOP,
+    PUSH_NULL,
+    PUSH_INT(i64),
+    PUSH_UINT(u64),
 
-    OP_LOAD_IDENT(u32),  // stack.push(variable[x])  variable or const val
+    PUSH_CONST(u32),
 
-    OP_ADD,
-    OP_SUB,
-    OP_MUL,
-    OP_DIV,
+    LOAD_IDENT(u32),  // push(variable['ident'])
+    LOAD_CONST(u32),  // push(value['ident'])
 
-    OP_PRINT,
+    LOAD_IDENT_VAR(u32),  // stack.push(variable[x])  variable or const val
+    LOAD_IDENT_CONST(u32),
+    //STORE_GLOBAL(u32, ,
+    //STORE_LOCAL_VAR,
+    //STORE_LOCAL_CONST,
+
+    BINARY_ADD,
+    BINARY_SUB,
+    BINARY_MUL,
+    BINARY_DIV,
+
+    PRINT0,
+    PRINT,
+}
+
+pub enum SymbolType {
+    Global,
+    Argument,
+    Local,
+}
+
+pub struct Symbol {
+    kind: SymbolType,
+    pos : u32,
 }
 
 pub struct Compiler {
@@ -59,7 +78,8 @@ impl Compiler {
     }
 
     pub fn compile(&mut self, expr: &Expr) -> Vec<BCode> {
-        let PrintString = "print".to_string();
+        let print_string0 = "print0".to_string();
+        let print_string = "print".to_string();
 
         let codes: Vec<BCode> = match expr {
             Expr::IfElse(_, _, _) => vec![],
@@ -71,24 +91,32 @@ impl Compiler {
                 codes.append(&mut rhs);
 
                 match bop.op {
-                    Operator::IAdd => codes.push(BCode::OP_ADD),
-                    Operator::ISub => codes.push(BCode::OP_SUB),
-                    Operator::IMul => codes.push(BCode::OP_MUL),
-                    Operator::IDiv => codes.push(BCode::OP_DIV),
+                    Operator::IAdd => codes.push(BCode::BINARY_ADD),
+                    Operator::ISub => codes.push(BCode::BINARY_SUB),
+                    Operator::IMul => codes.push(BCode::BINARY_MUL),
+                    Operator::IDiv => codes.push(BCode::BINARY_DIV),
+                    // TODO: assign
                     _ => panic!("not implemented yet (Binary Operator)"),
                 }
                 codes
             }
-            Expr::Int64(i) => vec![BCode::OP_PUSH_INT(*i)],
-            Expr::UInt64(u) => vec![BCode::OP_PUSH_UINT(*u)],
-            Expr::Int(_) => vec![BCode::OP_PUSH_INT(0xDEADBEEF)], // TODO: implement
+            Expr::Int64(i) => vec![BCode::PUSH_INT(*i)],
+            Expr::UInt64(u) => vec![BCode::PUSH_UINT(*u)],
+            Expr::Int(i) => {
+                // TODO: support multiple-precision integer
+                let i = i.parse::<i64>().unwrap_or_else(|_| 0i64);
+                vec![BCode::PUSH_INT(i)]
+            }
             Expr::Identifier(name) => {
                 let id = self.names.get(name);
                 if id.is_none() {
                     panic!("error, variable/constant name is invalid: `{}`", name);
                 }
                 let id = id.unwrap() as &u32;
-                vec![BCode::OP_LOAD_IDENT(*id)]
+                vec![BCode::LOAD_IDENT_CONST(*id)]   // TODO(suma): Use env
+            }
+            Expr::Call(print_string0, _) => {
+                vec![BCode::PRINT0]
             }
             Expr::Call(print_string, a) => {
                 let mut codes: Vec<BCode> = vec![];
@@ -96,10 +124,10 @@ impl Compiler {
                     let mut res = self.compile(&e);
                     codes.append(&mut res);
                 }
-                vec![BCode::OP_PRINT]
+                vec![BCode::PRINT]
             }
             Expr::Call(_, _) => vec![],
-            Expr::Null => vec![BCode::OP_PUSH_NULL],
+            Expr::Null => vec![BCode::PUSH_NULL],
             Expr::Val(name, _ty, expr) => {
                 match expr {
                     Some(expr) => {
@@ -110,7 +138,7 @@ impl Compiler {
                         let id = self.names.len() as u32;
                         self.names.insert(name.clone(), id);
 
-                        let mut inst: Vec<BCode> = vec![BCode::OP_PUSH_CONST(id)];
+                        let mut inst: Vec<BCode> = vec![BCode::PUSH_CONST(id)];
                         let mut val = self.compile(expr);
                         val.append(&mut inst);
                         val

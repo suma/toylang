@@ -44,63 +44,76 @@ impl Processor {
             }
             let code: &BCode = &self.program[i];
             match code {
-                BCode::OP_NOP => i += 1,
-                BCode::OP_PUSH_NULL => {
+                BCode::NOP => i += 1,
+                BCode::PUSH_NULL => {
                     self.stack.push(Object::Null);
                     i += 1;
                 }
-                BCode::OP_PUSH_INT(int) => {
+                BCode::PUSH_INT(int) => {
                     self.stack.push(Object::Int64(*int));
                     i += 1;
                 }
-                BCode::OP_PUSH_UINT(u) => {
+                BCode::PUSH_UINT(u) => {
                     self.stack.push(Object::UInt64(*u));
                     i += 1;
                 }
-                BCode::OP_PUSH_IDENT(id) => {
-                    self.stack.push(Object::Ident(*id));
+                BCode::PUSH_CONST(id) => {
+                    let top = self.stack.pop().unwrap();
+                    self.val.insert(*id, top);
                     i += 1;
                 }
-                BCode::OP_PUSH_CONST(id) => {
+                BCode::LOAD_IDENT(id) => {
+                    let value = self.stack.pop().unwrap();
+                    self.var.insert(*id, value);
+                    i += 1;
+                }
+                BCode::LOAD_CONST(id) => {
                     let value = self.stack.pop().unwrap();
                     self.val.insert(*id, value);
                     i += 1;
                 }
-                BCode::OP_LOAD_IDENT(id) => {
+                BCode::LOAD_IDENT_VAR(id) => {
+                    let v = self.var.get(&id);
+                    match v {
+                        Some(v) => self.stack.push(*v),
+                        _ => panic!("LOAD IDENT var"),
+                    };
+                    i += 1;
+                }
+                BCode::LOAD_IDENT_CONST(id) => {
                     let v = self.val.get(&id);
                     match v {
                         Some(v) => self.stack.push(*v),
-                        // TODO: string, etc
-                        _ => panic!("LOAD IDENT"),
+                        _ => panic!("LOAD IDENT val"),
                     };
                     i += 1;
                 }
 
-                BCode::OP_PRINT => {
+                BCode::PRINT0 => {
                     let top = self.stack.pop();
                     match top {
-                        Some(Object::UInt64(u)) => println!("OP_PRINT u64 {}", u),
-                        Some(Object::Int64(int)) => println!("OP_PRINT i64 {}", int),
+                        Some(Object::UInt64(u)) => println!("{} (u64)", u),
+                        Some(Object::Int64(int)) => println!("{} (i64)", int),
                         Some(Object::Ident(id)) => {
                             // TODO: identify id for const(val) or variable
                             let val = self.val.get(&id);
                             match val {
-                                Some(Object::UInt64(u)) => println!("OP_PRINT u64 val {}", u),
-                                Some(Object::Int64(int)) => println!("OP_PRINT i64 val {}", int),
-                                Some(Object::Null) => println!("OP_PRINT i64 val Null"),
-                                _ => println!("OP_PRINT {} const does not found", id)
+                                Some(Object::UInt64(u)) => println!("val {} (u64)", u),
+                                Some(Object::Int64(int)) => println!("val {} (i64)", int),
+                                Some(Object::Null) => println!("Null"),
+                                x => println!("{:?} const", x),
                             }
                         }
-                        x => todo!("OP_PRINT (not implemented yet) : {:?}", x),
+                        x => todo!("PRINT (not implemented yet) : {:?}", x),
                     }
                     i += 1;
                 }
 
-                BCode::OP_ADD => {
+                BCode::BINARY_ADD => {
                     let lhs = self.stack.pop();
                     let rhs = self.stack.pop();
                     if lhs.is_none() || rhs.is_none() {
-                        panic!("OP_ADD: Stack is empty")
+                        panic!("BINARY_ADD: Stack is empty")
                     }
                     match (lhs.unwrap(), rhs.unwrap()) {
                         (Object::UInt64(lhs), Object::UInt64(rhs)) => {
@@ -114,12 +127,12 @@ impl Processor {
                         _ => panic!("Binary ADD operator found non integer object"),
                     }
                 }
-                _ => {
-                    panic!("not implemented yet")
+                x => {
+                    panic!("not implemented yet: {:?}", x)
                 }
-                //BCode::OP_SUB => {}
-                //BCode::OP_MUL => {}
-                //BCode::OP_DIV => {}
+                //BCode::BINARY_SUB => {}
+                //BCode::BINARY_MUL => {}
+                //BCode::BINARY_DIV => {}
             }
         }
 

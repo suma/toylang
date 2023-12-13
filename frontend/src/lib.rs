@@ -659,16 +659,16 @@ mod tests {
 
     #[test]
     fn parser_err_call_expr_list() {
-        let res = Parser::new("hoge(a,,)").parse_stmt_line();
+        let res = Parser::new("foo(a,,)").parse_stmt_line();
         assert!(res.is_err());
     }
 
     #[test]
     fn parser_val_simple_expr() {
-        let res = Parser::new("val hoge = 10u64").parse_stmt_line().unwrap();
+        let res = Parser::new("val foo = 10u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Val(
-                "hoge".to_string(),
+                "foo".to_string(),
                 Some(Type::Unknown),
                 Some(Box::new(Expr::UInt64(10)))
             ),
@@ -678,12 +678,12 @@ mod tests {
 
     #[test]
     fn parser_val_simple_expr_with_type() {
-        let res = Parser::new("val hoge: u64 = 30u64")
+        let res = Parser::new("val foo: u64 = 30u64")
             .parse_stmt_line()
             .unwrap();
         assert_eq!(
             Expr::Val(
-                "hoge".to_string(),
+                "foo".to_string(),
                 Some(Type::UInt64),
                 Some(Box::new(Expr::UInt64(30)))
             ),
@@ -692,10 +692,10 @@ mod tests {
     }
     #[test]
     fn parser_val_simple_expr_without_type1() {
-        let res = Parser::new("val fuga = 20u64").parse_stmt_line().unwrap();
+        let res = Parser::new("val foo = 20u64").parse_stmt_line().unwrap();
         assert_eq!(
             Expr::Val(
-                "fuga".to_string(),
+                "foo".to_string(),
                 Some(Type::Unknown),
                 Some(Box::new(Expr::UInt64(20)))
             ),
@@ -705,12 +705,12 @@ mod tests {
 
     #[test]
     fn parser_val_simple_expr_without_type2() {
-        let res = Parser::new("val fuga: ty = 20u64")
+        let res = Parser::new("val foo: ty = 20u64")
             .parse_stmt_line()
             .unwrap();
         assert_eq!(
             Expr::Val(
-                "fuga".to_string(),
+                "foo".to_string(),
                 Some(Type::Identifier("ty".to_string())),
                 Some(Box::new(Expr::UInt64(20)))
             ),

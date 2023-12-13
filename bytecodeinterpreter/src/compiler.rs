@@ -82,7 +82,14 @@ impl Compiler {
         let print_string = "print".to_string();
 
         let codes: Vec<BCode> = match expr {
-            Expr::IfElse(_, _, _) => vec![],
+            Expr::IfElse(expr, thenBlock, elseBlock) => {
+                let mut codes = self.compile(&expr);
+                //let mut then_codes = self.compile(thenBlock);
+                //let mut else_codes = self.compile(elseBlock);
+                //codes.append(&mut then_codes);
+                //codes.append(&mut else_codes);
+                codes
+            }
             Expr::Binary(bop) => {
                 let mut codes = Vec::new();
                 let mut lhs = self.compile(&bop.lhs);
@@ -126,7 +133,14 @@ impl Compiler {
                 }
                 vec![BCode::PRINT]
             }
-            Expr::Call(_, _) => vec![],
+            Expr::Block(b) => {
+                let mut codes: Vec<BCode> = vec![];
+                for e in b {
+                    let mut res: Vec<BCode> = self.compile(&e);
+                    codes.append(&mut res);
+                }
+                codes
+            }
             Expr::Null => vec![BCode::PUSH_NULL],
             Expr::Val(name, _ty, expr) => {
                 match expr {

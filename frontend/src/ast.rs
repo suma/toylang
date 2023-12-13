@@ -2,6 +2,7 @@
 pub enum Expr {
     IfElse(Box<Expr>, Vec<Expr>, Vec<Expr>),
     Binary(Box<BinaryExpr>),
+    Block(Vec<Box<Expr>>),
     Int64(i64),
     UInt64(u64),
     Int(String),

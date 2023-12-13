@@ -1,9 +1,9 @@
 #![feature(box_patterns)]
 
-use std::io::{self, Write};
-use frontend;
 use bytecodeinterpreter::compiler::*;
 use bytecodeinterpreter::processor::Processor;
+use frontend;
+use std::io::{self, Write};
 
 fn main() {
     let mut compiler = Compiler::new();
@@ -14,7 +14,9 @@ fn main() {
         print!(">>> ");
         io::stdout().flush().unwrap();
         let mut line = String::new();
-        io::stdin().read_line(&mut line).expect("Failed to read line `read_line`");
+        io::stdin()
+            .read_line(&mut line)
+            .expect("Failed to read line `read_line`");
 
         let mut parser = frontend::Parser::new(line.as_str());
         let expr = parser.parse_expr();

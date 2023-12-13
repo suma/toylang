@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use frontend;
 use frontend::ast::*;
+use std::collections::HashMap;
 
 pub enum Code {
     Op(BCode),
@@ -19,15 +19,14 @@ pub enum BCode {
 
     PUSH_CONST(u32),
 
-    LOAD_IDENT(u32),  // push(variable['ident'])
-    LOAD_CONST(u32),  // push(value['ident'])
+    LOAD_IDENT(u32), // push(variable['ident'])
+    LOAD_CONST(u32), // push(value['ident'])
 
-    LOAD_IDENT_VAR(u32),  // stack.push(variable[x])  variable or const val
+    LOAD_IDENT_VAR(u32), // stack.push(variable[x])  variable or const val
     LOAD_IDENT_CONST(u32),
     //STORE_GLOBAL(u32, ,
     //STORE_LOCAL_VAR,
     //STORE_LOCAL_CONST,
-
     BINARY_ADD,
     BINARY_SUB,
     BINARY_MUL,
@@ -45,7 +44,7 @@ pub enum SymbolType {
 
 pub struct Symbol {
     kind: SymbolType,
-    pos : u32,
+    pos: u32,
 }
 
 pub struct Compiler {
@@ -120,7 +119,7 @@ impl Compiler {
                     panic!("error, variable/constant name is invalid: `{}`", name);
                 }
                 let id = id.unwrap() as &u32;
-                vec![BCode::LOAD_IDENT_CONST(*id)]   // TODO(suma): Use env
+                vec![BCode::LOAD_IDENT_CONST(*id)] // TODO(suma): Use env
             }
             Expr::Call(print_string0, _) => {
                 vec![BCode::PRINT0]

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::compiler::*;
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Object {
@@ -129,10 +129,9 @@ impl Processor {
                 }
                 x => {
                     panic!("not implemented yet: {:?}", x)
-                }
-                //BCode::BINARY_SUB => {}
-                //BCode::BINARY_MUL => {}
-                //BCode::BINARY_DIV => {}
+                } //BCode::BINARY_SUB => {}
+                  //BCode::BINARY_MUL => {}
+                  //BCode::BINARY_DIV => {}
             }
         }
 

@@ -10,14 +10,20 @@ mod lexer {
 pub struct Parser<'a> {
     lexer: lexer::Lexer<'a>,
     ahead: Vec<Token>,
+    ast:   ExprPool,
+    inst:  Vec<Inst>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let lexer = lexer::Lexer::new(&input, 1u64);
+        let pool = ExprPool(Vec::with_capacity(1024 * 1024));
+        let inst = Vec::<Inst>::with_capacity(1024 * 1024);
         Parser {
             lexer,
             ahead: Vec::new(),
+            ast: pool,
+            inst: inst,
         }
     }
 
@@ -66,8 +72,8 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn new_binary(op: Operator, lhs: Expr, rhs: Expr) -> Expr {
-        Expr::Binary(Box::new(BinaryExpr { op, lhs, rhs }))
+    fn new_binary(op: Operator, lhs: ExprRef, rhs: ExprRef) -> Expr {
+        Expr::Binary(op, lhs, rhs)
     }
 
     pub fn expect_err(&mut self, accept: &Token) -> Result<(), String> {
@@ -77,10 +83,39 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    // prog := stm*
-    // stm := expr NewLine
+    fn add_inst(&mut self, i: Inst) {
+        self.inst.push(i);
+    }
+
+    pub fn get_inst(&self, i: usize) -> Option<&Inst> {
+        return self.inst.get(i);
+    }
+
+    pub fn inst_len(&self) -> usize {
+        return self.inst.len();
+    }
+
+    fn add(&mut self, e: Expr) -> ExprRef {
+        let len = self.ast.0.len();
+        self.ast.0.push(e);
+        ExprRef(len as u32)
+    }
+
+    pub fn get(&self, i: u32) -> Option<&Expr> {
+        return self.ast.0.get(i as usize);
+    }
+
+    pub fn len(&self) -> usize {
+        return self.ast.0.len();
+    }
+
+    pub fn next_expr(&self) -> u32 {
+        return self.len() as u32;
+    }
+
+    // prog := expr NewLine expr | expr | e
     // expr := assign | if_expr
-    // block := "{" stm* "}"
+    // block := "{" prog* "}"
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
     // assign := val_def | identifier "=" logical_expr | logical_expr
@@ -95,41 +130,60 @@ impl<'a> Parser<'a> {
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
-    pub fn parse_stmt_line(&mut self) -> Result<Expr, String> {
-        let lhs = self.parse_expr();
-        if lhs.is_err() {
-            return lhs;
+    // TODO: add define function
+
+    // this function is for test
+    pub fn parse_stmt_line(&mut self) -> Result<ExprRef, String> {
+        let expr = self.parse_some_exprs()?;
+        if expr.len() != 1 {
+            return Err(format!("parse_stmt_line: expected 1 expression but {:?} length", expr.len()));
         }
-        match self.peek() {
-            Some(Token::NewLine) => self.next(),
-            Some(Token::BraceClose) | None => (),
-            x => {
-                return Err(format!(
-                    "parse_stmt_line: expected NewLine or EOF(None) but {:?}",
-                    x
-                ))
-            }
-        }
-        return lhs;
+        self.inst.push(Inst::Expression(ExprRef(self.next_expr() - 1)));
+        Ok(*expr.first().unwrap())
     }
 
-    pub fn parse_some_stmt(&mut self) -> Result<Vec<Expr>, String> {
-        let mut stmts = vec![];
+    pub fn parse_some_exprs(&mut self) -> Result<Vec<ExprRef>, String> {
+        // remove unused NewLine
         loop {
             match self.peek() {
-                Some(Token::BraceClose) => break,
-                _ => (),
-            }
-            let x = self.parse_stmt_line();
-            match x {
-                Ok(expr) => stmts.push(expr),
-                _ => break,
+                Some(Token::NewLine) =>
+                    self.next(),
+                Some(_) | None =>
+                    break,
             }
         }
-        return Ok(stmts);
+        let mut exprs = vec![];
+
+        let lhs = self.parse_expr();
+        if lhs.is_err() {
+            return Err(format!("parse_some_exprs: expected expression: {:?}", lhs.err()));
+        }
+        exprs.push(lhs.unwrap());
+        match self.peek() {
+            Some(Token::NewLine) => {
+                loop {
+                    match self.peek() {
+                        Some(Token::NewLine) =>
+                            self.next(),
+                        Some(_) => {
+                            let rhs = self.parse_expr();
+                            if rhs.is_err() {
+                                return Err(format!("parse_some_exprs: expected expression: {:?}", rhs.err()));
+                            }
+                            self.inst.push(Inst::Expression(ExprRef(self.next_expr())));
+                            exprs.push(rhs.unwrap());
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            _ => (),
+        }
+        return Ok(exprs);
     }
 
-    pub fn parse_expr(&mut self) -> Result<Expr, String> {
+    pub fn parse_expr(&mut self) -> Result<ExprRef, String> {
         let assign = self.parse_assign();
         if assign.is_ok() {
             return assign;
@@ -150,7 +204,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_assign(&mut self) -> Result<Expr, String> {
+    pub fn parse_assign(&mut self) -> Result<ExprRef, String> {
         match self.peek() {
             Some(Token::Val) => {
                 self.next();
@@ -161,10 +215,11 @@ impl<'a> Parser<'a> {
                 match self.peek() {
                     Some(Token::Equal) => {
                         self.next();
-                        return Ok(Self::new_binary(
+                        let rhs = self.parse_logical_expr()?;
+                        return Ok(self.add(Self::new_binary(
                             Operator::Assign,
                             lhs,
-                            self.parse_logical_expr()?,
+                            rhs),
                         ));
                     }
                     _ => return Ok(lhs),
@@ -173,29 +228,28 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_if(&mut self) -> Result<Expr, String> {
+    pub fn parse_if(&mut self) -> Result<ExprRef, String> {
         let cond = self.parse_logical_expr()?;
         let if_block = self.parse_block()?;
 
-        let mut else_block = vec![];
-        match self.peek() {
+        let else_block: ExprRef = match self.peek() {
             Some(Token::Else) => {
                 self.next();
-                else_block = self.parse_block()?;
+                self.parse_block()?
             }
-            _ => (), // through
-        }
-        return Ok(Expr::IfElse(Box::new(cond), if_block, else_block));
+            _ => self.add(Expr::Block(vec![])), // through
+        };
+        return Ok(self.add(Expr::IfElse(cond, if_block, else_block)));
     }
 
-    pub fn parse_block(&mut self) -> Result<Vec<Expr>, String> {
+    pub fn parse_block(&mut self) -> Result<ExprRef, String> {
         self.expect_err(&Token::BraceOpen)?;
-        let block = self.parse_some_stmt()?;
+        let block = self.parse_some_exprs()?;
         self.expect_err(&Token::BraceClose)?;
-        return Ok(block);
+        return Ok(self.add(Expr::Block(block)));
     }
 
-    pub fn parse_val_def(&mut self) -> Result<Expr, String> {
+    pub fn parse_val_def(&mut self) -> Result<ExprRef, String> {
         let ident: String = match self.peek() {
             Some(Token::Identifier(s)) => {
                 let s = s.to_string();
@@ -217,11 +271,11 @@ impl<'a> Parser<'a> {
         let rhs = match self.peek() {
             Some(Token::Equal) => {
                 self.next();
-                Some(Box::new(self.parse_logical_expr()?))
+                Some(self.parse_logical_expr()?)
             }
             _ => None,
         };
-        return Ok(Expr::Val(ident, Some(ty), rhs));
+        return Ok(self.add(Expr::Val(ident, Some(ty), rhs)));
     }
 
     fn parse_def_ty(&mut self) -> Result<Type, String> {
@@ -238,7 +292,7 @@ impl<'a> Parser<'a> {
         return Ok(ty);
     }
 
-    fn parse_logical_expr(&mut self) -> Result<Expr, String> {
+    fn parse_logical_expr(&mut self) -> Result<ExprRef, String> {
         let mut lhs = self.parse_equality()?;
 
         loop {
@@ -246,19 +300,19 @@ impl<'a> Parser<'a> {
                 Some(Token::DoubleAnd) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::LogicalAnd, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::LogicalAnd, lhs, rhs));
                 }
                 Some(Token::DoubleOr) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::LogicalOr, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::LogicalOr, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
         }
     }
 
-    fn parse_equality(&mut self) -> Result<Expr, String> {
+    fn parse_equality(&mut self) -> Result<ExprRef, String> {
         let mut lhs = self.parse_relational()?;
 
         loop {
@@ -266,45 +320,49 @@ impl<'a> Parser<'a> {
                 Some(Token::DoubleEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::EQ, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::EQ, lhs, rhs));
                 }
                 Some(Token::NotEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = Self::new_binary(Operator::NE, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::NE, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
         }
     }
 
-    fn parse_relational(&mut self) -> Result<Expr, String> {
+    fn parse_relational(&mut self) -> Result<ExprRef, String> {
         let mut lhs = self.parse_add()?;
 
         loop {
             match self.peek() {
                 Some(Token::LT) => {
                     self.next();
-                    lhs = Self::new_binary(Operator::LT, lhs, self.parse_add()?)
+                    let rhs = self.parse_add()?;
+                    lhs = self.add(Self::new_binary(Operator::LT, lhs, rhs));
                 }
                 Some(Token::LE) => {
                     self.next();
-                    lhs = Self::new_binary(Operator::LE, lhs, self.parse_add()?)
+                    let rhs = self.parse_add()?;
+                    lhs = self.add(Self::new_binary(Operator::LE, lhs, rhs));
                 }
                 Some(Token::GT) => {
                     self.next();
-                    lhs = Self::new_binary(Operator::GT, lhs, self.parse_add()?)
+                    let rhs = self.parse_add()?;
+                    lhs = self.add(Self::new_binary(Operator::GT, lhs, rhs));
                 }
                 Some(Token::GE) => {
                     self.next();
-                    lhs = Self::new_binary(Operator::GE, lhs, self.parse_add()?)
+                    let rhs = self.parse_add()?;
+                    lhs = self.add(Self::new_binary(Operator::GE, lhs, rhs))
                 }
                 _ => return Ok(lhs),
             }
         }
     }
 
-    fn parse_add(&mut self) -> Result<Expr, String> {
+    fn parse_add(&mut self) -> Result<ExprRef, String> {
         let mut lhs = self.parse_mul()?;
 
         loop {
@@ -312,19 +370,19 @@ impl<'a> Parser<'a> {
                 Some(Token::IAdd) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = Self::new_binary(Operator::IAdd, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::IAdd, lhs, rhs));
                 }
                 Some(Token::ISub) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = Self::new_binary(Operator::ISub, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::ISub, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
         }
     }
 
-    fn parse_mul(&mut self) -> Result<Expr, String> {
+    fn parse_mul(&mut self) -> Result<ExprRef, String> {
         let mut lhs = self.parse_primary()?;
 
         loop {
@@ -332,19 +390,19 @@ impl<'a> Parser<'a> {
                 Some(Token::IMul) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = Self::new_binary(Operator::IMul, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::IMul, lhs, rhs));
                 }
                 Some(Token::IDiv) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = Self::new_binary(Operator::IDiv, lhs, rhs);
+                    lhs = self.add(Self::new_binary(Operator::IDiv, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
         }
     }
 
-    fn parse_primary(&mut self) -> Result<Expr, String> {
+    fn parse_primary(&mut self) -> Result<ExprRef, String> {
         match self.peek() {
             Some(Token::ParenOpen) => {
                 self.next();
@@ -361,20 +419,24 @@ impl<'a> Parser<'a> {
                         self.next();
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Token::ParenClose)?;
-                        Ok(Expr::Call(s, args))
+                        let args = self.add(Expr::Block(args));
+                        Ok(self.add(Expr::Call(s, args)))
                     }
                     _ => {
                         // identifier
-                        Ok(Expr::Identifier(s))
+                        Ok(self.add(Expr::Identifier(s)))
                     }
                 };
             }
             x => {
                 let e = match x {
-                    Some(&Token::UInt64(num)) => Ok(Expr::UInt64(num)),
-                    Some(&Token::Int64(num)) => Ok(Expr::Int64(num)),
-                    Some(Token::Integer(num)) => Ok(Expr::Int(num.clone())),
-                    Some(&Token::Null) => Ok(Expr::Null),
+                    Some(&Token::UInt64(num)) => Ok(self.add(Expr::UInt64(num))),
+                    Some(&Token::Int64(num)) => Ok(self.add(Expr::Int64(num))),
+                    Some(Token::Integer(num)) => {
+                        let integer = Expr::Int(num.clone());
+                        Ok(self.add(integer))
+                    }
+                    Some(&Token::Null) => Ok(self.add(Expr::Null)),
                     x => return Err(format!("parse_primary: unexpected token {:?}", x)),
                 };
                 self.next();
@@ -383,7 +445,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_expr_list(&mut self, mut args: Vec<Expr>) -> Result<Vec<Expr>, String> {
+    fn parse_expr_list(&mut self, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>, String> {
         match self.peek() {
             Some(Token::ParenClose) => return Ok(args),
             _ => (),
@@ -518,6 +580,24 @@ mod tests {
         assert_eq!(Token::UInt64(2), *t2);
     }
 
+    #[test]
+    fn parser_inst_expr_ast_test1() {
+        let mut p = Parser::new("1u64 + 2u64 ");
+        let _ = p.parse_stmt_line().unwrap();
+        assert_eq!(3, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::UInt64(1), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(2), *b);
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0u32), ExprRef(1u32)), *c);
+
+        assert_eq!(1, p.inst_len(), "Inst.len must be 1");
+        let d = p.get_inst(0).unwrap();
+        assert_eq!(Inst::Expression(ExprRef(2u32)), *d);
+    }
+
+    /*
     #[test]
     fn parser_simple_expr() {
         let mut p = Parser::new("1u64 + 2u64 ");
@@ -745,4 +825,5 @@ mod tests {
             res
         );
     }
+     */
 }

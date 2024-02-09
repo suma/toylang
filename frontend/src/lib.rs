@@ -581,7 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn parser_inst_expr_ast_test1() {
+    fn parser_simple_expr_test1() {
         let mut p = Parser::new("1u64 + 2u64 ");
         let _ = p.parse_stmt_line().unwrap();
         assert_eq!(3, p.len(), "ExprPool.len must be 3");
@@ -590,80 +590,68 @@ mod tests {
         let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
         let c = p.get(2).unwrap();
-        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0u32), ExprRef(1u32)), *c);
+        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
 
         assert_eq!(1, p.inst_len(), "Inst.len must be 1");
         let d = p.get_inst(0).unwrap();
-        assert_eq!(Inst::Expression(ExprRef(2u32)), *d);
-    }
-
-    /*
-    #[test]
-    fn parser_simple_expr() {
-        let mut p = Parser::new("1u64 + 2u64 ");
-        let res = p.parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::IAdd,
-                lhs: Expr::UInt64(1),
-                rhs: Expr::UInt64(2),
-            })),
-            res
-        );
+        assert_eq!(Inst::Expression(ExprRef(2)), *d);
     }
 
     #[test]
     fn parser_simple_expr_mul() {
         let mut p = Parser::new("(1u64) + 2u64 * 3u64");
-        let res = p.parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::IAdd,
-                lhs: Expr::UInt64(1),
-                rhs: Expr::Binary(Box::new(BinaryExpr {
-                    op: Operator::IMul,
-                    lhs: Expr::UInt64(2),
-                    rhs: Expr::UInt64(3),
-                })),
-            })),
-            res
-        );
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::UInt64(1), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(2), *b);
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::UInt64(3), *c);
+
+        let d = p.get(3).unwrap();
+        assert_eq!(Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)), *d);
+        let e = p.get(4).unwrap();
+        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
     fn parser_simple_relational_expr() {
         let mut p = Parser::new("0u64 < 2u64 + 4u64");
-        let res = p.parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::LT,
-                lhs: Expr::UInt64(0),
-                rhs: Expr::Binary(Box::new(BinaryExpr {
-                    op: Operator::IAdd,
-                    lhs: Expr::UInt64(2),
-                    rhs: Expr::UInt64(4),
-                })),
-            })),
-            res
-        );
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::UInt64(0), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(2), *b);
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::UInt64(4), *c);
+
+        let d = p.get(3).unwrap();
+        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)), *d);
+        let e = p.get(4).unwrap();
+        assert_eq!(Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
     fn parser_simple_logical_expr() {
         let mut p = Parser::new("1u64 && 2u64 < 3u64");
-        let res = p.parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::LogicalAnd,
-                lhs: Expr::UInt64(1),
-                rhs: Expr::Binary(Box::new(BinaryExpr {
-                    op: Operator::LT,
-                    lhs: Expr::UInt64(2),
-                    rhs: Expr::UInt64(3),
-                })),
-            })),
-            res
-        );
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::UInt64(1), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(2), *b);
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::UInt64(3), *c);
+
+        let d = p.get(3).unwrap();
+        assert_eq!(Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)), *d);
+        let e = p.get(4).unwrap();
+        assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
@@ -686,32 +674,49 @@ mod tests {
 
     #[test]
     fn parser_simple_ident_expr() {
-        let res = Parser::new("abc + 1u64").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::IAdd,
-                lhs: Expr::Identifier("abc".to_string()),
-                rhs: Expr::UInt64(1),
-            }),),
-            res
-        );
+        let mut p = Parser::new("abc + 1u64");
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(3, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::Identifier("abc".to_string()), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(1), *b);
+
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
     }
 
     #[test]
     fn parser_simple_apply_empty() {
-        let res = Parser::new("abc()").parse_stmt_line().unwrap();
-        assert_eq!(Expr::Call("abc".to_string(), vec![],), res);
+        let mut p = Parser::new("abc()");
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(2, p.len(), "ExprPool.len must be 2");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::Block(vec![]), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
     }
 
     #[test]
     fn parser_simple_apply_expr() {
-        let res = Parser::new("abc(1u64,2u64)").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Call("abc".to_string(), vec![Expr::UInt64(1), Expr::UInt64(2),],),
-            res
-        );
+        let mut p = Parser::new("abc(1u64, 2u64)");
+        let _ = p.parse_stmt_line().unwrap();
+
+        assert_eq!(4, p.len(), "ExprPool.len must be 4");
+        let a = p.get(0).unwrap();
+        assert_eq!(Expr::UInt64(1), *a);
+        let b = p.get(1).unwrap();
+        assert_eq!(Expr::UInt64(2), *b);
+
+        let c = p.get(2).unwrap();
+        assert_eq!(Expr::Block(vec![ExprRef(0), ExprRef(1)]), *c);
+        let d = p.get(3).unwrap();
+        assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
     }
 
+    /*
     #[test]
     fn parser_simple_expr_null_value() {
         let res = Parser::new("null").parse_stmt_line().unwrap();

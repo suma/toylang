@@ -95,6 +95,10 @@ impl<'a> Parser<'a> {
         return self.inst.len();
     }
 
+    pub fn inst_iter(&self) -> std::slice::Iter<'_, Inst> {
+        return self.inst.iter();
+    }
+
     fn add(&mut self, e: Expr) -> ExprRef {
         let len = self.ast.0.len();
         self.ast.0.push(e);
@@ -170,7 +174,7 @@ impl<'a> Parser<'a> {
                             if rhs.is_err() {
                                 return Err(format!("parse_some_exprs: expected expression: {:?}", rhs.err()));
                             }
-                            self.inst.push(Inst::Expression(ExprRef(self.next_expr())));
+                            self.add_inst(Inst::Expression(ExprRef(self.next_expr())));
                             exprs.push(rhs.unwrap());
                             break;
                         }
@@ -473,8 +477,7 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use crate::token::Token;
-    use crate::Expr::Identifier;
-    use crate::Expr::IfElse;
+    use crate::Expr;
 
     #[test]
     fn lexer_simple_keyword() {

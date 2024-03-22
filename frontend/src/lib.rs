@@ -718,6 +718,15 @@ mod tests {
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
     }
 
+    #[test]
+    fn parser_simple_error() {
+        let result = Parser::new("++").parse_stmt_line();
+        assert!(result.is_err());
+
+        if let Err(e) = result {
+            println!("{}", e);
+        }
+    }
     /*
     #[test]
     fn parser_simple_expr_null_value() {

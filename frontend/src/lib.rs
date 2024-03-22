@@ -2,6 +2,7 @@ pub mod ast;
 pub mod token;
 use crate::ast::*;
 use crate::token::Token;
+use anyhow::{anyhow, Result};
 
 mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -76,9 +77,9 @@ impl<'a> Parser<'a> {
         Expr::Binary(op, lhs, rhs)
     }
 
-    pub fn expect_err(&mut self, accept: &Token) -> Result<(), String> {
+    pub fn expect_err(&mut self, accept: &Token) -> Result<()> {
         if !self.expect(accept) {
-            return Err(format!("{:?} expected but {:?}", accept, self.ahead.get(0)));
+            return Err(anyhow!("{:?} expected but {:?}", accept, self.ahead.get(0)));
         }
         Ok(())
     }
@@ -137,16 +138,16 @@ impl<'a> Parser<'a> {
     // TODO: add define function
 
     // this function is for test
-    pub fn parse_stmt_line(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_stmt_line(&mut self) -> Result<ExprRef> {
         let expr = self.parse_some_exprs()?;
         if expr.len() != 1 {
-            return Err(format!("parse_stmt_line: expected 1 expression but {:?} length", expr.len()));
+            return Err(anyhow!("parse_stmt_line: expected 1 expression but {:?} length", expr.len()));
         }
         self.inst.push(Inst::Expression(ExprRef(self.next_expr() - 1)));
         Ok(*expr.first().unwrap())
     }
 
-    pub fn parse_some_exprs(&mut self) -> Result<Vec<ExprRef>, String> {
+    pub fn parse_some_exprs(&mut self) -> Result<Vec<ExprRef>> {
         // remove unused NewLine
         loop {
             match self.peek() {
@@ -160,7 +161,7 @@ impl<'a> Parser<'a> {
 
         let lhs = self.parse_expr();
         if lhs.is_err() {
-            return Err(format!("parse_some_exprs: expected expression: {:?}", lhs.err()));
+            return Err(anyhow!("parse_some_exprs: expected expression: {:?}", lhs.err()));
         }
         exprs.push(lhs.unwrap());
         match self.peek() {
@@ -172,7 +173,7 @@ impl<'a> Parser<'a> {
                         Some(_) => {
                             let rhs = self.parse_expr();
                             if rhs.is_err() {
-                                return Err(format!("parse_some_exprs: expected expression: {:?}", rhs.err()));
+                                return Err(anyhow!("parse_some_exprs: expected expression: {:?}", rhs.err()));
                             }
                             self.add_inst(Inst::Expression(ExprRef(self.next_expr())));
                             exprs.push(rhs.unwrap());
@@ -187,7 +188,7 @@ impl<'a> Parser<'a> {
         return Ok(exprs);
     }
 
-    pub fn parse_expr(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let assign = self.parse_assign();
         if assign.is_ok() {
             return assign;
@@ -203,12 +204,12 @@ impl<'a> Parser<'a> {
                 return self.parse_val_def();
             }
             x => {
-                return Err(format!("parse_expr: expected expression but {:?}", x));
+                return Err(anyhow!("parse_expr: expected expression but {:?}", x));
             }
         }
     }
 
-    pub fn parse_assign(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_assign(&mut self) -> Result<ExprRef> {
         match self.peek() {
             Some(Token::Val) => {
                 self.next();
@@ -232,7 +233,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_if(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_if(&mut self) -> Result<ExprRef> {
         let cond = self.parse_logical_expr()?;
         let if_block = self.parse_block()?;
 
@@ -246,21 +247,21 @@ impl<'a> Parser<'a> {
         return Ok(self.add(Expr::IfElse(cond, if_block, else_block)));
     }
 
-    pub fn parse_block(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_block(&mut self) -> Result<ExprRef> {
         self.expect_err(&Token::BraceOpen)?;
         let block = self.parse_some_exprs()?;
         self.expect_err(&Token::BraceClose)?;
         return Ok(self.add(Expr::Block(block)));
     }
 
-    pub fn parse_val_def(&mut self) -> Result<ExprRef, String> {
+    pub fn parse_val_def(&mut self) -> Result<ExprRef> {
         let ident: String = match self.peek() {
             Some(Token::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
                 s
             }
-            x => return Err(format!("parse_val_def: expected identifier but {:?}", x)),
+            x => return Err(anyhow!("parse_val_def: expected identifier but {:?}", x)),
         };
 
         let ty: Type = match self.peek() {
@@ -282,7 +283,7 @@ impl<'a> Parser<'a> {
         return Ok(self.add(Expr::Val(ident, Some(ty), rhs)));
     }
 
-    fn parse_def_ty(&mut self) -> Result<Type, String> {
+    fn parse_def_ty(&mut self) -> Result<Type> {
         let ty: Type = match self.peek() {
             Some(Token::U64) => Type::UInt64,
             Some(Token::I64) => Type::Int64,
@@ -296,7 +297,7 @@ impl<'a> Parser<'a> {
         return Ok(ty);
     }
 
-    fn parse_logical_expr(&mut self) -> Result<ExprRef, String> {
+    fn parse_logical_expr(&mut self) -> Result<ExprRef> {
         let mut lhs = self.parse_equality()?;
 
         loop {
@@ -316,7 +317,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_equality(&mut self) -> Result<ExprRef, String> {
+    fn parse_equality(&mut self) -> Result<ExprRef> {
         let mut lhs = self.parse_relational()?;
 
         loop {
@@ -336,7 +337,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_relational(&mut self) -> Result<ExprRef, String> {
+    fn parse_relational(&mut self) -> Result<ExprRef> {
         let mut lhs = self.parse_add()?;
 
         loop {
@@ -366,7 +367,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_add(&mut self) -> Result<ExprRef, String> {
+    fn parse_add(&mut self) -> Result<ExprRef> {
         let mut lhs = self.parse_mul()?;
 
         loop {
@@ -386,7 +387,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_mul(&mut self) -> Result<ExprRef, String> {
+    fn parse_mul(&mut self) -> Result<ExprRef> {
         let mut lhs = self.parse_primary()?;
 
         loop {
@@ -406,7 +407,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_primary(&mut self) -> Result<ExprRef, String> {
+    fn parse_primary(&mut self) -> Result<ExprRef> {
         match self.peek() {
             Some(Token::ParenOpen) => {
                 self.next();
@@ -441,7 +442,7 @@ impl<'a> Parser<'a> {
                         Ok(self.add(integer))
                     }
                     Some(&Token::Null) => Ok(self.add(Expr::Null)),
-                    x => return Err(format!("parse_primary: unexpected token {:?}", x)),
+                    x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
                 };
                 self.next();
                 return e;
@@ -449,7 +450,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_expr_list(&mut self, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>, String> {
+    fn parse_expr_list(&mut self, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
         match self.peek() {
             Some(Token::ParenClose) => return Ok(args),
             _ => (),
@@ -468,7 +469,7 @@ impl<'a> Parser<'a> {
                 self.parse_expr_list(args)
             }
             Some(Token::ParenClose) => Ok(args),
-            x => Err(format!("parse_expr_list: unexpected token {:?}", x)),
+            x => Err(anyhow!("parse_expr_list: unexpected token {:?}", x)),
         };
     }
 }
@@ -476,8 +477,6 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::token::Token;
-    use crate::Expr;
 
     #[test]
     fn lexer_simple_keyword() {

@@ -8,7 +8,7 @@ description = "Compiler front-end library"
 build = "build.rs"
 
 [dependencies]
-anyhow = "1.0.81"
+anyhow = "1.0"
 
 [build-dependencies]
 failure = "0.1.5"

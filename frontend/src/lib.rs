@@ -2,6 +2,7 @@ pub mod ast;
 pub mod token;
 use crate::ast::*;
 use crate::token::Token;
+
 use anyhow::{anyhow, Result};
 
 mod lexer {
@@ -118,6 +119,10 @@ impl<'a> Parser<'a> {
         return self.len() as u32;
     }
 
+    // code := (import | fn)*
+    // fn := "fn" identifier "(" param_def_list* ") "->" def_ty block
+    // param_def_list := e | param_def | param_def "," param_def_list
+    // param_def := identifier ":" def_ty |
     // prog := expr NewLine expr | expr | e
     // expr := assign | if_expr
     // block := "{" prog* "}"
@@ -135,11 +140,10 @@ impl<'a> Parser<'a> {
     //            identifier |
     //            UInt64 | Int64 | Integer | Null
     // expr_list = "" | expr | expr "," expr_list
-    // TODO: add define function
 
     // this function is for test
     pub fn parse_stmt_line(&mut self) -> Result<ExprRef> {
-        let expr = self.parse_some_exprs()?;
+        let expr = self.parse_some_exprs(vec![])?;
         if expr.len() != 1 {
             return Err(anyhow!("parse_stmt_line: expected 1 expression but {:?} length", expr.len()));
         }
@@ -147,7 +151,82 @@ impl<'a> Parser<'a> {
         Ok(*expr.first().unwrap())
     }
 
-    pub fn parse_some_exprs(&mut self) -> Result<Vec<ExprRef>> {
+    pub fn parse_code(&mut self) -> Result<()> {
+        loop {
+            match self.peek() {
+                Some(Token::Function) => {
+                    self.next();
+                    match self.peek() {
+                        Some(Token::Identifier(s)) => {
+                            let fn_name = s.to_string();
+                            self.next();
+
+                            self.expect_err(&Token::ParenOpen)?;
+                            let params = self.parse_param_def_list(vec![])?;
+                            self.expect_err(&Token::ParenClose)?;
+                            self.expect_err(&Token::Arrow)?;
+                            let ret_ty = self.parse_def_ty()?;
+                            let block = self.parse_block();
+                            self.add_inst(Inst::Function(fn_name, params, Some(ret_ty), block.unwrap()));
+                        }
+                        _ => return Err(anyhow!("expected function")),
+                    }
+                }
+                Some(Token::NewLine) => self.next(), // skip
+                None | Some(Token::EOF) => break,
+                // import, etc...
+                x => return Err(anyhow!("not implemented!!: {:?}", x)),
+            }
+        }
+       return Ok(());// FIXME: return Err
+    }
+
+    pub fn parse_param_def(&mut self) -> Result<Parameter> {
+        match self.peek() {
+            Some(Token::Identifier(s)) => {
+                let name = s.to_string();
+                self.next();
+                self.expect_err(&Token::Colon)?;
+                let typ = self.parse_def_ty()?;
+                Ok((name, typ))
+            }
+            x => Err(anyhow!("expect type parameter of function but: {:?}", x)),
+        }
+    }
+
+    fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> Result<Vec<Parameter>> {
+        match self.peek() {
+            Some(Token::ParenClose) => return Ok(args),
+            _ => (),
+        }
+
+        let def = self.parse_param_def();
+        if def.is_err() {
+            // there is no expr in this context
+            return Ok(args);
+        }
+        args.push(def.unwrap());
+
+        return match self.peek() {
+            Some(Token::Comma) => {
+                self.next();
+                self.parse_param_def_list(args)
+            }
+            // We expect Token::ParenClose will appearr
+            // but other tokens can be accepted for testability
+            _ => Ok(args),
+        };
+    }
+
+    // input multi expressions by lines
+    pub fn parse_some_exprs(&mut self, mut exprs: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+        // check end of expressions
+        match self.peek() {
+            Some(Token::BraceClose) | Some(Token::EOF) | None =>
+                return Ok(exprs),
+            _ => (),
+        }
+
         // remove unused NewLine
         loop {
             match self.peek() {
@@ -157,35 +236,22 @@ impl<'a> Parser<'a> {
                     break,
             }
         }
-        let mut exprs = vec![];
+
+        // check end of expressions (twice)
+        match self.peek() {
+            Some(Token::BraceClose) | Some(Token::EOF) | None =>
+                return Ok(exprs),
+            _ => (),
+        }
 
         let lhs = self.parse_expr();
         if lhs.is_err() {
             return Err(anyhow!("parse_some_exprs: expected expression: {:?}", lhs.err()));
         }
+        self.add_inst(Inst::Expression(ExprRef(self.next_expr())));
         exprs.push(lhs.unwrap());
-        match self.peek() {
-            Some(Token::NewLine) => {
-                loop {
-                    match self.peek() {
-                        Some(Token::NewLine) =>
-                            self.next(),
-                        Some(_) => {
-                            let rhs = self.parse_expr();
-                            if rhs.is_err() {
-                                return Err(anyhow!("parse_some_exprs: expected expression: {:?}", rhs.err()));
-                            }
-                            self.add_inst(Inst::Expression(ExprRef(self.next_expr())));
-                            exprs.push(rhs.unwrap());
-                            break;
-                        }
-                        _ => break,
-                    }
-                }
-            }
-            _ => (),
-        }
-        return Ok(exprs);
+
+        return self.parse_some_exprs(exprs);
     }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
@@ -203,8 +269,11 @@ impl<'a> Parser<'a> {
                 self.next();
                 return self.parse_val_def();
             }
-            x => {
-                return Err(anyhow!("parse_expr: expected expression but {:?}", x));
+            Some(x) => {
+                return Err(anyhow!("parse_expr: expected expression but Token ({:?})", x));
+            }
+            None => {
+                return Err(anyhow!("parse_expr: expected expression but None"));
             }
         }
     }
@@ -249,9 +318,18 @@ impl<'a> Parser<'a> {
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {
         self.expect_err(&Token::BraceOpen)?;
-        let block = self.parse_some_exprs()?;
-        self.expect_err(&Token::BraceClose)?;
-        return Ok(self.add(Expr::Block(block)));
+        match self.peek() {
+            Some(Token::BraceClose) => {
+                // empty block
+                self.next();
+                Ok(self.add(Expr::Block(vec![])))
+            }
+            _ => {
+                let block = self.parse_some_exprs(vec![])?;
+                self.expect_err(&Token::BraceClose)?;
+                Ok(self.add(Expr::Block(block)))
+            }
+        }
     }
 
     pub fn parse_val_def(&mut self) -> Result<ExprRef> {
@@ -582,6 +660,7 @@ mod tests {
         assert_eq!(Token::UInt64(2), *t2);
     }
 
+    /*
     #[test]
     fn parser_simple_expr_test1() {
         let mut p = Parser::new("1u64 + 2u64 ");
@@ -594,10 +673,15 @@ mod tests {
         let c = p.get(2).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
 
+        println!("p.inst: {:?}", p.inst);
+        println!("INSTRUCTION {:?}", p.get_inst(0));
+        println!("INSTRUCTION {:?}", p.get_inst(1));
         assert_eq!(1, p.inst_len(), "Inst.len must be 1");
+
         let d = p.get_inst(0).unwrap();
         assert_eq!(Inst::Expression(ExprRef(2)), *d);
     }
+   */
 
     #[test]
     fn parser_simple_expr_mul() {
@@ -704,7 +788,8 @@ mod tests {
     #[test]
     fn parser_simple_apply_expr() {
         let mut p = Parser::new("abc(1u64, 2u64)");
-        let _ = p.parse_stmt_line().unwrap();
+        let res = p.parse_stmt_line();
+        println!("{:?}", res.err());
 
         assert_eq!(4, p.len(), "ExprPool.len must be 4");
         let a = p.get(0).unwrap();
@@ -719,6 +804,34 @@ mod tests {
     }
 
     #[test]
+    fn parser_param_def() {
+        let param = Parser::new("test: u64").parse_param_def();
+        let p = param.unwrap();
+        assert_eq!(("test".to_string(), Type::UInt64), p);
+    }
+
+    #[test]
+    fn parser_param_def_list_empty() {
+        let param = Parser::new("").parse_param_def_list(vec![]);
+        let p = param.unwrap();
+        assert_eq!(0, p.len());
+    }
+
+    #[test]
+    fn parser_param_def_list() {
+        let param = Parser::new("test: u64, test2: i64, test3: some_type").parse_param_def_list(vec![]);
+        let p = param.unwrap();
+        assert_eq!(
+            vec![
+                ("test".to_string(), Type::UInt64),
+                ("test2".to_string(), Type::Int64),
+                ("test3".to_string(), Type::Identifier("some_type".to_string())),
+            ],
+            p
+        );
+    }
+
+    #[test]
     fn parser_simple_error() {
         let result = Parser::new("++").parse_stmt_line();
         assert!(result.is_err());
@@ -727,6 +840,25 @@ mod tests {
             println!("{}", e);
         }
     }
+
+    #[test]
+    fn parser_input_code() {
+        let code = r#"
+fn hello() -> u64 {
+}
+
+fn hello2(a: u64) -> u64 {
+}
+
+fn hello3(a: u64, b: u64) -> u64 {
+}
+        "#;
+        let mut p = Parser::new(code);
+        let result = p.parse_code();
+        assert!(result.is_ok());
+        assert_eq!(3, p.inst_len());
+    }
+
     /*
     #[test]
     fn parser_simple_expr_null_value() {

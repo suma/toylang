@@ -4,11 +4,14 @@ pub struct ExprPool(pub Vec<Expr>);
 
 #[derive(Debug, PartialEq)]
 pub enum Inst {
-    Function(String, Vec<Parameter>),
+    Import(String),
+    // Name, Parameters, Return Type, Instructions
+    Function(String, ParameterList, Option<Type>, ExprRef),
     Expression(ExprRef),
 }
 
-type Parameter = (String, Type);
+pub type Parameter = (String, Type);
+pub type ParameterList = Vec<Parameter>;
 
 #[derive(Debug, PartialEq)]
 pub enum Expr {

@@ -111,6 +111,20 @@ impl<'a> Parser<'a> {
         return self.ast.0.get(i as usize);
     }
 
+    pub fn get_block(&self, i: u32) -> Option<Vec<&Expr>> {
+        let mut exprs_blk: Vec<&Expr> = vec![];
+        match self.get(i) {
+            Some(e) => match e {
+                Expr::Block(exprs) => {
+                    exprs.iter().for_each(|x| exprs_blk.push(&self.get(x.0).unwrap()));
+                }
+                _ => return Option::None,
+            }
+            _ => return Option::None,
+        }
+        return Some(exprs_blk);
+    }
+
     pub fn len(&self) -> usize {
         return self.ast.0.len();
     }
@@ -167,7 +181,8 @@ impl<'a> Parser<'a> {
                             self.expect_err(&Token::Arrow)?;
                             let ret_ty = self.parse_def_ty()?;
                             let block = self.parse_block();
-                            self.add_inst(Inst::Function(fn_name, params, Some(ret_ty), block.unwrap()));
+                            let block = block.unwrap();
+                            self.add_inst(Inst::Function(fn_name, params, Some(ret_ty), block));
                         }
                         _ => return Err(anyhow!("expected function")),
                     }
@@ -248,7 +263,6 @@ impl<'a> Parser<'a> {
         if lhs.is_err() {
             return Err(anyhow!("parse_some_exprs: expected expression: {:?}", lhs.err()));
         }
-        self.add_inst(Inst::Expression(ExprRef(self.next_expr())));
         exprs.push(lhs.unwrap());
 
         return self.parse_some_exprs(exprs);
@@ -845,18 +859,30 @@ mod tests {
     fn parser_input_code() {
         let code = r#"
 fn hello() -> u64 {
+a
+b
 }
 
 fn hello2(a: u64) -> u64 {
+b
 }
 
 fn hello3(a: u64, b: u64) -> u64 {
+c
 }
         "#;
         let mut p = Parser::new(code);
         let result = p.parse_code();
         assert!(result.is_ok());
         assert_eq!(3, p.inst_len());
+        assert_eq!(&Inst::Function("hello".to_string(), vec![], Some(Type::UInt64), ExprRef(2)),
+                   p.get_inst(0).unwrap());
+
+        let mut exprs_0 = p.get_block(2).unwrap();
+        assert_eq!(
+            vec![&Expr::Identifier("a".to_string()), &Expr::Identifier("b".to_string())],
+            exprs_0
+        );
     }
 
     /*

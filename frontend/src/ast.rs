@@ -13,7 +13,7 @@ pub enum Inst {
 pub type Parameter = (String, Type);
 pub type ParameterList = Vec<Parameter>;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     IfElse(ExprRef, ExprRef, ExprRef),
     Binary(Operator, ExprRef, ExprRef),
@@ -54,7 +54,7 @@ pub struct BinaryExpr {
     pub rhs: ExprRef,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Type {
     Unknown,
     Int64,

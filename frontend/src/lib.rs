@@ -878,10 +878,36 @@ c
         assert_eq!(&Inst::Function("hello".to_string(), vec![], Some(Type::UInt64), ExprRef(2)),
                    p.get_inst(0).unwrap());
 
-        let mut exprs_0 = p.get_block(2).unwrap();
+        // hello, hello2, hello3 blocks
+        let mut blocks: Vec<Option<Vec<&Expr>>> = vec![];
+        for inst in p.inst_iter() {
+            match inst {
+                Inst::Import(_) => (),
+                Inst::Expression(_) => (),
+                Inst::Function(str, param, result_type, block) => {
+                    let block = p.get_block(block.0);
+                    blocks.push(block);
+                    println!("Func {} {:?}", str, blocks.last());
+                }
+            }
+        }
+
+        let block0 = blocks.get(0).unwrap();
         assert_eq!(
             vec![&Expr::Identifier("a".to_string()), &Expr::Identifier("b".to_string())],
-            exprs_0
+            block0.clone().unwrap()
+        );
+
+        let block1 = blocks.get(1).unwrap();
+        assert_eq!(
+            vec![&Expr::Identifier("b".to_string())],
+            block1.clone().unwrap()
+        );
+
+        let block2 = blocks.get(2).unwrap();
+        assert_eq!(
+            vec![&Expr::Identifier("c".to_string())],
+            block2.clone().unwrap()
         );
     }
 

@@ -1,80 +1,85 @@
-use crate::token::Token;
+use crate::token::{Token, Kind};
+
+macro_rules! token {
+    ($self: ident, $kind: expr) => {
+        Token { kind: $kind, position: $self.yybytepos() }
+    }
+}
 
 %%
 %class Lexer
 %result_type Token
 %field u64 line_count
 
-"if"     return Ok(Token::If);
-"else"   return Ok(Token::Else);
-"for"    return Ok(Token::For);
-"while"  return Ok(Token::While);
-"break"  return Ok(Token::Break);
-"continue"  return Ok(Token::Continue);
-"class"  return Ok(Token::Class);
-"struct" return Ok(Token::Struct);
-"fn"     return Ok(Token::Function);
-"return" return Ok(Token::Return);
-"extern" return Ok(Token::Extern);
-"pub"    return Ok(Token::Public);
-"val"    return Ok(Token::Val);
-"var"    return Ok(Token::Var);
+"if"     return Ok(token!(self, Kind::If));
+"else"   return Ok(token!(self, Kind::Else));
+"for"    return Ok(token!(self, Kind::For));
+"while"  return Ok(token!(self, Kind::While));
+"break"  return Ok(token!(self, Kind::Break));
+"continue"  return Ok(token!(self, Kind::Continue));
+"class"  return Ok(token!(self, Kind::Class));
+"struct" return Ok(token!(self, Kind::Struct));
+"fn"     return Ok(token!(self, Kind::Function));
+"return" return Ok(token!(self, Kind::Return));
+"extern" return Ok(token!(self, Kind::Extern));
+"pub"    return Ok(token!(self, Kind::Public));
+"val"    return Ok(token!(self, Kind::Val));
+"var"    return Ok(token!(self, Kind::Var));
 
-"("      return Ok(Token::ParenOpen);
-")"      return Ok(Token::ParenClose);
-"{"      return Ok(Token::BraceOpen);
-"}"      return Ok(Token::BraceClose);
-"["      return Ok(Token::BracketOpen);
-"]"      return Ok(Token::BracketClose);
-","      return Ok(Token::Comma);
-"."      return Ok(Token::Dot);
-"::"     return Ok(Token::DoubleColon);
-":"      return Ok(Token::Colon);
-"->"     return Ok(Token::Arrow);
-"!"      return Ok(Token::Exclamation);
+"("      return Ok(token!(self, Kind::ParenOpen));
+")"      return Ok(token!(self, Kind::ParenClose));
+"{"      return Ok(token!(self, Kind::BraceOpen));
+"}"      return Ok(token!(self, Kind::BraceClose));
+"["      return Ok(token!(self, Kind::BracketOpen));
+"]"      return Ok(token!(self, Kind::BracketClose));
+","      return Ok(token!(self, Kind::Comma));
+"."      return Ok(token!(self, Kind::Dot));
+"::"     return Ok(token!(self, Kind::DoubleColon));
+":"      return Ok(token!(self, Kind::Colon));
+"->"     return Ok(token!(self, Kind::Arrow));
+"!"      return Ok(token!(self, Kind::Exclamation));
 
-"="      return Ok(Token::Equal);
+"="      return Ok(token!(self, Kind::Equal));
 
-"=="     return Ok(Token::DoubleEqual);
-"!="     return Ok(Token::NotEqual);
-"<="     return Ok(Token::LE);
-"<"      return Ok(Token::LT);
-">="     return Ok(Token::GE);
-">"      return Ok(Token::GT);
+"=="     return Ok(token!(self, Kind::DoubleEqual));
+"!="     return Ok(token!(self, Kind::NotEqual));
+"<="     return Ok(token!(self, Kind::LE));
+"<"      return Ok(token!(self, Kind::LT));
+">="     return Ok(token!(self, Kind::GE));
+">"      return Ok(token!(self, Kind::GT));
 
-"&&"     return Ok(Token::DoubleAnd);
-"||"     return Ok(Token::DoubleOr);
+"&&"     return Ok(token!(self, Kind::DoubleAnd));
+"||"     return Ok(token!(self, Kind::DoubleOr));
 
-"+"      return Ok(Token::IAdd);
-"-"      return Ok(Token::ISub);
-"*"      return Ok(Token::IMul);
-"/"      return Ok(Token::IDiv);
-"+."     return Ok(Token::FAdd);
-"-."     return Ok(Token::FSub);
-"*."     return Ok(Token::FMul);
-"/."     return Ok(Token::FDiv);
+"+"      return Ok(token!(self, Kind::IAdd));
+"-"      return Ok(token!(self, Kind::ISub));
+"*"      return Ok(token!(self, Kind::IMul));
+"/"      return Ok(token!(self, Kind::IDiv));
+"+."     return Ok(token!(self, Kind::FAdd));
+"-."     return Ok(token!(self, Kind::FSub));
+"*."     return Ok(token!(self, Kind::FMul));
+"/."     return Ok(token!(self, Kind::FDiv));
 
 
 -?[0-9]+"i64"       let mut text = self.yytext();
                     let drain = text.drain(0..(text.len()-3)); let s = drain.collect::<String>();
-                    return Ok(Token::Int64(s.parse::<i64>().unwrap()));
+                    return Ok(token!(self, Kind::Int64(s.parse::<i64>().unwrap())));
 [0-9]+"u64"         let mut text = self.yytext();
                     let drain = text.drain(0..(text.len()-3)); let s = drain.collect::<String>();
-                    return Ok(Token::UInt64(s.parse::<u64>().unwrap()));
--?[0-9]+            return Ok(Token::Integer(self.yytext()));
+                    return Ok(token!(self, Kind::UInt64(s.parse::<u64>().unwrap())));
+-?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
                     /* TODO: hold original text in lexer as used for lint */
 
-"u64"      return Ok(Token::U64);
-"i64"      return Ok(Token::I64);
-"ptr"      return Ok(Token::Ptr);
-"usize"    return Ok(Token::USize);
-"null"     return Ok(Token::Null);
+"u64"      return Ok(token!(self, Kind::U64));
+"i64"      return Ok(token!(self, Kind::I64));
+"ptr"      return Ok(token!(self, Kind::Ptr));
+"usize"    return Ok(token!(self, Kind::USize));
+"null"     return Ok(token!(self, Kind::Null));
 
-[A-Za-z_][A-Za-z_0-9]*  return Ok(Token::Identifier(self.yytext()));
+[A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
 " "      /* skip ws (TODO: count and return ws)  */
 \t       /* skip tab */
-\n       self.line_count += 1; return Ok(Token::NewLine);
+\n       self.line_count += 1; return Ok(token!(self, Kind::NewLine));
 
 %%
-

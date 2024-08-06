@@ -1,7 +1,7 @@
 pub mod ast;
 pub mod token;
 use crate::ast::*;
-use crate::token::Token;
+use crate::token::{Token, Kind};
 
 use anyhow::{anyhow, Result};
 
@@ -29,30 +29,36 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn peek(&mut self) -> Option<&Token> {
+    fn peek(&mut self) -> Option<&Kind> {
         if self.ahead.is_empty() {
             match self.lexer.yylex() {
                 Ok(t) => {
                     self.ahead.push(t);
-                    self.ahead.get(0)
+                    Some(&self.ahead.get(0).unwrap().kind)
                 }
                 _ => return None,
             }
         } else {
-            self.ahead.get(0)
+            match self.ahead.get(0) {
+                Some(t) => Some(&t.kind),
+                None => None,
+            }
         }
     }
 
     // pos: 0-origin
     #[allow(dead_code)]
-    fn peek_n(&mut self, pos: usize) -> Option<&Token> {
+    fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         while self.ahead.len() < pos + 1 {
             match self.lexer.yylex() {
                 Ok(t) => self.ahead.push(t),
                 _ => return None,
             }
         }
-        return self.ahead.get(pos);
+        match self.ahead.get(pos) {
+            Some(t) => Some(&t.kind),
+            None => None,
+        }
     }
 
     #[allow(dead_code)]
@@ -64,7 +70,7 @@ impl<'a> Parser<'a> {
         self.ahead.remove(0);
     }
 
-    pub fn expect(&mut self, accept: &Token) -> bool {
+    pub fn expect(&mut self, accept: &Kind) -> bool {
         let tk = self.peek();
         if *tk.unwrap() == *accept {
             self.next();
@@ -78,7 +84,7 @@ impl<'a> Parser<'a> {
         Expr::Binary(op, lhs, rhs)
     }
 
-    pub fn expect_err(&mut self, accept: &Token) -> Result<()> {
+    pub fn expect_err(&mut self, accept: &Kind) -> Result<()> {
         if !self.expect(accept) {
             return Err(anyhow!("{:?} expected but {:?}", accept, self.ahead.get(0)));
         }
@@ -168,17 +174,17 @@ impl<'a> Parser<'a> {
     pub fn parse_code(&mut self) -> Result<()> {
         loop {
             match self.peek() {
-                Some(Token::Function) => {
+                Some(Kind::Function) => {
                     self.next();
                     match self.peek() {
-                        Some(Token::Identifier(s)) => {
+                        Some(Kind::Identifier(s)) => {
                             let fn_name = s.to_string();
                             self.next();
 
-                            self.expect_err(&Token::ParenOpen)?;
+                            self.expect_err(&Kind::ParenOpen)?;
                             let params = self.parse_param_def_list(vec![])?;
-                            self.expect_err(&Token::ParenClose)?;
-                            self.expect_err(&Token::Arrow)?;
+                            self.expect_err(&Kind::ParenClose)?;
+                            self.expect_err(&Kind::Arrow)?;
                             let ret_ty = self.parse_def_ty()?;
                             let block = self.parse_block();
                             let block = block.unwrap();
@@ -187,8 +193,8 @@ impl<'a> Parser<'a> {
                         _ => return Err(anyhow!("expected function")),
                     }
                 }
-                Some(Token::NewLine) => self.next(), // skip
-                None | Some(Token::EOF) => break,
+                Some(Kind::NewLine) => self.next(), // skip
+                None | Some(Kind::EOF) => break,
                 // import, etc...
                 x => return Err(anyhow!("not implemented!!: {:?}", x)),
             }
@@ -198,10 +204,10 @@ impl<'a> Parser<'a> {
 
     pub fn parse_param_def(&mut self) -> Result<Parameter> {
         match self.peek() {
-            Some(Token::Identifier(s)) => {
+            Some(Kind::Identifier(s)) => {
                 let name = s.to_string();
                 self.next();
-                self.expect_err(&Token::Colon)?;
+                self.expect_err(&Kind::Colon)?;
                 let typ = self.parse_def_ty()?;
                 Ok((name, typ))
             }
@@ -211,7 +217,7 @@ impl<'a> Parser<'a> {
 
     fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> Result<Vec<Parameter>> {
         match self.peek() {
-            Some(Token::ParenClose) => return Ok(args),
+            Some(Kind::ParenClose) => return Ok(args),
             _ => (),
         }
 
@@ -223,11 +229,11 @@ impl<'a> Parser<'a> {
         args.push(def.unwrap());
 
         return match self.peek() {
-            Some(Token::Comma) => {
+            Some(Kind::Comma) => {
                 self.next();
                 self.parse_param_def_list(args)
             }
-            // We expect Token::ParenClose will appearr
+            // We expect Kind::ParenClose will appearr
             // but other tokens can be accepted for testability
             _ => Ok(args),
         };
@@ -237,7 +243,7 @@ impl<'a> Parser<'a> {
     pub fn parse_some_exprs(&mut self, mut exprs: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
         // check end of expressions
         match self.peek() {
-            Some(Token::BraceClose) | Some(Token::EOF) | None =>
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
                 return Ok(exprs),
             _ => (),
         }
@@ -245,7 +251,7 @@ impl<'a> Parser<'a> {
         // remove unused NewLine
         loop {
             match self.peek() {
-                Some(Token::NewLine) =>
+                Some(Kind::NewLine) =>
                     self.next(),
                 Some(_) | None =>
                     break,
@@ -254,7 +260,7 @@ impl<'a> Parser<'a> {
 
         // check end of expressions (twice)
         match self.peek() {
-            Some(Token::BraceClose) | Some(Token::EOF) | None =>
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
                 return Ok(exprs),
             _ => (),
         }
@@ -275,16 +281,16 @@ impl<'a> Parser<'a> {
         }
 
         match self.peek() {
-            Some(Token::If) => {
+            Some(Kind::If) => {
                 self.next();
                 return self.parse_if();
             }
-            Some(Token::Val) => {
+            Some(Kind::Val) => {
                 self.next();
                 return self.parse_val_def();
             }
             Some(x) => {
-                return Err(anyhow!("parse_expr: expected expression but Token ({:?})", x));
+                return Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x));
             }
             None => {
                 return Err(anyhow!("parse_expr: expected expression but None"));
@@ -294,14 +300,14 @@ impl<'a> Parser<'a> {
 
     pub fn parse_assign(&mut self) -> Result<ExprRef> {
         match self.peek() {
-            Some(Token::Val) => {
+            Some(Kind::Val) => {
                 self.next();
                 return self.parse_val_def();
             }
             _ => {
                 let lhs = self.parse_logical_expr()?;
                 match self.peek() {
-                    Some(Token::Equal) => {
+                    Some(Kind::Equal) => {
                         self.next();
                         let rhs = self.parse_logical_expr()?;
                         return Ok(self.add(Self::new_binary(
@@ -321,7 +327,7 @@ impl<'a> Parser<'a> {
         let if_block = self.parse_block()?;
 
         let else_block: ExprRef = match self.peek() {
-            Some(Token::Else) => {
+            Some(Kind::Else) => {
                 self.next();
                 self.parse_block()?
             }
@@ -331,16 +337,16 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {
-        self.expect_err(&Token::BraceOpen)?;
+        self.expect_err(&Kind::BraceOpen)?;
         match self.peek() {
-            Some(Token::BraceClose) => {
+            Some(Kind::BraceClose) => {
                 // empty block
                 self.next();
                 Ok(self.add(Expr::Block(vec![])))
             }
             _ => {
                 let block = self.parse_some_exprs(vec![])?;
-                self.expect_err(&Token::BraceClose)?;
+                self.expect_err(&Kind::BraceClose)?;
                 Ok(self.add(Expr::Block(block)))
             }
         }
@@ -348,7 +354,7 @@ impl<'a> Parser<'a> {
 
     pub fn parse_val_def(&mut self) -> Result<ExprRef> {
         let ident: String = match self.peek() {
-            Some(Token::Identifier(s)) => {
+            Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
                 s
@@ -357,7 +363,7 @@ impl<'a> Parser<'a> {
         };
 
         let ty: Type = match self.peek() {
-            Some(Token::Colon) => {
+            Some(Kind::Colon) => {
                 self.next();
                 self.parse_def_ty()?
             }
@@ -366,7 +372,7 @@ impl<'a> Parser<'a> {
 
         // "=" logical_expr
         let rhs = match self.peek() {
-            Some(Token::Equal) => {
+            Some(Kind::Equal) => {
                 self.next();
                 Some(self.parse_logical_expr()?)
             }
@@ -377,9 +383,9 @@ impl<'a> Parser<'a> {
 
     fn parse_def_ty(&mut self) -> Result<Type> {
         let ty: Type = match self.peek() {
-            Some(Token::U64) => Type::UInt64,
-            Some(Token::I64) => Type::Int64,
-            Some(Token::Identifier(s)) => {
+            Some(Kind::U64) => Type::UInt64,
+            Some(Kind::I64) => Type::Int64,
+            Some(Kind::Identifier(s)) => {
                 let ident = s.to_string();
                 Type::Identifier(ident)
             }
@@ -394,12 +400,12 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.peek() {
-                Some(Token::DoubleAnd) => {
+                Some(Kind::DoubleAnd) => {
                     self.next();
                     let rhs = self.parse_relational()?;
                     lhs = self.add(Self::new_binary(Operator::LogicalAnd, lhs, rhs));
                 }
-                Some(Token::DoubleOr) => {
+                Some(Kind::DoubleOr) => {
                     self.next();
                     let rhs = self.parse_relational()?;
                     lhs = self.add(Self::new_binary(Operator::LogicalOr, lhs, rhs));
@@ -414,12 +420,12 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.peek() {
-                Some(Token::DoubleEqual) => {
+                Some(Kind::DoubleEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
                     lhs = self.add(Self::new_binary(Operator::EQ, lhs, rhs));
                 }
-                Some(Token::NotEqual) => {
+                Some(Kind::NotEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
                     lhs = self.add(Self::new_binary(Operator::NE, lhs, rhs));
@@ -434,22 +440,22 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.peek() {
-                Some(Token::LT) => {
+                Some(Kind::LT) => {
                     self.next();
                     let rhs = self.parse_add()?;
                     lhs = self.add(Self::new_binary(Operator::LT, lhs, rhs));
                 }
-                Some(Token::LE) => {
+                Some(Kind::LE) => {
                     self.next();
                     let rhs = self.parse_add()?;
                     lhs = self.add(Self::new_binary(Operator::LE, lhs, rhs));
                 }
-                Some(Token::GT) => {
+                Some(Kind::GT) => {
                     self.next();
                     let rhs = self.parse_add()?;
                     lhs = self.add(Self::new_binary(Operator::GT, lhs, rhs));
                 }
-                Some(Token::GE) => {
+                Some(Kind::GE) => {
                     self.next();
                     let rhs = self.parse_add()?;
                     lhs = self.add(Self::new_binary(Operator::GE, lhs, rhs))
@@ -464,12 +470,12 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.peek() {
-                Some(Token::IAdd) => {
+                Some(Kind::IAdd) => {
                     self.next();
                     let rhs = self.parse_mul()?;
                     lhs = self.add(Self::new_binary(Operator::IAdd, lhs, rhs));
                 }
-                Some(Token::ISub) => {
+                Some(Kind::ISub) => {
                     self.next();
                     let rhs = self.parse_mul()?;
                     lhs = self.add(Self::new_binary(Operator::ISub, lhs, rhs));
@@ -484,12 +490,12 @@ impl<'a> Parser<'a> {
 
         loop {
             match self.peek() {
-                Some(Token::IMul) => {
+                Some(Kind::IMul) => {
                     self.next();
                     let rhs = self.parse_mul()?;
                     lhs = self.add(Self::new_binary(Operator::IMul, lhs, rhs));
                 }
-                Some(Token::IDiv) => {
+                Some(Kind::IDiv) => {
                     self.next();
                     let rhs = self.parse_mul()?;
                     lhs = self.add(Self::new_binary(Operator::IDiv, lhs, rhs));
@@ -501,21 +507,21 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<ExprRef> {
         match self.peek() {
-            Some(Token::ParenOpen) => {
+            Some(Kind::ParenOpen) => {
                 self.next();
                 let node = self.parse_expr()?;
-                self.expect_err(&Token::ParenClose)?;
+                self.expect_err(&Kind::ParenClose)?;
                 return Ok(node);
             }
-            Some(Token::Identifier(s)) => {
+            Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
                 return match self.peek() {
-                    Some(Token::ParenOpen) => {
+                    Some(Kind::ParenOpen) => {
                         // function call
                         self.next();
                         let args = self.parse_expr_list(vec![])?;
-                        self.expect_err(&Token::ParenClose)?;
+                        self.expect_err(&Kind::ParenClose)?;
                         let args = self.add(Expr::Block(args));
                         Ok(self.add(Expr::Call(s, args)))
                     }
@@ -527,13 +533,13 @@ impl<'a> Parser<'a> {
             }
             x => {
                 let e = match x {
-                    Some(&Token::UInt64(num)) => Ok(self.add(Expr::UInt64(num))),
-                    Some(&Token::Int64(num)) => Ok(self.add(Expr::Int64(num))),
-                    Some(Token::Integer(num)) => {
+                    Some(&Kind::UInt64(num)) => Ok(self.add(Expr::UInt64(num))),
+                    Some(&Kind::Int64(num)) => Ok(self.add(Expr::Int64(num))),
+                    Some(Kind::Integer(num)) => {
                         let integer = Expr::Int(num.clone());
                         Ok(self.add(integer))
                     }
-                    Some(&Token::Null) => Ok(self.add(Expr::Null)),
+                    Some(&Kind::Null) => Ok(self.add(Expr::Null)),
                     x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
                 };
                 self.next();
@@ -544,7 +550,7 @@ impl<'a> Parser<'a> {
 
     fn parse_expr_list(&mut self, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
         match self.peek() {
-            Some(Token::ParenClose) => return Ok(args),
+            Some(Kind::ParenClose) => return Ok(args),
             _ => (),
         }
 
@@ -556,11 +562,11 @@ impl<'a> Parser<'a> {
         args.push(expr.unwrap());
 
         return match self.peek() {
-            Some(Token::Comma) => {
+            Some(Kind::Comma) => {
                 self.next();
                 self.parse_expr_list(args)
             }
-            Some(Token::ParenClose) => Ok(args),
+            Some(Kind::ParenClose) => Ok(args),
             x => Err(anyhow!("parse_expr_list: unexpected token {:?}", x)),
         };
     }
@@ -574,82 +580,82 @@ mod tests {
     fn lexer_simple_keyword() {
         let s = " if else while break continue for class fn val var";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::If);
-        assert_eq!(l.yylex().unwrap(), Token::Else);
-        assert_eq!(l.yylex().unwrap(), Token::While);
-        assert_eq!(l.yylex().unwrap(), Token::Break);
-        assert_eq!(l.yylex().unwrap(), Token::Continue);
-        assert_eq!(l.yylex().unwrap(), Token::For);
-        assert_eq!(l.yylex().unwrap(), Token::Class);
-        assert_eq!(l.yylex().unwrap(), Token::Function);
-        assert_eq!(l.yylex().unwrap(), Token::Val);
-        assert_eq!(l.yylex().unwrap(), Token::Var);
+        assert_eq!(l.yylex().unwrap().kind, Kind::If);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Else);
+        assert_eq!(l.yylex().unwrap().kind, Kind::While);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Break);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Continue);
+        assert_eq!(l.yylex().unwrap().kind, Kind::For);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Class);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Function);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Val);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Var);
     }
 
     #[test]
     fn lexer_simple_integer() {
         let s = " -1i64 1i64 2u64 123 -456";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::Int64(-1));
-        assert_eq!(l.yylex().unwrap(), Token::Int64(1));
-        assert_eq!(l.yylex().unwrap(), Token::UInt64(2u64));
-        assert_eq!(l.yylex().unwrap(), Token::Integer("123".to_string()));
-        assert_eq!(l.yylex().unwrap(), Token::Integer("-456".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
+        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Integer("123".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Integer("-456".to_string()));
     }
 
     #[test]
     fn lexer_simple_symbol1() {
         let s = " ( ) { } [ ] , . :: : = !";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::ParenOpen);
-        assert_eq!(l.yylex().unwrap(), Token::ParenClose);
-        assert_eq!(l.yylex().unwrap(), Token::BraceOpen);
-        assert_eq!(l.yylex().unwrap(), Token::BraceClose);
-        assert_eq!(l.yylex().unwrap(), Token::BracketOpen);
-        assert_eq!(l.yylex().unwrap(), Token::BracketClose);
-        assert_eq!(l.yylex().unwrap(), Token::Comma);
-        assert_eq!(l.yylex().unwrap(), Token::Dot);
-        assert_eq!(l.yylex().unwrap(), Token::DoubleColon);
-        assert_eq!(l.yylex().unwrap(), Token::Colon);
-        assert_eq!(l.yylex().unwrap(), Token::Equal);
-        assert_eq!(l.yylex().unwrap(), Token::Exclamation);
+        assert_eq!(l.yylex().unwrap().kind, Kind::ParenOpen);
+        assert_eq!(l.yylex().unwrap().kind, Kind::ParenClose);
+        assert_eq!(l.yylex().unwrap().kind, Kind::BraceOpen);
+        assert_eq!(l.yylex().unwrap().kind, Kind::BraceClose);
+        assert_eq!(l.yylex().unwrap().kind, Kind::BracketOpen);
+        assert_eq!(l.yylex().unwrap().kind, Kind::BracketClose);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Comma);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Dot);
+        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleColon);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Colon);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Exclamation);
     }
 
     #[test]
     fn lexer_simple_symbol2() {
         let s = "== != <= < >= >";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::DoubleEqual);
-        assert_eq!(l.yylex().unwrap(), Token::NotEqual);
-        assert_eq!(l.yylex().unwrap(), Token::LE);
-        assert_eq!(l.yylex().unwrap(), Token::LT);
-        assert_eq!(l.yylex().unwrap(), Token::GE);
-        assert_eq!(l.yylex().unwrap(), Token::GT);
+        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleEqual);
+        assert_eq!(l.yylex().unwrap().kind, Kind::NotEqual);
+        assert_eq!(l.yylex().unwrap().kind, Kind::LE);
+        assert_eq!(l.yylex().unwrap().kind, Kind::LT);
+        assert_eq!(l.yylex().unwrap().kind, Kind::GE);
+        assert_eq!(l.yylex().unwrap().kind, Kind::GT);
     }
 
     #[test]
     fn lexer_arithmetic_operator_symbol() {
         let s = " + - * / +. -. *. /.";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::IAdd);
-        assert_eq!(l.yylex().unwrap(), Token::ISub);
-        assert_eq!(l.yylex().unwrap(), Token::IMul);
-        assert_eq!(l.yylex().unwrap(), Token::IDiv);
-        assert_eq!(l.yylex().unwrap(), Token::FAdd);
-        assert_eq!(l.yylex().unwrap(), Token::FSub);
-        assert_eq!(l.yylex().unwrap(), Token::FMul);
-        assert_eq!(l.yylex().unwrap(), Token::FDiv);
+        assert_eq!(l.yylex().unwrap().kind, Kind::IAdd);
+        assert_eq!(l.yylex().unwrap().kind, Kind::ISub);
+        assert_eq!(l.yylex().unwrap().kind, Kind::IMul);
+        assert_eq!(l.yylex().unwrap().kind, Kind::IDiv);
+        assert_eq!(l.yylex().unwrap().kind, Kind::FAdd);
+        assert_eq!(l.yylex().unwrap().kind, Kind::FSub);
+        assert_eq!(l.yylex().unwrap().kind, Kind::FMul);
+        assert_eq!(l.yylex().unwrap().kind, Kind::FDiv);
     }
 
     #[test]
     fn lexer_simple_identifier() {
         let s = " A _name Identifier ";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::Identifier("A".to_string()));
-        assert_eq!(l.yylex().unwrap(), Token::Identifier("_name".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("_name".to_string()));
         assert_eq!(
-            l.yylex().unwrap(),
-            Token::Identifier("Identifier".to_string())
+            l.yylex().unwrap().kind,
+            Kind::Identifier("Identifier".to_string())
         );
     }
 
@@ -657,21 +663,23 @@ mod tests {
     fn lexer_multiple_lines() {
         let s = " A \n B ";
         let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap(), Token::Identifier("A".to_string()));
-        assert_eq!(l.yylex().unwrap(), Token::NewLine);
-        assert_eq!(l.yylex().unwrap(), Token::Identifier("B".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
+        assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
         assert_eq!(*l.get_line_count(), 2);
     }
 
     #[test]
     fn parser_util_lookahead() {
         let mut p = Parser::new("1u64 + 2u64");
-        let t1 = p.peek_n(1).unwrap();
-        assert_eq!(Token::IAdd, *t1);
+        let t0 = p.peek_n(0).unwrap().clone();
+        let t1 = p.peek_n(1).unwrap().clone();
+        assert_eq!(Kind::UInt64(1), t0);
+        assert_eq!(Kind::IAdd, t1);
         assert_eq!(2, p.consume(2));
 
         let t2 = p.peek().unwrap();
-        assert_eq!(Token::UInt64(2), *t2);
+        assert_eq!(Kind::UInt64(2), *t2);
     }
 
     /*

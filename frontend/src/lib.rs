@@ -63,7 +63,7 @@ impl<'a> Parser<'a> {
 
     #[allow(dead_code)]
     fn consume(&mut self, count: usize) -> usize {
-        return self.ahead.drain(0..count).count();
+        self.ahead.drain(0..count).count()
     }
 
     fn next(&mut self) {
@@ -96,15 +96,15 @@ impl<'a> Parser<'a> {
     }
 
     pub fn get_inst(&self, i: usize) -> Option<&Inst> {
-        return self.inst.get(i);
+        self.inst.get(i)
     }
 
     pub fn inst_len(&self) -> usize {
-        return self.inst.len();
+        self.inst.len()
     }
 
     pub fn inst_iter(&self) -> std::slice::Iter<'_, Inst> {
-        return self.inst.iter();
+        self.inst.iter()
     }
 
     fn add(&mut self, e: Expr) -> ExprRef {
@@ -114,7 +114,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn get(&self, i: u32) -> Option<&Expr> {
-        return self.ast.0.get(i as usize);
+        self.ast.0.get(i as usize)
     }
 
     pub fn get_block(&self, i: u32) -> Option<Vec<&Expr>> {
@@ -128,15 +128,15 @@ impl<'a> Parser<'a> {
             }
             _ => return Option::None,
         }
-        return Some(exprs_blk);
+        Some(exprs_blk)
     }
 
     pub fn len(&self) -> usize {
-        return self.ast.0.len();
+        self.ast.0.len()
     }
 
     pub fn next_expr(&self) -> u32 {
-        return self.len() as u32;
+        self.len() as u32
     }
 
     // code := (import | fn)*

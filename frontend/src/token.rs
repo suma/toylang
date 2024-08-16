@@ -1,5 +1,11 @@
 #[derive(Debug, PartialEq, Clone)]
-pub enum Token {
+pub struct Token {
+    pub kind: Kind,
+    pub position: std::ops::Range<usize>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub enum Kind {
     If,
     Else,
     For,

@@ -228,7 +228,7 @@ impl<'a> Parser<'a> {
         }
         args.push(def.unwrap());
 
-        return match self.peek() {
+        match self.peek() {
             Some(Kind::Comma) => {
                 self.next();
                 self.parse_param_def_list(args)
@@ -236,7 +236,7 @@ impl<'a> Parser<'a> {
             // We expect Kind::ParenClose will appearr
             // but other tokens can be accepted for testability
             _ => Ok(args),
-        };
+        }
     }
 
     // input multi expressions by lines
@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
         }
         exprs.push(lhs.unwrap());
 
-        return self.parse_some_exprs(exprs);
+        self.parse_some_exprs(exprs)
     }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
@@ -302,7 +302,7 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Kind::Val) => {
                 self.next();
-                return self.parse_val_def();
+                self.parse_val_def()
             }
             _ => {
                 let lhs = self.parse_logical_expr()?;
@@ -310,13 +310,13 @@ impl<'a> Parser<'a> {
                     Some(Kind::Equal) => {
                         self.next();
                         let rhs = self.parse_logical_expr()?;
-                        return Ok(self.add(Self::new_binary(
+                        Ok(self.add(Self::new_binary(
                             Operator::Assign,
                             lhs,
                             rhs),
-                        ));
+                        ))
                     }
-                    _ => return Ok(lhs),
+                    _ => Ok(lhs),
                 }
             }
         }
@@ -333,7 +333,7 @@ impl<'a> Parser<'a> {
             }
             _ => self.add(Expr::Block(vec![])), // through
         };
-        return Ok(self.add(Expr::IfElse(cond, if_block, else_block)));
+        Ok(self.add(Expr::IfElse(cond, if_block, else_block)))
     }
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {
@@ -378,7 +378,7 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        return Ok(self.add(Expr::Val(ident, Some(ty), rhs)));
+        Ok(self.add(Expr::Val(ident, Some(ty), rhs)))
     }
 
     fn parse_def_ty(&mut self) -> Result<Type> {
@@ -392,7 +392,7 @@ impl<'a> Parser<'a> {
             _ => Type::Unknown,
         };
         self.next();
-        return Ok(ty);
+        Ok(ty)
     }
 
     fn parse_logical_expr(&mut self) -> Result<ExprRef> {
@@ -516,7 +516,7 @@ impl<'a> Parser<'a> {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
-                return match self.peek() {
+                match self.peek() {
                     Some(Kind::ParenOpen) => {
                         // function call
                         self.next();
@@ -529,7 +529,7 @@ impl<'a> Parser<'a> {
                         // identifier
                         Ok(self.add(Expr::Identifier(s)))
                     }
-                };
+                }
             }
             x => {
                 let e = match x {
@@ -543,7 +543,7 @@ impl<'a> Parser<'a> {
                     x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
                 };
                 self.next();
-                return e;
+                e
             }
         }
     }
@@ -561,14 +561,14 @@ impl<'a> Parser<'a> {
         }
         args.push(expr.unwrap());
 
-        return match self.peek() {
+        match self.peek() {
             Some(Kind::Comma) => {
                 self.next();
                 self.parse_expr_list(args)
             }
             Some(Kind::ParenClose) => Ok(args),
             x => Err(anyhow!("parse_expr_list: unexpected token {:?}", x)),
-        };
+        }
     }
 }
 

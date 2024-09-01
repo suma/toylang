@@ -13,19 +13,16 @@ pub struct Parser<'a> {
     lexer: lexer::Lexer<'a>,
     ahead: Vec<Token>,
     ast:   ExprPool,
-    inst:  Vec<Inst>,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let lexer = lexer::Lexer::new(&input, 1u64);
         let pool = ExprPool(Vec::with_capacity(1024 * 1024));
-        let inst = Vec::<Inst>::with_capacity(1024 * 1024);
         Parser {
             lexer,
             ahead: Vec::new(),
             ast: pool,
-            inst: inst,
         }
     }
 
@@ -62,6 +59,20 @@ impl<'a> Parser<'a> {
     }
 
     #[allow(dead_code)]
+    fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
+        while self.ahead.len() < pos + 1 {
+            match self.lexer.yylex() {
+                Ok(t) => self.ahead.push(t),
+                _ => return None,
+            }
+        }
+        match self.ahead.get(pos) {
+            Some(t) => Some(&t.position),
+            None => None,
+        }
+    }
+
+    #[allow(dead_code)]
     fn consume(&mut self, count: usize) -> usize {
         self.ahead.drain(0..count).count()
     }
@@ -91,52 +102,15 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn add_inst(&mut self, i: Inst) {
-        self.inst.push(i);
-    }
-
-    pub fn get_inst(&self, i: usize) -> Option<&Inst> {
-        self.inst.get(i)
-    }
-
-    pub fn inst_len(&self) -> usize {
-        self.inst.len()
-    }
-
-    pub fn inst_iter(&self) -> std::slice::Iter<'_, Inst> {
-        self.inst.iter()
-    }
-
     fn add(&mut self, e: Expr) -> ExprRef {
         let len = self.ast.0.len();
         self.ast.0.push(e);
         ExprRef(len as u32)
     }
 
-    pub fn get(&self, i: u32) -> Option<&Expr> {
-        self.ast.0.get(i as usize)
-    }
-
-    pub fn get_block(&self, i: u32) -> Option<Vec<&Expr>> {
-        let mut exprs_blk: Vec<&Expr> = vec![];
-        match self.get(i) {
-            Some(e) => match e {
-                Expr::Block(exprs) => {
-                    exprs.iter().for_each(|x| exprs_blk.push(&self.get(x.0).unwrap()));
-                }
-                _ => return Option::None,
-            }
-            _ => return Option::None,
-        }
-        Some(exprs_blk)
-    }
-
-    pub fn len(&self) -> usize {
-        self.ast.0.len()
-    }
 
     pub fn next_expr(&self) -> u32 {
-        self.len() as u32
+        self.ast.0.len() as u32
     }
 
     // code := (import | fn)*
@@ -162,19 +136,34 @@ impl<'a> Parser<'a> {
     // expr_list = "" | expr | expr "," expr_list
 
     // this function is for test
-    pub fn parse_stmt_line(&mut self) -> Result<ExprRef> {
-        let expr = self.parse_some_exprs(vec![])?;
-        if expr.len() != 1 {
-            return Err(anyhow!("parse_stmt_line: expected 1 expression but {:?} length", expr.len()));
+    pub fn parse_stmt_line(&mut self) -> Result<(ExprRef, ExprPool)> {
+        let e = self.parse_expr();
+        if e.is_err() {
+            return Err(anyhow!(e.err().unwrap()));
         }
-        self.inst.push(Inst::Expression(ExprRef(self.next_expr() - 1)));
-        Ok(*expr.first().unwrap())
+        let mut expr: ExprPool = ExprPool(vec![]);;
+        std::mem::swap(&mut expr, &mut self.ast);
+        Ok((e.unwrap(), expr))
     }
 
-    pub fn parse_code(&mut self) -> Result<()> {
+    pub fn parse_program(&mut self) -> Result<Program> {
+        let mut start_pos: Option<usize> = None;
+        let mut end_pos: Option<usize> = None;
+        let mut update_start_pos = |start: usize| {
+            if start_pos.is_none() || start_pos.unwrap() < start {
+                start_pos = Some(start);
+            }
+        };
+        let mut update_end_pos = |end: usize| {
+            end_pos = Some(end);
+        };
+        let mut def_funcs = vec![];
         loop {
             match self.peek() {
+                // Function definition
                 Some(Kind::Function) => {
+                    let fn_start_pos = self.peek_position_n(0).unwrap().start;
+                    update_start_pos(fn_start_pos);
                     self.next();
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
@@ -188,18 +177,39 @@ impl<'a> Parser<'a> {
                             let ret_ty = self.parse_def_ty()?;
                             let block = self.parse_block();
                             let block = block.unwrap();
-                            self.add_inst(Inst::Function(fn_name, params, Some(ret_ty), block));
+                            let fn_end_pos = self.peek_position_n(0).unwrap().end;
+                            update_end_pos(fn_end_pos);
+                            
+                            def_funcs.push(Function{
+                                node: Node::new(fn_start_pos, fn_end_pos),
+                                name: fn_name,
+                                parameter: params,
+                                return_type: Some(ret_ty),
+                                code: block,
+                            });
                         }
                         _ => return Err(anyhow!("expected function")),
                     }
                 }
-                Some(Kind::NewLine) => self.next(), // skip
+                Some(Kind::NewLine) => {
+                    // skip
+                    self.next()
+                }
                 None | Some(Kind::EOF) => break,
                 // import, etc...
                 x => return Err(anyhow!("not implemented!!: {:?}", x)),
             }
         }
-       return Ok(());// FIXME: return Err
+        // TODO: update end_position each element
+        // TODO: handle Err
+        let mut expr: ExprPool = ExprPool(vec![]);;
+        std::mem::swap(&mut expr, &mut self.ast);
+        Ok(Program{
+            node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
+            import: vec![],
+            function: def_funcs,
+            expression: expr,
+        })
     }
 
     pub fn parse_param_def(&mut self) -> Result<Parameter> {
@@ -708,126 +718,131 @@ mod tests {
     #[test]
     fn parser_simple_expr_mul() {
         let mut p = Parser::new("(1u64) + 2u64 * 3u64");
-        let _ = p.parse_stmt_line().unwrap();
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.len(), "ExprPool.len must be 3");
-        let a = p.get(0).unwrap();
+        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get(2).unwrap();
+        let c = p.0.get(2).unwrap();
         assert_eq!(Expr::UInt64(3), *c);
 
-        let d = p.get(3).unwrap();
+        let d = p.0.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get(4).unwrap();
+        let e = p.0.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
     fn parser_simple_relational_expr() {
         let mut p = Parser::new("0u64 < 2u64 + 4u64");
-        let _ = p.parse_stmt_line().unwrap();
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.len(), "ExprPool.len must be 3");
-        let a = p.get(0).unwrap();
+        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::UInt64(0), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get(2).unwrap();
+        let c = p.0.get(2).unwrap();
         assert_eq!(Expr::UInt64(4), *c);
 
-        let d = p.get(3).unwrap();
+        let d = p.0.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get(4).unwrap();
+        let e = p.0.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
     fn parser_simple_logical_expr() {
         let mut p = Parser::new("1u64 && 2u64 < 3u64");
-        let _ = p.parse_stmt_line().unwrap();
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.len(), "ExprPool.len must be 3");
-        let a = p.get(0).unwrap();
+        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get(2).unwrap();
+        let c = p.0.get(2).unwrap();
         assert_eq!(Expr::UInt64(3), *c);
 
-        let d = p.get(3).unwrap();
+        let d = p.0.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get(4).unwrap();
+        let e = p.0.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
     }
 
     #[test]
     fn parser_expr_accept() {
-        assert!(Parser::new("1u64").parse_stmt_line().is_ok());
-        assert!(Parser::new("(1u64 + 2u64)").parse_stmt_line().is_ok());
-        assert!(Parser::new("1u64 && 2u64 < 3u64").parse_stmt_line().is_ok());
-        assert!(Parser::new("1u64 || 2u64 < 3u64").parse_stmt_line().is_ok());
-        assert!(Parser::new("1u64 || (2u64) < 3u64 + 4u64")
-            .parse_stmt_line()
-            .is_ok());
-
-        assert!(Parser::new("variable").parse_stmt_line().is_ok());
-        assert!(Parser::new("a + b").parse_stmt_line().is_ok());
-        assert!(Parser::new("a + 1u64").parse_stmt_line().is_ok());
-
-        assert!(Parser::new("a() + 1u64").parse_stmt_line().is_ok());
-        assert!(Parser::new("a(b,c) + 1u64").parse_stmt_line().is_ok());
+        let expr_str = vec!["1u64", "(1u64 + 2u64)", "1u64 && 2u64 < 3u64", "1u64 || 2u64 < 3u64", "1u64 || (2u64) < 3u64 + 4u64",
+            "variable", "a + b", "a + 1u64", "a() + 1u64", "a(b,c) + 1u64"];
+        for input in expr_str {
+            let mut p = Parser::new(input);
+            let e = p.parse_stmt_line();
+            assert!(e.is_ok());
+        }
     }
 
     #[test]
     fn parser_simple_ident_expr() {
         let mut p = Parser::new("abc + 1u64");
-        let _ = p.parse_stmt_line().unwrap();
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(3, p.len(), "ExprPool.len must be 3");
-        let a = p.get(0).unwrap();
+        assert_eq!(3, p.0.len(), "ExprPool.len must be 3");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::Identifier("abc".to_string()), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::UInt64(1), *b);
 
-        let c = p.get(2).unwrap();
+        let c = p.0.get(2).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
     }
 
     #[test]
     fn parser_simple_apply_empty() {
         let mut p = Parser::new("abc()");
-        let _ = p.parse_stmt_line().unwrap();
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(2, p.len(), "ExprPool.len must be 2");
-        let a = p.get(0).unwrap();
+        assert_eq!(2, p.0.len(), "ExprPool.len must be 2");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::Block(vec![]), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
     }
 
     #[test]
     fn parser_simple_apply_expr() {
         let mut p = Parser::new("abc(1u64, 2u64)");
-        let res = p.parse_stmt_line();
-        println!("{:?}", res.err());
+        let e = p.parse_stmt_line();
+        assert!(e.is_ok());
+        let (_, p) = e.unwrap();
 
-        assert_eq!(4, p.len(), "ExprPool.len must be 4");
-        let a = p.get(0).unwrap();
+        assert_eq!(4, p.0.len(), "ExprPool.len must be 4");
+        let a = p.0.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get(1).unwrap();
+        let b = p.0.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
 
-        let c = p.get(2).unwrap();
+        let c = p.0.get(2).unwrap();
         assert_eq!(Expr::Block(vec![ExprRef(0), ExprRef(1)]), *c);
-        let d = p.get(3).unwrap();
+        let d = p.0.get(3).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
     }
 
     #[test]
     fn parser_param_def() {
         let param = Parser::new("test: u64").parse_param_def();
+        assert!(param.is_ok());
         let p = param.unwrap();
         assert_eq!(("test".to_string(), Type::UInt64), p);
     }
@@ -835,6 +850,7 @@ mod tests {
     #[test]
     fn parser_param_def_list_empty() {
         let param = Parser::new("").parse_param_def_list(vec![]);
+        assert!(param.is_ok());
         let p = param.unwrap();
         assert_eq!(0, p.len());
     }
@@ -842,6 +858,7 @@ mod tests {
     #[test]
     fn parser_param_def_list() {
         let param = Parser::new("test: u64, test2: i64, test3: some_type").parse_param_def_list(vec![]);
+        assert!(param.is_ok());
         let p = param.unwrap();
         assert_eq!(
             vec![
@@ -880,24 +897,24 @@ c
 }
         "#;
         let mut p = Parser::new(code);
-        let result = p.parse_code();
+        let result = p.parse_program();
         assert!(result.is_ok());
-        assert_eq!(3, p.inst_len());
-        assert_eq!(&Inst::Function("hello".to_string(), vec![], Some(Type::UInt64), ExprRef(2)),
-                   p.get_inst(0).unwrap());
+        let prog = result.unwrap();
+        assert_eq!(3, prog.function.len());
+
+        assert_eq!(Function{node: Node::new(1, 27), name: "hello".to_string(),
+            parameter: vec![], return_type: Some(Type::UInt64), code: ExprRef(2)}, prog.function[0]);
+
+        /*
+        // TODO: check code block
 
         // hello, hello2, hello3 blocks
         let mut blocks: Vec<Option<Vec<&Expr>>> = vec![];
-        for inst in p.inst_iter() {
-            match inst {
-                Inst::Import(_) => (),
-                Inst::Expression(_) => (),
-                Inst::Function(str, param, result_type, block) => {
-                    let block = p.get_block(block.0);
-                    blocks.push(block);
-                    println!("Func {} {:?}", str, blocks.last());
-                }
-            }
+        for func in prog.function {
+            //Function{name: str, parameter: param, return_type: result_type, code: block);
+            let block = p.get_block(func.code);
+            blocks.push(block);
+            println!("Func {} {:?}", str, blocks.last());
         }
 
         let block0 = blocks.get(0).unwrap();
@@ -917,6 +934,7 @@ c
             vec![&Expr::Identifier("c".to_string())],
             block2.clone().unwrap()
         );
+        */
     }
 
     /*

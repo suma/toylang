@@ -33,7 +33,7 @@ impl<'a> Parser<'a> {
                     self.ahead.push(t);
                     Some(&self.ahead.get(0).unwrap().kind)
                 }
-                _ => return None,
+                _ => None,
             }
         } else {
             match self.ahead.get(0) {
@@ -141,9 +141,9 @@ impl<'a> Parser<'a> {
         if e.is_err() {
             return Err(anyhow!(e.err().unwrap()));
         }
-        let mut expr: ExprPool = ExprPool(vec![]);;
+        let mut expr: ExprPool = ExprPool(vec![]);
         std::mem::swap(&mut expr, &mut self.ast);
-        Ok((e.unwrap(), expr))
+        Ok((e?, expr))
     }
 
     pub fn parse_program(&mut self) -> Result<Program> {
@@ -157,7 +157,7 @@ impl<'a> Parser<'a> {
         let mut update_end_pos = |end: usize| {
             end_pos = Some(end);
         };
-        let mut def_funcs = vec![];
+        let mut def_func = vec![];
         loop {
             match self.peek() {
                 // Function definition
@@ -175,12 +175,11 @@ impl<'a> Parser<'a> {
                             self.expect_err(&Kind::ParenClose)?;
                             self.expect_err(&Kind::Arrow)?;
                             let ret_ty = self.parse_def_ty()?;
-                            let block = self.parse_block();
-                            let block = block.unwrap();
+                            let block = self.parse_block()?;
                             let fn_end_pos = self.peek_position_n(0).unwrap().end;
                             update_end_pos(fn_end_pos);
                             
-                            def_funcs.push(Function{
+                            def_func.push(Function{
                                 node: Node::new(fn_start_pos, fn_end_pos),
                                 name: fn_name,
                                 parameter: params,
@@ -202,12 +201,12 @@ impl<'a> Parser<'a> {
         }
         // TODO: update end_position each element
         // TODO: handle Err
-        let mut expr: ExprPool = ExprPool(vec![]);;
+        let mut expr: ExprPool = ExprPool(vec![]);
         std::mem::swap(&mut expr, &mut self.ast);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             import: vec![],
-            function: def_funcs,
+            function: def_func,
             expression: expr,
         })
     }
@@ -243,14 +242,14 @@ impl<'a> Parser<'a> {
                 self.next();
                 self.parse_param_def_list(args)
             }
-            // We expect Kind::ParenClose will appearr
+            // We expect Kind::ParenClose will appear
             // but other tokens can be accepted for testability
             _ => Ok(args),
         }
     }
 
     // input multi expressions by lines
-    pub fn parse_some_exprs(&mut self, mut exprs: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+    pub fn parse_expression_block(&mut self, mut exprs: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
         // check end of expressions
         match self.peek() {
             Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
@@ -277,11 +276,11 @@ impl<'a> Parser<'a> {
 
         let lhs = self.parse_expr();
         if lhs.is_err() {
-            return Err(anyhow!("parse_some_exprs: expected expression: {:?}", lhs.err()));
+            return Err(anyhow!("parse_expression_block: expected expression: {:?}", lhs.err()));
         }
-        exprs.push(lhs.unwrap());
+        exprs.push(lhs?);
 
-        self.parse_some_exprs(exprs)
+        self.parse_expression_block(exprs)
     }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
@@ -293,17 +292,17 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Some(Kind::If) => {
                 self.next();
-                return self.parse_if();
+                self.parse_if()
             }
             Some(Kind::Val) => {
                 self.next();
-                return self.parse_val_def();
+                self.parse_val_def()
             }
             Some(x) => {
-                return Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x));
+                Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x))
             }
             None => {
-                return Err(anyhow!("parse_expr: expected expression but None"));
+                Err(anyhow!("parse_expr: expected expression but None"))
             }
         }
     }
@@ -355,7 +354,7 @@ impl<'a> Parser<'a> {
                 Ok(self.add(Expr::Block(vec![])))
             }
             _ => {
-                let block = self.parse_some_exprs(vec![])?;
+                let block = self.parse_expression_block(vec![])?;
                 self.expect_err(&Kind::BraceClose)?;
                 Ok(self.add(Expr::Block(block)))
             }
@@ -521,7 +520,7 @@ impl<'a> Parser<'a> {
                 self.next();
                 let node = self.parse_expr()?;
                 self.expect_err(&Kind::ParenClose)?;
-                return Ok(node);
+                Ok(node)
             }
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
@@ -569,7 +568,7 @@ impl<'a> Parser<'a> {
             // there is no expr in this context
             return Ok(args);
         }
-        args.push(expr.unwrap());
+        args.push(expr?);
 
         match self.peek() {
             Some(Kind::Comma) => {

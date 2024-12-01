@@ -235,7 +235,7 @@ impl<'a> Parser<'a> {
             // there is no expr in this context
             return Ok(args);
         }
-        args.push(def.unwrap());
+        args.push(def?);
 
         match self.peek() {
             Some(Kind::Comma) => {
@@ -249,11 +249,11 @@ impl<'a> Parser<'a> {
     }
 
     // input multi expressions by lines
-    pub fn parse_expression_block(&mut self, mut exprs: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+    pub fn parse_expression_block(&mut self, mut expressions: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
         // check end of expressions
         match self.peek() {
             Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
-                return Ok(exprs),
+                return Ok(expressions),
             _ => (),
         }
 
@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
         // check end of expressions (twice)
         match self.peek() {
             Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
-                return Ok(exprs),
+                return Ok(expressions),
             _ => (),
         }
 
@@ -278,9 +278,9 @@ impl<'a> Parser<'a> {
         if lhs.is_err() {
             return Err(anyhow!("parse_expression_block: expected expression: {:?}", lhs.err()));
         }
-        exprs.push(lhs?);
+        expressions.push(lhs?);
 
-        self.parse_expression_block(exprs)
+        self.parse_expression_block(expressions)
     }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
@@ -873,10 +873,7 @@ mod tests {
     fn parser_simple_error() {
         let result = Parser::new("++").parse_stmt_line();
         assert!(result.is_err());
-
-        if let Err(e) = result {
-            println!("{}", e);
-        }
+        assert_eq!(result.err().unwrap().to_string() , "parse_expr: expected expression but Kind (IAdd)");
     }
 
     #[test]
@@ -908,8 +905,7 @@ c
 
         let mut blocks = vec![];
         for func in &prog.function {
-            //Function{name: str, parameter: param, return_type: result_type, code: block);
-            blocks.push(prog.get_block(func.code.0 as u32).unwrap());
+            blocks.push(prog.get_block(func.code.0).unwrap());
             println!("Func {}", func.name);
         }
 

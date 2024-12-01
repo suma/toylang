@@ -904,36 +904,40 @@ c
         assert_eq!(Function{node: Node::new(1, 27), name: "hello".to_string(),
             parameter: vec![], return_type: Some(Type::UInt64), code: ExprRef(2)}, prog.function[0]);
 
-        /*
-        // TODO: check code block
-
         // hello, hello2, hello3 blocks
-        let mut blocks: Vec<Option<Vec<&Expr>>> = vec![];
-        for func in prog.function {
+
+        let mut blocks = vec![];
+        for func in &prog.function {
             //Function{name: str, parameter: param, return_type: result_type, code: block);
-            let block = p.get_block(func.code);
-            blocks.push(block);
-            println!("Func {} {:?}", str, blocks.last());
+            blocks.push(prog.get_block(func.code.0 as u32).unwrap());
+            println!("Func {}", func.name);
         }
 
         let block0 = blocks.get(0).unwrap();
+        assert_eq!("hello".to_string(), prog.function[0].name);
+        assert_eq!(0, prog.function[0].parameter.len());
         assert_eq!(
             vec![&Expr::Identifier("a".to_string()), &Expr::Identifier("b".to_string())],
-            block0.clone().unwrap()
+            block0.clone()
         );
 
+        assert_eq!("hello2".to_string(), prog.function[1].name);
+        assert_eq!(vec![("a".to_string(), Type::UInt64)],
+                   prog.function[1].parameter);
         let block1 = blocks.get(1).unwrap();
         assert_eq!(
             vec![&Expr::Identifier("b".to_string())],
-            block1.clone().unwrap()
+            block1.clone()
         );
 
+        assert_eq!("hello3".to_string(), prog.function[2].name);
+        assert_eq!(vec![("a".to_string(), Type::UInt64), ("b".to_string(), Type::UInt64)],
+                   prog.function[2].parameter);
         let block2 = blocks.get(2).unwrap();
         assert_eq!(
             vec![&Expr::Identifier("c".to_string())],
-            block2.clone().unwrap()
+            block2.clone()
         );
-        */
     }
 
     /*

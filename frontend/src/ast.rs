@@ -37,17 +37,17 @@ impl Program {
     }
 
     pub fn get_block(&self, i: u32) -> Option<Vec<&crate::ast::Expr>> {
-        let mut exprs_blk: Vec<&crate::ast::Expr> = vec![];
+        let mut expression_block: Vec<&crate::ast::Expr> = vec![];
         match self.get(i) {
             Some(e) => match e {
-                crate::ast::Expr::Block(exprs) => {
-                    exprs.iter().for_each(|x| exprs_blk.push(&self.get(x.0).unwrap()));
+                crate::ast::Expr::Block(expressions) => {
+                    expressions.iter().for_each(|x| expression_block.push(&self.get(x.0).unwrap()));
                 }
                 _ => return Option::None,
             }
             _ => return Option::None,
         }
-        Some(exprs_blk)
+        Some(expression_block)
     }
 
     pub fn len(&self) -> usize {

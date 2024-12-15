@@ -12,6 +12,30 @@ pub struct Node {
     end: usize,
 }
 
+impl ExprPool {
+    pub fn new() -> ExprPool {
+        ExprPool(Vec::with_capacity(1024 * 1024))
+    }
+
+    pub fn push(&mut self, expr: Expr) {
+        self.0.push(expr);
+    }
+
+    pub fn add(&mut self, expr: Expr) -> ExprRef {
+        let len = self.0.len();
+        self.0.push(expr);
+        ExprRef(len as u32)
+    }
+
+    pub fn get(&self, i: usize) -> Option<&Expr> {
+        self.0.get(i)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 impl Node {
     pub fn new(start: usize, end: usize) -> Self {
         Node {

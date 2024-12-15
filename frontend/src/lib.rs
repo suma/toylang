@@ -18,11 +18,10 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let lexer = lexer::Lexer::new(&input, 1u64);
-        let pool = ExprPool(Vec::with_capacity(1024 * 1024));
         Parser {
             lexer,
             ahead: Vec::new(),
-            ast: pool,
+            ast: ExprPool::new(),
         }
     }
 
@@ -102,15 +101,9 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
-    fn add(&mut self, e: Expr) -> ExprRef {
-        let len = self.ast.0.len();
-        self.ast.0.push(e);
-        ExprRef(len as u32)
-    }
-
 
     pub fn next_expr(&self) -> u32 {
-        self.ast.0.len() as u32
+        self.ast.len() as u32
     }
 
     // code := (import | fn)*
@@ -319,7 +312,7 @@ impl<'a> Parser<'a> {
                     Some(Kind::Equal) => {
                         self.next();
                         let rhs = self.parse_logical_expr()?;
-                        Ok(self.add(Self::new_binary(
+                        Ok(self.ast.add(Self::new_binary(
                             Operator::Assign,
                             lhs,
                             rhs),
@@ -340,9 +333,9 @@ impl<'a> Parser<'a> {
                 self.next();
                 self.parse_block()?
             }
-            _ => self.add(Expr::Block(vec![])), // through
+            _ => self.ast.add(Expr::Block(vec![])), // through
         };
-        Ok(self.add(Expr::IfElse(cond, if_block, else_block)))
+        Ok(self.ast.add(Expr::IfElse(cond, if_block, else_block)))
     }
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {
@@ -351,12 +344,12 @@ impl<'a> Parser<'a> {
             Some(Kind::BraceClose) => {
                 // empty block
                 self.next();
-                Ok(self.add(Expr::Block(vec![])))
+                Ok(self.ast.add(Expr::Block(vec![])))
             }
             _ => {
                 let block = self.parse_expression_block(vec![])?;
                 self.expect_err(&Kind::BraceClose)?;
-                Ok(self.add(Expr::Block(block)))
+                Ok(self.ast.add(Expr::Block(block)))
             }
         }
     }
@@ -387,7 +380,7 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        Ok(self.add(Expr::Val(ident, Some(ty), rhs)))
+        Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
     }
 
     fn parse_def_ty(&mut self) -> Result<Type> {
@@ -412,12 +405,12 @@ impl<'a> Parser<'a> {
                 Some(Kind::DoubleAnd) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = self.add(Self::new_binary(Operator::LogicalAnd, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::LogicalAnd, lhs, rhs));
                 }
                 Some(Kind::DoubleOr) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = self.add(Self::new_binary(Operator::LogicalOr, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::LogicalOr, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
@@ -432,12 +425,12 @@ impl<'a> Parser<'a> {
                 Some(Kind::DoubleEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = self.add(Self::new_binary(Operator::EQ, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::EQ, lhs, rhs));
                 }
                 Some(Kind::NotEqual) => {
                     self.next();
                     let rhs = self.parse_relational()?;
-                    lhs = self.add(Self::new_binary(Operator::NE, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::NE, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
@@ -452,22 +445,22 @@ impl<'a> Parser<'a> {
                 Some(Kind::LT) => {
                     self.next();
                     let rhs = self.parse_add()?;
-                    lhs = self.add(Self::new_binary(Operator::LT, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::LT, lhs, rhs));
                 }
                 Some(Kind::LE) => {
                     self.next();
                     let rhs = self.parse_add()?;
-                    lhs = self.add(Self::new_binary(Operator::LE, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::LE, lhs, rhs));
                 }
                 Some(Kind::GT) => {
                     self.next();
                     let rhs = self.parse_add()?;
-                    lhs = self.add(Self::new_binary(Operator::GT, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::GT, lhs, rhs));
                 }
                 Some(Kind::GE) => {
                     self.next();
                     let rhs = self.parse_add()?;
-                    lhs = self.add(Self::new_binary(Operator::GE, lhs, rhs))
+                    lhs = self.ast.add(Self::new_binary(Operator::GE, lhs, rhs))
                 }
                 _ => return Ok(lhs),
             }
@@ -482,12 +475,12 @@ impl<'a> Parser<'a> {
                 Some(Kind::IAdd) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.add(Self::new_binary(Operator::IAdd, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::IAdd, lhs, rhs));
                 }
                 Some(Kind::ISub) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.add(Self::new_binary(Operator::ISub, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::ISub, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
@@ -502,12 +495,12 @@ impl<'a> Parser<'a> {
                 Some(Kind::IMul) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.add(Self::new_binary(Operator::IMul, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::IMul, lhs, rhs));
                 }
                 Some(Kind::IDiv) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.add(Self::new_binary(Operator::IDiv, lhs, rhs));
+                    lhs = self.ast.add(Self::new_binary(Operator::IDiv, lhs, rhs));
                 }
                 _ => return Ok(lhs),
             }
@@ -531,24 +524,24 @@ impl<'a> Parser<'a> {
                         self.next();
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Kind::ParenClose)?;
-                        let args = self.add(Expr::Block(args));
-                        Ok(self.add(Expr::Call(s, args)))
+                        let args = self.ast.add(Expr::Block(args));
+                        Ok(self.ast.add(Expr::Call(s, args)))
                     }
                     _ => {
                         // identifier
-                        Ok(self.add(Expr::Identifier(s)))
+                        Ok(self.ast.add(Expr::Identifier(s)))
                     }
                 }
             }
             x => {
                 let e = match x {
-                    Some(&Kind::UInt64(num)) => Ok(self.add(Expr::UInt64(num))),
-                    Some(&Kind::Int64(num)) => Ok(self.add(Expr::Int64(num))),
+                    Some(&Kind::UInt64(num)) => Ok(self.ast.add(Expr::UInt64(num))),
+                    Some(&Kind::Int64(num)) => Ok(self.ast.add(Expr::Int64(num))),
                     Some(Kind::Integer(num)) => {
                         let integer = Expr::Int(num.clone());
-                        Ok(self.add(integer))
+                        Ok(self.ast.add(integer))
                     }
-                    Some(&Kind::Null) => Ok(self.add(Expr::Null)),
+                    Some(&Kind::Null) => Ok(self.ast.add(Expr::Null)),
                     x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
                 };
                 self.next();
@@ -721,17 +714,17 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.0.get(2).unwrap();
+        let c = p.get(2).unwrap();
         assert_eq!(Expr::UInt64(3), *c);
 
-        let d = p.0.get(3).unwrap();
+        let d = p.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)), *d);
-        let e = p.0.get(4).unwrap();
+        let e = p.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)), *e);
     }
 
@@ -742,17 +735,17 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::UInt64(0), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.0.get(2).unwrap();
+        let c = p.get(2).unwrap();
         assert_eq!(Expr::UInt64(4), *c);
 
-        let d = p.0.get(3).unwrap();
+        let d = p.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)), *d);
-        let e = p.0.get(4).unwrap();
+        let e = p.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)), *e);
     }
 
@@ -763,17 +756,17 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(5, p.0.len(), "ExprPool.len must be 3");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(5, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
-        let c = p.0.get(2).unwrap();
+        let c = p.get(2).unwrap();
         assert_eq!(Expr::UInt64(3), *c);
 
-        let d = p.0.get(3).unwrap();
+        let d = p.get(3).unwrap();
         assert_eq!(Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)), *d);
-        let e = p.0.get(4).unwrap();
+        let e = p.get(4).unwrap();
         assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
     }
 
@@ -795,13 +788,13 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(3, p.0.len(), "ExprPool.len must be 3");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(3, p.len(), "ExprPool.len must be 3");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::Identifier("abc".to_string()), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(1), *b);
 
-        let c = p.0.get(2).unwrap();
+        let c = p.get(2).unwrap();
         assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
     }
 
@@ -812,10 +805,10 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(2, p.0.len(), "ExprPool.len must be 2");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(2, p.len(), "ExprPool.len must be 2");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::Block(vec![]), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
     }
 
@@ -826,15 +819,15 @@ mod tests {
         assert!(e.is_ok());
         let (_, p) = e.unwrap();
 
-        assert_eq!(4, p.0.len(), "ExprPool.len must be 4");
-        let a = p.0.get(0).unwrap();
+        assert_eq!(4, p.len(), "ExprPool.len must be 4");
+        let a = p.get(0).unwrap();
         assert_eq!(Expr::UInt64(1), *a);
-        let b = p.0.get(1).unwrap();
+        let b = p.get(1).unwrap();
         assert_eq!(Expr::UInt64(2), *b);
 
-        let c = p.0.get(2).unwrap();
+        let c = p.get(2).unwrap();
         assert_eq!(Expr::Block(vec![ExprRef(0), ExprRef(1)]), *c);
-        let d = p.0.get(3).unwrap();
+        let d = p.get(3).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
     }
 

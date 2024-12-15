@@ -55,10 +55,6 @@ macro_rules! token {
 "-"      return Ok(token!(self, Kind::ISub));
 "*"      return Ok(token!(self, Kind::IMul));
 "/"      return Ok(token!(self, Kind::IDiv));
-"+."     return Ok(token!(self, Kind::FAdd));
-"-."     return Ok(token!(self, Kind::FSub));
-"*."     return Ok(token!(self, Kind::FMul));
-"/."     return Ok(token!(self, Kind::FDiv));
 
 
 -?[0-9]+"i64"       let mut text = self.yytext();

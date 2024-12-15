@@ -643,10 +643,6 @@ mod tests {
         assert_eq!(l.yylex().unwrap().kind, Kind::ISub);
         assert_eq!(l.yylex().unwrap().kind, Kind::IMul);
         assert_eq!(l.yylex().unwrap().kind, Kind::IDiv);
-        assert_eq!(l.yylex().unwrap().kind, Kind::FAdd);
-        assert_eq!(l.yylex().unwrap().kind, Kind::FSub);
-        assert_eq!(l.yylex().unwrap().kind, Kind::FMul);
-        assert_eq!(l.yylex().unwrap().kind, Kind::FDiv);
     }
 
     #[test]

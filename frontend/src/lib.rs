@@ -21,7 +21,7 @@ impl<'a> Parser<'a> {
         Parser {
             lexer,
             ahead: Vec::new(),
-            ast: ExprPool::new(),
+            ast: ExprPool::with_capacity(1024),
         }
     }
 
@@ -194,7 +194,7 @@ impl<'a> Parser<'a> {
         }
         // TODO: update end_position each element
         // TODO: handle Err
-        let mut expr: ExprPool = ExprPool(vec![]);
+        let mut expr = ExprPool::new();
         std::mem::swap(&mut expr, &mut self.ast);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),

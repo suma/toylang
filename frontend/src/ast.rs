@@ -14,7 +14,10 @@ pub struct Node {
 
 impl ExprPool {
     pub fn new() -> ExprPool {
-        ExprPool(Vec::with_capacity(1024 * 1024))
+        ExprPool(Vec::new())
+    }
+    pub fn with_capacity(cap: usize) -> ExprPool {
+        ExprPool(Vec::with_capacity(cap))
     }
 
     pub fn push(&mut self, expr: Expr) {

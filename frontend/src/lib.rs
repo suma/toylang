@@ -10,9 +10,9 @@ mod lexer {
 }
 
 pub struct Parser<'a> {
-    lexer: lexer::Lexer<'a>,
-    ahead: Vec<Token>,
-    ast:   ExprPool,
+    pub lexer: lexer::Lexer<'a>,
+    pub ahead: Vec<Token>,
+    pub ast:   ExprPool,
 }
 
 impl<'a> Parser<'a> {

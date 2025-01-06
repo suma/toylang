@@ -8,8 +8,8 @@ pub struct Stmt {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node {
-    start: usize,
-    end: usize,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl ExprPool {

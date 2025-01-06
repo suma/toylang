@@ -63,8 +63,6 @@ macro_rules! token {
 [0-9]+"u64"         let mut text = self.yytext();
                     let drain = text.drain(0..(text.len()-3)); let s = drain.collect::<String>();
                     return Ok(token!(self, Kind::UInt64(s.parse::<u64>().unwrap())));
--?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
-                    /* TODO: hold original text in lexer as used for lint */
 
 "u64"      return Ok(token!(self, Kind::U64));
 "i64"      return Ok(token!(self, Kind::I64));

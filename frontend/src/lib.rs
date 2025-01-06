@@ -537,10 +537,6 @@ impl<'a> Parser<'a> {
                 let e = match x {
                     Some(&Kind::UInt64(num)) => Ok(self.ast.add(Expr::UInt64(num))),
                     Some(&Kind::Int64(num)) => Ok(self.ast.add(Expr::Int64(num))),
-                    Some(Kind::Integer(num)) => {
-                        let integer = Expr::Int(num.clone());
-                        Ok(self.ast.add(integer))
-                    }
                     Some(&Kind::Null) => Ok(self.ast.add(Expr::Null)),
                     x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
                 };
@@ -601,8 +597,6 @@ mod tests {
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
         assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Integer("123".to_string()));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Integer("-456".to_string()));
     }
 
     #[test]

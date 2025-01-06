@@ -2,10 +2,6 @@
 pub struct ExprRef(pub u32);
 pub struct ExprPool(pub Vec<Expr>);
 
-#[derive(Debug, PartialEq)]
-pub struct Stmt {
-}
-
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node {
     pub start: usize,

@@ -1,3 +1,6 @@
+use std::rc::Rc;
+use crate::type_decl::TypeDecl;
+
 #[derive (Clone, Copy, Debug, PartialEq)]
 pub struct ExprRef(pub u32);
 pub struct ExprPool(pub Vec<Expr>);
@@ -47,7 +50,7 @@ impl Node {
 pub struct Program {
     pub node: Node,
     pub import: Vec<String>,
-    pub function: Vec<Function>,
+    pub function: Vec<Rc<Function>>,
     //pub expression: Vec<ExprRef>,
 
     pub expression: ExprPool,
@@ -84,11 +87,11 @@ pub struct Function {
     pub node: Node,
     pub name: String,
     pub parameter: ParameterList,
-    pub return_type: Option<Type>,
+    pub return_type: Option<TypeDecl>,
     pub code: ExprRef,
 }
 
-pub type Parameter = (String, Type);
+pub type Parameter = (String, TypeDecl);
 pub type ParameterList = Vec<Parameter>;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -98,7 +101,7 @@ pub enum Expr {
     Block(Vec<ExprRef>),
     Int64(i64),
     UInt64(u64),
-    Val(String, Option<Type>, Option<ExprRef>),
+    Val(String, Option<TypeDecl>, Option<ExprRef>),
     Identifier(String),
     Null,
     Call(String, ExprRef) // apply, function call, etc
@@ -129,14 +132,4 @@ pub struct BinaryExpr {
     pub op: Operator,
     pub lhs: ExprRef,
     pub rhs: ExprRef,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub enum Type {
-    Unknown,
-    Int64,
-    UInt64,
-    Identifier(String),
-    Unit,
-    Bool,
 }

@@ -1,6 +1,13 @@
+#![feature(box_patterns)]
+
 pub mod ast;
+pub mod type_decl;
 pub mod token;
+mod type_checker;
+
+use std::rc::Rc;
 use crate::ast::*;
+use crate::type_decl::*;
 use crate::token::{Token, Kind};
 
 use anyhow::{anyhow, Result};
@@ -172,13 +179,13 @@ impl<'a> Parser<'a> {
                             let fn_end_pos = self.peek_position_n(0).unwrap().end;
                             update_end_pos(fn_end_pos);
                             
-                            def_func.push(Function{
+                            def_func.push(Rc::new(Function{
                                 node: Node::new(fn_start_pos, fn_end_pos),
                                 name: fn_name,
                                 parameter: params,
                                 return_type: Some(ret_ty),
                                 code: block,
-                            });
+                            }));
                         }
                         _ => return Err(anyhow!("expected function")),
                     }
@@ -364,12 +371,12 @@ impl<'a> Parser<'a> {
             x => return Err(anyhow!("parse_val_def: expected identifier but {:?}", x)),
         };
 
-        let ty: Type = match self.peek() {
+        let ty: TypeDecl = match self.peek() {
             Some(Kind::Colon) => {
                 self.next();
                 self.parse_def_ty()?
             }
-            _ => Type::Unknown,
+            _ => TypeDecl::Unknown,
         };
 
         // "=" logical_expr
@@ -383,15 +390,15 @@ impl<'a> Parser<'a> {
         Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
     }
 
-    fn parse_def_ty(&mut self) -> Result<Type> {
-        let ty: Type = match self.peek() {
-            Some(Kind::U64) => Type::UInt64,
-            Some(Kind::I64) => Type::Int64,
+    fn parse_def_ty(&mut self) -> Result<TypeDecl> {
+        let ty: TypeDecl = match self.peek() {
+            Some(Kind::U64) => TypeDecl::UInt64,
+            Some(Kind::I64) => TypeDecl::Int64,
             Some(Kind::Identifier(s)) => {
                 let ident = s.to_string();
-                Type::Identifier(ident)
+                TypeDecl::Identifier(ident)
             }
-            _ => Type::Unknown,
+            _ => TypeDecl::Unknown,
         };
         self.next();
         Ok(ty)
@@ -826,7 +833,7 @@ mod tests {
         let param = Parser::new("test: u64").parse_param_def();
         assert!(param.is_ok());
         let p = param.unwrap();
-        assert_eq!(("test".to_string(), Type::UInt64), p);
+        assert_eq!(("test".to_string(), TypeDecl::UInt64), p);
     }
 
     #[test]
@@ -844,9 +851,9 @@ mod tests {
         let p = param.unwrap();
         assert_eq!(
             vec![
-                ("test".to_string(), Type::UInt64),
-                ("test2".to_string(), Type::Int64),
-                ("test3".to_string(), Type::Identifier("some_type".to_string())),
+                ("test".to_string(), TypeDecl::UInt64),
+                ("test2".to_string(), TypeDecl::Int64),
+                ("test3".to_string(), TypeDecl::Identifier("some_type".to_string())),
             ],
             p
         );
@@ -882,7 +889,7 @@ c
         assert_eq!(3, prog.function.len());
 
         assert_eq!(Function{node: Node::new(1, 27), name: "hello".to_string(),
-            parameter: vec![], return_type: Some(Type::UInt64), code: ExprRef(2)}, prog.function[0]);
+            parameter: vec![], return_type: Some(TypeDecl::UInt64), code: ExprRef(2)}, *prog.function[0]);
 
         // hello, hello2, hello3 blocks
 
@@ -901,7 +908,7 @@ c
         );
 
         assert_eq!("hello2".to_string(), prog.function[1].name);
-        assert_eq!(vec![("a".to_string(), Type::UInt64)],
+        assert_eq!(vec![("a".to_string(), TypeDecl::UInt64)],
                    prog.function[1].parameter);
         let block1 = blocks.get(1).unwrap();
         assert_eq!(
@@ -910,7 +917,7 @@ c
         );
 
         assert_eq!("hello3".to_string(), prog.function[2].name);
-        assert_eq!(vec![("a".to_string(), Type::UInt64), ("b".to_string(), Type::UInt64)],
+        assert_eq!(vec![("a".to_string(), TypeDecl::UInt64), ("b".to_string(), TypeDecl::UInt64)],
                    prog.function[2].parameter);
         let block2 = blocks.get(2).unwrap();
         assert_eq!(

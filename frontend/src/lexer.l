@@ -70,6 +70,10 @@ macro_rules! token {
 "usize"    return Ok(token!(self, Kind::USize));
 "null"     return Ok(token!(self, Kind::Null));
 
+"\"".*"\""  let mut text = self.yytext();  // 1 line str
+            let drain = text.drain(1..(text.len()-1)); let s = drain.collect::<String>();
+            return Ok(token!(self, Kind::String(s)));
+
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
 " "      /* skip ws (TODO: count and return ws)  */

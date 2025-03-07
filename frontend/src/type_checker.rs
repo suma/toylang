@@ -80,6 +80,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         }
         Expr::Int64(_) => TypeDecl::Int64,
         Expr::UInt64(_) => TypeDecl::UInt64,
+        Expr::String(_) => TypeDecl::String,
         Expr::Val(name, type_decl, _expr) => {
             if let Some(val_type) = type_decl {
                 ctx.set_var(name.as_str(), val_type.clone());
@@ -102,6 +103,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             }
         }
         Expr::Null => TypeDecl::Any,
+        Expr::ExprList(_) => TypeDecl::Unit,
         Expr::Call(fn_name, _) => {
             if let Some(fun) = ctx.get_fn(fn_name.as_str()) {
                 if let Some(ret_type) = &fun.return_type {

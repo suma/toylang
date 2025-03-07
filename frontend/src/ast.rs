@@ -3,6 +3,7 @@ use crate::type_decl::TypeDecl;
 
 #[derive (Clone, Copy, Debug, PartialEq)]
 pub struct ExprRef(pub u32);
+#[derive(Debug, PartialEq, Clone)]
 pub struct ExprPool(pub Vec<Expr>);
 
 #[derive(Debug, PartialEq, Clone)]
@@ -104,7 +105,9 @@ pub enum Expr {
     Val(String, Option<TypeDecl>, Option<ExprRef>),
     Identifier(String),
     Null,
-    Call(String, ExprRef) // apply, function call, etc
+    ExprList(Vec<ExprRef>),
+    Call(String, ExprRef), // apply, function call, etc
+    String(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]

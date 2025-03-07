@@ -63,6 +63,7 @@ pub enum Kind {
 
     Int64(i64),
     UInt64(u64),
+    String(String),
     Integer(String),
 
     Identifier(String),

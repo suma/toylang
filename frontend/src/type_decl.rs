@@ -7,4 +7,5 @@ pub enum TypeDecl {
     Bool,
     Identifier(String),
     Any,  // null
+    String,
 }

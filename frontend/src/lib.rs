@@ -89,7 +89,7 @@ impl<'a> Parser<'a> {
 
     pub fn expect(&mut self, accept: &Kind) -> bool {
         let tk = self.peek();
-        if *tk.unwrap() == *accept {
+        if tk.is_some() && *tk.unwrap() == *accept {
             self.next();
             true
         } else {
@@ -176,11 +176,11 @@ impl<'a> Parser<'a> {
                             self.expect_err(&Kind::Arrow)?;
                             let ret_ty = self.parse_def_ty()?;
                             let block = self.parse_block()?;
-                            let fn_end_pos = self.peek_position_n(0).unwrap().end;
+                            let fn_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(fn_end_pos);
                             
                             def_func.push(Rc::new(Function{
-                                node: Node::new(fn_start_pos, fn_end_pos),
+                                node: Node::new(fn_start_pos, fn_start_pos),
                                 name: fn_name,
                                 parameter: params,
                                 return_type: Some(ret_ty),
@@ -248,40 +248,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    // input multi expressions by lines
-    pub fn parse_expression_block(&mut self, mut expressions: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
-        // check end of expressions
-        match self.peek() {
-            Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
-                return Ok(expressions),
-            _ => (),
-        }
-
-        // remove unused NewLine
-        loop {
-            match self.peek() {
-                Some(Kind::NewLine) =>
-                    self.next(),
-                Some(_) | None =>
-                    break,
-            }
-        }
-
-        // check end of expressions (twice)
-        match self.peek() {
-            Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
-                return Ok(expressions),
-            _ => (),
-        }
-
-        let lhs = self.parse_expr();
-        if lhs.is_err() {
-            return Err(anyhow!("parse_expression_block: expected expression: {:?}", lhs.err()));
-        }
-        expressions.push(lhs?);
-
-        self.parse_expression_block(expressions)
-    }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let assign = self.parse_assign();
@@ -299,10 +265,14 @@ impl<'a> Parser<'a> {
                 self.parse_val_def()
             }
             Some(x) => {
+                let x = x.clone();
+                self.dump_ast();
                 Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x))
             }
             None => {
-                Err(anyhow!("parse_expr: expected expression but None"))
+                self.dump_ast();
+                //Err(anyhow!("parse_expr: expected expression but None"))
+                panic!("parse_expr: expected expression but Kind ({:?})", self.peek());
             }
         }
     }
@@ -348,17 +318,53 @@ impl<'a> Parser<'a> {
     pub fn parse_block(&mut self) -> Result<ExprRef> {
         self.expect_err(&Kind::BraceOpen)?;
         match self.peek() {
-            Some(Kind::BraceClose) => {
+            Some(Kind::BraceClose) | None => {
                 // empty block
                 self.next();
                 Ok(self.ast.add(Expr::Block(vec![])))
             }
             _ => {
-                let block = self.parse_expression_block(vec![])?;
+                let block = self.parse_block_impl(vec![])?;
                 self.expect_err(&Kind::BraceClose)?;
                 Ok(self.ast.add(Expr::Block(block)))
             }
         }
+    }
+
+    // input multi expressions by lines
+    pub fn parse_block_impl(&mut self, mut expressions: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+        // check end of expressions
+        match self.peek() {
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
+                return Ok(expressions),
+            _ => (),
+        }
+
+        // remove unused NewLine
+        loop {
+            match self.peek() {
+                Some(Kind::NewLine) =>
+                    self.next(),
+                Some(_) | None =>
+                    break,
+            }
+        }
+
+        // check end of expressions again
+        match self.peek() {
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None => {
+                return Ok(expressions);
+            }
+            _ => (),
+        }
+
+        let lhs = self.parse_expr();
+        if lhs.is_err() {
+            return Err(anyhow!("parse_expression_block: expected expression: {:?}", lhs.err()));
+        }
+        expressions.push(lhs?);
+
+        self.parse_block_impl(expressions)
     }
 
     pub fn parse_val_def(&mut self) -> Result<ExprRef> {
@@ -526,13 +532,13 @@ impl<'a> Parser<'a> {
                 let s = s.to_string();
                 self.next();
                 match self.peek() {
-                    Some(Kind::ParenOpen) => {
-                        // function call
+                    Some(Kind::ParenOpen) => { // function call
                         self.next();
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Kind::ParenClose)?;
-                        let args = self.ast.add(Expr::Block(args));
-                        Ok(self.ast.add(Expr::Call(s, args)))
+                        let args = self.ast.add(Expr::ExprList(args));
+                        let expr = self.ast.add(Expr::Call(s, args));
+                        Ok(expr)
                     }
                     _ => {
                         // identifier
@@ -541,12 +547,17 @@ impl<'a> Parser<'a> {
                 }
             }
             x => {
-                let e = match x {
-                    Some(&Kind::UInt64(num)) => Ok(self.ast.add(Expr::UInt64(num))),
-                    Some(&Kind::Int64(num)) => Ok(self.ast.add(Expr::Int64(num))),
-                    Some(&Kind::Null) => Ok(self.ast.add(Expr::Null)),
+                let e = Ok(match x {
+                    Some(&Kind::UInt64(num)) => self.ast.add(Expr::UInt64(num)),
+                    Some(&Kind::Int64(num)) => self.ast.add(Expr::Int64(num)),
+                    Some(&Kind::Null) => self.ast.add(Expr::Null),
+                    Some(Kind::String(str)) => {
+                        // TODO: optimizing with string interning
+                        let s = str.clone();
+                        self.ast.add(Expr::String(s))
+                    }
                     x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
-                };
+                });
                 self.next();
                 e
             }
@@ -579,7 +590,12 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::File;
+    use std::io::Read;
+    use std::path::PathBuf;
     use super::*;
+    use rstest::rstest;
+    use crate::type_checker::{type_check, TypeCheckContext};
 
     #[test]
     fn lexer_simple_keyword() {
@@ -607,6 +623,13 @@ mod tests {
     }
 
     #[test]
+    fn lexer_simple_string() {
+        let s = " \"string\" ";
+        let mut l = lexer::Lexer::new(&s, 1u64);
+        assert_eq!(l.yylex().unwrap().kind, Kind::String("string".to_string()));
+    }
+
+    #[test]
     fn lexer_simple_symbol1() {
         let s = " ( ) { } [ ] , . :: : = !";
         let mut l = lexer::Lexer::new(&s, 1u64);
@@ -622,6 +645,14 @@ mod tests {
         assert_eq!(l.yylex().unwrap().kind, Kind::Colon);
         assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
         assert_eq!(l.yylex().unwrap().kind, Kind::Exclamation);
+    }
+
+    #[test]
+    fn lexer_simple_number() {
+        let s = " 100u64 123i64 ";
+        let mut l = lexer::Lexer::new(&s, 1u64);
+        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(100));
+        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(123));
     }
 
     #[test]
@@ -804,7 +835,7 @@ mod tests {
 
         assert_eq!(2, p.len(), "ExprPool.len must be 2");
         let a = p.get(0).unwrap();
-        assert_eq!(Expr::Block(vec![]), *a);
+        assert_eq!(Expr::ExprList(vec![]), *a);
         let b = p.get(1).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
     }
@@ -823,7 +854,7 @@ mod tests {
         assert_eq!(Expr::UInt64(2), *b);
 
         let c = p.get(2).unwrap();
-        assert_eq!(Expr::Block(vec![ExprRef(0), ExprRef(1)]), *c);
+        assert_eq!(Expr::ExprList(vec![ExprRef(0), ExprRef(1)]), *c);
         let d = p.get(3).unwrap();
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
     }
@@ -888,7 +919,7 @@ c
         let prog = result.unwrap();
         assert_eq!(3, prog.function.len());
 
-        assert_eq!(Function{node: Node::new(1, 27), name: "hello".to_string(),
+        assert_eq!(Function{node: Node::new(1, 1), name: "hello".to_string(),
             parameter: vec![], return_type: Some(TypeDecl::UInt64), code: ExprRef(2)}, *prog.function[0]);
 
         // hello, hello2, hello3 blocks
@@ -924,6 +955,49 @@ c
             vec![&Expr::Identifier("c".to_string())],
             block2.clone()
         );
+    }
+
+    #[rstest]
+    fn check_lexer(#[files("src/test_ok/type_check*.txt")] path: PathBuf) {
+        let file = File::open(&path);
+        let mut input = String::new();
+        assert!(file.unwrap().read_to_string(&mut input).is_ok());
+        let mut l = lexer::Lexer::new(&input, 1u64);
+        loop {
+            match l.yylex() {
+                Ok(t) => {
+                    eprintln!("Input {:?}", t.kind);
+                }
+                _ => break,
+            }
+        }
+    }
+
+    #[rstest]
+    fn type_check_test(#[files("src/test_ok/type_check*.txt")] path: PathBuf) {
+        let file = File::open(&path);
+        let mut input = String::new();
+        assert!(file.unwrap().read_to_string(&mut input).is_ok());
+        let mut p = Parser::new(input.as_str());
+        let result = p.parse_program();
+        assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
+        let program = result.unwrap();
+        let main_fn = program.function.first().unwrap();
+        let mut ctx = TypeCheckContext::new();
+
+        let println_fun = Rc::new(ast::Function {
+            node: Node::new(0, 0),
+            name: "println".to_string(),
+            parameter: vec![],
+            return_type: Some(TypeDecl::Unit),
+            code: ExprRef(0),   // not found
+        });
+        ctx.set_fn("println", println_fun);
+        let ast = program.expression;
+
+        let res = type_check(&ast, main_fn.code, &mut ctx);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap(), TypeDecl::Unit);
     }
 
     /*

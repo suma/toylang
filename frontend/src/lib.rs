@@ -266,11 +266,9 @@ impl<'a> Parser<'a> {
             }
             Some(x) => {
                 let x = x.clone();
-                self.dump_ast();
                 Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x))
             }
             None => {
-                self.dump_ast();
                 //Err(anyhow!("parse_expr: expected expression but None"))
                 panic!("parse_expr: expected expression but Kind ({:?})", self.peek());
             }

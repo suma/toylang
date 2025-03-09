@@ -1,3 +1,6 @@
+fn empty() {
+}
+
 fn main() -> unit {
 	println(abc, 10000u64, "str")
 }

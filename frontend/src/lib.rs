@@ -173,8 +173,14 @@ impl<'a> Parser<'a> {
                             self.expect_err(&Kind::ParenOpen)?;
                             let params = self.parse_param_def_list(vec![])?;
                             self.expect_err(&Kind::ParenClose)?;
-                            self.expect_err(&Kind::Arrow)?;
-                            let ret_ty = self.parse_def_ty()?;
+                            let mut ret_ty: Option<type_decl::TypeDecl> = None;
+                            match self.peek() {
+                                Some(Kind::Arrow) => {
+                                    self.expect_err(&Kind::Arrow)?;
+                                    ret_ty =  Some(self.parse_def_ty()?);
+                                }
+                                _ => (),
+                            }
                             let block = self.parse_block()?;
                             let fn_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(fn_end_pos);
@@ -183,7 +189,7 @@ impl<'a> Parser<'a> {
                                 node: Node::new(fn_start_pos, fn_start_pos),
                                 name: fn_name,
                                 parameter: params,
-                                return_type: Some(ret_ty),
+                                return_type: ret_ty,
                                 code: block,
                             }));
                         }

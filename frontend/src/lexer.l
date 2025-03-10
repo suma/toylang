@@ -70,7 +70,7 @@ macro_rules! token {
 "usize"    return Ok(token!(self, Kind::USize));
 "null"     return Ok(token!(self, Kind::Null));
 
-"\"".*"\""  let mut text = self.yytext();  // 1 line str
+\".*\"      let mut text = self.yytext();  // 1 line str
             let drain = text.drain(1..(text.len()-1)); let s = drain.collect::<String>();
             return Ok(token!(self, Kind::String(s)));
 

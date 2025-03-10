@@ -15,4 +15,4 @@ rstest = "0.25.0"
 
 [build-dependencies]
 failure = "0.1.5"
-rflex = "0.8.1"
+rflex = "0.9.0"

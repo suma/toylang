@@ -108,6 +108,7 @@ pub enum Expr {
     ExprList(Vec<ExprRef>),
     Call(String, ExprRef), // apply, function call, etc
     String(String),
+    Return(Option<ExprRef>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

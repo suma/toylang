@@ -115,5 +115,13 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 return Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)));
             }
         }
+        Expr::Return(expr) => {
+            if expr.is_none() {
+                TypeDecl::Unit
+            } else {
+                let e = expr.unwrap();
+                type_check(ast, e, ctx)?
+            }
+        }
     })
 }

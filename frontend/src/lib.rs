@@ -526,6 +526,20 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<ExprRef> {
         match self.peek() {
+            Some(Kind::Return) => {
+                self.next();
+                match self.peek() {
+                    Some(&Kind::NewLine) | Some(&Kind::BracketClose) => {
+                        self.next();
+                        Ok(self.ast.add(Expr::Return(None)))
+                    }
+                    Some(expr) => {
+                        let expr = self.parse_expr()?;
+                        Ok(self.ast.add(Expr::Return(Some(expr))))
+                    }
+                    None => Err(anyhow!("parse_primary: expected expression")),
+                }
+            }
             Some(Kind::ParenOpen) => {
                 self.next();
                 let node = self.parse_expr()?;

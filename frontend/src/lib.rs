@@ -408,6 +408,9 @@ impl<'a> Parser<'a> {
                 let ident = s.to_string();
                 TypeDecl::Identifier(ident)
             }
+            Some(Kind::Str) => {
+                TypeDecl::String
+            }
             _ => TypeDecl::Unknown,
         };
         self.next();

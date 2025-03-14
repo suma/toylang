@@ -66,6 +66,7 @@ macro_rules! token {
 
 "u64"      return Ok(token!(self, Kind::U64));
 "i64"      return Ok(token!(self, Kind::I64));
+"str"      return Ok(token!(self, Kind::Str));
 "ptr"      return Ok(token!(self, Kind::Ptr));
 "usize"    return Ok(token!(self, Kind::USize));
 "null"     return Ok(token!(self, Kind::Null));

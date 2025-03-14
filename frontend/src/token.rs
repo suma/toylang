@@ -24,6 +24,7 @@ pub enum Kind {
     U64,
     I64,
     USize,
+    Str,
     Ptr,
     Null,
 

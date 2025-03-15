@@ -538,7 +538,7 @@ impl<'a> Parser<'a> {
                         self.next();
                         Ok(self.ast.add(Expr::Return(None)))
                     }
-                    Some(expr) => {
+                    Some(_expr) => {
                         let expr = self.parse_expr()?;
                         Ok(self.ast.add(Expr::Return(Some(expr))))
                     }
@@ -1012,7 +1012,6 @@ c
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
         let program = result.unwrap();
-        let main_fn = program.function.first().unwrap();
         let mut ctx = TypeCheckContext::new();
 
         let println_fun = Rc::new(ast::Function {
@@ -1025,9 +1024,33 @@ c
         ctx.set_fn("println", println_fun);
         let ast = program.expression;
 
-        let res = type_check(&ast, main_fn.code, &mut ctx);
-        assert!(res.is_ok());
-        assert_eq!(res.unwrap(), TypeDecl::Unit);
+        program.function.iter().for_each(|f| {
+            let res = type_check(&ast, f.code, &mut ctx);
+            assert!(res.is_ok(), "type check err {:?}", res.err().unwrap());
+        });
+    }
+
+    #[rstest]
+    fn syntax_error_test(#[files("tests/err_syntax*.txt")] path: PathBuf) {
+        let file = File::open(&path);
+        let mut input = String::new();
+        assert!(file.unwrap().read_to_string(&mut input).is_ok());
+        let mut p = Parser::new(input.as_str());
+        let result = p.parse_program();
+        assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
+        let program = result.unwrap();
+        let mut ctx = TypeCheckContext::new();
+
+        let ast = program.expression;
+        let mut res = true;
+        program.function.iter().for_each(|f| {
+            let r = type_check(&ast, f.code, &mut ctx);
+            if r.is_err() {
+                res = false;
+            }
+        });
+
+        assert!(!res, "type check should fail");
     }
 
     /*

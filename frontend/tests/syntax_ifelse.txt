@@ -1,0 +1,14 @@
+fn true_or_false() -> bool {
+    if true {
+        true
+    } else {
+        false
+    }
+}
+fn true_or_false() -> bool {
+    val x = if true {
+        true
+    } else {
+        true
+    }
+}

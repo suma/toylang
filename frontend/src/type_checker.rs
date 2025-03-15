@@ -68,15 +68,38 @@ impl TypeCheckContext {
 }
 
 pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
-    Ok(match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
-        Expr::IfElse(_cond, _blk1, _blk2) => TypeDecl::Unit,
-        Expr::Binary(_cond, _blk1, _blk2) => TypeDecl::Bool,
-        Expr::Block(expressions) => {
-            let mut ty = TypeDecl::Unit;
-            for e in expressions {
-                ty = type_check(ast, *e, ctx)?;
+    let is_block_empty = |blk: ExprRef| -> bool {
+        match ast.0.get(blk.0 as usize).unwrap() {
+            Expr::Block(expressions) => {
+                expressions.is_empty()
             }
-            ty
+            _ => false,
+        }
+    };
+    Ok(match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
+        Expr::True | Expr::False => TypeDecl::Bool,
+        Expr::IfElse(_cond, blk1, blk2) => {
+            let blk1_ty = if is_block_empty(*blk1) {
+                TypeDecl::Unit
+            } else {
+                check_block(ast, *blk1, ctx)?
+            };
+            let blk2_empty = is_block_empty(*blk2);
+            if blk2_empty {
+                blk1_ty // ignore to infer empty of blk2
+            } else {
+                let blk2_ty = check_block(ast, *blk2, ctx)?;
+                eprintln!("If blk type {:?} {:?}", blk1_ty, blk2_ty);
+                if blk1_ty == blk2_ty {
+                    blk1_ty
+                } else {
+                    return Err(TypeCheckError::new(format!("Type mismatch: {:?} != {:?} for if block", blk1_ty, blk2_ty)));
+                }
+            }
+        }
+        Expr::Binary(_cond, _blk1, _blk2) => TypeDecl::Bool,
+        Expr::Block(_expressions) => {
+            check_block(ast, e, ctx)?
         }
         Expr::Int64(_) => TypeDecl::Int64,
         Expr::UInt64(_) => TypeDecl::UInt64,
@@ -124,4 +147,33 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             }
         }
     })
+}
+pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
+    match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
+        Expr::Block(expressions) => {
+            let mut ty = TypeDecl::Unit;
+            if expressions.is_empty() {
+                return Ok(ty);
+            }
+            let mut return_types = vec![];
+            // This code assumes Block(expression) don't make nested function
+            // so `return` expression always return for this context.
+            for e in expressions {
+                let expr = ast.0.get(e.0 as usize).unwrap();
+                let def_ty = match expr {
+                    Expr::Return(ret_ty) if ret_ty.is_none() => {
+                        TypeDecl::Unit
+                    }
+                    Expr::Return(ret_ty) if ret_ty.is_some() => {
+                        type_check(ast, ret_ty.unwrap(), ctx)?
+                    }
+                    _ => type_check(ast, *e, ctx)?,
+                };
+                return_types.push(def_ty);
+            }
+            return_types.iter().all(|ty| ty == &return_types[0]);
+            Ok(return_types[0].clone())
+        }
+        _ => panic!("check_block: expected block but {:?}", ast.0.get(e.0 as usize).unwrap()),
+    }
 }

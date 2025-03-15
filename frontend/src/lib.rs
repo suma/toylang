@@ -980,7 +980,7 @@ c
     }
 
     #[rstest]
-    fn check_lexer(#[files("src/test_ok/type_check*.txt")] path: PathBuf) {
+    fn check_lexer(#[files("tests/syntax*.txt")] path: PathBuf) {
         let file = File::open(&path);
         let mut input = String::new();
         assert!(file.unwrap().read_to_string(&mut input).is_ok());
@@ -996,7 +996,7 @@ c
     }
 
     #[rstest]
-    fn type_check_test(#[files("src/test_ok/type_check*.txt")] path: PathBuf) {
+    fn syntax_test(#[files("tests/syntax*.txt")] path: PathBuf) {
         let file = File::open(&path);
         let mut input = String::new();
         assert!(file.unwrap().read_to_string(&mut input).is_ok());

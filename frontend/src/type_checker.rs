@@ -171,7 +171,7 @@ pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Re
                 };
                 return_types.push(def_ty);
             }
-            return_types.iter().all(|ty| ty == &return_types[0]);
+            return_types.iter().all(|ty| *ty == return_types[0]);
             Ok(return_types[0].clone())
         }
         _ => panic!("check_block: expected block but {:?}", ast.0.get(e.0 as usize).unwrap()),

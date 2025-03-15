@@ -620,13 +620,14 @@ mod tests {
 
     #[test]
     fn lexer_simple_keyword() {
-        let s = " if else while break continue for class fn val var";
+        let s = " if else while break continue return for class fn val var";
         let mut l = lexer::Lexer::new(&s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::If);
         assert_eq!(l.yylex().unwrap().kind, Kind::Else);
         assert_eq!(l.yylex().unwrap().kind, Kind::While);
         assert_eq!(l.yylex().unwrap().kind, Kind::Break);
         assert_eq!(l.yylex().unwrap().kind, Kind::Continue);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Return);
         assert_eq!(l.yylex().unwrap().kind, Kind::For);
         assert_eq!(l.yylex().unwrap().kind, Kind::Class);
         assert_eq!(l.yylex().unwrap().kind, Kind::Function);

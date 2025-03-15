@@ -132,8 +132,9 @@ impl<'a> Parser<'a> {
     // mul := primary ("*" mul | "/" mul)*
     // primary := "(" expr ")" | identifier "(" expr_list ")" |
     //            identifier |
+    //            return expr? |
     //            UInt64 | Int64 | Integer | Null
-    // expr_list = "" | expr | expr "," expr_list
+    // expr_list := "" | expr | expr "," expr_list
 
     // this function is for test
     pub fn parse_stmt_line(&mut self) -> Result<(ExprRef, ExprPool)> {

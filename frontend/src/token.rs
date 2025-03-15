@@ -21,6 +21,7 @@ pub enum Kind {
     Val,
     Var,
 
+    Bool,
     U64,
     I64,
     USize,
@@ -68,6 +69,8 @@ pub enum Kind {
     Integer(String),
 
     Identifier(String),
+    True,
+    False,
 
     NewLine,
     EOF,

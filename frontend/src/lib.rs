@@ -403,6 +403,7 @@ impl<'a> Parser<'a> {
 
     fn parse_def_ty(&mut self) -> Result<TypeDecl> {
         let ty: TypeDecl = match self.peek() {
+            Some(Kind::Bool) => TypeDecl::Bool,
             Some(Kind::U64) => TypeDecl::UInt64,
             Some(Kind::I64) => TypeDecl::Int64,
             Some(Kind::Identifier(s)) => {
@@ -573,6 +574,8 @@ impl<'a> Parser<'a> {
                     Some(&Kind::UInt64(num)) => self.ast.add(Expr::UInt64(num)),
                     Some(&Kind::Int64(num)) => self.ast.add(Expr::Int64(num)),
                     Some(&Kind::Null) => self.ast.add(Expr::Null),
+                    Some(&Kind::True) => self.ast.add(Expr::True),
+                    Some(&Kind::False) => self.ast.add(Expr::False),
                     Some(Kind::String(str)) => {
                         // TODO: optimizing with string interning
                         let s = str.clone();
@@ -621,7 +624,7 @@ mod tests {
 
     #[test]
     fn lexer_simple_keyword() {
-        let s = " if else while break continue return for class fn val var";
+        let s = " if else while break continue return for class fn val var bool";
         let mut l = lexer::Lexer::new(&s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::If);
         assert_eq!(l.yylex().unwrap().kind, Kind::Else);
@@ -634,15 +637,19 @@ mod tests {
         assert_eq!(l.yylex().unwrap().kind, Kind::Function);
         assert_eq!(l.yylex().unwrap().kind, Kind::Val);
         assert_eq!(l.yylex().unwrap().kind, Kind::Var);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Bool);
     }
 
     #[test]
     fn lexer_simple_integer() {
-        let s = " -1i64 1i64 2u64 123 -456";
+        let s = " -1i64 1i64 2u64  true false null";
         let mut l = lexer::Lexer::new(&s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
         assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
+        assert_eq!(l.yylex().unwrap().kind, Kind::True);
+        assert_eq!(l.yylex().unwrap().kind, Kind::False);
+        assert_eq!(l.yylex().unwrap().kind, Kind::Null);
     }
 
     #[test]

@@ -109,6 +109,8 @@ pub enum Expr {
     Call(String, ExprRef), // apply, function call, etc
     String(String),
     Return(Option<ExprRef>),
+    True,
+    False,
 }
 
 #[derive(Debug, Clone, PartialEq)]

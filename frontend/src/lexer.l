@@ -63,6 +63,8 @@ macro_rules! token {
 [0-9]+"u64"         let mut text = self.yytext();
                     let drain = text.drain(0..(text.len()-3)); let s = drain.collect::<String>();
                     return Ok(token!(self, Kind::UInt64(s.parse::<u64>().unwrap())));
+"true"              return Ok(token!(self, Kind::True));
+"false"             return Ok(token!(self, Kind::False));
 
 "u64"      return Ok(token!(self, Kind::U64));
 "i64"      return Ok(token!(self, Kind::I64));
@@ -70,6 +72,7 @@ macro_rules! token {
 "ptr"      return Ok(token!(self, Kind::Ptr));
 "usize"    return Ok(token!(self, Kind::USize));
 "null"     return Ok(token!(self, Kind::Null));
+"bool"     return Ok(token!(self, Kind::Bool));
 
 \".*\"      let mut text = self.yytext();  // 1 line str
             let drain = text.drain(1..(text.len()-1)); let s = drain.collect::<String>();

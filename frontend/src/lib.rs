@@ -273,12 +273,13 @@ impl<'a> Parser<'a> {
             }
             Some(x) => {
                 let x = x.clone();
-                Err(anyhow!("parse_expr: expected expression but Kind ({:?})", x))
+                let line = *((&mut (self.lexer)).get_line_count());
+                Err(anyhow!("parse_expr: expected expression but Kind ({:?}) at {}", x, line))
             }
             None => {
-                //Err(anyhow!("parse_expr: expected expression but None"))
-                let line = (&mut (self.lexer)).get_line_count();
-                panic!("parse_expr: expected expression but Kind at {}", *line);
+                let line = *((&mut (self.lexer)).get_line_count());
+                let tk = self.peek();
+                panic!("parse_expr: expected expression but Kind ({:?}) at {}", tk, line);
             }
         }
     }

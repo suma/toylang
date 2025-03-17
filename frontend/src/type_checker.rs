@@ -151,9 +151,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
 pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
         Expr::Block(expressions) => {
-            let mut ty = TypeDecl::Unit;
             if expressions.is_empty() {
-                return Ok(ty);
+                return Ok(TypeDecl::Unit);
             }
             let mut return_types = vec![];
             // This code assumes Block(expression) don't make nested function

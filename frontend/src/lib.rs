@@ -123,7 +123,7 @@ impl<'a> Parser<'a> {
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
     // assign := val_def | identifier "=" logical_expr | logical_expr
-    // val_def := "val" identifier (":" def_ty)? ("=" logical_expr)
+    // val_def := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
     // def_ty := Int64 | UInt64 | identifier | Unknown
     // logical_expr := equality ("&&" relational | "||" relational)*
     // equality := relational ("==" relational | "!=" relational)*
@@ -133,7 +133,7 @@ impl<'a> Parser<'a> {
     // primary := "(" expr ")" | identifier "(" expr_list ")" |
     //            identifier |
     //            return expr? |
-    //            UInt64 | Int64 | Integer | Null
+    //            UInt64 | Int64 | String | Null
     // expr_list := "" | expr | expr "," expr_list
 
     // this function is for test
@@ -267,7 +267,7 @@ impl<'a> Parser<'a> {
                 self.next();
                 self.parse_if()
             }
-            Some(Kind::Val) => {
+            Some(Kind::Val) | Some(Kind::Var) => {
                 self.next();
                 self.parse_val_def()
             }
@@ -277,14 +277,15 @@ impl<'a> Parser<'a> {
             }
             None => {
                 //Err(anyhow!("parse_expr: expected expression but None"))
-                panic!("parse_expr: expected expression but Kind ({:?})", self.peek());
+                let line = (&mut (self.lexer)).get_line_count();
+                panic!("parse_expr: expected expression but Kind at {}", *line);
             }
         }
     }
 
     pub fn parse_assign(&mut self) -> Result<ExprRef> {
         match self.peek() {
-            Some(Kind::Val) => {
+            Some(Kind::Val) | Some(Kind::Var) => {
                 self.next();
                 self.parse_val_def()
             }

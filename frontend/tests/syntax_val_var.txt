@@ -1,0 +1,5 @@
+fn main() -> unit {
+    val x: u64 = 100u64
+    var y: i64 = 123i64
+    val z: str = "hello"
+}

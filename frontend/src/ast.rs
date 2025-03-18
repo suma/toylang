@@ -103,6 +103,7 @@ pub enum Expr {
     Int64(i64),
     UInt64(u64),
     Val(String, Option<TypeDecl>, Option<ExprRef>),
+    Var(String, Option<TypeDecl>, Option<ExprRef>),
     Identifier(String),
     Null,
     ExprList(Vec<ExprRef>),

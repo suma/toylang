@@ -104,6 +104,14 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         Expr::Int64(_) => TypeDecl::Int64,
         Expr::UInt64(_) => TypeDecl::UInt64,
         Expr::String(_) => TypeDecl::String,
+        Expr::Var(name, type_decl, _expr) => {
+            if let Some(var_type) = type_decl {
+                ctx.set_var(name.as_str(), var_type.clone());
+                TypeDecl::Unit
+            } else {
+                return Err(TypeCheckError::new(format!("Type declaration {} not found", name)));
+            }
+        }
         Expr::Val(name, type_decl, _expr) => {
             if let Some(val_type) = type_decl {
                 ctx.set_var(name.as_str(), val_type.clone());

@@ -268,8 +268,9 @@ impl<'a> Parser<'a> {
                 self.parse_if()
             }
             Some(Kind::Val) | Some(Kind::Var) => {
+                let val_or_var = self.peek().unwrap().clone();
                 self.next();
-                self.parse_val_def()
+                self.parse_val_def(&val_or_var)
             }
             Some(x) => {
                 let x = x.clone();
@@ -287,8 +288,9 @@ impl<'a> Parser<'a> {
     pub fn parse_assign(&mut self) -> Result<ExprRef> {
         match self.peek() {
             Some(Kind::Val) | Some(Kind::Var) => {
+                let val_or_var = self.peek().unwrap().clone();
                 self.next();
-                self.parse_val_def()
+                self.parse_val_def(&val_or_var)
             }
             _ => {
                 let lhs = self.parse_logical_expr()?;
@@ -374,7 +376,7 @@ impl<'a> Parser<'a> {
         self.parse_block_impl(expressions)
     }
 
-    pub fn parse_val_def(&mut self) -> Result<ExprRef> {
+    pub fn parse_val_def(&mut self, val_or_var: &Kind) -> Result<ExprRef> {
         let ident: String = match self.peek() {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
@@ -400,7 +402,11 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
+        if val_or_var == &Kind::Val {
+            Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
+        } else {
+            Ok(self.ast.add(Expr::Var(ident, Some(ty), rhs)))
+        }
     }
 
     fn parse_def_ty(&mut self) -> Result<TypeDecl> {

@@ -932,7 +932,7 @@ mod tests {
     fn parser_simple_error() {
         let result = Parser::new("++").parse_stmt_line();
         assert!(result.is_err());
-        assert_eq!(result.err().unwrap().to_string() , "parse_expr: expected expression but Kind (IAdd)");
+        assert_eq!(result.err().unwrap().to_string() , "parse_expr: expected expression but Kind (IAdd) at 1");
     }
 
     #[test]

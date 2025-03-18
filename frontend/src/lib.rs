@@ -402,7 +402,7 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        if val_or_var == &Kind::Val {
+        if *val_or_var == Kind::Val {
             Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
         } else {
             Ok(self.ast.add(Expr::Var(ident, Some(ty), rhs)))

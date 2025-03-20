@@ -501,16 +501,16 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_mul()?;
 
         loop {
-            match self.peek() {
+            lhs = match self.peek() {
                 Some(Kind::IAdd) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::IAdd, lhs, rhs));
+                    self.ast.add(Self::new_binary(Operator::IAdd, lhs, rhs))
                 }
                 Some(Kind::ISub) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::ISub, lhs, rhs));
+                    self.ast.add(Self::new_binary(Operator::ISub, lhs, rhs))
                 }
                 _ => return Ok(lhs),
             }
@@ -521,16 +521,16 @@ impl<'a> Parser<'a> {
         let mut lhs = self.parse_primary()?;
 
         loop {
-            match self.peek() {
+            lhs = match self.peek() {
                 Some(Kind::IMul) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::IMul, lhs, rhs));
+                    self.ast.add(Self::new_binary(Operator::IMul, lhs, rhs))
                 }
                 Some(Kind::IDiv) => {
                     self.next();
                     let rhs = self.parse_mul()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::IDiv, lhs, rhs));
+                    self.ast.add(Self::new_binary(Operator::IDiv, lhs, rhs))
                 }
                 _ => return Ok(lhs),
             }

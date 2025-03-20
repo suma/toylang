@@ -434,73 +434,38 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_logical_expr(&mut self) -> Result<ExprRef> {
-        let mut lhs = self.parse_equality()?;
-
-        loop {
-            match self.peek() {
-                Some(Kind::DoubleAnd) => {
-                    self.next();
-                    let rhs = self.parse_relational()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::LogicalAnd, lhs, rhs));
-                }
-                Some(Kind::DoubleOr) => {
-                    self.next();
-                    let rhs = self.parse_relational()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::LogicalOr, lhs, rhs));
-                }
-                _ => return Ok(lhs),
-            }
-        }
+        let group = OperatorGroup {
+            tokens: vec![
+                (Kind::DoubleAnd, Operator::LogicalAnd),
+                (Kind::DoubleOr, Operator::LogicalOr),
+            ],
+            next_precedence: Self::parse_relational
+        };
+        self.parse_binary(&group)
     }
 
     fn parse_equality(&mut self) -> Result<ExprRef> {
-        let mut lhs = self.parse_relational()?;
-
-        loop {
-            match self.peek() {
-                Some(Kind::DoubleEqual) => {
-                    self.next();
-                    let rhs = self.parse_relational()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::EQ, lhs, rhs));
-                }
-                Some(Kind::NotEqual) => {
-                    self.next();
-                    let rhs = self.parse_relational()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::NE, lhs, rhs));
-                }
-                _ => return Ok(lhs),
-            }
-        }
+        let group = OperatorGroup {
+            tokens: vec![
+                (Kind::DoubleEqual, Operator::EQ),
+                (Kind::NotEqual, Operator::NE),
+            ],
+            next_precedence: Self::parse_relational
+        };
+        self.parse_binary(&group)
     }
 
     fn parse_relational(&mut self) -> Result<ExprRef> {
-        let mut lhs = self.parse_add()?;
-
-        loop {
-            match self.peek() {
-                Some(Kind::LT) => {
-                    self.next();
-                    let rhs = self.parse_add()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::LT, lhs, rhs));
-                }
-                Some(Kind::LE) => {
-                    self.next();
-                    let rhs = self.parse_add()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::LE, lhs, rhs));
-                }
-                Some(Kind::GT) => {
-                    self.next();
-                    let rhs = self.parse_add()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::GT, lhs, rhs));
-                }
-                Some(Kind::GE) => {
-                    self.next();
-                    let rhs = self.parse_add()?;
-                    lhs = self.ast.add(Self::new_binary(Operator::GE, lhs, rhs))
-                }
-                _ => return Ok(lhs),
-            }
-        }
+        let group = OperatorGroup {
+            tokens: vec![
+                (Kind::LT, Operator::LT),
+                (Kind::LE, Operator::LE),
+                (Kind::GT, Operator::GT),
+                (Kind::GE, Operator::GE),
+            ],
+            next_precedence: Self::parse_add
+        };
+        self.parse_binary(&group)
     }
 
     fn parse_binary(&mut self, group: &OperatorGroup<'a>) -> Result<ExprRef> {

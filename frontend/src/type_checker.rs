@@ -89,7 +89,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 blk1_ty // ignore to infer empty of blk2
             } else {
                 let blk2_ty = check_block(ast, *blk2, ctx)?;
-                eprintln!("If blk type {:?} {:?}", blk1_ty, blk2_ty);
+                // eprintln!("If blk type {:?} {:?}", blk1_ty, blk2_ty);
                 if blk1_ty == blk2_ty {
                     blk1_ty
                 } else {

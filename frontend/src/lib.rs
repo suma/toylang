@@ -22,6 +22,12 @@ pub struct Parser<'a> {
     pub ast:   ExprPool,
 }
 
+#[derive(Debug)]
+struct OperatorGroup<'a> {
+    tokens: Vec<(Kind, Operator)>,
+    next_precedence: fn(&mut Parser<'a>) -> Result<ExprRef>,
+}
+
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let lexer = lexer::Lexer::new(&input, 1u64);
@@ -497,44 +503,45 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_add(&mut self) -> Result<ExprRef> {
-        let mut lhs = self.parse_mul()?;
+    fn parse_binary(&mut self, group: &OperatorGroup<'a>) -> Result<ExprRef> {
+        let mut lhs = (group.next_precedence)(self)?;
 
         loop {
-            lhs = match self.peek() {
-                Some(Kind::IAdd) => {
+            let next_token = self.peek();
+            let matched_op = group.tokens.iter()
+                .find(|(kind, _)| next_token == Some(kind));
+
+            match matched_op {
+                Some((_, op)) => {
                     self.next();
-                    let rhs = self.parse_mul()?;
-                    self.ast.add(Self::new_binary(Operator::IAdd, lhs, rhs))
+                    let rhs = (group.next_precedence)(self)?;
+                    lhs = self.ast.add(Self::new_binary(op.clone(), lhs, rhs));
                 }
-                Some(Kind::ISub) => {
-                    self.next();
-                    let rhs = self.parse_mul()?;
-                    self.ast.add(Self::new_binary(Operator::ISub, lhs, rhs))
-                }
-                _ => return Ok(lhs),
+                None => return Ok(lhs),
             }
         }
     }
 
-    fn parse_mul(&mut self) -> Result<ExprRef> {
-        let mut lhs = self.parse_primary()?;
+    pub fn parse_add(&mut self) -> Result<ExprRef> {
+        let group = OperatorGroup {
+            tokens: vec![
+                (Kind::IAdd, Operator::IAdd),
+                (Kind::ISub, Operator::ISub),
+            ],
+            next_precedence: Self::parse_mul
+        };
+        self.parse_binary(&group)
+    }
 
-        loop {
-            lhs = match self.peek() {
-                Some(Kind::IMul) => {
-                    self.next();
-                    let rhs = self.parse_mul()?;
-                    self.ast.add(Self::new_binary(Operator::IMul, lhs, rhs))
-                }
-                Some(Kind::IDiv) => {
-                    self.next();
-                    let rhs = self.parse_mul()?;
-                    self.ast.add(Self::new_binary(Operator::IDiv, lhs, rhs))
-                }
-                _ => return Ok(lhs),
-            }
-        }
+    pub fn parse_mul(&mut self) -> Result<ExprRef> {
+        let group = OperatorGroup {
+            tokens: vec![
+                (Kind::IMul, Operator::IMul),
+                (Kind::IDiv, Operator::IDiv),
+            ],
+            next_precedence: Self::parse_primary,
+        };
+        self.parse_binary(&group)
     }
 
     fn parse_primary(&mut self) -> Result<ExprRef> {

@@ -261,7 +261,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let assign = self.parse_assign();
         if assign.is_ok() {
@@ -408,7 +407,7 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         };
-        if *val_or_var == Kind::Val {
+        if let Kind::Val = val_or_var {
             Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
         } else {
             Ok(self.ast.add(Expr::Var(ident, Some(ty), rhs)))
@@ -561,7 +560,19 @@ impl<'a> Parser<'a> {
                         let s = str.clone();
                         self.ast.add(Expr::String(s))
                     }
-                    x => return Err(anyhow!("parse_primary: unexpected token {:?}", x)),
+                    x => {
+                        match x {
+                            Some(Kind::ParenOpen) => {
+                                self.next();
+                                let e = self.parse_expr()?;
+                                self.expect_err(&Kind::ParenClose)?;
+                                return Ok(e);
+                            }
+                            _ => {
+                                return Err(anyhow!("parse_primary: unexpected token {:?}", x));
+                            }
+                        }
+                    }
                 });
                 self.next();
                 e
@@ -1030,7 +1041,7 @@ c
             }
         });
 
-        assert!(!res, "type check should fail");
+        assert!(!res, "{:?}: type check should fail", path.to_str().unwrap());
     }
 
     /*

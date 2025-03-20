@@ -67,6 +67,31 @@ impl TypeCheckContext {
     }
 }
 
+fn process_val_type(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    let mut expr_ty: Option<TypeDecl> = None;
+    if expr.is_some() {
+        let ty = type_check(ast, expr.unwrap(), ctx)?;
+        if ty != TypeDecl::Unit {
+            expr_ty = Some(ty);
+        } else {
+            return Err(TypeCheckError::new(format!("Type mismatch: expected <expression>, but got {:?}", ty)));
+        }
+    }
+    match type_decl {
+        Some(TypeDecl::Unknown) => {
+            ctx.set_var(name.as_str(), expr_ty.clone().unwrap());
+        }
+        Some(type_decl) => {
+            if expr_ty.is_some() && *type_decl != expr_ty.clone().unwrap() {
+                return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", type_decl, expr_ty.unwrap())));
+            }
+            ctx.set_var(name.as_str(), expr_ty.clone().unwrap());
+        }
+        _ => (),
+    }
+    Ok(TypeDecl::Unit)
+}
+
 pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     let is_block_empty = |blk: ExprRef| -> bool {
         match ast.0.get(blk.0 as usize).unwrap() {
@@ -93,7 +118,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 if blk1_ty == blk2_ty {
                     blk1_ty
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: {:?} != {:?} for if block", blk1_ty, blk2_ty)));
+                    TypeDecl::Unit
                 }
             }
         }
@@ -104,21 +129,13 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         Expr::Int64(_) => TypeDecl::Int64,
         Expr::UInt64(_) => TypeDecl::UInt64,
         Expr::String(_) => TypeDecl::String,
-        Expr::Var(name, type_decl, _expr) => {
-            if let Some(var_type) = type_decl {
-                ctx.set_var(name.as_str(), var_type.clone());
-                TypeDecl::Unit
-            } else {
-                return Err(TypeCheckError::new(format!("Type declaration {} not found", name)));
-            }
+        Expr::Var(name, type_decl, expr) => {
+            //eprintln!("process var {:?}", ast.0.get(e.0 as usize).unwrap());
+            process_val_type(ast, e, ctx, name, type_decl, expr)?
         }
-        Expr::Val(name, type_decl, _expr) => {
-            if let Some(val_type) = type_decl {
-                ctx.set_var(name.as_str(), val_type.clone());
-                TypeDecl::Unit
-            } else {
-                return Err(TypeCheckError::new(format!("Type declaration {} not found", name)));
-            }
+        Expr::Val(name, type_decl, expr) => {
+            eprintln!("process val {:?}", ast.0.get(e.0 as usize).unwrap());
+            process_val_type(ast, e, ctx, name, type_decl, expr)?
         }
         Expr::Identifier(name) => {
             if let Some(val_type) = ctx.get_var(&name) {

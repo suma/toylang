@@ -439,7 +439,7 @@ impl<'a> Parser<'a> {
                 (Kind::DoubleAnd, Operator::LogicalAnd),
                 (Kind::DoubleOr, Operator::LogicalOr),
             ],
-            next_precedence: Self::parse_relational
+            next_precedence: Self::parse_equality
         };
         self.parse_binary(&group)
     }

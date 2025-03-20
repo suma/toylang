@@ -122,7 +122,42 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 }
             }
         }
-        Expr::Binary(_cond, _blk1, _blk2) => TypeDecl::Bool,
+        Expr::Binary(op, lhs, rhs) => {
+            let lhs_ty = type_check(ast, *lhs, ctx)?;
+            let rhs_ty = type_check(ast, *rhs, ctx)?;
+            if lhs_ty != rhs_ty {
+                return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
+            }
+            match op {
+                Operator::IAdd if lhs_ty == TypeDecl::String && rhs_ty == TypeDecl::String => {
+                    TypeDecl::String
+                }
+                Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
+                    if lhs_ty == TypeDecl::UInt64 {
+                        if rhs_ty != TypeDecl::UInt64 {
+                            return Err(TypeCheckError::new(format!("Type mismatch: lhs expected UInt64, but rhs got {:?}", rhs_ty)));
+                        }
+                        TypeDecl::UInt64
+                    } else if lhs_ty == TypeDecl::Int64 {
+                        if rhs_ty != TypeDecl::Int64 {
+                            return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64, but rhs got {:?}", rhs_ty)));
+                        }
+                        TypeDecl::Int64
+                    } else {
+                        return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64 or UInt64, but rhs got {:?}", rhs_ty)));
+                    }
+                }
+                Operator::LogicalAnd | Operator::LogicalOr => {
+                    if lhs_ty == TypeDecl::Bool && rhs_ty == TypeDecl::Bool {
+                        TypeDecl::Bool
+                    } else {
+                        return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Bool, but rhs got {:?}", rhs_ty)));
+                    }
+                }
+                _ => return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", op, lhs_ty))),
+            }
+
+        }
         Expr::Block(_expressions) => {
             check_block(ast, e, ctx)?
         }

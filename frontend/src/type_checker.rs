@@ -132,7 +132,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 Operator::IAdd if lhs_ty == TypeDecl::String && rhs_ty == TypeDecl::String => {
                     TypeDecl::String
                 }
-                Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
+                Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul |
+                    Operator::LE | Operator::LT | Operator::GE | Operator::GT => {
                     if lhs_ty == TypeDecl::UInt64 {
                         if rhs_ty != TypeDecl::UInt64 {
                             return Err(TypeCheckError::new(format!("Type mismatch: lhs expected UInt64, but rhs got {:?}", rhs_ty)));

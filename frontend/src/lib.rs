@@ -136,7 +136,7 @@ impl<'a> Parser<'a> {
     // relational := add ("<" add | "<=" add | ">" add | ">=" add")*
     // add := mul ("+" mul | "-" mul)*
     // mul := primary ("*" mul | "/" mul)*
-    // primary := "(" expr ")" | identifier "(" expr_list ")" |
+    // primary := identifier "(" expr_list ")" |
     //            identifier |
     //            UInt64 | Int64 | String | Null | "(" expr ")"
     // expr_list := "" | expr | expr "," expr_list

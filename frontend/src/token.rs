@@ -9,6 +9,8 @@ pub enum Kind {
     If,
     Else,
     For,
+    In,
+    To,
     While,
     Break,
     Continue,

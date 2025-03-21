@@ -135,6 +135,7 @@ impl<'a> Parser<'a> {
     // assign_expr := logical_expr ("=" assign_expr)*
     // block := "{" prog* "}"
     // var_def_stmt := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
+    // for_stmt := "for" identifier in logical_expr to logical_expr block
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
     // def_ty := Int64 | UInt64 | identifier | Unknown
@@ -280,9 +281,24 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(self.ast.add(Expr::Continue))
             }
+            Some(Kind::For) => {
+                // e.g. `for x in 0 to 100 { println("hello") }`
+                self.next();
+                match self.peek() {
+                    Some(Kind::Identifier(s)) => {
+                        let ident = s.to_string();
+                        self.next();
+                        self.expect_err(&Kind::In)?;
+                        let start = self.parse_relational()?;
+                        self.expect_err(&Kind::To)?;
+                        let end = self.parse_relational()?;
+                        let block = self.parse_block()?;
+                        Ok(self.ast.add(Expr::For(ident, start, end, block)))
+                    }
+                    x => Err(anyhow!("parse_stmt for: expected identifier but {:?}", x)),
+                }
+            }
             // Some(Kind::While) => {
-            // }
-            // Some(Kind::For) => {
             // }
             _ => self.parse_expr(),
         }
@@ -764,6 +780,18 @@ mod tests {
         assert_eq!(Kind::UInt64(2), *t2);
     }
 
+    #[rstest]
+    #[case("for i in 0u64 to 9u64 { }")]
+    fn lexer_simple_example(#[case] input: &str) {
+        let mut l = lexer::Lexer::new(input, 1u64);
+        loop {
+            let t = l.yylex();
+            match t {
+                Ok(x) => eprintln!("{:?}", x.kind),
+                Err(_) => break,
+            }
+        }
+    }
     /*
     #[test]
     fn parser_simple_expr_test1() {
@@ -913,6 +941,7 @@ mod tests {
     #[case("fn_call(a, b, c)")]
     #[case("a + b * c / d")]
     #[case("a || b && c")]
+    #[case("for i in 0u64 to 9u64 { }")]
     fn parser_test_parse_stmt(#[case] input: &str) {
         let mut parser = Parser::new(input);
         let err = parser.parse_stmt();

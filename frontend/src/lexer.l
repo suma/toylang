@@ -14,6 +14,8 @@ macro_rules! token {
 "if"     return Ok(token!(self, Kind::If));
 "else"   return Ok(token!(self, Kind::Else));
 "for"    return Ok(token!(self, Kind::For));
+"in"     return Ok(token!(self, Kind::In));
+"to"     return Ok(token!(self, Kind::To));
 "while"  return Ok(token!(self, Kind::While));
 "break"  return Ok(token!(self, Kind::Break));
 "continue"  return Ok(token!(self, Kind::Continue));

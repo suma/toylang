@@ -206,6 +206,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 type_check(ast, e, ctx)?
             }
         }
+        Expr::Break => TypeDecl::Unit,
+        Expr::Continue => TypeDecl::Unit,
     })
 }
 pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {

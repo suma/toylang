@@ -100,7 +100,14 @@ pub enum Expr {
     // These are statement but used as Expr
     Val(String, Option<TypeDecl>, Option<ExprRef>),
     Var(String, Option<TypeDecl>, Option<ExprRef>),
+    Return(Option<ExprRef>),
+    Break,
+    Continue,
+    // For
+    // While
+
     // expr
+    // Assign
     IfElse(ExprRef, ExprRef, ExprRef),
     Binary(Operator, ExprRef, ExprRef),
     Block(Vec<ExprRef>),
@@ -111,7 +118,6 @@ pub enum Expr {
     ExprList(Vec<ExprRef>),
     Call(String, ExprRef), // apply, function call, etc
     String(String),
-    Return(Option<ExprRef>),
     True,
     False,
 }

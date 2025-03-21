@@ -268,7 +268,15 @@ impl<'a> Parser<'a> {
     pub fn parse_stmt(&mut self) -> Result<ExprRef> {
         match self.peek() {
             Some(Kind::Val) | Some(Kind::Var) => {
-                return self.parse_var_def();
+                self.parse_var_def()
+            }
+            Some(Kind::Break) => {
+                self.next();
+                Ok(self.ast.add(Expr::Break))
+            }
+            Some(Kind::Continue) => {
+                self.next();
+                Ok(self.ast.add(Expr::Continue))
             }
             // Some(Kind::While) => {
             // }

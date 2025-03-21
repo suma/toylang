@@ -129,6 +129,7 @@ impl<'a> Parser<'a> {
     //         while_stmt |
     //         expr
     // expr := logical_expr |
+    //         logical_expr "=" logical_expr |
     //         if_expr |
         //         return expr?
     // block := "{" prog* "}"
@@ -288,7 +289,13 @@ impl<'a> Parser<'a> {
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let e = self.parse_logical_expr();
         if e.is_ok() {
-            return e;
+            return match self.peek() {
+                Some(Kind::Equal) => {
+                    self.next();
+                    self.parse_assign(e?)
+                }
+                _ => e,
+            };
         }
 
         match self.peek() {
@@ -303,6 +310,11 @@ impl<'a> Parser<'a> {
             }
             None => Err(anyhow!("parse_expr: unexpected EOF")),
         }
+    }
+
+    pub fn parse_assign(&mut self, lhs: ExprRef) -> Result<ExprRef> {
+        let rhs = self.parse_logical_expr()?;
+        Ok(self.ast.add(Expr::Assign(lhs, rhs)))
     }
     pub fn parse_if(&mut self) -> Result<ExprRef> {
         let cond = self.parse_logical_expr()?;
@@ -882,6 +894,7 @@ mod tests {
     #[case("val x: u64 = 1u64")]
     #[case("val x: u64 = if true { 1u64 } else { 2u64 }")]
     #[case("var x = 1u64")]
+    #[case("x = 1u64")]
     #[case("if true { 1u64 }")]
     #[case("if true { 1u64 } else { 2u64 }")]
     #[case("{ if true { 1u64 } else { 2u64 } }")]

@@ -107,7 +107,7 @@ pub enum Expr {
     // While
 
     // expr
-    // Assign
+    Assign(ExprRef, ExprRef),   // lhs = rhs
     IfElse(ExprRef, ExprRef, ExprRef),
     Binary(Operator, ExprRef, ExprRef),
     Block(Vec<ExprRef>),

@@ -208,6 +208,14 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         }
         Expr::Break => TypeDecl::Unit,
         Expr::Continue => TypeDecl::Unit,
+        Expr::Assign(lhs, rhs) => {
+            let lhs_ty = type_check(ast, *lhs, ctx)?;
+            let rhs_ty = type_check(ast, *rhs, ctx)?;
+            if lhs_ty != rhs_ty {
+                return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
+            }
+            lhs_ty
+        }
     })
 }
 pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {

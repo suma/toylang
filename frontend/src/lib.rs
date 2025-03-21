@@ -124,14 +124,17 @@ impl<'a> Parser<'a> {
     // param_def_list := e | param_def | param_def "," param_def_list
     // param_def := identifier ":" def_ty |
     // prog := expr NewLine expr | expr | e
+    // stmt := var_def_stmt |
+    //         for_stmt |
+    //         while_stmt |
+    //         expr
     // expr := logical_expr |
     //         if_expr |
         //         return expr?
     // block := "{" prog* "}"
+    // var_def_stmt := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
-    // assign := val_def | identifier "=" logical_expr | logical_expr
-    // val_def := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
     // def_ty := Int64 | UInt64 | identifier | Unknown
     // logical_expr := equality ("&&" relational | "||" relational)*
     // equality := relational ("==" relational | "!=" relational)*
@@ -145,7 +148,7 @@ impl<'a> Parser<'a> {
 
     // this function is for test
     pub fn parse_stmt_line(&mut self) -> Result<(ExprRef, ExprPool)> {
-        let e = self.parse_expr();
+        let e = self.parse_stmt();
         if e.is_err() {
             return Err(anyhow!(e.err().unwrap()));
         }
@@ -262,6 +265,20 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn parse_stmt(&mut self) -> Result<ExprRef> {
+        match self.peek() {
+            Some(Kind::Val) | Some(Kind::Var) => {
+                return self.parse_var_def();
+            }
+            Some(Kind::While) => {
+            }
+            Some(Kind::For) => {
+            }
+            _ => (),
+        }
+
+        return self.parse_expr();
+    }
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let e = self.parse_logical_expr();
         if e.is_ok() {
@@ -338,23 +355,30 @@ impl<'a> Parser<'a> {
             _ => (),
         }
 
-        let lhs = self.parse_expr();
+        let lhs = self.parse_stmt();
         if lhs.is_err() {
-            return Err(anyhow!("parse_expression_block: expected expression: {:?}", lhs.err()));
+            return Err(anyhow!("parse_expression_block: expected stmt: {:?}", lhs.err()));
         }
         expressions.push(lhs?);
 
         self.parse_block_impl(expressions)
     }
 
-    pub fn parse_val_def(&mut self, val_or_var: &Kind) -> Result<ExprRef> {
+    pub fn parse_var_def(&mut self) -> Result<ExprRef> {
+        let is_val = match self.peek() {
+            Some(Kind::Val) => true,
+            Some(Kind::Var) => false,
+            _ => return Err(anyhow!("parse_assign: expected val or var")),
+        };
+        self.next();
+
         let ident: String = match self.peek() {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 self.next();
                 s
             }
-            x => return Err(anyhow!("parse_val_def: expected identifier but {:?}", x)),
+            x => return Err(anyhow!("parse_assign: expected identifier but {:?}", x)),
         };
 
         let ty: TypeDecl = match self.peek() {
@@ -370,16 +394,15 @@ impl<'a> Parser<'a> {
             Some(Kind::Equal) => {
                 self.next();
                 let expr = self.parse_logical_expr();
-                eprintln!("rhs: {:?}", expr);
                 if expr.is_err() {
                     return expr;
                 }
                 Some(expr.unwrap())
             }
             Some(Kind::NewLine) => None,
-            _ => return Err(anyhow!("parse_val_def: expected expression but {:?}", self.peek())),
+            _ => return Err(anyhow!("parse_assign: expected expression but {:?}", self.peek())),
         };
-        if let Kind::Val = val_or_var {
+        if is_val {
             Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
         } else {
             Ok(self.ast.add(Expr::Var(ident, Some(ty), rhs)))

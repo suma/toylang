@@ -877,6 +877,8 @@ mod tests {
     #[case("if true { 1u64 }")]
     #[case("if true { 1u64 } else { 2u64 }")]
     #[case("{ if true { 1u64 } else { 2u64 } }")]
+    #[case("fn_call()")]
+    #[case("fn_call(a, b, c)")]
     fn parser_test_parse_stmt(#[case] input: &str) {
         let mut parser = Parser::new(input);
         let err = parser.parse_stmt();

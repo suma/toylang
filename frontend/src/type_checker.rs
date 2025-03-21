@@ -67,7 +67,7 @@ impl TypeCheckContext {
     }
 }
 
-fn process_val_type(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+fn process_val_type(ast: &ExprPool, ctx: &mut TypeCheckContext, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
     let mut expr_ty: Option<TypeDecl> = None;
     if expr.is_some() {
         let ty = type_check(ast, expr.unwrap(), ctx)?;
@@ -166,12 +166,10 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         Expr::UInt64(_) => TypeDecl::UInt64,
         Expr::String(_) => TypeDecl::String,
         Expr::Var(name, type_decl, expr) => {
-            //eprintln!("process var {:?}", ast.0.get(e.0 as usize).unwrap());
-            process_val_type(ast, e, ctx, name, type_decl, expr)?
+            process_val_type(ast, ctx, name, type_decl, expr)?
         }
         Expr::Val(name, type_decl, expr) => {
-            eprintln!("process val {:?}", ast.0.get(e.0 as usize).unwrap());
-            process_val_type(ast, e, ctx, name, type_decl, expr)?
+            process_val_type(ast, ctx, name, type_decl, expr)?
         }
         Expr::Identifier(name) => {
             if let Some(val_type) = ctx.get_var(&name) {

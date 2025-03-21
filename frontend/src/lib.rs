@@ -862,6 +862,35 @@ mod tests {
         assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
     }
 
+    // Valid statement or expression
+    #[rstest]
+    #[case("1u64")]
+    #[case("1i64")]
+    #[case("true")]
+    #[case("false")]
+    #[case("null")]
+    #[case("\"string\"")]
+    #[case("val x = 1u64")]
+    #[case("val x: u64 = 1u64")]
+    #[case("val x: u64 = if true { 1u64 } else { 2u64 }")]
+    #[case("var x = 1u64")]
+    #[case("if true { 1u64 }")]
+    #[case("if true { 1u64 } else { 2u64 }")]
+    #[case("{ if true { 1u64 } else { 2u64 } }")]
+    fn parser_test_parse_stmt(#[case] input: &str) {
+        let mut parser = Parser::new(input);
+        let err = parser.parse_stmt();
+        assert!(err.is_ok(), "input: {} err: {:?}", input, err);
+    }
+
+    #[rstest]
+    #[case("1u64+")]
+    #[case("*2u64")]
+    #[case("(1u64+2u64")]
+    fn parser_errors_parse_expr(#[case] input: &str) {
+        let mut parser = Parser::new(input);
+        assert!(parser.parse_expr().is_err(), "input: {}", input);
+    }
     /*
     #[test]
     fn parser_simple_apply_expr() {
@@ -1024,119 +1053,4 @@ c
         assert!(!res, "{:?}: type check should fail", path.to_str().unwrap());
     }
 
-    /*
-    #[test]
-    fn parser_simple_expr_null_value() {
-        let res = Parser::new("null").parse_stmt_line().unwrap();
-        assert_eq!(Expr::Null, res);
-    }
-
-    #[test]
-    fn parser_simple_assign() {
-        let res = Parser::new("a = 1u64").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Binary(Box::new(BinaryExpr {
-                op: Operator::Assign,
-                lhs: Expr::Identifier("a".to_string()),
-                rhs: Expr::UInt64(1)
-            })),
-            res
-        );
-    }
-
-    #[test]
-    fn parser_err_primary() {
-        let res = Parser::new(".").parse_stmt_line();
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn parser_err_call_expr_list() {
-        let res = Parser::new("foo(a,,)").parse_stmt_line();
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn parser_val_simple_expr() {
-        let res = Parser::new("val foo = 10u64").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Val(
-                "foo".to_string(),
-                Some(Type::Unknown),
-                Some(Box::new(Expr::UInt64(10)))
-            ),
-            res
-        );
-    }
-
-    #[test]
-    fn parser_val_simple_expr_with_type() {
-        let res = Parser::new("val foo: u64 = 30u64")
-            .parse_stmt_line()
-            .unwrap();
-        assert_eq!(
-            Expr::Val(
-                "foo".to_string(),
-                Some(Type::UInt64),
-                Some(Box::new(Expr::UInt64(30)))
-            ),
-            res
-        );
-    }
-    #[test]
-    fn parser_val_simple_expr_without_type1() {
-        let res = Parser::new("val foo = 20u64").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::Val(
-                "foo".to_string(),
-                Some(Type::Unknown),
-                Some(Box::new(Expr::UInt64(20)))
-            ),
-            res
-        );
-    }
-
-    #[test]
-    fn parser_val_simple_expr_without_type2() {
-        let res = Parser::new("val foo: ty = 20u64")
-            .parse_stmt_line()
-            .unwrap();
-        assert_eq!(
-            Expr::Val(
-                "foo".to_string(),
-                Some(Type::Identifier("ty".to_string())),
-                Some(Box::new(Expr::UInt64(20)))
-            ),
-            res
-        );
-    }
-
-    #[test]
-    fn parser_if_expr() {
-        let res = Parser::new("if condition { }").parse_stmt_line().unwrap();
-        assert_eq!(
-            Expr::IfElse(
-                Box::new(Expr::Identifier("condition".to_string())),
-                vec![],
-                vec![],
-            ),
-            res
-        );
-    }
-
-    #[test]
-    fn parser_if_else_expr() {
-        let res = Parser::new("if condition { a } else { b }")
-            .parse_stmt_line()
-            .unwrap();
-        assert_eq!(
-            Expr::IfElse(
-                Box::new(Expr::Identifier("condition".to_string())),
-                vec![Expr::Identifier("a".to_string())],
-                vec![Expr::Identifier("b".to_string())],
-            ),
-            res
-        );
-    }
-     */
 }

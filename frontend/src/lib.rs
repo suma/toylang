@@ -143,7 +143,7 @@ impl<'a> Parser<'a> {
     // mul := primary ("*" mul | "/" mul)*
     // primary := identifier "(" expr_list ")" |
     //            identifier |
-    //            UInt64 | Int64 | String | Null | "(" expr ")"
+    //            UInt64 | Int64 | String | Null | "(" expr ")" | "{" block "}"
     // expr_list := "" | expr | expr "," expr_list
 
     // this function is for test
@@ -560,6 +560,9 @@ impl<'a> Parser<'a> {
                                 let e = self.parse_expr()?;
                                 self.expect_err(&Kind::ParenClose)?;
                                 return Ok(e);
+                            }
+                            Some(Kind::BraceOpen) => {
+                                return self.parse_block();
                             }
                             // TODO: write parse_expr right recursion (TODO: more smart way 🤔)
                             Some(Kind::If) => {

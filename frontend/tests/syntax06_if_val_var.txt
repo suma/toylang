@@ -1,0 +1,6 @@
+fn main() {
+    val a = 1u64 + 2u64
+    val b: u64 = if true { 3u64 } else { 4u64 }
+    var c = if true { 5i64 } else { 6i64 } + 7i64
+    var d: i64 = if false { 8i64 } else { 9i64 }
+}

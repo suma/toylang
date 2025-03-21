@@ -270,14 +270,12 @@ impl<'a> Parser<'a> {
             Some(Kind::Val) | Some(Kind::Var) => {
                 return self.parse_var_def();
             }
-            Some(Kind::While) => {
-            }
-            Some(Kind::For) => {
-            }
-            _ => (),
+            // Some(Kind::While) => {
+            // }
+            // Some(Kind::For) => {
+            // }
+            _ => self.parse_expr(),
         }
-
-        return self.parse_expr();
     }
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
         let e = self.parse_logical_expr();
@@ -562,6 +560,11 @@ impl<'a> Parser<'a> {
                                 let e = self.parse_expr()?;
                                 self.expect_err(&Kind::ParenClose)?;
                                 return Ok(e);
+                            }
+                            // TODO: write parse_expr right recursion (TODO: more smart way 🤔)
+                            Some(Kind::If) => {
+                                self.next();
+                                return self.parse_if();
                             }
                             _ => {
                                 return Err(anyhow!("parse_primary: unexpected token {:?}", x));

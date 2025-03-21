@@ -129,9 +129,10 @@ impl<'a> Parser<'a> {
     //         while_stmt |
     //         expr
     // expr := logical_expr |
-    //         logical_expr "=" logical_expr |
+    //         assign_expr |
     //         if_expr |
         //         return expr?
+    // assign_expr := logical_expr ("=" assign_expr)*
     // block := "{" prog* "}"
     // var_def_stmt := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
     // if_expr := "if" expr block else_expr?
@@ -313,8 +314,17 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_assign(&mut self, lhs: ExprRef) -> Result<ExprRef> {
-        let rhs = self.parse_logical_expr()?;
-        Ok(self.ast.add(Expr::Assign(lhs, rhs)))
+        let mut rhs = self.parse_logical_expr()?;
+        loop {
+            match self.peek() {
+                Some(Kind::Equal) => {
+                    self.next();
+                    let new_lhs = self.parse_logical_expr()?;
+                    rhs = self.ast.add(Expr::Assign(new_lhs, rhs));
+                }
+                _ => return Ok(self.ast.add(Expr::Assign(lhs, rhs))),
+            }
+        }
     }
     pub fn parse_if(&mut self) -> Result<ExprRef> {
         let cond = self.parse_logical_expr()?;
@@ -386,7 +396,7 @@ impl<'a> Parser<'a> {
         let is_val = match self.peek() {
             Some(Kind::Val) => true,
             Some(Kind::Var) => false,
-            _ => return Err(anyhow!("parse_assign: expected val or var")),
+            _ => return Err(anyhow!("parse_var_def: expected val or var")),
         };
         self.next();
 
@@ -396,7 +406,7 @@ impl<'a> Parser<'a> {
                 self.next();
                 s
             }
-            x => return Err(anyhow!("parse_assign: expected identifier but {:?}", x)),
+            x => return Err(anyhow!("parse_var_def: expected identifier but {:?}", x)),
         };
 
         let ty: TypeDecl = match self.peek() {
@@ -418,7 +428,7 @@ impl<'a> Parser<'a> {
                 Some(expr.unwrap())
             }
             Some(Kind::NewLine) => None,
-            _ => return Err(anyhow!("parse_assign: expected expression but {:?}", self.peek())),
+            _ => return Err(anyhow!("parse_var_def: expected expression but {:?}", self.peek())),
         };
         if is_val {
             Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
@@ -894,6 +904,7 @@ mod tests {
     #[case("val x: u64 = 1u64")]
     #[case("val x: u64 = if true { 1u64 } else { 2u64 }")]
     #[case("var x = 1u64")]
+    #[case("x = y = z = 1u64")]
     #[case("x = 1u64")]
     #[case("if true { 1u64 }")]
     #[case("if true { 1u64 } else { 2u64 }")]

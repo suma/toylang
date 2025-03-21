@@ -124,7 +124,9 @@ impl<'a> Parser<'a> {
     // param_def_list := e | param_def | param_def "," param_def_list
     // param_def := identifier ":" def_ty |
     // prog := expr NewLine expr | expr | e
-    // expr := logical_expr
+    // expr := logical_expr |
+    //         if_expr |
+        //         return expr?
     // block := "{" prog* "}"
     // if_expr := "if" expr block else_expr?
     // else_expr := "else" block
@@ -261,8 +263,11 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
-        return self.parse_logical_expr();
-        /*
+        let e = self.parse_logical_expr();
+        if e.is_ok() {
+            return e;
+        }
+
         match self.peek() {
             Some(Kind::If) => {
                 self.next();
@@ -275,7 +280,6 @@ impl<'a> Parser<'a> {
             }
             None => Err(anyhow!("parse_expr: unexpected EOF")),
         }
-        */
     }
     pub fn parse_if(&mut self) -> Result<ExprRef> {
         let cond = self.parse_logical_expr()?;

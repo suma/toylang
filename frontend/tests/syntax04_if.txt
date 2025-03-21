@@ -1,0 +1,3 @@
+fn main() {
+    1u64 + if true { 1u64 } else { 2u64 }
+}

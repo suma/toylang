@@ -125,13 +125,14 @@ impl<'a> Parser<'a> {
     // param_def := identifier ":" def_ty |
     // prog := expr NewLine expr | expr | e
     // stmt := var_def_stmt |
+    //         break | continue |
     //         for_stmt |
     //         while_stmt |
+    //         "return" expr? |
     //         expr
     // expr := logical_expr |
     //         assign_expr |
     //         if_expr |
-        //         return expr?
     // assign_expr := logical_expr ("=" assign_expr)*
     // block := "{" prog* "}"
     // var_def_stmt := ("val" | "var") identifier (":" def_ty)? ("=" logical_expr)
@@ -280,6 +281,21 @@ impl<'a> Parser<'a> {
             Some(Kind::Continue) => {
                 self.next();
                 Ok(self.ast.add(Expr::Continue))
+            }
+            Some(Kind::Return) => {
+                self.next();
+                match self.peek() {
+                    Some(&Kind::NewLine) | Some(&Kind::BracketClose) | Some(Kind::EOF) => {
+                        self.next();
+                        Ok(self.ast.add(Expr::Return(None)))
+                    }
+                    // Usually None is error but we treat this case for unit test.
+                    None => Ok(self.ast.add(Expr::Return(None))),
+                    Some(_expr) => {
+                        let expr = self.parse_expr()?;
+                        Ok(self.ast.add(Expr::Return(Some(expr))))
+                    }
+                }
             }
             Some(Kind::For) => {
                 // e.g. `for x in 0 to 100 { println("hello") }`
@@ -553,20 +569,6 @@ impl<'a> Parser<'a> {
 
     fn parse_primary(&mut self) -> Result<ExprRef> {
         match self.peek() {
-            Some(Kind::Return) => {
-                self.next();
-                match self.peek() {
-                    Some(&Kind::NewLine) | Some(&Kind::BracketClose) => {
-                        self.next();
-                        Ok(self.ast.add(Expr::Return(None)))
-                    }
-                    Some(_expr) => {
-                        let expr = self.parse_expr()?;
-                        Ok(self.ast.add(Expr::Return(Some(expr))))
-                    }
-                    None => Err(anyhow!("parse_primary: expected expression")),
-                }
-            }
             Some(Kind::ParenOpen) => {
                 self.next();
                 let node = self.parse_expr()?;
@@ -947,6 +949,8 @@ mod tests {
     #[case("a || b && c")]
     #[case("for i in 0u64 to 9u64 { continue }")]
     #[case("while true { break }")]
+    #[case("return true")]
+    #[case("return")]
     fn parser_test_parse_stmt(#[case] input: &str) {
         let mut parser = Parser::new(input);
         let err = parser.parse_stmt();

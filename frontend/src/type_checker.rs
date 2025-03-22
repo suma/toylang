@@ -206,6 +206,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             }
         }
         Expr::For(_, _, _, _) => TypeDecl::Unit,
+        Expr::While(_, _) => TypeDecl::Unit,
         Expr::Break => TypeDecl::Unit,
         Expr::Continue => TypeDecl::Unit,
         Expr::Assign(lhs, rhs) => {

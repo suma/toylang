@@ -298,8 +298,12 @@ impl<'a> Parser<'a> {
                     x => Err(anyhow!("parse_stmt for: expected identifier but {:?}", x)),
                 }
             }
-            // Some(Kind::While) => {
-            // }
+            Some(Kind::While) => {
+                self.next();
+                let cond = self.parse_logical_expr()?;
+                let block = self.parse_block()?;
+                Ok(self.ast.add(Expr::While(cond, block)))
+            }
             _ => self.parse_expr(),
         }
     }
@@ -941,7 +945,8 @@ mod tests {
     #[case("fn_call(a, b, c)")]
     #[case("a + b * c / d")]
     #[case("a || b && c")]
-    #[case("for i in 0u64 to 9u64 { }")]
+    #[case("for i in 0u64 to 9u64 { continue }")]
+    #[case("while true { break }")]
     fn parser_test_parse_stmt(#[case] input: &str) {
         let mut parser = Parser::new(input);
         let err = parser.parse_stmt();

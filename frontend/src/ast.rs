@@ -103,8 +103,8 @@ pub enum Expr {
     Return(Option<ExprRef>),
     Break,
     Continue,
-    For(String, ExprRef, ExprRef, ExprRef),
-    // While
+    For(String, ExprRef, ExprRef, ExprRef), // str, start, end, block
+    While(ExprRef, ExprRef), // cond, block
 
     // expr
     Assign(ExprRef, ExprRef),   // lhs = rhs

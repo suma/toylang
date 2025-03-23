@@ -2,9 +2,9 @@
 name = "interpreter"
 version = "0.1.0"
 edition = "2021"
-authors = ["Shuzo Kashihara <suma@users.sourceforge.jp>"]
+authors = ["Shuzo Kashihara <suman.orega.warukatta@gmail.com>"]
 license = "MIT"
-description = "interpreter"
+description = ""
 
 [dependencies]
 frontend = { path = "../frontend" }

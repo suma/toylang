@@ -3,7 +3,7 @@
 pub mod ast;
 pub mod type_decl;
 pub mod token;
-mod type_checker;
+pub mod type_checker;
 
 use std::rc::Rc;
 use crate::ast::*;

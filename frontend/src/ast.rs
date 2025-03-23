@@ -48,6 +48,7 @@ impl Node {
     }
 }
 
+#[derive(Debug)]
 pub struct Program {
     pub node: Node,
     pub import: Vec<String>,

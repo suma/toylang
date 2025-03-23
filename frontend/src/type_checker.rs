@@ -226,26 +226,34 @@ pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Re
             if expressions.is_empty() {
                 return Ok(TypeDecl::Unit);
             }
-            let mut return_types = vec![];
+            let mut last: Option<TypeDecl> = None;
             // This code assumes Block(expression) don't make nested function
             // so `return` expression always return for this context.
             for e in expressions {
                 let expr = ast.0.get(e.0 as usize).unwrap();
-                let def_ty = match expr {
+                let def_ty: TypeDecl = match expr {
                     Expr::Return(ret_ty) if ret_ty.is_none() => {
-                        TypeDecl::Unit
+                        let ty = type_check(ast, ret_ty.unwrap(), ctx)?;
+                        match last {
+                            Some(last_ty) if last_ty == ty => ty,
+                            _ => Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", last.unwrap().clone(), ty)))?,
+                        }
                     }
-                    Expr::Return(ret_ty) if ret_ty.is_some() => {
-                        type_check(ast, ret_ty.unwrap(), ctx)?
+                    Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False | Expr::Null => {
+                        let ty = type_check(ast, *e, ctx)?;
+                        match last {
+                            Some(last_ty) if last_ty == ty => ty,
+                            _ => Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", last.unwrap().clone(), ty)))?,
+                        }
                     }
                     _ => type_check(ast, *e, ctx)?,
                 };
-                return_types.push(def_ty);
+                last = Some(def_ty);
             }
-            if return_types.iter().all(|ty| *ty == return_types[0]) {
-                Ok(return_types[0].clone())
+            if last.is_some() {
+                Ok(last.unwrap().clone())
             } else {
-                Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}, but got {:?}", return_types[0], return_types)))
+                Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}", last)))
             }
         }
         _ => panic!("check_block: expected block but {:?}", ast.0.get(e.0 as usize).unwrap()),

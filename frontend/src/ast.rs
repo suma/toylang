@@ -98,7 +98,7 @@ pub type ParameterList = Vec<Parameter>;
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     // These are statement but used as Expr
-    Val(String, Option<TypeDecl>, Option<ExprRef>),
+    Val(String, Option<TypeDecl>, ExprRef),
     Var(String, Option<TypeDecl>, Option<ExprRef>),
     Return(Option<ExprRef>),
     Break,

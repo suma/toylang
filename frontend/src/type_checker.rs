@@ -169,7 +169,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             process_val_type(ast, ctx, name, type_decl, expr)?
         }
         Expr::Val(name, type_decl, expr) => {
-            process_val_type(ast, ctx, name, type_decl, expr)?
+            let expr = Some(expr.clone());
+            process_val_type(ast, ctx, name, type_decl, &expr)?
         }
         Expr::Identifier(name) => {
             if let Some(val_type) = ctx.get_var(&name) {

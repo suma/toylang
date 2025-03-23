@@ -467,7 +467,7 @@ impl<'a> Parser<'a> {
             _ => return Err(anyhow!("parse_var_def: expected expression but {:?}", self.peek())),
         };
         if is_val {
-            Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs)))
+            Ok(self.ast.add(Expr::Val(ident, Some(ty), rhs.unwrap())))
         } else {
             Ok(self.ast.add(Expr::Var(ident, Some(ty), rhs)))
         }

@@ -45,7 +45,7 @@ fn main() {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Environment {
     // mutable = true, immutable = false
     var: HashMap<String, (bool, Object)>,
@@ -57,6 +57,13 @@ impl Environment {
         Self {
             var: HashMap::new(),
             super_context: None,
+        }
+    }
+
+    pub fn new_block(&self) -> Self {
+        Self {
+            var: HashMap::new(),
+            super_context: Some(Box::new(self.clone())),
         }
     }
 
@@ -89,6 +96,10 @@ impl Environment {
         let v_val = self.var.get(name);
         if v_val.is_some() {
             return Some(&v_val.unwrap().1);
+        } else if self.super_context.is_some() {
+            if let Some(v) = self.super_context.as_ref() {
+                return v.get_val(name);
+            }
         }
         None
     }
@@ -102,15 +113,33 @@ pub enum Object {
     String(String),
     //Array: Vec<Object>,
     //Function: Rc<Function>,
+    Null,
+    Unit,
 }
 
 impl Object {
     pub fn get_type(&self) -> TypeDecl {
         match self {
+            Object::Unit => TypeDecl::Unit,
+            Object::Null => TypeDecl::Any,
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
             Object::String(_) => TypeDecl::String,
+        }
+    }
+
+    pub fn is_null(&self) -> bool {
+        match self {
+            Object::Null => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_unit(&self) -> bool {
+        match self {
+            Object::Unit => true,
+            _ => false,
         }
     }
 }
@@ -218,7 +247,7 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<Object
             };
             Ok(res)
         }
-        Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) => {
+        Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
             Ok(convert_object(expr))
         }
         Some(Expr::Return(e)) => {
@@ -227,57 +256,104 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<Object
         Some(Expr::Identifier(s)) => {
             Ok(ctx.get_val(s.as_ref()).unwrap().clone())
         }
+        Some(Expr::IfElse(cond, then, _else)) => {
+            let cond = evaluate(cond, ast, ctx)?;
+            if cond.get_type() != TypeDecl::Bool {
+                panic!("evaluate: Bad types for if-else due to different type: {:?}", expr);
+            }
+            assert!(ast.get(then.0 as usize).unwrap().is_block(), "evaluate: then is not block");
+            assert!(ast.get(_else.0 as usize).unwrap().is_block(), "evaluate: else is not block");
+            let mut ctx = ctx.new_block();
+            if let Object::Bool(true) = cond {
+                let then = evaluate_block(then, ast, &mut ctx)?;
+                Ok(then)
+            } else {
+                let _else = evaluate_block(_else, ast, &mut ctx)?;
+                Ok(_else)
+            }
+        }
 
-        _ => panic!("evaluate: Not implemented yet {:?}", expr),
+        Some(Expr::Block(_)) => {
+            let mut ctx = ctx.new_block();
+            Ok(evaluate_block(e, ast, &mut ctx)?)
+        }
+
+        _ => panic!("evaluate: Not handled yet {:?}", expr),
     }
 }
 
-fn evaluate_main(function: Rc<Function>, ast: &ExprPool, ctx: &mut Environment) -> Result<Object, String> {
-    let code = ast.get(function.code.0 as usize);
-    let mut last: Option<Object> = None;
-    match code {
-        Some(Expr::Block(expressions)) => {
-            expressions.iter().for_each(|e| {
-                let expr = ast.get(e.0 as usize);
+fn evaluate_block(blk_expr: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<Object, String> {
+    let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.0 as usize).unwrap_or(&Expr::Null) };
+    assert!(to_expr(blk_expr).is_block(), "failed: block expected but got {:?}", to_expr(blk_expr));
+
+    let mut last: Option<Object> = Some(Object::Unit);
+    match to_expr(blk_expr) {
+        Expr::Block(expressions) => {
+            for e in expressions {
+                let expr = to_expr(e);
                 match expr {
-                    // Type has already checked
-                    Some(Expr::Val(name, _, e)) => {
-                        let e = ast.get(e.0 as usize);
-                        let value = convert_object(e);
-                        ctx.set_val(name.as_ref(), &value);
+                    Expr::Val(name, _, e) => {
+                        let name = name.clone();
+                        let value = &evaluate(e, ast, ctx)?;
+                        ctx.set_val(name.as_ref(), value);
+                        last = Some(Object::Unit);
                     }
-                    Some(Expr::Var(name, _, e)) => {
-                        //let e = ast.get(e.unwrap().0 as usize);
-                        let value = evaluate(&e.unwrap(), ast, ctx).unwrap();
-                        // TODO: var can be set without assigned expression so `e` can be None
+                    Expr::Var(name, _, e) => {
+                        let value = if e.is_none() {
+                            Object::Null
+                        } else {
+                            evaluate(&e.unwrap(), ast, ctx)?
+                        };
                         ctx.set_var(name.as_ref(), &value);
                     }
-                    Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) => {
-                        last = Some(convert_object(expr));
+                    Expr::Return(e) => {
+                        if e.is_none() {
+                            return Ok(Object::Unit);
+                        }
+                        return Ok(evaluate(&e.unwrap(), ast, ctx)?);
                     }
-                    Some(Expr::Return(e)) => {
-                        last = Some(evaluate(&e.unwrap(), ast, ctx).unwrap());
-                        return;
+                    // TODO: break, continue
+                    Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
+                        last = Some(convert_object(Some(expr)));
                     }
-                    Some(Expr::Identifier(s)) => {
-                        last = Some(ctx.get_val(s.as_ref()).unwrap().clone());
+                    Expr::Identifier(s) => {
+                        let obj = ctx.get_val(s.as_ref());
+                        if obj.is_none() || obj.clone().unwrap().is_null() {
+                            panic!("evaluate_block: Identifier {} is null", s);
+                        }
+                        last = Some(obj.unwrap().clone());
                     }
-
-                    // TODO: implement here
-                    None | Some(_) => panic!("evaluate: Not handled yet {:?}", expr),
+                    Expr::Block(_) => {
+                        let mut ctx = ctx.new_block();
+                        last = Some(evaluate_block(blk_expr, ast, &mut ctx)?);
+                    }
+                    _ => {
+                        last = Some(evaluate(e, ast, ctx)?);
+                    }
                 }
-            });
-
-            // Result
-            let res = last.unwrap();
-            Ok(res)
+            }
         }
-        Some(_) | None => Err("Invalid code".to_string()),
+        _ => {
+            last = Some(evaluate(blk_expr, ast, ctx)?);
+            println!("evaluate_block: Not handled yet {:?}", to_expr(blk_expr))
+        }
+    }
+    Ok(last.unwrap())
+}
+
+fn evaluate_main(function: Rc<Function>, ast: &ExprPool, ctx: &mut Environment) -> Result<Object, String> {
+    let res = evaluate_block(&function.code, ast, ctx)?;
+    if function.return_type.is_none() || function.return_type.clone().unwrap() == TypeDecl::Unit {
+        Ok(Object::Unit)
+    } else {
+        Ok(res)
     }
 }
 
 fn convert_object(e: Option<&Expr>) -> Object {
     match e {
+        Some(Expr::True) => Object::Bool(true),
+        Some(Expr::False) => Object::Bool(false),
         Some(Expr::Int64(v)) => Object::Int64(*v),
         Some(Expr::UInt64(v)) => Object::UInt64(*v),
         Some(Expr::String(v)) => Object::String(v.clone()),

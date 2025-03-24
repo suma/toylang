@@ -123,6 +123,15 @@ pub enum Expr {
     String(String),
 }
 
+impl Expr {
+    pub fn is_block(&self) -> bool {
+        match self {
+            Expr::Block(_) => true,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
     IAdd,

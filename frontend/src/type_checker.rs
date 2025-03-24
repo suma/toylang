@@ -104,21 +104,17 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
     Ok(match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
         Expr::True | Expr::False => TypeDecl::Bool,
         Expr::IfElse(_cond, blk1, blk2) => {
-            let blk1_ty = if is_block_empty(*blk1) {
-                TypeDecl::Unit
-            } else {
-                check_block(ast, *blk1, ctx)?
-            };
+            let blk1_empty = is_block_empty(*blk1);
             let blk2_empty = is_block_empty(*blk2);
-            if blk2_empty {
-                blk1_ty // ignore to infer empty of blk2
+            if blk1_empty || blk2_empty {
+                TypeDecl::Unit // ignore to infer empty of blk
             } else {
+                let blk1_ty = check_block(ast, *blk1, ctx)?;
                 let blk2_ty = check_block(ast, *blk2, ctx)?;
-                // eprintln!("If blk type {:?} {:?}", blk1_ty, blk2_ty);
-                if blk1_ty == blk2_ty {
-                    blk1_ty
-                } else {
+                if blk1_ty != blk2_ty {
                     TypeDecl::Unit
+                } else {
+                    blk1_ty
                 }
             }
         }
@@ -152,7 +148,7 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                     if lhs_ty == TypeDecl::Bool && rhs_ty == TypeDecl::Bool {
                         TypeDecl::Bool
                     } else {
-                        return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Bool, but rhs got {:?}", rhs_ty)));
+                        return Err(TypeCheckError::new(format!("Type mismatch(bool): lhs expected Bool, but rhs got {:?}", rhs_ty)));
                     }
                 }
                 _ => return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", op, lhs_ty))),
@@ -221,29 +217,43 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
     })
 }
 pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
-    match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
+    let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.0 as usize).unwrap_or(&Expr::Null) };
+
+    match to_expr(&e) {
         Expr::Block(expressions) => {
             if expressions.is_empty() {
                 return Ok(TypeDecl::Unit);
             }
+            let mut last_empty = true;
             let mut last: Option<TypeDecl> = None;
             // This code assumes Block(expression) don't make nested function
             // so `return` expression always return for this context.
             for e in expressions {
                 let expr = ast.0.get(e.0 as usize).unwrap();
                 let def_ty: TypeDecl = match expr {
-                    Expr::Return(ret_ty) if ret_ty.is_none() => {
+                    Expr::Return(None) => {
+                        TypeDecl::Unit
+                    }
+                    Expr::Return(ret_ty) => {
                         let ty = type_check(ast, ret_ty.unwrap(), ctx)?;
-                        match last {
-                            Some(last_ty) if last_ty == ty => ty,
-                            _ => Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", last.unwrap().clone(), ty)))?,
+                        if last_empty {
+                            ty
+                        } else {
+                            match last {
+                                Some(last_ty) if last_ty == ty => ty,
+                                _ => Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, to_expr(&ret_ty.unwrap()), expr)))?,
+                            }
                         }
                     }
                     Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False | Expr::Null => {
                         let ty = type_check(ast, *e, ctx)?;
-                        match last {
-                            Some(last_ty) if last_ty == ty => ty,
-                            _ => Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", last.unwrap().clone(), ty)))?,
+                        if last_empty {
+                            ty
+                        } else {
+                            match last {
+                                Some(last_ty) if last_ty == ty => ty,
+                                _ => Err(TypeCheckError::new(format!("Type mismatch (value): expected {:?}, but got {:?} : {:?}", last, ty, expr)))?,
+                            }
                         }
                     }
                     _ => type_check(ast, *e, ctx)?,

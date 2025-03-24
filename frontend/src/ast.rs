@@ -125,7 +125,6 @@ pub enum Expr {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
-    Assign, // =
     IAdd,
     ISub,
     IMul,

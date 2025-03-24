@@ -96,6 +96,7 @@ impl Environment {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {
+    Bool(bool),
     Int64(i64),
     UInt64(u64),
     String(String),
@@ -106,6 +107,7 @@ pub enum Object {
 impl Object {
     pub fn get_type(&self) -> TypeDecl {
         match self {
+            Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
             Object::String(_) => TypeDecl::String,
@@ -133,32 +135,86 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<Object
                     match (lhs, rhs) {
                         (Object::Int64(l), Object::Int64(r)) => Object::Int64(l + r),
                         (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l + r),
-                        _ => panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr),
+                        _ => panic!("evaluate: Bad types for binary '+' operation due to different type: {:?}", expr),
                     }
                 }
                 Operator::ISub => {
                     match (lhs, rhs) {
                         (Object::Int64(l), Object::Int64(r)) => Object::Int64(l - r),
                         (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l - r),
-                        _ => panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr),
+                        _ => panic!("evaluate: Bad types for binary '-' operation due to different type: {:?}", expr),
                     }
                 }
                 Operator::IMul => {
                     match (lhs, rhs) {
                         (Object::Int64(l), Object::Int64(r)) => Object::Int64(l * r),
                         (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l * r),
-                        _ => panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr),
+                        _ => panic!("evaluate: Bad types for binary '*' operation due to different type: {:?}", expr),
                     }
                 }
                 Operator::IDiv => {
                     match (lhs, rhs) {
                         (Object::Int64(l), Object::Int64(r)) => Object::Int64(l / r),
                         (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l / r),
-                        _ => panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr),
+                        _ => panic!("evaluate: Bad types for binary '/' operation due to different type: {:?}", expr),
                     }
                 }
-                // TODO: implement LogicalAnd, LogicalOr
-                _ => panic!("evaluate: not implemented {:?}", op),
+                Operator::EQ => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l == r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l == r),
+                        (Object::String(l), Object::String(r)) => Object::Bool(l == r),
+                        _ => panic!("evaluate: Bad types for binary '==' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::NE => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l != r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l != r),
+                        (Object::String(l), Object::String(r)) => Object::Bool(l != r),
+                        _ => panic!("evaluate: Bad types for binary '!=' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::GE => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l >= r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l >= r),
+                        _ => panic!("evaluate: Bad types for binary '>=' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::GT => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l > r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l > r),
+                        _ => panic!("evaluate: Bad types for binary '>' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::LE => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l <= r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l <= r),
+                        _ => panic!("evaluate: Bad types for binary '<=' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::LT => {
+                    match (lhs, rhs) {
+                        (Object::Int64(l), Object::Int64(r)) => Object::Bool(l < r),
+                        (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l < r),
+                        _ => panic!("evaluate: Bad types for binary '<' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::LogicalAnd => {
+                    match (lhs, rhs) {
+                        (Object::Bool(l), Object::Bool(r)) => Object::Bool(l && r),
+                        _ => panic!("evaluate: Bad types for binary '&&' operation due to different type: {:?}", expr),
+                    }
+                }
+                Operator::LogicalOr => {
+                    match (lhs, rhs) {
+                        (Object::Bool(l), Object::Bool(r)) => Object::Bool(l || r),
+                        _ => panic!("evaluate: Bad types for binary '||' operation due to different type: {:?}", expr),
+                    }
+                }
             };
             Ok(res)
         }

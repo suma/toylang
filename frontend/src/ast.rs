@@ -112,6 +112,8 @@ pub enum Expr {
     IfElse(ExprRef, ExprRef, ExprRef),
     Binary(Operator, ExprRef, ExprRef),
     Block(Vec<ExprRef>),
+    True,
+    False,
     Int64(i64),
     UInt64(u64),
     Identifier(String),
@@ -119,8 +121,6 @@ pub enum Expr {
     ExprList(Vec<ExprRef>),
     Call(String, ExprRef), // apply, function call, etc
     String(String),
-    True,
-    False,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -237,6 +237,7 @@ pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Re
                     Expr::Return(ret_ty) => {
                         let ty = type_check(ast, ret_ty.unwrap(), ctx)?;
                         if last_empty {
+                            last_empty = false;
                             ty
                         } else {
                             match last {
@@ -248,6 +249,7 @@ pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Re
                     Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False | Expr::Null => {
                         let ty = type_check(ast, *e, ctx)?;
                         if last_empty {
+                            last_empty = false;
                             ty
                         } else {
                             match last {

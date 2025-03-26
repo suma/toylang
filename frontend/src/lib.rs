@@ -947,6 +947,8 @@ mod tests {
     #[case("fn_call(a, b, c)")]
     #[case("a + b * c / d")]
     #[case("a || b && c")]
+    #[case("a <= b && c >= d && e < f && g > h")]
+    #[case("a == b && c != d")]
     #[case("for i in 0u64 to 9u64 { continue }")]
     #[case("while true { break }")]
     #[case("return true")]

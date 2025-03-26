@@ -148,10 +148,6 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<Object
     let expr = ast.get(e.0 as usize);
     match expr {
         Some(Expr::Binary(op, lhs, rhs)) => {
-            let bool_op = vec![Operator::EQ, Operator::NE, Operator::LT, Operator::LE, Operator::GT, Operator::GE];
-            if bool_op.contains(op) {
-                panic!("Not handled yet logical operation: {:?}", expr);
-            }
             let lhs = evaluate(lhs, ast, ctx)?;
             let rhs = evaluate(rhs, ast, ctx)?;
             let lhs_ty = lhs.get_type();

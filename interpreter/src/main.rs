@@ -22,7 +22,7 @@ fn main() {
         return;
     }
 
-    let mut program = program.unwrap();
+    let program = program.unwrap();
     let mut ctx = TypeCheckContext::new();
     let mut kill_switch = false;
     let mut main: Option<Rc<Function>> = None;
@@ -37,8 +37,8 @@ fn main() {
         }
     });
     if !kill_switch && main.is_some() {
-        let mut env = Environment::new();
-        let res = evaluate_main(main.unwrap(), &mut program.statement, &mut program.expression, &mut env);
+        let mut eval = EvaluationContext::new(&program.statement, &program.expression);
+        let res = eval.evaluate_main(main.unwrap());
         println!("Result: {:?}", res);
         return;
     } else {
@@ -184,258 +184,275 @@ impl Object {
 
 type RcObject = Rc<RefCell<Object>>;
 
-fn evaluate(e: &ExprRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let expr = ast.get(e.to_index());
-    match expr {
-        Some(Expr::Binary(op, lhs, rhs)) => {
-            let lhs = evaluate(lhs, stmt_pool, ast, ctx)?;
-            let rhs = evaluate(rhs, stmt_pool, ast, ctx)?;
-            let lhs = lhs.borrow();
-            let rhs = rhs.borrow();
-            let lhs_ty = lhs.get_type();
-            let rhs_ty = rhs.get_type();
-            if lhs_ty != rhs_ty {
-                panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr);
+struct EvaluationContext<'a> {
+    stmt_pool: &'a StmtPool,
+    expr_pool: &'a ExprPool,
+    environment: Environment,
+}
+
+impl<'a> EvaluationContext<'a> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool) -> Self {
+        Self {
+            stmt_pool,
+            expr_pool,
+            environment: Environment::new(),
+        }
+    }
+
+    pub fn evaluate(&mut self, e: &ExprRef) -> Result<RcObject, String> {
+        let expr = self.expr_pool.get(e.to_index());
+        match expr {
+            Some(Expr::Binary(op, lhs, rhs)) => {
+                let lhs = self.evaluate(lhs)?;
+                let rhs = self.evaluate(rhs)?;
+                let lhs = lhs.borrow();
+                let rhs = rhs.borrow();
+                let lhs_ty = lhs.get_type();
+                let rhs_ty = rhs.get_type();
+                if lhs_ty != rhs_ty {
+                    panic!("evaluate: Bad types for binary operation due to different type: {:?}", expr);
+                }
+                let res = match op { // Int64, UInt64 only now
+                    Operator::IAdd => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l + r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l + r))),
+                            _ => panic!("evaluate: Bad types for binary '+' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::ISub => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l - r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l - r))),
+                            _ => panic!("evaluate: Bad types for binary '-' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::IMul => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l * r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l * r))),
+                            _ => panic!("evaluate: Bad types for binary '*' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::IDiv => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l / r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l / r))),
+                            _ => panic!("evaluate: Bad types for binary '/' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::EQ => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
+                            (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
+                            _ => panic!("evaluate: Bad types for binary '==' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::NE => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
+                            (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
+                            _ => panic!("evaluate: Bad types for binary '!=' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::GE => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
+                            _ => panic!("evaluate: Bad types for binary '>=' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::GT => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
+                            _ => panic!("evaluate: Bad types for binary '>' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::LE => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
+                            _ => panic!("evaluate: Bad types for binary '<=' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::LT => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
+                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
+                            _ => panic!("evaluate: Bad types for binary '<' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::LogicalAnd => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l && *r))),
+                            _ => panic!("evaluate: Bad types for binary '&&' operation due to different type: {:?}", expr),
+                        }
+                    }
+                    Operator::LogicalOr => {
+                        match (&*lhs, &*rhs) {
+                            (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l || *r))),
+                            _ => panic!("evaluate: Bad types for binary '||' operation due to different type: {:?}", expr),
+                        }
+                    }
+                };
+                Ok(res)
             }
-            let res = match op { // Int64, UInt64 only now
-                Operator::IAdd => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l + r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l + r))),
-                        _ => panic!("evaluate: Bad types for binary '+' operation due to different type: {:?}", expr),
+            Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
+                Ok(Rc::new(RefCell::new(convert_object(expr))))
+            }
+            //Some(Expr::Return(e)) => {
+            //    Ok(evaluate(&e.unwrap(), ctx)?)
+            //}
+            Some(Expr::Identifier(s)) => {
+                Ok(self.environment.get_val(s.as_ref()).unwrap().clone())
+            }
+            Some(Expr::IfElse(cond, then, _else)) => {
+                let cond = self.evaluate(cond)?;
+                let cond = cond.borrow();
+                if cond.get_type() != TypeDecl::Bool {
+                    panic!("evaluate: Bad types for if-else due to different type: {:?}", expr);
+                }
+                assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
+                assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
+                // TODO: push / let mut ctx = self.environment.new_block();
+                self.environment.new_block();
+                if let Object::Bool(true) = &*cond {
+                    let then = match self.expr_pool.get(then.to_index()) {
+                        Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
+                        _ => panic!("evaluate: then is not block"),
+                    };
+                    Ok(then)
+                } else {
+                    let _else = match self.expr_pool.get(_else.to_index()) {
+                        Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
+                        _ => panic!("evaluate: else is not block"),
+                    };
+                    Ok(_else)
+                }
+            }
+
+            Some(Expr::Block(statements)) => {
+                // TODO: environment.push() / pop()
+                Ok(self.evaluate_block(statements)?)
+            }
+
+            _ => panic!("evaluate: Not handled yet {:?}", expr),
+        }
+    }
+
+    fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<RcObject, String> {
+        let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap().clone() };
+        let mut last = Some(Rc::new(RefCell::new(Object::Unit)));
+        for s in statements {
+            let stmt = to_stmt(s);
+            match stmt {
+                Stmt::Val(name, _, e) => {
+                    let name = name.clone();
+                    let value = self.evaluate(&e)?;
+                    self.environment.set_val(name.as_ref(), value);
+                    last = Some(Rc::new(RefCell::new(Object::Unit)));
+                }
+                Stmt::Var(name, _, e) => {
+                    let value = if e.is_none() {
+                        Rc::new(RefCell::new(Object::Null))
+                    } else {
+                        self.evaluate(&e.unwrap())?
+                    };
+                    self.environment.set_var(name.as_ref(), value);
+                }
+                Stmt::Return(e) => {
+                    if e.is_none() {
+                        return Ok(Rc::new(RefCell::new(Object::Unit)));
+                    }
+                    return Ok(self.evaluate(&e.unwrap())?);
+                }
+                Stmt::Break => {
+                    todo!("break");
+                }
+                Stmt::While(_cond, _body) => {
+                    todo!("while");
+                }
+                Stmt::For(_identifier, _start, _end, _block) => {
+                    todo!("for");
+                }
+                Stmt::Continue => {
+                    todo!("continue");
+                }
+                Stmt::Expression(expr) => {
+                    let e = self.expr_pool.get(expr.to_index()).unwrap();
+                    match e {
+                        Expr::Assign(lhs, rhs) => {
+                            let lhs = self.evaluate(&lhs)?;
+                            let rhs = self.evaluate(&rhs)?;
+                            let lhs = lhs.borrow();
+                            let rhs_borrow = rhs.borrow();
+                            let lhs_ty = lhs.get_type(); // get type
+                            let name = if let TypeDecl::Identifier(name) = lhs.get_type() {
+                                // currently lhs expression assumes variable
+                                name
+                            } else {
+                                panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?} {:?}", lhs_ty, expr);
+                            };
+
+                            // type check
+                            let existing_val = self.environment.get_val(name.as_ref());
+                            if existing_val.is_none() {
+                                panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
+                            }
+                            let existing_val = existing_val.unwrap();
+                            let val = existing_val.borrow();
+                            let val_ty = val.get_type();
+                            let rhs_ty = rhs_borrow.get_type();
+                            if val_ty != rhs_ty {
+                                panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", lhs_ty, rhs_ty);
+                            } else {
+                                self.environment.set_var(name.as_ref(), rhs.clone());
+                            }
+                        }
+                        Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
+                            last = Some(Rc::new(RefCell::new(convert_object(Some(e)))));
+                        }
+                        Expr::Identifier(s) => {
+                            let obj = self.environment.get_val(s.as_ref());
+                            let obj_ref = obj.clone();
+                            if obj.is_none() || obj.unwrap().borrow().is_null() {
+                                panic!("evaluate_block: Identifier {} is null", s);
+                            }
+                            last = obj_ref;
+                        }
+                        Expr::Block(blk_expr) => {
+                            // TODO: environment.push()
+                            last = Some(self.evaluate_block(&blk_expr)?);
+                        }
+                        _ => {
+                            last = Some(self.evaluate(&expr)?);
+                        }
                     }
                 }
-                Operator::ISub => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l - r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l - r))),
-                        _ => panic!("evaluate: Bad types for binary '-' operation due to different type: {:?}", expr),
-                    }
+            }
+        }
+        Ok(last.unwrap())
+    }
+
+    fn evaluate_main(&mut self, function: Rc<Function>) -> Result<RcObject, String> {
+        let block = match self.stmt_pool.get(function.code.to_index()) {
+            Some(Stmt::Expression(e)) => {
+                match self.expr_pool.get(e.to_index()) {
+                    Some(Expr::Block(statements)) => statements,
+                    _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
                 }
-                Operator::IMul => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l * r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l * r))),
-                        _ => panic!("evaluate: Bad types for binary '*' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::IDiv => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l / r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l / r))),
-                        _ => panic!("evaluate: Bad types for binary '/' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::EQ => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                        (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                        _ => panic!("evaluate: Bad types for binary '==' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::NE => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                        (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                        _ => panic!("evaluate: Bad types for binary '!=' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::GE => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
-                        _ => panic!("evaluate: Bad types for binary '>=' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::GT => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
-                        _ => panic!("evaluate: Bad types for binary '>' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::LE => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
-                        _ => panic!("evaluate: Bad types for binary '<=' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::LT => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
-                        (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
-                        _ => panic!("evaluate: Bad types for binary '<' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::LogicalAnd => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l && *r))),
-                        _ => panic!("evaluate: Bad types for binary '&&' operation due to different type: {:?}", expr),
-                    }
-                }
-                Operator::LogicalOr => {
-                    match (&*lhs, &*rhs) {
-                        (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l || *r))),
-                        _ => panic!("evaluate: Bad types for binary '||' operation due to different type: {:?}", expr),
-                    }
-                }
-            };
+            }
+            _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+        };
+        let res = self.evaluate_block(block)?;
+        if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
+            Ok(Rc::new(RefCell::new(Object::Unit)))
+        } else {
             Ok(res)
         }
-        Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
-            Ok(Rc::new(RefCell::new(convert_object(expr))))
-        }
-        //Some(Expr::Return(e)) => {
-        //    Ok(evaluate(&e.unwrap(), stmt_pool, ast, ctx)?)
-        //}
-        Some(Expr::Identifier(s)) => {
-            Ok(ctx.get_val(s.as_ref()).unwrap().clone())
-        }
-        Some(Expr::IfElse(cond, then, _else)) => {
-            let cond = evaluate(cond, stmt_pool, ast, ctx)?;
-            let cond = cond.borrow();
-            if cond.get_type() != TypeDecl::Bool {
-                panic!("evaluate: Bad types for if-else due to different type: {:?}", expr);
-            }
-            assert!(ast.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
-            assert!(ast.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
-            let mut ctx = ctx.new_block();
-            if let Object::Bool(true) = &*cond {
-                let then = match ast.get(then.to_index()) {
-                    Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
-                    _ => panic!("evaluate: then is not block"),
-                };
-                Ok(then)
-            } else {
-                let _else = match ast.get(_else.to_index()) {
-                    Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
-                    _ => panic!("evaluate: else is not block"),
-                };
-                Ok(_else)
-            }
-        }
-
-        Some(Expr::Block(statements)) => {
-            let mut ctx = ctx.new_block();
-            Ok(evaluate_block(statements, stmt_pool, ast, &mut ctx)?)
-        }
-
-        _ => panic!("evaluate: Not handled yet {:?}", expr),
-    }
-}
-
-fn evaluate_block(statements: &Vec<StmtRef>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let to_stmt = |s: &StmtRef| { stmt_pool.get(s.to_index()).unwrap().clone() };
-    let mut last = Some(Rc::new(RefCell::new(Object::Unit)));
-    for s in statements {
-        let stmt = to_stmt(s);
-        match stmt {
-            Stmt::Val(name, _, e) => {
-                let name = name.clone();
-                let value = evaluate(&e, stmt_pool, ast, ctx)?;
-                ctx.set_val(name.as_ref(), value);
-                last = Some(Rc::new(RefCell::new(Object::Unit)));
-            }
-            Stmt::Var(name, _, e) => {
-                let value = if e.is_none() {
-                    Rc::new(RefCell::new(Object::Null))
-                } else {
-                    evaluate(&e.unwrap(), stmt_pool, ast, ctx)?
-                };
-                ctx.set_var(name.as_ref(), value);
-            }
-            Stmt::Return(e) => {
-                if e.is_none() {
-                    return Ok(Rc::new(RefCell::new(Object::Unit)));
-                }
-                return Ok(evaluate(&e.unwrap(), stmt_pool, ast, ctx)?);
-            }
-            Stmt::Break => {
-                todo!("break");
-            }
-            Stmt::While(_cond, _body) => {
-                todo!("while");
-            }
-            Stmt::For(_identifier, _start, _end, _block) => {
-                todo!("for");
-            }
-            Stmt::Continue => {
-                todo!("continue");
-            }
-            Stmt::Expression(expr) => {
-                let e = ast.get(expr.to_index()).unwrap();
-                match e {
-                    Expr::Assign(lhs, rhs) => {
-                        let lhs = evaluate(&lhs, stmt_pool, ast, ctx)?;
-                        let rhs = evaluate(&rhs, stmt_pool, ast, ctx)?;
-                        let lhs = lhs.borrow();
-                        let rhs_borrow = rhs.borrow();
-                        let lhs_ty = lhs.get_type(); // get type
-                        let name = if let TypeDecl::Identifier(name) = lhs.get_type() {
-                            // currently lhs expression assumes variable
-                            name
-                        } else {
-                            panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?} {:?}", lhs_ty, expr);
-                        };
-
-                        // type check
-                        let existing_val = ctx.get_val(name.as_ref());
-                        if existing_val.is_none() {
-                            panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
-                        }
-                        let existing_val = existing_val.unwrap();
-                        let val = existing_val.borrow();
-                        let val_ty = val.get_type();
-                        let rhs_ty = rhs_borrow.get_type();
-                        if val_ty != rhs_ty {
-                            panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", lhs_ty, rhs_ty);
-                        } else {
-                            ctx.set_var(name.as_ref(), rhs.clone());
-                        }
-                    }
-                    Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                        last = Some(Rc::new(RefCell::new(convert_object(Some(e)))));
-                    }
-                    Expr::Identifier(s) => {
-                        let obj = ctx.get_val(s.as_ref());
-                        let obj_ref = obj.clone();
-                        if obj.is_none() || obj.unwrap().borrow().is_null() {
-                            panic!("evaluate_block: Identifier {} is null", s);
-                        }
-                        last = obj_ref;
-                    }
-                    Expr::Block(blk_expr) => {
-                        let mut ctx = ctx.new_block();
-                        last = Some(evaluate_block(&blk_expr, stmt_pool, ast, &mut ctx)?);
-                    }
-                    _ => {
-                        last = Some(evaluate(&expr, stmt_pool, ast, ctx)?);
-                    }
-                }
-            }
-        }
-    }
-    Ok(last.unwrap())
-}
-
-fn evaluate_main(function: Rc<Function>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let block = match stmt_pool.get(function.code.to_index()) {
-        Some(Stmt::Expression(e)) => {
-            match ast.get(e.to_index()) {
-                Some(Expr::Block(statements)) => statements,
-                _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
-            }
-        }
-        _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
-    };
-    let res = evaluate_block(block, stmt_pool, ast, ctx)?;
-    if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
-        Ok(Rc::new(RefCell::new(Object::Unit)))
-    } else {
-        Ok(res)
     }
 }
 
@@ -449,4 +466,3 @@ fn convert_object(e: Option<&Expr>) -> Object {
         _ => panic!("Not handled yet {:?}", e),
     }
 }
-

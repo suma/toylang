@@ -432,7 +432,7 @@ fn evaluate_main(function: Rc<Function>, stmt_pool: &StmtPool, ast: &ExprPool, c
         _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
     };
     let res = evaluate_block(block, stmt_pool, ast, ctx)?;
-    if function.return_type.is_none() || function.return_type.clone().unwrap() == TypeDecl::Unit {
+    if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
         Ok(Rc::new(RefCell::new(Object::Unit)))
     } else {
         Ok(res)

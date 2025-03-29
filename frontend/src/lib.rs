@@ -192,7 +192,7 @@ impl<'a> Parser<'a> {
                             match self.peek() {
                                 Some(Kind::Arrow) => {
                                     self.expect_err(&Kind::Arrow)?;
-                                    ret_ty =  Some(self.parse_def_ty()?);
+                                    ret_ty =  Some(self.parse_type_declaration()?);
                                 }
                                 _ => (),
                             }
@@ -238,7 +238,7 @@ impl<'a> Parser<'a> {
                 let name = s.to_string();
                 self.next();
                 self.expect_err(&Kind::Colon)?;
-                let typ = self.parse_def_ty()?;
+                let typ = self.parse_type_declaration()?;
                 Ok((name, typ))
             }
             x => Err(anyhow!("expect type parameter of function but: {:?}", x)),
@@ -449,7 +449,7 @@ impl<'a> Parser<'a> {
         let ty: TypeDecl = match self.peek() {
             Some(Kind::Colon) => {
                 self.next();
-                self.parse_def_ty()?
+                self.parse_type_declaration()?
             }
             _ => TypeDecl::Unknown,
         };
@@ -473,7 +473,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_def_ty(&mut self) -> Result<TypeDecl> {
+    fn parse_type_declaration(&mut self) -> Result<TypeDecl> {
         let ty: TypeDecl = match self.peek() {
             Some(Kind::Bool) => TypeDecl::Bool,
             Some(Kind::U64) => TypeDecl::UInt64,
@@ -485,7 +485,9 @@ impl<'a> Parser<'a> {
             Some(Kind::Str) => {
                 TypeDecl::String
             }
-            _ => TypeDecl::Unknown,
+            Some(_) | None => {
+                panic!("parse_type_declaration: unexpected token {:?}", self.peek());
+            }
         };
         self.next();
         Ok(ty)

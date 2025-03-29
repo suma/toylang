@@ -27,7 +27,7 @@ fn main() {
     let mut kill_switch = false;
     let mut main: Option<Rc<Function>> = None;
     program.function.iter().for_each(|func| {
-        let r = type_check(&program.expression, func.code, &mut ctx);
+        let r = type_check(&func.code, &program.statement, &program.expression, &mut ctx);
         if r.is_err() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
             kill_switch = true;
@@ -38,7 +38,7 @@ fn main() {
     });
     if !kill_switch && main.is_some() {
         let mut env = Environment::new();
-        let res = evaluate_main(main.unwrap(), &mut program.expression, &mut env);
+        let res = evaluate_main(main.unwrap(), &mut program.statement, &mut program.expression, &mut env);
         println!("Result: {:?}", res);
         return;
     } else {
@@ -184,12 +184,12 @@ impl Object {
 
 type RcObject = Rc<RefCell<Object>>;
 
-fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
+fn evaluate(e: &ExprRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
     let expr = ast.get(e.0 as usize);
     match expr {
         Some(Expr::Binary(op, lhs, rhs)) => {
-            let lhs = evaluate(lhs, ast, ctx)?;
-            let rhs = evaluate(rhs, ast, ctx)?;
+            let lhs = evaluate(lhs, stmt_pool, ast, ctx)?;
+            let rhs = evaluate(rhs, stmt_pool, ast, ctx)?;
             let lhs = lhs.borrow();
             let rhs = rhs.borrow();
             let lhs_ty = lhs.get_type();
@@ -288,14 +288,14 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObje
         Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
             Ok(Rc::new(RefCell::new(convert_object(expr))))
         }
-        Some(Expr::Return(e)) => {
-            Ok(evaluate(&e.unwrap(), ast, ctx)?)
-        }
+        //Some(Expr::Return(e)) => {
+        //    Ok(evaluate(&e.unwrap(), stmt_pool, ast, ctx)?)
+        //}
         Some(Expr::Identifier(s)) => {
             Ok(ctx.get_val(s.as_ref()).unwrap().clone())
         }
         Some(Expr::IfElse(cond, then, _else)) => {
-            let cond = evaluate(cond, ast, ctx)?;
+            let cond = evaluate(cond, stmt_pool, ast, ctx)?;
             let cond = cond.borrow();
             if cond.get_type() != TypeDecl::Bool {
                 panic!("evaluate: Bad types for if-else due to different type: {:?}", expr);
@@ -304,50 +304,73 @@ fn evaluate(e: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObje
             assert!(ast.get(_else.0 as usize).unwrap().is_block(), "evaluate: else is not block");
             let mut ctx = ctx.new_block();
             if let Object::Bool(true) = &*cond {
-                let then = evaluate_block(then, ast, &mut ctx)?;
+                let then = match ast.get(then.0 as usize) {
+                    Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
+                    _ => panic!("evaluate: then is not block"),
+                };
                 Ok(then)
             } else {
-                let _else = evaluate_block(_else, ast, &mut ctx)?;
+                let _else = match ast.get(_else.0 as usize) {
+                    Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
+                    _ => panic!("evaluate: else is not block"),
+                };
                 Ok(_else)
             }
         }
 
-        Some(Expr::Block(_)) => {
+        Some(Expr::Block(statements)) => {
             let mut ctx = ctx.new_block();
-            Ok(evaluate_block(e, ast, &mut ctx)?)
+            Ok(evaluate_block(statements, stmt_pool, ast, &mut ctx)?)
         }
 
         _ => panic!("evaluate: Not handled yet {:?}", expr),
     }
 }
 
-fn evaluate_block(blk_expr: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.0 as usize).unwrap_or(&Expr::Null) };
-    assert!(to_expr(blk_expr).is_block(), "failed: block expected but got {:?}", to_expr(blk_expr));
-
+fn evaluate_block(statements: &Vec<StmtRef>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
+    let to_stmt = |s: &StmtRef| { stmt_pool.get(s.0 as usize).unwrap().clone() };
     let mut last = Some(Rc::new(RefCell::new(Object::Unit)));
-    match to_expr(blk_expr) {
-        Expr::Block(expressions) => {
-            for e in expressions {
-                let expr = to_expr(e);
-                match expr {
-                    Expr::Val(name, _, e) => {
-                        let name = name.clone();
-                        let value = evaluate(e, ast, ctx)?;
-                        ctx.set_val(name.as_ref(), value);
-                        last = Some(Rc::new(RefCell::new(Object::Unit)));
-                    }
-                    Expr::Var(name, _, e) => {
-                        let value = if e.is_none() {
-                            Rc::new(RefCell::new(Object::Null))
-                        } else {
-                            evaluate(&e.unwrap(), ast, ctx)?
-                        };
-                        ctx.set_var(name.as_ref(), value);
-                    }
+    for s in statements {
+        let stmt = to_stmt(s);
+        match stmt {
+            Stmt::Val(name, _, e) => {
+                let name = name.clone();
+                let value = evaluate(&e, stmt_pool, ast, ctx)?;
+                ctx.set_val(name.as_ref(), value);
+                last = Some(Rc::new(RefCell::new(Object::Unit)));
+            }
+            Stmt::Var(name, _, e) => {
+                let value = if e.is_none() {
+                    Rc::new(RefCell::new(Object::Null))
+                } else {
+                    evaluate(&e.unwrap(), stmt_pool, ast, ctx)?
+                };
+                ctx.set_var(name.as_ref(), value);
+            }
+            Stmt::Return(e) => {
+                if e.is_none() {
+                    return Ok(Rc::new(RefCell::new(Object::Unit)));
+                }
+                return Ok(evaluate(&e.unwrap(), stmt_pool, ast, ctx)?);
+            }
+            Stmt::Break => {
+                todo!("break");
+            }
+            Stmt::While(_cond, _body) => {
+                todo!("while");
+            }
+            Stmt::For(_identifier, _start, _end, _block) => {
+                todo!("for");
+            }
+            Stmt::Continue => {
+                todo!("continue");
+            }
+            Stmt::Expression(expr) => {
+                let e = ast.get(expr.0 as usize).unwrap();
+                match e {
                     Expr::Assign(lhs, rhs) => {
-                        let lhs = evaluate(lhs, ast, ctx)?;
-                        let rhs = evaluate(rhs, ast, ctx)?;
+                        let lhs = evaluate(&lhs, stmt_pool, ast, ctx)?;
+                        let rhs = evaluate(&rhs, stmt_pool, ast, ctx)?;
                         let lhs = lhs.borrow();
                         let rhs_borrow = rhs.borrow();
                         let lhs_ty = lhs.get_type(); // get type
@@ -373,15 +396,8 @@ fn evaluate_block(blk_expr: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> 
                             ctx.set_var(name.as_ref(), rhs.clone());
                         }
                     }
-                    Expr::Return(e) => {
-                        if e.is_none() {
-                            return Ok(Rc::new(RefCell::new(Object::Unit)));
-                        }
-                        return Ok(evaluate(&e.unwrap(), ast, ctx)?);
-                    }
-                    // TODO: break, continue
                     Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                        last = Some(Rc::new(RefCell::new(convert_object(Some(expr)))));
+                        last = Some(Rc::new(RefCell::new(convert_object(Some(e)))));
                     }
                     Expr::Identifier(s) => {
                         let obj = ctx.get_val(s.as_ref());
@@ -391,26 +407,31 @@ fn evaluate_block(blk_expr: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> 
                         }
                         last = obj_ref;
                     }
-                    Expr::Block(_) => {
+                    Expr::Block(blk_expr) => {
                         let mut ctx = ctx.new_block();
-                        last = Some(evaluate_block(blk_expr, ast, &mut ctx)?);
+                        last = Some(evaluate_block(&blk_expr, stmt_pool, ast, &mut ctx)?);
                     }
                     _ => {
-                        last = Some(evaluate(e, ast, ctx)?);
+                        last = Some(evaluate(&expr, stmt_pool, ast, ctx)?);
                     }
                 }
             }
-        }
-        _ => {
-            last = Some(evaluate(blk_expr, ast, ctx)?);
-            println!("evaluate_block: Not handled yet {:?}", to_expr(blk_expr))
         }
     }
     Ok(last.unwrap())
 }
 
-fn evaluate_main(function: Rc<Function>, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let res = evaluate_block(&function.code, ast, ctx)?;
+fn evaluate_main(function: Rc<Function>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
+    let block = match stmt_pool.get(function.code.0 as usize) {
+        Some(Stmt::Expression(e)) => {
+            match ast.get(e.0 as usize) {
+                Some(Expr::Block(statements)) => statements,
+                _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+            }
+        }
+        _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+    };
+    let res = evaluate_block(block, stmt_pool, ast, ctx)?;
     if function.return_type.is_none() || function.return_type.clone().unwrap() == TypeDecl::Unit {
         Ok(Rc::new(RefCell::new(Object::Unit)))
     } else {

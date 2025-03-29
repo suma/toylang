@@ -608,23 +608,23 @@ impl<'a> Parser<'a> {
                         self.ast.add(Expr::String(s))
                     }
                     x => {
-                        match x {
+                        return match x {
                             Some(Kind::ParenOpen) => {
                                 self.next();
                                 let e = self.parse_expr()?;
                                 self.expect_err(&Kind::ParenClose)?;
-                                return Ok(e);
+                                Ok(e)
                             }
                             Some(Kind::BraceOpen) => {
-                                return self.parse_block();
+                                self.parse_block()
                             }
                             // TODO: write parse_expr right recursion (TODO: more smart way 🤔)
                             Some(Kind::If) => {
                                 self.next();
-                                return self.parse_if();
+                                self.parse_if()
                             }
                             _ => {
-                                return Err(anyhow!("parse_primary: unexpected token {:?}", x));
+                                Err(anyhow!("parse_primary: unexpected token {:?}", x))
                             }
                         }
                     }

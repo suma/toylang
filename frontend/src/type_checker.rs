@@ -67,10 +67,11 @@ impl TypeCheckContext {
     }
 }
 
-fn process_val_type(ast: &ExprPool, ctx: &mut TypeCheckContext, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+fn process_val_type(stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut TypeCheckContext, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
     let mut expr_ty: Option<TypeDecl> = None;
     if expr.is_some() {
-        let ty = type_check(ast, expr.unwrap(), ctx)?;
+        let e = expr.unwrap();
+        let ty = type_check_expr(stmt_pool, ast, &e, ctx)?;
         if ty != TypeDecl::Unit {
             expr_ty = Some(ty);
         } else {
@@ -92,7 +93,7 @@ fn process_val_type(ast: &ExprPool, ctx: &mut TypeCheckContext, name: &String, t
     Ok(TypeDecl::Unit)
 }
 
-pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
+pub fn type_check_expr(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     let is_block_empty = |blk: ExprRef| -> bool {
         match ast.0.get(blk.0 as usize).unwrap() {
             Expr::Block(expressions) => {
@@ -109,8 +110,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             if blk1_empty || blk2_empty {
                 TypeDecl::Unit // ignore to infer empty of blk
             } else {
-                let blk1_ty = check_block(ast, *blk1, ctx)?;
-                let blk2_ty = check_block(ast, *blk2, ctx)?;
+                let blk1_ty = check_block(stmt_pool, ast, blk1, ctx)?;
+                let blk2_ty = check_block(stmt_pool, ast, blk2, ctx)?;
                 if blk1_ty != blk2_ty {
                     TypeDecl::Unit
                 } else {
@@ -119,8 +120,8 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
             }
         }
         Expr::Binary(op, lhs, rhs) => {
-            let lhs_ty = type_check(ast, *lhs, ctx)?;
-            let rhs_ty = type_check(ast, *rhs, ctx)?;
+            let lhs_ty = type_check_expr(stmt_pool, ast, lhs, ctx)?;
+            let rhs_ty = type_check_expr(stmt_pool, ast, rhs, ctx)?;
             if lhs_ty != rhs_ty {
                 return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
             }
@@ -156,18 +157,11 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
 
         }
         Expr::Block(_expressions) => {
-            check_block(ast, e, ctx)?
+            check_block(stmt_pool, ast, e, ctx)?
         }
         Expr::Int64(_) => TypeDecl::Int64,
         Expr::UInt64(_) => TypeDecl::UInt64,
         Expr::String(_) => TypeDecl::String,
-        Expr::Var(name, type_decl, expr) => {
-            process_val_type(ast, ctx, name, type_decl, expr)?
-        }
-        Expr::Val(name, type_decl, expr) => {
-            let expr = Some(expr.clone());
-            process_val_type(ast, ctx, name, type_decl, &expr)?
-        }
         Expr::Identifier(name) => {
             if let Some(val_type) = ctx.get_var(&name) {
                 val_type.clone()
@@ -194,21 +188,9 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
                 return Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)));
             }
         }
-        Expr::Return(expr) => {
-            if expr.is_none() {
-                TypeDecl::Unit
-            } else {
-                let e = expr.unwrap();
-                type_check(ast, e, ctx)?
-            }
-        }
-        Expr::For(_, _, _, _) => TypeDecl::Unit,
-        Expr::While(_, _) => TypeDecl::Unit,
-        Expr::Break => TypeDecl::Unit,
-        Expr::Continue => TypeDecl::Unit,
         Expr::Assign(lhs, rhs) => {
-            let lhs_ty = type_check(ast, *lhs, ctx)?;
-            let rhs_ty = type_check(ast, *rhs, ctx)?;
+            let lhs_ty = type_check_expr(stmt_pool, ast, lhs, ctx)?;
+            let rhs_ty = type_check_expr(stmt_pool, ast, rhs, ctx)?;
             if lhs_ty != rhs_ty {
                 return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
             }
@@ -216,49 +198,81 @@ pub fn type_check(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Res
         }
     })
 }
-pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
+
+pub fn type_check_stmt(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
+    let to_stmt = |e: &StmtRef| -> &Stmt { stmt_pool.get(e.0 as usize).unwrap_or(&Stmt::Break) };
+
+    Ok(match to_stmt(s) {
+        Stmt::Expression(e) => {
+            type_check_expr(stmt_pool, ast, e, ctx)?
+        }
+        Stmt::Var(name, type_decl, expr) => {
+            process_val_type(stmt_pool, ast, ctx, name, type_decl, expr)?
+        }
+        Stmt::Val(name, type_decl, expr) => {
+            let expr = Some(expr.clone());
+            process_val_type(stmt_pool, ast, ctx, name, type_decl, &expr)?
+        }
+        Stmt::Return(expr) => {
+            if expr.is_none() {
+                TypeDecl::Unit
+            } else {
+                let e = expr.unwrap();
+                type_check_expr(stmt_pool, ast, &e, ctx)?
+            }
+        }
+        Stmt::For(_, _, _, _) => TypeDecl::Unit,
+        Stmt::While(_, _) => TypeDecl::Unit,
+        Stmt::Break => TypeDecl::Unit,
+        Stmt::Continue => TypeDecl::Unit,
+    })
+}
+pub fn check_block(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.0 as usize).unwrap_or(&Expr::Null) };
 
     match to_expr(&e) {
-        Expr::Block(expressions) => {
-            if expressions.is_empty() {
+        Expr::Block(statements) => {
+            if statements.is_empty() {
                 return Ok(TypeDecl::Unit);
             }
             let mut last_empty = true;
             let mut last: Option<TypeDecl> = None;
             // This code assumes Block(expression) don't make nested function
             // so `return` expression always return for this context.
-            for e in expressions {
-                let expr = ast.0.get(e.0 as usize).unwrap();
-                let def_ty: TypeDecl = match expr {
-                    Expr::Return(None) => {
+            for s in statements {
+                let stmt = stmt_pool.0.get(s.0 as usize).unwrap();
+                let def_ty: TypeDecl = match stmt {
+                    Stmt::Return(None) => {
                         TypeDecl::Unit
                     }
-                    Expr::Return(ret_ty) => {
-                        let ty = type_check(ast, ret_ty.unwrap(), ctx)?;
+                    Stmt::Return(ret_ty) => {
+                        let e = ret_ty.unwrap();
+                        let ty = type_check_expr(stmt_pool, ast, &e, ctx)?;
                         if last_empty {
                             last_empty = false;
                             ty
                         } else {
                             match last {
                                 Some(last_ty) if last_ty == ty => ty,
-                                _ => Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, to_expr(&ret_ty.unwrap()), expr)))?,
+                                _ => Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, to_expr(&ret_ty.unwrap()), stmt)))?,
                             }
                         }
                     }
+                    /*
                     Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False | Expr::Null => {
-                        let ty = type_check(ast, *e, ctx)?;
+                        let ty = type_check_expr(ast, *s, ctx)?;
                         if last_empty {
                             last_empty = false;
                             ty
                         } else {
                             match last {
                                 Some(last_ty) if last_ty == ty => ty,
-                                _ => Err(TypeCheckError::new(format!("Type mismatch (value): expected {:?}, but got {:?} : {:?}", last, ty, expr)))?,
+                                _ => Err(TypeCheckError::new(format!("Type mismatch (value): expected {:?}, but got {:?} : {:?}", last, ty, stmt)))?,
                             }
                         }
                     }
-                    _ => type_check(ast, *e, ctx)?,
+                    */
+                    _ => type_check_stmt(s, stmt_pool, ast, ctx)?,
                 };
                 last = Some(def_ty);
             }
@@ -270,4 +284,30 @@ pub fn check_block(ast: &ExprPool, e: ExprRef, ctx: &mut TypeCheckContext) -> Re
         }
         _ => panic!("check_block: expected block but {:?}", ast.0.get(e.0 as usize).unwrap()),
     }
+}
+
+pub fn type_check(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool,  ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
+    let mut last = TypeDecl::Unit;
+
+    match stmt_pool.get(s.0 as usize).unwrap() {
+        Stmt::Expression(e) => {
+            match ast.get(e.0 as usize).unwrap() {
+                Expr::Block(statements) => {
+                    for stmt in statements {
+                        let res = type_check_stmt(stmt, stmt_pool, ast, ctx);
+                        if res.is_err() {
+                            return res;
+                        } else {
+                            last = res.unwrap();
+                        }
+                    }
+                }
+                _ => {
+                    panic!("type_check: expected block but {:?}", ast.0.get(s.0 as usize).unwrap());
+                }
+            }
+        }
+        _ => panic!("type_check: expected block but {:?}", ast.0.get(s.0 as usize).unwrap()),
+    }
+    Ok(last)
 }

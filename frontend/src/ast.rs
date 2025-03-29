@@ -6,6 +6,11 @@ pub struct ExprRef(pub u32);
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExprPool(pub Vec<Expr>);
 
+#[derive (Clone, Copy, Debug, PartialEq)]
+pub struct StmtRef(pub u32);
+#[derive(Debug, PartialEq, Clone)]
+pub struct StmtPool(pub Vec<Stmt>);
+
 #[derive(Debug, PartialEq, Clone)]
 pub struct Node {
     pub start: usize,
@@ -39,6 +44,33 @@ impl ExprPool {
     }
 }
 
+impl StmtPool {
+    pub fn new() -> StmtPool {
+        StmtPool(Vec::new())
+    }
+    pub fn with_capacity(cap: usize) -> StmtPool {
+        StmtPool(Vec::with_capacity(cap))
+    }
+
+    pub fn push(&mut self, stmt: Stmt) {
+        self.0.push(stmt);
+    }
+
+    pub fn add(&mut self, stmt: Stmt) -> StmtRef {
+        let len = self.0.len();
+        self.0.push(stmt);
+        StmtRef(len as u32)
+    }
+
+    pub fn get(&self, i: usize) -> Option<&Stmt> {
+        self.0.get(i)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 impl Node {
     pub fn new(start: usize, end: usize) -> Self {
         Node {
@@ -53,29 +85,14 @@ pub struct Program {
     pub node: Node,
     pub import: Vec<String>,
     pub function: Vec<Rc<Function>>,
-    //pub expression: Vec<ExprRef>,
 
+    pub statement: StmtPool,
     pub expression: ExprPool,
 }
 
 impl Program {
-
     pub fn get(&self, i: u32) -> Option<&crate::ast::Expr> {
         self.expression.0.get(i as usize)
-    }
-
-    pub fn get_block(&self, i: u32) -> Option<Vec<&crate::ast::Expr>> {
-        let mut expression_block: Vec<&crate::ast::Expr> = vec![];
-        match self.get(i) {
-            Some(e) => match e {
-                crate::ast::Expr::Block(expressions) => {
-                    expressions.iter().for_each(|x| expression_block.push(&self.get(x.0).unwrap()));
-                }
-                _ => return Option::None,
-            }
-            _ => return Option::None,
-        }
-        Some(expression_block)
     }
 
     pub fn len(&self) -> usize {
@@ -90,15 +107,15 @@ pub struct Function {
     pub name: String,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
-    pub code: ExprRef,
+    pub code: StmtRef,
 }
 
 pub type Parameter = (String, TypeDecl);
 pub type ParameterList = Vec<Parameter>;
 
 #[derive(Debug, PartialEq, Clone)]
-pub enum Expr {
-    // These are statement but used as Expr
+pub enum Stmt {
+    Expression(ExprRef),
     Val(String, Option<TypeDecl>, ExprRef),
     Var(String, Option<TypeDecl>, Option<ExprRef>),
     Return(Option<ExprRef>),
@@ -106,12 +123,14 @@ pub enum Expr {
     Continue,
     For(String, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
+}
 
-    // expr
+#[derive(Debug, PartialEq, Clone)]
+pub enum Expr {
     Assign(ExprRef, ExprRef),   // lhs = rhs
     IfElse(ExprRef, ExprRef, ExprRef),
     Binary(Operator, ExprRef, ExprRef),
-    Block(Vec<ExprRef>),
+    Block(Vec<StmtRef>),
     True,
     False,
     Int64(i64),

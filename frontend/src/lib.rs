@@ -20,7 +20,7 @@ pub struct Parser<'a> {
     pub lexer: lexer::Lexer<'a>,
     pub ahead: Vec<Token>,
     pub stmt:  StmtPool,
-    pub ast:   ExprPool,
+    pub expr:  ExprPool,
 }
 
 #[derive(Debug)]
@@ -36,7 +36,7 @@ impl<'a> Parser<'a> {
             lexer,
             ahead: Vec::new(),
             stmt: StmtPool::with_capacity(1024),
-            ast: ExprPool::with_capacity(1024),
+            expr: ExprPool::with_capacity(1024),
         }
     }
 
@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
 
 
     pub fn next_expr(&self) -> u32 {
-        self.ast.len() as u32
+        self.expr.len() as u32
     }
 
     // code := (import | fn)*
@@ -221,7 +221,7 @@ impl<'a> Parser<'a> {
         let mut stmt = StmtPool::new();
         std::mem::swap(&mut stmt, &mut self.stmt);
         let mut expr = ExprPool::new();
-        std::mem::swap(&mut expr, &mut self.ast);
+        std::mem::swap(&mut expr, &mut self.expr);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             import: vec![],
@@ -368,7 +368,7 @@ impl<'a> Parser<'a> {
                 Some(Kind::Equal) => {
                     self.next();
                     let new_rhs = self.parse_logical_expr()?;
-                    lhs = self.ast.add(Expr::Assign(lhs, new_rhs));
+                    lhs = self.expr.add(Expr::Assign(lhs, new_rhs));
                 }
                 _ => return Ok(lhs),
             }
@@ -383,9 +383,9 @@ impl<'a> Parser<'a> {
                 self.next();
                 self.parse_block()?
             }
-            _ => self.ast.add(Expr::Block(vec![])), // through
+            _ => self.expr.add(Expr::Block(vec![])), // through
         };
-        Ok(self.ast.add(Expr::IfElse(cond, if_block, else_block)))
+        Ok(self.expr.add(Expr::IfElse(cond, if_block, else_block)))
     }
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {
@@ -394,12 +394,12 @@ impl<'a> Parser<'a> {
             Some(Kind::BraceClose) | None => {
                 // empty block
                 self.next();
-                Ok(self.ast.add(Expr::Block(vec![])))
+                Ok(self.expr.add(Expr::Block(vec![])))
             }
             _ => {
                 let block = self.parse_block_impl(vec![])?;
                 self.expect_err(&Kind::BraceClose)?;
-                Ok(self.ast.add(Expr::Block(block)))
+                Ok(self.expr.add(Expr::Block(block)))
             }
         }
     }
@@ -552,7 +552,7 @@ impl<'a> Parser<'a> {
                 Some((_, op)) => {
                     self.next();
                     let rhs = (group.next_precedence)(self)?;
-                    lhs = self.ast.add(Self::new_binary(op.clone(), lhs, rhs));
+                    lhs = self.expr.add(Self::new_binary(op.clone(), lhs, rhs));
                 }
                 None => return Ok(lhs),
             }
@@ -597,27 +597,27 @@ impl<'a> Parser<'a> {
                         self.next();
                         let args = self.parse_expr_list(vec![])?;
                         self.expect_err(&Kind::ParenClose)?;
-                        let args = self.ast.add(Expr::ExprList(args));
-                        let expr = self.ast.add(Expr::Call(s, args));
+                        let args = self.expr.add(Expr::ExprList(args));
+                        let expr = self.expr.add(Expr::Call(s, args));
                         Ok(expr)
                     }
                     _ => {
                         // identifier
-                        Ok(self.ast.add(Expr::Identifier(s)))
+                        Ok(self.expr.add(Expr::Identifier(s)))
                     }
                 }
             }
             x => {
                 let e = Ok(match x {
-                    Some(&Kind::UInt64(num)) => self.ast.add(Expr::UInt64(num)),
-                    Some(&Kind::Int64(num)) => self.ast.add(Expr::Int64(num)),
-                    Some(&Kind::Null) => self.ast.add(Expr::Null),
-                    Some(&Kind::True) => self.ast.add(Expr::True),
-                    Some(&Kind::False) => self.ast.add(Expr::False),
+                    Some(&Kind::UInt64(num)) => self.expr.add(Expr::UInt64(num)),
+                    Some(&Kind::Int64(num)) => self.expr.add(Expr::Int64(num)),
+                    Some(&Kind::Null) => self.expr.add(Expr::Null),
+                    Some(&Kind::True) => self.expr.add(Expr::True),
+                    Some(&Kind::False) => self.expr.add(Expr::False),
                     Some(Kind::String(str)) => {
                         // TODO: optimizing with string interning
                         let s = str.clone();
-                        self.ast.add(Expr::String(s))
+                        self.expr.add(Expr::String(s))
                     }
                     x => {
                         return match x {

@@ -324,14 +324,14 @@ impl<'a> Parser<'a> {
         }
     }
     pub fn parse_expr(&mut self) -> Result<ExprRef> {
-        let e = self.parse_logical_expr();
-        if e.is_ok() {
+        let lhs = self.parse_logical_expr();
+        if lhs.is_ok() {
             return match self.peek() {
                 Some(Kind::Equal) => {
                     self.next();
-                    self.parse_assign(e?)
+                    self.parse_assign(lhs?)
                 }
-                _ => e,
+                _ => lhs,
             };
         }
 
@@ -349,16 +349,16 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_assign(&mut self, lhs: ExprRef) -> Result<ExprRef> {
-        let mut rhs = self.parse_logical_expr()?;
+    pub fn parse_assign(&mut self, mut lhs: ExprRef) -> Result<ExprRef> {
+        //let rhs = self.parse_logical_expr()?;
         loop {
             match self.peek() {
                 Some(Kind::Equal) => {
                     self.next();
-                    let new_lhs = self.parse_logical_expr()?;
-                    rhs = self.ast.add(Expr::Assign(new_lhs, rhs));
+                    let new_rhs = self.parse_logical_expr()?;
+                    lhs = self.ast.add(Expr::Assign(lhs, new_rhs));
                 }
-                _ => return Ok(self.ast.add(Expr::Assign(lhs, rhs))),
+                _ => return Ok(lhs),
             }
         }
     }

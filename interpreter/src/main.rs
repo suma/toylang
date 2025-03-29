@@ -345,6 +345,34 @@ fn evaluate_block(blk_expr: &ExprRef, ast: &ExprPool, ctx: &mut Environment) -> 
                         };
                         ctx.set_var(name.as_ref(), value);
                     }
+                    Expr::Assign(lhs, rhs) => {
+                        let lhs = evaluate(lhs, ast, ctx)?;
+                        let rhs = evaluate(rhs, ast, ctx)?;
+                        let lhs = lhs.borrow();
+                        let rhs_borrow = rhs.borrow();
+                        let lhs_ty = lhs.get_type(); // get type
+                        let name = if let TypeDecl::Identifier(name) = lhs.get_type() {
+                            // currently lhs expression assumes variable
+                            name
+                        } else {
+                            panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?} {:?}", lhs_ty, expr);
+                        };
+
+                        // type check
+                        let existing_val = ctx.get_val(name.as_ref());
+                        if existing_val.is_none() {
+                            panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
+                        }
+                        let existing_val = existing_val.unwrap();
+                        let val = existing_val.borrow();
+                        let val_ty = val.get_type();
+                        let rhs_ty = rhs_borrow.get_type();
+                        if val_ty != rhs_ty {
+                            panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", lhs_ty, rhs_ty);
+                        } else {
+                            ctx.set_var(name.as_ref(), rhs.clone());
+                        }
+                    }
                     Expr::Return(e) => {
                         if e.is_none() {
                             return Ok(Rc::new(RefCell::new(Object::Unit)));

@@ -56,7 +56,6 @@ impl<'a> Parser<'a> {
     }
 
     // pos: 0-origin
-    #[allow(dead_code)]
     fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         while self.ahead.len() < pos + 1 {
             match self.lexer.yylex() {
@@ -70,7 +69,6 @@ impl<'a> Parser<'a> {
         }
     }
 
-    #[allow(dead_code)]
     fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
         while self.ahead.len() < pos + 1 {
             match self.lexer.yylex() {
@@ -82,11 +80,6 @@ impl<'a> Parser<'a> {
             Some(t) => Some(&t.position),
             None => None,
         }
-    }
-
-    #[allow(dead_code)]
-    fn consume(&mut self, count: usize) -> usize {
-        self.ahead.drain(0..count).count()
     }
 
     fn next(&mut self) {
@@ -778,11 +771,15 @@ mod tests {
     #[test]
     fn parser_util_lookahead() {
         let mut p = Parser::new("1u64 + 2u64");
+
         let t0 = p.peek_n(0).unwrap().clone();
         let t1 = p.peek_n(1).unwrap().clone();
         assert_eq!(Kind::UInt64(1), t0);
         assert_eq!(Kind::IAdd, t1);
-        assert_eq!(2, p.consume(2));
+        let mut consume = |count: usize| -> usize {
+            p.ahead.drain(0..count).count()
+        };
+        assert_eq!(2, consume(2));
 
         let t2 = p.peek().unwrap();
         assert_eq!(Kind::UInt64(2), *t2);

@@ -17,6 +17,18 @@ pub struct Node {
     pub end: usize,
 }
 
+impl ExprRef {
+    pub fn to_index(&self) -> usize {
+        self.0 as usize
+    }
+}
+
+impl StmtRef {
+    pub fn to_index(&self) -> usize {
+        self.0 as usize
+    }
+}
+
 impl ExprPool {
     pub fn new() -> ExprPool {
         ExprPool(Vec::new())

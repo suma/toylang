@@ -95,14 +95,14 @@ fn process_val_type(stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut TypeCheckCon
 
 pub fn type_check_expr(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     let is_block_empty = |blk: ExprRef| -> bool {
-        match ast.0.get(blk.0 as usize).unwrap() {
+        match ast.0.get(blk.to_index()).unwrap() {
             Expr::Block(expressions) => {
                 expressions.is_empty()
             }
             _ => false,
         }
     };
-    Ok(match ast.0.get(e.0 as usize).unwrap_or(&Expr::Null) {
+    Ok(match ast.0.get(e.to_index()).unwrap_or(&Expr::Null) {
         Expr::True | Expr::False => TypeDecl::Bool,
         Expr::IfElse(_cond, blk1, blk2) => {
             let blk1_empty = is_block_empty(*blk1);
@@ -200,7 +200,7 @@ pub fn type_check_expr(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &
 }
 
 pub fn type_check_stmt(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
-    let to_stmt = |e: &StmtRef| -> &Stmt { stmt_pool.get(e.0 as usize).unwrap_or(&Stmt::Break) };
+    let to_stmt = |e: &StmtRef| -> &Stmt { stmt_pool.get(e.to_index()).unwrap_or(&Stmt::Break) };
 
     Ok(match to_stmt(s) {
         Stmt::Expression(e) => {
@@ -228,7 +228,7 @@ pub fn type_check_stmt(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &
     })
 }
 pub fn check_block(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
-    let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.0 as usize).unwrap_or(&Expr::Null) };
+    let to_expr = |e: &ExprRef| -> &Expr { ast.get(e.to_index()).unwrap_or(&Expr::Null) };
 
     match to_expr(&e) {
         Expr::Block(statements) => {
@@ -240,7 +240,7 @@ pub fn check_block(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut 
             // This code assumes Block(expression) don't make nested function
             // so `return` expression always return for this context.
             for s in statements {
-                let stmt = stmt_pool.0.get(s.0 as usize).unwrap();
+                let stmt = stmt_pool.0.get(s.to_index()).unwrap();
                 let def_ty: TypeDecl = match stmt {
                     Stmt::Return(None) => {
                         TypeDecl::Unit
@@ -282,16 +282,16 @@ pub fn check_block(stmt_pool: &StmtPool, ast: &ExprPool, e: &ExprRef, ctx: &mut 
                 Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}", last)))
             }
         }
-        _ => panic!("check_block: expected block but {:?}", ast.0.get(e.0 as usize).unwrap()),
+        _ => panic!("check_block: expected block but {:?}", ast.0.get(e.to_index()).unwrap()),
     }
 }
 
 pub fn type_check(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool,  ctx: &mut TypeCheckContext) -> Result<TypeDecl, TypeCheckError> {
     let mut last = TypeDecl::Unit;
 
-    match stmt_pool.get(s.0 as usize).unwrap() {
+    match stmt_pool.get(s.to_index()).unwrap() {
         Stmt::Expression(e) => {
-            match ast.get(e.0 as usize).unwrap() {
+            match ast.get(e.to_index()).unwrap() {
                 Expr::Block(statements) => {
                     for stmt in statements {
                         let res = type_check_stmt(stmt, stmt_pool, ast, ctx);
@@ -303,11 +303,11 @@ pub fn type_check(s: &StmtRef, stmt_pool: &StmtPool, ast: &ExprPool,  ctx: &mut 
                     }
                 }
                 _ => {
-                    panic!("type_check: expected block but {:?}", ast.0.get(s.0 as usize).unwrap());
+                    panic!("type_check: expected block but {:?}", ast.0.get(s.to_index()).unwrap());
                 }
             }
         }
-        _ => panic!("type_check: expected block but {:?}", ast.0.get(s.0 as usize).unwrap()),
+        _ => panic!("type_check: expected block but {:?}", ast.0.get(s.to_index()).unwrap()),
     }
     Ok(last)
 }

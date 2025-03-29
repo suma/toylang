@@ -185,7 +185,7 @@ impl Object {
 type RcObject = Rc<RefCell<Object>>;
 
 fn evaluate(e: &ExprRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let expr = ast.get(e.0 as usize);
+    let expr = ast.get(e.to_index());
     match expr {
         Some(Expr::Binary(op, lhs, rhs)) => {
             let lhs = evaluate(lhs, stmt_pool, ast, ctx)?;
@@ -300,17 +300,17 @@ fn evaluate(e: &ExprRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environ
             if cond.get_type() != TypeDecl::Bool {
                 panic!("evaluate: Bad types for if-else due to different type: {:?}", expr);
             }
-            assert!(ast.get(then.0 as usize).unwrap().is_block(), "evaluate: then is not block");
-            assert!(ast.get(_else.0 as usize).unwrap().is_block(), "evaluate: else is not block");
+            assert!(ast.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
+            assert!(ast.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
             let mut ctx = ctx.new_block();
             if let Object::Bool(true) = &*cond {
-                let then = match ast.get(then.0 as usize) {
+                let then = match ast.get(then.to_index()) {
                     Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
                     _ => panic!("evaluate: then is not block"),
                 };
                 Ok(then)
             } else {
-                let _else = match ast.get(_else.0 as usize) {
+                let _else = match ast.get(_else.to_index()) {
                     Some(Expr::Block(statements)) => evaluate_block(&statements, stmt_pool, ast, &mut ctx)?,
                     _ => panic!("evaluate: else is not block"),
                 };
@@ -328,7 +328,7 @@ fn evaluate(e: &ExprRef, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environ
 }
 
 fn evaluate_block(statements: &Vec<StmtRef>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let to_stmt = |s: &StmtRef| { stmt_pool.get(s.0 as usize).unwrap().clone() };
+    let to_stmt = |s: &StmtRef| { stmt_pool.get(s.to_index()).unwrap().clone() };
     let mut last = Some(Rc::new(RefCell::new(Object::Unit)));
     for s in statements {
         let stmt = to_stmt(s);
@@ -366,7 +366,7 @@ fn evaluate_block(statements: &Vec<StmtRef>, stmt_pool: &StmtPool, ast: &ExprPoo
                 todo!("continue");
             }
             Stmt::Expression(expr) => {
-                let e = ast.get(expr.0 as usize).unwrap();
+                let e = ast.get(expr.to_index()).unwrap();
                 match e {
                     Expr::Assign(lhs, rhs) => {
                         let lhs = evaluate(&lhs, stmt_pool, ast, ctx)?;
@@ -422,9 +422,9 @@ fn evaluate_block(statements: &Vec<StmtRef>, stmt_pool: &StmtPool, ast: &ExprPoo
 }
 
 fn evaluate_main(function: Rc<Function>, stmt_pool: &StmtPool, ast: &ExprPool, ctx: &mut Environment) -> Result<RcObject, String> {
-    let block = match stmt_pool.get(function.code.0 as usize) {
+    let block = match stmt_pool.get(function.code.to_index()) {
         Some(Stmt::Expression(e)) => {
-            match ast.get(e.0 as usize) {
+            match ast.get(e.to_index()) {
                 Some(Expr::Block(statements)) => statements,
                 _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
             }

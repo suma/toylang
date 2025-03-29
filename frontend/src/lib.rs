@@ -429,6 +429,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_var_def(&mut self) -> Result<ExprRef> {
+        // ("val" | "var") identifier (":" type)? "=" logical_expr?
         let is_val = match self.peek() {
             Some(Kind::Val) => true,
             Some(Kind::Var) => false,
@@ -453,7 +454,6 @@ impl<'a> Parser<'a> {
             _ => TypeDecl::Unknown,
         };
 
-        // "=" logical_expr
         let rhs = match self.peek() {
             Some(Kind::Equal) => {
                 self.next();

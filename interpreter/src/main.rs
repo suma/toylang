@@ -49,34 +49,35 @@ fn main() {
 #[derive(Debug, Clone)]
 pub struct Environment {
     // mutable = true, immutable = false
-    var: HashMap<String, (bool, Rc<RefCell<Object>>)>,
-    super_context: Option<Box<Environment>>,
+    var: Vec<HashMap<String, (bool, Rc<RefCell<Object>>)>>,
 }
 
 impl Environment {
     pub fn new() -> Self {
         Self {
-            var: HashMap::new(),
-            super_context: None,
+            var: vec![HashMap::new()],
         }
     }
 
-    pub fn new_block(&self) -> Self {
-        Self {
-            var: HashMap::new(),
-            super_context: Some(Box::new(self.clone())),
-        }
+    pub fn new_block(&mut self) {
+        self.var.push(HashMap::new());
+    }
+
+    pub fn pop(&mut self) {
+        self.var.pop();
     }
 
     pub fn set_val(&mut self, name: &str, value: RcObject) {
-        if self.var.contains_key(name) {
+        let last = self.var.last_mut().unwrap();
+        if last.contains_key(name) {
             panic!("Variable {} already defined (val)", name);
         }
-        self.var.insert(name.to_string(), (false, value));
+        last.insert(name.to_string(), (false, value));
     }
 
     pub fn set_var(&mut self, name: &str, value: RcObject) {
-        let exist = self.var.get(name);
+        let last = self.var.last_mut().unwrap();
+        let exist = last.get(name);
         if exist.is_some() {
             // Check type of variable
             let exist = exist.unwrap();
@@ -97,17 +98,16 @@ impl Environment {
                 _ => (),
             }
         } else {
-            self.var.insert(name.to_string(), (true, value));
+            last.insert(name.to_string(), (true, value));
         }
     }
 
     pub fn get_val(&self, name: &str) -> Option<Rc<RefCell<Object>>> {
-        let v_val = self.var.get(name);
-        if v_val.is_some() {
-            return Some(v_val.unwrap().1.clone());
-        } else if self.super_context.is_some() {
-            if let Some(v) = self.super_context.as_ref() {
-                return v.get_val(name);
+        for v in self.var.iter().rev() {
+            let v_val = v.get(name);
+            if v_val.is_some() {
+                let v_val = v_val.unwrap();
+                return Some(v_val.1.clone());
             }
         }
         None
@@ -317,26 +317,29 @@ impl<'a> EvaluationContext<'a> {
                 }
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
-                // TODO: push / let mut ctx = self.environment.new_block();
                 self.environment.new_block();
                 if let Object::Bool(true) = &*cond {
                     let then = match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => panic!("evaluate: then is not block"),
                     };
+                    self.environment.pop();
                     Ok(then)
                 } else {
                     let _else = match self.expr_pool.get(_else.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => panic!("evaluate: else is not block"),
                     };
+                    self.environment.pop();
                     Ok(_else)
                 }
             }
 
             Some(Expr::Block(statements)) => {
-                // TODO: environment.push() / pop()
-                Ok(self.evaluate_block(statements)?)
+                self.environment.new_block();
+                let ok = Ok(self.evaluate_block(statements)?);
+                self.environment.pop();
+                ok
             }
 
             _ => panic!("evaluate: Not handled yet {:?}", expr),
@@ -362,6 +365,7 @@ impl<'a> EvaluationContext<'a> {
                         self.evaluate(&e.unwrap())?
                     };
                     self.environment.set_var(name.as_ref(), value);
+                    last = Some(Rc::new(RefCell::new(Object::Unit)));
                 }
                 Stmt::Return(e) => {
                     if e.is_none() {
@@ -424,8 +428,9 @@ impl<'a> EvaluationContext<'a> {
                             last = obj_ref;
                         }
                         Expr::Block(blk_expr) => {
-                            // TODO: environment.push()
+                            self.environment.new_block();
                             last = Some(self.evaluate_block(&blk_expr)?);
+                            self.environment.pop();
                         }
                         _ => {
                             last = Some(self.evaluate(&expr)?);

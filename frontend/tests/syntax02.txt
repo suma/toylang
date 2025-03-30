@@ -6,6 +6,7 @@ fn hoge() -> u64 {
 }
 
 fn println(x: u64, y: u64, z: str) {
+	var a = x + y
 }
 
 fn main() -> unit {

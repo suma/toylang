@@ -34,7 +34,8 @@ fn main() {
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
     program.function.iter().for_each(|func| {
-        let r = tc.type_check(&func.code);
+        println!("Checking function {}", func.name);
+        let r = tc.type_check(func.clone());
         if r.is_err() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
             //kill_switch = true;
@@ -120,9 +121,8 @@ impl Environment {
     pub fn get_val(&self, name: &str) -> Option<Rc<RefCell<Object>>> {
         for v in self.var.iter().rev() {
             let v_val = v.get(name);
-            if v_val.is_some() {
-                let v_val = v_val.unwrap();
-                return Some(v_val.1.clone());
+            if let Some(val) = v_val {
+                return Some(val.1.clone());
             }
         }
         None

@@ -263,74 +263,69 @@ impl TypeChecker {
     }
 
     pub fn check_block(&mut self, e: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        match self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null) {
+        let statements = match self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null) {
             Expr::Block(statements) => {
-                let statements = statements.clone();
                 if statements.is_empty() {
                     return Ok(TypeDecl::Unit);
                 }
-                let mut last_empty = true;
-                let mut last: Option<TypeDecl> = None;
-                // This code assumes Block(expression) don't make nested function
-                // so `return` expression always return for this context.
-                for s in statements {
-                    let stmt = self.stmt_pool.get(s.to_index()).unwrap();
-                    let stmt_type = match stmt {
-                        Stmt::Return(None) => Ok(TypeDecl::Unit),
-                        Stmt::Return(ret_ty) => {
-                            if let Some(e) = ret_ty {
-                                let e = e.clone();
-                                let ty = self.type_check_expr(&e)?;
-                                if last_empty {
-                                    last_empty = false;
-                                    Ok(ty)
-                                } else if let Some(last_ty) = last.clone() {
-                                    if last_ty == ty {
-                                        Ok(ty)
-                                    } else {
-                                        let ret_expr = self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null);
-                                        Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, ret_expr, s)))?
-                                    }
-                                } else {
-                                    Ok(ty)
-                                }
-                            } else {
-                                Ok(TypeDecl::Unit)
-                            }
-                        }
-                        _ => self.type_check_stmt(&s),
-                    };
-                    match stmt_type {
-                        Ok(def_ty) => last = Some(def_ty),
-                        Err(e) => return Err(e),
-                    }
-                }
-                if let Some(last_type) = last {
-                    Ok(last_type)
-                } else {
-                    Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}", last)))
-                }
+                statements.clone()
             }
             _ => panic!("check_block: expected block but {:?}", self.expr_pool.get(e.to_index()).unwrap()),
+        };
+
+        let mut last_empty = true;
+        let mut last: Option<TypeDecl> = None;
+        // This code assumes Block(expression) don't make nested function
+        // so `return` expression always return for this context.
+        for s in statements {
+            let stmt = self.stmt_pool.get(s.to_index()).unwrap();
+            let stmt_type = match stmt {
+                Stmt::Return(None) => Ok(TypeDecl::Unit),
+                Stmt::Return(ret_ty) => {
+                    if let Some(e) = ret_ty {
+                        let e = e.clone();
+                        let ty = self.type_check_expr(&e)?;
+                        if last_empty {
+                            last_empty = false;
+                            Ok(ty)
+                        } else if let Some(last_ty) = last.clone() {
+                            if last_ty == ty {
+                                Ok(ty)
+                            } else {
+                                let ret_expr = self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null);
+                                Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, ret_expr, s)))?
+                            }
+                        } else {
+                            Ok(ty)
+                        }
+                    } else {
+                        Ok(TypeDecl::Unit)
+                    }
+                }
+                _ => self.type_check_stmt(&s),
+            };
+
+            match stmt_type {
+                Ok(def_ty) => last = Some(def_ty),
+                Err(e) => return Err(e),
+            }
+        }
+
+        if let Some(last_type) = last {
+            Ok(last_type)
+        } else {
+            Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}", last)))
         }
     }
 
     pub fn type_check(&mut self, s: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
         let mut last = TypeDecl::Unit;
 
-        match self.stmt_pool.get(s.to_index()).unwrap() {
+        let statements = match self.stmt_pool.get(s.to_index()).unwrap() {
             Stmt::Expression(e) => {
-                match self.expr_pool.0.get_mut(e.to_index()).unwrap() {
+                match self.expr_pool.0.get(e.to_index()).unwrap() {
                     Expr::Block(statements) => {
-                        let statements = statements.clone(); // clone to avoid error of borrow checker, but I want not to copy Vec
-                        for stmt in statements {
-                            let res = self.type_check_stmt(&stmt);
-                            if res.is_err() {
-                                return res;
-                            } else {
-                                last = res.unwrap();
-                            }
-                        }
+                        statements.clone()  // TODO: I want to avoid clone
                     }
                     _ => {
                         panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap());
@@ -338,7 +333,17 @@ impl TypeChecker {
                 }
             }
             _ => panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap()),
+        };
+
+        for stmt in statements {
+            let res = self.type_check_stmt(&stmt);
+            if res.is_err() {
+                return res;
+            } else {
+                last = res?;
+            }
         }
+
         Ok(last)
     }
 }

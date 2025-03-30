@@ -26,8 +26,15 @@ fn main() {
     let mut ctx = TypeCheckContext::new();
     let mut kill_switch = false;
     let mut main: Option<Rc<Function>> = None;
+
+    let stmt_pool = program.statement.clone();
+    let expr_pool = program.expression.clone();
+    let mut tc = TypeChecker::new(stmt_pool, expr_pool);
+    // Register all defined functions
+    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+
     program.function.iter().for_each(|func| {
-        let r = type_check(&func.code, &program.statement, &program.expression, &mut ctx);
+        let r = tc.type_check(&func.code);
         if r.is_err() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
             //kill_switch = true;
@@ -36,11 +43,14 @@ fn main() {
             main = Some(func.clone());
         }
     });
+
+    // Run main
     if !kill_switch && main.is_some() {
         let mut func = HashMap::new();
         for f in program.function {
             func.insert(f.name.clone(), f.clone());
         }
+
         let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
         let res = eval.evaluate_main(main.unwrap());
         println!("Result: {:?}", res);

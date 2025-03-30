@@ -204,9 +204,13 @@ impl TypeChecker {
 
             Expr::Call(fn_name, _) => {
                 if let Some(fun) = self.context.get_fn(fn_name.as_str()) {
+                    // Define variable of argument
+                    fun.parameter.iter().for_each(|(name, type_decl)| {
+                        self.context.set_var(name.as_str(), type_decl.clone());
+                    });
                     Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
                 } else {
-                    return Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)));
+                    Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)))
                 }
             }
 

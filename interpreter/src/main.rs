@@ -481,10 +481,10 @@ impl<'a> EvaluationContext<'a> {
             Some(Stmt::Expression(e)) => {
                 match self.expr_pool.get(e.to_index()) {
                     Some(Expr::Block(statements)) => statements,
-                    _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+                    _ => panic!("evaluate_function: Not handled yet {:?}", function.code),
                 }
             }
-            _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+            _ => panic!("evaluate_function: Not handled yet {:?}", function.code),
         };
 
         self.environment.new_block();

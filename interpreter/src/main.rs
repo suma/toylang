@@ -57,7 +57,7 @@ fn main() {
         println!("Result: {:?}", res);
         return;
     } else {
-        println!("Program didn't run");
+        println!("Program wasn't executed due to errors");
     }
 }
 

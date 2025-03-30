@@ -23,7 +23,6 @@ fn main() {
     }
 
     let program = program.unwrap();
-    let mut ctx = TypeCheckContext::new();
     let mut kill_switch = false;
     let mut main: Option<Rc<Function>> = None;
 
@@ -38,7 +37,7 @@ fn main() {
         let r = tc.type_check(func.clone());
         if r.is_err() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
-            //kill_switch = true;
+            kill_switch = true;
         }
         if func.name == "main" && func.parameter.is_empty() {
             main = Some(func.clone());

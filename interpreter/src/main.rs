@@ -52,7 +52,8 @@ fn main() {
         }
 
         let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
-        let res = eval.evaluate_main(main.unwrap());
+        let no_args = vec![];
+        let res = eval.evaluate_function(main.unwrap(), &no_args);
         println!("Result: {:?}", res);
         return;
     } else {
@@ -473,24 +474,6 @@ impl<'a> EvaluationContext<'a> {
             }
         }
         Ok(last.unwrap())
-    }
-
-    fn evaluate_main(&mut self, function: Rc<Function>) -> Result<RcObject, String> {
-        let block = match self.stmt_pool.get(function.code.to_index()) {
-            Some(Stmt::Expression(e)) => {
-                match self.expr_pool.get(e.to_index()) {
-                    Some(Expr::Block(statements)) => statements,
-                    _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
-                }
-            }
-            _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
-        };
-        let res = self.evaluate_block(block)?;
-        if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
-            Ok(Rc::new(RefCell::new(Object::Unit)))
-        } else {
-            Ok(res)
-        }
     }
 
     fn evaluate_function(&mut self, function: Rc<Function>, args: &Vec<ExprRef>) -> Result<RcObject, String> {

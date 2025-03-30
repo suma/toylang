@@ -4,10 +4,14 @@ use crate::ast::*;
 use crate::type_decl::*;
 
 #[derive(Debug)]
+pub struct VarState {
+    ty: TypeDecl,
+    is_const: bool,
+}
+#[derive(Debug)]
 pub struct TypeCheckContext {
-    vars: HashMap<String, TypeDecl>,
+    vars: Vec<HashMap<String, VarState>>,
     functions: HashMap<String, Rc<Function>>,
-    super_context: Option<Box<TypeCheckContext>>,
 }
 
 #[derive(Debug)]
@@ -19,6 +23,8 @@ pub struct TypeChecker {
     pub stmt_pool: StmtPool,
     pub expr_pool: ExprPool,
     pub context: TypeCheckContext,
+    pub call_depth: usize,
+    pub is_checked_fn: HashMap<String, Option<TypeDecl>>, // None -> in progress, Some -> Done
 }
 
 impl std::fmt::Display for TypeCheckError {
@@ -36,14 +42,32 @@ impl TypeCheckError {
 impl TypeCheckContext {
     pub fn new() -> Self {
         Self {
-            vars: HashMap::new(),
+            vars: vec![HashMap::new()],
             functions: HashMap::new(),
-            super_context: None,
         }
     }
 
+    pub fn set_val(&mut self, name: &str, ty: TypeDecl) {
+        let last = self.vars.last_mut().unwrap();
+        last.insert(name.to_string(), VarState { ty, is_const: true });
+    }
+
     pub fn set_var(&mut self, name: &str, ty: TypeDecl) {
-        self.vars.insert(name.to_string(), ty);
+        let last = self.vars.last_mut().unwrap();
+        let exist = last.get(name);
+        if let Some(exist) = exist {
+            if exist.is_const {
+                panic!("Cannot re-assign const variable: {:?}", name);
+            }
+            let ety = exist.ty.clone();
+            if ety != ty {
+                panic!("Cannot re-assign variable: {:?} with different type: {:?} != {:?}", name, ety, ty);
+            }
+            // it can overwrite
+        } else {
+            // or insert new one
+            last.insert(name.to_string(), VarState { ty, is_const: false });
+        }
     }
 
     pub fn set_fn(&mut self, name: &str, f: Rc<Function>) {
@@ -51,22 +75,19 @@ impl TypeCheckContext {
     }
 
     pub fn get_var(&self, name: &str) -> Option<TypeDecl> {
-        let name = name.to_string();
-        if let Some(val) = self.vars.get(&name) {
-            Some(val.clone())
-        } else if let Some(box super_context) = &self.super_context {
-            super_context.get_var(&name)
-        } else {
-            None
+        for v in self.vars.iter().rev() {
+            let v_val = v.get(name);
+            if let Some(val) = v_val {
+                return Some(val.ty.clone());
+            }
         }
+        None
     }
 
     pub fn get_fn(&self, name: &str) -> Option<Rc<Function>> {
         let name = name.to_string();
         if let Some(val) = self.functions.get(&name) {
             Some(val.clone())
-        } else if let Some(box super_context) = &self.super_context {
-            super_context.get_fn(&name)
         } else {
             None
         }
@@ -79,7 +100,17 @@ impl TypeChecker {
             stmt_pool,
             expr_pool,
             context: TypeCheckContext::new(),
+            call_depth: 0,
+            is_checked_fn: HashMap::new(),
         }
+    }
+
+    pub fn push_context(&mut self) {
+        self.context.vars.push(HashMap::new());
+    }
+
+    pub fn pop_context(&mut self) {
+        self.context.vars.pop();
     }
 
     pub fn add_function(&mut self, f: Rc<Function>) {
@@ -115,6 +146,8 @@ impl TypeChecker {
     }
 
     pub fn type_check_expr(&mut self, e: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.push_context();
+
         let is_block_empty = |blk: ExprRef| -> bool {
             match self.expr_pool.get(blk.to_index()).unwrap() {
                 Expr::Block(expressions) => {
@@ -124,14 +157,13 @@ impl TypeChecker {
             }
         };
 
-        match self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null) {
+        let res = match self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null) {
             Expr::True | Expr::False => Ok(TypeDecl::Bool),
             Expr::IfElse(_cond, blk1, blk2) => {
                 let blk1 = blk1.clone();
                 let blk2 = blk2.clone();
-                let blk1_empty = is_block_empty(blk1);
-                let blk2_empty = is_block_empty(blk2);
-                if blk1_empty || blk2_empty {
+                if is_block_empty(blk1) || is_block_empty(blk2) {
+                    self.pop_context();
                     return Ok(TypeDecl::Unit); // ignore to infer empty of blk
                 }
 
@@ -184,7 +216,10 @@ impl TypeChecker {
 
             }
 
-            Expr::Block(_expressions) => self.check_block(e),
+            Expr::Block(_expressions) => {
+                let res = self.check_block(e);
+                res
+            }
             Expr::Int64(_) => Ok(TypeDecl::Int64),
             Expr::UInt64(_) => Ok(TypeDecl::UInt64),
             Expr::String(_) => Ok(TypeDecl::String),
@@ -203,11 +238,15 @@ impl TypeChecker {
             Expr::ExprList(_) => Ok(TypeDecl::Unit),
 
             Expr::Call(fn_name, _) => {
+                self.context.vars.push(HashMap::new());
                 if let Some(fun) = self.context.get_fn(fn_name.as_str()) {
-                    // Define variable of argument
-                    fun.parameter.iter().for_each(|(name, type_decl)| {
-                        self.context.set_var(name.as_str(), type_decl.clone());
-                    });
+                    let status = self.is_checked_fn.get(fn_name.as_str());
+                    if status.is_none() || status.clone().unwrap().is_none() {
+                        // not checked yet
+                        let fun = self.context.get_fn(fn_name).unwrap();
+                        self.type_check(fun.clone())?;
+                    }
+
                     Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
                 } else {
                     Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)))
@@ -224,7 +263,10 @@ impl TypeChecker {
                 }
                 Ok(lhs_ty)
             }
-        }
+        };
+
+        self.pop_context();
+        res
     }
 
     pub fn type_check_stmt(&mut self, s: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
@@ -318,8 +360,25 @@ impl TypeChecker {
         }
     }
 
-    pub fn type_check(&mut self, s: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
+    pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let mut last = TypeDecl::Unit;
+        let s = func.code.clone();
+
+        // Is already checked
+        let func_name = func.name.clone();
+        let res_ty = self.is_checked_fn.get(func_name.as_str());
+        if let Some(res_ty) = res_ty {
+            if let Some(res_ty) = res_ty {
+                return Ok(res_ty.clone());
+            } else if let None = res_ty {
+                return Ok(TypeDecl::Unknown);
+            }
+        }
+
+        // Now checking...
+        self.is_checked_fn.insert(func_name.clone(), None);
+
+        self.call_depth += 1;
 
         let statements = match self.stmt_pool.get(s.to_index()).unwrap() {
             Stmt::Expression(e) => {
@@ -335,6 +394,12 @@ impl TypeChecker {
             _ => panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap()),
         };
 
+        self.push_context();
+        // Define variable of argument for this `func`
+        func.parameter.iter().for_each(|(name, type_decl)| {
+            self.context.set_var(name.as_str(), type_decl.clone());
+        });
+
         for stmt in statements {
             let res = self.type_check_stmt(&stmt);
             if res.is_err() {
@@ -343,7 +408,10 @@ impl TypeChecker {
                 last = res?;
             }
         }
+        self.pop_context();
+        self.call_depth -= 1;
 
+        self.is_checked_fn.insert(func_name, Some(last.clone()));
         Ok(last)
     }
 }

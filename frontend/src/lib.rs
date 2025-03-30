@@ -1067,7 +1067,7 @@ mod tests {
 
         program.function.iter().for_each(|f| {
             // TODO: concern argument of the function
-            let res = tc.type_check(&f.code);
+            let res = tc.type_check(f.clone());
             assert!(res.is_ok(), "type check err {:?}", res.err().unwrap());
         });
     }
@@ -1088,7 +1088,7 @@ mod tests {
         let mut tc = TypeChecker::new(stmt_pool, expr_pool);
         let mut res = true;
         program.function.iter().for_each(|f| {
-            let r = tc.type_check(&f.code);
+            let r = tc.type_check(f.clone());
             if r.is_err() {
                 res = false;
             }

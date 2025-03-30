@@ -1050,14 +1050,6 @@ mod tests {
         let program = result.unwrap();
         let mut ctx = TypeCheckContext::new();
 
-        let println_fun = Rc::new(ast::Function {
-            node: Node::new(0, 0),
-            name: "println".to_string(),
-            parameter: vec![],
-            return_type: Some(TypeDecl::Unit),
-            code: StmtRef(0),   // not found
-        });
-        ctx.set_fn("println", println_fun);
         let stmt_pool = program.statement;
         let expr_pool = program.expression;
 
@@ -1066,7 +1058,6 @@ mod tests {
         program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
         program.function.iter().for_each(|f| {
-            // TODO: concern argument of the function
             let res = tc.type_check(f.clone());
             assert!(res.is_ok(), "type check err {:?}", res.err().unwrap());
         });

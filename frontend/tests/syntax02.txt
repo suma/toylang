@@ -5,6 +5,9 @@ fn hoge() -> u64 {
     return 0u64
 }
 
+fn println(x: u64, y: u64, z: str) {
+}
+
 fn main() -> unit {
 	println(abc, 10000u64, "str")
 	return

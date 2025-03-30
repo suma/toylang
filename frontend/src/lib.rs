@@ -678,7 +678,7 @@ mod tests {
     use std::path::PathBuf;
     use super::*;
     use rstest::rstest;
-    use crate::type_checker::{type_check, TypeCheckContext};
+    use crate::type_checker::{TypeChecker, TypeCheckContext};
 
     #[test]
     fn lexer_simple_keyword() {
@@ -1059,11 +1059,15 @@ mod tests {
         });
         ctx.set_fn("println", println_fun);
         let stmt_pool = program.statement;
-        let ast = program.expression;
+        let expr_pool = program.expression;
+
+        let mut tc = TypeChecker::new(stmt_pool, expr_pool);
+        // Register all defined functions
+        program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
         program.function.iter().for_each(|f| {
             // TODO: concern argument of the function
-            let res = type_check(&f.code, &stmt_pool, &ast, &mut ctx);
+            let res = tc.type_check(&f.code);
             assert!(res.is_ok(), "type check err {:?}", res.err().unwrap());
         });
     }
@@ -1077,13 +1081,14 @@ mod tests {
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
         let program = result.unwrap();
-        let mut ctx = TypeCheckContext::new();
 
-        let ast = program.expression;
         let stmt_pool = program.statement;
+        let expr_pool = program.expression;
+
+        let mut tc = TypeChecker::new(stmt_pool, expr_pool);
         let mut res = true;
         program.function.iter().for_each(|f| {
-            let r = type_check(&f.code, &stmt_pool, &ast, &mut ctx);
+            let r = tc.type_check(&f.code);
             if r.is_err() {
                 res = false;
             }

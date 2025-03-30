@@ -1,0 +1,11 @@
+fn fib(n: u64) -> u64 {
+	if n <= 2u64 {
+		n
+	} else {
+		fib(n - 1u64) + fib(n - 2u64)
+	}
+}
+
+fn main() -> u64 {
+	fib(6u64)
+}

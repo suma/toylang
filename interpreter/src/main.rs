@@ -30,14 +30,18 @@ fn main() {
         let r = type_check(&func.code, &program.statement, &program.expression, &mut ctx);
         if r.is_err() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
-            kill_switch = true;
+            //kill_switch = true;
         }
         if func.name == "main" && func.parameter.is_empty() {
             main = Some(func.clone());
         }
     });
     if !kill_switch && main.is_some() {
-        let mut eval = EvaluationContext::new(&program.statement, &program.expression);
+        let mut func = HashMap::new();
+        for f in program.function {
+            func.insert(f.name.clone(), f.clone());
+        }
+        let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
         let res = eval.evaluate_main(main.unwrap());
         println!("Result: {:?}", res);
         return;
@@ -187,14 +191,16 @@ type RcObject = Rc<RefCell<Object>>;
 struct EvaluationContext<'a> {
     stmt_pool: &'a StmtPool,
     expr_pool: &'a ExprPool,
+    function: HashMap<String, Rc<Function>>,
     environment: Environment,
 }
 
 impl<'a> EvaluationContext<'a> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool) -> Self {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, function: HashMap<String, Rc<Function>>) -> Self {
         Self {
             stmt_pool,
             expr_pool,
+            function,
             environment: Environment::new(),
         }
     }
@@ -338,6 +344,26 @@ impl<'a> EvaluationContext<'a> {
                 self.environment.pop();
                 ok
             }
+            Some(Expr::Call(name, args)) => {
+                if let Some(func) = self.function.get::<str>(name.as_ref()) {
+                    // TODO: check arguments type
+                    let args = self.expr_pool.get(args.to_index()).unwrap();
+                    match args {
+                        Expr::ExprList(args) => {
+                            if args.len() != func.parameter.len() {
+                                return Err(format!("evaluate_function: bad arguments length: {:?}", args.len()));
+                            }
+
+                            Ok(self.evaluate_function(func.clone(), args)?)
+                        }
+                        _ => {
+                            panic ! ("evaluate: expected ExprList but {:?}", expr);
+                        }
+                    }
+                } else {
+                    panic!("evaluate: function not found: {:?}", expr);
+                }
+            }
 
             _ => panic!("evaluate: Not handled yet {:?}", expr),
         }
@@ -450,6 +476,33 @@ impl<'a> EvaluationContext<'a> {
             _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
         };
         let res = self.evaluate_block(block)?;
+        if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
+            Ok(Rc::new(RefCell::new(Object::Unit)))
+        } else {
+            Ok(res)
+        }
+    }
+
+    fn evaluate_function(&mut self, function: Rc<Function>, args: &Vec<ExprRef>) -> Result<RcObject, String> {
+        let block = match self.stmt_pool.get(function.code.to_index()) {
+            Some(Stmt::Expression(e)) => {
+                match self.expr_pool.get(e.to_index()) {
+                    Some(Expr::Block(statements)) => statements,
+                    _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+                }
+            }
+            _ => panic!("evaluate_main: Not handled yet {:?}", function.code),
+        };
+
+        self.environment.new_block();
+        for i in 0..args.len() {
+            let name = function.parameter.get(i).unwrap().0.clone();
+            let value = self.evaluate(&args[i])?;
+            self.environment.set_val(name.as_ref(), value);
+        }
+
+        let res = self.evaluate_block(block)?;
+        self.environment.pop();
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {

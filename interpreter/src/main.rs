@@ -303,9 +303,6 @@ impl<'a> EvaluationContext<'a> {
             Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
                 Ok(Rc::new(RefCell::new(convert_object(expr))))
             }
-            //Some(Expr::Return(e)) => {
-            //    Ok(evaluate(&e.unwrap(), ctx)?)
-            //}
             Some(Expr::Identifier(s)) => {
                 Ok(self.environment.get_val(s.as_ref()).unwrap().clone())
             }

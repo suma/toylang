@@ -680,111 +680,115 @@ mod tests {
     use rstest::rstest;
     use crate::type_checker::{TypeChecker, TypeCheckContext};
 
-    #[test]
-    fn lexer_simple_keyword() {
-        let s = " if else while break continue return for class fn val var bool";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::If);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Else);
-        assert_eq!(l.yylex().unwrap().kind, Kind::While);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Break);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Continue);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Return);
-        assert_eq!(l.yylex().unwrap().kind, Kind::For);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Class);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Function);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Val);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Var);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Bool);
-    }
+    mod lexer_tests{
+        use super::*;
+            #[test]
+        fn lexer_simple_keyword() {
+            let s = " if else while break continue return for class fn val var bool";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::If);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Else);
+            assert_eq!(l.yylex().unwrap().kind, Kind::While);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Break);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Continue);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Return);
+            assert_eq!(l.yylex().unwrap().kind, Kind::For);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Class);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Function);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Val);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Var);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Bool);
+        }
 
-    #[test]
-    fn lexer_simple_integer() {
-        let s = " -1i64 1i64 2u64  true false null";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
-        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
-        assert_eq!(l.yylex().unwrap().kind, Kind::True);
-        assert_eq!(l.yylex().unwrap().kind, Kind::False);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Null);
-    }
+        #[test]
+        fn lexer_simple_integer() {
+            let s = " -1i64 1i64 2u64  true false null 1234";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
+            assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
+            assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
+            assert_eq!(l.yylex().unwrap().kind, Kind::True);
+            assert_eq!(l.yylex().unwrap().kind, Kind::False);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Null);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Integer("1234".to_string()));
+        }
 
-    #[test]
-    fn lexer_simple_string() {
-        let s = " \"string\" ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::String("string".to_string()));
-    }
+        #[test]
+        fn lexer_simple_string() {
+            let s = " \"string\" ";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::String("string".to_string()));
+        }
 
-    #[test]
-    fn lexer_simple_symbol1() {
-        let s = " ( ) { } [ ] , . :: : = !";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ParenOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ParenClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BraceOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BraceClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BracketOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BracketClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Comma);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Dot);
-        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleColon);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Colon);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Exclamation);
-    }
+        #[test]
+        fn lexer_simple_symbol1() {
+            let s = " ( ) { } [ ] , . :: : = !";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::ParenOpen);
+            assert_eq!(l.yylex().unwrap().kind, Kind::ParenClose);
+            assert_eq!(l.yylex().unwrap().kind, Kind::BraceOpen);
+            assert_eq!(l.yylex().unwrap().kind, Kind::BraceClose);
+            assert_eq!(l.yylex().unwrap().kind, Kind::BracketOpen);
+            assert_eq!(l.yylex().unwrap().kind, Kind::BracketClose);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Comma);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Dot);
+            assert_eq!(l.yylex().unwrap().kind, Kind::DoubleColon);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Colon);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Exclamation);
+        }
 
-    #[test]
-    fn lexer_simple_number() {
-        let s = " 100u64 123i64 ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(100));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(123));
-    }
+        #[test]
+        fn lexer_simple_number() {
+            let s = " 100u64 123i64 ";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(100));
+            assert_eq!(l.yylex().unwrap().kind, Kind::Int64(123));
+        }
 
-    #[test]
-    fn lexer_simple_symbol2() {
-        let s = "== != <= < >= >";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleEqual);
-        assert_eq!(l.yylex().unwrap().kind, Kind::NotEqual);
-        assert_eq!(l.yylex().unwrap().kind, Kind::LE);
-        assert_eq!(l.yylex().unwrap().kind, Kind::LT);
-        assert_eq!(l.yylex().unwrap().kind, Kind::GE);
-        assert_eq!(l.yylex().unwrap().kind, Kind::GT);
-    }
+        #[test]
+        fn lexer_simple_symbol2() {
+            let s = "== != <= < >= >";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::DoubleEqual);
+            assert_eq!(l.yylex().unwrap().kind, Kind::NotEqual);
+            assert_eq!(l.yylex().unwrap().kind, Kind::LE);
+            assert_eq!(l.yylex().unwrap().kind, Kind::LT);
+            assert_eq!(l.yylex().unwrap().kind, Kind::GE);
+            assert_eq!(l.yylex().unwrap().kind, Kind::GT);
+        }
 
-    #[test]
-    fn lexer_arithmetic_operator_symbol() {
-        let s = " + - * / +. -. *. /.";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IAdd);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ISub);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IMul);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IDiv);
-    }
+        #[test]
+        fn lexer_arithmetic_operator_symbol() {
+            let s = " + - * / +. -. *. /.";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::IAdd);
+            assert_eq!(l.yylex().unwrap().kind, Kind::ISub);
+            assert_eq!(l.yylex().unwrap().kind, Kind::IMul);
+            assert_eq!(l.yylex().unwrap().kind, Kind::IDiv);
+        }
 
-    #[test]
-    fn lexer_simple_identifier() {
-        let s = " A _name Identifier ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("_name".to_string()));
-        assert_eq!(
-            l.yylex().unwrap().kind,
-            Kind::Identifier("Identifier".to_string())
-        );
-    }
+        #[test]
+        fn lexer_simple_identifier() {
+            let s = " A _name Identifier ";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("_name".to_string()));
+            assert_eq!(
+                l.yylex().unwrap().kind,
+                Kind::Identifier("Identifier".to_string())
+            );
+        }
 
-    #[test]
-    fn lexer_multiple_lines() {
-        let s = " A \n B ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
-        assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
-        assert_eq!(*l.get_line_count(), 2);
+        #[test]
+        fn lexer_multiple_lines() {
+            let s = " A \n B ";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
+            assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
+            assert_eq!(*l.get_line_count(), 2);
+        }
     }
 
     #[test]

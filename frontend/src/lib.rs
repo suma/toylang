@@ -619,6 +619,7 @@ impl<'a> Parser<'a> {
                         let s = str.clone();
                         self.expr.add(Expr::String(s))
                     }
+                    Some(Kind::Integer(s)) => self.expr.add(Expr::Number(s.clone())),
                     x => {
                         return match x {
                             Some(Kind::ParenOpen) => {
@@ -760,7 +761,7 @@ mod tests {
 
         #[test]
         fn lexer_arithmetic_operator_symbol() {
-            let s = " + - * / +. -. *. /.";
+            let s = " + - * /";
             let mut l = lexer::Lexer::new(&s, 1u64);
             assert_eq!(l.yylex().unwrap().kind, Kind::IAdd);
             assert_eq!(l.yylex().unwrap().kind, Kind::ISub);

@@ -147,6 +147,7 @@ pub enum Expr {
     False,
     Int64(i64),
     UInt64(u64),
+    Number(String),
     Identifier(String),
     Null,
     ExprList(Vec<ExprRef>),

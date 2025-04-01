@@ -62,9 +62,13 @@ fn main() {
 }
 
 #[derive(Debug, Clone)]
+pub struct VariableValue {
+    pub value: RcObject,
+    pub mutable: bool,
+}
+#[derive(Debug, Clone)]
 pub struct Environment {
-    // mutable = true, immutable = false
-    var: Vec<HashMap<String, (bool, Rc<RefCell<Object>>)>>,
+    var: Vec<HashMap<String, VariableValue>>,
 }
 
 impl Environment {
@@ -87,33 +91,33 @@ impl Environment {
         if last.contains_key(name) {
             panic!("Variable {} already defined (val)", name);
         }
-        last.insert(name.to_string(), (false, value));
+        last.insert(name.to_string(),
+                    VariableValue{
+                        mutable: false,
+                        value
+                    });
     }
 
-    pub fn set_var(&mut self, name: &str, value: RcObject) {
-        let last = self.var.last_mut().unwrap();
-        let exist = last.get(name);
-        if exist.is_some() {
-            // Check type of variable
-            let exist = exist.unwrap();
-            if !exist.0 {
-                panic!("Variable {} already defined as val", name);
-            }
-            let value = value.as_ref().borrow();
-            let ty = value.get_type();
-            let mut exist = exist.1.borrow_mut();
-            if exist.get_type() != ty {
-                panic!("Variable {} already defined: different type (var) expected {:?} but {:?}", name, exist.get_type(), ty);
-            }
-            match *exist {
-                Object::Int64(ref mut val) => *val = value.unwrap_int64(),
-                Object::UInt64(ref mut val) => *val = value.unwrap_uint64(),
-                Object::Bool(ref mut val) => *val = value.unwrap_bool(),
-                Object::String(ref mut val) => *val = value.unwrap_string().clone(),
-                _ => (),
-            }
+    pub fn set_var(&mut self, name: &str, value: RcObject) -> Result<(), String> {
+        let current = self.var.iter_mut().rfind(|v| v.contains_key(name));
+
+        if current.is_none() {
+            // Insert new value
+            let val = VariableValue{ mutable: true, value };
+            let mut last:  &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
+            last.insert(name.to_string(), val);
+            Ok(())
         } else {
-            last.insert(name.to_string(), (true, value));
+            let current: &mut HashMap<String, VariableValue> = current.unwrap();
+            // Overwrite variable
+            let entry = current.get_mut(name).unwrap();
+
+            if !entry.mutable {
+                return Err(format!("Variable {} already defined as immutable (val)", name));
+            }
+
+            entry.value = value.clone();
+            Ok(())
         }
     }
 
@@ -121,7 +125,7 @@ impl Environment {
         for v in self.var.iter().rev() {
             let v_val = v.get(name);
             if let Some(val) = v_val {
-                return Some(val.1.clone());
+                return Some(val.value.clone());
             }
         }
         None
@@ -194,6 +198,38 @@ impl Object {
         }
     }
 
+    pub fn set(&mut self, other: &RefCell<Object>) {
+        let other = unsafe { &*other.as_ptr() };
+        match self {
+            Object::Bool(_) => {
+                if let Object::Bool(v) = other {
+                    *self = Object::Bool(*v);
+                } else {
+                    panic!("set: expected bool but {:?}", other);
+                }
+            }
+            Object::Int64(val) => {
+                if let Object::Int64(v) = other {
+                    *val = *v;
+                } else {
+                    panic!("set: expected int64 but {:?}", other);
+                }
+            }
+            Object::UInt64(val) => {
+                if let Object::UInt64(v) = other {
+                    *val = *v;
+                }
+            }
+            Object::String(val) => {
+                if let Object::String(v) = other {
+                    *val = v.clone();
+                } else {
+                    panic!("set: expected string but {:?}", other);
+                }
+            }
+            _ => panic!("set: unexpected type {:?}", self),
+        }
+    }
 }
 
 type RcObject = Rc<RefCell<Object>>;
@@ -412,8 +448,26 @@ impl<'a> EvaluationContext<'a> {
                 Stmt::While(_cond, _body) => {
                     todo!("while");
                 }
-                Stmt::For(_identifier, _start, _end, _block) => {
-                    todo!("for");
+                Stmt::For(identifier, start, end, block) => {
+                    let start = self.evaluate(&start)?;
+                    let end = self.evaluate(&end)?;
+                    let start_ty = start.borrow().get_type();
+                    let end_ty = start.borrow().get_type();
+                    if start_ty != end_ty {
+                        panic!("evaluate_block: Bad types for 'for' loop due to different type: {:?} {:?}", start_ty, end_ty);
+                    }
+                    let start = start.borrow().unwrap_uint64();
+                    let end = end.borrow().unwrap_uint64();
+
+                    let block = self.expr_pool.get(block.to_index()).unwrap();
+                    if let Expr::Block(statements) = block {
+                        for i in start..end {
+                            self.environment.new_block();
+                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))));
+                            self.evaluate_block(statements)?;
+                            self.environment.pop();
+                        }
+                    }
                 }
                 Stmt::Continue => {
                     todo!("continue");
@@ -422,31 +476,27 @@ impl<'a> EvaluationContext<'a> {
                     let e = self.expr_pool.get(expr.to_index()).unwrap();
                     match e {
                         Expr::Assign(lhs, rhs) => {
-                            let lhs = self.evaluate(&lhs)?;
-                            let rhs = self.evaluate(&rhs)?;
-                            let lhs = lhs.borrow();
-                            let rhs_borrow = rhs.borrow();
-                            let lhs_ty = lhs.get_type(); // get type
-                            let name = if let TypeDecl::Identifier(name) = lhs.get_type() {
-                                // currently lhs expression assumes variable
-                                name
-                            } else {
-                                panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?} {:?}", lhs_ty, expr);
-                            };
+                            if let Some(Expr::Identifier(name)) = self.expr_pool.get(lhs.to_index()) {
+                                // Currently, lhs assumes Identifier only
+                                let rhs = self.evaluate(&rhs)?;
+                                let rhs_borrow = rhs.borrow();
 
-                            // type check
-                            let existing_val = self.environment.get_val(name.as_ref());
-                            if existing_val.is_none() {
-                                panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
-                            }
-                            let existing_val = existing_val.unwrap();
-                            let val = existing_val.borrow();
-                            let val_ty = val.get_type();
-                            let rhs_ty = rhs_borrow.get_type();
-                            if val_ty != rhs_ty {
-                                panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", lhs_ty, rhs_ty);
+                                // type check
+                                let existing_val = self.environment.get_val(name.as_ref());
+                                if existing_val.is_none() {
+                                    panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
+                                }
+                                let existing_val = existing_val.unwrap();
+                                let val = existing_val.borrow();
+                                let val_ty = val.get_type();
+                                let rhs_ty = rhs_borrow.get_type();
+                                if val_ty != rhs_ty {
+                                    panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", val_ty, rhs_ty);
+                                } else {
+                                    self.environment.set_var(name.as_ref(), rhs.clone())?;
+                                }
                             } else {
-                                self.environment.set_var(name.as_ref(), rhs.clone());
+                                panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr);
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {

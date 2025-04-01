@@ -340,7 +340,7 @@ impl<'a> Parser<'a> {
         if lhs.is_ok() {
             return match self.peek() {
                 Some(Kind::Equal) => {
-                    self.next();
+                    // don't consume current Kind::Equal token. Consume in next parse_assign function.
                     self.parse_assign(lhs?)
                 }
                 _ => lhs,
@@ -951,6 +951,21 @@ mod tests {
             assert_eq!(Expr::ExprList(vec![]), *a);
             let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
+        }
+
+        #[test]
+        fn parser_simple_assign_expr() {
+            let mut p = Parser::new("a = 1u64");
+            let e = p.parse_stmt();
+            assert!(e.is_ok());
+
+            assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
+            assert_eq!(Expr::Identifier("a".to_string()), *a);
+            let b = p.expr.get(1).unwrap();
+            assert_eq!(Expr::UInt64(1u64), *b);
+            let c = p.expr.get(2).unwrap();
+            assert_eq!(Expr::Assign(ExprRef(0), ExprRef(1)), *c);
         }
 
         // Valid statement or expression

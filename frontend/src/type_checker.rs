@@ -222,6 +222,7 @@ impl TypeChecker {
             }
             Expr::Int64(_) => Ok(TypeDecl::Int64),
             Expr::UInt64(_) => Ok(TypeDecl::UInt64),
+            Expr::Number(_) => Ok(TypeDecl::Unknown),
             Expr::String(_) => Ok(TypeDecl::String),
 
             Expr::Identifier(name) => {

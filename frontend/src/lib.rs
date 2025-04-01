@@ -362,7 +362,6 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_assign(&mut self, mut lhs: ExprRef) -> Result<ExprRef> {
-        //let rhs = self.parse_logical_expr()?;
         loop {
             match self.peek() {
                 Some(Kind::Equal) => {
@@ -827,135 +826,132 @@ mod tests {
                 }
             }
         }
-        /*
         #[test]
         fn parser_simple_expr_test1() {
             let mut p = Parser::new("1u64 + 2u64 ");
-            let _ = p.parse_stmt_line().unwrap();
-            assert_eq!(3, p.len(), "ExprPool.len must be 3");
-            let a = p.get(0).unwrap();
+            let _ = p.parse_stmt().unwrap();
+            assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::UInt64(1), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(2), *b);
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
 
-            println!("p.inst: {:?}", p.inst);
-            println!("INSTRUCTION {:?}", p.get_inst(0));
-            println!("INSTRUCTION {:?}", p.get_inst(1));
-            assert_eq!(1, p.inst_len(), "Inst.len must be 1");
+            println!("p.stmt: {:?}", p.stmt);
+            println!("INSTRUCTION {:?}", p.stmt.get(0));
+            println!("INSTRUCTION {:?}", p.stmt.get(1));
+            assert_eq!(1, p.stmt.len(), "stmt.len must be 1");
 
-            let d = p.get_inst(0).unwrap();
-            assert_eq!(Inst::Expression(ExprRef(2)), *d);
+            let d = p.stmt.get(0).unwrap();
+            assert_eq!(Stmt::Expression(ExprRef(2)), *d);
         }
-       */
 
-        /*
         #[test]
         fn parser_simple_expr_mul() {
             let mut p = Parser::new("(1u64) + 2u64 * 3u64");
-            let e = p.parse_stmt_line();
+            let e = p.parse_stmt();
             assert!(e.is_ok());
-            let (_, p) = e.unwrap();
 
-            assert_eq!(5, p.len(), "ExprPool.len must be 3");
-            let a = p.get(0).unwrap();
+            assert_eq!(5, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::UInt64(1), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(2), *b);
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::UInt64(3), *c);
 
-            let d = p.get(3).unwrap();
+            let d = p.expr.get(3).unwrap();
             assert_eq!(Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)), *d);
-            let e = p.get(4).unwrap();
+            let e = p.expr.get(4).unwrap();
             assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)), *e);
         }
 
         #[test]
         fn parser_simple_relational_expr() {
             let mut p = Parser::new("0u64 < 2u64 + 4u64");
-            let e = p.parse_stmt_line();
+            let e = p.parse_stmt();
             assert!(e.is_ok());
-            let (_, p) = e.unwrap();
 
-            assert_eq!(5, p.len(), "ExprPool.len must be 3");
-            let a = p.get(0).unwrap();
+            assert_eq!(5, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::UInt64(0), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(2), *b);
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::UInt64(4), *c);
 
-            let d = p.get(3).unwrap();
+            let d = p.expr.get(3).unwrap();
             assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)), *d);
-            let e = p.get(4).unwrap();
+            let e = p.expr.get(4).unwrap();
             assert_eq!(Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)), *e);
         }
 
         #[test]
         fn parser_simple_logical_expr() {
             let mut p = Parser::new("1u64 && 2u64 < 3u64");
-            let e = p.parse_stmt_line();
+            let e = p.parse_stmt();
             assert!(e.is_ok());
-            let (_, p) = e.unwrap();
 
-            assert_eq!(5, p.len(), "ExprPool.len must be 3");
-            let a = p.get(0).unwrap();
+            assert_eq!(5, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::UInt64(1), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(2), *b);
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::UInt64(3), *c);
 
-            let d = p.get(3).unwrap();
+            let d = p.expr.get(3).unwrap();
             assert_eq!(Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)), *d);
-            let e = p.get(4).unwrap();
+            let e = p.expr.get(4).unwrap();
             assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
         }
 
-        #[test]
-        fn parser_expr_accept() {
-            let expr_str = vec!["1u64", "(1u64 + 2u64)", "1u64 && 2u64 < 3u64", "1u64 || 2u64 < 3u64", "1u64 || (2u64) < 3u64 + 4u64",
-                "variable", "a + b", "a + 1u64", "a() + 1u64", "a(b,c) + 1u64"];
-            for input in expr_str {
-                let mut p = Parser::new(input);
-                let e = p.parse_stmt_line();
-                assert!(e.is_ok(), "failed: {}", input);
-            }
+        #[rstest]
+        #[case("1u64")]
+        #[case("(1u64 + 2u64)")]
+        #[case("1u64 && 2u64 < 3u64")]
+        #[case("1u64 || 2u64 < 3u64")]
+        #[case("1u64 || (2u64) < 3u64 + 4u64")]
+        #[case("variable")]
+        #[case("a + b")]
+        #[case("a + 1u64")]
+        #[case("a() + 1u64")]
+        #[case("a(b,c) + 1u64")]
+        fn parser_expr_accept(#[case] input: &str) {
+            let mut p = Parser::new(input);
+            let e = p.parse_stmt();
+            assert!(e.is_ok(), "failed: {}", input);
         }
 
         #[test]
         fn parser_simple_ident_expr() {
             let mut p = Parser::new("abc + 1u64");
-            let e = p.parse_stmt_line();
+            let e = p.parse_stmt();
             assert!(e.is_ok());
-            let (_, p) = e.unwrap();
 
-            assert_eq!(3, p.len(), "ExprPool.len must be 3");
-            let a = p.get(0).unwrap();
+            assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::Identifier("abc".to_string()), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(1), *b);
 
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
         }
 
         #[test]
         fn parser_simple_apply_empty() {
             let mut p = Parser::new("abc()");
-            let e = p.parse_stmt_line();
+            let e = p.parse_stmt();
             assert!(e.is_ok());
-            let (_, p) = e.unwrap();
 
-            assert_eq!(2, p.len(), "ExprPool.len must be 2");
-            let a = p.get(0).unwrap();
+            assert_eq!(2, p.expr.len(), "ExprPool.len must be 2");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::ExprList(vec![]), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
         }
-        */
 
         // Valid statement or expression
         #[rstest]
@@ -998,26 +994,24 @@ mod tests {
             let mut parser = Parser::new(input);
             assert!(parser.parse_expr_impl().is_err(), "input: {}", input);
         }
-        /*
+
         #[test]
         fn parser_simple_apply_expr() {
             let mut p = Parser::new("abc(1u64, 2u64)");
-            let e = p.parse_stmt_line();
-            assert!(e.is_ok(), "{:?}", p.ast);
-            let (_, p) = e.unwrap();
+            let e = p.parse_stmt();
+            assert!(e.is_ok(), "{:?}", p.expr);
 
-            assert_eq!(4, p.len(), "ExprPool.len must be 4");
-            let a = p.get(0).unwrap();
+            assert_eq!(4, p.expr.len(), "ExprPool.len must be 4");
+            let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::UInt64(1), *a);
-            let b = p.get(1).unwrap();
+            let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(2), *b);
 
-            let c = p.get(2).unwrap();
+            let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::ExprList(vec![ExprRef(0), ExprRef(1)]), *c);
-            let d = p.get(3).unwrap();
+            let d = p.expr.get(3).unwrap();
             assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
         }
-        */
 
         #[test]
         fn parser_param_def() {

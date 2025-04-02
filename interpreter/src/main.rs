@@ -104,9 +104,8 @@ impl Environment {
         if current.is_none() {
             // Insert new value
             let val = VariableValue{ mutable: true, value };
-            let mut last:  &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
+            let last: &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
             last.insert(name.to_string(), val);
-            Ok(())
         } else {
             let current: &mut HashMap<String, VariableValue> = current.unwrap();
             // Overwrite variable
@@ -117,8 +116,9 @@ impl Environment {
             }
 
             entry.value = value.clone();
-            Ok(())
         }
+
+        Ok(())
     }
 
     pub fn get_val(&self, name: &str) -> Option<Rc<RefCell<Object>>> {
@@ -433,7 +433,7 @@ impl<'a> EvaluationContext<'a> {
                     } else {
                         self.evaluate(&e.unwrap())?
                     };
-                    self.environment.set_var(name.as_ref(), value);
+                    self.environment.set_var(name.as_ref(), value)?;
                     last = Some(Rc::new(RefCell::new(Object::Unit)));
                 }
                 Stmt::Return(e) => {
@@ -463,7 +463,7 @@ impl<'a> EvaluationContext<'a> {
                     if let Expr::Block(statements) = block {
                         for i in start..end {
                             self.environment.new_block();
-                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))));
+                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))))?;
                             self.evaluate_block(statements)?;
                             self.environment.pop();
                         }

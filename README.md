@@ -1,8 +1,5 @@
-# Toy language compiler
+# Implementation of Programing Language for study in Rust
 
-This project is for hobby activity to create original toy programming language.
+This project is for learning to create an original programming language.
 
-
-I want to write stable software in distributed or network programming environments.
-
-Faster and testability are very important facators.
+This project uses https://crates.io/crates/rflex for generating lexer.

@@ -35,7 +35,7 @@ impl std::fmt::Display for TypeCheckError {
 }
 
 impl TypeCheckError {
-    fn new(msg: String) -> Self {
+    pub fn new(msg: String) -> Self {
         Self { msg }
     }
 }
@@ -122,7 +122,7 @@ impl TypeCheckerVisitor {
     fn process_val_type(&mut self, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let expr_ty = match expr {
             Some(e) => {
-                let ty = self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+                let ty = self.visit_expr(e)?;
                 if ty == TypeDecl::Unit {
                     return Err(TypeCheckError::new(format!("Type mismatch: expected <expression>, but got {:?}", ty)));
                 }
@@ -241,7 +241,7 @@ impl Acceptable for Stmt {
 impl AstVisitor for TypeCheckerVisitor {
     type ResultType = TypeDecl;
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(expr.to_index()).unwrap_or(&Expr::Null).clone().accept(self)
+        self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
@@ -252,8 +252,8 @@ impl AstVisitor for TypeCheckerVisitor {
         let op = op.clone();
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
-        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
+        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
         if lhs_ty != rhs_ty {
             return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
         }
@@ -300,7 +300,7 @@ impl AstVisitor for TypeCheckerVisitor {
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
                         let e = e.clone();
-                        let ty = self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+                        let ty = self.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
                         if last_empty {
                             last_empty = false;
                             Ok(ty)
@@ -308,7 +308,7 @@ impl AstVisitor for TypeCheckerVisitor {
                             if last_ty == ty {
                                 Ok(ty)
                             } else {
-                                let ret_expr = self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null);
+                                let ret_expr = self.expr_pool.get(e.to_index()).unwrap();
                                 Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, ret_expr, s)))?
                             }
                         } else {
@@ -349,8 +349,8 @@ impl AstVisitor for TypeCheckerVisitor {
             return Ok(TypeDecl::Unit); // ignore to infer empty of blk
         }
 
-        let blk1_ty = self.expr_pool.get(blk1.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
-        let blk2_ty = self.expr_pool.get(blk2.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+        let blk1_ty = self.expr_pool.get(blk1.to_index()).unwrap().clone().accept(self)?;
+        let blk2_ty = self.expr_pool.get(blk2.to_index()).unwrap().clone().accept(self)?;
         if blk1_ty != blk2_ty {
             Ok(TypeDecl::Unit)
         } else {
@@ -361,8 +361,8 @@ impl AstVisitor for TypeCheckerVisitor {
     fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
-        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
+        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
         if lhs_ty != rhs_ty {
             return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
         }
@@ -427,7 +427,7 @@ impl AstVisitor for TypeCheckerVisitor {
     }
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(expr.to_index()).unwrap_or(&Expr::Null).clone().accept(self)
+        self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }
 
     fn visit_var(&mut self, name: &str, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -451,7 +451,7 @@ impl AstVisitor for TypeCheckerVisitor {
             Ok(TypeDecl::Unit)
         } else {
             let e = expr.unwrap();
-            self.expr_pool.get(e.to_index()).unwrap_or(&Expr::Null).clone().accept(self)?;
+            self.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
             Ok(TypeDecl::Unit)
         }
     }

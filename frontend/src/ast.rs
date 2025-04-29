@@ -1,5 +1,7 @@
 use std::rc::Rc;
+use crate::type_checker::{Acceptable, TypeCheckError};
 use crate::type_decl::TypeDecl;
+use crate::visitor::AstVisitor;
 
 #[derive (Clone, Copy, Debug, PartialEq)]
 pub struct ExprRef(pub u32);
@@ -54,6 +56,15 @@ impl ExprPool {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+
+    pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor<ResultType=TypeDecl>)
+                       -> Result<TypeDecl, TypeCheckError> {
+        match self.get(expr_ref.to_index()) {
+            Some(expr) => expr.clone().accept(visitor),
+            None => Err(TypeCheckError::new(format!("Expression not found at index: {:?}", expr_ref.to_index()))),
+        }
+    }
+
 }
 
 impl StmtPool {

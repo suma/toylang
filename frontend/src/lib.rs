@@ -4,6 +4,7 @@ pub mod ast;
 pub mod type_decl;
 pub mod token;
 pub mod type_checker;
+mod visitor;
 
 use std::rc::Rc;
 use crate::ast::*;
@@ -795,7 +796,7 @@ mod tests {
 
     mod parser_tests {
         use super::*;
-        use crate::type_checker::TypeChecker;
+        use crate::type_checker::TypeCheckerVisitor;
 
         #[test]
         fn parser_util_lookahead() {
@@ -1072,7 +1073,7 @@ mod tests {
             let stmt_pool = program.statement;
             let expr_pool = program.expression;
 
-            let mut tc = TypeChecker::new(stmt_pool, expr_pool);
+            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool);
             // Register all defined functions
             program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
@@ -1095,7 +1096,7 @@ mod tests {
             let stmt_pool = program.statement;
             let expr_pool = program.expression;
 
-            let mut tc = TypeChecker::new(stmt_pool, expr_pool);
+            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool);
             let mut res = true;
             program.function.iter().for_each(|f| {
                 let r = tc.type_check(f.clone());

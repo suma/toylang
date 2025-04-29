@@ -28,7 +28,7 @@ fn main() {
 
     let stmt_pool = program.statement.clone();
     let expr_pool = program.expression.clone();
-    let mut tc = TypeChecker::new(stmt_pool, expr_pool);
+    let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool);
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 

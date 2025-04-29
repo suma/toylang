@@ -153,13 +153,10 @@ impl TypeCheckerVisitor {
 
         // Is already checked
         let func_name = func.name.clone();
-        let res_ty = self.is_checked_fn.get(func_name.as_str());
-        if let Some(res_ty) = res_ty {
-            if let Some(res_ty) = res_ty {
-                return Ok(res_ty.clone());
-            } else if let None = res_ty {
-                return Ok(TypeDecl::Unknown);
-            }
+        match self.is_checked_fn.get(func_name.as_str()) {
+            Some(Some(result_ty)) => return Ok(result_ty.clone()),  // already checked
+            Some(None) => return Ok(TypeDecl::Unknown), // now checking
+            None => (),
         }
 
         // Now checking...

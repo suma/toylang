@@ -456,12 +456,12 @@ impl AstVisitor for TypeCheckerVisitor {
         }
     }
 
-    fn visit_for(&mut self, _init: &String, _cond: &ExprRef, _step: &ExprRef, _body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Unit)
+    fn visit_for(&mut self, _init: &String, _cond: &ExprRef, _step: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
     }
 
-    fn visit_while(&mut self, _cond: &ExprRef, _body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Unit)
+    fn visit_while(&mut self, _cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
     }
 
     fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {

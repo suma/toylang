@@ -57,7 +57,7 @@ impl ExprPool {
         self.0.len()
     }
 
-    pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor<ResultType=TypeDecl>)
+    pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor)
                        -> Result<TypeDecl, TypeCheckError> {
         match self.get(expr_ref.to_index()) {
             Some(expr) => expr.clone().accept(visitor),

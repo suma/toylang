@@ -200,11 +200,11 @@ impl TypeCheckerVisitor {
     }
 }
 pub trait Acceptable {
-    fn accept(&mut self, visitor: &mut dyn AstVisitor<ResultType=TypeDecl>) -> Result<TypeDecl, TypeCheckError>;
+    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError>;
 }
 
 impl Acceptable for Expr {
-    fn accept(&mut self, visitor: &mut dyn AstVisitor<ResultType=TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
+    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Expr::Binary(op, lhs, rhs) => visitor.visit_binary(op, lhs, rhs),
             Expr::Block(statements) => visitor.visit_block(statements),
@@ -224,7 +224,7 @@ impl Acceptable for Expr {
 }
 
 impl Acceptable for Stmt {
-    fn accept(&mut self, visitor: &mut dyn AstVisitor<ResultType=TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
+    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Stmt::Expression(expr) => visitor.visit_expression_stmt(expr),
             Stmt::Var(name, type_decl, expr) => visitor.visit_var(name, type_decl, expr),
@@ -239,7 +239,6 @@ impl Acceptable for Stmt {
 }
 
 impl AstVisitor for TypeCheckerVisitor {
-    type ResultType = TypeDecl;
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }

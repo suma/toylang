@@ -261,9 +261,10 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate(&mut self, e: &ExprRef) -> Result<RcObject, InterpreterError> {
-        let expr = self.expr_pool.get(e.to_index());
+        let expr = self.expr_pool.get(e.to_index())
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", e.to_index())))?;
         match expr {
-            Some(Expr::Binary(op, lhs, rhs)) => {
+            Expr::Binary(op, lhs, rhs) => {
                 let lhs = self.evaluate(lhs)?;
                 let rhs = self.evaluate(rhs)?;
                 let lhs = lhs.borrow();
@@ -271,7 +272,11 @@ impl<'a> EvaluationContext<'a> {
                 let lhs_ty = lhs.get_type();
                 let rhs_ty = rhs.get_type();
                 if lhs_ty != rhs_ty {
-                    return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary operation due to different type: {:?}", expr)});
+                    return Err(InterpreterError::TypeError{
+                        expected: lhs_ty,
+                        found: rhs_ty,
+                        message: format!("evaluate: Bad types for binary operation due to different type: {:?}", expr)
+                    });
                 }
                 let res = match op { // Int64, UInt64 only now
                     Operator::IAdd => {
@@ -361,13 +366,13 @@ impl<'a> EvaluationContext<'a> {
                 };
                 Ok(res)
             }
-            Some(Expr::Int64(_)) | Some(Expr::UInt64(_)) | Some(Expr::String(_)) | Some(Expr::True) | Some(Expr::False) => {
+            Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
                 Ok(Rc::new(RefCell::new(convert_object(expr))))
             }
-            Some(Expr::Identifier(s)) => {
+            Expr::Identifier(s) => {
                 Ok(self.environment.get_val(s.as_ref()).unwrap().clone())
             }
-            Some(Expr::IfElse(cond, then, _else)) => {
+            Expr::IfElse(cond, then, _else) => {
                 let cond = self.evaluate(cond)?;
                 let cond = cond.borrow();
                 if cond.get_type() != TypeDecl::Bool {
@@ -393,13 +398,13 @@ impl<'a> EvaluationContext<'a> {
                 }
             }
 
-            Some(Expr::Block(statements)) => {
+            Expr::Block(statements) => {
                 self.environment.new_block();
                 let ok = Ok(self.evaluate_block(statements)?);
                 self.environment.pop();
                 ok
             }
-            Some(Expr::Call(name, args)) => {
+            Expr::Call(name, args) => {
                 if let Some(func) = self.function.get::<str>(name.as_ref()) {
                     // TODO: check arguments type
                     let args = self.expr_pool.get(args.to_index()).unwrap();
@@ -514,7 +519,7 @@ impl<'a> EvaluationContext<'a> {
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                            last = Some(Rc::new(RefCell::new(convert_object(Some(e)))));
+                            last = Some(Rc::new(RefCell::new(convert_object(e))));
                         }
                         Expr::Identifier(s) => {
                             let obj = self.environment.get_val(s.as_ref());
@@ -567,13 +572,13 @@ impl<'a> EvaluationContext<'a> {
     }
 }
 
-fn convert_object(e: Option<&Expr>) -> Object {
+fn convert_object(e: &Expr) -> Object {
     match e {
-        Some(Expr::True) => Object::Bool(true),
-        Some(Expr::False) => Object::Bool(false),
-        Some(Expr::Int64(v)) => Object::Int64(*v),
-        Some(Expr::UInt64(v)) => Object::UInt64(*v),
-        Some(Expr::String(v)) => Object::String(v.clone()),
+        Expr::True => Object::Bool(true),
+        Expr::False => Object::Bool(false),
+        Expr::Int64(v) => Object::Int64(*v),
+        Expr::UInt64(v) => Object::UInt64(*v),
+        Expr::String(v) => Object::String(v.clone()),
         _ => panic!("Not handled yet {:?}", e),
     }
 }

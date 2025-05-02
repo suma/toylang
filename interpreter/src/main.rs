@@ -586,3 +586,19 @@ fn convert_object(e: &Expr) -> Object {
         _ => panic!("Not handled yet {:?}", e),
     }
 }
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_evaluate_integer() {
+        let stmt_pool = StmtPool::new();
+        let mut expr_pool = ExprPool::new();
+        let expr_ref = expr_pool.add(Expr::Int64(42));
+
+        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, HashMap::new());
+        let result = ctx.evaluate(&expr_ref).unwrap();
+
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+}

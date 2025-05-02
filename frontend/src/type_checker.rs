@@ -455,8 +455,13 @@ impl AstVisitor for TypeCheckerVisitor {
         }
     }
 
-    fn visit_for(&mut self, _init: &String, _cond: &ExprRef, _step: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
+    fn visit_for(&mut self, init: &String, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.push_context();
+        let ty = Some(TypeDecl::Unknown); // FIXME
+        self.process_val_type(init, &ty, &Some(*range))?;
+        let res = self.expr_pool.get(body.to_index()).unwrap().clone().accept(self);
+        self.pop_context();
+        res
     }
 
     fn visit_while(&mut self, _cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {

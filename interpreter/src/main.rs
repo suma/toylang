@@ -507,6 +507,7 @@ impl<'a> EvaluationContext<'a> {
                                     panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", val_ty, rhs_ty);
                                 } else {
                                     self.environment.set_var(name.as_ref(), rhs.clone())?;
+                                    last = Some(Rc::new(RefCell::new(rhs.borrow().clone())));
                                 }
                             } else {
                                 panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr);

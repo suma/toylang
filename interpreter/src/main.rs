@@ -107,10 +107,10 @@ impl Environment {
                     });
     }
 
-    pub fn set_var(&mut self, name: &str, value: RcObject) -> Result<(), InterpreterError> {
+    pub fn set_var(&mut self, name: &str, value: RcObject, new_define: bool) -> Result<(), InterpreterError> {
         let current = self.var.iter_mut().rfind(|v| v.contains_key(name));
 
-        if current.is_none() {
+        if current.is_none() || new_define {
             // Insert new value
             let val = VariableValue{ mutable: true, value };
             let last: &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
@@ -446,7 +446,7 @@ impl<'a> EvaluationContext<'a> {
                     } else {
                         self.evaluate(&e.unwrap())?
                     };
-                    self.environment.set_var(name.as_ref(), value)?;
+                    self.environment.set_var(name.as_ref(), value, true)?;
                     last = Some(Rc::new(RefCell::new(Object::Unit)));
                 }
                 Stmt::Return(e) => {
@@ -476,7 +476,7 @@ impl<'a> EvaluationContext<'a> {
                     if let Expr::Block(statements) = block {
                         for i in start..end {
                             self.environment.new_block();
-                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))))?;
+                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))), false)?;
                             self.evaluate_block(statements)?;
                             self.environment.pop();
                         }
@@ -506,7 +506,7 @@ impl<'a> EvaluationContext<'a> {
                                 if val_ty != rhs_ty {
                                     panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", val_ty, rhs_ty);
                                 } else {
-                                    self.environment.set_var(name.as_ref(), rhs.clone())?;
+                                    self.environment.set_var(name.as_ref(), rhs.clone(), false)?;
                                     last = Some(Rc::new(RefCell::new(rhs.borrow().clone())));
                                 }
                             } else {

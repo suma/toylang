@@ -481,7 +481,11 @@ impl<'a> EvaluationContext<'a> {
                     if let Expr::Block(statements) = block {
                         for i in start..end {
                             self.environment.new_block();
-                            self.environment.set_var(identifier.as_ref(), Rc::new(RefCell::new(Object::UInt64(i))), false)?;
+                            self.environment.set_var(
+                                identifier.as_ref(),
+                                Rc::new(RefCell::new(Object::UInt64(i))),
+                                true
+                            )?;
                             self.evaluate_block(statements)?;
                             self.environment.pop();
                         }

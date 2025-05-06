@@ -103,6 +103,12 @@ pub struct Environment {
     var: Vec<HashMap<String, VariableValue>>,
 }
 
+pub enum BlockEvaluationResult {
+    Return(Rc<RefCell<Object>>),
+    Break,  // We assume break and continue are used with a label
+    Continue,
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -410,22 +416,31 @@ impl<'a> EvaluationContext<'a> {
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
                     };
                     self.environment.pop();
-                    Ok(then)
+                    Ok(match then {
+                        BlockEvaluationResult::Return(v) => v,
+                        BlockEvaluationResult::Break | BlockEvaluationResult::Continue => unreachable!(),
+                    })
                 } else {
                     let _else = match self.expr_pool.get(_else.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     };
                     self.environment.pop();
-                    Ok(_else)
+                    Ok(match _else {
+                        BlockEvaluationResult::Return(v) => v,
+                        BlockEvaluationResult::Break | BlockEvaluationResult::Continue => unreachable!(),
+                    })
                 }
             }
 
             Expr::Block(statements) => {
                 self.environment.new_block();
-                let ok = Ok(self.evaluate_block(statements)?);
+                let ok = self.evaluate_block(statements)?;
                 self.environment.pop();
-                ok
+                Ok(match ok {
+                    BlockEvaluationResult::Return(v) => v,
+                    BlockEvaluationResult::Break | BlockEvaluationResult::Continue => Rc::new(RefCell::new(Object::Unit)),
+                })
             }
             Expr::Call(name, args) => {
                 if let Some(func) = self.function.get::<str>(name.as_ref()) {
@@ -456,9 +471,9 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
-    fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<RcObject, InterpreterError> {
+    fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<BlockEvaluationResult, InterpreterError> {
         let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap().clone() };
-        let mut last = Some(Rc::new(RefCell::new(Object::Unit)));
+        let mut last: Option<BlockEvaluationResult> = None;
         for s in statements {
             let stmt = to_stmt(s);
             match stmt {
@@ -466,7 +481,7 @@ impl<'a> EvaluationContext<'a> {
                     let name = name.clone();
                     let value = self.evaluate(&e)?;
                     self.environment.set_val(name.as_ref(), value);
-                    last = Some(Rc::new(RefCell::new(Object::Unit)));
+                    last = None;
                 }
                 Stmt::Var(name, _, e) => {
                     let value = if e.is_none() {
@@ -475,16 +490,19 @@ impl<'a> EvaluationContext<'a> {
                         self.evaluate(&e.unwrap())?
                     };
                     self.environment.set_var(name.as_ref(), value, true)?;
-                    last = Some(Rc::new(RefCell::new(Object::Unit)));
+                    last = None;
                 }
                 Stmt::Return(e) => {
                     if e.is_none() {
-                        return Ok(Rc::new(RefCell::new(Object::Unit)));
+                        return Ok(BlockEvaluationResult::Return(Rc::new(RefCell::new(Object::Unit))));
                     }
-                    return Ok(self.evaluate(&e.unwrap())?);
+                    return Ok(BlockEvaluationResult::Return(self.evaluate(&e.unwrap())?));
                 }
                 Stmt::Break => {
-                    todo!("break");
+                    return Ok(BlockEvaluationResult::Break);
+                }
+                Stmt::Continue => {
+                    return Ok(BlockEvaluationResult::Continue);
                 }
                 Stmt::While(_cond, _body) => {
                     todo!("while");
@@ -539,14 +557,14 @@ impl<'a> EvaluationContext<'a> {
                                     return Err(InterpreterError::TypeError { expected: val_ty, found: rhs_ty, message: "evaluate_block: Bad types for assignment due to different type".to_string()});
                                 } else {
                                     self.environment.set_var(name.as_ref(), rhs.clone(), false)?;
-                                    last = Some(Rc::new(RefCell::new(rhs.borrow().clone())));
+                                    last = Some(BlockEvaluationResult::Return(Rc::new(RefCell::new(rhs.borrow().clone()))));
                                 }
                             } else {
                                 return Err(InterpreterError::InternalError(format!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr)));
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                            last = Some(Rc::new(RefCell::new(convert_object(e))));
+                            last = Some(BlockEvaluationResult::Return(Rc::new(RefCell::new(convert_object(e)))));
                         }
                         Expr::Identifier(s) => {
                             let obj = self.environment.get_val(s.as_ref());
@@ -554,7 +572,7 @@ impl<'a> EvaluationContext<'a> {
                             if obj.is_none() || obj.unwrap().borrow().is_null() {
                                 return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: Identifier {} is null", s)));
                             }
-                            last = obj_ref;
+                            last = Some(BlockEvaluationResult::Return(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
                             self.environment.new_block();
@@ -562,7 +580,7 @@ impl<'a> EvaluationContext<'a> {
                             self.environment.pop();
                         }
                         _ => {
-                            last = Some(self.evaluate(&expr)?);
+                            last = Some(BlockEvaluationResult::Return(self.evaluate(&expr)?));
                         }
                     }
                 }
@@ -592,9 +610,13 @@ impl<'a> EvaluationContext<'a> {
         let res = self.evaluate_block(block)?;
         self.environment.pop();
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
-            Ok(Rc::new(RefCell::new(Object::Unit)))
+            Ok( Rc::new(RefCell::new(Object::Unit)))
         } else {
-            Ok(res)
+            Ok(match res {
+                BlockEvaluationResult::Return(v) => v,
+                BlockEvaluationResult::Break | BlockEvaluationResult::Continue =>
+                    Rc::new(RefCell::new(Object::Unit)),
+            })
         }
     }
 }

@@ -20,9 +20,9 @@ pub struct TypeCheckError {
     msg: String,
 }
 
-pub struct TypeCheckerVisitor {
-    pub stmt_pool: StmtPool,
-    pub expr_pool: ExprPool,
+pub struct TypeCheckerVisitor <'a, 'b> where 'a: 'b {
+    pub stmt_pool: &'a StmtPool,
+    pub expr_pool: &'b ExprPool,
     pub context: TypeCheckContext,
     pub call_depth: usize,
     pub is_checked_fn: HashMap<String, Option<TypeDecl>>, // None -> in progress, Some -> Done
@@ -96,8 +96,8 @@ impl TypeCheckContext {
 }
 
 
-impl TypeCheckerVisitor {
-    pub fn new(stmt_pool: StmtPool, expr_pool: ExprPool) -> Self {
+impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b ExprPool) -> Self {
         Self {
             stmt_pool,
             expr_pool,
@@ -238,7 +238,7 @@ impl Acceptable for Stmt {
     }
 }
 
-impl AstVisitor for TypeCheckerVisitor {
+impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }

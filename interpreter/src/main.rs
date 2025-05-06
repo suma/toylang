@@ -23,8 +23,6 @@ fn main() {
     }
 
     let program = program.unwrap();
-    let mut kill_switch = false;
-    let mut main: Option<Rc<Function>> = None;
 
     let stmt_pool = program.statement.clone();
     let expr_pool = program.expression.clone();
@@ -32,6 +30,7 @@ fn main() {
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
+    let mut kill_switch = false;
     program.function.iter().for_each(|func| {
         println!("Checking function {}", func.name);
         let r = tc.type_check(func.clone());
@@ -39,27 +38,42 @@ fn main() {
             eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
             kill_switch = true;
         }
+    });
+
+    if kill_switch {
+        return;
+    }
+
+    let res = execute_program(&program);
+    if res.is_ok() {
+        println!("Result: {:?}", res.unwrap());
+    } else {
+        eprintln!("execute_program failed: {:?}", res.unwrap_err());
+    }
+}
+
+fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
+    let mut main: Option<Rc<Function>> = None;
+    program.function.iter().for_each(|func| {
         if func.name == "main" && func.parameter.is_empty() {
             main = Some(func.clone());
         }
     });
 
-    // Run main
-    if !kill_switch && main.is_some() {
+    if main.is_some() {
         let mut func = HashMap::new();
-        for f in program.function {
+        for f in &program.function {
             func.insert(f.name.clone(), f.clone());
         }
 
         let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
         let no_args = vec![];
-        let res = eval.evaluate_function(main.unwrap(), &no_args);
-        println!("Result: {:?}", res);
-        return;
+        Ok(eval.evaluate_function(main.unwrap(), &no_args)?)
     } else {
-        println!("Program wasn't executed due to errors");
+        Err(InterpreterError::FunctionNotFound("main".to_string()))
     }
 }
+
 #[derive(Debug, Clone)]
 pub enum InterpreterError {
     TypeError { expected: TypeDecl, found: TypeDecl, message: String },

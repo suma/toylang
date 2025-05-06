@@ -624,4 +624,24 @@ mod tests {
 
         assert_eq!(result.borrow().unwrap_int64(), 42);
     }
+
+    #[test]
+    fn test_simple_program() {
+        let mut parser = frontend::Parser::new(r"
+        fn main() -> u64 {
+            val a = 1u64
+            val b = 2u64
+            val c = a + b
+            c
+        }
+        ");
+        let program = parser.parse_program();
+        assert!(program.is_ok());
+
+        let program = program.unwrap();
+
+        let res = execute_program(&program);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
+    }
 }

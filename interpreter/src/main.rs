@@ -506,20 +506,20 @@ impl<'a> EvaluationContext<'a> {
                                 // type check
                                 let existing_val = self.environment.get_val(name.as_ref());
                                 if existing_val.is_none() {
-                                    panic!("evaluate_block: bad assignment due to variable was not set: {:?}", name);
+                                    return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: bad assignment due to variable was not set: {:?}", name)));
                                 }
                                 let existing_val = existing_val.unwrap();
                                 let val = existing_val.borrow();
                                 let val_ty = val.get_type();
                                 let rhs_ty = rhs_borrow.get_type();
                                 if val_ty != rhs_ty {
-                                    panic!("evaluate_block: Bad types for assignment due to different type: {:?} {:?}", val_ty, rhs_ty);
+                                    return Err(InterpreterError::TypeError { expected: val_ty, found: rhs_ty, message: "evaluate_block: Bad types for assignment due to different type".to_string()});
                                 } else {
                                     self.environment.set_var(name.as_ref(), rhs.clone(), false)?;
                                     last = Some(Rc::new(RefCell::new(rhs.borrow().clone())));
                                 }
                             } else {
-                                panic!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr);
+                                return Err(InterpreterError::InternalError(format!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr)));
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
@@ -529,7 +529,7 @@ impl<'a> EvaluationContext<'a> {
                             let obj = self.environment.get_val(s.as_ref());
                             let obj_ref = obj.clone();
                             if obj.is_none() || obj.unwrap().borrow().is_null() {
-                                panic!("evaluate_block: Identifier {} is null", s);
+                                return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: Identifier {} is null", s)));
                             }
                             last = obj_ref;
                         }

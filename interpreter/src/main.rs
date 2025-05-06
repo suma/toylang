@@ -24,21 +24,10 @@ fn main() {
 
     let program = program.unwrap();
 
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &program.expression);
-    // Register all defined functions
-    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
-
-    let mut kill_switch = false;
-    program.function.iter().for_each(|func| {
-        println!("Checking function {}", func.name);
-        let r = tc.type_check(func.clone());
-        if r.is_err() {
-            eprintln!("type_check failed in {}: {}", func.name, r.unwrap_err());
-            kill_switch = true;
+    if let Err(errors) = check_typing(&program) {
+        for e in errors {
+            eprintln!("{}", e);
         }
-    });
-
-    if kill_switch {
         return;
     }
 
@@ -47,6 +36,28 @@ fn main() {
         println!("Result: {:?}", res.unwrap());
     } else {
         eprintln!("execute_program failed: {:?}", res.unwrap_err());
+    }
+}
+
+fn check_typing(program: &Program) -> Result<(), Vec<String>> {
+    let mut errors: Vec<String> = vec![];
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &program.expression);
+
+    // Register all defined functions
+    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+
+    program.function.iter().for_each(|func| {
+        println!("Checking function {}", func.name);
+        let r = tc.type_check(func.clone());
+        if r.is_err() {
+            errors.push(format!("type_check failed in {}: {}", func.name, r.unwrap_err()));
+        }
+    });
+
+    if errors.len() == 0 {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 

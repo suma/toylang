@@ -77,13 +77,13 @@ fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
 
         let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
         let no_args = vec![];
-        Ok(eval.evaluate_function(main.unwrap(), &no_args)?)
+        eval.evaluate_function(main.unwrap(), &no_args)
     } else {
         Err(InterpreterError::FunctionNotFound("main".to_string()))
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum InterpreterError {
     TypeError { expected: TypeDecl, found: TypeDecl, message: String },
     UndefinedVariable(String),
@@ -103,8 +103,11 @@ pub struct Environment {
     var: Vec<HashMap<String, VariableValue>>,
 }
 
-pub enum BlockEvaluationResult {
-    Return(Rc<RefCell<Object>>),
+#[derive(Debug)]
+pub enum EvaluationResult {
+    None,
+    Value(Rc<RefCell<Object>>),
+    Return(Option<Rc<RefCell<Object>>>),
     Break,  // We assume break and continue are used with a label
     Continue,
 }
@@ -289,13 +292,25 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
-    pub fn evaluate(&mut self, e: &ExprRef) -> Result<RcObject, InterpreterError> {
+    pub fn evaluate(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let expr = self.expr_pool.get(e.to_index())
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", e.to_index())))?;
         match expr {
             Expr::Binary(op, lhs, rhs) => {
-                let lhs = self.evaluate(lhs)?;
-                let rhs = self.evaluate(rhs)?;
+                let lhs = match self.evaluate(lhs)? {
+                    EvaluationResult::Value(v) => v,
+                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                    result @ EvaluationResult::Break => return Ok(result),
+                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                };
+                let rhs = match self.evaluate(rhs)? {
+                    EvaluationResult::Value(v) => v,
+                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                    result @ EvaluationResult::Break => return Ok(result),
+                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                };
                 let lhs = lhs.borrow();
                 let rhs = rhs.borrow();
                 let lhs_ty = lhs.get_type();
@@ -393,16 +408,22 @@ impl<'a> EvaluationContext<'a> {
                         }
                     }
                 };
-                Ok(res)
+                Ok(EvaluationResult::Value(res))
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
-                Ok(Rc::new(RefCell::new(convert_object(expr))))
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
             }
             Expr::Identifier(s) => {
-                Ok(self.environment.get_val(s.as_ref()).unwrap().clone())
+                Ok(EvaluationResult::Value(self.environment.get_val(s.as_ref()).unwrap().clone()))
             }
             Expr::IfElse(cond, then, _else) => {
-                let cond = self.evaluate(cond)?;
+                let cond = match self.evaluate(cond)? {
+                    EvaluationResult::Value(v) => v,
+                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                    result @ EvaluationResult::Break => return Ok(result),
+                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                };
                 let cond = cond.borrow();
                 if cond.get_type() != TypeDecl::Bool {
                     return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: format!("evaluate: Bad types for if-else due to different type: {:?}", expr)});
@@ -416,31 +437,28 @@ impl<'a> EvaluationContext<'a> {
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
                     };
                     self.environment.pop();
-                    Ok(match then {
-                        BlockEvaluationResult::Return(v) => v,
-                        BlockEvaluationResult::Break | BlockEvaluationResult::Continue => unreachable!(),
-                    })
+                    Ok(then)
                 } else {
                     let _else = match self.expr_pool.get(_else.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     };
                     self.environment.pop();
-                    Ok(match _else {
-                        BlockEvaluationResult::Return(v) => v,
-                        BlockEvaluationResult::Break | BlockEvaluationResult::Continue => unreachable!(),
-                    })
+                    Ok(_else)
                 }
             }
 
             Expr::Block(statements) => {
                 self.environment.new_block();
-                let ok = self.evaluate_block(statements)?;
+                let block = self.evaluate_block(statements)?;
                 self.environment.pop();
-                Ok(match ok {
-                    BlockEvaluationResult::Return(v) => v,
-                    BlockEvaluationResult::Break | BlockEvaluationResult::Continue => Rc::new(RefCell::new(Object::Unit)),
-                })
+                match block {
+                    result @ EvaluationResult::Value(_) => Ok(result),
+                    result @ EvaluationResult::Return(_) => Ok(result),
+                    EvaluationResult::Break => Ok(EvaluationResult::Break),
+                    EvaluationResult::Continue => Ok(EvaluationResult::Continue),
+                    EvaluationResult::None => Ok(EvaluationResult::None),
+                }
             }
             Expr::Call(name, args) => {
                 if let Some(func) = self.function.get::<str>(name.as_ref()) {
@@ -458,7 +476,7 @@ impl<'a> EvaluationContext<'a> {
                                 );
                             }
 
-                            Ok(self.evaluate_function(func.clone(), args)?)
+                            Ok(EvaluationResult::Value(self.evaluate_function(func.clone(), args)?))
                         }
                         _ => Err(InterpreterError::InternalError(format!("evaluate_function: expected ExprList but: {:?}", expr))),
                     }
@@ -471,15 +489,22 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
-    fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<BlockEvaluationResult, InterpreterError> {
+    fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<EvaluationResult, InterpreterError> {
         let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap().clone() };
-        let mut last: Option<BlockEvaluationResult> = None;
+        let mut last: Option<EvaluationResult> = None;
         for s in statements {
             let stmt = to_stmt(s);
             match stmt {
                 Stmt::Val(name, _, e) => {
                     let name = name.clone();
                     let value = self.evaluate(&e)?;
+                    let value = match value {
+                        EvaluationResult::Value(v) => v,
+                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                        result @ EvaluationResult::Break => return Ok(result),
+                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                    };
                     self.environment.set_val(name.as_ref(), value);
                     last = None;
                 }
@@ -487,29 +512,53 @@ impl<'a> EvaluationContext<'a> {
                     let value = if e.is_none() {
                         Rc::new(RefCell::new(Object::Null))
                     } else {
-                        self.evaluate(&e.unwrap())?
+                        match self.evaluate(&e.unwrap())? {
+                            EvaluationResult::Value(v) => v,
+                            EvaluationResult::Return(v) => v.unwrap(),
+                            _ => Rc::new(RefCell::new(Object::Null)),
+                        }
                     };
                     self.environment.set_var(name.as_ref(), value, true)?;
                     last = None;
                 }
                 Stmt::Return(e) => {
                     if e.is_none() {
-                        return Ok(BlockEvaluationResult::Return(Rc::new(RefCell::new(Object::Unit))));
+                        return Ok(EvaluationResult::Return(None));
                     }
-                    return Ok(BlockEvaluationResult::Return(self.evaluate(&e.unwrap())?));
+                    return match self.evaluate(&e.unwrap())? {
+                        EvaluationResult::Value(v) => Ok(EvaluationResult::Return(Some(v))),
+                        EvaluationResult::Return(v) => Ok(EvaluationResult::Return(v)),
+                        EvaluationResult::Break => Err(InterpreterError::InternalError("break cannot be used in here".to_string())),
+                        EvaluationResult::Continue => Err(InterpreterError::InternalError("continue cannot be used in here".to_string())),
+                        EvaluationResult::None => Err(InterpreterError::InternalError("unexpected None".to_string())),
+                    };
                 }
                 Stmt::Break => {
-                    return Ok(BlockEvaluationResult::Break);
+                    return Ok(EvaluationResult::Break);
                 }
                 Stmt::Continue => {
-                    return Ok(BlockEvaluationResult::Continue);
+                    return Ok(EvaluationResult::Continue);
                 }
                 Stmt::While(_cond, _body) => {
                     todo!("while");
                 }
                 Stmt::For(identifier, start, end, block) => {
                     let start = self.evaluate(&start)?;
+                    let start = match start {
+                        EvaluationResult::Value(v) => v,
+                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                        result @ EvaluationResult::Break => return Ok(result),
+                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                    };
                     let end = self.evaluate(&end)?;
+                    let end = match end {
+                        EvaluationResult::Value(v) => v,
+                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                        result @ EvaluationResult::Break => return Ok(result),
+                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                    };
                     let start_ty = start.borrow().get_type();
                     let end_ty = start.borrow().get_type();
                     if start_ty != end_ty {
@@ -527,13 +576,22 @@ impl<'a> EvaluationContext<'a> {
                                 Rc::new(RefCell::new(Object::UInt64(i))),
                                 true
                             )?;
-                            self.evaluate_block(statements)?;
+
+                            // Evaluate for block
+                            let res_block = self.evaluate_block(statements)?;
                             self.environment.pop();
+
+                            eprintln!("For evaluate: {:?}", res_block);
+                            match res_block {
+                                EvaluationResult::Value(_) => (),
+                                result @ EvaluationResult::Return(_) => return Ok(result),
+                                EvaluationResult::Break => break,
+                                EvaluationResult::Continue => continue,
+                                EvaluationResult::None => (),
+                            }
                         }
                     }
-                }
-                Stmt::Continue => {
-                    todo!("continue");
+                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))));
                 }
                 Stmt::Expression(expr) => {
                     let e = self.expr_pool.get(expr.to_index()).unwrap();
@@ -542,6 +600,13 @@ impl<'a> EvaluationContext<'a> {
                             if let Some(Expr::Identifier(name)) = self.expr_pool.get(lhs.to_index()) {
                                 // Currently, lhs assumes Identifier only
                                 let rhs = self.evaluate(&rhs)?;
+                                let rhs = match rhs {
+                                    EvaluationResult::Value(v) => v,
+                                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                                    result @ EvaluationResult::Break => return Ok(result),
+                                    result @ EvaluationResult::Continue => return Ok(result),
+                                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
+                                };
                                 let rhs_borrow = rhs.borrow();
 
                                 // type check
@@ -557,14 +622,14 @@ impl<'a> EvaluationContext<'a> {
                                     return Err(InterpreterError::TypeError { expected: val_ty, found: rhs_ty, message: "evaluate_block: Bad types for assignment due to different type".to_string()});
                                 } else {
                                     self.environment.set_var(name.as_ref(), rhs.clone(), false)?;
-                                    last = Some(BlockEvaluationResult::Return(Rc::new(RefCell::new(rhs.borrow().clone()))));
+                                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(rhs.borrow().clone()))));
                                 }
                             } else {
                                 return Err(InterpreterError::InternalError(format!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr)));
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                            last = Some(BlockEvaluationResult::Return(Rc::new(RefCell::new(convert_object(e)))));
+                            last = Some(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(e)))));
                         }
                         Expr::Identifier(s) => {
                             let obj = self.environment.get_val(s.as_ref());
@@ -572,7 +637,7 @@ impl<'a> EvaluationContext<'a> {
                             if obj.is_none() || obj.unwrap().borrow().is_null() {
                                 return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: Identifier {} is null", s)));
                             }
-                            last = Some(BlockEvaluationResult::Return(obj_ref.unwrap()));
+                            last = Some(EvaluationResult::Value(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
                             self.environment.new_block();
@@ -580,13 +645,24 @@ impl<'a> EvaluationContext<'a> {
                             self.environment.pop();
                         }
                         _ => {
-                            last = Some(BlockEvaluationResult::Return(self.evaluate(&expr)?));
+                            last = Some(EvaluationResult::Value(match self.evaluate(&expr) {
+                                Ok(EvaluationResult::Value(v)) => v,
+                                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                                result @ Ok(EvaluationResult::Break) => return result,
+                                result @ Ok(EvaluationResult::Continue) => return result,
+                                result @  Ok(EvaluationResult::None) => return result,
+                                Err(e) => return Err(e),
+                            }));
                         }
                     }
                 }
             }
         }
-        Ok(last.unwrap())
+        if last.is_some() {
+            Ok(last.unwrap())
+        } else {
+            Ok(EvaluationResult::None)
+        }
     }
 
     fn evaluate_function(&mut self, function: Rc<Function>, args: &Vec<ExprRef>) -> Result<RcObject, InterpreterError> {
@@ -603,7 +679,13 @@ impl<'a> EvaluationContext<'a> {
         self.environment.new_block();
         for i in 0..args.len() {
             let name = function.parameter.get(i).unwrap().0.clone();
-            let value = self.evaluate(&args[i])?;
+            let value = match self.evaluate(&args[i]) {
+                Ok(EvaluationResult::Value(v)) => v,
+                Ok(EvaluationResult::Return(v)) => return Ok(v.unwrap()),
+                Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => return Ok(Rc::new(RefCell::new(Object::Unit))),
+                Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Null)),
+                Err(e) => return Err(e),
+            };
             self.environment.set_val(name.as_ref(), value);
         }
 
@@ -613,9 +695,10 @@ impl<'a> EvaluationContext<'a> {
             Ok( Rc::new(RefCell::new(Object::Unit)))
         } else {
             Ok(match res {
-                BlockEvaluationResult::Return(v) => v,
-                BlockEvaluationResult::Break | BlockEvaluationResult::Continue =>
-                    Rc::new(RefCell::new(Object::Unit)),
+                EvaluationResult::Value(v) => v,
+                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Null)),
+                EvaluationResult::Return(v) => v.unwrap(),
+                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }
     }
@@ -642,7 +725,10 @@ mod tests {
         let expr_ref = expr_pool.add(Expr::Int64(42));
 
         let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, HashMap::new());
-        let result = ctx.evaluate(&expr_ref).unwrap();
+        let result = match ctx.evaluate(&expr_ref) {
+            Ok(EvaluationResult::Value(v)) => v,
+            _ => panic!("evaluate should return int64 value"),
+        };
 
         assert_eq!(result.borrow().unwrap_int64(), 42);
     }
@@ -659,6 +745,73 @@ mod tests {
         ");
         let program = parser.parse_program();
         assert!(program.is_ok());
+
+        let program = program.unwrap();
+
+        let res = execute_program(&program);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
+    }
+
+    #[test]
+    fn test_simple_for_loop() {
+        let mut parser = frontend::Parser::new(r"
+        fn main() -> u64 {
+            var a = 0u64
+            for i in 0u64 to 4u64 {
+                a = a + 1u64
+            }
+            return a
+        }
+        ");
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "{}", program.unwrap_err());
+
+        let program = program.unwrap();
+
+        let res = execute_program(&program);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 4);
+    }
+
+    #[test]
+    fn test_simple_for_loop_continue() {
+        let mut parser = frontend::Parser::new(r"
+        fn main() -> u64 {
+            var a = 0u64
+            for i in 0u64 to 4u64 {
+                continue
+                a = a + 1u64
+            }
+            return a
+        }
+        ");
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "{}", program.unwrap_err());
+
+        let program = program.unwrap();
+
+        let res = execute_program(&program);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 0);
+    }
+
+    #[test]
+    fn test_simple_for_loop_break() {
+        let mut parser = frontend::Parser::new(r"
+        fn main() -> u64 {
+            var a = 0u64
+            for i in 0u64 to 4u64 {
+                a = a + 1u64
+                if a > 2u64 {
+                    break
+                }
+            }
+            return a
+        }
+        ");
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "{}", program.unwrap_err());
 
         let program = program.unwrap();
 

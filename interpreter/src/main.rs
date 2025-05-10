@@ -156,7 +156,7 @@ impl Environment {
                 return Err(InterpreterError::ImmutableAssignment(format!("Variable {} already defined as immutable (val)", name)));
             }
 
-            entry.value = value.clone();
+            entry.value = value;
         }
 
         Ok(())
@@ -300,15 +300,15 @@ impl<'a> EvaluationContext<'a> {
                 let lhs = match self.evaluate(lhs)? {
                     EvaluationResult::Value(v) => v,
                     EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    result @ EvaluationResult::Break => return Ok(result),
-                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                     EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                 };
                 let rhs = match self.evaluate(rhs)? {
                     EvaluationResult::Value(v) => v,
                     EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    result @ EvaluationResult::Break => return Ok(result),
-                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                     EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                 };
                 let lhs = lhs.borrow();
@@ -420,8 +420,8 @@ impl<'a> EvaluationContext<'a> {
                 let cond = match self.evaluate(cond)? {
                     EvaluationResult::Value(v) => v,
                     EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    result @ EvaluationResult::Break => return Ok(result),
-                    result @ EvaluationResult::Continue => return Ok(result),
+                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                     EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                 };
                 let cond = cond.borrow();
@@ -448,18 +448,6 @@ impl<'a> EvaluationContext<'a> {
                 }
             }
 
-            Expr::Block(statements) => {
-                self.environment.new_block();
-                let block = self.evaluate_block(statements)?;
-                self.environment.pop();
-                match block {
-                    result @ EvaluationResult::Value(_) => Ok(result),
-                    result @ EvaluationResult::Return(_) => Ok(result),
-                    EvaluationResult::Break => Ok(EvaluationResult::Break),
-                    EvaluationResult::Continue => Ok(EvaluationResult::Continue),
-                    EvaluationResult::None => Ok(EvaluationResult::None),
-                }
-            }
             Expr::Call(name, args) => {
                 if let Some(func) = self.function.get::<str>(name.as_ref()) {
                     // TODO: check arguments type
@@ -490,10 +478,10 @@ impl<'a> EvaluationContext<'a> {
     }
 
     fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<EvaluationResult, InterpreterError> {
-        let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap().clone() };
+        let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap() };
+        let statements = statements.iter().map(|s| to_stmt(s)).collect::<Vec<_>>();
         let mut last: Option<EvaluationResult> = None;
-        for s in statements {
-            let stmt = to_stmt(s);
+        for stmt in statements {
             match stmt {
                 Stmt::Val(name, _, e) => {
                     let name = name.clone();
@@ -501,8 +489,8 @@ impl<'a> EvaluationContext<'a> {
                     let value = match value {
                         EvaluationResult::Value(v) => v,
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        result @ EvaluationResult::Break => return Ok(result),
-                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                         EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                     };
                     self.environment.set_val(name.as_ref(), value);
@@ -547,16 +535,16 @@ impl<'a> EvaluationContext<'a> {
                     let start = match start {
                         EvaluationResult::Value(v) => v,
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        result @ EvaluationResult::Break => return Ok(result),
-                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                         EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                     };
                     let end = self.evaluate(&end)?;
                     let end = match end {
                         EvaluationResult::Value(v) => v,
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        result @ EvaluationResult::Break => return Ok(result),
-                        result @ EvaluationResult::Continue => return Ok(result),
+                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                         EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                     };
                     let start_ty = start.borrow().get_type();
@@ -581,10 +569,9 @@ impl<'a> EvaluationContext<'a> {
                             let res_block = self.evaluate_block(statements)?;
                             self.environment.pop();
 
-                            eprintln!("For evaluate: {:?}", res_block);
                             match res_block {
                                 EvaluationResult::Value(_) => (),
-                                result @ EvaluationResult::Return(_) => return Ok(result),
+                                EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
                                 EvaluationResult::Break => break,
                                 EvaluationResult::Continue => continue,
                                 EvaluationResult::None => (),
@@ -603,8 +590,8 @@ impl<'a> EvaluationContext<'a> {
                                 let rhs = match rhs {
                                     EvaluationResult::Value(v) => v,
                                     EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                                    result @ EvaluationResult::Break => return Ok(result),
-                                    result @ EvaluationResult::Continue => return Ok(result),
+                                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                                     EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                                 };
                                 let rhs_borrow = rhs.borrow();
@@ -645,14 +632,19 @@ impl<'a> EvaluationContext<'a> {
                             self.environment.pop();
                         }
                         _ => {
-                            last = Some(EvaluationResult::Value(match self.evaluate(&expr) {
-                                Ok(EvaluationResult::Value(v)) => v,
-                                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                                result @ Ok(EvaluationResult::Break) => return result,
-                                result @ Ok(EvaluationResult::Continue) => return result,
-                                result @  Ok(EvaluationResult::None) => return result,
+                            match self.evaluate(&expr) {
+                                Ok(EvaluationResult::Value(v)) =>
+                                    last = Some(EvaluationResult::Value(v)),
+                                Ok(EvaluationResult::Return(v)) =>
+                                    last = Some(EvaluationResult::Return(v)),
+                                Ok(EvaluationResult::Break) =>
+                                    last = Some(EvaluationResult::Break),
+                                Ok(EvaluationResult::Continue) =>
+                                    last = Some(EvaluationResult::Continue),
+                                Ok(EvaluationResult::None) =>
+                                    last = None,
                                 Err(e) => return Err(e),
-                            }));
+                            };
                         }
                     }
                 }

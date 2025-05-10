@@ -431,7 +431,7 @@ impl<'a> EvaluationContext<'a> {
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
                 self.environment.new_block();
-                if let Object::Bool(true) = &*cond {
+                if cond.unwrap_bool() {
                     let then = match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
@@ -628,19 +628,28 @@ impl<'a> EvaluationContext<'a> {
                         }
                         Expr::Block(blk_expr) => {
                             self.environment.new_block();
-                            last = Some(self.evaluate_block(&blk_expr)?);
+                            let result = self.evaluate_block(&blk_expr)?;
                             self.environment.pop();
+                            match result {
+                                EvaluationResult::Value(v) => last = Some(EvaluationResult::Value(v)),
+                                EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                                EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                                EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                                EvaluationResult::None => last = None,
+                            };
                         }
                         _ => {
+                            // Take care to handle loop control flow correctly when break/continue is executed
+                            // in nested loops. These statements affect only their immediate enclosing loop.
                             match self.evaluate(&expr) {
                                 Ok(EvaluationResult::Value(v)) =>
                                     last = Some(EvaluationResult::Value(v)),
                                 Ok(EvaluationResult::Return(v)) =>
-                                    last = Some(EvaluationResult::Return(v)),
+                                    return Ok(EvaluationResult::Return(v)),
                                 Ok(EvaluationResult::Break) =>
-                                    last = Some(EvaluationResult::Break),
+                                    return Ok(EvaluationResult::Break),
                                 Ok(EvaluationResult::Continue) =>
-                                    last = Some(EvaluationResult::Continue),
+                                    return Ok(EvaluationResult::Continue),
                                 Ok(EvaluationResult::None) =>
                                     last = None,
                                 Err(e) => return Err(e),

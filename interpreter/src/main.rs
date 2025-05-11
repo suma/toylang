@@ -133,16 +133,17 @@ impl Environment {
         self.var.pop();
     }
 
-    pub fn set_val(&mut self, name: &str, value: RcObject) {
+    pub fn set_val(&mut self, name: &str, value: RcObject) -> Result<(), InterpreterError> {
         let last = self.var.last_mut().unwrap();
         if last.contains_key(name) {
-            panic!("Variable {} already defined (val)", name);
+            return Err(InterpreterError::InternalError(format!("Variable {} already defined", name)));
         }
         last.insert(name.to_string(),
                     VariableValue{
                         mutable: false,
                         value
                     });
+        Ok(())
     }
 
     pub fn set_var(&mut self, name: &str, value: RcObject, set_type: VariableSetType) -> Result<(), InterpreterError> {
@@ -499,7 +500,7 @@ impl<'a> EvaluationContext<'a> {
                         EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
                         EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
                     };
-                    self.environment.set_val(name.as_ref(), value);
+                    self.environment.set_val(name.as_ref(), value)?;
                     last = None;
                 }
                 Stmt::Var(name, _, e) => {
@@ -693,7 +694,7 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Null)),
                 Err(e) => return Err(e),
             };
-            self.environment.set_val(name.as_ref(), value);
+            self.environment.set_val(name.as_ref(), value)?;
         }
 
         let res = self.evaluate_block(block)?;

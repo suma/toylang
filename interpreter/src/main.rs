@@ -574,8 +574,7 @@ impl<'a> EvaluationContext<'a> {
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
                         for i in start..end {
-                            //let _ = self.environment.with_new_scope();
-                            self.environment.new_block();
+                            let _ = self.environment.with_new_scope();
                             self.environment.set_var(
                                 identifier.as_ref(),
                                 Rc::new(RefCell::new(Object::UInt64(i))),
@@ -584,7 +583,6 @@ impl<'a> EvaluationContext<'a> {
 
                             // Evaluate for block
                             let res_block = self.evaluate_block(statements)?;
-                            self.environment.pop();
 
                             match res_block {
                                 EvaluationResult::Value(_) => (),
@@ -644,8 +642,9 @@ impl<'a> EvaluationContext<'a> {
                             last = Some(EvaluationResult::Value(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
-                            let _ = self.environment.with_new_scope();
+                            self.environment.new_block(); // FIXME: replace with `with_new_scope`
                             let result = self.evaluate_block(&blk_expr)?;
+                            self.environment.pop();
                             match result {
                                 EvaluationResult::Value(v) => last = Some(EvaluationResult::Value(v)),
                                 EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
@@ -708,7 +707,7 @@ impl<'a> EvaluationContext<'a> {
 
         let res = self.evaluate_block(block)?;
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
-            Ok( Rc::new(RefCell::new(Object::Unit)))
+            Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
             Ok(match res {
                 EvaluationResult::Value(v) => v,

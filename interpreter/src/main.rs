@@ -112,6 +112,12 @@ pub enum EvaluationResult {
     Continue,
 }
 
+#[derive(Eq, PartialEq)]
+pub enum VariableSetType {
+    Insert,
+    Overwrite,
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -139,10 +145,10 @@ impl Environment {
                     });
     }
 
-    pub fn set_var(&mut self, name: &str, value: RcObject, new_define: bool) -> Result<(), InterpreterError> {
+    pub fn set_var(&mut self, name: &str, value: RcObject, set_type: VariableSetType) -> Result<(), InterpreterError> {
         let current = self.var.iter_mut().rfind(|v| v.contains_key(name));
 
-        if current.is_none() || new_define {
+        if current.is_none() || set_type == VariableSetType::Insert {
             // Insert new value
             let val = VariableValue{ mutable: true, value };
             let last: &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
@@ -506,7 +512,7 @@ impl<'a> EvaluationContext<'a> {
                             _ => Rc::new(RefCell::new(Object::Null)),
                         }
                     };
-                    self.environment.set_var(name.as_ref(), value, true)?;
+                    self.environment.set_var(name.as_ref(), value, VariableSetType::Insert)?;
                     last = None;
                 }
                 Stmt::Return(e) => {
@@ -562,7 +568,7 @@ impl<'a> EvaluationContext<'a> {
                             self.environment.set_var(
                                 identifier.as_ref(),
                                 Rc::new(RefCell::new(Object::UInt64(i))),
-                                true
+                                VariableSetType::Insert
                             )?;
 
                             // Evaluate for block
@@ -608,7 +614,7 @@ impl<'a> EvaluationContext<'a> {
                                 if val_ty != rhs_ty {
                                     return Err(InterpreterError::TypeError { expected: val_ty, found: rhs_ty, message: "evaluate_block: Bad types for assignment due to different type".to_string()});
                                 } else {
-                                    self.environment.set_var(name.as_ref(), rhs.clone(), false)?;
+                                    self.environment.set_var(name.as_ref(), rhs.clone(), VariableSetType::Overwrite)?;
                                     last = Some(EvaluationResult::Value(Rc::new(RefCell::new(rhs.borrow().clone()))));
                                 }
                             } else {

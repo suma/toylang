@@ -781,7 +781,9 @@ mod tests {
         fn main() -> u64 {
             var a = 0u64
             for i in 0u64 to 4u64 {
-                continue
+                if i < 3u64 {
+                    continue
+                }
                 a = a + 1u64
             }
             return a
@@ -794,7 +796,7 @@ mod tests {
 
         let res = execute_program(&program);
         assert!(res.is_ok());
-        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 0);
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);
     }
 
     #[test]

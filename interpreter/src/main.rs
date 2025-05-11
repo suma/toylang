@@ -91,6 +91,7 @@ pub enum InterpreterError {
     FunctionNotFound(String),
     FunctionParameterMismatch { message: String, expected: usize, found: usize },
     InternalError(String),
+    PropagateFlow(EvaluationResult),
 }
 
 #[derive(Debug, Clone)]
@@ -310,123 +311,182 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
+    fn extract_value(&mut self, result: Result<EvaluationResult, InterpreterError>) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+        match result {
+            Ok(EvaluationResult::Value(v)) => Ok(v),
+            Ok(EvaluationResult::Return(v)) => Err(InterpreterError::PropagateFlow(EvaluationResult::Return(v))),
+            Ok(EvaluationResult::Break) => Err(InterpreterError::PropagateFlow(EvaluationResult::Break)),
+            Ok(EvaluationResult::Continue) => Err(InterpreterError::PropagateFlow(EvaluationResult::Continue)),
+            Ok(EvaluationResult::None) => Err(InterpreterError::InternalError("unexpected None".to_string())),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn evaluate_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let lhs = self.evaluate(lhs);
+        let rhs = self.evaluate(rhs);
+        let lhs_val = self.extract_value(lhs)?;
+        let rhs_val = self.extract_value(rhs)?;
+
+        let lhs_obj = lhs_val.borrow();
+        let rhs_obj = rhs_val.borrow();
+
+        let result = match op {
+            Operator::IAdd => self.evaluate_add(&lhs_obj, &rhs_obj)?,
+            Operator::ISub => self.evaluate_sub(&lhs_obj, &rhs_obj)?,
+            Operator::IMul => self.evaluate_mul(&lhs_obj, &rhs_obj)?,
+            Operator::IDiv => self.evaluate_div(&lhs_obj, &rhs_obj)?,
+            Operator::EQ => self.evaluate_eq(&lhs_obj, &rhs_obj)?,
+            Operator::NE => self.evaluate_ne(&lhs_obj, &rhs_obj)?,
+            Operator::LT => self.evaluate_lt(&lhs_obj, &rhs_obj)?,
+            Operator::LE => self.evaluate_le(&lhs_obj, &rhs_obj)?,
+            Operator::GT => self.evaluate_gt(&lhs_obj, &rhs_obj)?,
+            Operator::GE => self.evaluate_ge(&lhs_obj, &rhs_obj)?,
+            Operator::LogicalAnd => self.evaluate_logical_and(&lhs_obj, &rhs_obj)?,
+            Operator::LogicalOr => self.evaluate_logical_or(&lhs_obj, &rhs_obj)?,
+        };
+
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
+    }
+
+    pub fn evaluate_add(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l + r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l + r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_sub(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l - r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l - r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_mul(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l * r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l * r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_div(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l / r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l / r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_eq(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l == r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l == r),
+            (Object::String(l), Object::String(r)) => Object::Bool(l == r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_ne(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l != r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l != r),
+            (Object::String(l), Object::String(r)) => Object::Bool(l != r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_ge(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l >= r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l >= r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_gt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l > r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l > r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_le(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l <= r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l <= r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_lt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l < r),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l < r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_logical_and(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l && *r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
+    pub fn evaluate_logical_or(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l || *r),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+        })
+    }
+
     pub fn evaluate(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let expr = self.expr_pool.get(e.to_index())
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", e.to_index())))?;
         match expr {
             Expr::Binary(op, lhs, rhs) => {
-                let lhs = match self.evaluate(lhs)? {
-                    EvaluationResult::Value(v) => v,
-                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                };
-                let rhs = match self.evaluate(rhs)? {
-                    EvaluationResult::Value(v) => v,
-                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                };
-                let lhs = lhs.borrow();
-                let rhs = rhs.borrow();
-                let lhs_ty = lhs.get_type();
-                let rhs_ty = rhs.get_type();
-                if lhs_ty != rhs_ty {
-                    return Err(InterpreterError::TypeError{
-                        expected: lhs_ty,
-                        found: rhs_ty,
-                        message: format!("evaluate: Bad types for binary operation due to different type: {:?}", expr)
-                    });
-                }
-                let res = match op { // Int64, UInt64 only now
-                    Operator::IAdd => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l + r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l + r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '+' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::ISub => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l - r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l - r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '-' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::IMul => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l * r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l * r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '*' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::IDiv => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Int64(l / r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::UInt64(l / r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '/' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::EQ => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                            (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l == r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '==' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::NE => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                            (Object::String(l), Object::String(r)) => Rc::new(RefCell::new(Object::Bool(l != r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '!=' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::GE => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l >= r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '>=' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::GT => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l > r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '>' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::LE => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l <= r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '<=' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::LT => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Int64(l), Object::Int64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
-                            (Object::UInt64(l), Object::UInt64(r)) => Rc::new(RefCell::new(Object::Bool(l < r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '<' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::LogicalAnd => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l && *r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '&&' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                    Operator::LogicalOr => {
-                        match (&*lhs, &*rhs) {
-                            (Object::Bool(l), Object::Bool(r)) => Rc::new(RefCell::new(Object::Bool(*l || *r))),
-                            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate: Bad types for binary '||' operation due to different type: {:?}", expr)}),
-                        }
-                    }
-                };
-                Ok(EvaluationResult::Value(res))
+                self.evaluate_binary(op, lhs, rhs)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))

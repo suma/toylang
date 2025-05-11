@@ -799,9 +799,18 @@ mod tests {
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }
 
+    fn test_program(program: &str) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+        let mut parser = frontend::Parser::new(program);
+        let program = parser.parse_program();
+        assert!(program.is_ok());
+        let res = execute_program(&program.unwrap());
+        assert!(res.is_ok());
+        Ok(res.unwrap())
+    }
+
     #[test]
     fn test_simple_for_loop() {
-        let mut parser = frontend::Parser::new(r"
+        let res = test_program(r"
         fn main() -> u64 {
             var a = 0u64
             for i in 0u64 to 4u64 {
@@ -810,19 +819,12 @@ mod tests {
             return a
         }
         ");
-        let program = parser.parse_program();
-        assert!(program.is_ok(), "{}", program.unwrap_err());
-
-        let program = program.unwrap();
-
-        let res = execute_program(&program);
-        assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 4);
     }
 
     #[test]
     fn test_simple_for_loop_continue() {
-        let mut parser = frontend::Parser::new(r"
+        let res = test_program(r"
         fn main() -> u64 {
             var a = 0u64
             for i in 0u64 to 4u64 {
@@ -834,19 +836,12 @@ mod tests {
             return a
         }
         ");
-        let program = parser.parse_program();
-        assert!(program.is_ok(), "{}", program.unwrap_err());
-
-        let program = program.unwrap();
-
-        let res = execute_program(&program);
-        assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);
     }
 
     #[test]
     fn test_simple_for_loop_break() {
-        let mut parser = frontend::Parser::new(r"
+        let res = test_program(r"
         fn main() -> u64 {
             var a = 0u64
             for i in 0u64 to 4u64 {
@@ -858,19 +853,12 @@ mod tests {
             return a
         }
         ");
-        let program = parser.parse_program();
-        assert!(program.is_ok(), "{}", program.unwrap_err());
-
-        let program = program.unwrap();
-
-        let res = execute_program(&program);
-        assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }
 
     #[test]
     fn test_simple_variable_scope() {
-        let mut parser = frontend::Parser::new(r"
+        let res = test_program(r"
         fn main() -> u64 {
             var x = 100u64
             {
@@ -880,13 +868,6 @@ mod tests {
             x = x + 1u64
         }
         ");
-        let program = parser.parse_program();
-        assert!(program.is_ok(), "{}", program.unwrap_err());
-
-        let program = program.unwrap();
-
-        let res = execute_program(&program);
-        assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 101);
     }
 }

@@ -495,13 +495,8 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::Value(self.environment.get_val(s.as_ref()).unwrap().clone()))
             }
             Expr::IfElse(cond, then, _else) => {
-                let cond = match self.evaluate(cond)? {
-                    EvaluationResult::Value(v) => v,
-                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                };
+                let cond = self.evaluate(cond);
+                let cond = self.extract_value(cond)?;
                 let cond = cond.borrow();
                 if cond.get_type() != TypeDecl::Bool {
                     return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: format!("evaluate: Bad types for if-else due to different type: {:?}", expr)});
@@ -561,14 +556,8 @@ impl<'a> EvaluationContext<'a> {
             match stmt {
                 Stmt::Val(name, _, e) => {
                     let name = name.clone();
-                    let value = self.evaluate(&e)?;
-                    let value = match value {
-                        EvaluationResult::Value(v) => v,
-                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                    };
+                    let value = self.evaluate(&e);
+                    let value = self.extract_value(value)?;
                     self.environment.set_val(name.as_ref(), value);
                     last = None;
                 }
@@ -607,22 +596,10 @@ impl<'a> EvaluationContext<'a> {
                     todo!("while");
                 }
                 Stmt::For(identifier, start, end, block) => {
-                    let start = self.evaluate(&start)?;
-                    let start = match start {
-                        EvaluationResult::Value(v) => v,
-                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                    };
-                    let end = self.evaluate(&end)?;
-                    let end = match end {
-                        EvaluationResult::Value(v) => v,
-                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                        EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                    };
+                    let start = self.evaluate(&start);
+                    let start = self.extract_value(start)?;
+                    let end = self.evaluate(&end);
+                    let end = self.extract_value(end)?;
                     let start_ty = start.borrow().get_type();
                     let end_ty = start.borrow().get_type();
                     if start_ty != end_ty {
@@ -661,14 +638,8 @@ impl<'a> EvaluationContext<'a> {
                         Expr::Assign(lhs, rhs) => {
                             if let Some(Expr::Identifier(name)) = self.expr_pool.get(lhs.to_index()) {
                                 // Currently, lhs assumes Identifier only
-                                let rhs = self.evaluate(&rhs)?;
-                                let rhs = match rhs {
-                                    EvaluationResult::Value(v) => v,
-                                    EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                                    EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                                    EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                                    EvaluationResult::None => return Err(InterpreterError::InternalError("unexpected None".to_string())),
-                                };
+                                let rhs = self.evaluate(&rhs);
+                                let rhs = self.extract_value(rhs)?;
                                 let rhs_borrow = rhs.borrow();
 
                                 // type check

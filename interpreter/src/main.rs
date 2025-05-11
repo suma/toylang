@@ -118,11 +118,26 @@ pub enum VariableSetType {
     Overwrite,
 }
 
+struct EnvironmentGuard<'a> {
+    env: &'a mut Environment,
+}
+
+impl<'a> Drop for EnvironmentGuard<'a> {
+    fn drop(&mut self) {
+        self.env.pop();
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
             var: vec![HashMap::new()],
         }
+    }
+
+    fn with_new_scope(&mut self) -> EnvironmentGuard {
+        self.new_block();
+        EnvironmentGuard { env: self }
     }
 
     pub fn new_block(&mut self) {
@@ -433,20 +448,18 @@ impl<'a> EvaluationContext<'a> {
                 }
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
-                self.environment.new_block();
+                let _ = self.environment.with_new_scope();
                 if cond.unwrap_bool() {
                     let then = match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
                     };
-                    self.environment.pop();
                     Ok(then)
                 } else {
                     let _else = match self.expr_pool.get(_else.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     };
-                    self.environment.pop();
                     Ok(_else)
                 }
             }
@@ -561,6 +574,7 @@ impl<'a> EvaluationContext<'a> {
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
                         for i in start..end {
+                            //let _ = self.environment.with_new_scope();
                             self.environment.new_block();
                             self.environment.set_var(
                                 identifier.as_ref(),
@@ -630,9 +644,8 @@ impl<'a> EvaluationContext<'a> {
                             last = Some(EvaluationResult::Value(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
-                            self.environment.new_block();
+                            let _ = self.environment.with_new_scope();
                             let result = self.evaluate_block(&blk_expr)?;
-                            self.environment.pop();
                             match result {
                                 EvaluationResult::Value(v) => last = Some(EvaluationResult::Value(v)),
                                 EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
@@ -680,7 +693,7 @@ impl<'a> EvaluationContext<'a> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
         };
 
-        self.environment.new_block();
+        let _ = self.environment.with_new_scope();
         for i in 0..args.len() {
             let name = function.parameter.get(i).unwrap().0.clone();
             let value = match self.evaluate(&args[i]) {
@@ -694,7 +707,6 @@ impl<'a> EvaluationContext<'a> {
         }
 
         let res = self.evaluate_block(block)?;
-        self.environment.pop();
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok( Rc::new(RefCell::new(Object::Unit)))
         } else {
@@ -824,5 +836,27 @@ mod tests {
         let res = execute_program(&program);
         assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
+    }
+
+    #[test]
+    fn test_simple_variable_scope() {
+        let mut parser = frontend::Parser::new(r"
+        fn main() -> u64 {
+            var x = 100u64
+            {
+                var x = 10u64
+                x = x + 1000u64
+            }
+            x = x + 1u64
+        }
+        ");
+        let program = parser.parse_program();
+        assert!(program.is_ok(), "{}", program.unwrap_err());
+
+        let program = program.unwrap();
+
+        let res = execute_program(&program);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 101);
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::AstVisitor;
@@ -11,8 +12,8 @@ pub struct VarState {
 }
 #[derive(Debug)]
 pub struct TypeCheckContext {
-    vars: Vec<HashMap<String, VarState>>,
-    functions: HashMap<String, Rc<Function>>,
+    vars: Vec<HashMap<DefaultSymbol, VarState>>,
+    functions: HashMap<DefaultSymbol, Rc<Function>>,
 }
 
 #[derive(Debug)]
@@ -20,12 +21,13 @@ pub struct TypeCheckError {
     msg: String,
 }
 
-pub struct TypeCheckerVisitor <'a, 'b> where 'a: 'b {
+pub struct TypeCheckerVisitor <'a, 'b, 'c> {
     pub stmt_pool: &'a StmtPool,
     pub expr_pool: &'b ExprPool,
+    pub string_interner: &'c DefaultStringInterner,
     pub context: TypeCheckContext,
     pub call_depth: usize,
-    pub is_checked_fn: HashMap<String, Option<TypeDecl>>, // None -> in progress, Some -> Done
+    pub is_checked_fn: HashMap<DefaultSymbol, Option<TypeDecl>>, // None -> in progress, Some -> Done
 }
 
 impl std::fmt::Display for TypeCheckError {
@@ -48,14 +50,14 @@ impl TypeCheckContext {
         }
     }
 
-    pub fn set_val(&mut self, name: &str, ty: TypeDecl) {
+    pub fn set_val(&mut self, name: DefaultSymbol, ty: TypeDecl) {
         let last = self.vars.last_mut().unwrap();
-        last.insert(name.to_string(), VarState { ty, is_const: true });
+        last.insert(name, VarState { ty, is_const: true });
     }
 
-    pub fn set_var(&mut self, name: &str, ty: TypeDecl) {
+    pub fn set_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
         let last = self.vars.last_mut().unwrap();
-        let exist = last.get(name);
+        let exist = last.get(&name);
         if let Some(exist) = exist {
             if exist.is_const {
                 panic!("Cannot re-assign const variable: {:?}", name);
@@ -67,17 +69,17 @@ impl TypeCheckContext {
             // it can overwrite
         } else {
             // or insert a new one
-            last.insert(name.to_string(), VarState { ty, is_const: false });
+            last.insert(name, VarState { ty, is_const: false });
         }
     }
 
-    pub fn set_fn(&mut self, name: &str, f: Rc<Function>) {
-        self.functions.insert(name.to_string(), f);
+    pub fn set_fn(&mut self, name: DefaultSymbol, f: Rc<Function>) {
+        self.functions.insert(name, f);
     }
 
-    pub fn get_var(&self, name: &str) -> Option<TypeDecl> {
+    pub fn get_var(&self, name: DefaultSymbol) -> Option<TypeDecl> {
         for v in self.vars.iter().rev() {
-            let v_val = v.get(name);
+            let v_val = v.get(&name);
             if let Some(val) = v_val {
                 return Some(val.ty.clone());
             }
@@ -85,8 +87,7 @@ impl TypeCheckContext {
         None
     }
 
-    pub fn get_fn(&self, name: &str) -> Option<Rc<Function>> {
-        let name = name.to_string();
+    pub fn get_fn(&self, name: DefaultSymbol) -> Option<Rc<Function>> {
         if let Some(val) = self.functions.get(&name) {
             Some(val.clone())
         } else {
@@ -96,11 +97,12 @@ impl TypeCheckContext {
 }
 
 
-impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b ExprPool) -> Self {
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b ExprPool, string_interner: &'c DefaultStringInterner) -> Self {
         Self {
             stmt_pool,
             expr_pool,
+            string_interner: string_interner,
             context: TypeCheckContext::new(),
             call_depth: 0,
             is_checked_fn: HashMap::new(),
@@ -116,10 +118,10 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
     }
 
     pub fn add_function(&mut self, f: Rc<Function>) {
-        self.context.set_fn(f.name.as_str(), f.clone());
+        self.context.set_fn(f.name, f.clone());
     }
 
-    fn process_val_type(&mut self, name: &String, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    fn process_val_type(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let expr_ty = match expr {
             Some(e) => {
                 let ty = self.visit_expr(e)?;
@@ -133,13 +135,13 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
 
         match (type_decl, expr_ty.as_ref()) {
             (Some(TypeDecl::Unknown), Some(ty)) => {
-                self.context.set_var(name.as_str(), ty.clone());
+                self.context.set_var(name, ty.clone());
             }
             (Some(decl), Some(ty)) => {
                 if decl != ty {
                     return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", decl, ty)));
                 }
-                self.context.set_var(name.as_str(), ty.clone());
+                self.context.set_var(name, ty.clone());
             }
             _ => (),
         }
@@ -152,15 +154,14 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
         let s = func.code.clone();
 
         // Is already checked
-        let func_name = func.name.clone();
-        match self.is_checked_fn.get(func_name.as_str()) {
+        match self.is_checked_fn.get(&func.name) {
             Some(Some(result_ty)) => return Ok(result_ty.clone()),  // already checked
             Some(None) => return Ok(TypeDecl::Unknown), // now checking
             None => (),
         }
 
         // Now checking...
-        self.is_checked_fn.insert(func_name.clone(), None);
+        self.is_checked_fn.insert(func.name, None);
 
         self.call_depth += 1;
 
@@ -181,7 +182,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
         self.push_context();
         // Define variable of argument for this `func`
         func.parameter.iter().for_each(|(name, type_decl)| {
-            self.context.set_var(name.as_str(), type_decl.clone());
+            self.context.set_var(*name, type_decl.clone());
         });
 
         for stmt in statements {
@@ -195,7 +196,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
         self.pop_context();
         self.call_depth -= 1;
 
-        self.is_checked_fn.insert(func_name, Some(last.clone()));
+        self.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
     }
 }
@@ -210,12 +211,12 @@ impl Acceptable for Expr {
             Expr::Block(statements) => visitor.visit_block(statements),
             Expr::IfElse(cond, then_block, else_block) => visitor.visit_if_else(cond, then_block, else_block),
             Expr::Assign(lhs, rhs) => visitor.visit_assign(lhs, rhs),
-            Expr::Identifier(name) => visitor.visit_identifier(name),
-            Expr::Call(fn_name, args) => visitor.visit_call(fn_name, args),
+            Expr::Identifier(name) => visitor.visit_identifier(*name),
+            Expr::Call(fn_name, args) => visitor.visit_call(*fn_name, args),
             Expr::Int64(val) => visitor.visit_int64_literal(val),
             Expr::UInt64(val) => visitor.visit_uint64_literal(val),
-            Expr::Number(val) => visitor.visit_number_literal(val),
-            Expr::String(val) => visitor.visit_string_literal(val),
+            Expr::Number(val) => visitor.visit_number_literal(*val),
+            Expr::String(val) => visitor.visit_string_literal(*val),
             Expr::True | Expr::False => visitor.visit_boolean_literal(self),
             Expr::Null => visitor.visit_null_literal(),
             Expr::ExprList(items) => visitor.visit_expr_list(items),
@@ -227,10 +228,10 @@ impl Acceptable for Stmt {
     fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Stmt::Expression(expr) => visitor.visit_expression_stmt(expr),
-            Stmt::Var(name, type_decl, expr) => visitor.visit_var(name, type_decl, expr),
-            Stmt::Val(name, type_decl, expr) => visitor.visit_val(name, type_decl, expr),
+            Stmt::Var(name, type_decl, expr) => visitor.visit_var(*name, type_decl, expr),
+            Stmt::Val(name, type_decl, expr) => visitor.visit_val(*name, type_decl, expr),
             Stmt::Return(expr) => visitor.visit_return(expr),
-            Stmt::For(init, cond, step, body) => visitor.visit_for(init, cond, step, body),
+            Stmt::For(init, cond, step, body) => visitor.visit_for(*init, cond, step, body),
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue()
@@ -238,7 +239,7 @@ impl Acceptable for Stmt {
     }
 }
 
-impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }
@@ -368,20 +369,21 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         Ok(lhs_ty)
     }
 
-    fn visit_identifier(&mut self, name: &str) -> Result<TypeDecl, TypeCheckError> {
-        if let Some(val_type) = self.context.get_var(&name) {
+    fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
+        if let Some(val_type) = self.context.get_var(name) {
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
+            let name = self.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             return Err(TypeCheckError::new(format!("Identifier {:?} not found", name)));
         }
     }
 
-    fn visit_call(&mut self, fn_name: &str, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_call(&mut self, fn_name: DefaultSymbol, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         if let Some(fun) = self.context.get_fn(fn_name) {
-            let status = self.is_checked_fn.get(fn_name);
+            let status = self.is_checked_fn.get(&fn_name);
             if status.is_none() || status.clone().unwrap().is_none() {
                 // not checked yet
                 let fun = self.context.get_fn(fn_name).unwrap();
@@ -392,6 +394,7 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
             self.pop_context();
+            let fn_name = self.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
             Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)))
         }
     }
@@ -404,11 +407,11 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         Ok(TypeDecl::UInt64)
     }
 
-    fn visit_number_literal(&mut self, _value: &str) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::UInt64)
     }
 
-    fn visit_string_literal(&mut self, _value: &str) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_string_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::String)
     }
 
@@ -429,19 +432,17 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }
 
-    fn visit_var(&mut self, name: &str, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        let name = name.to_string();
+    fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let type_decl = type_decl.clone();
         let expr = expr.clone();
-        self.process_val_type(&name, &type_decl, &expr)?;
+        self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
     }
 
-    fn visit_val(&mut self, name: &str, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr = Some(expr.clone());
-        let name = name.to_string();
         let type_decl = type_decl.clone();
-        self.process_val_type(&name, &type_decl, &expr)?;
+        self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
     }
 
@@ -455,7 +456,7 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         }
     }
 
-    fn visit_for(&mut self, init: &String, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         let ty = Some(TypeDecl::Unknown); // FIXME
         self.process_val_type(init, &ty, &Some(*range))?;

@@ -12,6 +12,7 @@ use crate::type_decl::*;
 use crate::token::{Token, Kind};
 
 use anyhow::{anyhow, Result};
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -22,6 +23,7 @@ pub struct Parser<'a> {
     pub ahead: Vec<Token>,
     pub stmt:  StmtPool,
     pub expr:  ExprPool,
+    pub string_interner: DefaultStringInterner,
 }
 
 #[derive(Debug)]
@@ -38,6 +40,7 @@ impl<'a> Parser<'a> {
             ahead: Vec::new(),
             stmt: StmtPool::with_capacity(1024),
             expr: ExprPool::with_capacity(1024),
+            string_interner: DefaultStringInterner::new(),
         }
     }
 
@@ -179,7 +182,8 @@ impl<'a> Parser<'a> {
                     self.next();
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
-                            let fn_name = s.to_string();
+                            let s = s.to_string();
+                            let fn_name = self.string_interner.get_or_intern(s);
                             self.next();
 
                             self.expect_err(&Kind::ParenOpen)?;
@@ -223,19 +227,23 @@ impl<'a> Parser<'a> {
         std::mem::swap(&mut stmt, &mut self.stmt);
         let mut expr = ExprPool::new();
         std::mem::swap(&mut expr, &mut self.expr);
+        let mut string_interner = DefaultStringInterner::new();
+        std::mem::swap(&mut string_interner, &mut self.string_interner);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             import: vec![],
             function: def_func,
             statement: stmt,
             expression: expr,
+            string_interner,
         })
     }
 
     pub fn parse_param_def(&mut self) -> Result<Parameter> {
         match self.peek() {
             Some(Kind::Identifier(s)) => {
-                let name = s.to_string();
+                let s = s.to_string();
+                let name = self.string_interner.get_or_intern(s);
                 self.next();
                 self.expect_err(&Kind::Colon)?;
                 let typ = self.parse_type_declaration()?;
@@ -302,7 +310,8 @@ impl<'a> Parser<'a> {
                 self.next();
                 match self.peek() {
                     Some(Kind::Identifier(s)) => {
-                        let ident = s.to_string();
+                        let s = s.to_string();
+                        let ident = self.string_interner.get_or_intern(s);
                         self.next();
                         self.expect_err(&Kind::In)?;
                         let start = self.parse_relational()?;
@@ -449,9 +458,10 @@ impl<'a> Parser<'a> {
         };
         self.next();
 
-        let ident: String = match self.peek() {
+        let ident: DefaultSymbol = match self.peek() {
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
+                let s = self.string_interner.get_or_intern(s);
                 self.next();
                 s
             }
@@ -491,7 +501,8 @@ impl<'a> Parser<'a> {
             Some(Kind::U64) => TypeDecl::UInt64,
             Some(Kind::I64) => TypeDecl::Int64,
             Some(Kind::Identifier(s)) => {
-                let ident = s.to_string();
+                let s = s.to_string();
+                let ident = self.string_interner.get_or_intern(s);
                 TypeDecl::Identifier(ident)
             }
             Some(Kind::Str) => {
@@ -591,6 +602,7 @@ impl<'a> Parser<'a> {
             }
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
+                let s = self.string_interner.get_or_intern(s);
                 self.next();
                 match self.peek() {
                     Some(Kind::ParenOpen) => { // function call
@@ -614,13 +626,14 @@ impl<'a> Parser<'a> {
                     Some(&Kind::Null) => self.expr.add(Expr::Null),
                     Some(&Kind::True) => self.expr.add(Expr::True),
                     Some(&Kind::False) => self.expr.add(Expr::False),
-                    Some(Kind::String(str)) => {
-                        // TODO: optimizing with string interning
-                        let s = str.clone();
+                    Some(Kind::String(s)) => {
+                        let s = s.to_string();
+                        let s = self.string_interner.get_or_intern(s);
                         self.expr.add(Expr::String(s))
                     }
-                    Some(Kind::Integer(str)) => {
-                        let s = str.clone();
+                    Some(Kind::Integer(s)) => {
+                        let s = s.to_string();
+                        let s = self.string_interner.get_or_intern(s);
                         self.expr.add(Expr::Number(s))
                     }
                     x => {
@@ -933,7 +946,7 @@ mod tests {
 
             assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
             let a = p.expr.get(0).unwrap();
-            assert_eq!(Expr::Identifier("abc".to_string()), *a);
+            assert_eq!(Expr::Identifier(p.string_interner.get_or_intern("abc".to_string())), *a);
             let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(1), *b);
 
@@ -951,7 +964,7 @@ mod tests {
             let a = p.expr.get(0).unwrap();
             assert_eq!(Expr::ExprList(vec![]), *a);
             let b = p.expr.get(1).unwrap();
-            assert_eq!(Expr::Call("abc".to_string(), ExprRef(0)), *b);
+            assert_eq!(Expr::Call(p.string_interner.get_or_intern("abc".to_string()), ExprRef(0)), *b);
         }
 
         #[test]
@@ -962,7 +975,7 @@ mod tests {
 
             assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
             let a = p.expr.get(0).unwrap();
-            assert_eq!(Expr::Identifier("a".to_string()), *a);
+            assert_eq!(Expr::Identifier(p.string_interner.get_or_intern("a".to_string())), *a);
             let b = p.expr.get(1).unwrap();
             assert_eq!(Expr::UInt64(1u64), *b);
             let c = p.expr.get(2).unwrap();
@@ -1026,15 +1039,17 @@ mod tests {
             let c = p.expr.get(2).unwrap();
             assert_eq!(Expr::ExprList(vec![ExprRef(0), ExprRef(1)]), *c);
             let d = p.expr.get(3).unwrap();
-            assert_eq!(Expr::Call("abc".to_string(), ExprRef(2)), *d);
+            assert_eq!(Expr::Call(p.string_interner.get_or_intern("abc".to_string()), ExprRef(2)), *d);
         }
 
         #[test]
         fn parser_param_def() {
-            let param = Parser::new("test: u64").parse_param_def();
+            let mut p = Parser::new("test: u64");
+            let param = p.parse_param_def();
             assert!(param.is_ok());
-            let p = param.unwrap();
-            assert_eq!(("test".to_string(), TypeDecl::UInt64), p);
+            let param = param.unwrap();
+            let test_id = p.string_interner.get_or_intern("test".to_string());
+            assert_eq!((test_id, TypeDecl::UInt64), param);
         }
 
         #[test]
@@ -1047,16 +1062,17 @@ mod tests {
 
         #[test]
         fn parser_param_def_list() {
-            let param = Parser::new("test: u64, test2: i64, test3: some_type").parse_param_def_list(vec![]);
+            let mut p = Parser::new("test: u64, test2: i64, test3: some_type");
+            let param = p.parse_param_def_list(vec![]);
             assert!(param.is_ok());
-            let p = param.unwrap();
+            let some_type = p.string_interner.get_or_intern("some_type".to_string());
             assert_eq!(
                 vec![
-                    ("test".to_string(), TypeDecl::UInt64),
-                    ("test2".to_string(), TypeDecl::Int64),
-                    ("test3".to_string(), TypeDecl::Identifier("some_type".to_string())),
+                    (p.string_interner.get_or_intern("test".to_string()), TypeDecl::UInt64),
+                    (p.string_interner.get_or_intern("test2".to_string()), TypeDecl::Int64),
+                    (p.string_interner.get_or_intern("test3".to_string()), TypeDecl::Identifier(some_type)),
                 ],
-                p
+                param.unwrap()
             );
         }
 
@@ -1070,10 +1086,11 @@ mod tests {
             assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
             let program = result.unwrap();
 
-            let stmt_pool = program.statement;
-            let expr_pool = program.expression;
+            let stmt_pool = &program.statement;
+            let expr_pool = &program.expression;
+            let string_interner = &program.string_interner;
 
-            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool);
+            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner);
             // Register all defined functions
             program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
@@ -1095,8 +1112,9 @@ mod tests {
 
             let stmt_pool = program.statement;
             let expr_pool = program.expression;
+            let interner = program.string_interner;
 
-            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool);
+            let mut tc = TypeCheckerVisitor::new(&stmt_pool, &expr_pool, &interner);
             let mut res = true;
             program.function.iter().for_each(|f| {
                 let r = tc.type_check(f.clone());

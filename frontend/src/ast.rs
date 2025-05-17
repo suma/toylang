@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::type_checker::{Acceptable, TypeCheckError};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
@@ -111,6 +112,7 @@ pub struct Program {
 
     pub statement: StmtPool,
     pub expression: ExprPool,
+    pub string_interner: DefaultStringInterner,
 }
 
 impl Program {
@@ -127,24 +129,24 @@ impl Program {
 #[derive(Debug, PartialEq, Clone)]
 pub struct Function {
     pub node: Node,
-    pub name: String,
+    pub name: DefaultSymbol,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,
 }
 
-pub type Parameter = (String, TypeDecl);
+pub type Parameter = (DefaultSymbol, TypeDecl);
 pub type ParameterList = Vec<Parameter>;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Expression(ExprRef),
-    Val(String, Option<TypeDecl>, ExprRef),
-    Var(String, Option<TypeDecl>, Option<ExprRef>),
+    Val(DefaultSymbol, Option<TypeDecl>, ExprRef),
+    Var(DefaultSymbol, Option<TypeDecl>, Option<ExprRef>),
     Return(Option<ExprRef>),
     Break,
     Continue,
-    For(String, ExprRef, ExprRef, ExprRef), // str, start, end, block
+    For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
 }
 
@@ -158,12 +160,12 @@ pub enum Expr {
     False,
     Int64(i64),
     UInt64(u64),
-    Number(String),
-    Identifier(String),
+    Number(DefaultSymbol),
+    Identifier(DefaultSymbol),
     Null,
     ExprList(Vec<ExprRef>),
-    Call(String, ExprRef), // apply, function call, etc
-    String(String),
+    Call(DefaultSymbol, ExprRef), // apply, function call, etc
+    String(DefaultSymbol),
 }
 
 impl Expr {

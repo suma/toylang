@@ -1,3 +1,5 @@
+use string_interner::DefaultSymbol;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum TypeDecl {
     Unknown,
@@ -5,7 +7,7 @@ pub enum TypeDecl {
     Int64,
     UInt64,
     Bool,
-    Identifier(String),
+    Identifier(DefaultSymbol),
     Any,  // null
     String,
 }

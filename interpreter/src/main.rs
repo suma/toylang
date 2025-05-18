@@ -74,11 +74,12 @@ fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
 
     if main.is_some() {
         let mut func = HashMap::new();
+        let mut string_interner = program.string_interner.clone();
         for f in &program.function {
             func.insert(f.name.clone(), f.clone());
         }
 
-        let mut eval = EvaluationContext::new(&program.statement, &program.expression, &program.string_interner, func);
+        let mut eval = EvaluationContext::new(&program.statement, &program.expression, &mut string_interner, func);
         let no_args = vec![];
         eval.evaluate_function(main.unwrap(), &no_args)
     } else {
@@ -300,13 +301,13 @@ type RcObject = Rc<RefCell<Object>>;
 struct EvaluationContext<'a> {
     stmt_pool: &'a StmtPool,
     expr_pool: &'a ExprPool,
-    string_interner: &'a DefaultStringInterner,
+    string_interner: &'a mut DefaultStringInterner,
     function: HashMap<DefaultSymbol, Rc<Function>>,
     environment: Environment,
 }
 
 impl<'a> EvaluationContext<'a> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self {
             stmt_pool,
             expr_pool,
@@ -510,8 +511,9 @@ impl<'a> EvaluationContext<'a> {
                 }
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
-                let _ = self.environment.with_new_scope();
-                if cond.unwrap_bool() {
+                //let _ = self.environment.with_new_scope();
+                self.environment.new_block(); // FIXME: replace with `with_new_scope`
+                let res = if cond.unwrap_bool() {
                     Ok(match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
@@ -521,7 +523,9 @@ impl<'a> EvaluationContext<'a> {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     })
-                }
+                };
+                self.environment.pop();
+                res
             }
 
             Expr::Call(name, args) => {
@@ -616,7 +620,8 @@ impl<'a> EvaluationContext<'a> {
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
                         for i in start..end {
-                            let _ = self.environment.with_new_scope();
+                            //let _ = self.environment.with_new_scope();
+                            self.environment.new_block(); // FIXME: replace with `with_new_scope`
                             self.environment.set_var(
                                 *identifier,
                                 Rc::new(RefCell::new(Object::UInt64(i))),
@@ -626,6 +631,7 @@ impl<'a> EvaluationContext<'a> {
 
                             // Evaluate for block
                             let res_block = self.evaluate_block(statements)?;
+                            self.environment.pop();
 
                             match res_block {
                                 EvaluationResult::Value(_) => (),
@@ -730,9 +736,10 @@ impl<'a> EvaluationContext<'a> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
         };
 
-        let _ = self.environment.with_new_scope();
+        //let _ = self.environment.with_new_scope();    // FIXME: this is buggy
+        self.environment.new_block();
         for i in 0..args.len() {
-            let name = function.parameter.get(i).unwrap().0.clone();
+            let name = function.parameter.get(i).unwrap().0;
             let value = match self.evaluate(&args[i]) {
                 Ok(EvaluationResult::Value(v)) => v,
                 Ok(EvaluationResult::Return(v)) => return Ok(v.unwrap()),
@@ -744,6 +751,7 @@ impl<'a> EvaluationContext<'a> {
         }
 
         let res = self.evaluate_block(block)?;
+        self.environment.pop();
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
@@ -776,9 +784,9 @@ mod tests {
         let stmt_pool = StmtPool::new();
         let mut expr_pool = ExprPool::new();
         let expr_ref = expr_pool.add(Expr::Int64(42));
-        let interner = DefaultStringInterner::new();
+        let mut interner = DefaultStringInterner::new();
 
-        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &interner, HashMap::new());
+        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &mut interner, HashMap::new());
         let result = match ctx.evaluate(&expr_ref) {
             Ok(EvaluationResult::Value(v)) => v,
             _ => panic!("evaluate should return int64 value"),
@@ -917,6 +925,23 @@ mod tests {
             } else {
                 1234u64
             }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);
+    }
+
+    #[test]
+    fn test_simple_fib_scope() {
+        let res = test_program(r"
+        fn fib(n: u64) -> u64 {
+            if n <= 1u64 {
+                n
+            } else {
+                fib(n - 1u64) + fib(n - 2u64)
+            }
+        }
+        fn main() -> u64 {
+            fib(2u64)
         }
         ");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);

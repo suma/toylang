@@ -7,6 +7,7 @@ use frontend;
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::type_decl::TypeDecl;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 fn main() {
     let args = std::env::args().collect::<Vec<String>>();
@@ -41,16 +42,17 @@ fn main() {
 
 fn check_typing(program: &Program) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &program.expression);
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &program.expression, &program.string_interner);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
     program.function.iter().for_each(|func| {
-        println!("Checking function {}", func.name);
+        let name = program.string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
+        println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
         if r.is_err() {
-            errors.push(format!("type_check failed in {}: {}", func.name, r.unwrap_err()));
+            errors.push(format!("type_check failed in {}: {}", name, r.unwrap_err()));
         }
     });
 
@@ -63,8 +65,9 @@ fn check_typing(program: &Program) -> Result<(), Vec<String>> {
 
 fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
     let mut main: Option<Rc<Function>> = None;
+    let main_id = program.string_interner.get("main").unwrap();
     program.function.iter().for_each(|func| {
-        if func.name == "main" && func.parameter.is_empty() {
+        if func.name == main_id && func.parameter.is_empty() {
             main = Some(func.clone());
         }
     });
@@ -75,7 +78,7 @@ fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
             func.insert(f.name.clone(), f.clone());
         }
 
-        let mut eval = EvaluationContext::new(&program.statement, &program.expression, func);
+        let mut eval = EvaluationContext::new(&program.statement, &program.expression, &program.string_interner, func);
         let no_args = vec![];
         eval.evaluate_function(main.unwrap(), &no_args)
     } else {
@@ -101,7 +104,7 @@ pub struct VariableValue {
 }
 #[derive(Debug, Clone)]
 pub struct Environment {
-    var: Vec<HashMap<String, VariableValue>>,
+    var: Vec<HashMap<DefaultSymbol, VariableValue>>,
 }
 
 #[derive(Debug)]
@@ -149,29 +152,30 @@ impl Environment {
         self.var.pop();
     }
 
-    pub fn set_val(&mut self, name: &str, value: RcObject) {
+    pub fn set_val(&mut self, name: DefaultSymbol, value: RcObject) {
         let last = self.var.last_mut();
-        last.unwrap().insert(name.to_string(),
+        last.unwrap().insert(name,
                     VariableValue{
                         mutable: false,
                         value
                     });
     }
 
-    pub fn set_var(&mut self, name: &str, value: RcObject, set_type: VariableSetType) -> Result<(), InterpreterError> {
-        let current = self.var.iter_mut().rfind(|v| v.contains_key(name));
+    pub fn set_var(&mut self, name: DefaultSymbol, value: RcObject, set_type: VariableSetType, string_interner: &DefaultStringInterner) -> Result<(), InterpreterError> {
+        let current = self.var.iter_mut().rfind(|v| v.contains_key(&name));
 
         if current.is_none() || set_type == VariableSetType::Insert {
             // Insert new value
             let val = VariableValue{ mutable: true, value };
-            let last: &mut HashMap<String, VariableValue> = self.var.last_mut().unwrap();
-            last.insert(name.to_string(), val);
+            let last: &mut HashMap<DefaultSymbol, VariableValue> = self.var.last_mut().unwrap();
+            last.insert(name, val);
         } else {
-            let current: &mut HashMap<String, VariableValue> = current.unwrap();
+            let current: &mut HashMap<DefaultSymbol, VariableValue> = current.unwrap();
             // Overwrite variable
-            let entry = current.get_mut(name).unwrap();
+            let entry = current.get_mut(&name).unwrap();
 
             if !entry.mutable {
+                let name = string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
                 return Err(InterpreterError::ImmutableAssignment(format!("Variable {} already defined as immutable (val)", name)));
             }
 
@@ -181,10 +185,9 @@ impl Environment {
         Ok(())
     }
 
-    pub fn get_val(&self, name: &str) -> Option<Rc<RefCell<Object>>> {
+    pub fn get_val(&self, name: DefaultSymbol) -> Option<Rc<RefCell<Object>>> {
         for v in self.var.iter().rev() {
-            let v_val = v.get(name);
-            if let Some(val) = v_val {
+            if let Some(val) = v.get(&name) {
                 return Some(val.value.clone());
             }
         }
@@ -197,7 +200,7 @@ pub enum Object {
     Bool(bool),
     Int64(i64),
     UInt64(u64),
-    String(String),
+    String(DefaultSymbol),
     //Array: Vec<Object>,
     //Function: Rc<Function>,
     Null,
@@ -251,9 +254,9 @@ impl Object {
         }
     }
 
-    pub fn unwrap_string(&self) -> &String {
+    pub fn unwrap_string(&self) -> DefaultSymbol {
         match self {
-            Object::String(v) => v,
+            Object::String(v) => *v,
             _ => panic!("unwrap_string: expected string but {:?}", self),
         }
     }
@@ -297,15 +300,17 @@ type RcObject = Rc<RefCell<Object>>;
 struct EvaluationContext<'a> {
     stmt_pool: &'a StmtPool,
     expr_pool: &'a ExprPool,
-    function: HashMap<String, Rc<Function>>,
+    string_interner: &'a DefaultStringInterner,
+    function: HashMap<DefaultSymbol, Rc<Function>>,
     environment: Environment,
 }
 
 impl<'a> EvaluationContext<'a> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, function: HashMap<String, Rc<Function>>) -> Self {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self {
             stmt_pool,
             expr_pool,
+            string_interner,
             function,
             environment: Environment::new(),
         }
@@ -445,7 +450,9 @@ impl<'a> EvaluationContext<'a> {
 
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l <= r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l <= r),
+            (Object::UInt64(l), Object::UInt64(r)) => {
+                Object::Bool(l <= r)
+            },
             _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '<=' operation due to different type: {:?}", lhs)}),
         })
     }
@@ -492,7 +499,7 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
             }
             Expr::Identifier(s) => {
-                Ok(EvaluationResult::Value(self.environment.get_val(s.as_ref()).unwrap().clone()))
+                Ok(EvaluationResult::Value(self.environment.get_val(*s).unwrap()))
             }
             Expr::IfElse(cond, then, _else) => {
                 let cond = self.evaluate(cond);
@@ -506,13 +513,13 @@ impl<'a> EvaluationContext<'a> {
                 let _ = self.environment.with_new_scope();
                 if cond.unwrap_bool() {
                     let then = match self.expr_pool.get(then.to_index()) {
-                        Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
+                        Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
                     };
                     Ok(then)
                 } else {
                     let _else = match self.expr_pool.get(_else.to_index()) {
-                        Some(Expr::Block(statements)) => self.evaluate_block(&statements)?,
+                        Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     };
                     Ok(_else)
@@ -520,7 +527,7 @@ impl<'a> EvaluationContext<'a> {
             }
 
             Expr::Call(name, args) => {
-                if let Some(func) = self.function.get::<str>(name.as_ref()) {
+                if let Some(func) = self.function.get::<DefaultSymbol>(name) {
                     // TODO: check arguments type
                     let args = self.expr_pool.get(args.to_index()).unwrap();
                     match args {
@@ -540,7 +547,8 @@ impl<'a> EvaluationContext<'a> {
                         _ => Err(InterpreterError::InternalError(format!("evaluate_function: expected ExprList but: {:?}", expr))),
                     }
                 } else {
-                    Err(InterpreterError::FunctionNotFound(name.clone()))
+                    let name = self.string_interner.resolve(*name).unwrap_or("<NOT_FOUND>");
+                    Err(InterpreterError::FunctionNotFound(name.to_string()))
                 }
             }
 
@@ -555,10 +563,9 @@ impl<'a> EvaluationContext<'a> {
         for stmt in statements {
             match stmt {
                 Stmt::Val(name, _, e) => {
-                    let name = name.clone();
                     let value = self.evaluate(&e);
                     let value = self.extract_value(value)?;
-                    self.environment.set_val(name.as_ref(), value);
+                    self.environment.set_val(*name, value);
                     last = None;
                 }
                 Stmt::Var(name, _, e) => {
@@ -571,7 +578,7 @@ impl<'a> EvaluationContext<'a> {
                             _ => Rc::new(RefCell::new(Object::Null)),
                         }
                     };
-                    self.environment.set_var(name.as_ref(), value, VariableSetType::Insert)?;
+                    self.environment.set_var(*name, value, VariableSetType::Insert, self.string_interner)?;
                     last = None;
                 }
                 Stmt::Return(e) => {
@@ -613,9 +620,10 @@ impl<'a> EvaluationContext<'a> {
                         for i in start..end {
                             let _ = self.environment.with_new_scope();
                             self.environment.set_var(
-                                identifier.as_ref(),
+                                *identifier,
                                 Rc::new(RefCell::new(Object::UInt64(i))),
-                                VariableSetType::Insert
+                                VariableSetType::Insert,
+                                self.string_interner,
                             )?;
 
                             // Evaluate for block
@@ -643,7 +651,7 @@ impl<'a> EvaluationContext<'a> {
                                 let rhs_borrow = rhs.borrow();
 
                                 // type check
-                                let existing_val = self.environment.get_val(name.as_ref());
+                                let existing_val = self.environment.get_val(*name);
                                 if existing_val.is_none() {
                                     return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: bad assignment due to variable was not set: {:?}", name)));
                                 }
@@ -654,7 +662,7 @@ impl<'a> EvaluationContext<'a> {
                                 if val_ty != rhs_ty {
                                     return Err(InterpreterError::TypeError { expected: val_ty, found: rhs_ty, message: "evaluate_block: Bad types for assignment due to different type".to_string()});
                                 } else {
-                                    self.environment.set_var(name.as_ref(), rhs.clone(), VariableSetType::Overwrite)?;
+                                    self.environment.set_var(*name, rhs.clone(), VariableSetType::Overwrite, self.string_interner)?;
                                     last = Some(EvaluationResult::Value(Rc::new(RefCell::new(rhs.borrow().clone()))));
                                 }
                             } else {
@@ -665,9 +673,10 @@ impl<'a> EvaluationContext<'a> {
                             last = Some(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(e)))));
                         }
                         Expr::Identifier(s) => {
-                            let obj = self.environment.get_val(s.as_ref());
+                            let obj = self.environment.get_val(*s);
                             let obj_ref = obj.clone();
                             if obj.is_none() || obj.unwrap().borrow().is_null() {
+                                let s = self.string_interner.resolve(*s).unwrap_or("<NOT_FOUND>");
                                 return Err(InterpreterError::UndefinedVariable(format!("evaluate_block: Identifier {} is null", s)));
                             }
                             last = Some(EvaluationResult::Value(obj_ref.unwrap()));
@@ -733,7 +742,7 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Null)),
                 Err(e) => return Err(e),
             };
-            self.environment.set_val(name.as_ref(), value);
+            self.environment.set_val(name, value);
         }
 
         let res = self.evaluate_block(block)?;
@@ -756,7 +765,7 @@ fn convert_object(e: &Expr) -> Object {
         Expr::False => Object::Bool(false),
         Expr::Int64(v) => Object::Int64(*v),
         Expr::UInt64(v) => Object::UInt64(*v),
-        Expr::String(v) => Object::String(v.clone()),
+        Expr::String(v) => Object::String(*v),
         _ => panic!("Not handled yet {:?}", e),
     }
 }
@@ -769,8 +778,9 @@ mod tests {
         let stmt_pool = StmtPool::new();
         let mut expr_pool = ExprPool::new();
         let expr_ref = expr_pool.add(Expr::Int64(42));
+        let interner = DefaultStringInterner::new();
 
-        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, HashMap::new());
+        let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &interner, HashMap::new());
         let result = match ctx.evaluate(&expr_ref) {
             Ok(EvaluationResult::Value(v)) => v,
             _ => panic!("evaluate should return int64 value"),

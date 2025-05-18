@@ -512,17 +512,15 @@ impl<'a> EvaluationContext<'a> {
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
                 let _ = self.environment.with_new_scope();
                 if cond.unwrap_bool() {
-                    let then = match self.expr_pool.get(then.to_index()) {
+                    Ok(match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: then is not block".to_string()}),
-                    };
-                    Ok(then)
+                    })
                 } else {
-                    let _else = match self.expr_pool.get(_else.to_index()) {
+                    Ok(match self.expr_pool.get(_else.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
-                    };
-                    Ok(_else)
+                    })
                 }
             }
 
@@ -879,5 +877,48 @@ mod tests {
         }
         ");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 101);
+    }
+
+    #[test]
+    fn test_simple_if_then() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            if true {
+                10u64
+            } else {
+                1u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 10);
+    }
+
+    #[test]
+    fn test_simple_if_else() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            if false {
+                1u64
+            } else {
+                1234u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1234);
+    }
+
+    #[test]
+    fn test_simple_if_trivial_le() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            val n = 1u64
+            if n <= 2u64 {
+                1u64
+            } else {
+                1234u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);
     }
 }

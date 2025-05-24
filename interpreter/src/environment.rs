@@ -22,26 +22,11 @@ pub enum VariableSetType {
     Overwrite,
 }
 
-struct EnvironmentGuard<'a> {
-    env: &'a mut Environment,
-}
-
-impl<'a> Drop for EnvironmentGuard<'a> {
-    fn drop(&mut self) {
-        self.env.pop();
-    }
-}
-
 impl Environment {
     pub fn new() -> Self {
         Self {
             var: vec![HashMap::new()],
         }
-    }
-
-    fn with_new_scope(&mut self) -> EnvironmentGuard {
-        self.new_block();
-        EnvironmentGuard { env: self }
     }
 
     pub fn new_block(&mut self) {

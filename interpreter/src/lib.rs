@@ -4,13 +4,11 @@ pub mod evaluation;
 pub mod error;
 
 use std::rc::Rc;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use frontend;
 use frontend::ast::*;
 use frontend::type_checker::*;
-use string_interner::DefaultStringInterner;
-use crate::object::{Object, RcObject};
+use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
 

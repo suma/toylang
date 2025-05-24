@@ -230,7 +230,6 @@ impl<'a> EvaluationContext<'a> {
                 }
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
-                self.environment.new_block(); // replace with `with_new_scope`
                 let res = if cond.unwrap_bool() {
                     Ok(match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
@@ -242,7 +241,6 @@ impl<'a> EvaluationContext<'a> {
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     })
                 };
-                self.environment.pop();
                 res
             }
 
@@ -338,7 +336,7 @@ impl<'a> EvaluationContext<'a> {
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
                         for i in start..end {
-                            self.environment.new_block(); // replace with `with_new_scope`
+                            let _ = self.environment.new_block();
                             self.environment.set_var(
                                 *identifier,
                                 Rc::new(RefCell::new(Object::UInt64(i))),
@@ -403,7 +401,7 @@ impl<'a> EvaluationContext<'a> {
                             last = Some(EvaluationResult::Value(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
-                            self.environment.new_block(); // replace with `with_new_scope`
+                            self.environment.new_block();
                             let result = self.evaluate_block(&blk_expr)?;
                             self.environment.pop();
                             match result {
@@ -453,7 +451,7 @@ impl<'a> EvaluationContext<'a> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
         };
 
-        self.environment.new_block();  // replace with `with_new_scope`
+        let _ = self.environment.with_new_scope();
         for i in 0..args.len() {
             let name = function.parameter.get(i).unwrap().0;
             let value = match self.evaluate(&args[i]) {
@@ -467,7 +465,7 @@ impl<'a> EvaluationContext<'a> {
         }
 
         let res = self.evaluate_block(block)?;
-        self.environment.pop();
+
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {

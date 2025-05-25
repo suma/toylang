@@ -453,7 +453,7 @@ impl<'a> EvaluationContext<'a> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
         };
 
-        let _ = self.environment.with_new_scope();
+        self.environment.new_block();   // nazo
         for i in 0..args.len() {
             let name = function.parameter.get(i).unwrap().0;
             let value = match self.evaluate(&args[i]) {
@@ -467,6 +467,7 @@ impl<'a> EvaluationContext<'a> {
         }
 
         let res = self.evaluate_block(block)?;
+        self.environment.pop();
 
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok(Rc::new(RefCell::new(Object::Unit)))

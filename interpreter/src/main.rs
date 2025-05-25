@@ -91,6 +91,33 @@ mod tests {
     }
 
     #[test]
+    fn test_simple_if_then_else_1() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            if true {
+                1u64
+            } else {
+                2u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1u64);
+    }
+
+    #[test]
+    fn test_simple_if_then_else_2() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            if false {
+                1u64
+            } else {
+                2u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 2u64);
+    }
+    #[test]
     fn test_simple_for_loop() {
         let res = test_program(r"
         fn main() -> u64 {
@@ -231,7 +258,7 @@ mod tests {
             if n <= 1u64 {
                 n
             } else {
-                fib(n - 2u64) + fib(n - 2u64)
+                fib(n - 1u64) + fib(n - 2u64)
             }
         }
         fn main() -> u64 {

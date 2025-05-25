@@ -154,6 +154,21 @@ mod tests {
     }
 
     #[test]
+    fn test_simple_variable_scope_with_if() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            var x = 100u64
+            if true {
+                var x = 10u64
+                x = x + 1000u64
+            }
+            x = x + 1u64
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 101);
+    }
+
+    #[test]
     fn test_simple_if_then() {
         let res = test_program(r"
         fn main() -> u64 {
@@ -213,12 +228,10 @@ mod tests {
     fn test_simple_fib_scope() {
         let res = test_program(r"
         fn fib(n: u64) -> u64 {
-            if n == 0u64 {
-                0u64
-            } else if n == 1u64 {
-                1u64
+            if n <= 1u64 {
+                n
             } else {
-                fib(n - 1u64) + fib(n - 2u64)
+                fib(n - 2u64) + fib(n - 2u64)
             }
         }
         fn main() -> u64 {

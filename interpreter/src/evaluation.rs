@@ -230,6 +230,8 @@ impl<'a> EvaluationContext<'a> {
                 }
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
+
+                self.environment.new_block();
                 let res = if cond.unwrap_bool() {
                     Ok(match self.expr_pool.get(then.to_index()) {
                         Some(Expr::Block(statements)) => self.evaluate_block(statements)?,
@@ -241,6 +243,7 @@ impl<'a> EvaluationContext<'a> {
                         _ => return Err(InterpreterError::TypeError { expected: TypeDecl::Unit, found: TypeDecl::Unit, message: "evaluate: else is not block".to_string()}),
                     })
                 };
+                self.environment.pop();
                 res
             }
 

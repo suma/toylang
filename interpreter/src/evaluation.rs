@@ -237,12 +237,12 @@ impl<'a> EvaluationContext<'a> {
                     _else
                 };
 
-                self.environment.new_block();
+                self.environment.enter_block();
                 let res =  {
                     if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) { self.evaluate_block(statements) }
                     else { return Err(InterpreterError::InternalError(format!("evaluate: then-else Expr is not block: {:?}", expr))) }
                 };
-                self.environment.pop();
+                self.environment.exit_block();
                 res
             }
 
@@ -338,7 +338,7 @@ impl<'a> EvaluationContext<'a> {
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
                         for i in start..end {
-                            let _ = self.environment.new_block();
+                            self.environment.enter_block();
                             self.environment.set_var(
                                 *identifier,
                                 Rc::new(RefCell::new(Object::UInt64(i))),
@@ -347,15 +347,16 @@ impl<'a> EvaluationContext<'a> {
                             )?;
 
                             // Evaluate for block
-                            let res_block = self.evaluate_block(statements)?;
-                            self.environment.pop();
+                            let res_block = self.evaluate_block(statements);
+                            self.environment.exit_block();
 
                             match res_block {
-                                EvaluationResult::Value(_) => (),
-                                EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                                EvaluationResult::Break => break,
-                                EvaluationResult::Continue => continue,
-                                EvaluationResult::None => (),
+                                Ok(EvaluationResult::Value(_)) => (),
+                                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                                Ok(EvaluationResult::Break) => break,
+                                Ok(EvaluationResult::Continue) => continue,
+                                Ok(EvaluationResult::None) => (),
+                                Err(e) => return Err(e),
                             }
                         }
                     }
@@ -403,9 +404,9 @@ impl<'a> EvaluationContext<'a> {
                             last = Some(EvaluationResult::Value(obj_ref.unwrap()));
                         }
                         Expr::Block(blk_expr) => {
-                            self.environment.new_block();
+                            self.environment.enter_block();
                             let result = self.evaluate_block(&blk_expr)?;
-                            self.environment.pop();
+                            self.environment.exit_block();
                             match result {
                                 EvaluationResult::Value(v) => last = Some(EvaluationResult::Value(v)),
                                 EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
@@ -453,21 +454,30 @@ impl<'a> EvaluationContext<'a> {
             _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
         };
 
-        self.environment.new_block();   // nazo
+        self.environment.enter_block();
         for i in 0..args.len() {
             let name = function.parameter.get(i).unwrap().0;
             let value = match self.evaluate(&args[i]) {
                 Ok(EvaluationResult::Value(v)) => v,
-                Ok(EvaluationResult::Return(v)) => return Ok(v.unwrap()),
-                Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => return Ok(Rc::new(RefCell::new(Object::Unit))),
+                Ok(EvaluationResult::Return(v)) => {
+                    self.environment.exit_block();
+                    return Ok(v.unwrap());
+                },
+                Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => {
+                    self.environment.exit_block();
+                    return Ok(Rc::new(RefCell::new(Object::Unit)));
+                },
                 Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Null)),
-                Err(e) => return Err(e),
+                Err(e) => {
+                    self.environment.exit_block();
+                    return Err(e);
+                },
             };
             self.environment.set_val(name, value);
         }
 
         let res = self.evaluate_block(block)?;
-        self.environment.pop();
+        self.environment.exit_block();
 
         if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
             Ok(Rc::new(RefCell::new(Object::Unit)))

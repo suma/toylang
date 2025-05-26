@@ -267,4 +267,65 @@ mod tests {
         ");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 1);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn test_comparison_transitivity(a: u64, b: u64, c: u64) {
+            let mut values = vec![a, b, c];
+            values.sort();
+            let (a, b, c) = (values[0], values[1], values[2]);
+
+            let program_a_lt_b = format!(r"
+                fn main() -> bool {{
+                    {}u64 < {}u64
+                }}
+            ", a, b);
+
+            let program_b_lt_c = format!(r"
+                fn main() -> bool {{
+                    {}u64 < {}u64
+                }}
+            ", b, c);
+
+            let program_a_lt_c = format!(r"
+                fn main() -> bool {{
+                    {}u64 < {}u64
+                }}
+            ", a, c);
+
+            let a_lt_b = test_program(&program_a_lt_b).unwrap().borrow().unwrap_bool();
+            let b_lt_c = test_program(&program_b_lt_c).unwrap().borrow().unwrap_bool();
+            let a_lt_c = test_program(&program_a_lt_c).unwrap().borrow().unwrap_bool();
+
+            // a < b and b < c => a < c
+            if a < b && b < c {
+                assert!(a_lt_b);
+                assert!(b_lt_c);
+                assert!(a_lt_c);
+            }
+        }
+
+        #[test]
+        fn test_logical_operations(a: bool, b: bool) {
+            let program_and = format!(r"
+                fn main() -> bool {{
+                    {} && {}
+                }}
+            ", a, b);
+
+            let program_or = format!(r"
+                fn main() -> bool {{
+                    {} || {}
+                }}
+            ", a, b);
+
+            let result_and = test_program(&program_and).unwrap().borrow().unwrap_bool();
+            let result_or = test_program(&program_or).unwrap().borrow().unwrap_bool();
+
+            assert_eq!(result_and, a && b);
+            assert_eq!(result_or, a || b);
+        }
+    }
 }

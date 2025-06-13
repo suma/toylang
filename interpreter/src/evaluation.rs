@@ -328,35 +328,70 @@ impl<'a> EvaluationContext<'a> {
                     let end = self.evaluate(&end);
                     let end = self.extract_value(end)?;
                     let start_ty = start.borrow().get_type();
-                    let end_ty = start.borrow().get_type();
+                    let end_ty = end.borrow().get_type();
                     if start_ty != end_ty {
                         return Err(InterpreterError::TypeError { expected: start_ty, found: end_ty, message: "evaluate_block: Bad types for 'for' loop due to different type".to_string()});
                     }
-                    let start = start.borrow().unwrap_uint64();
-                    let end = end.borrow().unwrap_uint64();
-
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
-                        for i in start..end {
-                            self.environment.enter_block();
-                            self.environment.set_var(
-                                *identifier,
-                                Rc::new(RefCell::new(Object::UInt64(i))),
-                                VariableSetType::Insert,
-                                self.string_interner,
-                            )?;
+                        match start_ty {
+                            TypeDecl::UInt64 => {
+                                let start = start.borrow().unwrap_uint64();
+                                let end = end.borrow().unwrap_uint64();
+                                for i in start..end {
+                                    self.environment.enter_block();
+                                    self.environment.set_var(
+                                        *identifier,
+                                        Rc::new(RefCell::new(Object::UInt64(i))),
+                                        VariableSetType::Insert,
+                                        self.string_interner,
+                                    )?;
 
-                            // Evaluate for block
-                            let res_block = self.evaluate_block(statements);
-                            self.environment.exit_block();
+                                    // Evaluate for block
+                                    let res_block = self.evaluate_block(statements);
+                                    self.environment.exit_block();
 
-                            match res_block {
-                                Ok(EvaluationResult::Value(_)) => (),
-                                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                                Ok(EvaluationResult::Break) => break,
-                                Ok(EvaluationResult::Continue) => continue,
-                                Ok(EvaluationResult::None) => (),
-                                Err(e) => return Err(e),
+                                    match res_block {
+                                        Ok(EvaluationResult::Value(_)) => (),
+                                        Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                                        Ok(EvaluationResult::Break) => break,
+                                        Ok(EvaluationResult::Continue) => continue,
+                                        Ok(EvaluationResult::None) => (),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            TypeDecl::Int64 => {
+                                let start = start.borrow().unwrap_int64();
+                                let end = end.borrow().unwrap_int64();
+                                for i in start..end {
+                                    self.environment.enter_block();
+                                    self.environment.set_var(
+                                        *identifier,
+                                        Rc::new(RefCell::new(Object::Int64(i))),
+                                        VariableSetType::Insert,
+                                        self.string_interner,
+                                    )?;
+
+                                    let res_block = self.evaluate_block(statements);
+                                    self.environment.exit_block();
+
+                                    match res_block {
+                                        Ok(EvaluationResult::Value(_)) => (),
+                                        Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                                        Ok(EvaluationResult::Break) => break,
+                                        Ok(EvaluationResult::Continue) => continue,
+                                        Ok(EvaluationResult::None) => (),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            _ => {
+                                return Err(InterpreterError::TypeError {
+                                    expected: TypeDecl::UInt64,
+                                    found: start_ty,
+                                    message: "For loop range must be UInt64 or Int64".to_string()
+                                });
                             }
                         }
                     }

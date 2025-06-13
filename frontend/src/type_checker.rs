@@ -261,8 +261,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             Operator::IAdd if lhs_ty == TypeDecl::String && rhs_ty == TypeDecl::String => {
                 Ok(TypeDecl::String)
             }
-            Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul |
-            Operator::LE | Operator::LT | Operator::GE | Operator::GT => {
+            Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
                 if lhs_ty == TypeDecl::UInt64 {
                     if rhs_ty != TypeDecl::UInt64 {
                         return Err(TypeCheckError::new(format!("Type mismatch: lhs expected UInt64, but rhs got {:?}", rhs_ty)));
@@ -274,7 +273,14 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                     }
                     Ok(TypeDecl::Int64)
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64 or UInt64, but rhs got {:?}", rhs_ty)));
+                    return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64 or UInt64, but got {:?}", lhs_ty)));
+                }
+            }
+            Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
+                if lhs_ty == TypeDecl::UInt64 || lhs_ty == TypeDecl::Int64 || lhs_ty == TypeDecl::Bool {
+                    Ok(TypeDecl::Bool)
+                } else {
+                    return Err(TypeCheckError::new(format!("Type mismatch: comparison operators require Int64, UInt64, or Bool, but got {:?}", lhs_ty)));
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
@@ -284,7 +290,6 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                     Err(TypeCheckError::new(format!("Type mismatch(bool): lhs expected Bool, but rhs got {:?}", rhs_ty)))
                 }
             }
-            _ => Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", op, lhs_ty))),
         }
     }
 
@@ -458,7 +463,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
-        let ty = Some(TypeDecl::Unknown); // FIXME
+        let range_ty = self.expr_pool.get(range.to_index()).unwrap().clone().accept(self)?;
+        let ty = Some(range_ty);
         self.process_val_type(init, &ty, &Some(*range))?;
         let res = self.expr_pool.get(body.to_index()).unwrap().clone().accept(self);
         self.pop_context();

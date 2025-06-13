@@ -62,6 +62,18 @@ mod tests {
     }
 
     #[test]
+    fn test_i64_basic() {
+        let res = test_program(r"
+        fn main() -> i64 {
+            val a: i64 = 42i64
+            val b: i64 = -10i64
+            a + b
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 32);
+    }
+
+    #[test]
     fn test_simple_program() {
         let mut parser = frontend::Parser::new(r"
         fn main() -> u64 {
@@ -326,6 +338,117 @@ mod tests {
 
             assert_eq!(result_and, a && b);
             assert_eq!(result_or, a || b);
+        }
+
+        #[test]
+        fn test_i64_arithmetic_properties(a in -1000i64..1000i64, b in -100i64..100i64) {
+            prop_assume!(b != 0);
+
+            let program_add = format!(r"
+                fn main() -> i64 {{
+                    {}i64 + {}i64
+                }}
+            ", a, b);
+
+            let program_sub = format!(r"
+                fn main() -> i64 {{
+                    {}i64 - {}i64
+                }}
+            ", a, b);
+
+            let program_mul = format!(r"
+                fn main() -> i64 {{
+                    {}i64 * {}i64
+                }}
+            ", a, b);
+
+            let program_div = format!(r"
+                fn main() -> i64 {{
+                    {}i64 / {}i64
+                }}
+            ", a, b);
+
+            let result_add = test_program(&program_add).unwrap().borrow().unwrap_int64();
+            let result_sub = test_program(&program_sub).unwrap().borrow().unwrap_int64();
+            let result_mul = test_program(&program_mul).unwrap().borrow().unwrap_int64();
+            let result_div = test_program(&program_div).unwrap().borrow().unwrap_int64();
+
+            assert_eq!(result_add, a + b);
+            assert_eq!(result_sub, a - b);
+            assert_eq!(result_mul, a * b);
+            assert_eq!(result_div, a / b);
+        }
+
+        #[test]
+        fn test_i64_comparison_properties(a: i64, b: i64) {
+            let program_lt = format!(r"
+                fn main() -> bool {{
+                    {}i64 < {}i64
+                }}
+            ", a, b);
+
+            let program_le = format!(r"
+                fn main() -> bool {{
+                    {}i64 <= {}i64
+                }}
+            ", a, b);
+
+            let program_gt = format!(r"
+                fn main() -> bool {{
+                    {}i64 > {}i64
+                }}
+            ", a, b);
+
+            let program_ge = format!(r"
+                fn main() -> bool {{
+                    {}i64 >= {}i64
+                }}
+            ", a, b);
+
+            let program_eq = format!(r"
+                fn main() -> bool {{
+                    {}i64 == {}i64
+                }}
+            ", a, b);
+
+            let program_ne = format!(r"
+                fn main() -> bool {{
+                    {}i64 != {}i64
+                }}
+            ", a, b);
+
+            let result_lt = test_program(&program_lt).unwrap().borrow().unwrap_bool();
+            let result_le = test_program(&program_le).unwrap().borrow().unwrap_bool();
+            let result_gt = test_program(&program_gt).unwrap().borrow().unwrap_bool();
+            let result_ge = test_program(&program_ge).unwrap().borrow().unwrap_bool();
+            let result_eq = test_program(&program_eq).unwrap().borrow().unwrap_bool();
+            let result_ne = test_program(&program_ne).unwrap().borrow().unwrap_bool();
+
+            assert_eq!(result_lt, a < b);
+            assert_eq!(result_le, a <= b);
+            assert_eq!(result_gt, a > b);
+            assert_eq!(result_ge, a >= b);
+            assert_eq!(result_eq, a == b);
+            assert_eq!(result_ne, a != b);
+        }
+
+        #[test]
+        fn test_i64_for_loop_properties(start in -1000i64..1000i64, end in -1000i64..1000i64) {
+            prop_assume!(start <= end);
+
+            let program = format!(r"
+                fn main() -> i64 {{
+                    var sum: i64 = 0i64
+                    for i in {}i64 to {}i64 {{
+                        sum = sum + i
+                    }}
+                    sum
+                }}
+            ", start, end);
+
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            let expected: i64 = (start..end).sum();
+            assert_eq!(result, expected);
         }
     }
 }

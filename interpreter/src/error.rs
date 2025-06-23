@@ -1,5 +1,6 @@
 use frontend::type_decl::TypeDecl;
 use crate::evaluation::EvaluationResult;
+use crate::object::ObjectError;
 
 #[derive(Debug)]
 pub enum InterpreterError {
@@ -10,4 +11,5 @@ pub enum InterpreterError {
     FunctionParameterMismatch { message: String, expected: usize, found: usize },
     InternalError(String),
     PropagateFlow(EvaluationResult),
+    ObjectError(ObjectError),
 }

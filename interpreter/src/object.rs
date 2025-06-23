@@ -3,6 +3,12 @@ use std::rc::Rc;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
+#[derive(Debug, PartialEq)]
+pub enum ObjectError {
+    TypeMismatch { expected: TypeDecl, found: TypeDecl },
+    UnexpectedType(TypeDecl),
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Object {
     Bool(bool),
@@ -50,10 +56,24 @@ impl Object {
         }
     }
 
+    pub fn try_unwrap_bool(&self) -> Result<bool, ObjectError> {
+        match self {
+            Object::Bool(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Bool, found: self.get_type() }),
+        }
+    }
+
     pub fn unwrap_int64(&self) -> i64 {
         match self {
             Object::Int64(v) => *v,
             _ => panic!("unwrap_int64: expected int64 but {:?}", self),
+        }
+    }
+
+    pub fn try_unwrap_int64(&self) -> Result<i64, ObjectError> {
+        match self {
+            Object::Int64(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Int64, found: self.get_type() }),
         }
     }
 
@@ -64,6 +84,13 @@ impl Object {
         }
     }
 
+    pub fn try_unwrap_uint64(&self) -> Result<u64, ObjectError> {
+        match self {
+            Object::UInt64(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::UInt64, found: self.get_type() }),
+        }
+    }
+
     pub fn unwrap_string(&self) -> DefaultSymbol {
         match self {
             Object::String(v) => *v,
@@ -71,36 +98,43 @@ impl Object {
         }
     }
 
-    pub fn set(&mut self, other: &RefCell<Object>) {
-        let other = unsafe { &*other.as_ptr() };
+    pub fn try_unwrap_string(&self) -> Result<DefaultSymbol, ObjectError> {
         match self {
-            Object::Bool(_) => {
-                if let Object::Bool(v) = other {
-                    *self = Object::Bool(*v);
-                } else {
-                    panic!("set: expected bool but {:?}", other);
-                }
+            Object::String(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::String, found: self.get_type() }),
+        }
+    }
+
+    pub fn set(&mut self, other: &RefCell<Object>) -> Result<(), ObjectError> {
+        let other_borrowed = other.borrow();
+        let self_type = self.get_type();
+        let other_type = other_borrowed.get_type();
+        
+        match (&mut *self, &*other_borrowed) {
+            (Object::Bool(self_val), Object::Bool(v)) => {
+                *self_val = *v;
+                Ok(())
             }
-            Object::Int64(val) => {
-                if let Object::Int64(v) = other {
-                    *val = *v;
-                } else {
-                    panic!("set: expected int64 but {:?}", other);
-                }
+            (Object::Int64(self_val), Object::Int64(v)) => {
+                *self_val = *v;
+                Ok(())
             }
-            Object::UInt64(val) => {
-                if let Object::UInt64(v) = other {
-                    *val = *v;
-                }
+            (Object::UInt64(self_val), Object::UInt64(v)) => {
+                *self_val = *v;
+                Ok(())
             }
-            Object::String(val) => {
-                if let Object::String(v) = other {
-                    *val = v.clone();
-                } else {
-                    panic!("set: expected string but {:?}", other);
-                }
+            (Object::String(self_val), Object::String(v)) => {
+                *self_val = *v;
+                Ok(())
             }
-            _ => panic!("set: unexpected type {:?}", self),
+            (Object::Null, _) | (Object::Unit, _) => {
+                *self = other_borrowed.clone();
+                Ok(())
+            }
+            _ => Err(ObjectError::TypeMismatch { 
+                expected: self_type, 
+                found: other_type 
+            }),
         }
     }
 }

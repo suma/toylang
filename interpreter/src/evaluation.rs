@@ -265,7 +265,7 @@ impl<'a> EvaluationContext<'a> {
                 assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
                 assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
 
-                let block_expr = if cond.unwrap_bool() {
+                let block_expr = if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
                     then
                 } else {
                     _else
@@ -370,8 +370,8 @@ impl<'a> EvaluationContext<'a> {
                     if let Expr::Block(statements) = block {
                         match start_ty {
                             TypeDecl::UInt64 => {
-                                let start = start.borrow().unwrap_uint64();
-                                let end = end.borrow().unwrap_uint64();
+                                let start = start.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
+                                let end = end.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
                                 for i in start..end {
                                     self.environment.enter_block();
                                     self.environment.set_var(
@@ -396,8 +396,8 @@ impl<'a> EvaluationContext<'a> {
                                 }
                             }
                             TypeDecl::Int64 => {
-                                let start = start.borrow().unwrap_int64();
-                                let end = end.borrow().unwrap_int64();
+                                let start = start.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
+                                let end = end.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
                                 for i in start..end {
                                     self.environment.enter_block();
                                     self.environment.set_var(

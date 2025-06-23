@@ -193,6 +193,58 @@ mod tests {
     }
 
     #[test]
+    fn test_simple_while_loop() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            while i < 5u64 {
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 10); // 0+1+2+3+4 = 10
+    }
+
+    #[test]
+    fn test_while_loop_with_break() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            var i = 0u64
+            while true {
+                i = i + 1u64
+                if i >= 3u64 {
+                    break
+                }
+            }
+            i
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
+    }
+
+    #[test]
+    fn test_while_loop_with_continue() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            while i < 5u64 {
+                i = i + 1u64
+                if i == 3u64 {
+                    continue
+                }
+                sum = sum + i
+            }
+            sum
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 12); // 1+2+4+5 = 12, skipping 3
+    }
+
+    #[test]
     fn test_simple_variable_scope_with_if() {
         let res = test_program(r"
         fn main() -> u64 {

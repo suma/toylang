@@ -396,8 +396,35 @@ impl<'a> EvaluationContext<'a> {
                 Stmt::Continue => {
                     return Ok(EvaluationResult::Continue);
                 }
-                Stmt::While(_cond, _body) => {
-                    todo!("while");
+                Stmt::While(cond, body) => {
+                    loop {
+                        let cond_result = self.evaluate(cond)?;
+                        let cond_value = self.extract_value(Ok(cond_result))?;
+                        let cond_bool = cond_value.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+                        
+                        if !cond_bool {
+                            break;
+                        }
+                        
+                        let body_expr = self.expr_pool.get(body.to_index()).unwrap();
+                        if let Expr::Block(statements) = body_expr {
+                            self.environment.enter_block();
+                            let res = self.evaluate_block(statements);
+                            self.environment.exit_block();
+                            
+                            match res {
+                                Ok(EvaluationResult::Value(_)) => (),
+                                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                                Ok(EvaluationResult::Break) => break,
+                                Ok(EvaluationResult::Continue) => continue,
+                                Ok(EvaluationResult::None) => (),
+                                Err(e) => return Err(e),
+                            }
+                        } else {
+                            return Err(InterpreterError::InternalError("While body is not a block".to_string()));
+                        }
+                    }
+                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))));
                 }
                 Stmt::For(identifier, start, end, block) => {
                     let start = self.evaluate(&start);

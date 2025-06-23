@@ -9,6 +9,52 @@ use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 
 #[derive(Debug)]
+enum ArithmeticOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+impl ArithmeticOp {
+    fn name(&self) -> &str {
+        match self {
+            ArithmeticOp::Add => "evaluate_add",
+            ArithmeticOp::Sub => "evaluate_sub",
+            ArithmeticOp::Mul => "evaluate_mul",
+            ArithmeticOp::Div => "evaluate_div",
+        }
+    }
+
+    fn symbol(&self) -> &str {
+        match self {
+            ArithmeticOp::Add => "+",
+            ArithmeticOp::Sub => "-", 
+            ArithmeticOp::Mul => "*",
+            ArithmeticOp::Div => "/",
+        }
+    }
+
+    fn apply_i64(&self, l: i64, r: i64) -> i64 {
+        match self {
+            ArithmeticOp::Add => l + r,
+            ArithmeticOp::Sub => l - r,
+            ArithmeticOp::Mul => l * r,
+            ArithmeticOp::Div => l / r,
+        }
+    }
+
+    fn apply_u64(&self, l: u64, r: u64) -> u64 {
+        match self {
+            ArithmeticOp::Add => l + r,
+            ArithmeticOp::Sub => l - r,
+            ArithmeticOp::Mul => l * r,
+            ArithmeticOp::Div => l / r,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum EvaluationResult {
     None,
     Value(Rc<RefCell<Object>>),
@@ -74,48 +120,36 @@ impl<'a> EvaluationContext<'a> {
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
     }
 
-    pub fn evaluate_add(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+    fn evaluate_arithmetic_op(&self, lhs: &Object, rhs: &Object, op: ArithmeticOp) -> Result<Object, InterpreterError> {
         let lhs_ty = lhs.get_type();
         let rhs_ty = rhs.get_type();
 
         Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l + r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l + r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '+' operation due to different type: {:?}", lhs)}),
+            (Object::Int64(l), Object::Int64(r)) => Object::Int64(op.apply_i64(*l, *r)),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(op.apply_u64(*l, *r)),
+            _ => return Err(InterpreterError::TypeError{
+                expected: lhs_ty, 
+                found: rhs_ty, 
+                message: format!("{}: Bad types for binary '{}' operation due to different type: {:?}", 
+                               op.name(), op.symbol(), lhs)
+            }),
         })
+    }
+
+    pub fn evaluate_add(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Add)
     }
 
     pub fn evaluate_sub(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l - r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l - r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_sub: Bad types for binary '-' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Sub)
     }
 
     pub fn evaluate_mul(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l * r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l * r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_mul: Bad types for binary '*' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Mul)
     }
 
     pub fn evaluate_div(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Int64(l / r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l / r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_div: Bad types for binary '/' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Div)
     }
 
     pub fn evaluate_eq(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {

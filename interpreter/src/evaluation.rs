@@ -72,6 +72,49 @@ pub struct EvaluationContext<'a> {
 }
 
 impl<'a> EvaluationContext<'a> {
+    fn execute_for_loop<T>(
+        &mut self,
+        identifier: DefaultSymbol,
+        start: T,
+        end: T,
+        statements: &Vec<StmtRef>,
+        create_object: fn(T) -> Object,
+    ) -> Result<EvaluationResult, InterpreterError>
+    where
+        T: Copy + std::cmp::PartialOrd + std::ops::Add<Output = T> + From<u8>,
+    {
+        let mut current = start;
+        let one = T::from(1);
+        
+        while current < end {
+            self.environment.enter_block();
+            self.environment.set_var(
+                identifier,
+                Rc::new(RefCell::new(create_object(current))),
+                VariableSetType::Insert,
+                self.string_interner,
+            )?;
+
+            let res_block = self.evaluate_block(statements);
+            self.environment.exit_block();
+
+            match res_block {
+                Ok(EvaluationResult::Value(_)) => (),
+                Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
+                Ok(EvaluationResult::Break) => break,
+                Ok(EvaluationResult::Continue) => {
+                    current = current + one;
+                    continue;
+                }
+                Ok(EvaluationResult::None) => (),
+                Err(e) => return Err(e),
+            }
+            
+            current = current + one;
+        }
+        
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))))
+    }
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self {
             stmt_pool,
@@ -368,57 +411,16 @@ impl<'a> EvaluationContext<'a> {
                     }
                     let block = self.expr_pool.get(block.to_index()).unwrap();
                     if let Expr::Block(statements) = block {
-                        match start_ty {
+                        let result = match start_ty {
                             TypeDecl::UInt64 => {
-                                let start = start.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                                let end = end.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                                for i in start..end {
-                                    self.environment.enter_block();
-                                    self.environment.set_var(
-                                        *identifier,
-                                        Rc::new(RefCell::new(Object::UInt64(i))),
-                                        VariableSetType::Insert,
-                                        self.string_interner,
-                                    )?;
-
-                                    // Evaluate for block
-                                    let res_block = self.evaluate_block(statements);
-                                    self.environment.exit_block();
-
-                                    match res_block {
-                                        Ok(EvaluationResult::Value(_)) => (),
-                                        Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                                        Ok(EvaluationResult::Break) => break,
-                                        Ok(EvaluationResult::Continue) => continue,
-                                        Ok(EvaluationResult::None) => (),
-                                        Err(e) => return Err(e),
-                                    }
-                                }
+                                let start_val = start.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
+                                let end_val = end.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
+                                self.execute_for_loop(*identifier, start_val, end_val, statements, Object::UInt64)?
                             }
                             TypeDecl::Int64 => {
-                                let start = start.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                                let end = end.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                                for i in start..end {
-                                    self.environment.enter_block();
-                                    self.environment.set_var(
-                                        *identifier,
-                                        Rc::new(RefCell::new(Object::Int64(i))),
-                                        VariableSetType::Insert,
-                                        self.string_interner,
-                                    )?;
-
-                                    let res_block = self.evaluate_block(statements);
-                                    self.environment.exit_block();
-
-                                    match res_block {
-                                        Ok(EvaluationResult::Value(_)) => (),
-                                        Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                                        Ok(EvaluationResult::Break) => break,
-                                        Ok(EvaluationResult::Continue) => continue,
-                                        Ok(EvaluationResult::None) => (),
-                                        Err(e) => return Err(e),
-                                    }
-                                }
+                                let start_val = start.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
+                                let end_val = end.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
+                                self.execute_for_loop(*identifier, start_val, end_val, statements, Object::Int64)?
                             }
                             _ => {
                                 return Err(InterpreterError::TypeError {
@@ -427,6 +429,13 @@ impl<'a> EvaluationContext<'a> {
                                     message: "For loop range must be UInt64 or Int64".to_string()
                                 });
                             }
+                        };
+                        
+                        match result {
+                            EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                            EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                            EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                            _ => (),
                         }
                     }
                     last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))));

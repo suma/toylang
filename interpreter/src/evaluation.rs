@@ -92,7 +92,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Int64(l - r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l - r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '-' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_sub: Bad types for binary '-' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -103,7 +103,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Int64(l * r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l * r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '*' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_mul: Bad types for binary '*' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -114,7 +114,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Int64(l / r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(l / r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '/' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_div: Bad types for binary '/' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -126,7 +126,7 @@ impl<'a> EvaluationContext<'a> {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l == r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l == r),
             (Object::String(l), Object::String(r)) => Object::Bool(l == r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '==' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_eq: Bad types for binary '==' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -138,7 +138,7 @@ impl<'a> EvaluationContext<'a> {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l != r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l != r),
             (Object::String(l), Object::String(r)) => Object::Bool(l != r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '!=' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_ne: Bad types for binary '!=' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -149,7 +149,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l >= r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l >= r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '>=' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_ge: Bad types for binary '>=' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -160,7 +160,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l > r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l > r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '>' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_gt: Bad types for binary '>' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -173,7 +173,7 @@ impl<'a> EvaluationContext<'a> {
             (Object::UInt64(l), Object::UInt64(r)) => {
                 Object::Bool(l <= r)
             },
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '<=' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_le: Bad types for binary '<=' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -184,7 +184,7 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(l < r),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l < r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '<' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_lt: Bad types for binary '<' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -194,7 +194,7 @@ impl<'a> EvaluationContext<'a> {
 
         Ok(match (lhs, rhs) {
             (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l && *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '&&' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_and: Bad types for binary '&&' operation due to different type: {:?}", lhs)}),
         })
     }
 
@@ -204,7 +204,7 @@ impl<'a> EvaluationContext<'a> {
 
         Ok(match (lhs, rhs) {
             (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l || *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_add: Bad types for binary '||' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_or: Bad types for binary '||' operation due to different type: {:?}", lhs)}),
         })
     }
 

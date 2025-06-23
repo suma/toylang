@@ -55,6 +55,71 @@ impl ArithmeticOp {
 }
 
 #[derive(Debug)]
+enum ComparisonOp {
+    Eq,  // ==
+    Ne,  // !=
+    Lt,  // <
+    Le,  // <=
+    Gt,  // >
+    Ge,  // >=
+}
+
+impl ComparisonOp {
+    fn name(&self) -> &str {
+        match self {
+            ComparisonOp::Eq => "evaluate_eq",
+            ComparisonOp::Ne => "evaluate_ne",
+            ComparisonOp::Lt => "evaluate_lt",
+            ComparisonOp::Le => "evaluate_le",
+            ComparisonOp::Gt => "evaluate_gt",
+            ComparisonOp::Ge => "evaluate_ge",
+        }
+    }
+
+    fn symbol(&self) -> &str {
+        match self {
+            ComparisonOp::Eq => "==",
+            ComparisonOp::Ne => "!=",
+            ComparisonOp::Lt => "<",
+            ComparisonOp::Le => "<=",
+            ComparisonOp::Gt => ">",
+            ComparisonOp::Ge => ">=",
+        }
+    }
+
+    fn apply_i64(&self, l: i64, r: i64) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r,
+            ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r,
+            ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r,
+            ComparisonOp::Ge => l >= r,
+        }
+    }
+
+    fn apply_u64(&self, l: u64, r: u64) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r,
+            ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r,
+            ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r,
+            ComparisonOp::Ge => l >= r,
+        }
+    }
+
+    fn apply_string(&self, l: DefaultSymbol, r: DefaultSymbol) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r,
+            ComparisonOp::Ne => l != r,
+            // String comparison for <, <=, >, >= not implemented
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum EvaluationResult {
     None,
     Value(Rc<RefCell<Object>>),
@@ -115,6 +180,34 @@ impl<'a> EvaluationContext<'a> {
         
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))))
     }
+
+    fn evaluate_comparison_op(&self, lhs: &Object, rhs: &Object, op: ComparisonOp) -> Result<Object, InterpreterError> {
+        let lhs_ty = lhs.get_type();
+        let rhs_ty = rhs.get_type();
+
+        Ok(match (lhs, rhs) {
+            (Object::Int64(l), Object::Int64(r)) => Object::Bool(op.apply_i64(*l, *r)),
+            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(op.apply_u64(*l, *r)),
+            (Object::String(l), Object::String(r)) => {
+                match op {
+                    ComparisonOp::Eq | ComparisonOp::Ne => Object::Bool(op.apply_string(*l, *r)),
+                    _ => return Err(InterpreterError::TypeError{
+                        expected: lhs_ty, 
+                        found: rhs_ty, 
+                        message: format!("{}: String comparison only supports == and !=: {:?}", 
+                                       op.name(), lhs)
+                    }),
+                }
+            }
+            _ => return Err(InterpreterError::TypeError{
+                expected: lhs_ty, 
+                found: rhs_ty, 
+                message: format!("{}: Bad types for binary '{}' operation due to different type: {:?}", 
+                               op.name(), op.symbol(), lhs)
+            }),
+        })
+    }
+
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self {
             stmt_pool,
@@ -196,73 +289,27 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate_eq(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l == r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l == r),
-            (Object::String(l), Object::String(r)) => Object::Bool(l == r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_eq: Bad types for binary '==' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Eq)
     }
 
     pub fn evaluate_ne(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l != r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l != r),
-            (Object::String(l), Object::String(r)) => Object::Bool(l != r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_ne: Bad types for binary '!=' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Ne)
     }
 
     pub fn evaluate_ge(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l >= r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l >= r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_ge: Bad types for binary '>=' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Ge)
     }
 
     pub fn evaluate_gt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l > r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l > r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_gt: Bad types for binary '>' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Gt)
     }
 
     pub fn evaluate_le(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l <= r),
-            (Object::UInt64(l), Object::UInt64(r)) => {
-                Object::Bool(l <= r)
-            },
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_le: Bad types for binary '<=' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Le)
     }
 
     pub fn evaluate_lt(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
-        let lhs_ty = lhs.get_type();
-        let rhs_ty = rhs.get_type();
-
-        Ok(match (lhs, rhs) {
-            (Object::Int64(l), Object::Int64(r)) => Object::Bool(l < r),
-            (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(l < r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_lt: Bad types for binary '<' operation due to different type: {:?}", lhs)}),
-        })
+        self.evaluate_comparison_op(lhs, rhs, ComparisonOp::Lt)
     }
 
     pub fn evaluate_logical_and(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {

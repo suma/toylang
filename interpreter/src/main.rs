@@ -41,9 +41,9 @@ mod tests {
     use frontend;
     use frontend::ast::*;
     use string_interner::DefaultStringInterner;
-    use interpreter::object::{Object, RcObject};
+    use interpreter::object::Object;
     use interpreter::error::InterpreterError;
-    use interpreter::evaluation::{EvaluationContext, convert_object, EvaluationResult};
+    use interpreter::evaluation::{EvaluationContext, EvaluationResult};
 
     #[test]
     fn test_evaluate_integer() {

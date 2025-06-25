@@ -1,3 +1,9 @@
 /target
+.DS_Store
+.idea
 Cargo.lock
+frontend/.idea
 frontend/target
+interpreter/.idea
+interpreter/target
+interpreter/proptest-regressions

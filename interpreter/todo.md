@@ -18,8 +18,9 @@
 
 ### 中優先度
 
-8. **エラーハンドリングの明確化** 🔍
-   - `evaluation.rs:467`付近のnullチェックが複雑で、より明確な方法に改善できます
+8. **エラーハンドリングの明確化** ✅ (2024-06-24完了)
+   - `evaluation.rs`のObject::NullをObject::Unitに変更してセマンティクスを明確化
+   - while/forループ完了時、EvaluationResult::None、Return(None)処理を改善
 
 ### 低優先度
 

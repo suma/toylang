@@ -230,6 +230,14 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Short-circuit evaluation for logical operators
+        match op {
+            Operator::LogicalAnd => return self.evaluate_logical_and_short_circuit(lhs, rhs),
+            Operator::LogicalOr => return self.evaluate_logical_or_short_circuit(lhs, rhs),
+            _ => {}
+        }
+
+        // Regular evaluation for all other operators
         let lhs = self.evaluate(lhs);
         let rhs = self.evaluate(rhs);
         let lhs_val = self.extract_value(lhs)?;
@@ -249,8 +257,7 @@ impl<'a> EvaluationContext<'a> {
             Operator::LE => self.evaluate_le(&lhs_obj, &rhs_obj)?,
             Operator::GT => self.evaluate_gt(&lhs_obj, &rhs_obj)?,
             Operator::GE => self.evaluate_ge(&lhs_obj, &rhs_obj)?,
-            Operator::LogicalAnd => self.evaluate_logical_and(&lhs_obj, &rhs_obj)?,
-            Operator::LogicalOr => self.evaluate_logical_or(&lhs_obj, &rhs_obj)?,
+            Operator::LogicalAnd | Operator::LogicalOr => unreachable!("Should be handled above"),
         };
 
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
@@ -330,6 +337,52 @@ impl<'a> EvaluationContext<'a> {
             (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l || *r),
             _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_or: Bad types for binary '||' operation due to different type: {:?}", lhs)}),
         })
+    }
+
+    // Short-circuit evaluation for logical AND
+    pub fn evaluate_logical_and_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let lhs_result = self.evaluate(lhs);
+        let lhs_val = self.extract_value(lhs_result)?;
+        let lhs_obj = lhs_val.borrow();
+        
+        let lhs_bool = lhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+        
+        // Short-circuit: if left is false, return false without evaluating right
+        if !lhs_bool {
+            return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(false)))));
+        }
+        
+        // Left is true, so evaluate right side
+        let rhs_result = self.evaluate(rhs);
+        let rhs_val = self.extract_value(rhs_result)?;
+        let rhs_obj = rhs_val.borrow();
+        
+        let rhs_bool = rhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+        
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(rhs_bool)))))
+    }
+
+    // Short-circuit evaluation for logical OR
+    pub fn evaluate_logical_or_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let lhs_result = self.evaluate(lhs);
+        let lhs_val = self.extract_value(lhs_result)?;
+        let lhs_obj = lhs_val.borrow();
+        
+        let lhs_bool = lhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+        
+        // Short-circuit: if left is true, return true without evaluating right
+        if lhs_bool {
+            return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(true)))));
+        }
+        
+        // Left is false, so evaluate right side
+        let rhs_result = self.evaluate(rhs);
+        let rhs_val = self.extract_value(rhs_result)?;
+        let rhs_obj = rhs_val.borrow();
+        
+        let rhs_bool = rhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+        
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(rhs_bool)))))
     }
 
     pub fn evaluate(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {

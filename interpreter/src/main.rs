@@ -245,6 +245,46 @@ mod tests {
     }
 
     #[test]
+    fn test_short_circuit_and_false() {
+        let res = test_program(r"
+        fn main() -> bool {
+            false && true
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), false);
+    }
+
+    #[test]
+    fn test_short_circuit_and_true() {
+        let res = test_program(r"
+        fn main() -> bool {
+            true && false
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), false);
+    }
+
+    #[test]
+    fn test_short_circuit_or_true() {
+        let res = test_program(r"
+        fn main() -> bool {
+            true || false
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), true);
+    }
+
+    #[test]
+    fn test_short_circuit_or_false() {
+        let res = test_program(r"
+        fn main() -> bool {
+            false || true
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), true);
+    }
+
+    #[test]
     fn test_simple_variable_scope_with_if() {
         let res = test_program(r"
         fn main() -> u64 {

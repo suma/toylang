@@ -24,9 +24,10 @@
 
 ### 低優先度
 
-9. **論理演算の最適化** ⚡
-   - `evaluate_logical_and`と`evaluate_logical_or`で短絡評価（short-circuit evaluation）が実装されていません
-   - 現在は両方のオペランドを評価していますが、効率性のため短絡評価を実装
+9. **論理演算の最適化** ✅ (2024-06-24完了)
+   - `evaluate_logical_and_short_circuit`と`evaluate_logical_or_short_circuit`で短絡評価を実装
+   - false && expr、true || exprで右辺を評価せずにパフォーマンス向上を実現
+   - 4つのテストケースを追加して動作確認済み
 
 10. **未使用importの削除** ✅ (2024-06-24完了)
     - 警告に表示されている`RcObject`と`convert_object`の未使用importを削除

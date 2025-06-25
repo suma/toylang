@@ -471,7 +471,7 @@ impl<'a> EvaluationContext<'a> {
                             return Err(InterpreterError::InternalError("While body is not a block".to_string()));
                         }
                     }
-                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))));
+                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))));
                 }
                 Stmt::For(identifier, start, end, block) => {
                     let start = self.evaluate(&start);
@@ -512,7 +512,7 @@ impl<'a> EvaluationContext<'a> {
                             _ => (),
                         }
                     }
-                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))));
+                    last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))));
                 }
                 Stmt::Expression(expr) => {
                     let e = self.expr_pool.get(expr.to_index()).unwrap();
@@ -619,7 +619,7 @@ impl<'a> EvaluationContext<'a> {
                     self.environment.exit_block();
                     return Ok(Rc::new(RefCell::new(Object::Unit)));
                 },
-                Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Null)),
+                Ok(EvaluationResult::None) => Rc::new(RefCell::new(Object::Unit)),
                 Err(e) => {
                     self.environment.exit_block();
                     return Err(e);
@@ -636,7 +636,7 @@ impl<'a> EvaluationContext<'a> {
         } else {
             Ok(match res {
                 EvaluationResult::Value(v) => v,
-                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Null)),
+                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
                 EvaluationResult::Return(v) => v.unwrap(),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })

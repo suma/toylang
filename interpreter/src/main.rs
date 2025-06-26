@@ -459,6 +459,21 @@ mod tests {
     }
 
     #[test]
+    fn test_context_inference_mixed_with_int64_explicit() {
+        // Test: Context inference where only one variable has explicit Int64 type
+        let res = test_program(r"
+        fn main() -> i64 {
+            val a = 100
+            val b = 50
+            val c = 25
+            val d: i64 = 10
+            (a - b) + (c - d)
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 65); // (100-50) + (25-10) = 50 + 15 = 65
+    }
+
+    #[test]
     fn test_no_context_defaults_to_uint64() {
         // Test: When no context is available, Number should default to UInt64
         let res = test_program(r"

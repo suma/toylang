@@ -5,27 +5,29 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Structure
 
-This is a toy programming language implementation in Rust with three main components:
+This is a toy programming language implementation in Rust with two main components:
 
-- **Root crate (langc)**: LLVM-based compiler that compiles to machine code via LLVM IR
-- **frontend/**: Shared parser and AST library using rflex for lexer generation
-- **interpreter/**: Tree-walking interpreter for the same language
+- **frontend/**: Shared parser, AST library, and type checker using rflex for lexer generation
+- **interpreter/**: Tree-walking interpreter with comprehensive test suite
 
-The language supports functions, variables (val/var), control flow (if/else, for loops with break/continue), basic arithmetic, and type checking.
+The language supports functions, variables (val/var), control flow (if/else, for loops with break/continue), basic arithmetic, advanced type checking with context-based inference, and automatic type conversion.
 
 ## Commands
 
 ### Building and Running
 
 ```bash
-# Build all components
-cargo build
+# Build frontend library
+cd frontend && cargo build
 
-# Run the LLVM compiler (generates .ll files)
-cargo run -- <source_file.t>
+# Build interpreter  
+cd interpreter && cargo build
 
-# Run the interpreter 
+# Run the interpreter
 cd interpreter && cargo run <source_file.t>
+
+# Example programs are available in interpreter/example/
+cd interpreter && cargo run example/fib.t
 ```
 
 ### Testing
@@ -55,7 +57,8 @@ cd interpreter && cargo test proptest
 cd frontend && cargo build
 
 # Type check with clippy
-cargo clippy --all-targets --all-features
+cd frontend && cargo clippy --all-targets --all-features
+cd interpreter && cargo clippy --all-targets --all-features
 ```
 
 ## Language Syntax
@@ -83,12 +86,17 @@ fn main() -> u64 {
 
 ## Architecture Notes
 
-- AST uses memory pools (StmtPool, ExprPool) for efficient allocation
-- Frontend generates lexer from flex-style `.l` file using rflex crate
-- LLVM compiler requires LLVM 10.0 (uses inkwell crate)
-- Interpreter uses Rc<RefCell<Object>> for runtime values
-- Type checker runs before execution in interpreter
-- Property-based testing validates language semantics
+- **Frontend Library**: 
+  - AST uses memory pools (StmtPool, ExprPool) for efficient allocation
+  - Generates lexer from flex-style `.l` file using rflex crate
+  - Advanced type checker with context-based inference and automatic type conversion
+  - Shared between different backends (currently interpreter)
+
+- **Interpreter**: 
+  - Tree-walking interpreter using Rc<RefCell<Object>> for runtime values
+  - Type checker runs before execution for type safety
+  - Comprehensive test suite with 40+ tests including property-based testing
+  - Example programs in `interpreter/example/` directory
 
 ## Task Management
 

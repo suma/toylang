@@ -16,9 +16,9 @@ fn main() {
         return;
     }
 
-    let program = program.unwrap();
+    let mut program = program.unwrap();
 
-    if let Err(errors) = interpreter::check_typing(&program) {
+    if let Err(errors) = interpreter::check_typing(&mut program) {
         for e in errors {
             eprintln!("{}", e);
         }
@@ -96,9 +96,28 @@ mod tests {
     fn test_program(program: &str) -> Result<Rc<RefCell<Object>>, InterpreterError> {
         let mut parser = frontend::Parser::new(program);
         let program = parser.parse_program();
-        assert!(program.is_ok());
-        let res = interpreter::execute_program(&program.unwrap());
-        assert!(res.is_ok());
+        if program.is_err() {
+            panic!("Parse error: {:?}", program.unwrap_err());
+        }
+        let mut program = program.unwrap();
+        
+        // Check typing
+        if let Err(errors) = interpreter::check_typing(&mut program) {
+            panic!("Type check errors: {:?}", errors);
+        }
+        
+        // Debug: Print AST after type checking
+        println!("AST after type checking:");
+        for i in 0..program.expression.len() {
+            if let Some(expr) = program.expression.get(i) {
+                println!("Expr[{}]: {:?}", i, expr);
+            }
+        }
+        
+        let res = interpreter::execute_program(&program);
+        if res.is_err() {
+            panic!("Execution error: {:?}", res.unwrap_err());
+        }
         Ok(res.unwrap())
     }
 
@@ -297,6 +316,85 @@ mod tests {
         }
         ");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 101);
+    }
+
+    #[test]
+    fn test_auto_type_conversion_number_to_uint64() {
+        // Test: Type-unspecified number (5) should convert to u64 when used with u64
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 10u64
+            val y = 5
+            x + y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 15);
+    }
+
+    #[test]
+    fn test_auto_type_conversion_number_to_int64() {
+        // Test: Type-unspecified number (5) should convert to i64 when used with i64
+        let res = test_program(r"
+        fn main() -> i64 {
+            val x = 10i64
+            val y = 5
+            x + y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 15);
+    }
+
+    #[test]
+    fn test_auto_type_conversion_both_numbers() {
+        // Test: Two type-unspecified numbers should default to u64
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 10
+            val y = 5
+            x + y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 15);
+    }
+
+    #[test]
+    fn test_auto_type_conversion_arithmetic_operations() {
+        // Test: Mixed operations with type-unspecified numbers
+        let res = test_program(r"
+        fn main() -> u64 {
+            val a = 20u64
+            val b = 5
+            val c = 2
+            (a + b) * c - 10
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 40);  // (20 + 5) * 2 - 10 = 40
+    }
+
+    #[test]
+    fn test_auto_type_conversion_comparison() {
+        // Test: Type-unspecified number should convert for comparison operations
+        let res = test_program(r"
+        fn main() -> bool {
+            val x = 10u64
+            val y = 5
+            x > y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), true);
+    }
+
+    #[test]
+    fn test_negative_number_forces_int64() {
+        // Test: Type-unspecified positive number should convert to i64 when used with i64
+        let res = test_program(r"
+        fn main() -> i64 {
+            val x = -5i64
+            val y = 10
+            x + y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 5);
     }
 
     #[test]

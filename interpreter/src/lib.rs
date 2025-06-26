@@ -12,9 +12,9 @@ use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
 
-pub fn check_typing(program: &Program) -> Result<(), Vec<String>> {
+pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &program.expression, &program.string_interner);
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });

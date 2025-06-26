@@ -54,6 +54,10 @@ impl ExprPool {
         self.0.get(i)
     }
 
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut Expr> {
+        self.0.get_mut(i)
+    }
+
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -88,6 +92,10 @@ impl StmtPool {
 
     pub fn get(&self, i: usize) -> Option<&Stmt> {
         self.0.get(i)
+    }
+
+    pub fn get_mut(&mut self, i: usize) -> Option<&mut Stmt> {
+        self.0.get_mut(i)
     }
 
     pub fn len(&self) -> usize {

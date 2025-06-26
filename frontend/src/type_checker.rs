@@ -23,7 +23,7 @@ pub struct TypeCheckError {
 
 pub struct TypeCheckerVisitor <'a, 'b, 'c> {
     pub stmt_pool: &'a StmtPool,
-    pub expr_pool: &'b ExprPool,
+    pub expr_pool: &'b mut ExprPool,
     pub string_interner: &'c DefaultStringInterner,
     pub context: TypeCheckContext,
     pub call_depth: usize,
@@ -94,11 +94,21 @@ impl TypeCheckContext {
             None
         }
     }
+
+    pub fn update_var_type(&mut self, name: DefaultSymbol, new_ty: TypeDecl) -> bool {
+        for v in self.vars.iter_mut().rev() {
+            if let Some(var_state) = v.get_mut(&name) {
+                var_state.ty = new_ty;
+                return true;
+            }
+        }
+        false // Variable not found
+    }
 }
 
 
 impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b ExprPool, string_interner: &'c DefaultStringInterner) -> Self {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'c DefaultStringInterner) -> Self {
         Self {
             stmt_pool,
             expr_pool,
@@ -141,6 +151,10 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
                 if decl != ty {
                     return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", decl, ty)));
                 }
+                self.context.set_var(name, ty.clone());
+            }
+            (None, Some(ty)) => {
+                // No explicit type declaration - store the inferred type
                 self.context.set_var(name, ty.clone());
             }
             _ => (),
@@ -196,6 +210,9 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         self.pop_context();
         self.call_depth -= 1;
 
+        // Final pass: convert any remaining Number literals to default type (UInt64)
+        self.finalize_number_types()?;
+        
         self.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
     }
@@ -254,40 +271,49 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let rhs = rhs.clone();
         let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
         let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
-        if lhs_ty != rhs_ty {
-            return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
+        
+        // Resolve types with automatic conversion for Number type
+        let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)?;
+        
+        // Transform AST nodes if type conversion occurred
+        if lhs_ty == TypeDecl::Number && resolved_lhs_ty != TypeDecl::Number {
+            self.transform_numeric_expr(&lhs, &resolved_lhs_ty)?;
         }
+        if rhs_ty == TypeDecl::Number && resolved_rhs_ty != TypeDecl::Number {
+            self.transform_numeric_expr(&rhs, &resolved_rhs_ty)?;
+        }
+        
+        // Update variable types if identifiers were involved in type conversion
+        self.update_identifier_types(&lhs, &lhs_ty, &resolved_lhs_ty)?;
+        self.update_identifier_types(&rhs, &rhs_ty, &resolved_rhs_ty)?;
         match op {
-            Operator::IAdd if lhs_ty == TypeDecl::String && rhs_ty == TypeDecl::String => {
+            Operator::IAdd if resolved_lhs_ty == TypeDecl::String && resolved_rhs_ty == TypeDecl::String => {
                 Ok(TypeDecl::String)
             }
             Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
-                if lhs_ty == TypeDecl::UInt64 {
-                    if rhs_ty != TypeDecl::UInt64 {
-                        return Err(TypeCheckError::new(format!("Type mismatch: lhs expected UInt64, but rhs got {:?}", rhs_ty)));
-                    }
+                if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
                     Ok(TypeDecl::UInt64)
-                } else if lhs_ty == TypeDecl::Int64 {
-                    if rhs_ty != TypeDecl::Int64 {
-                        return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64, but rhs got {:?}", rhs_ty)));
-                    }
+                } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     Ok(TypeDecl::Int64)
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: lhs expected Int64 or UInt64, but got {:?}", lhs_ty)));
+                    return Err(TypeCheckError::new(format!("Type mismatch: arithmetic operations require matching numeric types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
                 }
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
-                if lhs_ty == TypeDecl::UInt64 || lhs_ty == TypeDecl::Int64 || lhs_ty == TypeDecl::Bool {
+                if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) && 
+                   (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
+                    Ok(TypeDecl::Bool)
+                } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     Ok(TypeDecl::Bool)
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: comparison operators require Int64, UInt64, or Bool, but got {:?}", lhs_ty)));
+                    return Err(TypeCheckError::new(format!("Type mismatch: comparison operators require matching types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
-                if lhs_ty == TypeDecl::Bool && rhs_ty == TypeDecl::Bool {
+                if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     Ok(TypeDecl::Bool)
                 } else {
-                    Err(TypeCheckError::new(format!("Type mismatch(bool): lhs expected Bool, but rhs got {:?}", rhs_ty)))
+                    Err(TypeCheckError::new(format!("Type mismatch: logical operators require Bool types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)))
                 }
             }
         }
@@ -376,6 +402,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
+            // Return the stored type, which may be Number for type inference
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
@@ -412,8 +439,25 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         Ok(TypeDecl::UInt64)
     }
 
-    fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::UInt64)
+    fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
+        let num_str = self.string_interner.resolve(value)
+            .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
+        
+        // Parse the number and determine appropriate type
+        if let Ok(val) = num_str.parse::<i64>() {
+            if val >= 0 && val <= (i64::MAX) {
+                // Positive number that fits in both i64 and u64 - use Number for inference
+                Ok(TypeDecl::Number)
+            } else {
+                // Negative number or very large positive - must be i64
+                Ok(TypeDecl::Int64)
+            }
+        } else if let Ok(_val) = num_str.parse::<u64>() {
+            // Very large positive number that doesn't fit in i64 - must be u64
+            Ok(TypeDecl::UInt64)
+        } else {
+            Err(TypeCheckError::new(format!("Invalid number literal: {}", num_str)))
+        }
     }
 
     fn visit_string_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
@@ -445,8 +489,24 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        let expr_ref = expr.clone();
         let expr = Some(expr.clone());
         let type_decl = type_decl.clone();
+        
+        // Visit the expression first to get its type
+        let expr_ty = self.visit_expr(&expr_ref)?;
+        
+        // If it's a Number type and we have an explicit type declaration, convert it
+        if expr_ty == TypeDecl::Number {
+            if let Some(decl) = &type_decl {
+                if decl != &TypeDecl::Unknown {
+                    // Transform to the explicitly declared type
+                    self.transform_numeric_expr(&expr_ref, decl)?;
+                }
+            }
+            // If no explicit type is declared, leave as Number for context-based inference
+        }
+        
         self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
     }
@@ -481,5 +541,99 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unit)
+    }
+}
+
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+    // Transform Expr::Number nodes to concrete types based on resolved types
+    fn transform_numeric_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
+        if let Some(expr) = self.expr_pool.get_mut(expr_ref.to_index()) {
+            if let Expr::Number(value) = expr {
+                let num_str = self.string_interner.resolve(*value)
+                    .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
+                
+                match target_type {
+                    TypeDecl::UInt64 => {
+                        if let Ok(val) = num_str.parse::<u64>() {
+                            *expr = Expr::UInt64(val);
+                        } else {
+                            return Err(TypeCheckError::new(format!("Cannot convert {} to UInt64", num_str)));
+                        }
+                    },
+                    TypeDecl::Int64 => {
+                        if let Ok(val) = num_str.parse::<i64>() {
+                            *expr = Expr::Int64(val);
+                        } else {
+                            return Err(TypeCheckError::new(format!("Cannot convert {} to Int64", num_str)));
+                        }
+                    },
+                    _ => {
+                        return Err(TypeCheckError::new(format!("Cannot transform number to type: {:?}", target_type)));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Update variable type in context if identifier was type-converted
+    fn update_identifier_types(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
+        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
+            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                if let Expr::Identifier(name) = expr {
+                    // Update the variable's type in context while preserving is_const flag
+                    self.context.update_var_type(*name, resolved_ty.clone());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Finalize any remaining Number types to default UInt64
+    fn finalize_number_types(&mut self) -> Result<(), TypeCheckError> {
+        let expr_len = self.expr_pool.len();
+        for i in 0..expr_len {
+            if let Some(expr) = self.expr_pool.get(i) {
+                if let Expr::Number(_) = expr {
+                    let expr_ref = ExprRef(i as u32);
+                    self.transform_numeric_expr(&expr_ref, &TypeDecl::UInt64)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Helper method to resolve numeric types with automatic conversion
+    fn resolve_numeric_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> Result<(TypeDecl, TypeDecl), TypeCheckError> {
+        match (lhs_ty, rhs_ty) {
+            // Both types are already concrete - no conversion needed
+            (TypeDecl::UInt64, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+            (TypeDecl::Int64, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            (TypeDecl::Bool, TypeDecl::Bool) => Ok((TypeDecl::Bool, TypeDecl::Bool)),
+            (TypeDecl::String, TypeDecl::String) => Ok((TypeDecl::String, TypeDecl::String)),
+            
+            // Number type automatic conversion
+            (TypeDecl::Number, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+            (TypeDecl::UInt64, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+            (TypeDecl::Number, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            (TypeDecl::Int64, TypeDecl::Number) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            
+            // Two Number types - default to UInt64 for positive literals
+            (TypeDecl::Number, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+            
+            // Cross-type operations (UInt64 vs Int64) - generally not allowed for safety
+            (TypeDecl::UInt64, TypeDecl::Int64) | (TypeDecl::Int64, TypeDecl::UInt64) => {
+                Err(TypeCheckError::new(format!("Cannot mix signed and unsigned integer types: {:?} and {:?}", lhs_ty, rhs_ty)))
+            },
+            
+            // Other type mismatches
+            _ => {
+                if lhs_ty == rhs_ty {
+                    Ok((lhs_ty.clone(), rhs_ty.clone()))
+                } else {
+                    Err(TypeCheckError::new(format!("Type mismatch: cannot convert between {:?} and {:?}", lhs_ty, rhs_ty)))
+                }
+            }
+        }
     }
 }

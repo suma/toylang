@@ -395,6 +395,10 @@ impl<'a> EvaluationContext<'a> {
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
             }
+            Expr::Number(_v) => {
+                // Type-unspecified numbers should be resolved during type checking
+                Err(InterpreterError::InternalError("Expr::Number should be transformed to concrete type during type checking".to_string()))
+            }
             Expr::Identifier(s) => {
                 Ok(EvaluationResult::Value(self.environment.get_val(*s).unwrap()))
             }
@@ -704,6 +708,10 @@ pub fn convert_object(e: &Expr) -> Object {
         Expr::Int64(v) => Object::Int64(*v),
         Expr::UInt64(v) => Object::UInt64(*v),
         Expr::String(v) => Object::String(*v),
+        Expr::Number(_v) => {
+            // Type-unspecified numbers should be resolved during type checking
+            panic!("Expr::Number should be transformed to concrete type during type checking: {:?}", e)
+        },
         _ => panic!("Not handled yet {:?}", e),
     }
 }

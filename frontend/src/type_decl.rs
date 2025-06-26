@@ -10,4 +10,5 @@ pub enum TypeDecl {
     Identifier(DefaultSymbol),
     Any,  // null
     String,
+    Number,  // Type-unspecified numeric literal for type inference
 }

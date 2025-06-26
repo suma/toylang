@@ -21,7 +21,8 @@ pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
 
     program.function.iter().for_each(|func| {
         let name = program.string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
-        println!("Checking function {}", name);
+        // Commented out for performance benchmarking
+        // println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
         if r.is_err() {
             errors.push(format!("type_check failed in {}: {}", name, r.unwrap_err()));

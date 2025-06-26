@@ -28,6 +28,9 @@ pub struct TypeCheckerVisitor <'a, 'b, 'c> {
     pub context: TypeCheckContext,
     pub call_depth: usize,
     pub is_checked_fn: HashMap<DefaultSymbol, Option<TypeDecl>>, // None -> in progress, Some -> Done
+    pub type_hint: Option<TypeDecl>, // Type hint for Number literal inference
+    pub number_usage_context: Vec<(ExprRef, TypeDecl)>, // Track Number expressions and their usage context
+    pub variable_expr_mapping: HashMap<DefaultSymbol, ExprRef>, // Track which expression belongs to which variable
 }
 
 impl std::fmt::Display for TypeCheckError {
@@ -116,6 +119,9 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             context: TypeCheckContext::new(),
             call_depth: 0,
             is_checked_fn: HashMap::new(),
+            type_hint: None,
+            number_usage_context: Vec::new(),
+            variable_expr_mapping: HashMap::new(),
         }
     }
 
@@ -199,6 +205,28 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             self.context.set_var(*name, type_decl.clone());
         });
 
+        // Pre-scan for explicit type declarations and establish global type context
+        let mut global_numeric_type: Option<TypeDecl> = None;
+        for s in &statements {
+            if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
+                match stmt {
+                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
+                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
+                            global_numeric_type = Some(type_decl.clone());
+                            break; // Use the first explicit numeric type found
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Set global type hint if found
+        let original_hint = self.type_hint.clone();
+        if let Some(ref global_type) = global_numeric_type {
+            self.type_hint = Some(global_type.clone());
+        }
+
         for stmt in statements {
             let res = self.stmt_pool.get(stmt.to_index()).unwrap().clone().accept(self);
             if res.is_err() {
@@ -209,6 +237,9 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         }
         self.pop_context();
         self.call_depth -= 1;
+
+        // Restore original type hint
+        self.type_hint = original_hint;
 
         // Final pass: convert any remaining Number literals to default type (UInt64)
         self.finalize_number_types()?;
@@ -258,7 +289,21 @@ impl Acceptable for Stmt {
 
 impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
+        // Set up context hint for nested expressions
+        let original_hint = self.type_hint.clone();
+        let result = self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
+        
+        // Context propagation: if this expression resolved to a concrete numeric type,
+        // and we don't have a current hint, set it for sibling expressions
+        if let Ok(ref result_type) = result {
+            if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64) {
+                if self.type_hint.is_none() {
+                    self.type_hint = Some(result_type.clone());
+                }
+            }
+        }
+        
+        result
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
@@ -275,6 +320,28 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         // Resolve types with automatic conversion for Number type
         let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)?;
         
+        // Context propagation: if we have a type hint, propagate it to Number expressions
+        if let Some(hint) = self.type_hint.clone() {
+            if lhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
+                self.propagate_type_to_number_expr(&lhs, &hint)?;
+            }
+            if rhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
+                self.propagate_type_to_number_expr(&rhs, &hint)?;
+            }
+        }
+        
+        // Record Number usage context for later finalization
+        self.record_number_usage_context(&lhs, &lhs_ty, &resolved_lhs_ty)?;
+        self.record_number_usage_context(&rhs, &rhs_ty, &resolved_rhs_ty)?;
+        
+        // Immediate propagation: if one side has concrete type, propagate to Number variables
+        if resolved_lhs_ty != TypeDecl::Number && rhs_ty == TypeDecl::Number {
+            self.propagate_to_number_variable(&rhs, &resolved_lhs_ty)?;
+        }
+        if resolved_rhs_ty != TypeDecl::Number && lhs_ty == TypeDecl::Number {
+            self.propagate_to_number_variable(&lhs, &resolved_rhs_ty)?;
+        }
+        
         // Transform AST nodes if type conversion occurred
         if lhs_ty == TypeDecl::Number && resolved_lhs_ty != TypeDecl::Number {
             self.transform_numeric_expr(&lhs, &resolved_lhs_ty)?;
@@ -286,15 +353,16 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         // Update variable types if identifiers were involved in type conversion
         self.update_identifier_types(&lhs, &lhs_ty, &resolved_lhs_ty)?;
         self.update_identifier_types(&rhs, &rhs_ty, &resolved_rhs_ty)?;
-        match op {
+        
+        let result_type = match op {
             Operator::IAdd if resolved_lhs_ty == TypeDecl::String && resolved_rhs_ty == TypeDecl::String => {
-                Ok(TypeDecl::String)
+                TypeDecl::String
             }
             Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
                 if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
-                    Ok(TypeDecl::UInt64)
+                    TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
-                    Ok(TypeDecl::Int64)
+                    TypeDecl::Int64
                 } else {
                     return Err(TypeCheckError::new(format!("Type mismatch: arithmetic operations require matching numeric types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
                 }
@@ -302,26 +370,51 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
                 if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) && 
                    (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
-                    Ok(TypeDecl::Bool)
+                    TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
-                    Ok(TypeDecl::Bool)
+                    TypeDecl::Bool
                 } else {
                     return Err(TypeCheckError::new(format!("Type mismatch: comparison operators require matching types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
                 if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
-                    Ok(TypeDecl::Bool)
+                    TypeDecl::Bool
                 } else {
-                    Err(TypeCheckError::new(format!("Type mismatch: logical operators require Bool types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)))
+                    return Err(TypeCheckError::new(format!("Type mismatch: logical operators require Bool types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
                 }
             }
-        }
+        };
+        
+        Ok(result_type)
     }
 
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {
         let mut last_empty = true;
         let mut last: Option<TypeDecl> = None;
+        
+        // Pre-scan for explicit type declarations and establish global type context
+        let mut global_numeric_type: Option<TypeDecl> = None;
+        for s in statements {
+            if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
+                match stmt {
+                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
+                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
+                            global_numeric_type = Some(type_decl.clone());
+                            break; // Use the first explicit numeric type found
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // Set global type hint if found
+        let original_hint = self.type_hint.clone();
+        if let Some(ref global_type) = global_numeric_type {
+            self.type_hint = Some(global_type.clone());
+        }
+        
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements {
@@ -357,6 +450,9 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 Err(e) => return Err(e),
             }
         }
+        
+        // Restore original type hint
+        self.type_hint = original_hint;
 
         if let Some(last_type) = last {
             Ok(last_type)
@@ -443,6 +539,31 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let num_str = self.string_interner.resolve(value)
             .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
         
+        // If we have a type hint from val/var declaration, validate and return the hint type
+        if let Some(hint) = self.type_hint.clone() {
+            match hint {
+                TypeDecl::Int64 => {
+                    if let Ok(_val) = num_str.parse::<i64>() {
+                        // Return the hinted type - transformation will happen in visit_val
+                        return Ok(hint);
+                    } else {
+                        return Err(TypeCheckError::new(format!("Cannot convert {} to Int64", num_str)));
+                    }
+                },
+                TypeDecl::UInt64 => {
+                    if let Ok(_val) = num_str.parse::<u64>() {
+                        // Return the hinted type - transformation will happen in visit_val
+                        return Ok(hint);
+                    } else {
+                        return Err(TypeCheckError::new(format!("Cannot convert {} to UInt64", num_str)));
+                    }
+                },
+                _ => {
+                    // Other types, fall through to default logic
+                }
+            }
+        }
+        
         // Parse the number and determine appropriate type
         if let Ok(val) = num_str.parse::<i64>() {
             if val >= 0 && val <= (i64::MAX) {
@@ -493,19 +614,51 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let expr = Some(expr.clone());
         let type_decl = type_decl.clone();
         
-        // Visit the expression first to get its type
+        // Set type hint: explicit declaration takes priority, otherwise use current hint
+        let old_hint = self.type_hint.clone();
+        if let Some(decl) = &type_decl {
+            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number {
+                self.type_hint = Some(decl.clone());
+            }
+        }
+        
+        // Visit the expression with type hint context
         let expr_ty = self.visit_expr(&expr_ref)?;
         
-        // If it's a Number type and we have an explicit type declaration, convert it
-        if expr_ty == TypeDecl::Number {
-            if let Some(decl) = &type_decl {
-                if decl != &TypeDecl::Unknown {
-                    // Transform to the explicitly declared type
-                    self.transform_numeric_expr(&expr_ref, decl)?;
+        // Record variable-expression mapping for Number types
+        if expr_ty == TypeDecl::Number || (expr_ty != TypeDecl::Number && self.has_number_in_expr(&expr_ref)) {
+            self.variable_expr_mapping.insert(name, expr_ref.clone());
+        }
+        
+        // Apply type transformation if needed
+        if type_decl.is_none() && expr_ty == TypeDecl::Number {
+            // No explicit type, but we have a Number - use type hint if available
+            if let Some(hint) = self.type_hint.clone() {
+                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+                    // Transform Number to hinted type
+                    self.transform_numeric_expr(&expr_ref, &hint)?;
                 }
             }
-            // If no explicit type is declared, leave as Number for context-based inference
+        } else if type_decl.is_some() && type_decl.as_ref().unwrap() == &TypeDecl::Unknown && expr_ty == TypeDecl::Int64 {
+            // Unknown type declaration with Int64 inference - also transform
+            if let Some(hint) = self.type_hint.clone() {
+                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+                    self.transform_numeric_expr(&expr_ref, &hint)?;
+                }
+            }
+        } else if let Some(decl) = &type_decl {
+            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && expr_ty == *decl {
+                // Expression returned the hinted type, transform Number literals to concrete type
+                if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                    if let Expr::Number(_) = expr {
+                        self.transform_numeric_expr(&expr_ref, decl)?;
+                    }
+                }
+            }
         }
+        
+        // Restore previous type hint
+        self.type_hint = old_hint;
         
         self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
@@ -589,8 +742,91 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         Ok(())
     }
 
-    // Finalize any remaining Number types to default UInt64
+    // Record Number usage context for identifiers
+    fn record_number_usage_context(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
+        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
+            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                if let Expr::Identifier(name) = expr {
+                    // Find all Number expressions that might belong to this variable
+                    // and record the context type
+                    for i in 0..self.expr_pool.len() {
+                        if let Some(candidate_expr) = self.expr_pool.get(i) {
+                            if let Expr::Number(_) = candidate_expr {
+                                let candidate_ref = ExprRef(i as u32);
+                                // Check if this Number might be associated with this variable
+                                if self.is_number_for_variable(*name, &candidate_ref) {
+                                    self.number_usage_context.push((candidate_ref, resolved_ty.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    // Check if an expression contains Number literals
+    fn has_number_in_expr(&self, expr_ref: &ExprRef) -> bool {
+        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            match expr {
+                Expr::Number(_) => true,
+                _ => false, // For now, only check direct Number literals
+            }
+        } else {
+            false
+        }
+    }
+
+    // Check if a Number expression is associated with a specific variable
+    fn is_number_for_variable(&self, var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
+        // Use the recorded mapping to check if this Number expression belongs to this variable
+        if let Some(mapped_expr_ref) = self.variable_expr_mapping.get(&var_name) {
+            return mapped_expr_ref == number_expr_ref;
+        }
+        false
+    }
+
+    // Propagate concrete type to Number variable immediately
+    fn propagate_to_number_variable(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
+        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            if let Expr::Identifier(name) = expr {
+                if let Some(var_type) = self.context.get_var(*name) {
+                    if var_type == TypeDecl::Number {
+                        // Find and record the Number expression for this variable
+                        for i in 0..self.expr_pool.len() {
+                            if let Some(candidate_expr) = self.expr_pool.get(i) {
+                                if let Expr::Number(_) = candidate_expr {
+                                    let candidate_ref = ExprRef(i as u32);
+                                    if self.is_number_for_variable(*name, &candidate_ref) {
+                                        self.number_usage_context.push((candidate_ref, target_type.clone()));
+                                        // Update variable type in context
+                                        self.context.update_var_type(*name, target_type.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Finalize any remaining Number types with context-aware inference
     fn finalize_number_types(&mut self) -> Result<(), TypeCheckError> {
+        // Use recorded context information to transform Number expressions
+        let context_info = self.number_usage_context.clone();
+        for (expr_ref, target_type) in context_info {
+            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                if let Expr::Number(_) = expr {
+                    self.transform_numeric_expr(&expr_ref, &target_type)?;
+                }
+            }
+        }
+        
+        // Second pass: handle any remaining Number types with default
         let expr_len = self.expr_pool.len();
         for i in 0..expr_len {
             if let Some(expr) = self.expr_pool.get(i) {
@@ -602,6 +838,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         }
         Ok(())
     }
+
 
     // Helper method to resolve numeric types with automatic conversion
     fn resolve_numeric_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> Result<(TypeDecl, TypeDecl), TypeCheckError> {
@@ -618,8 +855,18 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             (TypeDecl::Number, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Int64, TypeDecl::Number) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             
-            // Two Number types - default to UInt64 for positive literals
-            (TypeDecl::Number, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+            // Two Number types - check if we have a context hint, otherwise default to UInt64
+            (TypeDecl::Number, TypeDecl::Number) => {
+                if let Some(hint) = &self.type_hint {
+                    match hint {
+                        TypeDecl::Int64 => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+                        TypeDecl::UInt64 => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+                        _ => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
+                    }
+                } else {
+                    Ok((TypeDecl::UInt64, TypeDecl::UInt64))
+                }
+            },
             
             // Cross-type operations (UInt64 vs Int64) - generally not allowed for safety
             (TypeDecl::UInt64, TypeDecl::Int64) | (TypeDecl::Int64, TypeDecl::UInt64) => {
@@ -635,5 +882,33 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
                 }
             }
         }
+    }
+    
+    // Propagate type to Number expression and associated variables
+    fn propagate_type_to_number_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
+        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            match expr {
+                Expr::Identifier(name) => {
+                    // If this is an identifier with Number type, update it
+                    if let Some(var_type) = self.context.get_var(*name) {
+                        if var_type == TypeDecl::Number {
+                            self.context.update_var_type(*name, target_type.clone());
+                            // Also record for Number expression transformation
+                            if let Some(mapped_expr) = self.variable_expr_mapping.get(name) {
+                                self.number_usage_context.push((mapped_expr.clone(), target_type.clone()));
+                            }
+                        }
+                    }
+                },
+                Expr::Number(_) => {
+                    // Direct Number literal
+                    self.number_usage_context.push((expr_ref.clone(), target_type.clone()));
+                },
+                _ => {
+                    // For other expression types, we might need to recurse
+                }
+            }
+        }
+        Ok(())
     }
 }

@@ -106,14 +106,6 @@ mod tests {
             panic!("Type check errors: {:?}", errors);
         }
         
-        // Debug: Print AST after type checking
-        println!("AST after type checking:");
-        for i in 0..program.expression.len() {
-            if let Some(expr) = program.expression.get(i) {
-                println!("Expr[{}]: {:?}", i, expr);
-            }
-        }
-        
         let res = interpreter::execute_program(&program);
         if res.is_err() {
             panic!("Execution error: {:?}", res.unwrap_err());
@@ -395,6 +387,102 @@ mod tests {
         }
         ");
         assert_eq!(res.unwrap().borrow().unwrap_int64(), 5);
+    }
+
+    #[test]
+    fn test_explicit_type_declaration_inference() {
+        // Test: Explicit type declaration should infer Number type immediately
+        let res = test_program(r"
+        fn main() -> i64 {
+            val x: i64 = 100
+            val y: i64 = 25
+            x - y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 75);
+    }
+
+    #[test]
+    fn test_mixed_explicit_and_inferred_types() {
+        // Test: Mix of explicit declarations and context inference
+        let res = test_program(r"
+        fn main() -> u64 {
+            val a: u64 = 50
+            val b = 30
+            val c = 5
+            (a + b) / c
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 16);
+    }
+
+    #[test]
+    fn test_context_inference_in_comparison() {
+        // Test: Number type inference in comparison operations
+        let res = test_program(r"
+        fn main() -> bool {
+            val x: i64 = -10
+            val y = 5
+            x < y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_bool(), true);
+    }
+
+    #[test]
+    fn test_context_inference_multiple_operations() {
+        // Test: Context inference through multiple operations
+        let res = test_program(r"
+        fn main() -> i64 {
+            val a = 100
+            val b: i64 = 50
+            val c = 25
+            val d = 10
+            (a - b) + (c - d)
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 65); // (100-50) + (25-10) = 50 + 15 = 65
+    }
+
+    #[test]
+    fn test_context_inference_nested_expressions() {
+        // Test: Context inference in nested expressions
+        let res = test_program(r"
+        fn main() -> u64 {
+            val base: u64 = 10
+            val multiplier = 3
+            val offset = 5
+            base * (multiplier + offset)
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 80); // 10 * (3 + 5) = 10 * 8 = 80
+    }
+
+    #[test]
+    fn test_no_context_defaults_to_uint64() {
+        // Test: When no context is available, Number should default to UInt64
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 42
+            x
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 42);
+    }
+
+    #[test]
+    fn test_context_inference_across_variable_assignments() {
+        // Test: Context inference works across multiple variable assignments
+        let res = test_program(r"
+        fn main() -> i64 {
+            val base: i64 = 1000
+            val step1 = 100
+            val step2 = 50
+            val step3 = 25
+            base - step1 - step2 - step3
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_int64(), 825); // 1000 - 100 - 50 - 25 = 825
     }
 
     #[test]

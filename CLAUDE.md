@@ -41,6 +41,13 @@ cd frontend && cargo test
 cd interpreter && cargo test proptest
 ```
 
+**Note**: インタープリターの`cargo test`は3つのフェーズで実行されます：
+1. `src/lib.rs`のテスト
+2. `src/main.rs`のテスト (メインテストスイート)
+3. `doc-tests`
+
+テスト結果は各フェーズごとに`running X tests`と表示されます。
+
 ### Development
 
 ```bash

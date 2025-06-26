@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
     }
 
     // pos: 0-origin
-    #[warn(dead_code)]
+    #[allow(dead_code)]
     fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         while self.ahead.len() < pos + 1 {
             match self.lexer.yylex() {

@@ -62,12 +62,10 @@ impl TypeCheckContext {
         let last = self.vars.last_mut().unwrap();
         let exist = last.get(&name);
         if let Some(exist) = exist {
-            if exist.is_const {
-                panic!("Cannot re-assign const variable: {:?}", name);
-            }
             let ety = exist.ty.clone();
             if ety != ty {
-                panic!("Cannot re-assign variable: {:?} with different type: {:?} != {:?}", name, ety, ty);
+                // Re-define with other type
+                last.insert(name, VarState { ty, is_const: true });
             }
             // it can overwrite
         } else {
@@ -611,7 +609,6 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_ref = expr.clone();
-        let expr = Some(expr.clone());
         let type_decl = type_decl.clone();
         
         // Set type hint: explicit declaration takes priority, otherwise use current hint
@@ -625,9 +622,29 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         // Visit the expression with type hint context
         let expr_ty = self.visit_expr(&expr_ref)?;
         
-        // Record variable-expression mapping for Number types
+        // Record variable-expression mapping for Number types (remove old mapping)
         if expr_ty == TypeDecl::Number || (expr_ty != TypeDecl::Number && self.has_number_in_expr(&expr_ref)) {
             self.variable_expr_mapping.insert(name, expr_ref.clone());
+        } else {
+            // Remove old mapping for non-Number types to prevent stale references
+            self.variable_expr_mapping.remove(&name);
+            // Also remove from number_usage_context to prevent stale type inference
+            let indices_to_remove: Vec<usize> = self.number_usage_context
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (old_expr, _))| {
+                    if self.is_old_number_for_variable(name, old_expr) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Remove in reverse order to maintain valid indices
+            for &index in indices_to_remove.iter().rev() {
+                self.number_usage_context.remove(index);
+            }
         }
         
         // Apply type transformation if needed
@@ -657,10 +674,20 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             }
         }
         
+        // Store the variable with the final type (after transformation)
+        let final_type = match (&type_decl, &expr_ty) {
+            (Some(TypeDecl::Unknown), _) => expr_ty,
+            (Some(decl), _) if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => decl.clone(),
+            (None, _) => expr_ty,
+            _ => expr_ty,
+        };
+        
+        // Set the variable directly without calling process_val_type to avoid double evaluation
+        self.context.set_var(name, final_type);
+        
         // Restore previous type hint
         self.type_hint = old_hint;
         
-        self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
     }
 
@@ -787,6 +814,19 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         }
         false
     }
+    
+    // Check if an old Number expression might be associated with a variable for cleanup
+    fn is_old_number_for_variable(&self, _var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
+        // Check if this Number expression was previously mapped to this variable
+        // This is used for cleanup when variables are redefined
+        if let Some(expr) = self.expr_pool.get(number_expr_ref.to_index()) {
+            if let Expr::Number(_) = expr {
+                // For now, we'll be conservative and remove all Number contexts when variables are redefined
+                return true;
+            }
+        }
+        false
+    }
 
     // Propagate concrete type to Number variable immediately
     fn propagate_to_number_variable(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
@@ -822,17 +862,47 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Number(_) = expr {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
+                    
+                    // Update variable types in context if this expression is mapped to a variable
+                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping.clone() {
+                        if mapped_expr_ref == &expr_ref {
+                            self.context.update_var_type(*var_name, target_type.clone());
+                        }
+                    }
                 }
             }
         }
         
-        // Second pass: handle any remaining Number types with default
+        // Second pass: handle any remaining Number types by using variable context
         let expr_len = self.expr_pool.len();
         for i in 0..expr_len {
             if let Some(expr) = self.expr_pool.get(i) {
                 if let Expr::Number(_) = expr {
                     let expr_ref = ExprRef(i as u32);
-                    self.transform_numeric_expr(&expr_ref, &TypeDecl::UInt64)?;
+                    
+                    // Find if this Number is associated with a variable and use its final type
+                    let mut target_type = TypeDecl::UInt64; // default
+                    
+                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping {
+                        if mapped_expr_ref == &expr_ref {
+                            // Check the current type of this variable in context
+                            if let Some(var_type) = self.context.get_var(*var_name) {
+                                if var_type != TypeDecl::Number {
+                                    target_type = var_type;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    self.transform_numeric_expr(&expr_ref, &target_type)?;
+                    
+                    // Update variable types in context if this expression is mapped to a variable
+                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping.clone() {
+                        if mapped_expr_ref == &expr_ref {
+                            self.context.update_var_type(*var_name, target_type.clone());
+                        }
+                    }
                 }
             }
         }

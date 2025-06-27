@@ -1085,10 +1085,10 @@ mod tests {
             let program = result.unwrap();
 
             let stmt_pool = &program.statement;
-            let expr_pool = &program.expression;
+            let mut expr_pool = program.expression;
             let string_interner = &program.string_interner;
 
-            let mut tc = TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner);
+            let mut tc = TypeCheckerVisitor::new(stmt_pool, &mut expr_pool, string_interner);
             // Register all defined functions
             program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
@@ -1109,10 +1109,10 @@ mod tests {
             let program = result.unwrap();
 
             let stmt_pool = program.statement;
-            let expr_pool = program.expression;
+            let mut expr_pool = program.expression;
             let interner = program.string_interner;
 
-            let mut tc = TypeCheckerVisitor::new(&stmt_pool, &expr_pool, &interner);
+            let mut tc = TypeCheckerVisitor::new(&stmt_pool, &mut expr_pool, &interner);
             let mut res = true;
             program.function.iter().for_each(|f| {
                 let r = tc.type_check(f.clone());

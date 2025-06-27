@@ -403,6 +403,19 @@ mod tests {
     }
 
     #[test]
+    fn test_explicit_type_redefine_declaration_inference() {
+        // Test: Variable redefinition with different types works correctly
+        let res = test_program(r"
+        fn main() -> u64 {
+            val y: i64 = 25
+            val y = 26u64
+            y
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 26);
+    }
+
+    #[test]
     fn test_mixed_explicit_and_inferred_types() {
         // Test: Mix of explicit declarations and context inference
         let res = test_program(r"

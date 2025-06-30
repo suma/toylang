@@ -8,7 +8,6 @@ use crate::visitor::AstVisitor;
 #[derive(Debug)]
 pub struct VarState {
     ty: TypeDecl,
-    is_const: bool,
 }
 #[derive(Debug)]
 pub struct TypeCheckContext {
@@ -55,7 +54,7 @@ impl TypeCheckContext {
 
     pub fn set_val(&mut self, name: DefaultSymbol, ty: TypeDecl) {
         let last = self.vars.last_mut().unwrap();
-        last.insert(name, VarState { ty, is_const: true });
+        last.insert(name, VarState { ty });
     }
 
     pub fn set_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
@@ -65,12 +64,12 @@ impl TypeCheckContext {
             let ety = exist.ty.clone();
             if ety != ty {
                 // Re-define with other type
-                last.insert(name, VarState { ty, is_const: true });
+                last.insert(name, VarState { ty });
             }
             // it can overwrite
         } else {
             // or insert a new one
-            last.insert(name, VarState { ty, is_const: false });
+            last.insert(name, VarState { ty });
         }
     }
 
@@ -845,7 +844,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
             if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Identifier(name) = expr {
-                    // Update the variable's type in context while preserving is_const flag
+                    // Update the variable's type
                     self.context.update_var_type(*name, resolved_ty.clone());
                 }
             }

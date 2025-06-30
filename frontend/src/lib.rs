@@ -385,6 +385,15 @@ impl<'a> Parser<'a> {
         let cond = self.parse_logical_expr()?;
         let if_block = self.parse_block()?;
 
+        // Parse elif chains
+        let mut elif_pairs = Vec::new();
+        while let Some(Kind::Elif) = self.peek() {
+            self.next(); // consume 'elif'
+            let elif_cond = self.parse_logical_expr()?;
+            let elif_block = self.parse_block()?;
+            elif_pairs.push((elif_cond, elif_block));
+        }
+
         let else_block: ExprRef = match self.peek() {
             Some(Kind::Else) => {
                 self.next();
@@ -392,7 +401,9 @@ impl<'a> Parser<'a> {
             }
             _ => self.expr.add(Expr::Block(vec![])), // through
         };
-        Ok(self.expr.add(Expr::IfElse(cond, if_block, else_block)))
+
+        // Always use IfElifElse (elif_pairs can be empty for regular if-else)
+        Ok(self.expr.add(Expr::IfElifElse(cond, if_block, elif_pairs, else_block)))
     }
 
     pub fn parse_block(&mut self) -> Result<ExprRef> {

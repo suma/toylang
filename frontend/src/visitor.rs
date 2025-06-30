@@ -10,7 +10,7 @@ pub trait AstVisitor {
     // Expr variants
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_if_else(&mut self, cond: &ExprRef, then_block: &ExprRef, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_if_elif_else(&mut self, cond: &ExprRef, then_block: &ExprRef, elif_pairs: &Vec<(ExprRef, ExprRef)>, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_call(&mut self, fn_name: DefaultSymbol, args: &ExprRef) -> Result<TypeDecl, TypeCheckError>;

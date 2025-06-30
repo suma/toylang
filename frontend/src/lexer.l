@@ -12,6 +12,7 @@ macro_rules! token {
 %field u64 line_count
 
 "if"     return Ok(token!(self, Kind::If));
+"elif"   return Ok(token!(self, Kind::Elif));
 "else"   return Ok(token!(self, Kind::Else));
 "for"    return Ok(token!(self, Kind::For));
 "in"     return Ok(token!(self, Kind::In));

@@ -402,29 +402,61 @@ impl<'a> EvaluationContext<'a> {
             Expr::Identifier(s) => {
                 Ok(EvaluationResult::Value(self.environment.get_val(*s).unwrap()))
             }
-            Expr::IfElse(cond, then, _else) => {
+
+            Expr::IfElifElse(cond, then, elif_pairs, _else) => {
+                // Evaluate if condition
                 let cond = self.evaluate(cond);
                 let cond = self.extract_value(cond)?;
                 let cond = cond.borrow();
                 if cond.get_type() != TypeDecl::Bool {
-                    return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: format!("evaluate: Bad types for if-else due to different type: {:?}", expr)});
+                    return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: format!("evaluate: Bad types for if condition: {:?}", expr)});
                 }
-                assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: then is not block");
-                assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else is not block");
 
-                let block_expr = if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-                    then
+                let mut selected_block = None;
+
+                // Check if condition
+                if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+                    assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: if-then is not block");
+                    selected_block = Some(then);
                 } else {
-                    _else
-                };
+                    // Check elif conditions
+                    for (elif_cond, elif_block) in elif_pairs {
+                        let elif_cond = self.evaluate(elif_cond);
+                        let elif_cond = self.extract_value(elif_cond)?;
+                        let elif_cond = elif_cond.borrow();
+                        if elif_cond.get_type() != TypeDecl::Bool {
+                            return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: elif_cond.get_type(), message: format!("evaluate: Bad types for elif condition: {:?}", expr)});
+                        }
 
-                self.environment.enter_block();
-                let res =  {
-                    if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) { self.evaluate_block(statements) }
-                    else { return Err(InterpreterError::InternalError(format!("evaluate: then-else Expr is not block: {:?}", expr))) }
-                };
-                self.environment.exit_block();
-                res
+                        if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+                            assert!(self.expr_pool.get(elif_block.to_index()).unwrap().is_block(), "evaluate: elif block is not block");
+                            selected_block = Some(elif_block);
+                            break;
+                        }
+                    }
+
+                    // If no elif condition matched, use else block
+                    if selected_block.is_none() {
+                        assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else block is not block");
+                        selected_block = Some(_else);
+                    }
+                }
+
+                // Execute selected block
+                if let Some(block_expr) = selected_block {
+                    self.environment.enter_block();
+                    let res = {
+                        if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) { 
+                            self.evaluate_block(statements) 
+                        } else { 
+                            return Err(InterpreterError::InternalError(format!("evaluate: selected block is not block: {:?}", expr))) 
+                        }
+                    };
+                    self.environment.exit_block();
+                    res
+                } else {
+                    Err(InterpreterError::InternalError("evaluate: no block selected in if-elif-else".to_string()))
+                }
             }
 
             Expr::Call(name, args) => {

@@ -255,7 +255,7 @@ impl Acceptable for Expr {
         match self {
             Expr::Binary(op, lhs, rhs) => visitor.visit_binary(op, lhs, rhs),
             Expr::Block(statements) => visitor.visit_block(statements),
-            Expr::IfElse(cond, then_block, else_block) => visitor.visit_if_else(cond, then_block, else_block),
+            Expr::IfElifElse(cond, then_block, elif_pairs, else_block) => visitor.visit_if_elif_else(cond, then_block, elif_pairs, else_block),
             Expr::Assign(lhs, rhs) => visitor.visit_assign(lhs, rhs),
             Expr::Identifier(name) => visitor.visit_identifier(*name),
             Expr::Call(fn_name, args) => visitor.visit_call(*fn_name, args),
@@ -461,28 +461,60 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
     }
 
-    fn visit_if_else(&mut self, _cond: &ExprRef, then_block: &ExprRef, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let is_block_empty = |blk: ExprRef| -> bool {
-            match self.expr_pool.get(blk.to_index()).unwrap() {
-                Expr::Block(expressions) => {
-                    expressions.is_empty()
-                }
-                _ => false,
-            }
+
+    fn visit_if_elif_else(&mut self, _cond: &ExprRef, then_block: &ExprRef, elif_pairs: &Vec<(ExprRef, ExprRef)>, else_block: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // Collect all block types
+        let mut block_types = Vec::new();
+
+        // Check if-block
+        let if_block = then_block.clone();
+        let is_if_empty = match self.expr_pool.get(if_block.to_index()).unwrap() {
+            Expr::Block(expressions) => expressions.is_empty(),
+            _ => false,
         };
-        let blk1 = then_block.clone();
-        let blk2 = else_block.clone();
-        if is_block_empty(blk1) || is_block_empty(blk2) {
-            return Ok(TypeDecl::Unit); // ignore to infer empty of blk
+        if !is_if_empty {
+            let if_ty = self.expr_pool.get(if_block.to_index()).unwrap().clone().accept(self)?;
+            block_types.push(if_ty);
         }
 
-        let blk1_ty = self.expr_pool.get(blk1.to_index()).unwrap().clone().accept(self)?;
-        let blk2_ty = self.expr_pool.get(blk2.to_index()).unwrap().clone().accept(self)?;
-        if blk1_ty != blk2_ty {
-            Ok(TypeDecl::Unit)
-        } else {
-            Ok(blk1_ty)
+        // Check elif-blocks
+        for (_, elif_block) in elif_pairs {
+            let elif_block = elif_block.clone();
+            let is_elif_empty = match self.expr_pool.get(elif_block.to_index()).unwrap() {
+                Expr::Block(expressions) => expressions.is_empty(),
+                _ => false,
+            };
+            if !is_elif_empty {
+                let elif_ty = self.expr_pool.get(elif_block.to_index()).unwrap().clone().accept(self)?;
+                block_types.push(elif_ty);
+            }
         }
+
+        // Check else-block
+        let else_block = else_block.clone();
+        let is_else_empty = match self.expr_pool.get(else_block.to_index()).unwrap() {
+            Expr::Block(expressions) => expressions.is_empty(),
+            _ => false,
+        };
+        if !is_else_empty {
+            let else_ty = self.expr_pool.get(else_block.to_index()).unwrap().clone().accept(self)?;
+            block_types.push(else_ty);
+        }
+
+        // If no blocks have values or all blocks are empty, return Unit
+        if block_types.is_empty() {
+            return Ok(TypeDecl::Unit);
+        }
+
+        // Check if all blocks have the same type
+        let first_type = &block_types[0];
+        for block_type in &block_types[1..] {
+            if block_type != first_type {
+                return Ok(TypeDecl::Unit); // Different types, return Unit
+            }
+        }
+
+        Ok(first_type.clone())
     }
 
     fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {

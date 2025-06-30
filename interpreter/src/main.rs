@@ -140,6 +140,81 @@ mod tests {
         ");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 2u64);
     }
+
+    #[test]
+    fn test_simple_elif_first_true() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 1u64
+            if x == 0u64 {
+                10u64
+            } elif x == 1u64 {
+                20u64
+            } else {
+                30u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 20);
+    }
+
+    #[test]
+    fn test_simple_elif_second_true() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 2u64
+            if x == 0u64 {
+                10u64
+            } elif x == 1u64 {
+                20u64
+            } elif x == 2u64 {
+                30u64
+            } else {
+                40u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 30);
+    }
+
+    #[test]
+    fn test_simple_elif_else_fallback() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if x == 0u64 {
+                10u64
+            } elif x == 1u64 {
+                20u64
+            } elif x == 2u64 {
+                30u64
+            } else {
+                40u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 40);
+    }
+
+    #[test]
+    fn test_elif_with_complex_conditions() {
+        let res = test_program(r"
+        fn main() -> u64 {
+            val x = 15u64
+            if x < 10u64 {
+                1u64
+            } elif x >= 10u64 && x < 20u64 {
+                2u64
+            } elif x >= 20u64 {
+                3u64
+            } else {
+                4u64
+            }
+        }
+        ");
+        assert_eq!(res.unwrap().borrow().unwrap_uint64(), 2);
+    }
+
     #[test]
     fn test_simple_for_loop() {
         let res = test_program(r"

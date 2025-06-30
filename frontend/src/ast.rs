@@ -161,7 +161,7 @@ pub enum Stmt {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Assign(ExprRef, ExprRef),   // lhs = rhs
-    IfElse(ExprRef, ExprRef, ExprRef),
+    IfElifElse(ExprRef, ExprRef, Vec<(ExprRef, ExprRef)>, ExprRef), // if_cond, if_block, elif_pairs, else_block
     Binary(Operator, ExprRef, ExprRef),
     Block(Vec<StmtRef>),
     True,

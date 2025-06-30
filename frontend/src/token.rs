@@ -7,6 +7,7 @@ pub struct Token {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Kind {
     If,
+    Elif,
     Else,
     For,
     In,

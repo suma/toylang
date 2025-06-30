@@ -266,6 +266,8 @@ impl Acceptable for Expr {
             Expr::True | Expr::False => visitor.visit_boolean_literal(self),
             Expr::Null => visitor.visit_null_literal(),
             Expr::ExprList(items) => visitor.visit_expr_list(items),
+            Expr::ArrayLiteral(elements) => visitor.visit_array_literal(elements),
+            Expr::ArrayAccess(array, index) => visitor.visit_array_access(array, index),
         }
     }
 }
@@ -594,6 +596,56 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_expr_list(&mut self, _items: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unit)
+    }
+
+    fn visit_array_literal(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        if elements.is_empty() {
+            return Err(TypeCheckError::new("Empty array literals are not supported".to_string()));
+        }
+
+        // Type check all elements and ensure they have the same type
+        let mut element_types = Vec::new();
+        for element in elements {
+            let element_type = self.visit_expr(element)?;
+            element_types.push(element_type);
+        }
+
+        let first_type = &element_types[0];
+        for (i, element_type) in element_types.iter().enumerate() {
+            if element_type != first_type {
+                return Err(TypeCheckError::new(format!(
+                    "Array elements must have the same type, but element {} has type {:?} while first element has type {:?}",
+                    i, element_type, first_type
+                )));
+            }
+        }
+
+        Ok(TypeDecl::Array(element_types, elements.len()))
+    }
+
+    fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        let array_type = self.visit_expr(array)?;
+        let index_type = self.visit_expr(index)?;
+
+        // Index must be an integer type
+        if index_type != TypeDecl::UInt64 && index_type != TypeDecl::Int64 {
+            return Err(TypeCheckError::new(format!(
+                "Array index must be an integer type, but got {:?}", index_type
+            )));
+        }
+
+        // Array must be an array type
+        match array_type {
+            TypeDecl::Array(ref element_types, _size) => {
+                if element_types.is_empty() {
+                    return Err(TypeCheckError::new("Cannot access elements of empty array".to_string()));
+                }
+                Ok(element_types[0].clone())
+            }
+            _ => Err(TypeCheckError::new(format!(
+                "Cannot index into non-array type {:?}", array_type
+            )))
+        }
     }
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {

@@ -494,24 +494,58 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_declaration(&mut self) -> Result<TypeDecl> {
-        let ty: TypeDecl = match self.peek() {
-            Some(Kind::Bool) => TypeDecl::Bool,
-            Some(Kind::U64) => TypeDecl::UInt64,
-            Some(Kind::I64) => TypeDecl::Int64,
+        match self.peek() {
+            Some(Kind::BracketOpen) => {
+                // Array type: [element_type; size]
+                self.next(); // consume '['
+                let element_type = self.parse_type_declaration()?;
+                self.expect_err(&Kind::Semicolon)?;
+                
+                let size = match self.peek().cloned() {
+                    Some(Kind::UInt64(n)) => {
+                        self.next();
+                        n as usize
+                    }
+                    Some(Kind::Integer(s)) => {
+                        self.next();
+                        s.parse::<usize>().map_err(|_| anyhow!("Invalid array size: {}", s))?
+                    }
+                    Some(Kind::Underscore) => {
+                        self.next();
+                        0 // placeholder for inferred size
+                    }
+                    _ => return Err(anyhow!("Expected array size or underscore"))
+                };
+                
+                self.expect_err(&Kind::BracketClose)?;
+                Ok(TypeDecl::Array(vec![element_type; size], size))
+            }
+            Some(Kind::Bool) => {
+                self.next();
+                Ok(TypeDecl::Bool)
+            }
+            Some(Kind::U64) => {
+                self.next();
+                Ok(TypeDecl::UInt64)
+            }
+            Some(Kind::I64) => {
+                self.next();
+                Ok(TypeDecl::Int64)
+            }
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 let ident = self.string_interner.get_or_intern(s);
-                TypeDecl::Identifier(ident)
+                self.next();
+                Ok(TypeDecl::Identifier(ident))
             }
             Some(Kind::Str) => {
-                TypeDecl::String
+                self.next();
+                Ok(TypeDecl::String)
             }
             Some(_) | None => {
-                panic!("parse_type_declaration: unexpected token {:?}", self.peek());
+                Err(anyhow!("parse_type_declaration: unexpected token {:?}", self.peek()))
             }
-        };
-        self.next();
-        Ok(ty)
+        }
     }
 
     fn parse_logical_expr(&mut self) -> Result<ExprRef> {
@@ -611,6 +645,13 @@ impl<'a> Parser<'a> {
                         let expr = self.expr.add(Expr::Call(s, args));
                         Ok(expr)
                     }
+                    Some(Kind::BracketOpen) => { // array access
+                        self.next();
+                        let index = self.parse_expr_impl()?;
+                        self.expect_err(&Kind::BracketClose)?;
+                        let array_ref = self.expr.add(Expr::Identifier(s));
+                        Ok(self.expr.add(Expr::ArrayAccess(array_ref, index)))
+                    }
                     _ => {
                         // identifier
                         Ok(self.expr.add(Expr::Identifier(s)))
@@ -644,6 +685,12 @@ impl<'a> Parser<'a> {
                             }
                             Some(Kind::BraceOpen) => {
                                 self.parse_block()
+                            }
+                            Some(Kind::BracketOpen) => { // array literal
+                                self.next();
+                                let elements = self.parse_array_elements(vec![])?;
+                                self.expect_err(&Kind::BracketClose)?;
+                                Ok(self.expr.add(Expr::ArrayLiteral(elements)))
                             }
                             // TODO: write parse_expr right recursion (TODO: more smart way 🤔)
                             Some(Kind::If) => {
@@ -682,6 +729,44 @@ impl<'a> Parser<'a> {
             }
             Some(Kind::ParenClose) => Ok(args),
             x => Err(anyhow!("parse_expr_list: unexpected token {:?}", x)),
+        }
+    }
+
+    fn parse_array_elements(&mut self, mut elements: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+        // Skip newlines
+        self.skip_newlines();
+        
+        match self.peek() {
+            Some(Kind::BracketClose) => return Ok(elements),
+            _ => (),
+        }
+
+        let expr = self.parse_expr_impl();
+        if expr.is_err() {
+            // there is no expr in this context
+            return Ok(elements);
+        }
+        elements.push(expr?);
+
+        match self.peek() {
+            Some(Kind::Comma) => {
+                self.next();
+                // Skip newlines after comma
+                self.skip_newlines();
+                // Check if we're at the end after comma (trailing comma case)
+                match self.peek() {
+                    Some(Kind::BracketClose) => Ok(elements),
+                    _ => self.parse_array_elements(elements)
+                }
+            }
+            Some(Kind::BracketClose) => Ok(elements),
+            x => Err(anyhow!("parse_array_elements: unexpected token {:?}", x)),
+        }
+    }
+
+    fn skip_newlines(&mut self) {
+        while let Some(Kind::NewLine) = self.peek() {
+            self.next();
         }
     }
 }

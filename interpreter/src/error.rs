@@ -12,4 +12,5 @@ pub enum InterpreterError {
     InternalError(String),
     PropagateFlow(EvaluationResult),
     ObjectError(ObjectError),
+    IndexOutOfBounds { index: isize, size: usize },
 }

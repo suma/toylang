@@ -757,4 +757,245 @@ mod tests {
             assert_eq!(result, expected);
         }
     }
+
+    // Array tests
+    #[test]
+    fn test_array_basic_operations() {
+        let program = r"
+            fn main() -> u64 {
+                val a: [u64; 3] = [1u64, 2u64, 3u64]
+                a[0u64] + a[1u64] + a[2u64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 6);
+    }
+
+    #[test]
+    fn test_array_assignment() {
+        let program = r"
+            fn main() -> i64 {
+                var a: [i64; 3] = [1i64, 2i64, 3i64]
+                a[1i64] = 10i64
+                a[0i64] + a[1i64] + a[2i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 14);
+    }
+
+    #[test]
+    fn test_array_different_types() {
+        let program = r"
+            fn main() -> bool {
+                val bools: [bool; 2] = [true, false]
+                bools[0u64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_bool();
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn test_array_complex_expressions() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 4] = [10i64, 20i64, 30i64, 40i64]
+                val index: i64 = 2i64
+                a[0i64] * a[1i64] + a[index] - a[3i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 190);
+    }
+
+    #[test]
+    fn test_array_nested_access() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 3] = [0i64, 1i64, 2i64]
+                val b: [i64; 3] = [10i64, 20i64, 30i64]
+                b[a[1i64]] + b[a[2i64]]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 50);
+    }
+
+    #[test]
+    fn test_array_in_loop() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 5] = [1i64, 2i64, 3i64, 4i64, 5i64]
+                var sum: i64 = 0i64
+                for i in 0i64 to 5i64 {
+                    sum = sum + a[i]
+                }
+                sum
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 15);
+    }
+
+    #[test]
+    fn test_array_single_element() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 1] = [42i64]
+                a[0i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_array_multiple_assignments() {
+        let program = r"
+            fn main() -> i64 {
+                var a: [i64; 3] = [1i64, 2i64, 3i64]
+                a[0i64] = a[1i64] + a[2i64]
+                a[1i64] = a[0i64] * 2i64
+                a[2i64] = a[1i64] - a[0i64]
+                a[0i64] + a[1i64] + a[2i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 20);
+    }
+
+    // Error case tests - these should be type check errors or runtime errors
+    #[test]
+    #[should_panic(expected = "Array elements must have the same type")]
+    fn test_array_type_mismatch() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 2] = [1i64, true]
+                a[0i64]
+            }
+        ";
+        test_program(program).unwrap();
+    }
+
+    #[test]
+    #[should_panic(expected = "IndexOutOfBounds")]
+    fn test_array_index_out_of_bounds() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 2] = [1i64, 2i64]
+                a[5i64]
+            }
+        ";
+        test_program(program).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_array_negative_index() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 2] = [1i64, 2i64]
+                a[-1i64]
+            }
+        ";
+        test_program(program).unwrap();
+    }
+
+    #[test]
+    fn test_array_size_one() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 1] = [99i64]
+                a[0i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 99);
+    }
+
+    #[test]
+    fn test_array_large_size() {
+        let program = r"
+            fn main() -> i64 {
+                val a: [i64; 10] = [0i64, 1i64, 2i64, 3i64, 4i64, 5i64, 6i64, 7i64, 8i64, 9i64]
+                a[9i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 9);
+    }
+
+    #[test]
+    fn test_array_modification_preserves_other_elements() {
+        let program = r"
+            fn main() -> i64 {
+                var a: [i64; 5] = [10i64, 20i64, 30i64, 40i64, 50i64]
+                a[2i64] = 99i64
+                a[0i64] + a[1i64] + a[2i64] + a[3i64] + a[4i64]
+            }
+        ";
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 219);
+    }
+
+    proptest! {
+        #[test]
+        fn test_array_sum_property(values in prop::collection::vec(0i64..100i64, 1..10)) {
+            let size = values.len();
+            let values_str = values.iter().map(|v| format!("{}i64", v)).collect::<Vec<_>>().join(", ");
+            
+            let program = format!(r"
+                fn main() -> i64 {{
+                    val a: [i64; {}] = [{}]
+                    var sum: i64 = 0i64
+                    for i in 0i64 to {}i64 {{
+                        sum = sum + a[i]
+                    }}
+                    sum
+                }}
+            ", size, values_str, size);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            let expected: i64 = values.iter().sum();
+            assert_eq!(result, expected);
+        }
+
+        #[test]
+        fn test_array_access_property(values in prop::collection::vec(0i64..1000i64, 1..20), index in 0usize..19) {
+            prop_assume!(index < values.len());
+            
+            let size = values.len();
+            let values_str = values.iter().map(|v| format!("{}i64", v)).collect::<Vec<_>>().join(", ");
+            
+            let program = format!(r"
+                fn main() -> i64 {{
+                    val a: [i64; {}] = [{}]
+                    a[{}i64]
+                }}
+            ", size, values_str, index);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            assert_eq!(result, values[index]);
+        }
+
+        #[test]
+        fn test_array_assignment_property(original in prop::collection::vec(0i64..100i64, 2..10), new_value in 0i64..1000i64, index in 0usize..9) {
+            prop_assume!(index < original.len());
+            
+            let size = original.len();
+            let values_str = original.iter().map(|v| format!("{}i64", v)).collect::<Vec<_>>().join(", ");
+            
+            let program = format!(r"
+                fn main() -> i64 {{
+                    var a: [i64; {}] = [{}]
+                    a[{}i64] = {}i64
+                    a[{}i64]
+                }}
+            ", size, values_str, index, new_value, index);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            assert_eq!(result, new_value);
+        }
+    }
 }

@@ -41,6 +41,8 @@ pub enum Kind {
     Dot,
     DoubleColon,
     Colon,
+    Semicolon,   // ;
+    Underscore,  // _
     Arrow,       // ->
     Exclamation, // !
 

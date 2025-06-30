@@ -21,6 +21,8 @@ pub trait AstVisitor {
     fn visit_boolean_literal(&mut self, value: &Expr) -> Result<TypeDecl, TypeCheckError>;
     fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_expr_list(&mut self, items: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_array_literal(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
 
     // Stmt variants
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;

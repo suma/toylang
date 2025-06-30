@@ -38,6 +38,8 @@ macro_rules! token {
 "."      return Ok(token!(self, Kind::Dot));
 "::"     return Ok(token!(self, Kind::DoubleColon));
 ":"      return Ok(token!(self, Kind::Colon));
+";"      return Ok(token!(self, Kind::Semicolon));
+"_"      return Ok(token!(self, Kind::Underscore));
 "->"     return Ok(token!(self, Kind::Arrow));
 "!"      return Ok(token!(self, Kind::Exclamation));
 

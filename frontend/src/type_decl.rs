@@ -11,4 +11,5 @@ pub enum TypeDecl {
     Any,  // null
     String,
     Number,  // Type-unspecified numeric literal for type inference
+    Array(Vec<TypeDecl>, usize),  // element types and fixed size
 }

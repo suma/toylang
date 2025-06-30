@@ -453,6 +453,50 @@ impl<'a> EvaluationContext<'a> {
                 }
             }
 
+            Expr::ArrayLiteral(elements) => {
+                let mut array_objects = Vec::new();
+                for element in elements {
+                    let value = self.evaluate(element)?;
+                    let obj = self.extract_value(Ok(value))?;
+                    array_objects.push(obj);
+                }
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(array_objects)))))
+            }
+
+            Expr::ArrayAccess(array, index) => {
+                let array_value = self.evaluate(array)?;
+                let array_obj = self.extract_value(Ok(array_value))?;
+                let index_value = self.evaluate(index)?;
+                let index_obj = self.extract_value(Ok(index_value))?;
+                
+                let array_borrowed = array_obj.borrow();
+                let index_borrowed = index_obj.borrow();
+                
+                let array_vec = array_borrowed.try_unwrap_array()
+                    .map_err(InterpreterError::ObjectError)?;
+                    
+                let index_val = match &*index_borrowed {
+                    Object::UInt64(i) => *i as usize,
+                    Object::Int64(i) => {
+                        if *i < 0 {
+                            return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: array_vec.len() });
+                        }
+                        *i as usize
+                    }
+                    _ => return Err(InterpreterError::TypeError {
+                        expected: TypeDecl::UInt64,
+                        found: index_borrowed.get_type(),
+                        message: "Array index must be an integer".to_string()
+                    })
+                };
+                
+                if index_val >= array_vec.len() {
+                    return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
+                }
+                
+                Ok(EvaluationResult::Value(array_vec[index_val].clone()))
+            }
+
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {:?}", expr))),
         }
     }
@@ -576,7 +620,7 @@ impl<'a> EvaluationContext<'a> {
                     match e {
                         Expr::Assign(lhs, rhs) => {
                             if let Some(Expr::Identifier(name)) = self.expr_pool.get(lhs.to_index()) {
-                                // Currently, lhs assumes Identifier only
+                                // Variable assignment
                                 let rhs = self.evaluate(&rhs);
                                 let rhs = self.extract_value(rhs)?;
                                 let rhs_borrow = rhs.borrow();
@@ -596,8 +640,53 @@ impl<'a> EvaluationContext<'a> {
                                     self.environment.set_var(*name, rhs.clone(), VariableSetType::Overwrite, self.string_interner)?;
                                     last = Some(EvaluationResult::Value(Rc::new(RefCell::new(rhs.borrow().clone()))));
                                 }
+                            } else if let Some(Expr::ArrayAccess(array, index)) = self.expr_pool.get(lhs.to_index()) {
+                                // Array element assignment: a[0] = value
+                                let array_value = self.evaluate(array)?;
+                                let array_obj = self.extract_value(Ok(array_value))?;
+                                let index_value = self.evaluate(index)?;
+                                let index_obj = self.extract_value(Ok(index_value))?;
+                                let rhs_value = self.evaluate(rhs)?;
+                                let rhs_obj = self.extract_value(Ok(rhs_value))?;
+                                
+                                let index_borrowed = index_obj.borrow();
+                                let index_val = match &*index_borrowed {
+                                    Object::UInt64(i) => *i as usize,
+                                    Object::Int64(i) => {
+                                        if *i < 0 {
+                                            return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: 0 });
+                                        }
+                                        *i as usize
+                                    }
+                                    _ => return Err(InterpreterError::TypeError {
+                                        expected: TypeDecl::UInt64,
+                                        found: index_borrowed.get_type(),
+                                        message: "Array index must be an integer".to_string()
+                                    })
+                                };
+                                
+                                let mut array_borrowed = array_obj.borrow_mut();
+                                let array_vec = array_borrowed.unwrap_array_mut();
+                                
+                                if index_val >= array_vec.len() {
+                                    return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
+                                }
+                                
+                                // Type check
+                                let existing_element_type = array_vec[index_val].borrow().get_type();
+                                let rhs_type = rhs_obj.borrow().get_type();
+                                if existing_element_type != rhs_type {
+                                    return Err(InterpreterError::TypeError {
+                                        expected: existing_element_type,
+                                        found: rhs_type,
+                                        message: "Array element assignment type mismatch".to_string()
+                                    });
+                                }
+                                
+                                array_vec[index_val] = rhs_obj.clone();
+                                last = Some(EvaluationResult::Value(rhs_obj));
                             } else {
-                                return Err(InterpreterError::InternalError(format!("evaluate_block: bad assignment due to lhs is not identifier: {:?}", expr)));
+                                return Err(InterpreterError::InternalError(format!("evaluate_block: bad assignment due to lhs is not identifier or array access: {:?}", expr)));
                             }
                         }
                         Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {

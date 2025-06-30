@@ -15,7 +15,7 @@ pub enum Object {
     Int64(i64),
     UInt64(u64),
     String(DefaultSymbol),
-    //Array: Vec<Object>,
+    Array(Vec<RcObject>),
     //Function: Rc<Function>,
     Null,
     Unit,
@@ -32,6 +32,15 @@ impl Object {
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
             Object::String(_) => TypeDecl::String,
+            Object::Array(elements) => {
+                if elements.is_empty() {
+                    TypeDecl::Array(vec![], 0)
+                } else {
+                    let element_type = elements[0].borrow().get_type();
+                    let element_types = vec![element_type; elements.len()];
+                    TypeDecl::Array(element_types, elements.len())
+                }
+            }
         }
     }
 
@@ -105,6 +114,27 @@ impl Object {
         }
     }
 
+    pub fn unwrap_array(&self) -> &Vec<RcObject> {
+        match self {
+            Object::Array(v) => v,
+            _ => panic!("unwrap_array: expected array but {:?}", self),
+        }
+    }
+
+    pub fn unwrap_array_mut(&mut self) -> &mut Vec<RcObject> {
+        match self {
+            Object::Array(v) => v,
+            _ => panic!("unwrap_array_mut: expected array but {:?}", self),
+        }
+    }
+
+    pub fn try_unwrap_array(&self) -> Result<&Vec<RcObject>, ObjectError> {
+        match self {
+            Object::Array(v) => Ok(v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Array(vec![], 0), found: self.get_type() }),
+        }
+    }
+
     pub fn set(&mut self, other: &RefCell<Object>) -> Result<(), ObjectError> {
         let other_borrowed = other.borrow();
         let self_type = self.get_type();
@@ -125,6 +155,11 @@ impl Object {
             }
             (Object::String(self_val), Object::String(v)) => {
                 *self_val = *v;
+                Ok(())
+            }
+            (Object::Array(self_val), Object::Array(v)) => {
+                self_val.clear();
+                self_val.extend(v.iter().cloned());
                 Ok(())
             }
             (Object::Null, _) | (Object::Unit, _) => {

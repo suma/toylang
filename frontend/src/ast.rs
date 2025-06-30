@@ -174,6 +174,8 @@ pub enum Expr {
     ExprList(Vec<ExprRef>),
     Call(DefaultSymbol, ExprRef), // apply, function call, etc
     String(DefaultSymbol),
+    ArrayLiteral(Vec<ExprRef>),  // [1, 2, 3, 4, 5]
+    ArrayAccess(ExprRef, ExprRef),  // a[0]
 }
 
 impl Expr {

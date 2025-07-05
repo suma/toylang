@@ -1135,4 +1135,68 @@ mod tests {
         let result = test_program(program).unwrap().borrow().unwrap_int64();
         assert_eq!(result, -6i64);
     }
+
+    // Array index type inference tests
+    #[test]
+    fn test_array_index_inference_number_literal() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 3] = [10u64, 20u64, 30u64]
+                a[0] + a[1] + a[2]  # 0, 1, 2 should be inferred as u64
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 60u64);
+    }
+
+    #[test]
+    fn test_array_index_inference_i64_array() {
+        let program = r#"
+            fn main() -> i64 {
+                val a: [i64; 3] = [10i64, 20i64, 30i64]
+                a[0] + a[1] + a[2]  # 0, 1, 2 should be inferred as u64 for indexing
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 60i64);
+    }
+
+    #[test]
+    fn test_array_index_inference_variable() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 5] = [1u64, 2u64, 3u64, 4u64, 5u64]
+                val i = 2  # i should be inferred as u64 for indexing
+                a[i]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 3u64);
+    }
+
+    #[test]
+    fn test_array_index_inference_expression() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 4] = [10u64, 20u64, 30u64, 40u64]
+                val base = 1
+                a[base + 1]  # base + 1 should be inferred as u64
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 30u64);
+    }
+
+    #[test]
+    fn test_array_index_inference_mixed_indexing() {
+        let program = r#"
+            fn main() -> i64 {
+                val a: [i64; 3] = [100i64, 200i64, 300i64]
+                val idx = 1
+                a[0] + a[idx] + a[2]  # Mix of literals and variables
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 600i64);
+    }
 }

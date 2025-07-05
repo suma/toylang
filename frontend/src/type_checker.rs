@@ -738,14 +738,37 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let array_type = self.visit_expr(array)?;
+        
+        // Set type hint for index to UInt64 (default for array indexing)
+        let original_hint = self.type_hint.clone();
+        self.type_hint = Some(TypeDecl::UInt64);
+        
         let index_type = self.visit_expr(index)?;
+        
+        // Restore original type hint
+        self.type_hint = original_hint;
 
-        // Index must be an integer type
-        if index_type != TypeDecl::UInt64 && index_type != TypeDecl::Int64 {
-            return Err(TypeCheckError::new(format!(
-                "Array index must be an integer type, but got {:?}", index_type
-            )));
-        }
+        // Handle index type inference and conversion
+        let _final_index_type = match index_type {
+            TypeDecl::Number => {
+                // Transform Number index to UInt64 (default for array indexing)
+                self.transform_numeric_expr(index, &TypeDecl::UInt64)?;
+                TypeDecl::UInt64
+            },
+            TypeDecl::Unknown => {
+                // Infer index as UInt64 for unknown types (likely variables)
+                TypeDecl::UInt64
+            },
+            TypeDecl::UInt64 | TypeDecl::Int64 => {
+                // Already a valid integer type
+                index_type
+            },
+            _ => {
+                return Err(TypeCheckError::new(format!(
+                    "Array index must be an integer type, but got {:?}", index_type
+                )));
+            }
+        };
 
         // Array must be an array type
         match array_type {

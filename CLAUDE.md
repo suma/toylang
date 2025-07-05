@@ -80,7 +80,7 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `bool`
+- Types: `u64`, `i64`, `bool`
 - Control flow: `if/else`, `for i in start to end`, `break`, `continue`
 - All programs must have a `main()` function
 

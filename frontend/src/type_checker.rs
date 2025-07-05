@@ -575,7 +575,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             match hint {
                 TypeDecl::Int64 => {
                     if let Ok(_val) = num_str.parse::<i64>() {
-                        // Return the hinted type - transformation will happen in visit_val
+                        // Return the hinted type - transformation will happen in visit_val or array processing
                         return Ok(hint);
                     } else {
                         return Err(TypeCheckError::new(format!("Cannot convert {} to Int64", num_str)));
@@ -583,7 +583,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 },
                 TypeDecl::UInt64 => {
                     if let Ok(_val) = num_str.parse::<u64>() {
-                        // Return the hinted type - transformation will happen in visit_val
+                        // Return the hinted type - transformation will happen in visit_val or array processing
                         return Ok(hint);
                     } else {
                         return Err(TypeCheckError::new(format!("Cannot convert {} to UInt64", num_str)));
@@ -634,12 +634,94 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             return Err(TypeCheckError::new("Empty array literals are not supported".to_string()));
         }
 
-        // Type check all elements and ensure they have the same type
+        // Save the original type hint to restore later
+        let original_hint = self.type_hint.clone();
+        
+        // If we have a type hint for the array element type, use it for element type inference
+        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_hint {
+            if !element_types.is_empty() {
+                Some(element_types[0].clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Type check all elements with proper type hint for each element
         let mut element_types = Vec::new();
         for element in elements {
+            // Set the element type hint for each element individually
+            if let Some(ref hint) = element_type_hint {
+                self.type_hint = Some(hint.clone());
+            }
+            
             let element_type = self.visit_expr(element)?;
             element_types.push(element_type);
+            
+            // Restore original hint after processing each element
+            self.type_hint = original_hint.clone();
         }
+
+        // If we have array type hint, handle type inference for all elements
+        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint {
+            if !expected_element_types.is_empty() {
+                let expected_element_type = &expected_element_types[0];
+                
+                // Handle type inference for each element
+                for (i, element) in elements.iter().enumerate() {
+                    match &element_types[i] {
+                        TypeDecl::Number => {
+                            // Transform Number literals to the expected type
+                            self.transform_numeric_expr(element, expected_element_type)?;
+                            element_types[i] = expected_element_type.clone();
+                        },
+                        actual_type if actual_type == expected_element_type => {
+                            // Element already has the expected type, but may need AST transformation
+                            // Check if this is a number literal that needs transformation
+                            if let Some(expr) = self.expr_pool.get(element.to_index()) {
+                                if matches!(expr, Expr::Number(_)) {
+                                    self.transform_numeric_expr(element, expected_element_type)?;
+                                }
+                            }
+                        },
+                        TypeDecl::Unknown => {
+                            // For variables with unknown type, try to infer from context
+                            element_types[i] = expected_element_type.clone();
+                        },
+                        actual_type if actual_type != expected_element_type => {
+                            // Check if type conversion is possible
+                            match (actual_type, expected_element_type) {
+                                (TypeDecl::Int64, TypeDecl::UInt64) | 
+                                (TypeDecl::UInt64, TypeDecl::Int64) => {
+                                    return Err(TypeCheckError::new(format!(
+                                        "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
+                                        i, actual_type, expected_element_type
+                                    )));
+                                },
+                                _ => {
+                                    // Accept the actual type if it matches expectations
+                                    if actual_type == expected_element_type {
+                                        // Already matches, no change needed
+                                    } else {
+                                        return Err(TypeCheckError::new(format!(
+                                            "Array element {} has type {:?} but expected {:?}",
+                                            i, actual_type, expected_element_type
+                                        )));
+                                    }
+                                }
+                            }
+                        },
+                        _ => {
+                            // Type already matches expected type
+                        }
+                    }
+                }
+            }
+        }
+
+        // Restore the original type hint
+        self.type_hint = original_hint;
 
         let first_type = &element_types[0];
         for (i, element_type) in element_types.iter().enumerate() {
@@ -697,8 +779,17 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         // Set type hint: explicit declaration takes priority, otherwise use current hint
         let old_hint = self.type_hint.clone();
         if let Some(decl) = &type_decl {
-            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number {
-                self.type_hint = Some(decl.clone());
+            match decl {
+                TypeDecl::Array(element_types, _) => {
+                    // For array types, set the array type as hint for array literal processing
+                    if !element_types.is_empty() {
+                        self.type_hint = Some(decl.clone());
+                    }
+                },
+                _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
+                    self.type_hint = Some(decl.clone());
+                },
+                _ => {}
             }
         }
         

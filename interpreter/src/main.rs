@@ -942,7 +942,7 @@ mod tests {
 
     // Error case tests - these should be type check errors or runtime errors
     #[test]
-    #[should_panic(expected = "Array elements must have the same type")]
+    #[should_panic(expected = "Array element 1 has type Bool but expected Int64")]
     fn test_array_type_mismatch() {
         let program = r"
             fn main() -> i64 {
@@ -1072,5 +1072,67 @@ mod tests {
             let result = test_program(&program).unwrap().borrow().unwrap_int64();
             assert_eq!(result, new_value);
         }
+    }
+
+    // Array type inference tests
+    #[test]
+    fn test_array_type_inference_u64() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 3] = [1, 2, 3]
+                a[0u64] + a[1u64] + a[2u64]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 6u64);
+    }
+
+    #[test]
+    fn test_array_type_inference_i64() {
+        let program = r#"
+            fn main() -> i64 {
+                val a: [i64; 3] = [1, 2, 3]
+                a[0u64] + a[1u64] + a[2u64]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 6i64);
+    }
+
+    #[test]
+    fn test_array_type_inference_mixed_values() {
+        let program = r#"
+            fn main() -> i64 {
+                val a: [i64; 4] = [10, 20, 30, 40]
+                val b: [i64; 2] = [a[0u64], a[1u64]]
+                b[0u64] + b[1u64]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, 30i64);
+    }
+
+    #[test]
+    fn test_array_type_inference_large_numbers() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 2] = [1000000, 2000000]
+                a[0u64] + a[1u64]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 3000000u64);
+    }
+
+    #[test]
+    fn test_array_type_inference_negative_numbers() {
+        let program = r#"
+            fn main() -> i64 {
+                val a: [i64; 3] = [-1, -2, -3]
+                a[0u64] + a[1u64] + a[2u64]
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_int64();
+        assert_eq!(result, -6i64);
     }
 }

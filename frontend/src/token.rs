@@ -77,6 +77,8 @@ pub enum Kind {
     True,
     False,
 
+    Comment(String),
+
     NewLine,
     EOF,
 }

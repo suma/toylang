@@ -44,12 +44,18 @@ impl<'a> Parser<'a> {
 
     fn peek(&mut self) -> Option<&Kind> {
         if self.ahead.is_empty() {
-            match self.lexer.yylex() {
-                Ok(t) => {
-                    self.ahead.push(t);
-                    Some(&self.ahead.get(0).unwrap().kind)
+            loop {
+                match self.lexer.yylex() {
+                    Ok(t) => {
+                        // Skip comment tokens
+                        if matches!(t.kind, Kind::Comment(_)) {
+                            continue;
+                        }
+                        self.ahead.push(t);
+                        return Some(&self.ahead.get(0).unwrap().kind);
+                    }
+                    _ => return None,
                 }
-                _ => None,
             }
         } else {
             match self.ahead.get(0) {
@@ -63,9 +69,18 @@ impl<'a> Parser<'a> {
     #[allow(dead_code)]
     fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         while self.ahead.len() < pos + 1 {
-            match self.lexer.yylex() {
-                Ok(t) => self.ahead.push(t),
-                _ => return None,
+            loop {
+                match self.lexer.yylex() {
+                    Ok(t) => {
+                        // Skip comment tokens
+                        if matches!(t.kind, Kind::Comment(_)) {
+                            continue;
+                        }
+                        self.ahead.push(t);
+                        break;
+                    }
+                    _ => return None,
+                }
             }
         }
         match self.ahead.get(pos) {
@@ -76,9 +91,18 @@ impl<'a> Parser<'a> {
 
     fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
         while self.ahead.len() < pos + 1 {
-            match self.lexer.yylex() {
-                Ok(t) => self.ahead.push(t),
-                _ => return None,
+            loop {
+                match self.lexer.yylex() {
+                    Ok(t) => {
+                        // Skip comment tokens
+                        if matches!(t.kind, Kind::Comment(_)) {
+                            continue;
+                        }
+                        self.ahead.push(t);
+                        break;
+                    }
+                    _ => return None,
+                }
             }
         }
         match self.ahead.get(pos) {
@@ -899,6 +923,18 @@ mod tests {
             assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
             assert_eq!(*l.get_line_count(), 2);
         }
+
+        #[test]
+        fn lexer_comment_test() {
+            let s = "# this is a comment\n val x = 1u64";
+            let mut l = lexer::Lexer::new(&s, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Comment(" this is a comment".to_string()));
+            assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Val);
+            assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("x".to_string()));
+            assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
+            assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(1));
+        }
     }
 
     mod parser_tests {
@@ -922,18 +958,13 @@ mod tests {
             assert_eq!(Kind::UInt64(2), *t2);
         }
 
-        #[rstest]
-        #[case("for i in 0u64 to 9u64 { }")]
-        fn lexer_simple_example(#[case] input: &str) {
-            let mut l = lexer::Lexer::new(input, 1u64);
-            loop {
-                let t = l.yylex();
-                match t {
-                    Ok(x) => eprintln!("{:?}", x.kind),
-                    Err(_) => break,
-                }
-            }
+        #[test]
+        fn parser_comment_skip_test() {
+            let mut p = Parser::new("1u64 + 2u64 # another comment");
+            let _ = p.parse_stmt().unwrap();
+            assert_eq!(3, p.expr.len(), "ExprPool.len must be 3");
         }
+
         #[test]
         fn parser_simple_expr_test1() {
             let mut p = Parser::new("1u64 + 2u64 ");

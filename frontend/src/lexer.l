@@ -88,6 +88,10 @@ macro_rules! token {
 
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
+"#".*    let mut text = self.yytext();
+         let drain = text.drain(1..); let s = drain.collect::<String>();
+         return Ok(token!(self, Kind::Comment(s)));
+
 " "      /* skip ws (TODO: count and return ws)  */
 \t       /* skip tab */
 \n       self.line_count += 1; return Ok(token!(self, Kind::NewLine));

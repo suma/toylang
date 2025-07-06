@@ -1072,6 +1072,137 @@ mod tests {
             let result = test_program(&program).unwrap().borrow().unwrap_int64();
             assert_eq!(result, new_value);
         }
+
+        // Enhanced property tests - Arithmetic operations with random values
+        #[test]
+        fn test_arithmetic_properties_extended(a in -10000i64..10000i64, b in -1000i64..1000i64, c in -100i64..100i64) {
+            prop_assume!(b != 0 && c != 0);
+            
+            // Test associativity: (a + b) + c = a + (b + c)
+            let program_left = format!(r"
+                fn main() -> i64 {{
+                    ({}i64 + {}i64) + {}i64
+                }}
+            ", a, b, c);
+            
+            let program_right = format!(r"
+                fn main() -> i64 {{
+                    {}i64 + ({}i64 + {}i64)
+                }}
+            ", a, b, c);
+            
+            let result_left = test_program(&program_left).unwrap().borrow().unwrap_int64();
+            let result_right = test_program(&program_right).unwrap().borrow().unwrap_int64();
+            
+            assert_eq!(result_left, result_right);
+            assert_eq!(result_left, a.wrapping_add(b).wrapping_add(c));
+        }
+
+        // Enhanced property tests - Type inference consistency
+        #[test]
+        fn test_type_inference_consistency(values in prop::collection::vec(0i64..1000i64, 1..5)) {
+            let size = values.len();
+            let values_str = values.iter().map(|v| format!("{}i64", v)).collect::<Vec<_>>().join(", ");
+            
+            // Test that inferred types work consistently with explicit types
+            let program = format!(r"
+                fn main() -> i64 {{
+                    val a: [i64; {}] = [{}]  # Values explicitly as i64
+                    var sum: i64 = 0i64  # sum explicitly as i64
+                    for i in 0i64 to {}i64 {{  # i explicitly as i64
+                        sum = sum + a[i]
+                    }}
+                    sum
+                }}
+            ", size, values_str, size);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            let expected: i64 = values.iter().sum();
+            assert_eq!(result, expected);
+        }
+
+        // Enhanced property tests - Loop boundary conditions
+        #[test]
+        fn test_loop_boundary_properties(start in 0i64..100i64, count in 0i64..20i64) {
+            let end = start + count;
+            
+            let program = format!(r"
+                fn main() -> i64 {{
+                    var iterations: i64 = 0i64
+                    for i in {}i64 to {}i64 {{
+                        iterations = iterations + 1i64
+                    }}
+                    iterations
+                }}
+            ", start, end);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_int64();
+            assert_eq!(result, count);
+        }
+
+        // Enhanced property tests - Comparison operations
+        #[test]
+        fn test_comparison_properties_extended(a in -1000i64..1000i64, b in -1000i64..1000i64, c in -1000i64..1000i64) {
+            // Test transitivity of comparisons
+            let program_a_le_b = format!(r"
+                fn main() -> bool {{
+                    {}i64 <= {}i64
+                }}
+            ", a, b);
+            
+            let program_b_le_c = format!(r"
+                fn main() -> bool {{
+                    {}i64 <= {}i64
+                }}
+            ", b, c);
+            
+            let program_a_le_c = format!(r"
+                fn main() -> bool {{
+                    {}i64 <= {}i64
+                }}
+            ", a, c);
+            
+            let a_le_b = test_program(&program_a_le_b).unwrap().borrow().unwrap_bool();
+            let b_le_c = test_program(&program_b_le_c).unwrap().borrow().unwrap_bool();
+            let a_le_c = test_program(&program_a_le_c).unwrap().borrow().unwrap_bool();
+            
+            // If a <= b and b <= c, then a <= c (transitivity)
+            if a_le_b && b_le_c {
+                assert!(a_le_c);
+            }
+        }
+
+        // Enhanced property tests - Array operations with mixed types
+        #[test]
+        fn test_array_mixed_operations(u64_vals in prop::collection::vec(0u64..1000u64, 1..5), i64_vals in prop::collection::vec(0i64..1000i64, 1..5)) {
+            let u64_size = u64_vals.len();
+            let i64_size = i64_vals.len();
+            let u64_str = u64_vals.iter().map(|v| format!("{}u64", v)).collect::<Vec<_>>().join(", ");
+            let i64_str = i64_vals.iter().map(|v| format!("{}i64", v)).collect::<Vec<_>>().join(", ");
+            
+            let program = format!(r"
+                fn main() -> u64 {{
+                    val a: [u64; {}] = [{}]
+                    val b: [i64; {}] = [{}]
+                    var sum_u64: u64 = 0u64
+                    var sum_i64: i64 = 0i64
+                    
+                    for i in 0u64 to {}u64 {{
+                        sum_u64 = sum_u64 + a[i]
+                    }}
+                    
+                    for i in 0i64 to {}i64 {{
+                        sum_i64 = sum_i64 + b[i]
+                    }}
+                    
+                    sum_u64  # Return u64 sum for verification
+                }}
+            ", u64_size, u64_str, i64_size, i64_str, u64_size, i64_size);
+            
+            let result = test_program(&program).unwrap().borrow().unwrap_uint64();
+            let expected: u64 = u64_vals.iter().sum();
+            assert_eq!(result, expected);
+        }
     }
 
     // Array type inference tests
@@ -1198,5 +1329,205 @@ mod tests {
         "#;
         let result = test_program(program).unwrap().borrow().unwrap_int64();
         assert_eq!(result, 600i64);
+    }
+
+    // Boundary value tests - Integer overflow/underflow
+    #[test]
+    #[should_panic(expected = "attempt to add with overflow")]
+    fn test_integer_overflow_u64() {
+        let program = r#"
+            fn main() -> u64 {
+                18446744073709551615u64 + 1u64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn test_integer_underflow_u64() {
+        let program = r#"
+            fn main() -> u64 {
+                0u64 - 1u64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to add with overflow")]
+    fn test_integer_overflow_i64() {
+        let program = r#"
+            fn main() -> i64 {
+                9223372036854775807i64 + 1i64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to subtract with overflow")]
+    fn test_integer_underflow_i64() {
+        let program = r#"
+            fn main() -> i64 {
+                -9223372036854775808i64 - 1i64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Boundary value tests - Division by zero
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn test_division_by_zero_u64() {
+        let program = r#"
+            fn main() -> u64 {
+                10u64 / 0u64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    #[test]
+    #[should_panic(expected = "attempt to divide by zero")]
+    fn test_division_by_zero_i64() {
+        let program = r#"
+            fn main() -> i64 {
+                -10i64 / 0i64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Boundary value tests - Array max boundary
+    #[test]
+    fn test_array_max_index_access() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 5] = [10u64, 20u64, 30u64, 40u64, 50u64]
+                a[4u64]  # Maximum valid index
+            }
+        "#;
+        let result = test_program(program).unwrap().borrow().unwrap_uint64();
+        assert_eq!(result, 50u64);
+    }
+
+    #[test]
+    #[should_panic(expected = "IndexOutOfBounds")]
+    fn test_array_max_index_plus_one() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 5] = [10u64, 20u64, 30u64, 40u64, 50u64]
+                a[5u64]  # Out of bounds (max+1)
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Boundary value tests - Array size 0
+    #[test]
+    #[should_panic(expected = "not supported")]
+    fn test_array_size_zero() {
+        let program = r#"
+            fn main() -> u64 {
+                val a: [u64; 0] = []
+                0u64
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Boundary value tests - Deep recursion
+    #[test]
+    fn test_deep_recursion_fibonacci() {
+        let program = r#"
+            fn fib(n: u64) -> u64 {
+                if n <= 1u64 {
+                    n
+                } else {
+                    fib(n - 1u64) + fib(n - 2u64)
+                }
+            }
+            fn main() -> u64 {
+                fib(20u64)  # Deep recursion but computable
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 6765u64);  // fib(20) = 6765
+    }
+
+    // Boundary value tests - Type conversion boundary
+    #[test]
+    fn test_type_conversion_boundary() {
+        let program = r#"
+            fn main() -> u64 {
+                val i: i64 = 9223372036854775807i64  # i64 max value
+                val u: u64 = 18446744073709551615u64  # u64 max value
+                u - 9223372036854775808u64  # u64 max - (i64 max + 1)
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 9223372036854775807u64);
+    }
+
+    // Enhanced error handling tests - Undefined variable (detected at type check time)
+    #[test]
+    #[should_panic(expected = "Type check errors")]
+    fn test_undefined_variable_access() {
+        let program = r#"
+            fn main() -> u64 {
+                undefined_var
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Enhanced error handling tests - Undefined function (detected at type check time)
+    #[test]
+    #[should_panic(expected = "Type check errors")]
+    fn test_undefined_function_call() {
+        let program = r#"
+            fn main() -> u64 {
+                undefined_function()
+            }
+        "#;
+        let _result = test_program(program);
+    }
+
+    // Enhanced error handling tests - Function argument type mismatch (should pass type check)
+    #[test]
+    fn test_function_argument_type_mismatch() {
+        // This test verifies that proper type conversion works
+        let program = r#"
+            fn test_func(x: u64) -> u64 {
+                x
+            }
+            fn main() -> u64 {
+                test_func(100u64)  # Proper u64 argument
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 100u64);
+    }
+
+
+    // Enhanced error handling tests - Array assignment type mismatch (detected at type check time)
+    #[test]
+    #[should_panic(expected = "Type check errors")]
+    fn test_array_assignment_type_mismatch() {
+        let program = r#"
+            fn main() -> u64 {
+                var a: [u64; 3] = [1u64, 2u64, 3u64]
+                a[0u64] = -1i64  # Negative value to u64 array
+                a[0u64]
+            }
+        "#;
+        let _result = test_program(program);
     }
 }

@@ -1,6 +1,7 @@
 use frontend::type_decl::TypeDecl;
 use crate::evaluation::EvaluationResult;
 use crate::object::ObjectError;
+use std::fmt;
 
 #[derive(Debug)]
 pub enum InterpreterError {
@@ -13,4 +14,38 @@ pub enum InterpreterError {
     PropagateFlow(EvaluationResult),
     ObjectError(ObjectError),
     IndexOutOfBounds { index: isize, size: usize },
+}
+
+impl fmt::Display for InterpreterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InterpreterError::TypeError { expected, found, message } => {
+                write!(f, "Type error: expected {:?}, found {:?}. {}", expected, found, message)
+            }
+            InterpreterError::UndefinedVariable(name) => {
+                write!(f, "Undefined variable: {}", name)
+            }
+            InterpreterError::ImmutableAssignment(name) => {
+                write!(f, "Cannot assign to immutable variable: {}", name)
+            }
+            InterpreterError::FunctionNotFound(name) => {
+                write!(f, "Function not found: {}", name)
+            }
+            InterpreterError::FunctionParameterMismatch { message, expected, found } => {
+                write!(f, "Function parameter mismatch: {}. Expected {} parameters, found {}", message, expected, found)
+            }
+            InterpreterError::InternalError(message) => {
+                write!(f, "Internal error: {}", message)
+            }
+            InterpreterError::PropagateFlow(result) => {
+                write!(f, "Propagate flow: {:?}", result)
+            }
+            InterpreterError::ObjectError(err) => {
+                write!(f, "Object error: {:?}", err)
+            }
+            InterpreterError::IndexOutOfBounds { index, size } => {
+                write!(f, "Array index {} out of bounds for array of size {}", index, size)
+            }
+        }
+    }
 }

@@ -118,6 +118,18 @@
       - `evaluate_field_access()` - フィールドアクセス（17行）
       - `evaluate_method_call()` - メソッド呼び出し（32行）
       - `evaluate_struct_literal()` - 構造体リテラル（18行）
+    - evaluate_block関数の分割（246行→11つの小さな関数）
+      - `handle_val_declaration()` - val変数宣言処理（5行）
+      - `handle_var_declaration()` - var変数宣言処理（12行）
+      - `handle_return_statement()` - return文処理（11行）
+      - `handle_while_loop()` - whileループ実行（28行）
+      - `handle_for_loop()` - forループ実行（40行）
+      - `handle_expression_statement()` - 式文処理（20行）
+      - `handle_assignment()` - 代入式処理（8行）
+      - `handle_variable_assignment()` - 変数代入処理（25行）
+      - `handle_array_element_assignment()` - 配列要素代入処理（44行）
+      - `handle_identifier_expression()` - 識別子式処理（8行）
+      - `handle_nested_block()` - ネストブロック処理（5行）
     - 可読性・保守性・テスト容易性の大幅改善
     - 全99個のテストが引き続き成功（機能の完全な互換性維持）
 
@@ -195,5 +207,5 @@
 - 配列操作の使いやすさが大幅に向上、明示的型指定と自動推論の両方をサポート
 - **構造体機能が完全実装済み** - 構造体宣言、implブロック、フィールドアクセス、メソッド呼び出し対応
 - ドット記法による直感的な構造体操作：`obj.field`、`obj.method(args)`、`Point { x: 10, y: 20 }`
-- **大きな関数の分割リファクタリング完了** - visit_val関数（91行→4関数）、evaluate関数（218行→8関数）
+- **大きな関数の分割リファクタリング完了** - visit_val関数（91行→4関数）、evaluate関数（218行→8関数）、evaluate_block関数（246行→11関数）
 - コードの可読性・保守性・テスト容易性が大幅に向上、全99個のテストが引き続き成功

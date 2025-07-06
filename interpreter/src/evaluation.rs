@@ -458,7 +458,7 @@ impl<'a> EvaluationContext<'a> {
                 self.evaluate_binary(op, lhs, rhs)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
+                self.evaluate_literal(expr)
             }
             Expr::Number(_v) => {
                 // Type-unspecified numbers should be resolved during type checking
@@ -467,207 +467,239 @@ impl<'a> EvaluationContext<'a> {
             Expr::Identifier(s) => {
                 Ok(EvaluationResult::Value(self.environment.get_val(*s).unwrap()))
             }
-
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
-                // Evaluate if condition
-                let cond = self.evaluate(cond);
-                let cond = self.extract_value(cond)?;
-                let cond = cond.borrow();
-                if cond.get_type() != TypeDecl::Bool {
-                    return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: format!("evaluate: Bad types for if condition: {:?}", expr)});
-                }
-
-                let mut selected_block = None;
-
-                // Check if condition
-                if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-                    assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: if-then is not block");
-                    selected_block = Some(then);
-                } else {
-                    // Check elif conditions
-                    for (elif_cond, elif_block) in elif_pairs {
-                        let elif_cond = self.evaluate(elif_cond);
-                        let elif_cond = self.extract_value(elif_cond)?;
-                        let elif_cond = elif_cond.borrow();
-                        if elif_cond.get_type() != TypeDecl::Bool {
-                            return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: elif_cond.get_type(), message: format!("evaluate: Bad types for elif condition: {:?}", expr)});
-                        }
-
-                        if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-                            assert!(self.expr_pool.get(elif_block.to_index()).unwrap().is_block(), "evaluate: elif block is not block");
-                            selected_block = Some(elif_block);
-                            break;
-                        }
-                    }
-
-                    // If no elif condition matched, use else block
-                    if selected_block.is_none() {
-                        assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else block is not block");
-                        selected_block = Some(_else);
-                    }
-                }
-
-                // Execute selected block
-                if let Some(block_expr) = selected_block {
-                    self.environment.enter_block();
-                    let res = {
-                        if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) {
-                            self.evaluate_block(statements)
-                        } else {
-                            return Err(InterpreterError::InternalError(format!("evaluate: selected block is not block: {:?}", expr)))
-                        }
-                    };
-                    self.environment.exit_block();
-                    res
-                } else {
-                    Err(InterpreterError::InternalError("evaluate: no block selected in if-elif-else".to_string()))
-                }
+                self.evaluate_if_elif_else(cond, then, elif_pairs, _else)
             }
-
             Expr::Call(name, args) => {
-                if let Some(func) = self.function.get::<DefaultSymbol>(name) {
-                    // TODO: check arguments type
-                    let args = self.expr_pool.get(args.to_index()).unwrap();
-                    match args {
-                        Expr::ExprList(args) => {
-                            if args.len() != func.parameter.len() {
-                                return Err(
-                                    InterpreterError::FunctionParameterMismatch {
-                                        message: format!("evaluate_function: bad function parameter length: {:?}", args.len()),
-                                        expected: func.parameter.len(),
-                                        found: args.len()
-                                    }
-                                );
-                            }
-
-                            Ok(EvaluationResult::Value(self.evaluate_function(func.clone(), args)?))
-                        }
-                        _ => Err(InterpreterError::InternalError(format!("evaluate_function: expected ExprList but: {:?}", expr))),
-                    }
-                } else {
-                    let name = self.string_interner.resolve(*name).unwrap_or("<NOT_FOUND>");
-                    Err(InterpreterError::FunctionNotFound(name.to_string()))
-                }
+                self.evaluate_function_call(name, args)
             }
-
             Expr::ArrayLiteral(elements) => {
-                let mut array_objects = Vec::new();
-                for element in elements {
-                    let value = self.evaluate(element)?;
-                    let obj = self.extract_value(Ok(value))?;
-                    array_objects.push(obj);
-                }
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(array_objects)))))
+                self.evaluate_array_literal(elements)
             }
-
             Expr::ArrayAccess(array, index) => {
-                let array_value = self.evaluate(array)?;
-                let array_obj = self.extract_value(Ok(array_value))?;
-                let index_value = self.evaluate(index)?;
-                let index_obj = self.extract_value(Ok(index_value))?;
-                
-                let array_borrowed = array_obj.borrow();
-                let index_borrowed = index_obj.borrow();
-                
-                let array_vec = array_borrowed.try_unwrap_array()
-                    .map_err(InterpreterError::ObjectError)?;
-                    
-                let index_val = match &*index_borrowed {
-                    Object::UInt64(i) => *i as usize,
-                    Object::Int64(i) => {
-                        if *i < 0 {
-                            return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: array_vec.len() });
-                        }
-                        *i as usize
-                    }
-                    _ => return Err(InterpreterError::TypeError {
-                        expected: TypeDecl::UInt64,
-                        found: index_borrowed.get_type(),
-                        message: "Array index must be an integer".to_string()
-                    })
-                };
-                
-                if index_val >= array_vec.len() {
-                    return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
-                }
-                
-                Ok(EvaluationResult::Value(array_vec[index_val].clone()))
+                self.evaluate_array_access(array, index)
             }
-
             Expr::FieldAccess(obj, field) => {
-                let obj_val = self.evaluate(obj)?;
-                let obj_val = self.extract_value(Ok(obj_val))?;
-                let obj_borrowed = obj_val.borrow();
-                
-                match &*obj_borrowed {
-                    Object::Struct { fields, .. } => {
-                        let field_name = self.string_interner.resolve(*field)
-                            .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?;
-                        
-                        fields.get(field_name)
-                            .cloned()
-                            .map(EvaluationResult::Value)
-                            .ok_or_else(|| InterpreterError::InternalError(format!("Field '{}' not found", field_name)))
-                    }
-                    _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {:?}", obj_borrowed)))
-                }
+                self.evaluate_field_access(obj, field)
             }
-
             Expr::MethodCall(obj, method, args) => {
-                let obj_val = self.evaluate(obj)?;
-                let obj_val = self.extract_value(Ok(obj_val))?;
-                let obj_borrowed = obj_val.borrow();
-                
-                match &*obj_borrowed {
-                    Object::Struct { type_name, .. } => {
-                        let struct_name_symbol = *type_name;
-                        
-                        if let Some(method_func) = self.get_method(struct_name_symbol, *method) {
-                            drop(obj_borrowed); // Release borrow before method call
-                            
-                            // Evaluate method arguments
-                            let mut arg_values = Vec::new();
-                            for arg in args {
-                                let arg_val = self.evaluate(arg)?;
-                                let arg_val = self.extract_value(Ok(arg_val))?;
-                                arg_values.push(arg_val);
-                            }
-                            
-                            // Call method with self as first argument
-                            self.call_method(method_func, obj_val, arg_values)
-                        } else {
-                            let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
-                            Err(InterpreterError::InternalError(format!("Method '{}' not found for struct '{:?}'", method_name, type_name)))
-                        }
-                    }
-                    _ => {
-                        let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
-                        Err(InterpreterError::InternalError(format!("Cannot call method '{}' on non-struct object: {:?}", method_name, obj_borrowed)))
-                    }
-                }
+                self.evaluate_method_call(obj, method, args)
             }
-
             Expr::StructLiteral(struct_name, fields) => {
-                // Create a struct instance
-                let mut field_values = HashMap::new();
-                
-                for (field_name, field_expr) in fields {
-                    let field_value = self.evaluate(field_expr)?;
-                    let field_value = self.extract_value(Ok(field_value))?;
-                    let field_name_str = self.string_interner.resolve(*field_name).unwrap_or("unknown").to_string();
-                    field_values.insert(field_name_str, field_value);
-                }
-                
-                let struct_obj = Object::Struct {
-                    type_name: *struct_name,
-                    fields: field_values,
-                };
-                
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
+                self.evaluate_struct_literal(struct_name, fields)
             }
-
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {:?}", expr))),
         }
+    }
+
+    /// Evaluates literal values (Int64, UInt64, String, True, False)
+    fn evaluate_literal(&self, expr: &Expr) -> Result<EvaluationResult, InterpreterError> {
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
+    }
+
+    /// Evaluates if-elif-else control structure
+    fn evaluate_if_elif_else(&mut self, cond: &ExprRef, then: &ExprRef, elif_pairs: &[(ExprRef, ExprRef)], _else: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Evaluate if condition
+        let cond = self.evaluate(cond);
+        let cond = self.extract_value(cond)?;
+        let cond = cond.borrow();
+        if cond.get_type() != TypeDecl::Bool {
+            return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: "evaluate: Bad types for if condition".to_string()});
+        }
+
+        let mut selected_block = None;
+
+        // Check if condition
+        if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+            assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: if-then is not block");
+            selected_block = Some(then);
+        } else {
+            // Check elif conditions
+            for (elif_cond, elif_block) in elif_pairs {
+                let elif_cond = self.evaluate(elif_cond);
+                let elif_cond = self.extract_value(elif_cond)?;
+                let elif_cond = elif_cond.borrow();
+                if elif_cond.get_type() != TypeDecl::Bool {
+                    return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: elif_cond.get_type(), message: "evaluate: Bad types for elif condition".to_string()});
+                }
+
+                if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+                    assert!(self.expr_pool.get(elif_block.to_index()).unwrap().is_block(), "evaluate: elif block is not block");
+                    selected_block = Some(elif_block);
+                    break;
+                }
+            }
+
+            // If no elif condition matched, use else block
+            if selected_block.is_none() {
+                assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else block is not block");
+                selected_block = Some(_else);
+            }
+        }
+
+        // Execute selected block
+        if let Some(block_expr) = selected_block {
+            self.environment.enter_block();
+            let res = {
+                if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) {
+                    self.evaluate_block(statements)
+                } else {
+                    return Err(InterpreterError::InternalError("evaluate: selected block is not block".to_string()))
+                }
+            };
+            self.environment.exit_block();
+            res
+        } else {
+            Err(InterpreterError::InternalError("evaluate: no block selected in if-elif-else".to_string()))
+        }
+    }
+
+    /// Evaluates function calls
+    fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        if let Some(func) = self.function.get::<DefaultSymbol>(name) {
+            // TODO: check arguments type
+            let args = self.expr_pool.get(args.to_index()).unwrap();
+            match args {
+                Expr::ExprList(args) => {
+                    if args.len() != func.parameter.len() {
+                        return Err(
+                            InterpreterError::FunctionParameterMismatch {
+                                message: format!("evaluate_function: bad function parameter length: {:?}", args.len()),
+                                expected: func.parameter.len(),
+                                found: args.len()
+                            }
+                        );
+                    }
+
+                    Ok(EvaluationResult::Value(self.evaluate_function(func.clone(), args)?))
+                }
+                _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
+            }
+        } else {
+            let name = self.string_interner.resolve(*name).unwrap_or("<NOT_FOUND>");
+            Err(InterpreterError::FunctionNotFound(name.to_string()))
+        }
+    }
+
+    /// Evaluates array literal expressions
+    fn evaluate_array_literal(&mut self, elements: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        let mut array_objects = Vec::new();
+        for element in elements {
+            let value = self.evaluate(element)?;
+            let obj = self.extract_value(Ok(value))?;
+            array_objects.push(obj);
+        }
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(array_objects)))))
+    }
+
+    /// Evaluates array access expressions
+    fn evaluate_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let array_value = self.evaluate(array)?;
+        let array_obj = self.extract_value(Ok(array_value))?;
+        let index_value = self.evaluate(index)?;
+        let index_obj = self.extract_value(Ok(index_value))?;
+        
+        let array_borrowed = array_obj.borrow();
+        let index_borrowed = index_obj.borrow();
+        
+        let array_vec = array_borrowed.try_unwrap_array()
+            .map_err(InterpreterError::ObjectError)?;
+            
+        let index_val = match &*index_borrowed {
+            Object::UInt64(i) => *i as usize,
+            Object::Int64(i) => {
+                if *i < 0 {
+                    return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: array_vec.len() });
+                }
+                *i as usize
+            }
+            _ => return Err(InterpreterError::TypeError {
+                expected: TypeDecl::UInt64,
+                found: index_borrowed.get_type(),
+                message: "Array index must be an integer".to_string()
+            })
+        };
+        
+        if index_val >= array_vec.len() {
+            return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
+        }
+        
+        Ok(EvaluationResult::Value(array_vec[index_val].clone()))
+    }
+
+    /// Evaluates field access expressions
+    fn evaluate_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
+        let obj_val = self.evaluate(obj)?;
+        let obj_val = self.extract_value(Ok(obj_val))?;
+        let obj_borrowed = obj_val.borrow();
+        
+        match &*obj_borrowed {
+            Object::Struct { fields, .. } => {
+                let field_name = self.string_interner.resolve(*field)
+                    .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?;
+                
+                fields.get(field_name)
+                    .cloned()
+                    .map(EvaluationResult::Value)
+                    .ok_or_else(|| InterpreterError::InternalError(format!("Field '{}' not found", field_name)))
+            }
+            _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {:?}", obj_borrowed)))
+        }
+    }
+
+    /// Evaluates method call expressions
+    fn evaluate_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        let obj_val = self.evaluate(obj)?;
+        let obj_val = self.extract_value(Ok(obj_val))?;
+        let obj_borrowed = obj_val.borrow();
+        
+        match &*obj_borrowed {
+            Object::Struct { type_name, .. } => {
+                let struct_name_symbol = *type_name;
+                
+                if let Some(method_func) = self.get_method(struct_name_symbol, *method) {
+                    drop(obj_borrowed); // Release borrow before method call
+                    
+                    // Evaluate method arguments
+                    let mut arg_values = Vec::new();
+                    for arg in args {
+                        let arg_val = self.evaluate(arg)?;
+                        let arg_val = self.extract_value(Ok(arg_val))?;
+                        arg_values.push(arg_val);
+                    }
+                    
+                    // Call method with self as first argument
+                    self.call_method(method_func, obj_val, arg_values)
+                } else {
+                    let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+                    Err(InterpreterError::InternalError(format!("Method '{}' not found for struct '{:?}'", method_name, type_name)))
+                }
+            }
+            _ => {
+                let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+                Err(InterpreterError::InternalError(format!("Cannot call method '{}' on non-struct object: {:?}", method_name, obj_borrowed)))
+            }
+        }
+    }
+
+    /// Evaluates struct literal expressions
+    fn evaluate_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &[(DefaultSymbol, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
+        // Create a struct instance
+        let mut field_values = HashMap::new();
+        
+        for (field_name, field_expr) in fields {
+            let field_value = self.evaluate(field_expr)?;
+            let field_value = self.extract_value(Ok(field_value))?;
+            let field_name_str = self.string_interner.resolve(*field_name).unwrap_or("unknown").to_string();
+            field_values.insert(field_name_str, field_value);
+        }
+        
+        let struct_obj = Object::Struct {
+            type_name: *struct_name,
+            fields: field_values,
+        };
+        
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
     }
 
     pub fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<EvaluationResult, InterpreterError> {

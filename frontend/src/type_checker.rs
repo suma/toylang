@@ -804,87 +804,18 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let expr_ref = expr.clone();
         let type_decl = type_decl.clone();
         
-        // Set type hint: explicit declaration takes priority, otherwise use current hint
-        let old_hint = self.type_hint.clone();
-        if let Some(decl) = &type_decl {
-            match decl {
-                TypeDecl::Array(element_types, _) => {
-                    // For array types, set the array type as hint for array literal processing
-                    if !element_types.is_empty() {
-                        self.type_hint = Some(decl.clone());
-                    }
-                },
-                _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
-                    self.type_hint = Some(decl.clone());
-                },
-                _ => {}
-            }
-        }
-        
-        // Visit the expression with type hint context
+        // Set type hint and evaluate expression
+        let old_hint = self.setup_type_hint_for_val(&type_decl);
         let expr_ty = self.visit_expr(&expr_ref)?;
         
-        // Record variable-expression mapping for Number types (remove old mapping)
-        if expr_ty == TypeDecl::Number || (expr_ty != TypeDecl::Number && self.has_number_in_expr(&expr_ref)) {
-            self.variable_expr_mapping.insert(name, expr_ref.clone());
-        } else {
-            // Remove old mapping for non-Number types to prevent stale references
-            self.variable_expr_mapping.remove(&name);
-            // Also remove from number_usage_context to prevent stale type inference
-            let indices_to_remove: Vec<usize> = self.number_usage_context
-                .iter()
-                .enumerate()
-                .filter_map(|(i, (old_expr, _))| {
-                    if self.is_old_number_for_variable(name, old_expr) {
-                        Some(i)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            
-            // Remove in reverse order to maintain valid indices
-            for &index in indices_to_remove.iter().rev() {
-                self.number_usage_context.remove(index);
-            }
-        }
+        // Manage variable-expression mapping
+        self.update_variable_expr_mapping(name, &expr_ref, &expr_ty);
         
-        // Apply type transformation if needed
-        if type_decl.is_none() && expr_ty == TypeDecl::Number {
-            // No explicit type, but we have a Number - use type hint if available
-            if let Some(hint) = self.type_hint.clone() {
-                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
-                    // Transform Number to hinted type
-                    self.transform_numeric_expr(&expr_ref, &hint)?;
-                }
-            }
-        } else if type_decl.is_some() && type_decl.as_ref().unwrap() == &TypeDecl::Unknown && expr_ty == TypeDecl::Int64 {
-            // Unknown type declaration with Int64 inference - also transform
-            if let Some(hint) = self.type_hint.clone() {
-                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
-                    self.transform_numeric_expr(&expr_ref, &hint)?;
-                }
-            }
-        } else if let Some(decl) = &type_decl {
-            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && expr_ty == *decl {
-                // Expression returned the hinted type, transform Number literals to concrete type
-                if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
-                    if let Expr::Number(_) = expr {
-                        self.transform_numeric_expr(&expr_ref, decl)?;
-                    }
-                }
-            }
-        }
+        // Apply type transformations
+        self.apply_type_transformations(&type_decl, &expr_ty, &expr_ref)?;
         
-        // Store the variable with the final type (after transformation)
-        let final_type = match (&type_decl, &expr_ty) {
-            (Some(TypeDecl::Unknown), _) => expr_ty,
-            (Some(decl), _) if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => decl.clone(),
-            (None, _) => expr_ty,
-            _ => expr_ty,
-        };
-        
-        // Set the variable directly without calling process_val_type to avoid double evaluation
+        // Determine final type and store variable
+        let final_type = self.determine_final_type(&type_decl, &expr_ty);
         self.context.set_var(name, final_type);
         
         // Restore previous type hint
@@ -892,6 +823,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         
         Ok(TypeDecl::Unit)
     }
+
 
     fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         if expr.is_none() {
@@ -1050,6 +982,96 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 }
 
 impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+    /// Sets up type hint for variable declaration and returns the old hint
+    fn setup_type_hint_for_val(&mut self, type_decl: &Option<TypeDecl>) -> Option<TypeDecl> {
+        let old_hint = self.type_hint.clone();
+        
+        if let Some(decl) = type_decl {
+            match decl {
+                TypeDecl::Array(element_types, _) => {
+                    // For array types, set the array type as hint for array literal processing
+                    if !element_types.is_empty() {
+                        self.type_hint = Some(decl.clone());
+                    }
+                },
+                _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
+                    self.type_hint = Some(decl.clone());
+                },
+                _ => {}
+            }
+        }
+        
+        old_hint
+    }
+
+    /// Updates variable-expression mapping for type inference
+    fn update_variable_expr_mapping(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
+        if *expr_ty == TypeDecl::Number || (*expr_ty != TypeDecl::Number && self.has_number_in_expr(expr_ref)) {
+            self.variable_expr_mapping.insert(name, expr_ref.clone());
+        } else {
+            // Remove old mapping for non-Number types to prevent stale references
+            self.variable_expr_mapping.remove(&name);
+            // Also remove from number_usage_context to prevent stale type inference
+            let indices_to_remove: Vec<usize> = self.number_usage_context
+                .iter()
+                .enumerate()
+                .filter_map(|(i, (old_expr, _))| {
+                    if self.is_old_number_for_variable(name, old_expr) {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            
+            // Remove in reverse order to maintain valid indices
+            for &index in indices_to_remove.iter().rev() {
+                self.number_usage_context.remove(index);
+            }
+        }
+    }
+
+    /// Applies type transformations for numeric expressions
+    fn apply_type_transformations(&mut self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
+        if type_decl.is_none() && *expr_ty == TypeDecl::Number {
+            // No explicit type, but we have a Number - use type hint if available
+            if let Some(hint) = self.type_hint.clone() {
+                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+                    // Transform Number to hinted type
+                    self.transform_numeric_expr(expr_ref, &hint)?;
+                }
+            }
+        } else if type_decl.is_some() && type_decl.as_ref().unwrap() == &TypeDecl::Unknown && *expr_ty == TypeDecl::Int64 {
+            // Unknown type declaration with Int64 inference - also transform
+            if let Some(hint) = self.type_hint.clone() {
+                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+                    self.transform_numeric_expr(expr_ref, &hint)?;
+                }
+            }
+        } else if let Some(decl) = type_decl {
+            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && *expr_ty == *decl {
+                // Expression returned the hinted type, transform Number literals to concrete type
+                if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                    if let Expr::Number(_) = expr {
+                        self.transform_numeric_expr(expr_ref, decl)?;
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Determines the final type for a variable declaration
+    fn determine_final_type(&self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl) -> TypeDecl {
+        match (type_decl, expr_ty) {
+            (Some(TypeDecl::Unknown), _) => expr_ty.clone(),
+            (Some(decl), _) if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => decl.clone(),
+            (None, _) => expr_ty.clone(),
+            _ => expr_ty.clone(),
+        }
+    }
+
     // Transform Expr::Number nodes to concrete types based on resolved types
     fn transform_numeric_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
         if let Some(expr) = self.expr_pool.get_mut(expr_ref.to_index()) {

@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, StmtRef};
+use crate::ast::{Expr, ExprRef, Operator, StmtRef, StructField};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 
@@ -33,4 +33,5 @@ pub trait AstVisitor {
     fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_break(&mut self, ) -> Result<TypeDecl, TypeCheckError>;
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError>;
 }

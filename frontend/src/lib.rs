@@ -234,6 +234,30 @@ impl<'a> Parser<'a> {
                         _ => return Err(anyhow!("expected function")),
                     }
                 }
+                // Struct definition
+                Some(Kind::Struct) => {
+                    let struct_start_pos = self.peek_position_n(0).unwrap().start;
+                    update_start_pos(struct_start_pos);
+                    self.next();
+                    match self.peek() {
+                        Some(Kind::Identifier(s)) => {
+                            let struct_name = s.to_string();
+                            self.next();
+                            self.expect_err(&Kind::BraceOpen)?;
+                            let fields = self.parse_struct_fields(vec![])?;
+                            self.expect_err(&Kind::BraceClose)?;
+                            let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
+                            update_end_pos(struct_end_pos);
+                            
+                            // Add struct declaration as a statement
+                            self.stmt.add(Stmt::StructDecl {
+                                name: struct_name,
+                                fields,
+                            });
+                        }
+                        _ => return Err(anyhow!("expected struct name")),
+                    }
+                }
                 Some(Kind::NewLine) => {
                     // skip
                     self.next()
@@ -804,6 +828,59 @@ impl<'a> Parser<'a> {
             self.next();
         }
     }
+
+    fn parse_struct_fields(&mut self, mut fields: Vec<StructField>) -> Result<Vec<StructField>> {
+        // Skip newlines
+        self.skip_newlines();
+        
+        match self.peek() {
+            Some(Kind::BraceClose) => return Ok(fields),
+            _ => (),
+        }
+
+        // Parse field definition: [pub] name: type
+        let visibility = match self.peek() {
+            Some(Kind::Public) => {
+                self.next();
+                Visibility::Public
+            }
+            _ => Visibility::Private,
+        };
+
+        let field_name = match self.peek() {
+            Some(Kind::Identifier(s)) => {
+                let name = s.to_string();
+                self.next();
+                name
+            }
+            _ => return Err(anyhow!("expected field name")),
+        };
+
+        self.expect_err(&Kind::Colon)?;
+        let field_type = self.parse_type_declaration()?;
+
+        fields.push(StructField {
+            name: field_name,
+            type_decl: field_type,
+            visibility,
+        });
+
+        // Skip newlines and check for comma or end
+        self.skip_newlines();
+        match self.peek() {
+            Some(Kind::Comma) => {
+                self.next();
+                self.skip_newlines();
+                // Check if we're at the end after comma (trailing comma case)
+                match self.peek() {
+                    Some(Kind::BraceClose) => Ok(fields),
+                    _ => self.parse_struct_fields(fields)
+                }
+            }
+            Some(Kind::BraceClose) => Ok(fields),
+            _ => self.parse_struct_fields(fields), // Allow newline-separated fields without commas
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1249,6 +1326,126 @@ mod tests {
             });
 
             assert!(!res, "{:?}: type check should fail", path.to_str().unwrap());
+        }
+
+        #[test]
+        fn parser_struct_decl_simple() {
+            let input = "struct Point { x: i64, y: i64 }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert_eq!(1, program.statement.len(), "should have one struct declaration");
+            
+            match program.statement.get(0).unwrap() {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Point", name);
+                    assert_eq!(2, fields.len());
+                    
+                    assert_eq!("x", fields[0].name);
+                    assert_eq!(TypeDecl::Int64, fields[0].type_decl);
+                    assert_eq!(Visibility::Private, fields[0].visibility);
+                    
+                    assert_eq!("y", fields[1].name);
+                    assert_eq!(TypeDecl::Int64, fields[1].type_decl);
+                    assert_eq!(Visibility::Private, fields[1].visibility);
+                }
+                _ => panic!("Expected struct declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_struct_decl_with_visibility() {
+            let input = "struct Person { pub name: str, age: u64 }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert_eq!(1, program.statement.len(), "should have one struct declaration");
+            
+            match program.statement.get(0).unwrap() {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Person", name);
+                    assert_eq!(2, fields.len());
+                    
+                    assert_eq!("name", fields[0].name);
+                    assert_eq!(TypeDecl::String, fields[0].type_decl);
+                    assert_eq!(Visibility::Public, fields[0].visibility);
+                    
+                    assert_eq!("age", fields[1].name);
+                    assert_eq!(TypeDecl::UInt64, fields[1].type_decl);
+                    assert_eq!(Visibility::Private, fields[1].visibility);
+                }
+                _ => panic!("Expected struct declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_struct_decl_empty() {
+            let input = "struct Empty { }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert_eq!(1, program.statement.len(), "should have one struct declaration");
+            
+            match program.statement.get(0).unwrap() {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Empty", name);
+                    assert_eq!(0, fields.len());
+                }
+                _ => panic!("Expected struct declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_struct_decl_with_newlines() {
+            let input = "struct Point {\n    x: i64,\n    y: i64\n}";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert_eq!(1, program.statement.len(), "should have one struct declaration");
+            
+            match program.statement.get(0).unwrap() {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Point", name);
+                    assert_eq!(2, fields.len());
+                    assert_eq!("x", fields[0].name);
+                    assert_eq!("y", fields[1].name);
+                }
+                _ => panic!("Expected struct declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_struct_with_function() {
+            let input = "struct Point { x: i64, y: i64 }\nfn main() -> u64 { 42u64 }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            // Program contains: struct decl, function body as expression stmt, and literal expr
+            assert!(program.statement.len() >= 1, "should have at least one struct declaration");
+            assert_eq!(1, program.function.len(), "should have one function");
+            
+            // Check struct - should be the first statement
+            match program.statement.get(0).unwrap() {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Point", name);
+                    assert_eq!(2, fields.len());
+                }
+                _ => panic!("Expected struct declaration as first statement"),
+            }
+            
+            // Check function
+            let func = &program.function[0];
+            assert_eq!(program.string_interner.resolve(func.name), Some("main"));
         }
     }
 }

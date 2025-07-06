@@ -281,7 +281,8 @@ impl Acceptable for Stmt {
             Stmt::For(init, cond, step, body) => visitor.visit_for(*init, cond, step, body),
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
-            Stmt::Continue => visitor.visit_continue()
+            Stmt::Continue => visitor.visit_continue(),
+            Stmt::StructDecl { name, fields } => visitor.visit_struct_decl(name, fields),
         }
     }
 }
@@ -917,6 +918,28 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Unit)
+    }
+
+    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError> {
+        // Struct declaration type checking - actual processing is not implemented yet
+        // Check field types for validity
+        for field in fields {
+            // Check if each field type is valid
+            match &field.type_decl {
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
+                    // Valid types
+                },
+                _ => {
+                    return Err(TypeCheckError::new(format!(
+                        "Unsupported field type {:?} for field '{}' in struct '{}'",
+                        field.type_decl, field.name, name
+                    )));
+                }
+            }
+        }
+        
+        // Struct declaration returns Unit
         Ok(TypeDecl::Unit)
     }
 }

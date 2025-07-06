@@ -146,6 +146,19 @@ pub struct Function {
 pub type Parameter = (DefaultSymbol, TypeDecl);
 pub type ParameterList = Vec<Parameter>;
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructField {
+    pub name: String,
+    pub type_decl: TypeDecl,
+    pub visibility: Visibility,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Visibility {
+    Public,
+    Private,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Expression(ExprRef),
@@ -156,6 +169,10 @@ pub enum Stmt {
     Continue,
     For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
+    StructDecl {
+        name: String,
+        fields: Vec<StructField>,
+    },
 }
 
 #[derive(Debug, PartialEq, Clone)]

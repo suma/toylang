@@ -22,6 +22,7 @@ macro_rules! token {
 "continue"  return Ok(token!(self, Kind::Continue));
 "class"  return Ok(token!(self, Kind::Class));
 "struct" return Ok(token!(self, Kind::Struct));
+"impl"   return Ok(token!(self, Kind::Impl));
 "fn"     return Ok(token!(self, Kind::Function));
 "return" return Ok(token!(self, Kind::Return));
 "extern" return Ok(token!(self, Kind::Extern));
@@ -55,6 +56,7 @@ macro_rules! token {
 
 "&&"     return Ok(token!(self, Kind::DoubleAnd));
 "||"     return Ok(token!(self, Kind::DoubleOr));
+"&"      return Ok(token!(self, Kind::And));
 
 "+"      return Ok(token!(self, Kind::IAdd));
 "-"      return Ok(token!(self, Kind::ISub));

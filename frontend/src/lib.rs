@@ -258,6 +258,30 @@ impl<'a> Parser<'a> {
                         _ => return Err(anyhow!("expected struct name")),
                     }
                 }
+                // Impl block definition
+                Some(Kind::Impl) => {
+                    let impl_start_pos = self.peek_position_n(0).unwrap().start;
+                    update_start_pos(impl_start_pos);
+                    self.next();
+                    match self.peek() {
+                        Some(Kind::Identifier(s)) => {
+                            let target_type = s.to_string();
+                            self.next();
+                            self.expect_err(&Kind::BraceOpen)?;
+                            let methods = self.parse_impl_methods(vec![])?;
+                            self.expect_err(&Kind::BraceClose)?;
+                            let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
+                            update_end_pos(impl_end_pos);
+                            
+                            // Add impl block as a statement
+                            self.stmt.add(Stmt::ImplBlock {
+                                target_type,
+                                methods,
+                            });
+                        }
+                        _ => return Err(anyhow!("expected type name for impl block")),
+                    }
+                }
                 Some(Kind::NewLine) => {
                     // skip
                     self.next()
@@ -678,9 +702,43 @@ impl<'a> Parser<'a> {
                 (Kind::IMul, Operator::IMul),
                 (Kind::IDiv, Operator::IDiv),
             ],
-            next_precedence: Self::parse_primary,
+            next_precedence: Self::parse_postfix,
         };
         self.parse_binary(&group)
+    }
+
+    fn parse_postfix(&mut self) -> Result<ExprRef> {
+        let mut expr = self.parse_primary()?;
+        
+        loop {
+            match self.peek() {
+                Some(Kind::Dot) => {
+                    self.next(); // consume '.'
+                    match self.peek() {
+                        Some(Kind::Identifier(field_name)) => {
+                            let field_name = field_name.to_string();
+                            let field_symbol = self.string_interner.get_or_intern(field_name);
+                            self.next(); // consume field name
+                            
+                            // Check if this is a method call
+                            if self.peek() == Some(&Kind::ParenOpen) {
+                                self.next(); // consume '('
+                                let args = self.parse_expr_list(vec![])?;
+                                self.expect_err(&Kind::ParenClose)?;
+                                expr = self.expr.add(Expr::MethodCall(expr, field_symbol, args));
+                            } else {
+                                // Field access
+                                expr = self.expr.add(Expr::FieldAccess(expr, field_symbol));
+                            }
+                        }
+                        _ => return Err(anyhow!("parse_postfix: expected field name after '.'")),
+                    }
+                }
+                _ => break,
+            }
+        }
+        
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<ExprRef> {
@@ -710,6 +768,12 @@ impl<'a> Parser<'a> {
                         self.expect_err(&Kind::BracketClose)?;
                         let array_ref = self.expr.add(Expr::Identifier(s));
                         Ok(self.expr.add(Expr::ArrayAccess(array_ref, index)))
+                    }
+                    Some(Kind::BraceOpen) => { // struct literal
+                        self.next();
+                        let fields = self.parse_struct_literal_fields(vec![])?;
+                        self.expect_err(&Kind::BraceClose)?;
+                        Ok(self.expr.add(Expr::StructLiteral(s, fields)))
                     }
                     _ => {
                         // identifier
@@ -880,6 +944,158 @@ impl<'a> Parser<'a> {
             Some(Kind::BraceClose) => Ok(fields),
             _ => self.parse_struct_fields(fields), // Allow newline-separated fields without commas
         }
+    }
+
+    fn parse_impl_methods(&mut self, mut methods: Vec<Rc<MethodFunction>>) -> Result<Vec<Rc<MethodFunction>>> {
+        // Skip newlines
+        self.skip_newlines();
+        
+        match self.peek() {
+            Some(Kind::BraceClose) => return Ok(methods),
+            _ => (),
+        }
+
+        // Parse method definition: fn method_name([&self,] params...) -> return_type { body }
+        match self.peek() {
+            Some(Kind::Function) => {
+                self.next();
+                match self.peek() {
+                    Some(Kind::Identifier(s)) => {
+                        let s = s.to_string();
+                        self.next();
+                        let method_name = self.string_interner.get_or_intern(s);
+                        
+                        self.expect_err(&Kind::ParenOpen)?;
+                        let (params, has_self) = self.parse_method_param_list(vec![])?;
+                        self.expect_err(&Kind::ParenClose)?;
+                        
+                        let mut ret_ty: Option<TypeDecl> = None;
+                        match self.peek() {
+                            Some(Kind::Arrow) => {
+                                self.expect_err(&Kind::Arrow)?;
+                                ret_ty = Some(self.parse_type_declaration()?);
+                            }
+                            _ => (),
+                        }
+                        
+                        let block = self.parse_block()?;
+                        
+                        methods.push(Rc::new(MethodFunction {
+                            node: Node::new(0, 0), // TODO: proper position tracking
+                            name: method_name,
+                            parameter: params,
+                            return_type: ret_ty,
+                            code: self.stmt.add(Stmt::Expression(block)),
+                            has_self_param: has_self,
+                        }));
+                        
+                        // Skip newlines and continue parsing more methods
+                        self.skip_newlines();
+                        self.parse_impl_methods(methods)
+                    }
+                    _ => Err(anyhow!("expected method name after fn")),
+                }
+            }
+            _ => Ok(methods), // No more methods
+        }
+    }
+
+    fn parse_method_param_list(&mut self, args: Vec<Parameter>) -> Result<(Vec<Parameter>, bool)> {
+        let mut has_self = false;
+        
+        match self.peek() {
+            Some(Kind::ParenClose) => return Ok((args, has_self)),
+            _ => (),
+        }
+
+        // Check for &self parameter
+        if let Some(Kind::And) = self.peek() {
+            // Check if next token is 'self'
+            if let Some(Kind::Identifier(name)) = self.peek_n(1) {
+                if name == "self" {
+                    self.next(); // consume '&'
+                    self.next(); // consume 'self'
+                    has_self = true;
+                    
+                    // Check for comma or end
+                    match self.peek() {
+                        Some(Kind::Comma) => {
+                            self.next();
+                            let (rest_params, _) = self.parse_param_def_list_impl(args)?;
+                            return Ok((rest_params, has_self));
+                        }
+                        Some(Kind::ParenClose) => return Ok((args, has_self)),
+                        _ => return Err(anyhow!("expected comma or closing paren after &self")),
+                    }
+                }
+            }
+        }
+
+        // Parse regular parameters
+        let (params, _) = self.parse_param_def_list_impl(args)?;
+        Ok((params, has_self))
+    }
+
+    fn parse_param_def_list_impl(&mut self, mut args: Vec<Parameter>) -> Result<(Vec<Parameter>, bool)> {
+        match self.peek() {
+            Some(Kind::ParenClose) => return Ok((args, false)),
+            _ => (),
+        }
+
+        let def = self.parse_param_def();
+        if def.is_err() {
+            return Ok((args, false));
+        }
+        args.push(def?);
+
+        match self.peek() {
+            Some(Kind::Comma) => {
+                self.next();
+                self.parse_param_def_list_impl(args)
+            }
+            _ => Ok((args, false)),
+        }
+    }
+
+    fn parse_struct_literal_fields(&mut self, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+        if self.peek() == Some(&Kind::BraceClose) {
+            return Ok(fields);
+        }
+
+        loop {
+            // Parse field name
+            let field_name = match self.peek() {
+                Some(Kind::Identifier(name)) => {
+                    let name = name.to_string();
+                    let symbol = self.string_interner.get_or_intern(name);
+                    self.next();
+                    symbol
+                }
+                _ => return Err(anyhow!("parse_struct_literal_fields: expected field name")),
+            };
+
+            // Expect colon
+            self.expect_err(&Kind::Colon)?;
+
+            // Parse field value
+            let field_value = self.parse_expr_impl()?;
+
+            fields.push((field_name, field_value));
+
+            // Check for comma or end
+            match self.peek() {
+                Some(&Kind::Comma) => {
+                    self.next();
+                    if self.peek() == Some(&Kind::BraceClose) {
+                        break;
+                    }
+                }
+                Some(&Kind::BraceClose) => break,
+                _ => return Err(anyhow!("parse_struct_literal_fields: expected ',' or '}}'")),
+            }
+        }
+
+        Ok(fields)
     }
 }
 
@@ -1446,6 +1662,132 @@ mod tests {
             // Check function
             let func = &program.function[0];
             assert_eq!(program.string_interner.resolve(func.name), Some("main"));
+        }
+
+        #[test]
+        fn parser_impl_block_simple() {
+            let input = "impl Point { fn new(x: i64, y: i64) -> i64 { 42i64 } }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert!(program.statement.len() >= 1, "should have at least one impl block");
+            
+            // Find the ImplBlock in statements
+            let impl_stmt = program.statement.0.iter().find(|stmt| {
+                matches!(stmt, Stmt::ImplBlock { .. })
+            }).expect("Should have impl block");
+            
+            match impl_stmt {
+                Stmt::ImplBlock { target_type, methods } => {
+                    assert_eq!("Point", target_type);
+                    assert_eq!(1, methods.len());
+                    
+                    let method = &methods[0];
+                    assert_eq!(program.string_interner.resolve(method.name), Some("new"));
+                    assert!(!method.has_self_param);
+                    assert_eq!(2, method.parameter.len());
+                }
+                _ => panic!("Expected impl block declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_impl_block_with_self() {
+            let input = "impl Point { fn distance(&self) -> i64 { 42i64 } }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert!(program.statement.len() >= 1, "should have at least one impl block");
+            
+            let impl_stmt = program.statement.0.iter().find(|stmt| {
+                matches!(stmt, Stmt::ImplBlock { .. })
+            }).expect("Should have impl block");
+            
+            match impl_stmt {
+                Stmt::ImplBlock { target_type, methods } => {
+                    assert_eq!("Point", target_type);
+                    assert_eq!(1, methods.len());
+                    
+                    let method = &methods[0];
+                    assert_eq!(program.string_interner.resolve(method.name), Some("distance"));
+                    assert!(method.has_self_param);
+                    assert_eq!(0, method.parameter.len()); // &self is not counted in regular parameters
+                }
+                _ => panic!("Expected impl block declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_impl_block_multiple_methods() {
+            let input = "impl Point { fn new() -> i64 { 42i64 } fn get_x(&self) -> i64 { 0i64 } }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert!(program.statement.len() >= 1, "should have at least one impl block");
+            
+            let impl_stmt = program.statement.0.iter().find(|stmt| {
+                matches!(stmt, Stmt::ImplBlock { .. })
+            }).expect("Should have impl block");
+            
+            match impl_stmt {
+                Stmt::ImplBlock { target_type, methods } => {
+                    assert_eq!("Point", target_type);
+                    assert_eq!(2, methods.len());
+                    
+                    let method1 = &methods[0];
+                    assert_eq!(program.string_interner.resolve(method1.name), Some("new"));
+                    assert!(!method1.has_self_param);
+                    
+                    let method2 = &methods[1];
+                    assert_eq!(program.string_interner.resolve(method2.name), Some("get_x"));
+                    assert!(method2.has_self_param);
+                }
+                _ => panic!("Expected impl block declaration"),
+            }
+        }
+
+        #[test]
+        fn parser_struct_with_impl() {
+            let input = "struct Point { x: i64, y: i64 }\nimpl Point { fn new() -> i64 { 42i64 } }";
+            let mut parser = Parser::new(input);
+            let result = parser.parse_program();
+            assert!(result.is_ok(), "parse err {:?}", result.err());
+            
+            let program = result.unwrap();
+            assert!(program.statement.len() >= 2, "should have struct and impl declarations");
+            
+            // Find struct and impl blocks
+            let struct_stmt = program.statement.0.iter().find(|stmt| {
+                matches!(stmt, Stmt::StructDecl { .. })
+            }).expect("Should have struct declaration");
+            
+            let impl_stmt = program.statement.0.iter().find(|stmt| {
+                matches!(stmt, Stmt::ImplBlock { .. })
+            }).expect("Should have impl block");
+            
+            // Check struct
+            match struct_stmt {
+                Stmt::StructDecl { name, fields } => {
+                    assert_eq!("Point", name);
+                    assert_eq!(2, fields.len());
+                }
+                _ => panic!("Expected struct declaration"),
+            }
+            
+            // Check impl
+            match impl_stmt {
+                Stmt::ImplBlock { target_type, methods } => {
+                    assert_eq!("Point", target_type);
+                    assert_eq!(1, methods.len());
+                }
+                _ => panic!("Expected impl block declaration"),
+            }
         }
     }
 }

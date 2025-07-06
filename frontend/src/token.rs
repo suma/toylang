@@ -17,6 +17,7 @@ pub enum Kind {
     Continue,
     Class,
     Struct,
+    Impl,
     Function,
     Return,
     Extern,
@@ -58,6 +59,7 @@ pub enum Kind {
 
     DoubleAnd, // &&
     DoubleOr,  // ||
+    And,       // &
 
     IAdd,
     ISub,

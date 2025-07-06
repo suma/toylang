@@ -12,4 +12,5 @@ pub enum TypeDecl {
     String,
     Number,  // Type-unspecified numeric literal for type inference
     Array(Vec<TypeDecl>, usize),  // element types and fixed size
+    Struct(DefaultSymbol),  // struct type
 }

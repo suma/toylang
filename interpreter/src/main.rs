@@ -1530,4 +1530,141 @@ mod tests {
         "#;
         let _result = test_program(program);
     }
+
+    // Struct field access and method call tests
+    #[test] 
+    fn test_struct_declaration_parsing() {
+        // Test that struct declarations can be parsed successfully
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            fn main() -> i64 {
+                42i64
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 42i64);
+    }
+
+    #[test]
+    fn test_impl_block_parsing() {
+        // Test that impl blocks can be parsed successfully
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            impl Point {
+                fn get_x(&self) -> i64 {
+                    42i64
+                }
+            }
+            
+            fn main() -> i64 {
+                100i64
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 100i64);
+    }
+
+    #[test]
+    fn test_struct_literal_parsing() {
+        // Test that struct literals can be parsed successfully
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            fn main() -> i64 {
+                val p = Point { x: 10i64, y: 20i64 }
+                42i64
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 42i64);
+    }
+
+    #[test]
+    fn test_struct_field_access_with_literal() {
+        // Test struct field access with struct literal
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            fn main() -> i64 {
+                val p = Point { x: 10i64, y: 20i64 }
+                p.x
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 10i64);
+    }
+
+    #[test]
+    fn test_struct_method_call_with_literal() {
+        // Test struct method call with struct literal
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            impl Point {
+                fn get_x(&self) -> i64 {
+                    self.x
+                }
+            }
+            
+            fn main() -> i64 {
+                val p = Point { x: 42i64, y: 24i64 }
+                p.get_x()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 42i64);
+    }
+
+    #[test]
+    fn test_struct_method_call_with_args() {
+        // Test struct method call with arguments
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64,
+            }
+            
+            impl Point {
+                fn add(&self, dx: i64, dy: i64) -> i64 {
+                    self.x + dx + self.y + dy
+                }
+            }
+            
+            fn main() -> i64 {
+                val p = Point { x: 10i64, y: 20i64 }
+                p.add(5i64, 15i64)
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 50i64); // 10 + 5 + 20 + 15 = 50
+    }
 }

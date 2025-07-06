@@ -159,6 +159,22 @@ pub enum Visibility {
     Private,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImplBlock {
+    pub target_type: String,
+    pub methods: Vec<Rc<MethodFunction>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodFunction {
+    pub node: Node,
+    pub name: DefaultSymbol,
+    pub parameter: ParameterList,
+    pub return_type: Option<TypeDecl>,
+    pub code: StmtRef,
+    pub has_self_param: bool, // true if first parameter is &self
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Expression(ExprRef),
@@ -172,6 +188,10 @@ pub enum Stmt {
     StructDecl {
         name: String,
         fields: Vec<StructField>,
+    },
+    ImplBlock {
+        target_type: String,
+        methods: Vec<Rc<MethodFunction>>,
     },
 }
 
@@ -193,6 +213,9 @@ pub enum Expr {
     String(DefaultSymbol),
     ArrayLiteral(Vec<ExprRef>),  // [1, 2, 3, 4, 5]
     ArrayAccess(ExprRef, ExprRef),  // a[0]
+    FieldAccess(ExprRef, DefaultSymbol),  // obj.field
+    MethodCall(ExprRef, DefaultSymbol, Vec<ExprRef>),  // obj.method(args)
+    StructLiteral(DefaultSymbol, Vec<(DefaultSymbol, ExprRef)>),  // Point { x: 10, y: 20 }
 }
 
 impl Expr {

@@ -267,6 +267,9 @@ impl Acceptable for Expr {
             Expr::ExprList(items) => visitor.visit_expr_list(items),
             Expr::ArrayLiteral(elements) => visitor.visit_array_literal(elements),
             Expr::ArrayAccess(array, index) => visitor.visit_array_access(array, index),
+            Expr::FieldAccess(obj, field) => visitor.visit_field_access(obj, field),
+            Expr::MethodCall(obj, method, args) => visitor.visit_method_call(obj, method, args),
+            Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
         }
     }
 }
@@ -283,6 +286,7 @@ impl Acceptable for Stmt {
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, fields } => visitor.visit_struct_decl(name, fields),
+            Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
         }
     }
 }
@@ -941,6 +945,107 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         
         // Struct declaration returns Unit
         Ok(TypeDecl::Unit)
+    }
+
+    fn visit_impl_block(&mut self, target_type: &String, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {
+        // Impl block type checking - validate methods
+        for method in methods {
+            // Check method parameter types
+            for (_, param_type) in &method.parameter {
+                match param_type {
+                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
+                        // Valid parameter types
+                    },
+                    _ => {
+                        return Err(TypeCheckError::new(format!(
+                            "Unsupported parameter type {:?} in method '{}' for impl block '{}'",
+                            param_type, 
+                            self.string_interner.resolve(method.name).unwrap_or("<unknown>"),
+                            target_type
+                        )));
+                    }
+                }
+            }
+            
+            // Check return type if specified
+            if let Some(ref ret_type) = method.return_type {
+                match ret_type {
+                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | TypeDecl::Unit => {
+                        // Valid return types
+                    },
+                    _ => {
+                        return Err(TypeCheckError::new(format!(
+                            "Unsupported return type {:?} in method '{}' for impl block '{}'",
+                            ret_type,
+                            self.string_interner.resolve(method.name).unwrap_or("<unknown>"),
+                            target_type
+                        )));
+                    }
+                }
+            }
+        }
+        
+        // Impl block declaration returns Unit
+        Ok(TypeDecl::Unit)
+    }
+
+    fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
+        let obj_type = self.visit_expr(obj)?;
+        
+        // For now, we assume all field accesses return the type of the field
+        // This is a simplified implementation - in practice, we'd need to look up
+        // the struct definition and check the field type
+        match obj_type {
+            TypeDecl::Identifier(_) | TypeDecl::Struct(_) => {
+                // Assume field access on custom types is valid for now
+                // Return a placeholder type - this should be improved to look up actual field types
+                Ok(TypeDecl::Unknown)
+            }
+            _ => {
+                let field_name = self.string_interner.resolve(*field).unwrap_or("<unknown>");
+                Err(TypeCheckError::new(format!(
+                    "Cannot access field '{}' on non-struct type {:?}",
+                    field_name, obj_type
+                )))
+            }
+        }
+    }
+
+    fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        let obj_type = self.visit_expr(obj)?;
+        
+        // Type check all arguments
+        for arg in args {
+            self.visit_expr(arg)?;
+        }
+        
+        // For now, we assume all method calls return the type of the object or a basic type
+        // This is a simplified implementation - in practice, we'd need to look up
+        // the method definition and check the return type
+        match obj_type {
+            TypeDecl::Identifier(_) | TypeDecl::Struct(_) => {
+                // Assume method calls on custom types are valid for now
+                // Return a placeholder type - this should be improved to look up actual method return types
+                Ok(TypeDecl::Unknown)
+            }
+            _ => {
+                let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+                Err(TypeCheckError::new(format!(
+                    "Cannot call method '{}' on non-struct type {:?}",
+                    method_name, obj_type
+                )))
+            }
+        }
+    }
+
+    fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+        // Type check all field values
+        for (_field_name, field_expr) in fields {
+            self.visit_expr(field_expr)?;
+        }
+        
+        // Return the struct type
+        Ok(TypeDecl::Struct(*struct_name))
     }
 }
 

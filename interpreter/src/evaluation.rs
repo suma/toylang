@@ -134,6 +134,7 @@ pub struct EvaluationContext<'a> {
     pub string_interner: &'a mut DefaultStringInterner,
     function: HashMap<DefaultSymbol, Rc<Function>>,
     pub environment: Environment,
+    method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -215,6 +216,70 @@ impl<'a> EvaluationContext<'a> {
             string_interner,
             function,
             environment: Environment::new(),
+            method_registry: HashMap::new(),
+        }
+    }
+
+    pub fn register_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
+        self.method_registry
+            .entry(struct_name)
+            .or_insert_with(HashMap::new)
+            .insert(method_name, method);
+    }
+
+    pub fn get_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<Rc<MethodFunction>> {
+        self.method_registry
+            .get(&struct_name)?
+            .get(&method_name)
+            .cloned()
+    }
+
+    fn call_method(&mut self, method: Rc<MethodFunction>, self_obj: RcObject, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
+        // Create new scope for method execution
+        self.environment.enter_block();
+        
+        // Set up method parameters
+        let mut param_index = 0;
+        
+        // If method has &self parameter, bind it
+        if method.has_self_param {
+            // For now, we'll use a placeholder symbol for self
+            let self_symbol = self.string_interner.get_or_intern("self".to_string());
+            self.environment.set_val(self_symbol, self_obj);
+        }
+        
+        // Bind regular parameters
+        for (param_symbol, _param_type) in &method.parameter {
+            if param_index < args.len() {
+                self.environment.set_val(*param_symbol, args[param_index].clone());
+                param_index += 1;
+            }
+        }
+        
+        // Execute method body
+        let result = self.evaluate_method(&method);
+        
+        // Clean up scope
+        self.environment.exit_block();
+        
+        result
+    }
+
+    fn evaluate_method(&mut self, method: &MethodFunction) -> Result<EvaluationResult, InterpreterError> {
+        // Get the method body from the statement pool
+        let stmt = self.stmt_pool.get(method.code.to_index()).unwrap();
+        
+        // Execute the method body 
+        match stmt {
+            frontend::ast::Stmt::Expression(expr_ref) => {
+                if let Some(Expr::Block(statements)) = self.expr_pool.get(expr_ref.to_index()) {
+                    self.evaluate_block(statements)
+                } else {
+                    // Single expression method body
+                    self.evaluate(expr_ref)
+                }
+            }
+            _ => Err(InterpreterError::InternalError(format!("evaluate_method: unexpected method body type: {:?}", stmt)))
         }
     }
 
@@ -446,10 +511,10 @@ impl<'a> EvaluationContext<'a> {
                 if let Some(block_expr) = selected_block {
                     self.environment.enter_block();
                     let res = {
-                        if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) { 
-                            self.evaluate_block(statements) 
-                        } else { 
-                            return Err(InterpreterError::InternalError(format!("evaluate: selected block is not block: {:?}", expr))) 
+                        if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) {
+                            self.evaluate_block(statements)
+                        } else {
+                            return Err(InterpreterError::InternalError(format!("evaluate: selected block is not block: {:?}", expr)))
                         }
                     };
                     self.environment.exit_block();
@@ -529,6 +594,78 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::Value(array_vec[index_val].clone()))
             }
 
+            Expr::FieldAccess(obj, field) => {
+                let obj_val = self.evaluate(obj)?;
+                let obj_val = self.extract_value(Ok(obj_val))?;
+                let obj_borrowed = obj_val.borrow();
+                
+                match &*obj_borrowed {
+                    Object::Struct { fields, .. } => {
+                        let field_name = self.string_interner.resolve(*field)
+                            .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?;
+                        
+                        fields.get(field_name)
+                            .cloned()
+                            .map(EvaluationResult::Value)
+                            .ok_or_else(|| InterpreterError::InternalError(format!("Field '{}' not found", field_name)))
+                    }
+                    _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {:?}", obj_borrowed)))
+                }
+            }
+
+            Expr::MethodCall(obj, method, args) => {
+                let obj_val = self.evaluate(obj)?;
+                let obj_val = self.extract_value(Ok(obj_val))?;
+                let obj_borrowed = obj_val.borrow();
+                
+                match &*obj_borrowed {
+                    Object::Struct { type_name, .. } => {
+                        let struct_name_symbol = *type_name;
+                        
+                        if let Some(method_func) = self.get_method(struct_name_symbol, *method) {
+                            drop(obj_borrowed); // Release borrow before method call
+                            
+                            // Evaluate method arguments
+                            let mut arg_values = Vec::new();
+                            for arg in args {
+                                let arg_val = self.evaluate(arg)?;
+                                let arg_val = self.extract_value(Ok(arg_val))?;
+                                arg_values.push(arg_val);
+                            }
+                            
+                            // Call method with self as first argument
+                            self.call_method(method_func, obj_val, arg_values)
+                        } else {
+                            let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+                            Err(InterpreterError::InternalError(format!("Method '{}' not found for struct '{:?}'", method_name, type_name)))
+                        }
+                    }
+                    _ => {
+                        let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+                        Err(InterpreterError::InternalError(format!("Cannot call method '{}' on non-struct object: {:?}", method_name, obj_borrowed)))
+                    }
+                }
+            }
+
+            Expr::StructLiteral(struct_name, fields) => {
+                // Create a struct instance
+                let mut field_values = HashMap::new();
+                
+                for (field_name, field_expr) in fields {
+                    let field_value = self.evaluate(field_expr)?;
+                    let field_value = self.extract_value(Ok(field_value))?;
+                    let field_name_str = self.string_interner.resolve(*field_name).unwrap_or("unknown").to_string();
+                    field_values.insert(field_name_str, field_value);
+                }
+                
+                let struct_obj = Object::Struct {
+                    type_name: *struct_name,
+                    fields: field_values,
+                };
+                
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
+            }
+
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {:?}", expr))),
         }
     }
@@ -575,6 +712,14 @@ impl<'a> EvaluationContext<'a> {
                 }
                 Stmt::Continue => {
                     return Ok(EvaluationResult::Continue);
+                }
+                Stmt::StructDecl { .. } => {
+                    // Struct declarations are handled at compile time
+                    last = None;
+                }
+                Stmt::ImplBlock { .. } => {
+                    // Impl blocks are handled at compile time
+                    last = None;
                 }
                 Stmt::While(cond, body) => {
                     loop {

@@ -52,7 +52,30 @@ pub fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> 
             func.insert(f.name.clone(), f.clone());
         }
 
+        // Register methods from impl blocks first
+        let mut method_registry = std::collections::HashMap::new();
+        for stmt_ref in &program.statement.0 {
+            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
+                let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
+                for method in methods {
+                    let method_name_symbol = method.name;
+                    method_registry
+                        .entry(struct_name_symbol)
+                        .or_insert_with(std::collections::HashMap::new)
+                        .insert(method_name_symbol, method.clone());
+                }
+            }
+        }
+        
         let mut eval = EvaluationContext::new(&program.statement, &program.expression, &mut string_interner, func);
+        
+        // Register methods using the public interface
+        for (struct_symbol, methods) in method_registry {
+            for (method_symbol, method_func) in methods {
+                eval.register_method(struct_symbol, method_symbol, method_func);
+            }
+        }
+        
         let no_args = vec![];
         eval.evaluate_function(main.unwrap(), &no_args)
     } else {

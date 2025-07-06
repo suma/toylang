@@ -1,7 +1,8 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, StmtRef, StructField};
+use crate::ast::{Expr, ExprRef, Operator, StmtRef, StructField, MethodFunction};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
+use std::rc::Rc;
 
 pub trait AstVisitor {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
@@ -23,6 +24,9 @@ pub trait AstVisitor {
     fn visit_expr_list(&mut self, items: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_array_literal(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError>;
 
     // Stmt variants
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
@@ -34,4 +38,5 @@ pub trait AstVisitor {
     fn visit_break(&mut self, ) -> Result<TypeDecl, TypeCheckError>;
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_impl_block(&mut self, target_type: &String, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError>;
 }

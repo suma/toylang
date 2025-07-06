@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::collections::HashMap;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -16,6 +17,10 @@ pub enum Object {
     UInt64(u64),
     String(DefaultSymbol),
     Array(Vec<RcObject>),
+    Struct {
+        type_name: DefaultSymbol,
+        fields: HashMap<String, RcObject>,
+    },
     //Function: Rc<Function>,
     Null,
     Unit,
@@ -40,6 +45,9 @@ impl Object {
                     let element_types = vec![element_type; elements.len()];
                     TypeDecl::Array(element_types, elements.len())
                 }
+            }
+            Object::Struct { type_name, .. } => {
+                TypeDecl::Struct(*type_name)
             }
         }
     }
@@ -162,6 +170,19 @@ impl Object {
                 self_val.extend(v.iter().cloned());
                 Ok(())
             }
+            (Object::Struct { type_name: self_type, fields: self_fields }, 
+             Object::Struct { type_name: other_type, fields: other_fields }) => {
+                if self_type == other_type {
+                    self_fields.clear();
+                    self_fields.extend(other_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    Ok(())
+                } else {
+                    Err(ObjectError::TypeMismatch { 
+                        expected: TypeDecl::Struct(*self_type), 
+                        found: TypeDecl::Struct(*other_type)
+                    })
+                }
+            }
             (Object::Null, _) | (Object::Unit, _) => {
                 *self = other_borrowed.clone();
                 Ok(())
@@ -170,6 +191,27 @@ impl Object {
                 expected: self_type, 
                 found: other_type 
             }),
+        }
+    }
+
+    pub fn get_field(&self, field_name: &str) -> Result<RcObject, ObjectError> {
+        match self {
+            Object::Struct { fields, .. } => {
+                fields.get(field_name)
+                    .cloned()
+                    .ok_or_else(|| ObjectError::UnexpectedType(self.get_type()))
+            }
+            _ => Err(ObjectError::UnexpectedType(self.get_type())),
+        }
+    }
+
+    pub fn set_field(&mut self, field_name: &str, value: RcObject) -> Result<(), ObjectError> {
+        match self {
+            Object::Struct { fields, .. } => {
+                fields.insert(field_name.to_string(), value);
+                Ok(())
+            }
+            _ => Err(ObjectError::UnexpectedType(self.get_type())),
         }
     }
 }

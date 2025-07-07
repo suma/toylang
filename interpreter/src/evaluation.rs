@@ -652,8 +652,36 @@ impl<'a> EvaluationContext<'a> {
         let obj_val = self.evaluate(obj)?;
         let obj_val = self.extract_value(Ok(obj_val))?;
         let obj_borrowed = obj_val.borrow();
+        let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
         
         match &*obj_borrowed {
+            Object::String(string_symbol) => {
+                // Handle built-in String methods
+                match method_name {
+                    "len" => {
+                        // String.len() method - no arguments required, returns u64
+                        if !args.is_empty() {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.len() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        // Get the actual string from the interner and calculate its length
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?;
+                        let len = string_value.len() as u64;
+                        
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
+                    }
+                    _ => {
+                        Err(InterpreterError::InternalError(format!(
+                            "Method '{}' not found for String type",
+                            method_name
+                        )))
+                    }
+                }
+            }
             Object::Struct { type_name, .. } => {
                 let struct_name_symbol = *type_name;
                 
@@ -671,12 +699,10 @@ impl<'a> EvaluationContext<'a> {
                     // Call method with self as first argument
                     self.call_method(method_func, obj_val, arg_values)
                 } else {
-                    let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
                     Err(InterpreterError::InternalError(format!("Method '{}' not found for struct '{:?}'", method_name, type_name)))
                 }
             }
             _ => {
-                let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
                 Err(InterpreterError::InternalError(format!("Cannot call method '{}' on non-struct object: {:?}", method_name, obj_borrowed)))
             }
         }

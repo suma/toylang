@@ -951,17 +951,36 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             self.visit_expr(arg)?;
         }
         
-        // For now, we assume all method calls return the type of the object or a basic type
-        // This is a simplified implementation - in practice, we'd need to look up
-        // the method definition and check the return type
+        let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+        
+        // Handle built-in methods for basic types
         match obj_type {
+            TypeDecl::String => {
+                match method_name {
+                    "len" => {
+                        // String.len() method - no arguments required, returns u64
+                        if !args.is_empty() {
+                            return Err(TypeCheckError::new(format!(
+                                "String.len() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        Ok(TypeDecl::UInt64)
+                    }
+                    _ => {
+                        Err(TypeCheckError::new(format!(
+                            "Method '{}' not found for String type",
+                            method_name
+                        )))
+                    }
+                }
+            }
             TypeDecl::Identifier(_) | TypeDecl::Struct(_) => {
                 // Assume method calls on custom types are valid for now
                 // Return a placeholder type - this should be improved to look up actual method return types
                 Ok(TypeDecl::Unknown)
             }
             _ => {
-                let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
                 Err(TypeCheckError::new(format!(
                     "Cannot call method '{}' on non-struct type {:?}",
                     method_name, obj_type

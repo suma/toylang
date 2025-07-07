@@ -1667,4 +1667,82 @@ mod tests {
         let value = result.unwrap().borrow().unwrap_int64();
         assert_eq!(value, 50i64); // 10 + 5 + 20 + 15 = 50
     }
+
+    // String.len() method tests
+    #[test]
+    fn test_string_len_basic() {
+        let program = r#"
+            fn main() -> u64 {
+                val s = "hello"
+                s.len()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 5u64);
+    }
+
+    #[test]
+    fn test_string_len_empty() {
+        let program = r#"
+            fn main() -> u64 {
+                val s = ""
+                s.len()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 0u64);
+    }
+
+    #[test]
+    fn test_string_len_arithmetic() {
+        let program = r#"
+            fn main() -> u64 {
+                val str1 = "hello"
+                val str2 = "world"
+                str1.len() + str2.len()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 10u64);
+    }
+
+    #[test]
+    fn test_string_len_comparison() {
+        let program = r#"
+            fn main() -> bool {
+                val long = "this is a long string"
+                val short = "hi"
+                long.len() > short.len()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_string_len_in_expression() {
+        let program = r#"
+            fn main() -> u64 {
+                val s = "test"
+                val len = s.len()
+                if len > 3u64 {
+                    len * 2u64
+                } else {
+                    len
+                }
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_uint64();
+        assert_eq!(value, 8u64); // "test".len() = 4, 4 > 3, so 4 * 2 = 8
+    }
 }

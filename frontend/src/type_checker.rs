@@ -186,7 +186,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             Stmt::Expression(e) => {
                 match self.expr_pool.0.get(e.to_index()).unwrap() {
                     Expr::Block(statements) => {
-                        statements.clone()  // TODO: I want to avoid clone
+                        statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
                     _ => {
                         panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap());
@@ -204,7 +204,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
 
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
-        for s in &statements {
+        for s in statements.iter() {
             if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
@@ -224,7 +224,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             self.type_hint = Some(global_type.clone());
         }
 
-        for stmt in statements {
+        for stmt in statements.iter() {
             let res = self.stmt_pool.get(stmt.to_index()).unwrap().clone().accept(self);
             if res.is_err() {
                 return res;
@@ -399,7 +399,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
-        for s in statements {
+        for s in statements.iter() {
             if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
@@ -421,7 +421,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
-        for s in statements {
+        for s in statements.iter() {
             let stmt = self.stmt_pool.get(s.to_index()).unwrap();
             let stmt_type = match stmt {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),

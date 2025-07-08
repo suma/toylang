@@ -224,7 +224,7 @@ impl<'a> Parser<'a> {
                             update_end_pos(fn_end_pos);
                             
                             def_func.push(Rc::new(Function{
-                                node: Node::new(fn_start_pos, fn_start_pos),
+                                node: Node::new(fn_start_pos, fn_end_pos),
                                 name: fn_name,
                                 parameter: params,
                                 return_type: ret_ty,
@@ -291,8 +291,6 @@ impl<'a> Parser<'a> {
                 x => return Err(anyhow!("not implemented!!: {:?}", x)),
             }
         }
-        // TODO: update end_position each element
-        // TODO: handle Err
         let mut stmt = StmtPool::new();
         std::mem::swap(&mut stmt, &mut self.stmt);
         let mut expr = ExprPool::new();
@@ -958,6 +956,7 @@ impl<'a> Parser<'a> {
         // Parse method definition: fn method_name([&self,] params...) -> return_type { body }
         match self.peek() {
             Some(Kind::Function) => {
+                let fn_start_pos = self.peek_position_n(0).unwrap().start;
                 self.next();
                 match self.peek() {
                     Some(Kind::Identifier(s)) => {
@@ -979,9 +978,10 @@ impl<'a> Parser<'a> {
                         }
                         
                         let block = self.parse_block()?;
+                        let fn_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                         
                         methods.push(Rc::new(MethodFunction {
-                            node: Node::new(0, 0), // TODO: proper position tracking
+                            node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
                             parameter: params,
                             return_type: ret_ty,

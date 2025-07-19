@@ -589,7 +589,7 @@ impl<'a> EvaluationContext<'a> {
             let obj = self.extract_value(Ok(value))?;
             array_objects.push(obj);
         }
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(array_objects)))))
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(array_objects))))))
     }
 
     /// Evaluates array access expressions
@@ -722,7 +722,7 @@ impl<'a> EvaluationContext<'a> {
         
         let struct_obj = Object::Struct {
             type_name: *struct_name,
-            fields: field_values,
+            fields: Box::new(field_values),
         };
         
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))

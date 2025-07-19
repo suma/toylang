@@ -16,10 +16,10 @@ pub enum Object {
     Int64(i64),
     UInt64(u64),
     String(DefaultSymbol),
-    Array(Vec<RcObject>),
+    Array(Box<Vec<RcObject>>),
     Struct {
         type_name: DefaultSymbol,
-        fields: HashMap<String, RcObject>,
+        fields: Box<HashMap<String, RcObject>>,
     },
     //Function: Rc<Function>,
     Null,
@@ -124,21 +124,21 @@ impl Object {
 
     pub fn unwrap_array(&self) -> &Vec<RcObject> {
         match self {
-            Object::Array(v) => v,
+            Object::Array(v) => v.as_ref(),
             _ => panic!("unwrap_array: expected array but {:?}", self),
         }
     }
 
     pub fn unwrap_array_mut(&mut self) -> &mut Vec<RcObject> {
         match self {
-            Object::Array(v) => v,
+            Object::Array(v) => v.as_mut(),
             _ => panic!("unwrap_array_mut: expected array but {:?}", self),
         }
     }
 
     pub fn try_unwrap_array(&self) -> Result<&Vec<RcObject>, ObjectError> {
         match self {
-            Object::Array(v) => Ok(v),
+            Object::Array(v) => Ok(v.as_ref()),
             _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Array(vec![], 0), found: self.get_type() }),
         }
     }

@@ -8,6 +8,10 @@ use string_interner::DefaultSymbol;
 pub enum ObjectError {
     TypeMismatch { expected: TypeDecl, found: TypeDecl },
     UnexpectedType(TypeDecl),
+    FieldNotFound { struct_type: String, field_name: String },
+    IndexOutOfBounds { index: usize, length: usize },
+    NullDereference,
+    InvalidOperation { operation: String, object_type: TypeDecl },
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -56,6 +60,14 @@ impl Object {
         match self {
             Object::Null => true,
             _ => false,
+        }
+    }
+
+    pub fn check_not_null(&self) -> Result<(), ObjectError> {
+        if self.is_null() {
+            Err(ObjectError::NullDereference)
+        } else {
+            Ok(())
         }
     }
 
@@ -139,7 +151,43 @@ impl Object {
     pub fn try_unwrap_array(&self) -> Result<&Vec<RcObject>, ObjectError> {
         match self {
             Object::Array(v) => Ok(v.as_ref()),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Array(vec![], 0), found: self.get_type() }),
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "array_access".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn get_array_element(&self, index: usize) -> Result<RcObject, ObjectError> {
+        match self {
+            Object::Array(v) => {
+                if index >= v.len() {
+                    Err(ObjectError::IndexOutOfBounds { index, length: v.len() })
+                } else {
+                    Ok(v[index].clone())
+                }
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "array_indexing".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn set_array_element(&mut self, index: usize, value: RcObject) -> Result<(), ObjectError> {
+        match self {
+            Object::Array(v) => {
+                if index >= v.len() {
+                    Err(ObjectError::IndexOutOfBounds { index, length: v.len() })
+                } else {
+                    v[index] = value;
+                    Ok(())
+                }
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "array_assignment".to_string(), 
+                object_type: self.get_type() 
+            }),
         }
     }
 
@@ -196,12 +244,18 @@ impl Object {
 
     pub fn get_field(&self, field_name: &str) -> Result<RcObject, ObjectError> {
         match self {
-            Object::Struct { fields, .. } => {
+            Object::Struct { fields, type_name } => {
                 fields.get(field_name)
                     .cloned()
-                    .ok_or_else(|| ObjectError::UnexpectedType(self.get_type()))
+                    .ok_or_else(|| ObjectError::FieldNotFound { 
+                        struct_type: format!("struct_{:?}", type_name), 
+                        field_name: field_name.to_string() 
+                    })
             }
-            _ => Err(ObjectError::UnexpectedType(self.get_type())),
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "field_access".to_string(), 
+                object_type: self.get_type() 
+            }),
         }
     }
 
@@ -211,7 +265,10 @@ impl Object {
                 fields.insert(field_name.to_string(), value);
                 Ok(())
             }
-            _ => Err(ObjectError::UnexpectedType(self.get_type())),
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "field_assignment".to_string(), 
+                object_type: self.get_type() 
+            }),
         }
     }
 }

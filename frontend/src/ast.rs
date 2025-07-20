@@ -4,7 +4,7 @@ use crate::type_checker::{Acceptable, TypeCheckError};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 
-#[derive (Clone, Copy, Debug, PartialEq)]
+#[derive (Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExprRef(pub u32);
 #[derive(Debug, PartialEq, Clone)]
 pub struct ExprPool(pub Vec<Expr>);

@@ -30,6 +30,7 @@ pub struct TypeCheckerVisitor <'a, 'b, 'c> {
     pub type_hint: Option<TypeDecl>, // Type hint for Number literal inference
     pub number_usage_context: Vec<(ExprRef, TypeDecl)>, // Track Number expressions and their usage context
     pub variable_expr_mapping: HashMap<DefaultSymbol, ExprRef>, // Track which expression belongs to which variable
+    pub type_cache: HashMap<ExprRef, TypeDecl>, // Cache for type inference results
 }
 
 impl std::fmt::Display for TypeCheckError {
@@ -119,6 +120,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             type_hint: None,
             number_usage_context: Vec::new(),
             variable_expr_mapping: HashMap::new(),
+            type_cache: HashMap::new(),
         }
     }
 
@@ -293,13 +295,21 @@ impl Acceptable for Stmt {
 
 impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // Check cache first
+        if let Some(cached_type) = self.get_cached_type(expr) {
+            return Ok(cached_type.clone());
+        }
+        
         // Set up context hint for nested expressions
         let original_hint = self.type_hint.clone();
         let result = self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
         
-        // Context propagation: if this expression resolved to a concrete numeric type,
-        // and we don't have a current hint, set it for sibling expressions
+        // Cache the result if successful
         if let Ok(ref result_type) = result {
+            self.cache_type(expr.clone(), result_type.clone());
+            
+            // Context propagation: if this expression resolved to a concrete numeric type,
+            // and we don't have a current hint, set it for sibling expressions
             if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64) {
                 if self.type_hint.is_none() {
                     self.type_hint = Some(result_type.clone());
@@ -1001,6 +1011,16 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 }
 
 impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+    /// Get cached type for an expression if available
+    fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
+        self.type_cache.get(expr_ref)
+    }
+    
+    /// Cache type result for an expression
+    fn cache_type(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
+        self.type_cache.insert(expr_ref, type_decl);
+    }
+
     /// Sets up type hint for variable declaration and returns the old hint
     fn setup_type_hint_for_val(&mut self, type_decl: &Option<TypeDecl>) -> Option<TypeDecl> {
         let old_hint = self.type_hint.clone();

@@ -44,7 +44,7 @@ impl<'a> Parser<'a> {
         self.token_provider.advance();
     }
 
-    pub fn line_count(&mut self) -> u64 {
+    pub fn line_count(&mut self) -> usize {
         self.token_provider.line_count()
     }
 

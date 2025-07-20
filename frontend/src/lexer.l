@@ -112,6 +112,6 @@ macro_rules! parse_number {
 
 %%
 
-    pub fn get_current_line(&self) -> usize {
+    pub fn get_current_line_count(&self) -> usize {
         self.line_count as usize
     }

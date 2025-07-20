@@ -8,7 +8,6 @@ use crate::type_checker::TypeCheckerVisitor;
 use rstest::rstest;
 
 mod lexer_tests{
-    use super::*;
     use crate::token::Kind;
 
     mod lexer {
@@ -120,7 +119,7 @@ mod lexer_tests{
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
-        assert_eq!(l.get_current_line(), 2);
+        assert_eq!(l.get_current_line_count(), 2);
     }
 
     #[test]

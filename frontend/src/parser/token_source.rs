@@ -8,7 +8,7 @@ pub trait TokenSource {
     fn next_token(&mut self) -> Result<Option<Token>>;
     
     /// Get current line count for error reporting
-    fn line_count(&mut self) -> u64;
+    fn line_count(&self) -> usize;
 }
 
 /// Token provider that combines a TokenSource with an optimized LookaheadBuffer
@@ -86,7 +86,7 @@ impl<T: TokenSource> TokenProvider<T> {
     }
 
     /// Get current line count from the source
-    pub fn line_count(&mut self) -> u64 {
+    pub fn line_count(&self) -> usize {
         self.source.line_count()
     }
 
@@ -127,8 +127,8 @@ impl<'a> TokenSource for LexerTokenSource<'a> {
         }
     }
 
-    fn line_count(&mut self) -> u64 {
-        *self.lexer.get_line_count()
+    fn line_count(&self) -> usize {
+        self.lexer.get_current_line_count()
     }
 }
 
@@ -141,7 +141,7 @@ mod tests {
     struct MockTokenSource {
         tokens: Vec<Token>,
         position: usize,
-        line_count: u64,
+        line_count: usize,
     }
 
     impl MockTokenSource {
@@ -165,7 +165,7 @@ mod tests {
             }
         }
 
-        fn line_count(&mut self) -> u64 {
+        fn line_count(&self) -> usize {
             self.line_count
         }
     }

@@ -120,7 +120,7 @@ mod lexer_tests{
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
-        assert_eq!(*l.get_line_count(), 2);
+        assert_eq!(l.get_current_line(), 2);
     }
 
     #[test]
@@ -148,10 +148,10 @@ mod parser_tests {
         let t1 = p.peek_n(1).unwrap().clone();
         assert_eq!(Kind::UInt64(1), t0);
         assert_eq!(Kind::IAdd, t1);
-        let mut consume = |count: usize| -> usize {
-            p.ahead.drain(0..count).count()
-        };
-        assert_eq!(2, consume(2));
+        
+        // Advance 2 tokens
+        p.next();
+        p.next();
 
         let t2 = p.peek().unwrap();
         assert_eq!(Kind::UInt64(2), *t2);

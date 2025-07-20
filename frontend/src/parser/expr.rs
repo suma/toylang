@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
             }
             Some(x) => {
                 let x = x.clone();
-                let line = *((&mut (self.lexer)).get_line_count());
+                let line = self.line_count();
                 Err(anyhow!("parse_expr: expected expression but Kind ({:?}) at {}", x, line))
             }
             None => Err(anyhow!("parse_expr: unexpected EOF")),

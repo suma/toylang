@@ -111,3 +111,7 @@ macro_rules! parse_number {
 \n                  self.line_count += 1; return Ok(token!(self, Kind::NewLine));
 
 %%
+
+    pub fn get_current_line(&self) -> usize {
+        self.line_count as usize
+    }

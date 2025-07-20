@@ -1,80 +1,51 @@
 use std::rc::Rc;
 use crate::ast::*;
 use crate::type_decl::*;
-use crate::token::{Token, Kind};
+use crate::token::Kind;
+use super::token_source::{TokenProvider, LexerTokenSource};
 
 use anyhow::{anyhow, Result};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
-mod lexer {
+pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }
 
 pub struct Parser<'a> {
-    pub lexer: lexer::Lexer<'a>,
-    pub ahead: Vec<Token>,
-    pub ahead_pos: usize,
+    token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
     pub string_interner: DefaultStringInterner,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
-        let lexer = lexer::Lexer::new(&input, 1u64);
+        let source = LexerTokenSource::new(input);
         Parser {
-            lexer,
-            ahead: Vec::new(),
-            ahead_pos: 0,
+            token_provider: TokenProvider::with_buffer_capacity(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner: DefaultStringInterner::new(),
         }
     }
 
     pub fn peek(&mut self) -> Option<&Kind> {
-        self.ensure_token_available(0);
-        self.ahead.get(self.ahead_pos).map(|t| &t.kind)
-    }
-
-    pub fn ensure_token_available(&mut self, relative_pos: usize) {
-        let required_len = self.ahead_pos + relative_pos + 1;
-        while self.ahead.len() < required_len {
-            loop {
-                match self.lexer.yylex() {
-                    Ok(t) => {
-                        if matches!(t.kind, Kind::Comment(_)) {
-                            continue;
-                        }
-                        self.ahead.push(t);
-                        break;
-                    }
-                    _ => return,
-                }
-            }
-        }
-        
-        if self.ahead_pos > 100 {
-            self.ahead.drain(0..self.ahead_pos);
-            self.ahead_pos = 0;
-        }
+        self.token_provider.peek()
     }
 
     #[allow(dead_code)]
     pub fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
-        self.ensure_token_available(pos);
-        self.ahead.get(self.ahead_pos + pos).map(|t| &t.kind)
+        self.token_provider.peek_at(pos)
     }
 
     pub fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
-        self.ensure_token_available(self.ahead_pos + pos);
-        self.ahead.get(self.ahead_pos + pos).map(|t| &t.position)
+        self.token_provider.peek_position_at(pos)
     }
 
     pub fn next(&mut self) {
-        self.ahead_pos += 1;
-        if self.ahead_pos > 100 && self.ahead_pos > self.ahead.len() / 2 {
-            self.ahead.drain(0..self.ahead_pos);
-            self.ahead_pos = 0;
-        }
+        self.token_provider.advance();
+    }
+
+    pub fn line_count(&mut self) -> u64 {
+        self.token_provider.line_count()
     }
 
     pub fn expect(&mut self, accept: &Kind) -> Result<()> {
@@ -83,7 +54,7 @@ impl<'a> Parser<'a> {
             self.next();
             Ok(())
         } else {
-            let current = self.ahead.get(0).map(|t| &t.kind).unwrap_or(&Kind::EOF);
+            let current = self.peek().unwrap_or(&Kind::EOF);
             Err(anyhow!("Expected {:?} but found {:?}", accept, current))
         }
     }

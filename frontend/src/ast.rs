@@ -70,6 +70,7 @@ impl ExprPool {
         }
     }
 
+
 }
 
 impl StmtPool {
@@ -100,6 +101,178 @@ impl StmtPool {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+}
+
+pub struct AstBuilder {
+    pub expr_pool: ExprPool,
+    pub stmt_pool: StmtPool,
+}
+
+impl AstBuilder {
+    pub fn new() -> Self {
+        AstBuilder {
+            expr_pool: ExprPool::new(),
+            stmt_pool: StmtPool::new(),
+        }
+    }
+
+    pub fn with_capacity(expr_cap: usize, stmt_cap: usize) -> Self {
+        AstBuilder {
+            expr_pool: ExprPool::with_capacity(expr_cap),
+            stmt_pool: StmtPool::with_capacity(stmt_cap),
+        }
+    }
+
+    // Legacy methods for compatibility
+    pub fn add_expr(&mut self, expr: Expr) -> ExprRef {
+        self.expr_pool.add(expr)
+    }
+
+    pub fn add_stmt(&mut self, stmt: Stmt) -> StmtRef {
+        self.stmt_pool.add(stmt)
+    }
+
+    pub fn get_expr_pool(&self) -> &ExprPool {
+        &self.expr_pool
+    }
+
+    pub fn get_stmt_pool(&self) -> &StmtPool {
+        &self.stmt_pool
+    }
+
+    pub fn get_expr_pool_mut(&mut self) -> &mut ExprPool {
+        &mut self.expr_pool
+    }
+
+    pub fn get_stmt_pool_mut(&mut self) -> &mut StmtPool {
+        &mut self.stmt_pool
+    }
+
+    pub fn extract_pools(self) -> (ExprPool, StmtPool) {
+        (self.expr_pool, self.stmt_pool)
+    }
+
+    // New Builder Pattern API
+    
+    // Expression builders
+    pub fn uint64_expr(&mut self, value: u64) -> ExprRef {
+        self.expr_pool.add(Expr::UInt64(value))
+    }
+    
+    pub fn int64_expr(&mut self, value: i64) -> ExprRef {
+        self.expr_pool.add(Expr::Int64(value))
+    }
+    
+    pub fn bool_true_expr(&mut self) -> ExprRef {
+        self.expr_pool.add(Expr::True)
+    }
+    
+    pub fn bool_false_expr(&mut self) -> ExprRef {
+        self.expr_pool.add(Expr::False)
+    }
+    
+    pub fn null_expr(&mut self) -> ExprRef {
+        self.expr_pool.add(Expr::Null)
+    }
+    
+    pub fn identifier_expr(&mut self, symbol: DefaultSymbol) -> ExprRef {
+        self.expr_pool.add(Expr::Identifier(symbol))
+    }
+    
+    pub fn string_expr(&mut self, symbol: DefaultSymbol) -> ExprRef {
+        self.expr_pool.add(Expr::String(symbol))
+    }
+    
+    pub fn number_expr(&mut self, symbol: DefaultSymbol) -> ExprRef {
+        self.expr_pool.add(Expr::Number(symbol))
+    }
+    
+    pub fn binary_expr(&mut self, op: Operator, lhs: ExprRef, rhs: ExprRef) -> ExprRef {
+        self.expr_pool.add(Expr::Binary(op, lhs, rhs))
+    }
+    
+    pub fn assign_expr(&mut self, lhs: ExprRef, rhs: ExprRef) -> ExprRef {
+        self.expr_pool.add(Expr::Assign(lhs, rhs))
+    }
+    
+    pub fn if_elif_else_expr(&mut self, cond: ExprRef, if_block: ExprRef, elif_pairs: Vec<(ExprRef, ExprRef)>, else_block: ExprRef) -> ExprRef {
+        self.expr_pool.add(Expr::IfElifElse(cond, if_block, elif_pairs, else_block))
+    }
+    
+    pub fn block_expr(&mut self, statements: Vec<StmtRef>) -> ExprRef {
+        self.expr_pool.add(Expr::Block(statements))
+    }
+    
+    pub fn call_expr(&mut self, fn_name: DefaultSymbol, args: Vec<ExprRef>) -> ExprRef {
+        let args_ref = self.expr_pool.add(Expr::ExprList(args));
+        self.expr_pool.add(Expr::Call(fn_name, args_ref))
+    }
+    
+    pub fn expr_list(&mut self, exprs: Vec<ExprRef>) -> ExprRef {
+        self.expr_pool.add(Expr::ExprList(exprs))
+    }
+    
+    pub fn array_literal_expr(&mut self, elements: Vec<ExprRef>) -> ExprRef {
+        self.expr_pool.add(Expr::ArrayLiteral(elements))
+    }
+    
+    pub fn array_access_expr(&mut self, array: ExprRef, index: ExprRef) -> ExprRef {
+        self.expr_pool.add(Expr::ArrayAccess(array, index))
+    }
+    
+    pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol) -> ExprRef {
+        self.expr_pool.add(Expr::FieldAccess(object, field))
+    }
+    
+    pub fn method_call_expr(&mut self, object: ExprRef, method: DefaultSymbol, args: Vec<ExprRef>) -> ExprRef {
+        self.expr_pool.add(Expr::MethodCall(object, method, args))
+    }
+    
+    pub fn struct_literal_expr(&mut self, type_name: DefaultSymbol, fields: Vec<(DefaultSymbol, ExprRef)>) -> ExprRef {
+        self.expr_pool.add(Expr::StructLiteral(type_name, fields))
+    }
+
+    // Statement builders
+    pub fn expression_stmt(&mut self, expr: ExprRef) -> StmtRef {
+        self.stmt_pool.add(Stmt::Expression(expr))
+    }
+    
+    pub fn val_stmt(&mut self, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: ExprRef) -> StmtRef {
+        self.stmt_pool.add(Stmt::Val(name, type_decl, value))
+    }
+    
+    pub fn var_stmt(&mut self, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: Option<ExprRef>) -> StmtRef {
+        self.stmt_pool.add(Stmt::Var(name, type_decl, value))
+    }
+    
+    pub fn return_stmt(&mut self, value: Option<ExprRef>) -> StmtRef {
+        self.stmt_pool.add(Stmt::Return(value))
+    }
+    
+    pub fn break_stmt(&mut self) -> StmtRef {
+        self.stmt_pool.add(Stmt::Break)
+    }
+    
+    pub fn continue_stmt(&mut self) -> StmtRef {
+        self.stmt_pool.add(Stmt::Continue)
+    }
+    
+    pub fn for_stmt(&mut self, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef) -> StmtRef {
+        self.stmt_pool.add(Stmt::For(var, start, end, block))
+    }
+    
+    pub fn while_stmt(&mut self, cond: ExprRef, block: ExprRef) -> StmtRef {
+        self.stmt_pool.add(Stmt::While(cond, block))
+    }
+    
+    pub fn struct_decl_stmt(&mut self, name: String, fields: Vec<StructField>) -> StmtRef {
+        self.stmt_pool.add(Stmt::StructDecl { name, fields })
+    }
+    
+    pub fn impl_block_stmt(&mut self, target_type: String, methods: Vec<Rc<MethodFunction>>) -> StmtRef {
+        self.stmt_pool.add(Stmt::ImplBlock { target_type, methods })
     }
 }
 

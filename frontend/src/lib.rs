@@ -19,6 +19,7 @@ mod lexer {
 pub struct Parser<'a> {
     pub lexer: lexer::Lexer<'a>,
     pub ahead: Vec<Token>,
+    pub ahead_pos: usize, // Index into the ahead buffer for efficient consumption
     pub ast_builder: AstBuilder,
     pub string_interner: DefaultStringInterner,
 }
@@ -35,38 +36,20 @@ impl<'a> Parser<'a> {
         Parser {
             lexer,
             ahead: Vec::new(),
+            ahead_pos: 0,
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner: DefaultStringInterner::new(),
         }
     }
 
     fn peek(&mut self) -> Option<&Kind> {
-        if self.ahead.is_empty() {
-            loop {
-                match self.lexer.yylex() {
-                    Ok(t) => {
-                        // Skip comment tokens
-                        if matches!(t.kind, Kind::Comment(_)) {
-                            continue;
-                        }
-                        self.ahead.push(t);
-                        return Some(&self.ahead.get(0).unwrap().kind);
-                    }
-                    _ => return None,
-                }
-            }
-        } else {
-            match self.ahead.get(0) {
-                Some(t) => Some(&t.kind),
-                None => None,
-            }
-        }
+        self.ensure_token_available(0);
+        self.ahead.get(self.ahead_pos).map(|t| &t.kind)
     }
 
-    // pos: 0-origin
-    #[allow(dead_code)]
-    fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
-        while self.ahead.len() < pos + 1 {
+    fn ensure_token_available(&mut self, relative_pos: usize) {
+        let required_len = self.ahead_pos + relative_pos + 1;
+        while self.ahead.len() < required_len {
             loop {
                 match self.lexer.yylex() {
                     Ok(t) => {
@@ -77,58 +60,54 @@ impl<'a> Parser<'a> {
                         self.ahead.push(t);
                         break;
                     }
-                    _ => return None,
+                    _ => return,
                 }
             }
         }
-        match self.ahead.get(pos) {
-            Some(t) => Some(&t.kind),
-            None => None,
+        
+        // Periodically clean up consumed tokens to prevent memory buildup
+        if self.ahead_pos > 100 {
+            self.ahead.drain(0..self.ahead_pos);
+            self.ahead_pos = 0;
         }
+    }
+
+    // pos: 0-origin relative to current position
+    #[allow(dead_code)]
+    fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
+        self.ensure_token_available(pos);
+        self.ahead.get(self.ahead_pos + pos).map(|t| &t.kind)
     }
 
     fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
-        while self.ahead.len() < pos + 1 {
-            loop {
-                match self.lexer.yylex() {
-                    Ok(t) => {
-                        // Skip comment tokens
-                        if matches!(t.kind, Kind::Comment(_)) {
-                            continue;
-                        }
-                        self.ahead.push(t);
-                        break;
-                    }
-                    _ => return None,
-                }
-            }
-        }
-        match self.ahead.get(pos) {
-            Some(t) => Some(&t.position),
-            None => None,
-        }
+        self.ensure_token_available(self.ahead_pos + pos);
+        self.ahead.get(self.ahead_pos + pos).map(|t| &t.position)
     }
 
     fn next(&mut self) {
-        self.ahead.remove(0);
+        self.ahead_pos += 1;
+        // Periodically clean up consumed tokens to prevent memory buildup
+        if self.ahead_pos > 100 && self.ahead_pos > self.ahead.len() / 2 {
+            self.ahead.drain(0..self.ahead_pos);
+            self.ahead_pos = 0;
+        }
     }
 
-    pub fn expect(&mut self, accept: &Kind) -> bool {
+    pub fn expect(&mut self, accept: &Kind) -> Result<()> {
         let tk = self.peek();
         if tk.is_some() && *tk.unwrap() == *accept {
             self.next();
-            true
+            Ok(())
         } else {
-            false
+            let current = self.ahead.get(0).map(|t| &t.kind).unwrap_or(&Kind::EOF);
+            Err(anyhow!("Expected {:?} but found {:?}", accept, current))
         }
     }
 
-
+    // Legacy method for compatibility - redirects to expect()
+    #[deprecated(note = "Use expect() instead - this method is redundant")]
     pub fn expect_err(&mut self, accept: &Kind) -> Result<()> {
-        if !self.expect(accept) {
-            return Err(anyhow!("{:?} expected but {:?}", accept, self.ahead.get(0)));
-        }
-        Ok(())
+        self.expect(accept)
     }
 
 

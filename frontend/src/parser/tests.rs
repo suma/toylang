@@ -18,6 +18,81 @@ mod lexer_tests{
     }
 
     #[test]
+    fn lexer_keyword_tests_parallel() {
+        let test_cases = vec![
+            (" if ", Kind::If),
+            (" else ", Kind::Else),
+            (" while ", Kind::While),
+            (" break ", Kind::Break),
+            (" continue ", Kind::Continue),
+            (" return ", Kind::Return),
+            (" for ", Kind::For),
+            (" class ", Kind::Class),
+            (" fn ", Kind::Function),
+            (" val ", Kind::Val),
+            (" var ", Kind::Var),
+            (" bool ", Kind::Bool),
+        ];
+        
+        test_cases.par_iter().for_each(|&(input, ref expected)| {
+            let mut l = lexer::Lexer::new(input, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, *expected);
+        });
+    }
+
+    #[test]
+    fn lexer_integer_tests_parallel() {
+        let test_cases = vec![
+            (" -1i64 ", Kind::Int64(-1)),
+            (" 1i64 ", Kind::Int64(1)),
+            (" 2u64 ", Kind::UInt64(2u64)),
+            (" true ", Kind::True),
+            (" false ", Kind::False),
+            (" null ", Kind::Null),
+            (" 100u64 ", Kind::UInt64(100)),
+            (" 123i64 ", Kind::Int64(123)),
+        ];
+        
+        test_cases.par_iter().for_each(|&(input, ref expected)| {
+            let mut l = lexer::Lexer::new(input, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, *expected);
+        });
+    }
+
+    #[test]
+    fn lexer_symbol_tests_parallel() {
+        let test_cases = vec![
+            (" ( ", Kind::ParenOpen),
+            (" ) ", Kind::ParenClose),
+            (" { ", Kind::BraceOpen),
+            (" } ", Kind::BraceClose),
+            (" [ ", Kind::BracketOpen),
+            (" ] ", Kind::BracketClose),
+            (" , ", Kind::Comma),
+            (" . ", Kind::Dot),
+            (" :: ", Kind::DoubleColon),
+            (" : ", Kind::Colon),
+            (" = ", Kind::Equal),
+            (" ! ", Kind::Exclamation),
+            (" == ", Kind::DoubleEqual),
+            (" != ", Kind::NotEqual),
+            (" <= ", Kind::LE),
+            (" < ", Kind::LT),
+            (" >= ", Kind::GE),
+            (" > ", Kind::GT),
+            (" + ", Kind::IAdd),
+            (" - ", Kind::ISub),
+            (" * ", Kind::IMul),
+            (" / ", Kind::IDiv),
+        ];
+        
+        test_cases.par_iter().for_each(|&(input, ref expected)| {
+            let mut l = lexer::Lexer::new(input, 1u64);
+            assert_eq!(l.yylex().unwrap().kind, *expected);
+        });
+    }
+
+    #[test]
     fn lexer_simple_keyword() {
         let s = " if else while break continue return for class fn val var bool";
         let mut l = lexer::Lexer::new(&s, 1u64);
@@ -141,6 +216,7 @@ mod lexer_tests{
 mod parser_tests {
     use super::*;
     use crate::token::Kind;
+    use rayon::prelude::*;
 
     #[test]
     fn parser_util_lookahead() {
@@ -247,6 +323,28 @@ mod parser_tests {
         assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
     }
 
+    #[test]
+    fn parser_expr_accept_parallel() {
+        let test_cases = vec![
+            "1u64",
+            "(1u64 + 2u64)",
+            "1u64 && 2u64 < 3u64",
+            "1u64 || 2u64 < 3u64",
+            "1u64 || (2u64) < 3u64 + 4u64",
+            "variable",
+            "a + b",
+            "a + 1u64",
+            "a() + 1u64",
+            "a(b,c) + 1u64",
+        ];
+        
+        test_cases.par_iter().for_each(|&input| {
+            let mut p = Parser::new(input);
+            let e = p.parse_stmt();
+            assert!(e.is_ok(), "failed: {}", input);
+        });
+    }
+
     #[rstest]
     #[case("1u64")]
     #[case("(1u64 + 2u64)")]
@@ -309,6 +407,43 @@ mod parser_tests {
         assert_eq!(Expr::UInt64(1u64), *b);
         let c = p.get_expr_pool().get(2).unwrap();
         assert_eq!(Expr::Assign(ExprRef(0), ExprRef(1)), *c);
+    }
+
+    #[test]
+    fn parser_test_parse_stmt_parallel() {
+        let test_cases = vec![
+            "1u64",
+            "1i64",
+            "true",
+            "false",
+            "null",
+            "\"string\"",
+            "val x = 1u64",
+            "val x: u64 = 1u64",
+            "val x: u64 = if true { 1u64 } else { 2u64 }",
+            "var x = 1u64",
+            "x = y = z = 1u64",
+            "x = 1u64",
+            "if true { 1u64 }",
+            "if true { 1u64 } else { 2u64 }",
+            "{ if true { 1u64 } else { 2u64 } }",
+            "fn_call()",
+            "fn_call(a, b, c)",
+            "a + b * c / d",
+            "a || b && c",
+            "a <= b && c >= d && e < f && g > h",
+            "a == b && c != d",
+            "for i in 0u64 to 9u64 { continue }",
+            "while true { break }",
+            "return true",
+            "return",
+        ];
+        
+        test_cases.par_iter().for_each(|&input| {
+            let mut parser = Parser::new(input);
+            let err = parser.parse_stmt();
+            assert!(err.is_ok(), "input: {} err: {:?}", input, err);
+        });
     }
 
     #[rstest]

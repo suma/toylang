@@ -7,8 +7,11 @@ use crate::type_decl::*;
 use crate::type_checker::TypeCheckerVisitor;
 use rstest::rstest;
 
+#[cfg(test)]
+
 mod lexer_tests{
     use crate::token::Kind;
+    use rayon::prelude::*;
 
     mod lexer {
         include!(concat!(env!("OUT_DIR"), "/lexer.rs"));

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use frontend;
 use frontend::ast::*;
 use frontend::type_checker::*;
+use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
@@ -36,49 +37,75 @@ pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
     }
 }
 
-pub fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
-    let mut main: Option<Rc<Function>> = None;
+fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterError> {
     let main_id = program.string_interner.get("main").unwrap();
-    program.function.iter().for_each(|func| {
+    
+    for func in &program.function {
         if func.name == main_id && func.parameter.is_empty() {
-            main = Some(func.clone());
+            return Ok(func.clone());
         }
-    });
-
-    if main.is_some() {
-        let mut func = HashMap::new();
-        let mut string_interner = program.string_interner.clone();
-        for f in &program.function {
-            func.insert(f.name.clone(), f.clone());
-        }
-
-        // Register methods from impl blocks first
-        let mut method_registry = std::collections::HashMap::new();
-        for stmt_ref in &program.statement.0 {
-            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
-                let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
-                for method in methods {
-                    let method_name_symbol = method.name;
-                    method_registry
-                        .entry(struct_name_symbol)
-                        .or_insert_with(std::collections::HashMap::new)
-                        .insert(method_name_symbol, method.clone());
-                }
-            }
-        }
-        
-        let mut eval = EvaluationContext::new(&program.statement, &program.expression, &mut string_interner, func);
-        
-        // Register methods using the public interface
-        for (struct_symbol, methods) in method_registry {
-            for (method_symbol, method_func) in methods {
-                eval.register_method(struct_symbol, method_symbol, method_func);
-            }
-        }
-        
-        let no_args = vec![];
-        eval.evaluate_function(main.unwrap(), &no_args)
-    } else {
-        Err(InterpreterError::FunctionNotFound("main".to_string()))
     }
+    
+    Err(InterpreterError::FunctionNotFound("main".to_string()))
+}
+
+fn build_function_map(program: &Program) -> HashMap<DefaultSymbol, Rc<Function>> {
+    let mut func_map = HashMap::new();
+    for f in &program.function {
+        func_map.insert(f.name, f.clone());
+    }
+    func_map
+}
+
+fn build_method_registry(
+    program: &Program, 
+    string_interner: &mut DefaultStringInterner
+) -> HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> {
+    let mut method_registry = HashMap::new();
+    
+    for stmt_ref in &program.statement.0 {
+        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
+            let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
+            for method in methods {
+                let method_name_symbol = method.name;
+                method_registry
+                    .entry(struct_name_symbol)
+                    .or_insert_with(HashMap::new)
+                    .insert(method_name_symbol, method.clone());
+            }
+        }
+    }
+    
+    method_registry
+}
+
+fn register_methods(
+    eval: &mut EvaluationContext,
+    method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>
+) {
+    for (struct_symbol, methods) in method_registry {
+        for (method_symbol, method_func) in methods {
+            eval.register_method(struct_symbol, method_symbol, method_func);
+        }
+    }
+}
+
+pub fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
+    let main_function = find_main_function(program)?;
+    
+    let func_map = build_function_map(program);
+    let mut string_interner = program.string_interner.clone();
+    let method_registry = build_method_registry(program, &mut string_interner);
+    
+    let mut eval = EvaluationContext::new(
+        &program.statement, 
+        &program.expression, 
+        &mut string_interner, 
+        func_map
+    );
+    
+    register_methods(&mut eval, method_registry);
+    
+    let no_args = vec![];
+    eval.evaluate_function(main_function, &no_args)
 }

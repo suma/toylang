@@ -20,17 +20,64 @@ pub struct TypeCheckError {
     msg: String,
 }
 
-pub struct TypeCheckerVisitor <'a, 'b, 'c> {
+#[derive(Debug)]
+pub struct CoreReferences<'a, 'b, 'c> {
     pub stmt_pool: &'a StmtPool,
     pub expr_pool: &'b mut ExprPool,
     pub string_interner: &'c DefaultStringInterner,
-    pub context: TypeCheckContext,
+}
+
+#[derive(Debug)]
+pub struct TypeInferenceState {
+    pub type_hint: Option<TypeDecl>,
+    pub number_usage_context: Vec<(ExprRef, TypeDecl)>,
+    pub variable_expr_mapping: HashMap<DefaultSymbol, ExprRef>,
+}
+
+impl TypeInferenceState {
+    pub fn new() -> Self {
+        Self {
+            type_hint: None,
+            number_usage_context: Vec::new(),
+            variable_expr_mapping: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct FunctionCheckingState {
     pub call_depth: usize,
-    pub is_checked_fn: HashMap<DefaultSymbol, Option<TypeDecl>>, // None -> in progress, Some -> Done
-    pub type_hint: Option<TypeDecl>, // Type hint for Number literal inference
-    pub number_usage_context: Vec<(ExprRef, TypeDecl)>, // Track Number expressions and their usage context
-    pub variable_expr_mapping: HashMap<DefaultSymbol, ExprRef>, // Track which expression belongs to which variable
-    pub type_cache: HashMap<ExprRef, TypeDecl>, // Cache for type inference results
+    pub is_checked_fn: HashMap<DefaultSymbol, Option<TypeDecl>>,
+}
+
+impl FunctionCheckingState {
+    pub fn new() -> Self {
+        Self {
+            call_depth: 0,
+            is_checked_fn: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct PerformanceOptimization {
+    pub type_cache: HashMap<ExprRef, TypeDecl>,
+}
+
+impl PerformanceOptimization {
+    pub fn new() -> Self {
+        Self {
+            type_cache: HashMap::new(),
+        }
+    }
+}
+
+pub struct TypeCheckerVisitor <'a, 'b, 'c> {
+    pub core: CoreReferences<'a, 'b, 'c>,
+    pub context: TypeCheckContext,
+    pub type_inference: TypeInferenceState,
+    pub function_checking: FunctionCheckingState,
+    pub optimization: PerformanceOptimization,
 }
 
 impl std::fmt::Display for TypeCheckError {
@@ -111,16 +158,15 @@ impl TypeCheckContext {
 impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'c DefaultStringInterner) -> Self {
         Self {
-            stmt_pool,
-            expr_pool,
-            string_interner: string_interner,
+            core: CoreReferences {
+                stmt_pool,
+                expr_pool,
+                string_interner,
+            },
             context: TypeCheckContext::new(),
-            call_depth: 0,
-            is_checked_fn: HashMap::new(),
-            type_hint: None,
-            number_usage_context: Vec::new(),
-            variable_expr_mapping: HashMap::new(),
-            type_cache: HashMap::new(),
+            type_inference: TypeInferenceState::new(),
+            function_checking: FunctionCheckingState::new(),
+            optimization: PerformanceOptimization::new(),
         }
     }
 
@@ -173,32 +219,32 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         let s = func.code.clone();
 
         // Is already checked
-        match self.is_checked_fn.get(&func.name) {
+        match self.function_checking.is_checked_fn.get(&func.name) {
             Some(Some(result_ty)) => return Ok(result_ty.clone()),  // already checked
             Some(None) => return Ok(TypeDecl::Unknown), // now checking
             None => (),
         }
 
         // Now checking...
-        self.is_checked_fn.insert(func.name, None);
+        self.function_checking.is_checked_fn.insert(func.name, None);
 
         // Clear type cache at the start of each function to limit cache scope
-        self.type_cache.clear();
+        self.optimization.type_cache.clear();
 
-        self.call_depth += 1;
+        self.function_checking.call_depth += 1;
 
-        let statements = match self.stmt_pool.get(s.to_index()).unwrap() {
+        let statements = match self.core.stmt_pool.get(s.to_index()).unwrap() {
             Stmt::Expression(e) => {
-                match self.expr_pool.0.get(e.to_index()).unwrap() {
+                match self.core.expr_pool.0.get(e.to_index()).unwrap() {
                     Expr::Block(statements) => {
                         statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
                     _ => {
-                        panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap());
+                        panic!("type_check: expected block but {:?}", self.core.expr_pool.get(s.to_index()).unwrap());
                     }
                 }
             }
-            _ => panic!("type_check: expected block but {:?}", self.expr_pool.get(s.to_index()).unwrap()),
+            _ => panic!("type_check: expected block but {:?}", self.core.expr_pool.get(s.to_index()).unwrap()),
         };
 
         self.push_context();
@@ -210,7 +256,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
         for s in statements.iter() {
-            if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
+            if let Some(stmt) = self.core.stmt_pool.get(s.to_index()) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
                         if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
@@ -224,13 +270,13 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         }
         
         // Set global type hint if found
-        let original_hint = self.type_hint.clone();
+        let original_hint = self.type_inference.type_hint.clone();
         if let Some(ref global_type) = global_numeric_type {
-            self.type_hint = Some(global_type.clone());
+            self.type_inference.type_hint = Some(global_type.clone());
         }
 
         for stmt in statements.iter() {
-            let res = self.stmt_pool.get(stmt.to_index()).unwrap().clone().accept(self);
+            let res = self.core.stmt_pool.get(stmt.to_index()).unwrap().clone().accept(self);
             if res.is_err() {
                 return res;
             } else {
@@ -238,15 +284,15 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             }
         }
         self.pop_context();
-        self.call_depth -= 1;
+        self.function_checking.call_depth -= 1;
 
         // Restore original type hint
-        self.type_hint = original_hint;
+        self.type_inference.type_hint = original_hint;
 
         // Final pass: convert any remaining Number literals to default type (UInt64)
         self.finalize_number_types()?;
         
-        self.is_checked_fn.insert(func.name, Some(last.clone()));
+        self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
     }
 }
@@ -304,8 +350,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
         
         // Set up context hint for nested expressions
-        let original_hint = self.type_hint.clone();
-        let result = self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
+        let original_hint = self.type_inference.type_hint.clone();
+        let result = self.core.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
         
         // Cache the result if successful
         if let Ok(ref result_type) = result {
@@ -314,8 +360,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             // Context propagation: if this expression resolved to a concrete numeric type,
             // and we don't have a current hint, set it for sibling expressions
             if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64) {
-                if self.type_hint.is_none() {
-                    self.type_hint = Some(result_type.clone());
+                if self.type_inference.type_hint.is_none() {
+                    self.type_inference.type_hint = Some(result_type.clone());
                 }
             }
         }
@@ -324,21 +370,21 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        self.stmt_pool.get(stmt.to_index()).unwrap_or(&Stmt::Break).clone().accept(self)
+        self.core.stmt_pool.get(stmt.to_index()).unwrap_or(&Stmt::Break).clone().accept(self)
     }
 
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let op = op.clone();
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
-        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
+        let lhs_ty = self.core.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
+        let rhs_ty = self.core.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
         
         // Resolve types with automatic conversion for Number type
         let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)?;
         
         // Context propagation: if we have a type hint, propagate it to Number expressions
-        if let Some(hint) = self.type_hint.clone() {
+        if let Some(hint) = self.type_inference.type_hint.clone() {
             if lhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
                 self.propagate_type_to_number_expr(&lhs, &hint)?;
             }
@@ -411,12 +457,12 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let mut last: Option<TypeDecl> = None;
         
         // Clear type cache at the start of each block to limit cache scope to current block
-        self.type_cache.clear();
+        self.optimization.type_cache.clear();
         
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
         for s in statements.iter() {
-            if let Some(stmt) = self.stmt_pool.get(s.to_index()) {
+            if let Some(stmt) = self.core.stmt_pool.get(s.to_index()) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
                         if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
@@ -430,21 +476,21 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
         
         // Set global type hint if found
-        let original_hint = self.type_hint.clone();
+        let original_hint = self.type_inference.type_hint.clone();
         if let Some(ref global_type) = global_numeric_type {
-            self.type_hint = Some(global_type.clone());
+            self.type_inference.type_hint = Some(global_type.clone());
         }
         
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            let stmt = self.stmt_pool.get(s.to_index()).unwrap();
+            let stmt = self.core.stmt_pool.get(s.to_index()).unwrap();
             let stmt_type = match stmt {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
                         let e = e.clone();
-                        let ty = self.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
+                        let ty = self.core.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
                         if last_empty {
                             last_empty = false;
                             Ok(ty)
@@ -452,7 +498,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                             if last_ty == ty {
                                 Ok(ty)
                             } else {
-                                let ret_expr = self.expr_pool.get(e.to_index()).unwrap();
+                                let ret_expr = self.core.expr_pool.get(e.to_index()).unwrap();
                                 Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, ret_expr, s)))?
                             }
                         } else {
@@ -462,7 +508,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         Ok(TypeDecl::Unit)
                     }
                 }
-                _ => self.stmt_pool.get(s.to_index()).unwrap().clone().accept(self),
+                _ => self.core.stmt_pool.get(s.to_index()).unwrap().clone().accept(self),
             };
 
             match stmt_type {
@@ -472,7 +518,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
         
         // Restore original type hint
-        self.type_hint = original_hint;
+        self.type_inference.type_hint = original_hint;
 
         if let Some(last_type) = last {
             Ok(last_type)
@@ -488,36 +534,36 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
         // Check if-block
         let if_block = then_block.clone();
-        let is_if_empty = match self.expr_pool.get(if_block.to_index()).unwrap() {
+        let is_if_empty = match self.core.expr_pool.get(if_block.to_index()).unwrap() {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_if_empty {
-            let if_ty = self.expr_pool.get(if_block.to_index()).unwrap().clone().accept(self)?;
+            let if_ty = self.core.expr_pool.get(if_block.to_index()).unwrap().clone().accept(self)?;
             block_types.push(if_ty);
         }
 
         // Check elif-blocks
         for (_, elif_block) in elif_pairs {
             let elif_block = elif_block.clone();
-            let is_elif_empty = match self.expr_pool.get(elif_block.to_index()).unwrap() {
+            let is_elif_empty = match self.core.expr_pool.get(elif_block.to_index()).unwrap() {
                 Expr::Block(expressions) => expressions.is_empty(),
                 _ => false,
             };
             if !is_elif_empty {
-                let elif_ty = self.expr_pool.get(elif_block.to_index()).unwrap().clone().accept(self)?;
+                let elif_ty = self.core.expr_pool.get(elif_block.to_index()).unwrap().clone().accept(self)?;
                 block_types.push(elif_ty);
             }
         }
 
         // Check else-block
         let else_block = else_block.clone();
-        let is_else_empty = match self.expr_pool.get(else_block.to_index()).unwrap() {
+        let is_else_empty = match self.core.expr_pool.get(else_block.to_index()).unwrap() {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_else_empty {
-            let else_ty = self.expr_pool.get(else_block.to_index()).unwrap().clone().accept(self)?;
+            let else_ty = self.core.expr_pool.get(else_block.to_index()).unwrap().clone().accept(self)?;
             block_types.push(else_ty);
         }
 
@@ -540,8 +586,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
-        let rhs_ty = self.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
+        let lhs_ty = self.core.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
+        let rhs_ty = self.core.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
         if lhs_ty != rhs_ty {
             return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
         }
@@ -555,7 +601,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
-            let name = self.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+            let name = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             return Err(TypeCheckError::new(format!("Identifier {:?} not found", name)));
         }
     }
@@ -563,7 +609,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_call(&mut self, fn_name: DefaultSymbol, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         if let Some(fun) = self.context.get_fn(fn_name) {
-            let status = self.is_checked_fn.get(&fn_name);
+            let status = self.function_checking.is_checked_fn.get(&fn_name);
             if status.is_none() || status.clone().unwrap().is_none() {
                 // not checked yet
                 let fun = self.context.get_fn(fn_name).unwrap();
@@ -574,7 +620,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
             self.pop_context();
-            let fn_name = self.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+            let fn_name = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
             Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)))
         }
     }
@@ -588,11 +634,11 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        let num_str = self.string_interner.resolve(value)
+        let num_str = self.core.string_interner.resolve(value)
             .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
         
         // If we have a type hint from val/var declaration, validate and return the hint type
-        if let Some(hint) = self.type_hint.clone() {
+        if let Some(hint) = self.type_inference.type_hint.clone() {
             match hint {
                 TypeDecl::Int64 => {
                     if let Ok(_val) = num_str.parse::<i64>() {
@@ -656,10 +702,10 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
 
         // Save the original type hint to restore later
-        let original_hint = self.type_hint.clone();
+        let original_hint = self.type_inference.type_hint.clone();
         
         // If we have a type hint for the array element type, use it for element type inference
-        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_hint {
+        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_inference.type_hint {
             if !element_types.is_empty() {
                 Some(element_types[0].clone())
             } else {
@@ -674,14 +720,14 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         for element in elements {
             // Set the element type hint for each element individually
             if let Some(ref hint) = element_type_hint {
-                self.type_hint = Some(hint.clone());
+                self.type_inference.type_hint = Some(hint.clone());
             }
             
             let element_type = self.visit_expr(element)?;
             element_types.push(element_type);
             
             // Restore original hint after processing each element
-            self.type_hint = original_hint.clone();
+            self.type_inference.type_hint = original_hint.clone();
         }
 
         // If we have array type hint, handle type inference for all elements
@@ -700,7 +746,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         actual_type if actual_type == expected_element_type => {
                             // Element already has the expected type, but may need AST transformation
                             // Check if this is a number literal that needs transformation
-                            if let Some(expr) = self.expr_pool.get(element.to_index()) {
+                            if let Some(expr) = self.core.expr_pool.get(element.to_index()) {
                                 if matches!(expr, Expr::Number(_)) {
                                     self.transform_numeric_expr(element, expected_element_type)?;
                                 }
@@ -742,7 +788,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         }
 
         // Restore the original type hint
-        self.type_hint = original_hint;
+        self.type_inference.type_hint = original_hint;
 
         let first_type = &element_types[0];
         for (i, element_type) in element_types.iter().enumerate() {
@@ -761,13 +807,13 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let array_type = self.visit_expr(array)?;
         
         // Set type hint for index to UInt64 (default for array indexing)
-        let original_hint = self.type_hint.clone();
-        self.type_hint = Some(TypeDecl::UInt64);
+        let original_hint = self.type_inference.type_hint.clone();
+        self.type_inference.type_hint = Some(TypeDecl::UInt64);
         
         let index_type = self.visit_expr(index)?;
         
         // Restore original type hint
-        self.type_hint = original_hint;
+        self.type_inference.type_hint = original_hint;
 
         // Handle index type inference and conversion
         let _final_index_type = match index_type {
@@ -806,7 +852,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
+        self.core.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
     }
 
     fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -835,7 +881,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         self.context.set_var(name, final_type);
         
         // Restore previous type hint
-        self.type_hint = old_hint;
+        self.type_inference.type_hint = old_hint;
         
         Ok(TypeDecl::Unit)
     }
@@ -846,23 +892,23 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             Ok(TypeDecl::Unit)
         } else {
             let e = expr.unwrap();
-            self.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
+            self.core.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
             Ok(TypeDecl::Unit)
         }
     }
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
-        let range_ty = self.expr_pool.get(range.to_index()).unwrap().clone().accept(self)?;
+        let range_ty = self.core.expr_pool.get(range.to_index()).unwrap().clone().accept(self)?;
         let ty = Some(range_ty);
         self.process_val_type(init, &ty, &Some(*range))?;
-        let res = self.expr_pool.get(body.to_index()).unwrap().clone().accept(self);
+        let res = self.core.expr_pool.get(body.to_index()).unwrap().clone().accept(self);
         self.pop_context();
         res
     }
 
     fn visit_while(&mut self, _cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
+        self.core.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
     }
 
     fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {
@@ -908,7 +954,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         return Err(TypeCheckError::new(format!(
                             "Unsupported parameter type {:?} in method '{}' for impl block '{}'",
                             param_type, 
-                            self.string_interner.resolve(method.name).unwrap_or("<unknown>"),
+                            self.core.string_interner.resolve(method.name).unwrap_or("<unknown>"),
                             target_type
                         )));
                     }
@@ -925,7 +971,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         return Err(TypeCheckError::new(format!(
                             "Unsupported return type {:?} in method '{}' for impl block '{}'",
                             ret_type,
-                            self.string_interner.resolve(method.name).unwrap_or("<unknown>"),
+                            self.core.string_interner.resolve(method.name).unwrap_or("<unknown>"),
                             target_type
                         )));
                     }
@@ -950,7 +996,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 Ok(TypeDecl::Unknown)
             }
             _ => {
-                let field_name = self.string_interner.resolve(*field).unwrap_or("<unknown>");
+                let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
                 Err(TypeCheckError::new(format!(
                     "Cannot access field '{}' on non-struct type {:?}",
                     field_name, obj_type
@@ -967,7 +1013,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             self.visit_expr(arg)?;
         }
         
-        let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
+        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
         
         // Handle built-in methods for basic types
         match obj_type {
@@ -1019,28 +1065,28 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     /// Get cached type for an expression if available
     fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
-        self.type_cache.get(expr_ref)
+        self.optimization.type_cache.get(expr_ref)
     }
     
     /// Cache type result for an expression
     fn cache_type(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
-        self.type_cache.insert(expr_ref, type_decl);
+        self.optimization.type_cache.insert(expr_ref, type_decl);
     }
 
     /// Sets up type hint for variable declaration and returns the old hint
     fn setup_type_hint_for_val(&mut self, type_decl: &Option<TypeDecl>) -> Option<TypeDecl> {
-        let old_hint = self.type_hint.clone();
+        let old_hint = self.type_inference.type_hint.clone();
         
         if let Some(decl) = type_decl {
             match decl {
                 TypeDecl::Array(element_types, _) => {
                     // For array types, set the array type as hint for array literal processing
                     if !element_types.is_empty() {
-                        self.type_hint = Some(decl.clone());
+                        self.type_inference.type_hint = Some(decl.clone());
                     }
                 },
                 _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
-                    self.type_hint = Some(decl.clone());
+                    self.type_inference.type_hint = Some(decl.clone());
                 },
                 _ => {}
             }
@@ -1052,12 +1098,12 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     /// Updates variable-expression mapping for type inference
     fn update_variable_expr_mapping(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
         if *expr_ty == TypeDecl::Number || (*expr_ty != TypeDecl::Number && self.has_number_in_expr(expr_ref)) {
-            self.variable_expr_mapping.insert(name, expr_ref.clone());
+            self.type_inference.variable_expr_mapping.insert(name, expr_ref.clone());
         } else {
             // Remove old mapping for non-Number types to prevent stale references
-            self.variable_expr_mapping.remove(&name);
+            self.type_inference.variable_expr_mapping.remove(&name);
             // Also remove from number_usage_context to prevent stale type inference
-            let indices_to_remove: Vec<usize> = self.number_usage_context
+            let indices_to_remove: Vec<usize> = self.type_inference.number_usage_context
                 .iter()
                 .enumerate()
                 .filter_map(|(i, (old_expr, _))| {
@@ -1071,7 +1117,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             
             // Remove in reverse order to maintain valid indices
             for &index in indices_to_remove.iter().rev() {
-                self.number_usage_context.remove(index);
+                self.type_inference.number_usage_context.remove(index);
             }
         }
     }
@@ -1080,7 +1126,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     fn apply_type_transformations(&mut self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
         if type_decl.is_none() && *expr_ty == TypeDecl::Number {
             // No explicit type, but we have a Number - use type hint if available
-            if let Some(hint) = self.type_hint.clone() {
+            if let Some(hint) = self.type_inference.type_hint.clone() {
                 if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
                     // Transform Number to hinted type
                     self.transform_numeric_expr(expr_ref, &hint)?;
@@ -1088,7 +1134,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             }
         } else if type_decl.is_some() && type_decl.as_ref().unwrap() == &TypeDecl::Unknown && *expr_ty == TypeDecl::Int64 {
             // Unknown type declaration with Int64 inference - also transform
-            if let Some(hint) = self.type_hint.clone() {
+            if let Some(hint) = self.type_inference.type_hint.clone() {
                 if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
                     self.transform_numeric_expr(expr_ref, &hint)?;
                 }
@@ -1096,7 +1142,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         } else if let Some(decl) = type_decl {
             if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && *expr_ty == *decl {
                 // Expression returned the hinted type, transform Number literals to concrete type
-                if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+                if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
                     if let Expr::Number(_) = expr {
                         self.transform_numeric_expr(expr_ref, decl)?;
                     }
@@ -1119,9 +1165,9 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
 
     // Transform Expr::Number nodes to concrete types based on resolved types
     fn transform_numeric_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.expr_pool.get_mut(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get_mut(expr_ref.to_index()) {
             if let Expr::Number(value) = expr {
-                let num_str = self.string_interner.resolve(*value)
+                let num_str = self.core.string_interner.resolve(*value)
                     .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
                 
                 match target_type {
@@ -1151,7 +1197,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     // Update variable type in context if identifier was type-converted
     fn update_identifier_types(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Identifier(name) = expr {
                     // Update the variable's type
                     self.context.update_var_type(*name, resolved_ty.clone());
@@ -1164,17 +1210,17 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     // Record Number usage context for identifiers
     fn record_number_usage_context(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Identifier(name) = expr {
                     // Find all Number expressions that might belong to this variable
                     // and record the context type
-                    for i in 0..self.expr_pool.len() {
-                        if let Some(candidate_expr) = self.expr_pool.get(i) {
+                    for i in 0..self.core.expr_pool.len() {
+                        if let Some(candidate_expr) = self.core.expr_pool.get(i) {
                             if let Expr::Number(_) = candidate_expr {
                                 let candidate_ref = ExprRef(i as u32);
                                 // Check if this Number might be associated with this variable
                                 if self.is_number_for_variable(*name, &candidate_ref) {
-                                    self.number_usage_context.push((candidate_ref, resolved_ty.clone()));
+                                    self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
                                 }
                             }
                         }
@@ -1188,7 +1234,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
 
     // Check if an expression contains Number literals
     fn has_number_in_expr(&self, expr_ref: &ExprRef) -> bool {
-        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
             match expr {
                 Expr::Number(_) => true,
                 _ => false, // For now, only check direct Number literals
@@ -1201,7 +1247,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     // Check if a Number expression is associated with a specific variable
     fn is_number_for_variable(&self, var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
         // Use the recorded mapping to check if this Number expression belongs to this variable
-        if let Some(mapped_expr_ref) = self.variable_expr_mapping.get(&var_name) {
+        if let Some(mapped_expr_ref) = self.type_inference.variable_expr_mapping.get(&var_name) {
             return mapped_expr_ref == number_expr_ref;
         }
         false
@@ -1211,7 +1257,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     fn is_old_number_for_variable(&self, _var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
         // Check if this Number expression was previously mapped to this variable
         // This is used for cleanup when variables are redefined
-        if let Some(expr) = self.expr_pool.get(number_expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(number_expr_ref.to_index()) {
             if let Expr::Number(_) = expr {
                 // For now, we'll be conservative and remove all Number contexts when variables are redefined
                 return true;
@@ -1222,17 +1268,17 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
 
     // Propagate concrete type to Number variable immediately
     fn propagate_to_number_variable(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
             if let Expr::Identifier(name) = expr {
                 if let Some(var_type) = self.context.get_var(*name) {
                     if var_type == TypeDecl::Number {
                         // Find and record the Number expression for this variable
-                        for i in 0..self.expr_pool.len() {
-                            if let Some(candidate_expr) = self.expr_pool.get(i) {
+                        for i in 0..self.core.expr_pool.len() {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(i) {
                                 if let Expr::Number(_) = candidate_expr {
                                     let candidate_ref = ExprRef(i as u32);
                                     if self.is_number_for_variable(*name, &candidate_ref) {
-                                        self.number_usage_context.push((candidate_ref, target_type.clone()));
+                                        self.type_inference.number_usage_context.push((candidate_ref, target_type.clone()));
                                         // Update variable type in context
                                         self.context.update_var_type(*name, target_type.clone());
                                     }
@@ -1249,14 +1295,14 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     // Finalize any remaining Number types with context-aware inference
     fn finalize_number_types(&mut self) -> Result<(), TypeCheckError> {
         // Use recorded context information to transform Number expressions
-        let context_info = self.number_usage_context.clone();
+        let context_info = self.type_inference.number_usage_context.clone();
         for (expr_ref, target_type) in context_info {
-            if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Number(_) = expr {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
                     
                     // Update variable types in context if this expression is mapped to a variable
-                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping.clone() {
+                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
                         if mapped_expr_ref == &expr_ref {
                             self.context.update_var_type(*var_name, target_type.clone());
                         }
@@ -1266,16 +1312,16 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         }
         
         // Second pass: handle any remaining Number types by using variable context
-        let expr_len = self.expr_pool.len();
+        let expr_len = self.core.expr_pool.len();
         for i in 0..expr_len {
-            if let Some(expr) = self.expr_pool.get(i) {
+            if let Some(expr) = self.core.expr_pool.get(i) {
                 if let Expr::Number(_) = expr {
                     let expr_ref = ExprRef(i as u32);
                     
                     // Find if this Number is associated with a variable and use its final type
                     let mut target_type = TypeDecl::UInt64; // default
                     
-                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping {
+                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
                         if mapped_expr_ref == &expr_ref {
                             // Check the current type of this variable in context
                             if let Some(var_type) = self.context.get_var(*var_name) {
@@ -1290,7 +1336,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
                     
                     // Update variable types in context if this expression is mapped to a variable
-                    for (var_name, mapped_expr_ref) in &self.variable_expr_mapping.clone() {
+                    for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
                         if mapped_expr_ref == &expr_ref {
                             self.context.update_var_type(*var_name, target_type.clone());
                         }
@@ -1319,7 +1365,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             
             // Two Number types - check if we have a context hint, otherwise default to UInt64
             (TypeDecl::Number, TypeDecl::Number) => {
-                if let Some(hint) = &self.type_hint {
+                if let Some(hint) = &self.type_inference.type_hint {
                     match hint {
                         TypeDecl::Int64 => Ok((TypeDecl::Int64, TypeDecl::Int64)),
                         TypeDecl::UInt64 => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
@@ -1348,7 +1394,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     
     // Propagate type to Number expression and associated variables
     fn propagate_type_to_number_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
             match expr {
                 Expr::Identifier(name) => {
                     // If this is an identifier with Number type, update it
@@ -1356,15 +1402,15 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
                         if var_type == TypeDecl::Number {
                             self.context.update_var_type(*name, target_type.clone());
                             // Also record for Number expression transformation
-                            if let Some(mapped_expr) = self.variable_expr_mapping.get(name) {
-                                self.number_usage_context.push((mapped_expr.clone(), target_type.clone()));
+                            if let Some(mapped_expr) = self.type_inference.variable_expr_mapping.get(name) {
+                                self.type_inference.number_usage_context.push((mapped_expr.clone(), target_type.clone()));
                             }
                         }
                     }
                 },
                 Expr::Number(_) => {
                     // Direct Number literal
-                    self.number_usage_context.push((expr_ref.clone(), target_type.clone()));
+                    self.type_inference.number_usage_context.push((expr_ref.clone(), target_type.clone()));
                 },
                 _ => {
                     // For other expression types, we might need to recurse

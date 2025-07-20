@@ -204,6 +204,17 @@
     - 文字列とコメントの処理にブロック構文を使用して処理を明確化
     - 全78個のfrontendテストが引き続き成功（機能の完全な互換性維持）
 
+27. **TypeCheckerVisitorの状態管理リファクタリング** ✅ (2024-07-20完了)
+    - 複雑な状態管理を機能別に4つのグループ構造体に分割
+      - `CoreReferences` - AST構造への参照（stmt_pool, expr_pool, string_interner）
+      - `TypeInferenceState` - 型推論状態（type_hint, number_usage_context, variable_expr_mapping）
+      - `FunctionCheckingState` - 関数チェック状態（call_depth, is_checked_fn）
+      - `PerformanceOptimization` - パフォーマンス最適化（type_cache）
+    - 各グループ構造体に初期化関数（new()）を追加
+    - 130箇所以上のフィールドアクセスを新しいグループ化構造に更新
+    - 関連する状態の論理的なグループ化により可読性と保守性を大幅改善
+    - 全78個のfrontend・104個のinterpreterテストが引き続き成功（機能の完全な互換性維持）
+
 
 ## 進行中 🚧
 

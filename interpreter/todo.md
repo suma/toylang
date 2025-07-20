@@ -215,6 +215,17 @@
     - 関連する状態の論理的なグループ化により可読性と保守性を大幅改善
     - 全78個のfrontend・104個のinterpreterテストが引き続き成功（機能の完全な互換性維持）
 
+28. **エラーメッセージシステムの統一化** ✅ (2024-07-20完了)
+    - 手動文字列作成と一貫性のないエラーメッセージ問題を解決
+    - 構造化エラーシステム（TypeCheckErrorKind enum）を導入
+      - `TypeMismatch`, `TypeMismatchOperation`, `NotFound`, `UnsupportedOperation`
+      - `ConversionError`, `ArrayError`, `MethodError`, `InvalidLiteral`, `GenericError`
+    - 専用コンストラクタメソッドを提供（type_mismatch, not_found, conversion_error等）
+    - エラーメッセージの統一フォーマットとコンテキスト情報追加機能を実装
+    - 全てのformat!による手動エラーメッセージを構造化システムに置き換え
+    - 型安全性とエラーメッセージの一貫性を大幅改善
+    - 全78個のfrontend・104個のinterpreterテストが引き続き成功（機能の完全な互換性維持）
+
 
 ## 進行中 🚧
 

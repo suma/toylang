@@ -16,8 +16,116 @@ pub struct TypeCheckContext {
 }
 
 #[derive(Debug)]
+pub enum TypeCheckErrorKind {
+    TypeMismatch { expected: TypeDecl, actual: TypeDecl },
+    TypeMismatchOperation { operation: String, left: TypeDecl, right: TypeDecl },
+    NotFound { item_type: String, name: String },
+    UnsupportedOperation { operation: String, type_name: TypeDecl },
+    ConversionError { from: String, to: String },
+    ArrayError { message: String },
+    MethodError { method: String, type_name: TypeDecl, reason: String },
+    InvalidLiteral { value: String, expected_type: String },
+    GenericError { message: String },
+}
+
+#[derive(Debug)]
 pub struct TypeCheckError {
-    msg: String,
+    kind: TypeCheckErrorKind,
+    context: Option<String>,
+}
+
+impl TypeCheckError {
+    pub fn type_mismatch(expected: TypeDecl, actual: TypeDecl) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::TypeMismatch { expected, actual },
+            context: None,
+        }
+    }
+
+    pub fn type_mismatch_operation(operation: &str, left: TypeDecl, right: TypeDecl) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::TypeMismatchOperation {
+                operation: operation.to_string(),
+                left,
+                right,
+            },
+            context: None,
+        }
+    }
+
+    pub fn not_found(item_type: &str, name: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::NotFound {
+                item_type: item_type.to_string(),
+                name: name.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn unsupported_operation(operation: &str, type_name: TypeDecl) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::UnsupportedOperation {
+                operation: operation.to_string(),
+                type_name,
+            },
+            context: None,
+        }
+    }
+
+    pub fn conversion_error(from: &str, to: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::ConversionError {
+                from: from.to_string(),
+                to: to.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn array_error(message: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::ArrayError {
+                message: message.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn method_error(method: &str, type_name: TypeDecl, reason: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::MethodError {
+                method: method.to_string(),
+                type_name,
+                reason: reason.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn invalid_literal(value: &str, expected_type: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::InvalidLiteral {
+                value: value.to_string(),
+                expected_type: expected_type.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn generic_error(message: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::GenericError {
+                message: message.to_string(),
+            },
+            context: None,
+        }
+    }
+
+    pub fn with_context(mut self, context: &str) -> Self {
+        self.context = Some(context.to_string());
+        self
+    }
 }
 
 #[derive(Debug)]
@@ -82,13 +190,47 @@ pub struct TypeCheckerVisitor <'a, 'b, 'c> {
 
 impl std::fmt::Display for TypeCheckError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "{}", self.msg)
+        let base_message = match &self.kind {
+            TypeCheckErrorKind::TypeMismatch { expected, actual } => {
+                format!("Type mismatch: expected {:?}, but got {:?}", expected, actual)
+            }
+            TypeCheckErrorKind::TypeMismatchOperation { operation, left, right } => {
+                format!("Type mismatch in {} operation: incompatible types {:?} and {:?}", operation, left, right)
+            }
+            TypeCheckErrorKind::NotFound { item_type, name } => {
+                format!("{} '{}' not found", item_type, name)
+            }
+            TypeCheckErrorKind::UnsupportedOperation { operation, type_name } => {
+                format!("Unsupported operation '{}' for type {:?}", operation, type_name)
+            }
+            TypeCheckErrorKind::ConversionError { from, to } => {
+                format!("Cannot convert '{}' to {}", from, to)
+            }
+            TypeCheckErrorKind::ArrayError { message } => {
+                format!("Array error: {}", message)
+            }
+            TypeCheckErrorKind::MethodError { method, type_name, reason } => {
+                format!("Method '{}' error for type {:?}: {}", method, type_name, reason)
+            }
+            TypeCheckErrorKind::InvalidLiteral { value, expected_type } => {
+                format!("Invalid {} literal: '{}'", expected_type, value)
+            }
+            TypeCheckErrorKind::GenericError { message } => {
+                message.clone()
+            }
+        };
+
+        if let Some(context) = &self.context {
+            write!(f, "{} (in {})", base_message, context)
+        } else {
+            write!(f, "{}", base_message)
+        }
     }
 }
 
 impl TypeCheckError {
     pub fn new(msg: String) -> Self {
-        Self { msg }
+        Self::generic_error(&msg)
     }
 }
 
@@ -187,7 +329,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             Some(e) => {
                 let ty = self.visit_expr(e)?;
                 if ty == TypeDecl::Unit {
-                    return Err(TypeCheckError::new(format!("Type mismatch: expected <expression>, but got {:?}", ty)));
+                    return Err(TypeCheckError::type_mismatch(TypeDecl::Unknown, ty));
                 }
                 Some(ty)
             }
@@ -200,7 +342,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             }
             (Some(decl), Some(ty)) => {
                 if decl != ty {
-                    return Err(TypeCheckError::new(format!("Type mismatch: expected {:?}, but got {:?}", decl, ty)));
+                    return Err(TypeCheckError::type_mismatch(decl.clone(), ty.clone()));
                 }
                 self.context.set_var(name, ty.clone());
             }
@@ -427,7 +569,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: arithmetic operations require matching numeric types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
+                    return Err(TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
                 }
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
@@ -437,14 +579,14 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: comparison operators require matching types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
+                    return Err(TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
                 if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    return Err(TypeCheckError::new(format!("Type mismatch: logical operators require Bool types, but got {:?} and {:?}", resolved_lhs_ty, resolved_rhs_ty)));
+                    return Err(TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
                 }
             }
         };
@@ -498,8 +640,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                             if last_ty == ty {
                                 Ok(ty)
                             } else {
-                                let ret_expr = self.core.expr_pool.get(e.to_index()).unwrap();
-                                Err(TypeCheckError::new(format!("Type mismatch(return): expected {:?}, but got {:?} : {:?}", last, ret_expr, s)))?
+                                return Err(TypeCheckError::type_mismatch(last_ty, ty).with_context("return statement"));
                             }
                         } else {
                             Ok(ty)
@@ -523,7 +664,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         if let Some(last_type) = last {
             Ok(last_type)
         } else {
-            Err(TypeCheckError::new(format!("Type of block mismatch: expected {:?}", last)))
+            Err(TypeCheckError::generic_error("Empty block - no return value"))
         }
     }
 
@@ -589,7 +730,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let lhs_ty = self.core.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
         let rhs_ty = self.core.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
         if lhs_ty != rhs_ty {
-            return Err(TypeCheckError::new(format!("Type mismatch: lhs expected {:?}, but rhs got {:?}", lhs_ty, rhs_ty)));
+            return Err(TypeCheckError::type_mismatch(lhs_ty, rhs_ty).with_context("assignment"));
         }
         Ok(lhs_ty)
     }
@@ -601,8 +742,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
-            let name = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
-            return Err(TypeCheckError::new(format!("Identifier {:?} not found", name)));
+            let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+            return Err(TypeCheckError::not_found("Identifier", name_str));
         }
     }
 
@@ -620,8 +761,8 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
             self.pop_context();
-            let fn_name = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
-            Err(TypeCheckError::new(format!("Function {:?} not found", fn_name)))
+            let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+            Err(TypeCheckError::not_found("Function", fn_name_str))
         }
     }
 
@@ -635,7 +776,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         let num_str = self.core.string_interner.resolve(value)
-            .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
+            .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;
         
         // If we have a type hint from val/var declaration, validate and return the hint type
         if let Some(hint) = self.type_inference.type_hint.clone() {
@@ -645,7 +786,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         // Return the hinted type - transformation will happen in visit_val or array processing
                         return Ok(hint);
                     } else {
-                        return Err(TypeCheckError::new(format!("Cannot convert {} to Int64", num_str)));
+                        return Err(TypeCheckError::conversion_error(num_str, "Int64"));
                     }
                 },
                 TypeDecl::UInt64 => {
@@ -653,7 +794,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         // Return the hinted type - transformation will happen in visit_val or array processing
                         return Ok(hint);
                     } else {
-                        return Err(TypeCheckError::new(format!("Cannot convert {} to UInt64", num_str)));
+                        return Err(TypeCheckError::conversion_error(num_str, "UInt64"));
                     }
                 },
                 _ => {
@@ -675,7 +816,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             // Very large positive number that doesn't fit in i64 - must be u64
             Ok(TypeDecl::UInt64)
         } else {
-            Err(TypeCheckError::new(format!("Invalid number literal: {}", num_str)))
+            Err(TypeCheckError::invalid_literal(num_str, "number"))
         }
     }
 
@@ -698,7 +839,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
 
     fn visit_array_literal(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         if elements.is_empty() {
-            return Err(TypeCheckError::new("Empty array literals are not supported".to_string()));
+            return Err(TypeCheckError::array_error("Empty array literals are not supported"));
         }
 
         // Save the original type hint to restore later
@@ -761,7 +902,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                             match (actual_type, expected_element_type) {
                                 (TypeDecl::Int64, TypeDecl::UInt64) | 
                                 (TypeDecl::UInt64, TypeDecl::Int64) => {
-                                    return Err(TypeCheckError::new(format!(
+                                    return Err(TypeCheckError::array_error(&format!(
                                         "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
                                         i, actual_type, expected_element_type
                                     )));
@@ -771,7 +912,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                                     if actual_type == expected_element_type {
                                         // Already matches, no change needed
                                     } else {
-                                        return Err(TypeCheckError::new(format!(
+                                        return Err(TypeCheckError::array_error(&format!(
                                             "Array element {} has type {:?} but expected {:?}",
                                             i, actual_type, expected_element_type
                                         )));
@@ -793,7 +934,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         let first_type = &element_types[0];
         for (i, element_type) in element_types.iter().enumerate() {
             if element_type != first_type {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::array_error(&format!(
                     "Array elements must have the same type, but element {} has type {:?} while first element has type {:?}",
                     i, element_type, first_type
                 )));
@@ -831,7 +972,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 index_type
             },
             _ => {
-                return Err(TypeCheckError::new(format!(
+                return Err(TypeCheckError::array_error(&format!(
                     "Array index must be an integer type, but got {:?}", index_type
                 )));
             }
@@ -841,11 +982,11 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         match array_type {
             TypeDecl::Array(ref element_types, _size) => {
                 if element_types.is_empty() {
-                    return Err(TypeCheckError::new("Cannot access elements of empty array".to_string()));
+                    return Err(TypeCheckError::array_error("Cannot access elements of empty array"));
                 }
                 Ok(element_types[0].clone())
             }
-            _ => Err(TypeCheckError::new(format!(
+            _ => Err(TypeCheckError::array_error(&format!(
                 "Cannot index into non-array type {:?}", array_type
             )))
         }
@@ -929,10 +1070,9 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                     // Valid types
                 },
                 _ => {
-                    return Err(TypeCheckError::new(format!(
-                        "Unsupported field type {:?} for field '{}' in struct '{}'",
-                        field.type_decl, field.name, name
-                    )));
+                    return Err(TypeCheckError::unsupported_operation(
+                        &format!("field type in struct '{}'", name), field.type_decl.clone()
+                    ));
                 }
             }
         }
@@ -951,12 +1091,11 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         // Valid parameter types
                     },
                     _ => {
-                        return Err(TypeCheckError::new(format!(
-                            "Unsupported parameter type {:?} in method '{}' for impl block '{}'",
-                            param_type, 
-                            self.core.string_interner.resolve(method.name).unwrap_or("<unknown>"),
-                            target_type
-                        )));
+                        let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                        return Err(TypeCheckError::unsupported_operation(
+                            &format!("parameter type in method '{}' for impl block '{}'", method_name, target_type),
+                            param_type.clone()
+                        ));
                     }
                 }
             }
@@ -968,12 +1107,11 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                         // Valid return types
                     },
                     _ => {
-                        return Err(TypeCheckError::new(format!(
-                            "Unsupported return type {:?} in method '{}' for impl block '{}'",
-                            ret_type,
-                            self.core.string_interner.resolve(method.name).unwrap_or("<unknown>"),
-                            target_type
-                        )));
+                        let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                        return Err(TypeCheckError::unsupported_operation(
+                            &format!("return type in method '{}' for impl block '{}'", method_name, target_type),
+                            ret_type.clone()
+                        ));
                     }
                 }
             }
@@ -997,10 +1135,9 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             }
             _ => {
                 let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
-                Err(TypeCheckError::new(format!(
-                    "Cannot access field '{}' on non-struct type {:?}",
-                    field_name, obj_type
-                )))
+                Err(TypeCheckError::unsupported_operation(
+                    &format!("field access '{}'", field_name), obj_type
+                ))
             }
         }
     }
@@ -1022,18 +1159,16 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                     "len" => {
                         // String.len() method - no arguments required, returns u64
                         if !args.is_empty() {
-                            return Err(TypeCheckError::new(format!(
-                                "String.len() method takes no arguments, but {} provided",
-                                args.len()
-                            )));
+                            return Err(TypeCheckError::method_error(
+                                "len", TypeDecl::String, &format!("takes no arguments, but {} provided", args.len())
+                            ));
                         }
                         Ok(TypeDecl::UInt64)
                     }
                     _ => {
-                        Err(TypeCheckError::new(format!(
-                            "Method '{}' not found for String type",
-                            method_name
-                        )))
+                        Err(TypeCheckError::method_error(
+                            method_name, TypeDecl::String, "method not found"
+                        ))
                     }
                 }
             }
@@ -1043,10 +1178,9 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
                 Ok(TypeDecl::Unknown)
             }
             _ => {
-                Err(TypeCheckError::new(format!(
-                    "Cannot call method '{}' on non-struct type {:?}",
-                    method_name, obj_type
-                )))
+                Err(TypeCheckError::method_error(
+                    method_name, obj_type, "method call on non-struct type"
+                ))
             }
         }
     }
@@ -1168,25 +1302,25 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         if let Some(expr) = self.core.expr_pool.get_mut(expr_ref.to_index()) {
             if let Expr::Number(value) = expr {
                 let num_str = self.core.string_interner.resolve(*value)
-                    .ok_or_else(|| TypeCheckError::new("Failed to resolve number literal".to_string()))?;
+                    .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;
                 
                 match target_type {
                     TypeDecl::UInt64 => {
                         if let Ok(val) = num_str.parse::<u64>() {
                             *expr = Expr::UInt64(val);
                         } else {
-                            return Err(TypeCheckError::new(format!("Cannot convert {} to UInt64", num_str)));
+                            return Err(TypeCheckError::conversion_error(num_str, "UInt64"));
                         }
                     },
                     TypeDecl::Int64 => {
                         if let Ok(val) = num_str.parse::<i64>() {
                             *expr = Expr::Int64(val);
                         } else {
-                            return Err(TypeCheckError::new(format!("Cannot convert {} to Int64", num_str)));
+                            return Err(TypeCheckError::conversion_error(num_str, "Int64"));
                         }
                     },
                     _ => {
-                        return Err(TypeCheckError::new(format!("Cannot transform number to type: {:?}", target_type)));
+                        return Err(TypeCheckError::unsupported_operation("transform", target_type.clone()));
                     }
                 }
             }
@@ -1378,7 +1512,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             
             // Cross-type operations (UInt64 vs Int64) - generally not allowed for safety
             (TypeDecl::UInt64, TypeDecl::Int64) | (TypeDecl::Int64, TypeDecl::UInt64) => {
-                Err(TypeCheckError::new(format!("Cannot mix signed and unsigned integer types: {:?} and {:?}", lhs_ty, rhs_ty)))
+                Err(TypeCheckError::type_mismatch_operation("mixed signed/unsigned", lhs_ty.clone(), rhs_ty.clone()))
             },
             
             // Other type mismatches
@@ -1386,7 +1520,7 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
                 if lhs_ty == rhs_ty {
                     Ok((lhs_ty.clone(), rhs_ty.clone()))
                 } else {
-                    Err(TypeCheckError::new(format!("Type mismatch: cannot convert between {:?} and {:?}", lhs_ty, rhs_ty)))
+                    Err(TypeCheckError::type_mismatch(lhs_ty.clone(), rhs_ty.clone()))
                 }
             }
         }

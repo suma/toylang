@@ -182,6 +182,9 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
         // Now checking...
         self.is_checked_fn.insert(func.name, None);
 
+        // Clear type cache at the start of each function to limit cache scope
+        self.type_cache.clear();
+
         self.call_depth += 1;
 
         let statements = match self.stmt_pool.get(s.to_index()).unwrap() {
@@ -406,6 +409,9 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError> {
         let mut last_empty = true;
         let mut last: Option<TypeDecl> = None;
+        
+        // Clear type cache at the start of each block to limit cache scope to current block
+        self.type_cache.clear();
         
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;

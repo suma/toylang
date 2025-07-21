@@ -13,7 +13,7 @@ use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
 
-pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
+pub fn check_typing(program: &mut Program, source_code: Option<&str>) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
     let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner);
 
@@ -26,7 +26,20 @@ pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
         // println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
         if r.is_err() {
-            errors.push(format!("type_check failed in {}: {}", name, r.unwrap_err()));
+            let mut error = r.unwrap_err();
+            
+            // Add source location information if available
+            if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
+                // Calculate line and column from source
+                let (line, column) = calculate_line_col_from_offset(source, location.offset as usize);
+                error.location = Some(frontend::type_checker::SourceLocation {
+                    line,
+                    column,
+                    offset: location.offset,
+                });
+            }
+            
+            errors.push(format!("type_check failed in {}: {}", name, error));
         }
     });
 
@@ -35,6 +48,25 @@ pub fn check_typing(program: &mut Program) -> Result<(), Vec<String>> {
     } else {
         Err(errors)
     }
+}
+
+fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
+    let mut line = 1u32;
+    let mut column = 1u32;
+    
+    for (i, ch) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    
+    (line, column)
 }
 
 fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterError> {

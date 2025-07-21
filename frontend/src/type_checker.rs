@@ -39,7 +39,7 @@ pub enum TypeCheckErrorKind {
 pub struct TypeCheckError {
     kind: TypeCheckErrorKind,
     context: Option<String>,
-    location: Option<SourceLocation>,
+    pub location: Option<SourceLocation>,
 }
 
 impl TypeCheckError {

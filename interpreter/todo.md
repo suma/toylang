@@ -71,6 +71,14 @@
     - 包括的テストスイート：lexer・パーサー両方のテスト追加
     - 使用例：example/comment_test.t でコメント機能のデモ
 
+15. **コンパイラ警告の未使用import除去** ✅ (2024-07-21完了)
+    - dead_code警告を完全解消してコードベースをクリーンアップ
+    - 未使用ヘルパーメソッドを削除：type_mismatch_with_location, not_found_with_location, type_mismatch_operation_with_location
+    - LookaheadBufferの未使用min_sizeフィールドを実際に活用
+    - cleanup処理でバッファの最小サイズ維持機能を実装
+    - メモリ効率とパフォーマンスの最適化を両立
+    - 104個の全テストが通過、機能への影響なし
+
 14. **配列要素の型推論機能の実装** ✅ (2024-07-05完了)
     - 配列のelement_typeから自動的に要素の型を推論する機能を完全実装
     - 例：`val a: [i64; 3] = [1, 2, 3]` で `1, 2, 3` を自動的に `i64` 型と推論

@@ -57,30 +57,7 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         self.core.location_pool.get_stmt_location(stmt_ref).cloned()
     }
     
-    // Helper methods to create errors with location information
-    fn type_mismatch_with_location(&self, expected: TypeDecl, actual: TypeDecl, expr_ref: &ExprRef) -> TypeCheckError {
-        let mut error = TypeCheckError::type_mismatch(expected, actual);
-        if let Some(location) = self.get_expr_location(expr_ref) {
-            error = error.with_location(location);
-        }
-        error
-    }
-    
-    fn not_found_with_location(&self, item_type: &str, name: &str, expr_ref: &ExprRef) -> TypeCheckError {
-        let mut error = TypeCheckError::not_found(item_type, name);
-        if let Some(location) = self.get_expr_location(expr_ref) {
-            error = error.with_location(location);
-        }
-        error
-    }
-    
-    fn type_mismatch_operation_with_location(&self, operation: &str, left: TypeDecl, right: TypeDecl, expr_ref: &ExprRef) -> TypeCheckError {
-        let mut error = TypeCheckError::type_mismatch_operation(operation, left, right);
-        if let Some(location) = self.get_expr_location(expr_ref) {
-            error = error.with_location(location);
-        }
-        error
-    }
+    // Helper methods for location tracking (can be used for future error reporting enhancements)
 
     pub fn push_context(&mut self) {
         self.context.vars.push(HashMap::new());

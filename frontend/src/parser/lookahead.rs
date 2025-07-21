@@ -84,11 +84,19 @@ impl LookaheadBuffer {
     /// Perform efficient cleanup by removing consumed tokens
     fn cleanup(&mut self) {
         if self.position > 0 {
-            // Remove consumed tokens from the front
-            for _ in 0..self.position {
+            // Remove consumed tokens from the front, but keep minimum tokens if possible
+            let tokens_to_remove = if self.buffer.len() > self.min_size {
+                // Keep at least min_size tokens, or remove consumed tokens if less
+                std::cmp::min(self.position, self.buffer.len().saturating_sub(self.min_size))
+            } else {
+                // If we have less than min_size tokens, don't remove any
+                0
+            };
+            
+            for _ in 0..tokens_to_remove {
                 self.buffer.pop_front();
             }
-            self.position = 0;
+            self.position = self.position.saturating_sub(tokens_to_remove);
         }
         
         // Shrink capacity if buffer is much larger than needed

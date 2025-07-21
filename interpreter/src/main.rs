@@ -25,11 +25,11 @@ fn main() {
         return;
     }
 
-    let res = interpreter::execute_program(&program);
+    let res = interpreter::execute_program(&program, Some(&file), Some(&args[1]));
     if res.is_ok() {
         println!("Result: {:?}", res.unwrap());
     } else {
-        eprintln!("execute_program failed: {:?}", res.unwrap_err());
+        eprintln!("{}", res.unwrap_err());
     }
 }
 
@@ -88,7 +88,7 @@ mod tests {
 
         let program = program.unwrap();
 
-        let res = interpreter::execute_program(&program);
+        let res = interpreter::execute_program(&program, Some("fn main() -> u64 { 1u64 + 2u64 }"), Some("test.t"));
         assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }
@@ -106,9 +106,9 @@ mod tests {
             panic!("Type check errors: {:?}", errors);
         }
         
-        let res = interpreter::execute_program(&program);
+        let res = interpreter::execute_program(&program, Some(source_code), Some("test.t"));
         if res.is_err() {
-            panic!("Execution error: {:?}", res.unwrap_err());
+            panic!("Execution error: {}", res.unwrap_err());
         }
         Ok(res.unwrap())
     }
@@ -954,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "IndexOutOfBounds")]
+    #[should_panic(expected = "Array index")]
     fn test_array_index_out_of_bounds() {
         let program = r"
             fn main() -> i64 {
@@ -1413,7 +1413,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "IndexOutOfBounds")]
+    #[should_panic(expected = "Array index")]
     fn test_array_max_index_plus_one() {
         let program = r#"
             fn main() -> u64 {

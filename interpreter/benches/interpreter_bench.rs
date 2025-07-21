@@ -2,16 +2,16 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use frontend::Parser;
 use interpreter::{execute_program, check_typing};
 
-fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<interpreter::object::Object>>, interpreter::error::InterpreterError> {
+fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<interpreter::object::Object>>, String> {
     let mut parser = Parser::new(source);
     let mut program = parser.parse_program().unwrap();
     
-    let errors = check_typing(&mut program, Some(source));
+    let errors = check_typing(&mut program, Some(source), Some("benchmark.t"));
     if let Err(err_msgs) = errors {
         panic!("Type check errors: {:?}", err_msgs);
     }
     
-    execute_program(&program)
+    execute_program(&program, Some(source), Some("benchmark.t"))
 }
 
 fn fibonacci_benchmark(c: &mut Criterion) {
@@ -152,7 +152,7 @@ fn main() -> u64 {
             let mut parser = Parser::new(black_box(complex_program));
             let mut program = parser.parse_program().unwrap();
             
-            let errors = check_typing(&mut program, Some(complex_program));
+            let errors = check_typing(&mut program, Some(complex_program), Some("benchmark.t"));
             assert!(errors.is_ok());
             
             program

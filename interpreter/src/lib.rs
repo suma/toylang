@@ -138,8 +138,11 @@ fn register_methods(
     }
 }
 
-pub fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> {
-    let main_function = find_main_function(program)?;
+pub fn execute_program(program: &Program, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
+    let main_function = match find_main_function(program) {
+        Ok(func) => func,
+        Err(e) => return Err(format!("Runtime Error: {}", e)),
+    };
     
     let func_map = build_function_map(program);
     let mut string_interner = program.string_interner.clone();
@@ -155,5 +158,18 @@ pub fn execute_program(program: &Program) -> Result<RcObject, InterpreterError> 
     register_methods(&mut eval, method_registry);
     
     let no_args = vec![];
-    eval.evaluate_function(main_function, &no_args)
+    match eval.evaluate_function(main_function, &no_args) {
+        Ok(result) => Ok(result),
+        Err(runtime_error) => {
+            // Format runtime error with source location if available
+            let formatted_error = if let (Some(source), Some(file)) = (source_code, filename) {
+                let formatter = ErrorFormatter::new(source, file);
+                // Try to extract location from runtime error if possible
+                formatter.format_runtime_error(&runtime_error.to_string(), None)
+            } else {
+                format!("Runtime Error: {}", runtime_error)
+            };
+            Err(formatted_error)
+        }
+    }
 }

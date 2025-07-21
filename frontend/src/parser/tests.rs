@@ -554,7 +554,8 @@ mod parser_tests {
         let mut expr_pool = program.expression;
         let string_interner = &program.string_interner;
 
-        let mut tc = TypeCheckerVisitor::new(stmt_pool, &mut expr_pool, string_interner);
+        let location_pool = &program.location_pool;
+        let mut tc = TypeCheckerVisitor::new(stmt_pool, &mut expr_pool, string_interner, location_pool);
         program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
 
         program.function.iter().for_each(|f| {
@@ -577,7 +578,8 @@ mod parser_tests {
         let mut expr_pool = program.expression;
         let interner = program.string_interner;
 
-        let mut tc = TypeCheckerVisitor::new(&stmt_pool, &mut expr_pool, &interner);
+        let location_pool = program.location_pool;
+        let mut tc = TypeCheckerVisitor::new(&stmt_pool, &mut expr_pool, &interner, &location_pool);
         let mut res = true;
         program.function.iter().for_each(|f| {
             let r = tc.type_check(f.clone());

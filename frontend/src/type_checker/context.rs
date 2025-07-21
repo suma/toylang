@@ -24,12 +24,12 @@ impl TypeCheckContext {
     }
 
     pub fn set_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
-        let last = self.vars.last_mut().unwrap();
+        let last = self.vars.last_mut().expect("Variable stack should not be empty");
         last.insert(name, VarState { ty });
     }
 
     pub fn set_mutable_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
-        let last = self.vars.last_mut().unwrap();
+        let last = self.vars.last_mut().expect("Variable stack should not be empty");
         last.insert(name, VarState { ty });
     }
 

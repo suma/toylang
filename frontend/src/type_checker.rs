@@ -122,9 +122,9 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
 
         self.function_checking.call_depth += 1;
 
-        let statements = match self.core.stmt_pool.get(s.to_index()).unwrap() {
+        let statements = match self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))? {
             Stmt::Expression(e) => {
-                match self.core.expr_pool.0.get(e.to_index()).unwrap() {
+                match self.core.expr_pool.0.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))? {
                     Expr::Block(statements) => {
                         statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
@@ -165,7 +165,8 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         }
 
         for stmt in statements.iter() {
-            let res = self.core.stmt_pool.get(stmt.to_index()).unwrap().clone().accept(self);
+            let stmt_obj = self.core.stmt_pool.get(stmt.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+            let res = stmt_obj.clone().accept(self);
             if res.is_err() {
                 return res;
             } else {
@@ -240,7 +241,8 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
-        let result = self.core.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
+        let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+        let result = expr_obj.clone().accept(self);
         
         // If an error occurred, try to add location information if not already present
         let result = match result {
@@ -284,8 +286,14 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         let op = op.clone();
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.core.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
-        let rhs_ty = self.core.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
+        let lhs_ty = {
+            let lhs_obj = self.core.expr_pool.get(lhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+            lhs_obj.clone().accept(self)?
+        };
+        let rhs_ty = {
+            let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+            rhs_obj.clone().accept(self)?
+        };
         
         // Resolve types with automatic conversion for Number type
         let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)?;
@@ -391,13 +399,14 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            let stmt = self.core.stmt_pool.get(s.to_index()).unwrap();
+            let stmt = self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
             let stmt_type = match stmt {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
                         let e = e.clone();
-                        let ty = self.core.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
+                        let expr_obj = self.core.expr_pool.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+                        let ty = expr_obj.clone().accept(self)?;
                         if last_empty {
                             last_empty = false;
                             Ok(ty)
@@ -414,7 +423,10 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                         Ok(TypeDecl::Unit)
                     }
                 }
-                _ => self.core.stmt_pool.get(s.to_index()).unwrap().clone().accept(self),
+                _ => {
+                    let stmt_obj = self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+                    stmt_obj.clone().accept(self)
+                }
             };
 
             match stmt_type {
@@ -440,36 +452,39 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
 
         // Check if-block
         let if_block = then_block.clone();
-        let is_if_empty = match self.core.expr_pool.get(if_block.to_index()).unwrap() {
+        let is_if_empty = match self.core.expr_pool.get(if_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_if_empty {
-            let if_ty = self.core.expr_pool.get(if_block.to_index()).unwrap().clone().accept(self)?;
+            let if_expr = self.core.expr_pool.get(if_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))?;
+            let if_ty = if_expr.clone().accept(self)?;
             block_types.push(if_ty);
         }
 
         // Check elif-blocks
         for (_, elif_block) in elif_pairs {
             let elif_block = elif_block.clone();
-            let is_elif_empty = match self.core.expr_pool.get(elif_block.to_index()).unwrap() {
+            let is_elif_empty = match self.core.expr_pool.get(elif_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))? {
                 Expr::Block(expressions) => expressions.is_empty(),
                 _ => false,
             };
             if !is_elif_empty {
-                let elif_ty = self.core.expr_pool.get(elif_block.to_index()).unwrap().clone().accept(self)?;
+                let elif_expr = self.core.expr_pool.get(elif_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))?;
+                let elif_ty = elif_expr.clone().accept(self)?;
                 block_types.push(elif_ty);
             }
         }
 
         // Check else-block
         let else_block = else_block.clone();
-        let is_else_empty = match self.core.expr_pool.get(else_block.to_index()).unwrap() {
+        let is_else_empty = match self.core.expr_pool.get(else_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_else_empty {
-            let else_ty = self.core.expr_pool.get(else_block.to_index()).unwrap().clone().accept(self)?;
+            let else_expr = self.core.expr_pool.get(else_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))?;
+            let else_ty = else_expr.clone().accept(self)?;
             block_types.push(else_ty);
         }
 
@@ -492,8 +507,14 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        let lhs_ty = self.core.expr_pool.get(lhs.to_index()).unwrap().clone().accept(self)?;
-        let rhs_ty = self.core.expr_pool.get(rhs.to_index()).unwrap().clone().accept(self)?;
+        let lhs_ty = {
+            let lhs_obj = self.core.expr_pool.get(lhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+            lhs_obj.clone().accept(self)?
+        };
+        let rhs_ty = {
+            let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+            rhs_obj.clone().accept(self)?
+        };
         if lhs_ty != rhs_ty {
             return Err(TypeCheckError::type_mismatch(lhs_ty, rhs_ty).with_context("assignment"));
         }
@@ -516,9 +537,9 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         self.push_context();
         if let Some(fun) = self.context.get_fn(fn_name) {
             let status = self.function_checking.is_checked_fn.get(&fn_name);
-            if status.is_none() || status.clone().unwrap().is_none() {
+            if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
                 // not checked yet
-                let fun = self.context.get_fn(fn_name).unwrap();
+                let fun = self.context.get_fn(fn_name).ok_or_else(|| TypeCheckError::not_found("Function", "<INTERNAL_ERROR>"))?;
                 self.type_check(fun.clone())?;
             }
 
@@ -758,7 +779,8 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     }
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.core.expr_pool.get(expr.to_index()).unwrap().clone().accept(self)
+        let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
+        expr_obj.clone().accept(self)
     }
 
     fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -797,24 +819,28 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         if expr.is_none() {
             Ok(TypeDecl::Unit)
         } else {
-            let e = expr.unwrap();
-            self.core.expr_pool.get(e.to_index()).unwrap().clone().accept(self)?;
+            let e = expr.as_ref().ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
+            let expr_obj = self.core.expr_pool.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+            expr_obj.clone().accept(self)?;
             Ok(TypeDecl::Unit)
         }
     }
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
-        let range_ty = self.core.expr_pool.get(range.to_index()).unwrap().clone().accept(self)?;
+        let range_obj = self.core.expr_pool.get(range.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
+        let range_ty = range_obj.clone().accept(self)?;
         let ty = Some(range_ty);
         self.process_val_type(init, &ty, &Some(*range))?;
-        let res = self.core.expr_pool.get(body.to_index()).unwrap().clone().accept(self);
+        let body_obj = self.core.expr_pool.get(body.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
+        let res = body_obj.clone().accept(self);
         self.pop_context();
         res
     }
 
     fn visit_while(&mut self, _cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.core.expr_pool.get(body.to_index()).unwrap().clone().accept(self)
+        let body_obj = self.core.expr_pool.get(body.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
+        body_obj.clone().accept(self)
     }
 
     fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {
@@ -1031,7 +1057,7 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                     self.transform_numeric_expr(expr_ref, &hint)?;
                 }
             }
-        } else if type_decl.is_some() && type_decl.as_ref().unwrap() == &TypeDecl::Unknown && *expr_ty == TypeDecl::Int64 {
+        } else if type_decl.as_ref().map_or(false, |decl| *decl == TypeDecl::Unknown) && *expr_ty == TypeDecl::Int64 {
             // Unknown type declaration with Int64 inference - also transform
             if let Some(hint) = self.type_inference.type_hint.clone() {
                 if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {

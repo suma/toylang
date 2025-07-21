@@ -86,7 +86,8 @@ fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
 }
 
 fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterError> {
-    let main_id = program.string_interner.get("main").unwrap();
+    let main_id = program.string_interner.get("main")
+        .ok_or_else(|| InterpreterError::FunctionNotFound("main function symbol not found".to_string()))?;
     
     for func in &program.function {
         if func.name == main_id && func.parameter.is_empty() {

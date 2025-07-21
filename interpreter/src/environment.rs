@@ -38,12 +38,13 @@ impl Environment {
     }
 
     pub fn set_val(&mut self, name: DefaultSymbol, value: RcObject) {
-        let last = self.var.last_mut();
-        last.unwrap().insert(name,
-                    VariableValue{
-                        mutable: false,
-                        value
-                    });
+        if let Some(last) = self.var.last_mut() {
+            last.insert(name,
+                        VariableValue{
+                            mutable: false,
+                            value
+                        });
+        }
     }
 
     pub fn set_var(&mut self, name: DefaultSymbol, value: RcObject, set_type: VariableSetType, string_interner: &DefaultStringInterner) -> Result<(), InterpreterError> {
@@ -52,19 +53,21 @@ impl Environment {
         if current.is_none() || set_type == VariableSetType::Insert {
             // Insert new value
             let val = VariableValue{ mutable: true, value };
-            let last: &mut HashMap<DefaultSymbol, VariableValue> = self.var.last_mut().unwrap();
-            last.insert(name, val);
-        } else {
-            let current: &mut HashMap<DefaultSymbol, VariableValue> = current.unwrap();
-            // Overwrite variable
-            let entry = current.get_mut(&name).unwrap();
-
-            if !entry.mutable {
-                let name = string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
-                return Err(InterpreterError::ImmutableAssignment(format!("Variable {} already defined as immutable (val)", name)));
+            if let Some(last) = self.var.last_mut() {
+                last.insert(name, val);
             }
+        } else {
+            if let Some(current) = current {
+                // Overwrite variable
+                if let Some(entry) = current.get_mut(&name) {
+                    if !entry.mutable {
+                        let name = string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+                        return Err(InterpreterError::ImmutableAssignment(format!("Variable {} already defined as immutable (val)", name)));
+                    }
 
-            entry.value = value;
+                    entry.value = value;
+                }
+            }
         }
 
         Ok(())

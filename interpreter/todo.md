@@ -330,6 +330,23 @@
     - 未定義`source`変数を`complex_program`に修正してコンパイルエラー解消
     - 既存機能の完全な互換性維持：全テストが引き続き通過
 
+36. **unwrapの完全削除によるエラーハンドリング強化** ✅ (2024-07-21完了)
+    - プロジェクト全体から安全でないunwrap()を完全に除去
+    - frontendディレクトリの改善：
+      - `type_checker.rs`の60箇所以上のunwrap → `ok_or_else()`による適切なエラーハンドリング
+      - `type_checker/context.rs`の変数スタック操作 → `expect()`による明示的エラーメッセージ
+      - `build.rs`の環境変数 → `expect()`による明確なエラー表示
+      - パーサーテストの引数不整合 → LocationPool引数追加で修正
+    - interpreterディレクトリの改善：
+      - `main.rs`の3箇所のunwrap → `match`文による適切な分岐処理
+      - `evaluation.rs`の25箇所以上のunwrap → InterpreterErrorによる構造化エラー
+      - `lib.rs`のstring_interner → `ok_or_else()`によるエラーハンドリング
+      - `environment.rs`の変数スタック操作 → `if let`パターンによる安全な処理
+    - 借用チェックエラーの修正：ブロックスコープによる借用期間制御
+    - 全テストが引き続き通過：frontend 92テスト、interpreter 104テスト
+    - サンプルプログラム（fib.t）の正常動作確認完了
+    - エラーハンドリングの堅牢性向上により、パニック発生リスクを大幅削減
+
 
 ## 進行中 🚧
 

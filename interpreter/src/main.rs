@@ -12,11 +12,19 @@ fn main() {
     let mut parser = frontend::Parser::new(&file);
     let program = parser.parse_program();
     if program.is_err() {
-        println!("parser_program failed {:?}", program.unwrap_err());
+        if let Err(err) = program {
+            println!("parser_program failed {:?}", err);
+        }
         return;
     }
 
-    let mut program = program.unwrap();
+    let mut program = match program {
+        Ok(p) => p,
+        Err(e) => {
+            println!("Failed to parse program: {:?}", e);
+            return;
+        }
+    };
 
     if let Err(errors) = interpreter::check_typing(&mut program, Some(&file), Some(&args[1])) {
         for e in errors {
@@ -26,8 +34,8 @@ fn main() {
     }
 
     let res = interpreter::execute_program(&program, Some(&file), Some(&args[1]));
-    if res.is_ok() {
-        println!("Result: {:?}", res.unwrap());
+    if let Ok(result) = res {
+        println!("Result: {:?}", result);
     } else {
         eprintln!("{}", res.unwrap_err());
     }

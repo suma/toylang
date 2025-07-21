@@ -267,7 +267,8 @@ impl<'a> EvaluationContext<'a> {
 
     fn evaluate_method(&mut self, method: &MethodFunction) -> Result<EvaluationResult, InterpreterError> {
         // Get the method body from the statement pool
-        let stmt = self.stmt_pool.get(method.code.to_index()).unwrap();
+        let stmt = self.stmt_pool.get(method.code.to_index())
+            .ok_or_else(|| InterpreterError::InternalError("Invalid method code reference".to_string()))?;
         
         // Execute the method body 
         match stmt {
@@ -465,7 +466,9 @@ impl<'a> EvaluationContext<'a> {
                 Err(InterpreterError::InternalError("Expr::Number should be transformed to concrete type during type checking".to_string()))
             }
             Expr::Identifier(s) => {
-                Ok(EvaluationResult::Value(self.environment.get_val(*s).unwrap()))
+                let val = self.environment.get_val(*s)
+                    .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {:?}", s)))?;
+                Ok(EvaluationResult::Value(val))
             }
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
                 self.evaluate_if_elif_else(cond, then, elif_pairs, _else)
@@ -512,7 +515,11 @@ impl<'a> EvaluationContext<'a> {
 
         // Check if condition
         if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-            assert!(self.expr_pool.get(then.to_index()).unwrap().is_block(), "evaluate: if-then is not block");
+            let then_expr = self.expr_pool.get(then.to_index())
+                .ok_or_else(|| InterpreterError::InternalError("Invalid then block reference".to_string()))?;
+            if !then_expr.is_block() {
+                return Err(InterpreterError::InternalError("if-then is not block".to_string()));
+            }
             selected_block = Some(then);
         } else {
             // Check elif conditions
@@ -525,7 +532,11 @@ impl<'a> EvaluationContext<'a> {
                 }
 
                 if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-                    assert!(self.expr_pool.get(elif_block.to_index()).unwrap().is_block(), "evaluate: elif block is not block");
+                    let elif_expr = self.expr_pool.get(elif_block.to_index())
+                        .ok_or_else(|| InterpreterError::InternalError("Invalid elif block reference".to_string()))?;
+                    if !elif_expr.is_block() {
+                        return Err(InterpreterError::InternalError("elif block is not block".to_string()));
+                    }
                     selected_block = Some(elif_block);
                     break;
                 }
@@ -533,7 +544,11 @@ impl<'a> EvaluationContext<'a> {
 
             // If no elif condition matched, use else block
             if selected_block.is_none() {
-                assert!(self.expr_pool.get(_else.to_index()).unwrap().is_block(), "evaluate: else block is not block");
+                let else_expr = self.expr_pool.get(_else.to_index())
+                    .ok_or_else(|| InterpreterError::InternalError("Invalid else block reference".to_string()))?;
+                if !else_expr.is_block() {
+                    return Err(InterpreterError::InternalError("else block is not block".to_string()));
+                }
                 selected_block = Some(_else);
             }
         }
@@ -559,7 +574,8 @@ impl<'a> EvaluationContext<'a> {
     fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         if let Some(func) = self.function.get::<DefaultSymbol>(name) {
             // TODO: check arguments type
-            let args = self.expr_pool.get(args.to_index()).unwrap();
+            let args = self.expr_pool.get(args.to_index())
+                .ok_or_else(|| InterpreterError::InternalError("Invalid arguments reference".to_string()))?;
             match args {
                 Expr::ExprList(args) => {
                     if args.len() != func.parameter.len() {
@@ -730,8 +746,13 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<EvaluationResult, InterpreterError> {
-        let to_stmt = |s: &StmtRef| { self.stmt_pool.get(s.to_index()).unwrap() };
-        let statements = statements.iter().map(|s| to_stmt(s)).collect::<Vec<_>>();
+        let to_stmt = |s: &StmtRef| -> Result<&Stmt, InterpreterError> {
+            self.stmt_pool.get(s.to_index())
+                .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
+        };
+        let statements = statements.iter()
+            .map(|s| to_stmt(s))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut last: Option<EvaluationResult> = None;
         
         for stmt in statements {
@@ -784,7 +805,7 @@ impl<'a> EvaluationContext<'a> {
         }
         
         if last.is_some() {
-            Ok(last.unwrap())
+            last.ok_or_else(|| InterpreterError::InternalError("Empty block evaluation".to_string()))
         } else {
             Ok(EvaluationResult::None)
         }
@@ -803,9 +824,9 @@ impl<'a> EvaluationContext<'a> {
         let value = if expr.is_none() {
             Rc::new(RefCell::new(Object::Null))
         } else {
-            match self.evaluate(&expr.unwrap())? {
+            match self.evaluate(expr.as_ref().ok_or_else(|| InterpreterError::InternalError("Missing expression in value".to_string()))?)? {
                 EvaluationResult::Value(v) => v,
-                EvaluationResult::Return(v) => v.unwrap(),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
                 _ => Rc::new(RefCell::new(Object::Null)),
             }
         };
@@ -818,7 +839,7 @@ impl<'a> EvaluationContext<'a> {
         if expr.is_none() {
             return Ok(EvaluationResult::Return(None));
         }
-        match self.evaluate(&expr.unwrap())? {
+        match self.evaluate(expr.as_ref().ok_or_else(|| InterpreterError::InternalError("Missing expression in return".to_string()))?)? {
             EvaluationResult::Value(v) => Ok(EvaluationResult::Return(Some(v))),
             EvaluationResult::Return(v) => Ok(EvaluationResult::Return(v)),
             EvaluationResult::Break => Err(InterpreterError::InternalError("break cannot be used in here".to_string())),
@@ -838,7 +859,8 @@ impl<'a> EvaluationContext<'a> {
                 break;
             }
             
-            let body_expr = self.expr_pool.get(body.to_index()).unwrap();
+            let body_expr = self.expr_pool.get(body.to_index())
+                .ok_or_else(|| InterpreterError::InternalError("Invalid body expression reference".to_string()))?;
             if let Expr::Block(statements) = body_expr {
                 self.environment.enter_block();
                 let res = self.evaluate_block(statements);
@@ -876,7 +898,8 @@ impl<'a> EvaluationContext<'a> {
             });
         }
         
-        let block = self.expr_pool.get(block.to_index()).unwrap();
+        let block = self.expr_pool.get(block.to_index())
+            .ok_or_else(|| InterpreterError::InternalError("Invalid block expression reference".to_string()))?;
         if let Expr::Block(statements) = block {
             match start_ty {
                 TypeDecl::UInt64 => {
@@ -904,7 +927,8 @@ impl<'a> EvaluationContext<'a> {
 
     /// Handles expression statements
     fn handle_expression_statement(&mut self, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let e = self.expr_pool.get(expr.to_index()).unwrap();
+        let e = self.expr_pool.get(expr.to_index())
+            .ok_or_else(|| InterpreterError::InternalError("Invalid expression reference".to_string()))?;
         match e {
             Expr::Assign(lhs, rhs) => {
                 self.handle_assignment(lhs, rhs)
@@ -1046,12 +1070,13 @@ impl<'a> EvaluationContext<'a> {
 
         self.environment.enter_block();
         for i in 0..args.len() {
-            let name = function.parameter.get(i).unwrap().0;
+            let name = function.parameter.get(i)
+                .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
             let value = match self.evaluate(&args[i]) {
                 Ok(EvaluationResult::Value(v)) => v,
                 Ok(EvaluationResult::Return(v)) => {
                     self.environment.exit_block();
-                    return Ok(v.unwrap());
+                    return Ok(v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))));
                 },
                 Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => {
                     self.environment.exit_block();
@@ -1069,13 +1094,13 @@ impl<'a> EvaluationContext<'a> {
         let res = self.evaluate_block(block)?;
         self.environment.exit_block();
 
-        if function.return_type.is_none() || function.return_type.as_ref().unwrap() == &TypeDecl::Unit {
+        if function.return_type.as_ref().map_or(true, |t| *t == TypeDecl::Unit) {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
             Ok(match res {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.unwrap(),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }

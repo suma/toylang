@@ -83,6 +83,7 @@ fn main() -> u64 {
 - Types: `u64`, `i64`, `bool`
 - Control flow: `if/else`, `for i in start to end`, `break`, `continue`
 - All programs must have a `main()` function
+- **No semicolons required**: Statements are separated by newlines, not semicolons
 
 ## Architecture Notes
 

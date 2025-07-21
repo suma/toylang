@@ -18,7 +18,7 @@ fn main() {
 
     let mut program = program.unwrap();
 
-    if let Err(errors) = interpreter::check_typing(&mut program, Some(&file)) {
+    if let Err(errors) = interpreter::check_typing(&mut program, Some(&file), Some(&args[1])) {
         for e in errors {
             eprintln!("{}", e);
         }
@@ -102,7 +102,7 @@ mod tests {
         let mut program = parse_result.unwrap();
         
         // Check typing
-        if let Err(errors) = interpreter::check_typing(&mut program, Some(source_code)) {
+        if let Err(errors) = interpreter::check_typing(&mut program, Some(source_code), Some("test.t")) {
             panic!("Type check errors: {:?}", errors);
         }
         

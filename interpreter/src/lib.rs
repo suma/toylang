@@ -2,6 +2,7 @@ pub mod environment;
 pub mod object;
 pub mod evaluation;
 pub mod error;
+pub mod error_formatter;
 
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -12,13 +13,21 @@ use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
+use crate::error_formatter::ErrorFormatter;
 
-pub fn check_typing(program: &mut Program, source_code: Option<&str>) -> Result<(), Vec<String>> {
+pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
     let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+
+    // Create error formatter if we have source code and filename
+    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
+        Some(ErrorFormatter::new(source, file))
+    } else {
+        None
+    };
 
     program.function.iter().for_each(|func| {
         let name = program.string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
@@ -39,7 +48,14 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>) -> Result<
                 });
             }
             
-            errors.push(format!("type_check failed in {}: {}", name, error));
+            // Use formatter if available, otherwise fallback to simple format
+            let formatted_error = if let Some(ref fmt) = formatter {
+                fmt.format_type_check_error(&error)
+            } else {
+                format!("type_check failed in {}: {}", name, error)
+            };
+            
+            errors.push(formatted_error);
         }
     });
 

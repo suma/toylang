@@ -445,11 +445,11 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                         statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
                     _ => {
-                        panic!("type_check: expected block but {:?}", self.core.expr_pool.get(s.to_index()).unwrap());
+                        return Err(TypeCheckError::generic_error("type_check: expected block expression"));
                     }
                 }
             }
-            _ => panic!("type_check: expected block but {:?}", self.core.expr_pool.get(s.to_index()).unwrap()),
+            _ => return Err(TypeCheckError::generic_error("type_check: expected block statement")),
         };
 
         self.push_context();

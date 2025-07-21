@@ -18,24 +18,31 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
             parse_var_def(parser)
         }
         Some(Kind::Break) => {
+            let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.break_stmt())
+            Ok(parser.ast_builder.break_stmt(location))
         }
         Some(Kind::Continue) => {
+            let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.continue_stmt())
+            Ok(parser.ast_builder.continue_stmt(location))
         }
         Some(Kind::Return) => {
             parser.next();
             match parser.peek() {
                 Some(&Kind::NewLine) | Some(&Kind::BracketClose) | Some(Kind::EOF) => {
+                    let location = parser.current_source_location();
                     parser.next();
-                    Ok(parser.ast_builder.return_stmt(None))
+                    Ok(parser.ast_builder.return_stmt(None, location))
                 }
-                None => Ok(parser.ast_builder.return_stmt(None)),
+                None => {
+                    let location = parser.current_source_location();
+                    Ok(parser.ast_builder.return_stmt(None, location))
+                },
                 Some(_expr) => {
+                    let location = parser.current_source_location();
                     let expr = parser.parse_expr_impl()?;
-                    Ok(parser.ast_builder.return_stmt(Some(expr)))
+                    Ok(parser.ast_builder.return_stmt(Some(expr), location))
                 }
             }
         }
@@ -51,7 +58,8 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
                     parser.expect_err(&Kind::To)?;
                     let end = super::expr::parse_relational(parser)?;
                     let block = super::expr::parse_block(parser)?;
-                    Ok(parser.ast_builder.for_stmt(ident, start, end, block))
+                    let location = parser.current_source_location();
+                    Ok(parser.ast_builder.for_stmt(ident, start, end, block, location))
                 }
                 x => Err(anyhow!("parse_stmt for: expected identifier but {:?}", x)),
             }
@@ -60,7 +68,8 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
             parser.next();
             let cond = super::expr::parse_logical_expr(parser)?;
             let block = super::expr::parse_block(parser)?;
-            Ok(parser.ast_builder.while_stmt(cond, block))
+            let location = parser.current_source_location();
+            Ok(parser.ast_builder.while_stmt(cond, block, location))
         }
         _ => parser.parse_expr(),
     }
@@ -104,10 +113,11 @@ pub fn parse_var_def(parser: &mut Parser) -> Result<StmtRef> {
         Some(Kind::NewLine) => None,
         _ => return Err(anyhow!("parse_var_def: expected expression but {:?}", parser.peek())),
     };
+    let location = parser.current_source_location();
     if is_val {
-        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap()))
+        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap(), location))
     } else {
-        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs))
+        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs, location))
     }
 }
 
@@ -171,6 +181,7 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
     match parser.peek() {
         Some(Kind::Function) => {
             let fn_start_pos = parser.peek_position_n(0).unwrap().start;
+            let location = parser.current_source_location();
             parser.next();
             match parser.peek() {
                 Some(Kind::Identifier(s)) => {
@@ -199,7 +210,7 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                         name: method_name,
                         parameter: params,
                         return_type: ret_ty,
-                        code: parser.ast_builder.expression_stmt(block),
+                        code: parser.ast_builder.expression_stmt(block, location),
                         has_self_param: has_self,
                     }));
                     

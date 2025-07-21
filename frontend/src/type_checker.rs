@@ -5,7 +5,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::AstVisitor;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceLocation {
     pub line: u32,
     pub column: u32,
@@ -151,10 +151,11 @@ impl TypeCheckError {
 }
 
 #[derive(Debug)]
-pub struct CoreReferences<'a, 'b, 'c> {
+pub struct CoreReferences<'a, 'b, 'c, 'd> {
     pub stmt_pool: &'a StmtPool,
     pub expr_pool: &'b mut ExprPool,
     pub string_interner: &'c DefaultStringInterner,
+    pub location_pool: &'d LocationPool,
 }
 
 #[derive(Debug)]
@@ -202,8 +203,8 @@ impl PerformanceOptimization {
     }
 }
 
-pub struct TypeCheckerVisitor <'a, 'b, 'c> {
-    pub core: CoreReferences<'a, 'b, 'c>,
+pub struct TypeCheckerVisitor <'a, 'b, 'c, 'd> {
+    pub core: CoreReferences<'a, 'b, 'c, 'd>,
     pub context: TypeCheckContext,
     pub type_inference: TypeInferenceState,
     pub function_checking: FunctionCheckingState,
@@ -325,19 +326,53 @@ impl TypeCheckContext {
 }
 
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'c DefaultStringInterner) -> Self {
+impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'c DefaultStringInterner, location_pool: &'d LocationPool) -> Self {
         Self {
             core: CoreReferences {
                 stmt_pool,
                 expr_pool,
                 string_interner,
+                location_pool,
             },
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
         }
+    }
+    
+    fn get_expr_location(&self, expr_ref: &ExprRef) -> Option<SourceLocation> {
+        self.core.location_pool.get_expr_location(expr_ref).cloned()
+    }
+    
+    fn get_stmt_location(&self, stmt_ref: &StmtRef) -> Option<SourceLocation> {
+        self.core.location_pool.get_stmt_location(stmt_ref).cloned()
+    }
+    
+    // Helper methods to create errors with location information
+    fn type_mismatch_with_location(&self, expected: TypeDecl, actual: TypeDecl, expr_ref: &ExprRef) -> TypeCheckError {
+        let mut error = TypeCheckError::type_mismatch(expected, actual);
+        if let Some(location) = self.get_expr_location(expr_ref) {
+            error = error.with_location(location);
+        }
+        error
+    }
+    
+    fn not_found_with_location(&self, item_type: &str, name: &str, expr_ref: &ExprRef) -> TypeCheckError {
+        let mut error = TypeCheckError::not_found(item_type, name);
+        if let Some(location) = self.get_expr_location(expr_ref) {
+            error = error.with_location(location);
+        }
+        error
+    }
+    
+    fn type_mismatch_operation_with_location(&self, operation: &str, left: TypeDecl, right: TypeDecl, expr_ref: &ExprRef) -> TypeCheckError {
+        let mut error = TypeCheckError::type_mismatch_operation(operation, left, right);
+        if let Some(location) = self.get_expr_location(expr_ref) {
+            error = error.with_location(location);
+        }
+        error
     }
 
     pub fn push_context(&mut self) {
@@ -512,7 +547,7 @@ impl Acceptable for Stmt {
     }
 }
 
-impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Check cache first
         if let Some(cached_type) = self.get_cached_type(expr) {
@@ -522,6 +557,15 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
         let result = self.core.expr_pool.get(expr.to_index()).unwrap().clone().accept(self);
+        
+        // If an error occurred, try to add location information if not already present
+        let result = match result {
+            Err(mut error) if error.location.is_none() => {
+                error.location = self.get_expr_location(expr);
+                Err(error)
+            }
+            other => other,
+        };
         
         // Cache the result if successful
         if let Ok(ref result_type) = result {
@@ -540,7 +584,16 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        self.core.stmt_pool.get(stmt.to_index()).unwrap_or(&Stmt::Break).clone().accept(self)
+        let result = self.core.stmt_pool.get(stmt.to_index()).unwrap_or(&Stmt::Break).clone().accept(self);
+        
+        // If an error occurred, try to add location information if not already present
+        match result {
+            Err(mut error) if error.location.is_none() => {
+                error.location = self.get_stmt_location(stmt);
+                Err(error)
+            }
+            other => other,
+        }
     }
 
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
@@ -1224,7 +1277,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 }
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     /// Get cached type for an expression if available
     fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
         self.optimization.type_cache.get(expr_ref)

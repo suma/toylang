@@ -6,7 +6,7 @@ use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource};
 
 use anyhow::{anyhow, Result};
-use string_interner::{DefaultStringInterner, DefaultSymbol};
+use string_interner::DefaultStringInterner;
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -149,6 +149,7 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Some(Kind::Function) => {
                     let fn_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
                     update_start_pos(fn_start_pos);
                     self.next();
                     match self.peek() {
@@ -177,7 +178,7 @@ impl<'a> Parser<'a> {
                                 name: fn_name,
                                 parameter: params,
                                 return_type: ret_ty,
-                                code: self.ast_builder.expression_stmt(block),
+                                code: self.ast_builder.expression_stmt(block, location),
                             }));
                         }
                         _ => return Err(anyhow!("expected function")),
@@ -185,6 +186,7 @@ impl<'a> Parser<'a> {
                 }
                 Some(Kind::Struct) => {
                     let struct_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
                     update_start_pos(struct_start_pos);
                     self.next();
                     match self.peek() {
@@ -197,13 +199,14 @@ impl<'a> Parser<'a> {
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
                             
-                            self.ast_builder.struct_decl_stmt(struct_name, fields);
+                            self.ast_builder.struct_decl_stmt(struct_name, fields, location);
                         }
                         _ => return Err(anyhow!("expected struct name")),
                     }
                 }
                 Some(Kind::Impl) => {
                     let impl_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
                     update_start_pos(impl_start_pos);
                     self.next();
                     match self.peek() {
@@ -216,7 +219,7 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(impl_end_pos);
                             
-                            self.ast_builder.impl_block_stmt(target_type, methods);
+                            self.ast_builder.impl_block_stmt(target_type, methods, location);
                         }
                         _ => return Err(anyhow!("expected type name for impl block")),
                     }
@@ -231,7 +234,7 @@ impl<'a> Parser<'a> {
 
         let mut ast_builder = AstBuilder::new();
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
-        let (expr, stmt) = ast_builder.extract_pools();
+        let (expr, stmt, location_pool) = ast_builder.extract_pools();
         let mut string_interner = DefaultStringInterner::new();
         std::mem::swap(&mut string_interner, &mut self.string_interner);
         Ok(Program{
@@ -240,6 +243,7 @@ impl<'a> Parser<'a> {
             function: def_func,
             statement: stmt,
             expression: expr,
+            location_pool,
             string_interner,
         })
     }

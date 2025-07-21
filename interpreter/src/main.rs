@@ -93,16 +93,16 @@ mod tests {
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }
 
-    fn test_program(program: &str) -> Result<Rc<RefCell<Object>>, InterpreterError> {
-        let mut parser = frontend::Parser::new(program);
-        let program = parser.parse_program();
-        if program.is_err() {
-            panic!("Parse error: {:?}", program.unwrap_err());
+    fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+        let mut parser = frontend::Parser::new(source_code);
+        let parse_result = parser.parse_program();
+        if parse_result.is_err() {
+            panic!("Parse error: {:?}", parse_result.unwrap_err());
         }
-        let mut program = program.unwrap();
+        let mut program = parse_result.unwrap();
         
         // Check typing
-        if let Err(errors) = interpreter::check_typing(&mut program, Some(program)) {
+        if let Err(errors) = interpreter::check_typing(&mut program, Some(source_code)) {
             panic!("Type check errors: {:?}", errors);
         }
         

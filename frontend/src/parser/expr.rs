@@ -45,7 +45,7 @@ impl<'a> Parser<'a> {
     }
 
     fn expr_to_stmt(&mut self, e: ExprRef) -> StmtRef {
-        self.ast_builder.expression_stmt(e)
+        self.ast_builder.expression_stmt(e, None)
     }
 }
 
@@ -55,7 +55,8 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> Result<ExprRef> {
             Some(Kind::Equal) => {
                 parser.next();
                 let new_rhs = parse_logical_expr(parser)?;
-                lhs = parser.ast_builder.assign_expr(lhs, new_rhs);
+                let location = parser.current_source_location();
+                lhs = parser.ast_builder.assign_expr(lhs, new_rhs, location);
             }
             _ => return Ok(lhs),
         }
@@ -79,10 +80,14 @@ pub fn parse_if(parser: &mut Parser) -> Result<ExprRef> {
             parser.next();
             parse_block(parser)?
         }
-        _ => parser.ast_builder.block_expr(vec![]),
+        _ => {
+            let location = parser.current_source_location();
+            parser.ast_builder.block_expr(vec![], location)
+        }
     };
 
-    Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block))
+    let location = parser.current_source_location();
+    Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block, location))
 }
 
 pub fn parse_block(parser: &mut Parser) -> Result<ExprRef> {
@@ -90,12 +95,14 @@ pub fn parse_block(parser: &mut Parser) -> Result<ExprRef> {
     match parser.peek() {
         Some(Kind::BraceClose) | None => {
             parser.next();
-            Ok(parser.ast_builder.block_expr(vec![]))
+            let location = parser.current_source_location();
+            Ok(parser.ast_builder.block_expr(vec![], location))
         }
         _ => {
             let block = parse_block_impl(parser, vec![])?;
             parser.expect_err(&Kind::BraceClose)?;
-            Ok(parser.ast_builder.block_expr(block))
+            let location = parser.current_source_location();
+            Ok(parser.ast_builder.block_expr(block, location))
         }
     }
 }
@@ -177,9 +184,10 @@ pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> R
 
         match matched_op {
             Some((_, op)) => {
+                let location = parser.current_source_location();
                 parser.next();
                 let rhs = (group.next_precedence)(parser)?;
-                lhs = parser.ast_builder.binary_expr(op.clone(), lhs, rhs);
+                lhs = parser.ast_builder.binary_expr(op.clone(), lhs, rhs, location);
             }
             None => return Ok(lhs),
         }
@@ -222,12 +230,14 @@ pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
                         parser.next();
                         
                         if parser.peek() == Some(&Kind::ParenOpen) {
+                            let location = parser.current_source_location();
                             parser.next();
                             let args = parse_expr_list(parser, vec![])?;
                             parser.expect_err(&Kind::ParenClose)?;
-                            expr = parser.ast_builder.method_call_expr(expr, field_symbol, args);
+                            expr = parser.ast_builder.method_call_expr(expr, field_symbol, args, location);
                         } else {
-                            expr = parser.ast_builder.field_access_expr(expr, field_symbol);
+                            let location = parser.current_source_location();
+                            expr = parser.ast_builder.field_access_expr(expr, field_symbol, location);
                         }
                     }
                     _ => return Err(anyhow!("parse_postfix: expected field name after '.'")),
@@ -254,46 +264,67 @@ pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
             parser.next();
             match parser.peek() {
                 Some(Kind::ParenOpen) => {
+                    let location = parser.current_source_location();
                     parser.next();
                     let args = parse_expr_list(parser, vec![])?;
                     parser.expect_err(&Kind::ParenClose)?;
-                    let expr = parser.ast_builder.call_expr(s, args);
+                    let expr = parser.ast_builder.call_expr(s, args, location);
                     Ok(expr)
                 }
                 Some(Kind::BracketOpen) => {
+                    let location = parser.current_source_location();
                     parser.next();
                     let index = parser.parse_expr_impl()?;
                     parser.expect_err(&Kind::BracketClose)?;
-                    let array_ref = parser.ast_builder.identifier_expr(s);
-                    Ok(parser.ast_builder.array_access_expr(array_ref, index))
+                    let array_ref = parser.ast_builder.identifier_expr(s, None);
+                    Ok(parser.ast_builder.array_access_expr(array_ref, index, location))
                 }
                 Some(Kind::BraceOpen) => {
+                    let location = parser.current_source_location();
                     parser.next();
                     let fields = parse_struct_literal_fields(parser, vec![])?;
                     parser.expect_err(&Kind::BraceClose)?;
-                    Ok(parser.ast_builder.struct_literal_expr(s, fields))
+                    Ok(parser.ast_builder.struct_literal_expr(s, fields, location))
                 }
                 _ => {
-                    Ok(parser.ast_builder.identifier_expr(s))
+                    let location = parser.current_source_location();
+                    Ok(parser.ast_builder.identifier_expr(s, location))
                 }
             }
         }
         x => {
             let e = Ok(match x {
-                Some(&Kind::UInt64(num)) => parser.ast_builder.uint64_expr(num),
-                Some(&Kind::Int64(num)) => parser.ast_builder.int64_expr(num),
-                Some(&Kind::Null) => parser.ast_builder.null_expr(),
-                Some(&Kind::True) => parser.ast_builder.bool_true_expr(),
-                Some(&Kind::False) => parser.ast_builder.bool_false_expr(),
+                Some(&Kind::UInt64(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.uint64_expr(num, location)
+                },
+                Some(&Kind::Int64(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.int64_expr(num, location)
+                },
+                Some(&Kind::Null) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.null_expr(location)
+                },
+                Some(&Kind::True) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.bool_true_expr(location)
+                },
+                Some(&Kind::False) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.bool_false_expr(location)
+                },
                 Some(Kind::String(s)) => {
-                    let s = s.to_string();
-                    let s = parser.string_interner.get_or_intern(s);
-                    parser.ast_builder.string_expr(s)
+                    let s_copy = s.to_string();
+                    let location = parser.current_source_location();
+                    let s = parser.string_interner.get_or_intern(s_copy);
+                    parser.ast_builder.string_expr(s, location)
                 }
                 Some(Kind::Integer(s)) => {
-                    let s = s.to_string();
-                    let s = parser.string_interner.get_or_intern(s);
-                    parser.ast_builder.number_expr(s)
+                    let s_copy = s.to_string();
+                    let location = parser.current_source_location();
+                    let s = parser.string_interner.get_or_intern(s_copy);
+                    parser.ast_builder.number_expr(s, location)
                 }
                 x => {
                     return match x {
@@ -307,10 +338,11 @@ pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
                             parse_block(parser)
                         }
                         Some(Kind::BracketOpen) => {
+                            let location = parser.current_source_location();
                             parser.next();
                             let elements = parse_array_elements(parser, vec![])?;
                             parser.expect_err(&Kind::BracketClose)?;
-                            Ok(parser.ast_builder.array_literal_expr(elements))
+                            Ok(parser.ast_builder.array_literal_expr(elements, location))
                         }
                         Some(Kind::If) => {
                             parser.next();

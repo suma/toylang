@@ -6,7 +6,7 @@ fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<inte
     let mut parser = Parser::new(source);
     let mut program = parser.parse_program().unwrap();
     
-    let errors = check_typing(&mut program);
+    let errors = check_typing(&mut program, Some(source));
     if let Err(err_msgs) = errors {
         panic!("Type check errors: {:?}", err_msgs);
     }
@@ -152,7 +152,7 @@ fn main() -> u64 {
             let mut parser = Parser::new(black_box(complex_program));
             let mut program = parser.parse_program().unwrap();
             
-            let errors = check_typing(&mut program);
+            let errors = check_typing(&mut program, Some(complex_program));
             assert!(errors.is_ok());
             
             program

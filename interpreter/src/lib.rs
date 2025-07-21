@@ -15,7 +15,7 @@ use crate::error::InterpreterError;
 
 pub fn check_typing(program: &mut Program, source_code: Option<&str>) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner);
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });

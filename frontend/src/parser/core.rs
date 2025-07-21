@@ -2,6 +2,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::token::Kind;
+use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource};
 
 use anyhow::{anyhow, Result};
@@ -15,6 +16,7 @@ pub struct Parser<'a> {
     token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
     pub string_interner: DefaultStringInterner,
+    input: &'a str,
 }
 
 impl<'a> Parser<'a> {
@@ -24,6 +26,7 @@ impl<'a> Parser<'a> {
             token_provider: TokenProvider::with_buffer_capacity(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner: DefaultStringInterner::new(),
+            input,
         }
     }
 
@@ -38,6 +41,45 @@ impl<'a> Parser<'a> {
 
     pub fn peek_position_n(&mut self, pos: usize) -> Option<&std::ops::Range<usize>> {
         self.token_provider.peek_position_at(pos)
+    }
+
+    pub fn current_position(&mut self) -> Option<&std::ops::Range<usize>> {
+        self.token_provider.peek_position_at(0)
+    }
+
+    /// Get current source location with line and column information
+    pub fn current_source_location(&mut self) -> Option<SourceLocation> {
+        if let Some(position) = self.current_position() {
+            let offset = position.start;
+            let (line, column) = self.offset_to_line_col(offset);
+            Some(SourceLocation {
+                line,
+                column,
+                offset: offset as u32,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Calculate line and column from absolute offset
+    fn offset_to_line_col(&self, offset: usize) -> (u32, u32) {
+        let mut line = 1u32;
+        let mut column = 1u32;
+        
+        for (i, ch) in self.input.char_indices() {
+            if i >= offset {
+                break;
+            }
+            if ch == '\n' {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+        }
+        
+        (line, column)
     }
 
     pub fn next(&mut self) {

@@ -270,6 +270,18 @@
     - 包括的テストスイート - LookaheadBufferとTokenProviderの独立テスト
     - 全88個のfrontendテスト・104個のinterpreterテストが引き続き成功（機能の完全な互換性維持）
 
+33. **TypeCheckErrorにソースコード位置情報を追加** ✅ (2024-07-21完了)
+    - `SourceLocation`構造体を実装：`line: u32`, `column: u32`, `offset: u32`フィールド
+    - `TypeCheckError`構造体に`location: Option<SourceLocation>`フィールドを追加
+    - `with_location()`メソッドでエラーに位置情報を付与可能
+    - エラーメッセージ表示時に位置情報を含む形式：`3:18:45: Type mismatch...`
+    - パーサーに位置情報取得機能を追加：`current_source_location()`メソッド
+    - `offset_to_line_col()`メソッドで絶対オフセットから行列番号を計算
+    - `Node`構造体に`to_source_location()`ヘルパーメソッドを追加
+    - AST構造と位置情報の連携機能を実装
+    - デモプログラムで位置情報機能の動作確認を完了
+    - エラー発生箇所の正確な特定により、デバッグ効率が大幅に向上
+
 
 ## 進行中 🚧
 

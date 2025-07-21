@@ -5,6 +5,13 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::AstVisitor;
 
+#[derive(Debug, Clone)]
+pub struct SourceLocation {
+    pub line: u32,
+    pub column: u32,
+    pub offset: u32,
+}
+
 #[derive(Debug)]
 pub struct VarState {
     ty: TypeDecl,
@@ -32,6 +39,7 @@ pub enum TypeCheckErrorKind {
 pub struct TypeCheckError {
     kind: TypeCheckErrorKind,
     context: Option<String>,
+    location: Option<SourceLocation>,
 }
 
 impl TypeCheckError {
@@ -39,6 +47,7 @@ impl TypeCheckError {
         Self {
             kind: TypeCheckErrorKind::TypeMismatch { expected, actual },
             context: None,
+            location: None,
         }
     }
 
@@ -50,6 +59,7 @@ impl TypeCheckError {
                 right,
             },
             context: None,
+            location: None,
         }
     }
 
@@ -60,6 +70,7 @@ impl TypeCheckError {
                 name: name.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
@@ -70,6 +81,7 @@ impl TypeCheckError {
                 type_name,
             },
             context: None,
+            location: None,
         }
     }
 
@@ -80,6 +92,7 @@ impl TypeCheckError {
                 to: to.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
@@ -89,6 +102,7 @@ impl TypeCheckError {
                 message: message.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
@@ -100,6 +114,7 @@ impl TypeCheckError {
                 reason: reason.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
@@ -110,6 +125,7 @@ impl TypeCheckError {
                 expected_type: expected_type.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
@@ -119,11 +135,17 @@ impl TypeCheckError {
                 message: message.to_string(),
             },
             context: None,
+            location: None,
         }
     }
 
     pub fn with_context(mut self, context: &str) -> Self {
         self.context = Some(context.to_string());
+        self
+    }
+
+    pub fn with_location(mut self, location: SourceLocation) -> Self {
+        self.location = Some(location);
         self
     }
 }
@@ -220,11 +242,17 @@ impl std::fmt::Display for TypeCheckError {
             }
         };
 
-        if let Some(context) = &self.context {
-            write!(f, "{} (in {})", base_message, context)
-        } else {
-            write!(f, "{}", base_message)
+        let mut result = base_message;
+
+        if let Some(location) = &self.location {
+            result = format!("{}:{}:{}: {}", location.line, location.column, location.offset, result);
         }
+
+        if let Some(context) = &self.context {
+            result = format!("{} (in {})", result, context);
+        }
+
+        write!(f, "{}", result)
     }
 }
 

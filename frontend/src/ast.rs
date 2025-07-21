@@ -1,6 +1,6 @@
 use std::rc::Rc;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
-use crate::type_checker::{Acceptable, TypeCheckError};
+use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 
@@ -18,6 +18,16 @@ pub struct StmtPool(pub Vec<Stmt>);
 pub struct Node {
     pub start: usize,
     pub end: usize,
+}
+
+impl Node {
+    pub fn to_source_location(&self, line: u32, column: u32) -> SourceLocation {
+        SourceLocation {
+            line,
+            column,
+            offset: self.start as u32,
+        }
+    }
 }
 
 impl ExprRef {

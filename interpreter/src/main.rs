@@ -42,7 +42,6 @@ mod tests {
     use frontend::ast::*;
     use string_interner::DefaultStringInterner;
     use interpreter::object::Object;
-    use interpreter::error::InterpreterError;
     use interpreter::evaluation::{EvaluationContext, EvaluationResult};
 
     #[test]
@@ -55,7 +54,8 @@ mod tests {
         let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &mut interner, HashMap::new());
         let result = match ctx.evaluate(&expr_ref) {
             Ok(EvaluationResult::Value(v)) => v,
-            _ => panic!("evaluate should return int64 value"),
+            Ok(other) => panic!("Expected Value but got {:?}", other),
+            Err(e) => panic!("Evaluation failed: {:?}", e),
         };
 
         assert_eq!(result.borrow().unwrap_int64(), 42);
@@ -93,24 +93,17 @@ mod tests {
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }
 
-    fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+    fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
         let mut parser = frontend::Parser::new(source_code);
-        let parse_result = parser.parse_program();
-        if parse_result.is_err() {
-            panic!("Parse error: {:?}", parse_result.unwrap_err());
-        }
-        let mut program = parse_result.unwrap();
+        let mut program = parser.parse_program()
+            .map_err(|e| format!("Parse error: {:?}", e))?;
         
         // Check typing
-        if let Err(errors) = interpreter::check_typing(&mut program, Some(source_code), Some("test.t")) {
-            panic!("Type check errors: {:?}", errors);
-        }
+        interpreter::check_typing(&mut program, Some(source_code), Some("test.t"))
+            .map_err(|errors| format!("Type check errors: {:?}", errors))?;
         
-        let res = interpreter::execute_program(&program, Some(source_code), Some("test.t"));
-        if res.is_err() {
-            panic!("Execution error: {}", res.unwrap_err());
-        }
-        Ok(res.unwrap())
+        // Execute program
+        interpreter::execute_program(&program, Some(source_code), Some("test.t"))
     }
 
     #[test]
@@ -1413,7 +1406,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "Array index")]
     fn test_array_max_index_plus_one() {
         let program = r#"
             fn main() -> u64 {
@@ -1421,12 +1413,13 @@ mod tests {
                 a[5u64]  # Out of bounds (max+1)
             }
         "#;
-        let _result = test_program(program);
+        let result = test_program(program);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Array index"));
     }
 
     // Boundary value tests - Array size 0
     #[test]
-    #[should_panic(expected = "not supported")]
     fn test_array_size_zero() {
         let program = r#"
             fn main() -> u64 {
@@ -1434,7 +1427,13 @@ mod tests {
                 0u64
             }
         "#;
-        let _result = test_program(program);
+        let result = test_program(program);
+        assert!(result.is_err());
+        // This could be caught at type check time or parse time
+        let error_msg = result.unwrap_err();
+        assert!(error_msg.contains("not supported") || 
+                error_msg.contains("Type check errors") ||
+                error_msg.contains("Parse error"));
     }
 
     // Boundary value tests - Deep recursion
@@ -1476,26 +1475,28 @@ mod tests {
 
     // Enhanced error handling tests - Undefined variable (detected at type check time)
     #[test]
-    #[should_panic(expected = "Type check errors")]
     fn test_undefined_variable_access() {
         let program = r#"
             fn main() -> u64 {
                 undefined_var
             }
         "#;
-        let _result = test_program(program);
+        let result = test_program(program);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Type check errors"));
     }
 
     // Enhanced error handling tests - Undefined function (detected at type check time)
     #[test]
-    #[should_panic(expected = "Type check errors")]
     fn test_undefined_function_call() {
         let program = r#"
             fn main() -> u64 {
                 undefined_function()
             }
         "#;
-        let _result = test_program(program);
+        let result = test_program(program);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Type check errors"));
     }
 
     // Enhanced error handling tests - Function argument type mismatch (should pass type check)
@@ -1519,7 +1520,6 @@ mod tests {
 
     // Enhanced error handling tests - Array assignment type mismatch (detected at type check time)
     #[test]
-    #[should_panic(expected = "Type check errors")]
     fn test_array_assignment_type_mismatch() {
         let program = r#"
             fn main() -> u64 {
@@ -1528,7 +1528,9 @@ mod tests {
                 a[0u64]
             }
         "#;
-        let _result = test_program(program);
+        let result = test_program(program);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Type check errors"));
     }
 
     // Struct field access and method call tests

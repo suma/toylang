@@ -4,12 +4,11 @@ use interpreter::{execute_program, check_typing};
 
 fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<interpreter::object::Object>>, String> {
     let mut parser = Parser::new(source);
-    let mut program = parser.parse_program().unwrap();
+    let mut program = parser.parse_program()
+        .map_err(|e| format!("Parse error: {:?}", e))?;
     
-    let errors = check_typing(&mut program, Some(source), Some("benchmark.t"));
-    if let Err(err_msgs) = errors {
-        panic!("Type check errors: {:?}", err_msgs);
-    }
+    check_typing(&mut program, Some(source), Some("benchmark.t"))
+        .map_err(|err_msgs| format!("Type check errors: {:?}", err_msgs))?;
     
     execute_program(&program, Some(source), Some("benchmark.t"))
 }

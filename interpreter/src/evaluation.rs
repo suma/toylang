@@ -494,7 +494,8 @@ impl<'a> EvaluationContext<'a> {
 
     /// Evaluates literal values (Int64, UInt64, String, True, False)
     fn evaluate_literal(&self, expr: &Expr) -> Result<EvaluationResult, InterpreterError> {
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(expr)))))
+        let obj = convert_object(expr)?;
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
     }
 
     /// Evaluates if-elif-else control structure
@@ -909,7 +910,8 @@ impl<'a> EvaluationContext<'a> {
                 self.handle_assignment(lhs, rhs)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(convert_object(e)))))
+                let obj = convert_object(e)?;
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
             }
             Expr::Identifier(s) => {
                 self.handle_identifier_expression(*s)
@@ -1080,17 +1082,21 @@ impl<'a> EvaluationContext<'a> {
     }
 }
 
-pub fn convert_object(e: &Expr) -> Object {
+pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
     match e {
-        Expr::True => Object::Bool(true),
-        Expr::False => Object::Bool(false),
-        Expr::Int64(v) => Object::Int64(*v),
-        Expr::UInt64(v) => Object::UInt64(*v),
-        Expr::String(v) => Object::String(*v),
+        Expr::True => Ok(Object::Bool(true)),
+        Expr::False => Ok(Object::Bool(false)),
+        Expr::Int64(v) => Ok(Object::Int64(*v)),
+        Expr::UInt64(v) => Ok(Object::UInt64(*v)),
+        Expr::String(v) => Ok(Object::String(*v)),
         Expr::Number(_v) => {
             // Type-unspecified numbers should be resolved during type checking
-            panic!("Expr::Number should be transformed to concrete type during type checking: {:?}", e)
+            Err(InterpreterError::InternalError(format!(
+                "Expr::Number should be transformed to concrete type during type checking: {:?}", e
+            )))
         },
-        _ => panic!("Not handled yet {:?}", e),
+        _ => Err(InterpreterError::InternalError(format!(
+            "Expression type not handled in convert_object: {:?}", e
+        ))),
     }
 }

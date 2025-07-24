@@ -7,15 +7,16 @@ use super::token_source::{TokenProvider, LexerTokenSource};
 
 use anyhow::{anyhow, Result};
 use string_interner::DefaultStringInterner;
+use crate::parser::error::ParserError;
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }
-
 pub struct Parser<'a> {
     token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
     pub string_interner: DefaultStringInterner,
+    pub errors: Vec<ParserError>,
     input: &'a str,
 }
 
@@ -26,6 +27,7 @@ impl<'a> Parser<'a> {
             token_provider: TokenProvider::with_buffer_capacity(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner: DefaultStringInterner::new(),
+            errors: Vec::with_capacity(4),
             input,
         }
     }
@@ -48,17 +50,24 @@ impl<'a> Parser<'a> {
     }
 
     /// Get current source location with line and column information
-    pub fn current_source_location(&mut self) -> Option<SourceLocation> {
+    pub fn current_source_location(&mut self) -> SourceLocation {
         if let Some(position) = self.current_position() {
             let offset = position.start;
             let (line, column) = self.offset_to_line_col(offset);
-            Some(SourceLocation {
+            SourceLocation {
                 line,
                 column,
                 offset: offset as u32,
-            })
+            }
         } else {
-            None
+            // Default location when no position is available (e.g., at EOF)
+            let input_len = self.input.len();
+            let (line, column) = self.offset_to_line_col(input_len);
+            SourceLocation {
+                line,
+                column,
+                offset: input_len as u32,
+            }
         }
     }
 
@@ -101,9 +110,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    #[deprecated(note = "Use expect() instead - this method is redundant")]
     pub fn expect_err(&mut self, accept: &Kind) -> Result<()> {
-        self.expect(accept)
+        let tk = self.peek();
+        if tk.is_some() && *tk.unwrap() == *accept {
+            self.next();
+            Ok(())
+        } else {
+            let location = self.current_source_location();
+            self.errors.push(ParserError::unexpected_token(location, format!("{:?}", accept)));
+            self.next();
+            Ok(())
+        }
     }
 
     pub fn next_expr(&self) -> u32 {
@@ -178,7 +195,7 @@ impl<'a> Parser<'a> {
                                 name: fn_name,
                                 parameter: params,
                                 return_type: ret_ty,
-                                code: self.ast_builder.expression_stmt(block, location),
+                                code: self.ast_builder.expression_stmt(block, Some(location)),
                             }));
                         }
                         _ => return Err(anyhow!("expected function")),
@@ -199,7 +216,7 @@ impl<'a> Parser<'a> {
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
                             
-                            self.ast_builder.struct_decl_stmt(struct_name, fields, location);
+                            self.ast_builder.struct_decl_stmt(struct_name, fields, Some(location));
                         }
                         _ => return Err(anyhow!("expected struct name")),
                     }
@@ -219,7 +236,7 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(impl_end_pos);
                             
-                            self.ast_builder.impl_block_stmt(target_type, methods, location);
+                            self.ast_builder.impl_block_stmt(target_type, methods, Some(location));
                         }
                         _ => return Err(anyhow!("expected type name for impl block")),
                     }

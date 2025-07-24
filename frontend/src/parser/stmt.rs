@@ -20,12 +20,12 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
         Some(Kind::Break) => {
             let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.break_stmt(location))
+            Ok(parser.ast_builder.break_stmt(Some(location)))
         }
         Some(Kind::Continue) => {
             let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.continue_stmt(location))
+            Ok(parser.ast_builder.continue_stmt(Some(location)))
         }
         Some(Kind::Return) => {
             parser.next();
@@ -33,16 +33,16 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
                 Some(&Kind::NewLine) | Some(&Kind::BracketClose) | Some(Kind::EOF) => {
                     let location = parser.current_source_location();
                     parser.next();
-                    Ok(parser.ast_builder.return_stmt(None, location))
+                    Ok(parser.ast_builder.return_stmt(None, Some(location)))
                 }
                 None => {
                     let location = parser.current_source_location();
-                    Ok(parser.ast_builder.return_stmt(None, location))
+                    Ok(parser.ast_builder.return_stmt(None, Some(location)))
                 },
                 Some(_expr) => {
                     let location = parser.current_source_location();
                     let expr = parser.parse_expr_impl()?;
-                    Ok(parser.ast_builder.return_stmt(Some(expr), location))
+                    Ok(parser.ast_builder.return_stmt(Some(expr), Some(location)))
                 }
             }
         }
@@ -59,7 +59,7 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
                     let end = super::expr::parse_relational(parser)?;
                     let block = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
-                    Ok(parser.ast_builder.for_stmt(ident, start, end, block, location))
+                    Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
                 }
                 x => Err(anyhow!("parse_stmt for: expected identifier but {:?}", x)),
             }
@@ -69,7 +69,7 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
             let cond = super::expr::parse_logical_expr(parser)?;
             let block = super::expr::parse_block(parser)?;
             let location = parser.current_source_location();
-            Ok(parser.ast_builder.while_stmt(cond, block, location))
+            Ok(parser.ast_builder.while_stmt(cond, block, Some(location)))
         }
         _ => parser.parse_expr(),
     }
@@ -108,16 +108,16 @@ pub fn parse_var_def(parser: &mut Parser) -> Result<StmtRef> {
             if expr.is_err() {
                 return Err(expr.err().unwrap());
             }
-            Some(expr.unwrap())
+            Some(expr?)
         }
         Some(Kind::NewLine) => None,
         _ => return Err(anyhow!("parse_var_def: expected expression but {:?}", parser.peek())),
     };
     let location = parser.current_source_location();
     if is_val {
-        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap(), location))
+        Ok(parser.ast_builder.val_stmt(ident, Some(ty), rhs.unwrap(), Some(location)))
     } else {
-        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs, location))
+        Ok(parser.ast_builder.var_stmt(ident, Some(ty), rhs, Some(location)))
     }
 }
 
@@ -210,7 +210,7 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                         name: method_name,
                         parameter: params,
                         return_type: ret_ty,
-                        code: parser.ast_builder.expression_stmt(block, location),
+                        code: parser.ast_builder.expression_stmt(block, Some(location)),
                         has_self_param: has_self,
                     }));
                     

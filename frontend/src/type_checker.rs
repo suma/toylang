@@ -185,10 +185,18 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         // Check if the function body type matches the declared return type
         if let Some(ref expected_return_type) = func.return_type {
             if &last != expected_return_type {
+                // Create location information from function node
+                let func_location = SourceLocation {
+                    line: 1, // TODO: Calculate actual line from func.node
+                    column: 1, // TODO: Calculate actual column from func.node
+                    offset: func.node.start as u32,
+                };
+                
                 return Err(TypeCheckError::type_mismatch(
                     expected_return_type.clone(),
                     last.clone()
-                ));
+                ).with_location(func_location)
+                .with_context("function return type"));
             }
         }
         
@@ -306,7 +314,15 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         };
         
         // Resolve types with automatic conversion for Number type
-        let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)?;
+        let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)
+            .map_err(|mut error| {
+                if error.location.is_none() {
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                }
+                error
+            })?;
         
         // Context propagation: if we have a type hint, propagate it to Number expressions
         if let Some(hint) = self.type_inference.type_hint.clone() {
@@ -352,7 +368,11 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
                 } else {
-                    return Err(TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
+                    let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
                 }
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
@@ -362,14 +382,22 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    return Err(TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
+                    let mut error = TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
                 if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    return Err(TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()));
+                    let mut error = TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
                 }
             }
         };
@@ -539,6 +567,7 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+            // Note: Location information will be added by visit_expr
             return Err(TypeCheckError::not_found("Identifier", name_str));
         }
     }

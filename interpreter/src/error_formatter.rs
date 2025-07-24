@@ -1,3 +1,4 @@
+use frontend::parser::error::ParserError;
 use frontend::type_checker::{SourceLocation, TypeCheckError};
 
 pub struct ErrorFormatter<'a> {
@@ -11,6 +12,10 @@ impl<'a> ErrorFormatter<'a> {
             source_code,
             filename,
         }
+    }
+
+    pub fn format_parse_error(&self, error: &ParserError) -> String {
+        self.format_error_with_location(&error.to_string(), &error.location)
     }
 
     pub fn format_type_check_error(&self, error: &TypeCheckError) -> String {

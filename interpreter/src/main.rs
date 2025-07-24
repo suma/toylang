@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use interpreter;
+use interpreter::error_formatter::ErrorFormatter;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -11,6 +12,16 @@ fn main() {
     let file = fs::read_to_string(&args[1]).expect("Failed to read file");
     let mut parser = frontend::Parser::new(&file);
     let program = parser.parse_program();
+
+    let source = file.as_ref();
+    let filename = args[1].as_ref();
+    let formatter = ErrorFormatter::new(source, filename);
+    if parser.errors.len() > 0 {
+        parser.errors.iter().for_each(|e|
+            eprintln!("{}", formatter.format_parse_error(e))
+        );
+        return;
+    }
     if program.is_err() {
         if let Err(err) = program {
             println!("parser_program failed {:?}", err);

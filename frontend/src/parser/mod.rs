@@ -6,5 +6,6 @@ pub mod token_source;
 
 #[cfg(test)]
 pub mod tests;
+pub mod error;
 
 pub use core::Parser;

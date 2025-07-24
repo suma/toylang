@@ -1132,24 +1132,31 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         Ok(())
     }
 
-    // Record Number usage context for identifiers
+    // Record Number usage context for both identifiers and direct Number literals
     fn record_number_usage_context(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
             if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
-                if let Expr::Identifier(name) = expr {
-                    // Find all Number expressions that might belong to this variable
-                    // and record the context type
-                    for i in 0..self.core.expr_pool.len() {
-                        if let Some(candidate_expr) = self.core.expr_pool.get(i) {
-                            if let Expr::Number(_) = candidate_expr {
-                                let candidate_ref = ExprRef(i as u32);
-                                // Check if this Number might be associated with this variable
-                                if self.is_number_for_variable(*name, &candidate_ref) {
-                                    self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
+                match expr {
+                    Expr::Identifier(name) => {
+                        // Find all Number expressions that might belong to this variable
+                        // and record the context type
+                        for i in 0..self.core.expr_pool.len() {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(i) {
+                                if let Expr::Number(_) = candidate_expr {
+                                    let candidate_ref = ExprRef(i as u32);
+                                    // Check if this Number might be associated with this variable
+                                    if self.is_number_for_variable(*name, &candidate_ref) {
+                                        self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
+                                    }
                                 }
                             }
                         }
                     }
+                    Expr::Number(_) => {
+                        // Direct Number literal - record its resolved type
+                        self.type_inference.number_usage_context.push((expr_ref.clone(), resolved_ty.clone()));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1221,14 +1228,14 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     fn finalize_number_types(&mut self) -> Result<(), TypeCheckError> {
         // Use recorded context information to transform Number expressions
         let context_info = self.type_inference.number_usage_context.clone();
-        for (expr_ref, target_type) in context_info {
+        for (expr_ref, target_type) in &context_info {
             if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
                 if let Expr::Number(_) = expr {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
                     
                     // Update variable types in context if this expression is mapped to a variable
                     for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
-                        if mapped_expr_ref == &expr_ref {
+                        if mapped_expr_ref == expr_ref {
                             self.context.update_var_type(*var_name, target_type.clone());
                         }
                     }
@@ -1242,6 +1249,12 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
             if let Some(expr) = self.core.expr_pool.get(i) {
                 if let Expr::Number(_) = expr {
                     let expr_ref = ExprRef(i as u32);
+                    
+                    // Skip if already processed in first pass
+                    let already_processed = context_info.iter().any(|(processed_ref, _)| processed_ref == &expr_ref);
+                    if already_processed {
+                        continue;
+                    }
                     
                     // Find if this Number is associated with a variable and use its final type
                     let mut target_type = TypeDecl::UInt64; // default

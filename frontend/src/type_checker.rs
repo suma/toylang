@@ -182,6 +182,16 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         // Final pass: convert any remaining Number literals to default type (UInt64)
         self.finalize_number_types()?;
         
+        // Check if the function body type matches the declared return type
+        if let Some(ref expected_return_type) = func.return_type {
+            if &last != expected_return_type {
+                return Err(TypeCheckError::type_mismatch(
+                    expected_return_type.clone(),
+                    last.clone()
+                ));
+            }
+        }
+        
         self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
     }
@@ -1257,7 +1267,8 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                     }
                     
                     // Find if this Number is associated with a variable and use its final type
-                    let mut target_type = TypeDecl::UInt64; // default
+                    // Use type hint if available, otherwise default to UInt64
+                    let mut target_type = self.type_inference.type_hint.clone().unwrap_or(TypeDecl::UInt64);
                     
                     for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
                         if mapped_expr_ref == &expr_ref {

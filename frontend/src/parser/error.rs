@@ -1,5 +1,4 @@
 use crate::parser::error::ParserErrorKind::UnexpectedToken;
-use crate::token::Kind;
 use crate::type_checker::SourceLocation;
 
 #[derive(Debug)]

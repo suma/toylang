@@ -403,6 +403,13 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
             }
         }
         Some(Kind::BracketClose) => Ok(elements),
+        Some(Kind::NewLine) => {
+            parser.skip_newlines();
+            match parser.peek() {
+                Some(Kind::BracketClose) => Ok(elements),
+                _ => parse_array_elements(parser, elements)
+            }
+        }
         x => Err(anyhow!("parse_array_elements: unexpected token {:?}", x)),
     }
 }

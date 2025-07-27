@@ -1766,4 +1766,317 @@ mod tests {
         let value = result.unwrap().borrow().unwrap_uint64();
         assert_eq!(value, 8u64); // "test".len() = 4, 4 > 3, so 4 * 2 = 8
     }
+
+    // ========== Bool Array Type Inference Integration Tests ==========
+
+    #[test]
+    fn test_bool_array_literal_type_inference() {
+        let program = r#"
+            fn main() -> bool {
+                val bool_array = [true, false, true]
+                bool_array[0u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_bool_array_with_explicit_type() {
+        let program = r#"
+            fn main() -> bool {
+                val bool_array: [bool; 2] = [false, true]
+                bool_array[1u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_bool_array_with_comparisons() {
+        let program = r#"
+            fn main() -> bool {
+                val x = 5i64
+                val y = 10i64
+                val comparison_array = [x > y, x < y, x == x]
+                comparison_array[1u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true); // 5 < 10 is true
+    }
+
+    #[test]
+    fn test_bool_array_single_element() {
+        let program = r#"
+            fn main() -> bool {
+                val single_bool = [false]
+                single_bool[0u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, false);
+    }
+
+    #[test]
+    fn test_bool_array_logical_operations() {
+        let program = r#"
+            fn main() -> bool {
+                val a = true
+                val b = false
+                val logic_array = [a && b, a || b]
+                logic_array[1u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true); // true || false is true
+    }
+
+    // ========== Struct Array Type Inference Integration Tests ==========
+    // Note: These tests are pending parser support for struct syntax
+
+    // #[test]
+    // fn test_struct_array_literal_type_inference() {
+    //     let program = r#"
+    //         struct Point {
+    //             x: i64,
+    //             y: i64
+    //         }
+    //         
+    //         fn main() -> i64 {
+    //             val points = [
+    //                 Point { x: 1i64, y: 2i64 },
+    //                 Point { x: 3i64, y: 4i64 }
+    //             ]
+    //             points[0u64].x
+    //         }
+    //     "#;
+    //     let result = test_program(program);
+    //     assert!(result.is_ok());
+    //     let value = result.unwrap().borrow().unwrap_int64();
+    //     assert_eq!(value, 1i64);
+    // }
+
+    // #[test]
+    // fn test_struct_array_with_explicit_type() {
+    //     let program = r#"
+    //         struct Point {
+    //             x: i64,
+    //             y: i64
+    //         }
+    //         
+    //         fn main() -> i64 {
+    //             val points: [Point; 2] = [
+    //                 Point { x: 10i64, y: 20i64 },
+    //                 Point { x: 30i64, y: 40i64 }
+    //             ]
+    //             points[1u64].y
+    //         }
+    //     "#;
+    //     let result = test_program(program);
+    //     assert!(result.is_ok());
+    //     let value = result.unwrap().borrow().unwrap_int64();
+    //     assert_eq!(value, 40i64);
+    // }
+
+    // #[test]
+    // fn test_nested_struct_array() {
+    //     let program = r#"
+    //         struct Point {
+    //             x: i64,
+    //             y: i64
+    //         }
+    //         
+    //         struct Line {
+    //             start: Point,
+    //             end: Point
+    //         }
+    //         
+    //         fn main() -> i64 {
+    //             val lines = [
+    //                 Line {
+    //                     start: Point { x: 0i64, y: 0i64 },
+    //                     end: Point { x: 10i64, y: 10i64 }
+    //                 }
+    //             ]
+    //             lines[0u64].end.x
+    //         }
+    //     "#;
+    //     let result = test_program(program);
+    //     assert!(result.is_ok());
+    //     let value = result.unwrap().borrow().unwrap_int64();
+    //     assert_eq!(value, 10i64);
+    // }
+
+    // Error handling tests for array type inference
+
+    #[test]
+    fn test_bool_array_mixed_type_error() {
+        // This should fail type checking due to mixed Bool and Number types
+        let program = r#"
+            fn main() -> bool {
+                val mixed_array = [true, 42i64]
+                mixed_array[0u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.contains("Array") || error.contains("type") || error.contains("mismatch"));
+    }
+
+    #[test] 
+    fn test_empty_array_error() {
+        // This should fail type checking due to empty array
+        let program = r#"
+            fn main() -> i64 {
+                val empty_array = []
+                42i64
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.contains("Empty array") || error.contains("not supported"));
+    }
+
+    // Type inference verification tests
+
+    #[test]
+    fn test_bool_array_index_type_inference() {
+        let program = r#"
+            fn main() -> bool {
+                val bool_array = [true, false]
+                val index = 0u64
+                bool_array[index]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_bool_array_size_verification() {
+        // Test that array size is correctly inferred
+        let program = r#"
+            fn main() -> bool {
+                val bool_array = [false, true, false, true]
+                // Access last element to verify size is 4
+                bool_array[3u64]
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_bool_array_in_function_parameter() {
+        let program = r#"
+            fn get_first_bool(arr: [bool; 2]) -> bool {
+                arr[0u64]
+            }
+            
+            fn main() -> bool {
+                val bool_array = [true, false]
+                get_first_bool(bool_array)
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_bool_array_complex_inference() {
+        let program = r#"
+            fn main() -> bool {
+                val x = 10i64
+                val y = 20i64
+                val z = 15i64
+                val conditions = [
+                    x < y,
+                    y > z,
+                    z >= x,
+                    x == 10i64
+                ]
+                conditions[0u64] && conditions[1u64] && conditions[2u64] && conditions[3u64]
+            }
+        "#;
+        let result = test_program(program);
+        if result.is_err() {
+            println!("Error: {}", result.as_ref().unwrap_err());
+        }
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true); // All conditions should be true
+    }
+
+    #[test] 
+    fn test_struct_array_basic_inference() {
+        let program = r#"
+            struct Point {
+                x: i64,
+                y: i64
+            }
+
+            fn main() -> i64 {
+                val points = [
+                    Point { x: 1i64, y: 2i64 },
+                    Point { x: 3i64, y: 4i64 }
+                ]
+                points[0u64].x + points[1u64].y
+            }
+        "#;
+        let result = test_program(program);
+        // This will fail until struct syntax is implemented in parser
+        // For now, we expect it to fail gracefully
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nested_struct_array_inference() {
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+
+            fn main() -> i64 {
+                val nested = [
+                    Outer { 
+                        inner: Inner { value: 10i64 }, 
+                        count: 1i64 
+                    },
+                    Outer { 
+                        inner: Inner { value: 20i64 }, 
+                        count: 2i64 
+                    }
+                ]
+                nested[0u64].inner.value + nested[1u64].count
+            }
+        "#;
+        let result = test_program(program);
+        // This will also fail until struct syntax is implemented
+        assert!(result.is_err());
+    }
 }

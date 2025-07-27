@@ -21,6 +21,16 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+    
+    // Register all struct definitions first
+    for stmt_ref in &program.statement.0 {
+        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
+            let struct_symbol = program.string_interner.get(name).unwrap_or_else(|| {
+                panic!("Struct name '{}' not found in string interner", name)
+            });
+            tc.context.register_struct(struct_symbol, fields.clone());
+        }
+    }
 
     // Create error formatter if we have source code and filename
     let formatter = if let (Some(source), Some(file)) = (source_code, filename) {

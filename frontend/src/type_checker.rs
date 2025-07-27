@@ -719,6 +719,23 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                             }
                             // Type is correct, no transformation needed
                         },
+                        TypeDecl::Struct(actual_struct) => {
+                            // Struct literals - check type compatibility
+                            if let TypeDecl::Struct(expected_struct) = expected_element_type {
+                                if actual_struct != expected_struct {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Array element {} has struct type {:?} but expected {:?}",
+                                        i, actual_struct, expected_struct
+                                    )));
+                                }
+                                // Same struct type, no transformation needed
+                            } else {
+                                return Err(TypeCheckError::array_error(&format!(
+                                    "Array element {} has struct type {:?} but expected {:?}",
+                                    i, actual_struct, expected_element_type
+                                )));
+                            }
+                        },
                         actual_type if actual_type == expected_element_type => {
                             // Element already has the expected type, but may need AST transformation
                             // Check if this is a number literal that needs transformation
@@ -746,6 +763,20 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                                     return Err(TypeCheckError::array_error(&format!(
                                         "Cannot mix Bool with other types in array. Element {} has type {:?} but expected {:?}",
                                         i, actual_type, expected_element_type
+                                    )));
+                                },
+                                (TypeDecl::Struct(struct1), TypeDecl::Struct(struct2)) => {
+                                    if struct1 != struct2 {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Array element {} has struct type {:?} but expected {:?}",
+                                            i, struct1, struct2
+                                        )));
+                                    }
+                                },
+                                (TypeDecl::Struct(struct_name), other_type) | (other_type, TypeDecl::Struct(struct_name)) => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
+                                        struct_name, other_type, i
                                     )));
                                 },
                                 _ => {
@@ -907,13 +938,37 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     }
 
     fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError> {
-        // Struct declaration type checking - actual processing is not implemented yet
-        // Check field types for validity
+        // 1. Check for duplicate field names
+        let mut field_names = std::collections::HashSet::new();
         for field in fields {
-            // Check if each field type is valid
+            if !field_names.insert(field.name.clone()) {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Duplicate field '{}' in struct '{}'", field.name, name
+                )));
+            }
+        }
+        
+        // 2. Validate field types
+        for field in fields {
             match &field.type_decl {
                 TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
-                    // Valid types
+                    // Basic types are valid
+                },
+                TypeDecl::Struct(struct_name) => {
+                    // Check if referenced struct is already defined
+                    if !self.context.struct_definitions.contains_key(struct_name) {
+                        return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+                    }
+                },
+                TypeDecl::Array(element_types, _) => {
+                    // Validate array element types
+                    for element_type in element_types {
+                        if let TypeDecl::Struct(struct_name) = element_type {
+                            if !self.context.struct_definitions.contains_key(struct_name) {
+                                return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+                            }
+                        }
+                    }
                 },
                 _ => {
                     return Err(TypeCheckError::unsupported_operation(
@@ -923,7 +978,11 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
             }
         }
         
-        // Struct declaration returns Unit
+        // 3. Register struct definition  
+        // Note: We can't use get_or_intern here because string_interner is immutable
+        // The struct registration will need to be done elsewhere where we have mutable access
+        // For now, we'll defer this registration
+        
         Ok(TypeDecl::Unit)
     }
 
@@ -1032,12 +1091,50 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     }
 
     fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
-        // Type check all field values
-        for (_field_name, field_expr) in fields {
-            self.visit_expr(field_expr)?;
+        // 1. Check if struct definition exists and clone it
+        let struct_definition = self.context.get_struct_definition(*struct_name)
+            .ok_or_else(|| TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))?
+            .clone();
+        
+        // 2. Validate provided fields against struct definition
+        self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
+        
+        // 3. Type check each field and verify type compatibility
+        let mut field_types = std::collections::HashMap::new();
+        for (field_name, field_expr) in fields {
+            // Find expected field type from struct definition
+            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let expected_field_type = struct_definition.iter()
+                .find(|def| def.name == field_name_str)
+                .map(|def| &def.type_decl);
+            
+            // Set type hint for field expression
+            let original_hint = self.type_inference.type_hint.clone();
+            if let Some(expected_type) = expected_field_type {
+                self.type_inference.type_hint = Some(expected_type.clone());
+            }
+            
+            // Type check the field expression
+            let field_type = self.visit_expr(field_expr)?;
+            self.type_inference.type_hint = original_hint;
+            
+            // Verify type compatibility
+            if let Some(expected_type) = expected_field_type {
+                if &field_type != expected_type {
+                    // Check for Number type auto-conversion
+                    if field_type == TypeDecl::Number && (expected_type == &TypeDecl::Int64 || expected_type == &TypeDecl::UInt64) {
+                        self.transform_numeric_expr(field_expr, expected_type)?;
+                    } else {
+                        return Err(TypeCheckError::type_mismatch(expected_type.clone(), field_type));
+                    }
+                }
+            }
+            
+            field_types.insert(*field_name, field_type);
         }
         
-        // Return the struct type
+        // 4. Verify all required fields are provided (already done in validate_struct_fields)
+        
         Ok(TypeDecl::Struct(*struct_name))
     }
 }
@@ -1060,10 +1157,14 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         if let Some(decl) = type_decl {
             match decl {
                 TypeDecl::Array(element_types, _) => {
-                    // For array types, set the array type as hint for array literal processing
+                    // For array types (including struct arrays), set the array type as hint for array literal processing
                     if !element_types.is_empty() {
                         self.type_inference.type_hint = Some(decl.clone());
                     }
+                },
+                TypeDecl::Struct(_) => {
+                    // For struct types, set the struct type as hint for struct literal processing
+                    self.type_inference.type_hint = Some(decl.clone());
                 },
                 _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
                     self.type_inference.type_hint = Some(decl.clone());

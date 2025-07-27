@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::ast::Function;
+use crate::ast::{Function, StructField};
 use crate::type_decl::TypeDecl;
+use crate::type_checker::error::TypeCheckError;
+use crate::type_checker::core::CoreReferences;
 
 #[derive(Debug)]
 pub struct VarState {
@@ -13,6 +15,7 @@ pub struct VarState {
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
+    pub struct_definitions: HashMap<DefaultSymbol, Vec<StructField>>,
 }
 
 impl TypeCheckContext {
@@ -20,6 +23,7 @@ impl TypeCheckContext {
         Self {
             vars: vec![HashMap::new()],
             functions: HashMap::new(),
+            struct_definitions: HashMap::new(),
         }
     }
 
@@ -71,5 +75,48 @@ impl TypeCheckContext {
 
     pub fn pop_scope(&mut self) {
         self.vars.pop();
+    }
+
+    // Struct definition methods
+    pub fn register_struct(&mut self, name: DefaultSymbol, fields: Vec<StructField>) {
+        self.struct_definitions.insert(name, fields);
+    }
+    
+    pub fn get_struct_definition(&self, name: DefaultSymbol) -> Option<&Vec<StructField>> {
+        self.struct_definitions.get(&name)
+    }
+    
+    pub fn validate_struct_fields(&self, struct_name: DefaultSymbol, provided_fields: &Vec<(DefaultSymbol, crate::ast::ExprRef)>, string_interner: &CoreReferences) -> Result<(), TypeCheckError> {
+        if let Some(definition) = self.get_struct_definition(struct_name) {
+            // Check if all required fields are provided
+            for required_field in definition {
+                let field_name_symbol = string_interner.string_interner.get(&required_field.name).unwrap_or_else(|| panic!("Field name not found in string interner"));
+                let field_provided = provided_fields.iter().any(|(name, _)| *name == field_name_symbol);
+                if !field_provided {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Missing required field '{}' in struct '{:?}'", 
+                        required_field.name, struct_name
+                    )));
+                }
+            }
+            
+            // Check if any extra fields are provided
+            for (provided_field_name, _) in provided_fields {
+                let field_valid = definition.iter().any(|def| {
+                    let def_field_symbol = string_interner.string_interner.get(&def.name).unwrap_or_else(|| panic!("Field name not found in string interner"));
+                    def_field_symbol == *provided_field_name
+                });
+                if !field_valid {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Unknown field '{:?}' in struct '{:?}'", 
+                        provided_field_name, struct_name
+                    )));
+                }
+            }
+            
+            Ok(())
+        } else {
+            Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))
+        }
     }
 }

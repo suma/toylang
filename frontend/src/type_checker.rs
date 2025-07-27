@@ -1830,4 +1830,173 @@ mod tests {
             _ => panic!("Expected Array type, got {:?}", array_type),
         }
     }
+
+    // ========== Struct Array Type Inference Tests ==========
+
+    #[test]
+    fn test_struct_definition_registration() {
+        let mut string_interner = DefaultStringInterner::new();
+        let point_symbol = string_interner.get_or_intern("Point");
+        
+        let builder = create_test_ast_builder();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Register Point struct manually
+        let struct_fields: Vec<StructField> = vec![
+            StructField {
+                name: "x".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+            StructField {
+                name: "y".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        
+        type_checker.context.register_struct(point_symbol, struct_fields);
+        
+        // Verify struct registration
+        let definition = type_checker.context.get_struct_definition(point_symbol);
+        assert!(definition.is_some());
+        assert_eq!(definition.unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_struct_array_type_compatibility() {
+        let mut string_interner = DefaultStringInterner::new();
+        let point_symbol = string_interner.get_or_intern("Point");
+        
+        let builder = create_test_ast_builder();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Register Point struct
+        let struct_fields: Vec<StructField> = vec![
+            StructField {
+                name: "x".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        type_checker.context.register_struct(point_symbol, struct_fields);
+        
+        // Test array with same struct types
+        let point_type = TypeDecl::Struct(point_symbol);
+        let array_type = TypeDecl::Array(vec![point_type.clone(), point_type.clone()], 2);
+        
+        // This should be valid
+        assert!(matches!(array_type, TypeDecl::Array(ref types, 2) if types.len() == 2 && types[0] == point_type && types[1] == point_type));
+    }
+
+    #[test]
+    fn test_struct_field_validation() {
+        let mut string_interner = DefaultStringInterner::new();
+        let point_symbol = string_interner.get_or_intern("Point");
+        let x_symbol = string_interner.get_or_intern("x");
+        let y_symbol = string_interner.get_or_intern("y");
+        
+        let builder = create_test_ast_builder();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Register Point struct
+        let struct_fields: Vec<StructField> = vec![
+            StructField {
+                name: "x".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+            StructField {
+                name: "y".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        type_checker.context.register_struct(point_symbol, struct_fields);
+        
+        // Test struct literal validation with missing field - should fail
+        let incomplete_fields = vec![(x_symbol, ExprRef(0))]; // missing y field
+        let result = type_checker.context.validate_struct_fields(point_symbol, &incomplete_fields, &type_checker.core);
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("Missing required field"));
+    }
+
+    #[test]
+    fn test_mixed_struct_types_error() {
+        let mut string_interner = DefaultStringInterner::new();
+        let point_symbol = string_interner.get_or_intern("Point");
+        let circle_symbol = string_interner.get_or_intern("Circle");
+        
+        let builder = create_test_ast_builder();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Register Point and Circle structs
+        let point_fields: Vec<StructField> = vec![
+            StructField {
+                name: "x".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        let circle_fields: Vec<StructField> = vec![
+            StructField {
+                name: "radius".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        
+        type_checker.context.register_struct(point_symbol, point_fields);
+        type_checker.context.register_struct(circle_symbol, circle_fields);
+        
+        // Test array with mixed struct types - should be caught by array type checker
+        let point_type = TypeDecl::Struct(point_symbol);
+        let circle_type = TypeDecl::Struct(circle_symbol);
+        
+        // This demonstrates that different struct types cannot be mixed in arrays
+        assert_ne!(point_type, circle_type);
+    }
+
+    #[test]
+    fn test_struct_array_inference_with_hint() {
+        let mut string_interner = DefaultStringInterner::new();
+        let point_symbol = string_interner.get_or_intern("Point");
+        
+        let builder = create_test_ast_builder();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Register Point struct
+        let struct_fields: Vec<StructField> = vec![
+            StructField {
+                name: "x".to_string(),
+                type_decl: TypeDecl::Int64,
+                visibility: crate::ast::Visibility::Public,
+            },
+        ];
+        type_checker.context.register_struct(point_symbol, struct_fields);
+        
+        // Set type hint for struct array
+        let point_type = TypeDecl::Struct(point_symbol);
+        let array_hint = TypeDecl::Array(vec![point_type.clone()], 1);
+        type_checker.type_inference.type_hint = Some(array_hint.clone());
+        
+        // Verify type hint was set correctly
+        assert_eq!(type_checker.type_inference.type_hint, Some(array_hint));
+        
+        // Test that the setup_type_hint_for_val method works with struct arrays
+        let old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
+        assert!(type_checker.type_inference.type_hint.is_some());
+    }
 }

@@ -990,6 +990,10 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     }
 
     fn visit_impl_block(&mut self, target_type: &String, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {
+        // Get the struct symbol for the target type
+        let struct_symbol = self.core.string_interner.get(target_type)
+            .ok_or_else(|| TypeCheckError::not_found("struct type", target_type))?;
+
         // Impl block type checking - validate methods
         for method in methods {
             // Check method parameter types
@@ -1023,6 +1027,9 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                     }
                 }
             }
+
+            // Register method in context
+            self.context.register_struct_method(struct_symbol, method.name, method.clone());
         }
         
         // Impl block declaration returns Unit
@@ -1102,10 +1109,17 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                     }
                 }
             }
-            TypeDecl::Identifier(_) | TypeDecl::Struct(_) => {
-                // Assume method calls on custom types are valid for now
-                // Return a placeholder type - this should be improved to look up actual method return types
-                Ok(TypeDecl::Unknown)
+            TypeDecl::Identifier(struct_symbol) | TypeDecl::Struct(struct_symbol) => {
+                // Look up method in struct methods
+                if let Some(method) = self.context.get_struct_method(struct_symbol, *method) {
+                    // Return method's return type, or Unit if not specified
+                    Ok(method.return_type.clone().unwrap_or(TypeDecl::Unit))
+                } else {
+                    let struct_name = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
+                    Err(TypeCheckError::method_error(
+                        method_name, obj_type.clone(), &format!("method not found on struct '{}'", struct_name)
+                    ))
+                }
             }
             _ => {
                 Err(TypeCheckError::method_error(

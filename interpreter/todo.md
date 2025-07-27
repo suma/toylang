@@ -364,6 +364,17 @@
     - 統合テスト準備：将来のパーサー実装に備えた基本・ネスト構造体配列テスト
     - 構造体パーサー未実装の課題を明確化（将来の実装課題として文書化）
 
+39. **構造体メソッド呼び出しの型推論を修正** ✅ (2024-07-27完了)
+    - 構造体メソッド呼び出しでUnknown型を返していた問題を修正
+    - TypeCheckContextにstruct_methodsフィールドを追加してメソッド管理機能を実装
+    - register_struct_method()とget_struct_method()メソッドを追加
+    - visit_impl_blockでメソッドをcontextに登録するロジックを実装
+    - visit_method_callでメソッドの実際の戻り値型を返すよう修正
+    - check_typing関数でimplブロックを事前処理してメソッド登録順序を調整
+    - frontend/src/visitor.rsモジュールをpublicに変更してAstVisitorトレイトへのアクセスを可能に
+    - 失敗していたtest_struct_method_call_with_literalとtest_struct_method_call_with_argsテストが通過
+    - 全117個のテストが成功、構造体メソッドの型推論が正常に動作
+
 
 ## 進行中 🚧
 

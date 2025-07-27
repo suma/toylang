@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::ast::{Function, StructField};
+use crate::ast::{Function, StructField, MethodFunction};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
 use crate::type_checker::core::CoreReferences;
@@ -16,6 +16,7 @@ pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
     pub struct_definitions: HashMap<DefaultSymbol, Vec<StructField>>,
+    pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
 }
 
 impl TypeCheckContext {
@@ -24,6 +25,7 @@ impl TypeCheckContext {
             vars: vec![HashMap::new()],
             functions: HashMap::new(),
             struct_definitions: HashMap::new(),
+            struct_methods: HashMap::new(),
         }
     }
 
@@ -118,5 +120,14 @@ impl TypeCheckContext {
         } else {
             Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))
         }
+    }
+
+    // Method management methods
+    pub fn register_struct_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
+        self.struct_methods.entry(struct_name).or_insert_with(HashMap::new).insert(method_name, method);
+    }
+
+    pub fn get_struct_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Rc<MethodFunction>> {
+        self.struct_methods.get(&struct_name)?.get(&method_name)
     }
 }

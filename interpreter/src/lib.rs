@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use frontend;
 use frontend::ast::*;
 use frontend::type_checker::*;
+use frontend::visitor::AstVisitor;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
@@ -18,12 +19,20 @@ use crate::error_formatter::ErrorFormatter;
 pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
     
-    // Collect struct information before creating type checker
+    // Collect struct and impl information before creating type checker
     let mut struct_definitions: Vec<(DefaultSymbol, Vec<StructField>)> = Vec::new();
+    let mut impl_blocks: Vec<(String, Vec<std::rc::Rc<MethodFunction>>)> = Vec::new();
+    
     for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
-            let struct_symbol = program.string_interner.get_or_intern(name);
-            struct_definitions.push((struct_symbol, fields.clone()));
+        match stmt_ref {
+            frontend::ast::Stmt::StructDecl { name, fields } => {
+                let struct_symbol = program.string_interner.get_or_intern(name);
+                struct_definitions.push((struct_symbol, fields.clone()));
+            }
+            frontend::ast::Stmt::ImplBlock { target_type, methods } => {
+                impl_blocks.push((target_type.clone(), methods.clone()));
+            }
+            _ => {}
         }
     }
     
@@ -43,6 +52,18 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
     } else {
         None
     };
+
+    // Process impl blocks to register methods
+    for (target_type, methods) in impl_blocks {
+        if let Err(err) = tc.visit_impl_block(&target_type, &methods) {
+            let formatted_error = if let Some(ref fmt) = formatter {
+                fmt.format_type_check_error(&err)
+            } else {
+                format!("Impl block error for {}: {}", target_type, err)
+            };
+            errors.push(formatted_error);
+        }
+    }
 
     program.function.iter().for_each(|func| {
         let name = program.string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");

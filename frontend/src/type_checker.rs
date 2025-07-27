@@ -709,6 +709,16 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                             self.transform_numeric_expr(element, expected_element_type)?;
                             element_types[i] = expected_element_type.clone();
                         },
+                        TypeDecl::Bool => {
+                            // Bool literals - check type compatibility
+                            if expected_element_type != &TypeDecl::Bool {
+                                return Err(TypeCheckError::array_error(&format!(
+                                    "Array element {} has type Bool but expected {:?}",
+                                    i, expected_element_type
+                                )));
+                            }
+                            // Type is correct, no transformation needed
+                        },
                         actual_type if actual_type == expected_element_type => {
                             // Element already has the expected type, but may need AST transformation
                             // Check if this is a number literal that needs transformation
@@ -729,6 +739,12 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
                                 (TypeDecl::UInt64, TypeDecl::Int64) => {
                                     return Err(TypeCheckError::array_error(&format!(
                                         "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
+                                        i, actual_type, expected_element_type
+                                    )));
+                                },
+                                (TypeDecl::Bool, _other_type) | (_other_type, TypeDecl::Bool) => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Cannot mix Bool with other types in array. Element {} has type {:?} but expected {:?}",
                                         i, actual_type, expected_element_type
                                     )));
                                 },
@@ -1396,5 +1412,321 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::*;
+    use crate::type_decl::TypeDecl;
+    use string_interner::DefaultStringInterner;
+
+    fn create_test_ast_builder() -> AstBuilder {
+        AstBuilder::new()
+    }
+
+    fn create_test_type_checker<'a>(
+        stmt_pool: &'a StmtPool, 
+        expr_pool: &'a mut ExprPool, 
+        string_interner: &'a DefaultStringInterner,
+        location_pool: &'a LocationPool
+    ) -> TypeCheckerVisitor<'a, 'a, 'a, 'a> {
+        TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner, location_pool)
+    }
+
+    #[test]
+    fn test_bool_array_literal_type_inference() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create bool literals: [true, false, true]
+        let true_expr = builder.bool_true_expr(None);
+        let false_expr = builder.bool_false_expr(None);
+        let true_expr2 = builder.bool_true_expr(None);
+        
+        let array_elements = vec![true_expr, false_expr, true_expr2];
+        let array_expr = builder.array_literal_expr(array_elements, None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Test type inference
+        let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1), ExprRef(2)]);
+        
+        assert!(result.is_ok());
+        let array_type = result.unwrap();
+        
+        match array_type {
+            TypeDecl::Array(element_types, size) => {
+                assert_eq!(size, 3);
+                assert_eq!(element_types.len(), 3);
+                assert_eq!(element_types[0], TypeDecl::Bool);
+                assert_eq!(element_types[1], TypeDecl::Bool);
+                assert_eq!(element_types[2], TypeDecl::Bool);
+            },
+            _ => panic!("Expected Array type, got {:?}", array_type),
+        }
+    }
+
+    #[test]
+    fn test_bool_array_literal_with_type_hint() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create bool literals: [true, false]
+        let true_expr = builder.bool_true_expr(None);
+        let false_expr = builder.bool_false_expr(None);
+        
+        let array_elements = vec![true_expr, false_expr];
+        let array_expr = builder.array_literal_expr(array_elements, None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Set type hint for bool array
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool], 2));
+        
+        // Test type inference with hint
+        let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
+        
+        assert!(result.is_ok());
+        let array_type = result.unwrap();
+        
+        match array_type {
+            TypeDecl::Array(element_types, size) => {
+                assert_eq!(size, 2);
+                assert_eq!(element_types.len(), 2);
+                assert_eq!(element_types[0], TypeDecl::Bool);
+                assert_eq!(element_types[1], TypeDecl::Bool);
+            },
+            _ => panic!("Expected Array type, got {:?}", array_type),
+        }
+    }
+
+    #[test]
+    fn test_bool_array_mixed_type_error() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create mixed literals: [true, 42] - should fail
+        let true_expr = builder.bool_true_expr(None);
+        let number_symbol = string_interner.get_or_intern("42");
+        let number_expr = builder.number_expr(number_symbol, None);
+        
+        let array_elements = vec![true_expr, number_expr];
+        let array_expr = builder.array_literal_expr(array_elements, None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Test type inference - should fail
+        let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        
+        // Check that it's an array error about type mismatch
+        match error.kind {
+            TypeCheckErrorKind::ArrayError { message } => {
+                assert!(message.contains("must have the same type"));
+                assert!(message.contains("Bool"));
+                assert!(message.contains("Number"));
+            },
+            _ => panic!("Expected ArrayError, got {:?}", error.kind),
+        }
+    }
+
+    #[test]
+    fn test_bool_array_empty_error() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Test empty array - should fail
+        let result = type_checker.visit_array_literal(&vec![]);
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        
+        // Check that it's an array error about empty arrays
+        match error.kind {
+            TypeCheckErrorKind::ArrayError { message } => {
+                assert!(message.contains("Empty array literals are not supported"));
+            },
+            _ => panic!("Expected ArrayError about empty arrays, got {:?}", error.kind),
+        }
+    }
+
+    #[test]
+    fn test_bool_array_with_wrong_type_hint() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create bool literals: [true, false]
+        let true_expr = builder.bool_true_expr(None);
+        let false_expr = builder.bool_false_expr(None);
+        
+        let array_elements = vec![true_expr, false_expr];
+        let array_expr = builder.array_literal_expr(array_elements, None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Set wrong type hint (expecting UInt64 array)
+        type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64], 2));
+        
+        // Test type inference with wrong hint - should fail
+        let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
+        
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        
+        // Check that it's an array error about type mismatch
+        match error.kind {
+            TypeCheckErrorKind::ArrayError { message } => {
+                assert!(message.contains("Bool"));
+                assert!(message.contains("UInt64"));
+            },
+            _ => panic!("Expected ArrayError about type mismatch, got {:?}", error.kind),
+        }
+    }
+
+    #[test]
+    fn test_bool_literal_type_checking() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create bool literals
+        let true_expr = builder.bool_true_expr(None);
+        let false_expr = builder.bool_false_expr(None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Test individual bool literals
+        let true_result = type_checker.visit_boolean_literal(&Expr::True);
+        let false_result = type_checker.visit_boolean_literal(&Expr::False);
+        
+        assert!(true_result.is_ok());
+        assert!(false_result.is_ok());
+        
+        assert_eq!(true_result.unwrap(), TypeDecl::Bool);
+        assert_eq!(false_result.unwrap(), TypeDecl::Bool);
+    }
+
+    #[test]
+    fn test_bool_array_single_element() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create single bool literal: [true]
+        let true_expr = builder.bool_true_expr(None);
+        
+        let array_elements = vec![true_expr];
+        let array_expr = builder.array_literal_expr(array_elements, None);
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Test single element array
+        let result = type_checker.visit_array_literal(&vec![ExprRef(0)]);
+        
+        assert!(result.is_ok());
+        let array_type = result.unwrap();
+        
+        match array_type {
+            TypeDecl::Array(element_types, size) => {
+                assert_eq!(size, 1);
+                assert_eq!(element_types.len(), 1);
+                assert_eq!(element_types[0], TypeDecl::Bool);
+            },
+            _ => panic!("Expected Array type, got {:?}", array_type),
+        }
+    }
+
+    #[test]
+    fn test_bool_array_large_array_performance() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Create large bool array: [true, false, true, false, ...] (100 elements)
+        let mut elements = Vec::new();
+        for i in 0..100 {
+            if i % 2 == 0 {
+                elements.push(builder.bool_true_expr(None));
+            } else {
+                elements.push(builder.bool_false_expr(None));
+            }
+        }
+        
+        let element_refs: Vec<ExprRef> = (0..100).map(|i| ExprRef(i)).collect();
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Measure performance
+        let start = std::time::Instant::now();
+        let result = type_checker.visit_array_literal(&element_refs);
+        let duration = start.elapsed();
+        
+        assert!(result.is_ok());
+        let array_type = result.unwrap();
+        
+        match array_type {
+            TypeDecl::Array(element_types, size) => {
+                assert_eq!(size, 100);
+                assert_eq!(element_types.len(), 100);
+                // All elements should be Bool type
+                for element_type in &element_types {
+                    assert_eq!(*element_type, TypeDecl::Bool);
+                }
+            },
+            _ => panic!("Expected Array type, got {:?}", array_type),
+        }
+        
+        // Performance assertion - should complete within 100ms for 100 elements
+        assert!(duration.as_millis() < 100, "Type inference took too long: {:?}", duration);
+    }
+
+    #[test]
+    fn test_bool_array_edge_cases() {
+        let mut builder = create_test_ast_builder();
+        let mut string_interner = DefaultStringInterner::new();
+        
+        // Test with maximum realistic array size
+        let mut elements = Vec::new();
+        for _ in 0..1000 {
+            elements.push(builder.bool_true_expr(None));
+        }
+        
+        let element_refs: Vec<ExprRef> = (0..1000).map(|i| ExprRef(i)).collect();
+        
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        let result = type_checker.visit_array_literal(&element_refs);
+        
+        assert!(result.is_ok());
+        let array_type = result.unwrap();
+        
+        match array_type {
+            TypeDecl::Array(element_types, size) => {
+                assert_eq!(size, 1000);
+                assert_eq!(element_types.len(), 1000);
+            },
+            _ => panic!("Expected Array type, got {:?}", array_type),
+        }
     }
 }

@@ -17,19 +17,24 @@ use crate::error_formatter::ErrorFormatter;
 
 pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
+    
+    // Collect struct information before creating type checker
+    let mut struct_definitions: Vec<(DefaultSymbol, Vec<StructField>)> = Vec::new();
+    for stmt_ref in &program.statement.0 {
+        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
+            let struct_symbol = program.string_interner.get_or_intern(name);
+            struct_definitions.push((struct_symbol, fields.clone()));
+        }
+    }
+    
     let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
     
-    // Register all struct definitions first
-    for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
-            let struct_symbol = program.string_interner.get(name).unwrap_or_else(|| {
-                panic!("Struct name '{}' not found in string interner", name)
-            });
-            tc.context.register_struct(struct_symbol, fields.clone());
-        }
+    // Register all struct definitions
+    for (symbol, fields) in struct_definitions {
+        tc.context.register_struct(symbol, fields);
     }
 
     // Create error formatter if we have source code and filename

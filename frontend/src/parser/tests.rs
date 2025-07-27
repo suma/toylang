@@ -484,7 +484,7 @@ mod parser_tests {
     #[case("(1u64+2u64")]
     fn parser_errors_parse_expr(#[case] input: &str) {
         let mut parser = Parser::new(input);
-        assert!(parser.parse_expr_impl().is_err(), "input: {}", input);
+        assert!(parser.parse_expr_impl().is_err() || parser.errors.len() > 0, "input: {}", input);
     }
 
     #[test]

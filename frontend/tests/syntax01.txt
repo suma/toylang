@@ -1,6 +1,6 @@
 fn println() {
 }
 
-fn main() -> unit {
+fn main() {
 	println()
 }

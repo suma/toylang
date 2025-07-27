@@ -1632,6 +1632,9 @@ mod tests {
             }
         "#;
         let result = test_program(program);
+        if result.is_err() {
+            println!("Error in test_struct_field_access_with_literal: {}", result.as_ref().unwrap_err());
+        }
         assert!(result.is_ok());
         let value = result.unwrap().borrow().unwrap_int64();
         assert_eq!(value, 10i64);
@@ -1974,11 +1977,13 @@ mod tests {
         let program = r#"
             fn main() -> bool {
                 val bool_array = [false, true, false, true]
-                // Access last element to verify size is 4
                 bool_array[3u64]
             }
         "#;
         let result = test_program(program);
+        if result.is_err() {
+            println!("Error: {}", result.as_ref().unwrap_err());
+        }
         assert!(result.is_ok());
         let value = result.unwrap().borrow().unwrap_bool();
         assert_eq!(value, true);
@@ -2032,14 +2037,13 @@ mod tests {
         let program = r#"
             struct Point {
                 x: i64,
-                y: i64
+                y: i64,
             }
 
             fn main() -> i64 {
                 val points = [
                     Point { x: 1i64, y: 2i64 },
                     Point { x: 3i64, y: 4i64 }
-                ]
                 points[0u64].x + points[1u64].y
             }
         "#;

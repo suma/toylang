@@ -162,6 +162,9 @@ impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         let original_hint = self.type_inference.type_hint.clone();
         if let Some(ref global_type) = global_numeric_type {
             self.type_inference.type_hint = Some(global_type.clone());
+        } else if let Some(ref return_type) = func.return_type {
+            // Use function return type as type hint for Number literals
+            self.type_inference.type_hint = Some(return_type.clone());
         }
 
         for stmt in statements.iter() {
@@ -907,8 +910,8 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
         } else {
             let e = expr.as_ref().ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
             let expr_obj = self.core.expr_pool.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
-            expr_obj.clone().accept(self)?;
-            Ok(TypeDecl::Unit)
+            let return_type = expr_obj.clone().accept(self)?;
+            Ok(return_type)
         }
     }
 
@@ -1029,14 +1032,36 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         let obj_type = self.visit_expr(obj)?;
         
-        // For now, we assume all field accesses return the type of the field
-        // This is a simplified implementation - in practice, we'd need to look up
-        // the struct definition and check the field type
         match obj_type {
-            TypeDecl::Identifier(_) | TypeDecl::Struct(_) => {
-                // Assume field access on custom types is valid for now
-                // Return a placeholder type - this should be improved to look up actual field types
-                Ok(TypeDecl::Unknown)
+            TypeDecl::Identifier(struct_name) => {
+                // Look up the struct definition and get the field type
+                if let Some(struct_fields) = self.context.get_struct_definition(struct_name) {
+                    let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                    for struct_field in struct_fields {
+                        if struct_field.name == field_name {
+                            return Ok(struct_field.type_decl.clone());
+                        }
+                    }
+                    Err(TypeCheckError::not_found("field", field_name))
+                } else {
+                    let struct_name_str = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
+                    Err(TypeCheckError::not_found("struct", struct_name_str))
+                }
+            }
+            TypeDecl::Struct(struct_symbol) => {
+                // Handle symbol-based struct type  
+                if let Some(struct_fields) = self.context.get_struct_definition(struct_symbol) {
+                    let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                    for struct_field in struct_fields {
+                        if struct_field.name == field_name {
+                            return Ok(struct_field.type_decl.clone());
+                        }
+                    }
+                    Err(TypeCheckError::not_found("field", field_name))
+                } else {
+                    let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
+                    Err(TypeCheckError::not_found("struct", struct_name_str))
+                }
             }
             _ => {
                 let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");

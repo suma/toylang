@@ -107,7 +107,11 @@ impl LookaheadBuffer {
 
     /// Force cleanup regardless of thresholds (useful for memory pressure)
     pub fn force_cleanup(&mut self) {
-        self.cleanup();
+        // Force cleanup: remove all consumed tokens and reset position to 0
+        for _ in 0..self.position {
+            self.buffer.pop_front();
+        }
+        self.position = 0;
     }
 
     /// Get buffer statistics for debugging and optimization

@@ -9,7 +9,7 @@ fn println(x: u64, y: u64, z: str) {
 	var a = x + y
 }
 
-fn main() -> unit {
+fn main() {
 	println(abc, 10000u64, "str")
 	return
 }

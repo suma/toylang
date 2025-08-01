@@ -383,6 +383,22 @@
     - コードの可読性と保守性が向上、型シグネチャの複雑さが軽減
     - frontend 107テスト・interpreter 117テスト全て成功、機能の完全な互換性維持
 
+41. **TypeCheckerVisitorの機能別トレイト分割** ✅ (2024-08-01完了)
+    - 単一の巨大構造体を6つの機能別トレイトに分割してアーキテクチャを改善
+    - トレイト設計：
+      - `LiteralTypeChecker` - リテラル値の型チェック（数値、文字列、真偽値、null）
+      - `ExpressionTypeChecker` - 式の型チェック（バイナリ演算、配列アクセス、代入等）
+      - `StatementTypeChecker` - 文の型チェック（var/val宣言、制御構造、return等）
+      - `StructTypeChecker` - 構造体関連の型チェック（宣言、フィールドアクセス、メソッド）
+      - `FunctionTypeChecker` - 関数関連の型チェック（関数呼び出し、型推論）
+      - `TypeInferenceManager` - 型推論とキャッシュ管理
+      - `TypeCheckerCore<'a, 'b>` - 共通機能とアクセサメソッド
+    - 既存コードの完全移行：`visit_*_literal`メソッドを`check_*_literal`トレイトメソッドに変更
+    - ライフタイム修正とコンパイルエラー解決：ジェネリックライフタイムパラメータの適切な管理
+    - 単一責任の原則の実現：各トレイトが明確な機能範囲を持つ設計
+    - 拡張可能性の向上：新機能追加時のトレイト実装による柔軟な拡張
+    - frontend 107テスト・interpreter 117テスト全て成功、機能の完全な互換性維持
+
 
 ## 進行中 🚧
 

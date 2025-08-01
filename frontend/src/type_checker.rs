@@ -22,8 +22,8 @@ pub use optimization::PerformanceOptimization;
 
 // Struct definitions moved to separate modules
 
-pub struct TypeCheckerVisitor <'a, 'b, 'c, 'd> {
-    pub core: CoreReferences<'a, 'b, 'c, 'd>,
+pub struct TypeCheckerVisitor <'a, 'b> {
+    pub core: CoreReferences<'a, 'b>,
     pub context: TypeCheckContext,
     pub type_inference: TypeInferenceState,
     pub function_checking: FunctionCheckingState,
@@ -33,8 +33,8 @@ pub struct TypeCheckerVisitor <'a, 'b, 'c, 'd> {
 
 
 
-impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'c DefaultStringInterner, location_pool: &'d LocationPool) -> Self {
+impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
             core: CoreReferences {
                 stmt_pool,
@@ -253,7 +253,7 @@ impl Acceptable for Stmt {
     }
 }
 
-impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
+impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Check cache first
         if let Some(cached_type) = self.get_cached_type(expr) {
@@ -1178,7 +1178,7 @@ impl<'a, 'b, 'c, 'd> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c, 'd> {
     }
 }
 
-impl<'a, 'b, 'c, 'd> TypeCheckerVisitor<'a, 'b, 'c, 'd> {
+impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
     /// Get cached type for an expression if available
     fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
         self.optimization.type_cache.get(expr_ref)
@@ -1571,7 +1571,7 @@ mod tests {
         expr_pool: &'a mut ExprPool, 
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool
-    ) -> TypeCheckerVisitor<'a, 'a, 'a, 'a> {
+    ) -> TypeCheckerVisitor<'a, 'a> {
         TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner, location_pool)
     }
 

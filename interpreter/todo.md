@@ -375,6 +375,14 @@
     - 失敗していたtest_struct_method_call_with_literalとtest_struct_method_call_with_argsテストが通過
     - 全117個のテストが成功、構造体メソッドの型推論が正常に動作
 
+40. **TypeCheckerVisitorのライフタイム引数統合** ✅ (2024-08-01完了)
+    - `TypeCheckerVisitor<'a, 'b, 'c, 'd>`を`TypeCheckerVisitor<'a, 'b>`に簡素化
+    - `CoreReferences<'a, 'b, 'c, 'd>`を`CoreReferences<'a, 'b>`に統合
+    - 不変参照のライフタイム（'a、'c、'd）を単一ライフタイム'aに統合
+    - 可変参照'bは独立して保持し、借用チェッカーの要件を満足
+    - コードの可読性と保守性が向上、型シグネチャの複雑さが軽減
+    - frontend 107テスト・interpreter 117テスト全て成功、機能の完全な互換性維持
+
 
 ## 進行中 🚧
 

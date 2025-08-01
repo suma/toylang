@@ -259,6 +259,10 @@ impl Acceptable for Stmt {
 }
 
 impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
+    // =========================================================================
+    // Core Visitor Methods
+    // =========================================================================
+    
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Check cache first
         if let Some(cached_type) = self.get_cached_type(expr) {
@@ -307,6 +311,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             other => other,
         }
     }
+    
+    // =========================================================================
+    // Expression Type Checking
+    // =========================================================================
 
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let op = op.clone();
@@ -579,6 +587,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             return Err(TypeCheckError::not_found("Identifier", name_str));
         }
     }
+    
+    // =========================================================================
+    // Function and Method Type Checking
+    // =========================================================================
 
     fn visit_call(&mut self, fn_name: DefaultSymbol, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
@@ -598,6 +610,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             Err(TypeCheckError::not_found("Function", fn_name_str))
         }
     }
+    
+    // =========================================================================
+    // Literal Type Checking
+    // =========================================================================
 
     fn visit_int64_literal(&mut self, value: &i64) -> Result<TypeDecl, TypeCheckError> {
         self.check_int64_literal(value)
@@ -622,6 +638,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
         self.check_null_literal()
     }
+    
+    // =========================================================================
+    // Array and Collection Type Checking
+    // =========================================================================
 
     fn visit_expr_list(&mut self, _items: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unit)
@@ -828,6 +848,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             )))
         }
     }
+    
+    // =========================================================================
+    // Statement Type Checking
+    // =========================================================================
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
@@ -865,7 +889,6 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         Ok(TypeDecl::Unit)
     }
 
-
     fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         if expr.is_none() {
             Ok(TypeDecl::Unit)
@@ -876,6 +899,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             Ok(return_type)
         }
     }
+    
+    // =========================================================================
+    // Control Flow Type Checking
+    // =========================================================================
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
@@ -901,6 +928,10 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unit)
     }
+    
+    // =========================================================================
+    // Struct Type Checking
+    // =========================================================================
 
     fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names

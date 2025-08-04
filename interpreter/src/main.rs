@@ -2083,4 +2083,120 @@ mod tests {
         // This will also fail until struct syntax is implemented
         assert!(result.is_err());
     }
+
+    // ========== Null Value System Tests ==========
+
+    #[test]
+    fn test_null_is_null_method() {
+        let program = r#"
+            fn main() -> bool {
+                var x
+                x.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        if result.is_err() {
+            eprintln!("Test failed with error: {:?}", result.as_ref().unwrap_err());
+        }
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_null_assignment_to_variable() {
+        let program = r#"
+            fn main() -> bool {
+                var str_var = "hello"
+                str_var = null
+                str_var.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        if result.is_err() {
+            eprintln!("Test failed with error: {:?}", result.as_ref().unwrap_err());
+        }
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_struct_field_null_assignment() {
+        let program = r#"
+            struct Point {
+                x: u64,
+                y: u64
+            }
+            fn main() -> bool {
+                val p = Point { x: 10u64, y: null }
+                p.y.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+
+    #[test]
+    fn test_null_check_on_non_null_value() {
+        let program = r#"
+            fn main() -> bool {
+                val x = "hello"
+                x.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, false);
+    }
+
+    #[test]
+    fn test_null_check_on_numeric_values() {
+        let program = r#"
+            fn main() -> bool {
+                val x = 42u64
+                val y = -10i64
+                val z = true
+                x.is_null() || y.is_null() || z.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, false); // All non-null, so result should be false
+    }
+
+    #[test]
+    fn test_var_declaration_defaults_to_null() {
+        let program = r#"
+            fn main() -> bool {
+                var x
+                var y
+                x.is_null() && y.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, true);
+    }
+
+    #[test]
+    fn test_array_element_null_check() {
+        let program = r#"
+            fn main() -> bool {
+                val arr = ["hello"]
+                val first = arr[0u64]
+                first.is_null()
+            }
+        "#;
+        let result = test_program(program);
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_bool();
+        assert_eq!(value, false); // Array element is "hello", not null
+    }
 }

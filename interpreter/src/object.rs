@@ -36,7 +36,7 @@ impl Object {
     pub fn get_type(&self) -> TypeDecl {
         match self {
             Object::Unit => TypeDecl::Unit,
-            Object::Null => TypeDecl::Any,
+            Object::Null => TypeDecl::Null,
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
@@ -197,6 +197,32 @@ impl Object {
         let other_type = other_borrowed.get_type();
         
         match (&mut *self, &*other_borrowed) {
+            // All types allow null assignment
+            (Object::Bool(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::Int64(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::UInt64(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::String(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::Array(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::Struct { .. }, Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            // Same type assignments
             (Object::Bool(self_val), Object::Bool(v)) => {
                 *self_val = *v;
                 Ok(())
@@ -231,6 +257,7 @@ impl Object {
                     })
                 }
             }
+            // Null and Unit can accept any value
             (Object::Null, _) | (Object::Unit, _) => {
                 *self = other_borrowed.clone();
                 Ok(())

@@ -102,7 +102,14 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
                 // No explicit type declaration - store the inferred type
                 self.context.set_var(name, ty.clone());
             }
-            _ => (),
+            (Some(decl), None) => {
+                // Explicit type but no initial value - register with declared type
+                self.context.set_var(name, decl.clone());
+            }
+            (None, None) => {
+                // No type declaration and no initial value - default to null (Any type)
+                self.context.set_var(name, TypeDecl::Null);
+            }
         }
 
         Ok(TypeDecl::Unit)
@@ -569,8 +576,22 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept(self)?
         };
+        // Allow null assignment to any type except Any
         if lhs_ty != rhs_ty {
-            return Err(TypeCheckError::type_mismatch(lhs_ty, rhs_ty).with_context("assignment"));
+            match (&lhs_ty, &rhs_ty) {
+                // Allow null assignment to non-Any types
+                (TypeDecl::Int64, TypeDecl::Null) |
+                (TypeDecl::UInt64, TypeDecl::Null) |
+                (TypeDecl::Bool, TypeDecl::Null) |
+                (TypeDecl::String, TypeDecl::Null) |
+                (TypeDecl::Array(_, _), TypeDecl::Null) |
+                (TypeDecl::Struct(_), TypeDecl::Null) => {
+                    // Allow null assignment
+                }
+                _ => {
+                    return Err(TypeCheckError::type_mismatch(lhs_ty, rhs_ty).with_context("assignment"));
+                }
+            }
         }
         Ok(lhs_ty)
     }
@@ -1082,6 +1103,16 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         
         let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
         
+        // Handle universal is_null() method first
+        if method_name == "is_null" {
+            if !args.is_empty() {
+                return Err(TypeCheckError::method_error(
+                    "is_null", obj_type, &format!("takes no arguments, but {} provided", args.len())
+                ));
+            }
+            return Ok(TypeDecl::Bool);
+        }
+        
         // Handle built-in methods for basic types
         match obj_type {
             TypeDecl::String => {
@@ -1156,6 +1187,9 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
                     // Check for Number type auto-conversion
                     if field_type == TypeDecl::Number && (expected_type == &TypeDecl::Int64 || expected_type == &TypeDecl::UInt64) {
                         self.transform_numeric_expr(field_expr, expected_type)?;
+                    // Allow null assignment to any type
+                    } else if field_type == TypeDecl::Null {
+                        // Allow null assignment to struct fields
                     } else {
                         return Err(TypeCheckError::type_mismatch(expected_type.clone(), field_type));
                     }

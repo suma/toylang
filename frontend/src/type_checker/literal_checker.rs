@@ -66,6 +66,6 @@ impl<'a, 'b> LiteralTypeChecker for TypeCheckerVisitor<'a, 'b> {
     }
 
     fn check_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Any)
+        Ok(TypeDecl::Null)
     }
 }

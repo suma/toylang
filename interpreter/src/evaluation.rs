@@ -135,6 +135,7 @@ pub struct EvaluationContext<'a> {
     function: HashMap<DefaultSymbol, Rc<Function>>,
     pub environment: Environment,
     method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
+    null_object: RcObject, // Pre-created null object for reuse
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -217,6 +218,7 @@ impl<'a> EvaluationContext<'a> {
             function,
             environment: Environment::new(),
             method_registry: HashMap::new(),
+            null_object: Rc::new(RefCell::new(Object::Null)),
         }
     }
 
@@ -491,6 +493,9 @@ impl<'a> EvaluationContext<'a> {
             Expr::StructLiteral(struct_name, fields) => {
                 self.evaluate_struct_literal(struct_name, fields)
             }
+            Expr::Null => {
+                Err(InterpreterError::InternalError("Null reference error".to_string()))
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {:?}", expr))),
         }
     }
@@ -671,6 +676,18 @@ impl<'a> EvaluationContext<'a> {
         let obj_borrowed = obj_val.borrow();
         let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
         
+        // Handle universal is_null() method first
+        if method_name == "is_null" {
+            if !args.is_empty() {
+                return Err(InterpreterError::InternalError(format!(
+                    "is_null() method takes no arguments, but {} provided",
+                    args.len()
+                )));
+            }
+            let is_null = obj_borrowed.is_null();
+            return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(is_null)))));
+        }
+
         match &*obj_borrowed {
             Object::String(string_symbol) => {
                 // Handle built-in String methods
@@ -731,8 +748,21 @@ impl<'a> EvaluationContext<'a> {
         let mut field_values = HashMap::new();
         
         for (field_name, field_expr) in fields {
-            let field_value = self.evaluate(field_expr)?;
-            let field_value = self.extract_value(Ok(field_value))?;
+            // Handle null expressions specially in struct literals
+            let expr = self.expr_pool.get(field_expr.to_index())
+                .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", field_expr.to_index())))?;
+            
+            let field_value = match expr {
+                Expr::Null => {
+                    // Use pre-created null object for struct fields
+                    self.null_object.clone()
+                }
+                _ => {
+                    let field_value = self.evaluate(field_expr)?;
+                    self.extract_value(Ok(field_value))?
+                }
+            };
+            
             let field_name_str = self.string_interner.resolve(*field_name).unwrap_or("unknown").to_string();
             field_values.insert(field_name_str, field_value);
         }
@@ -822,12 +852,12 @@ impl<'a> EvaluationContext<'a> {
     /// Handles var (mutable variable) declarations
     fn handle_var_declaration(&mut self, name: DefaultSymbol, expr: &Option<ExprRef>) -> Result<Option<EvaluationResult>, InterpreterError> {
         let value = if expr.is_none() {
-            Rc::new(RefCell::new(Object::Null))
+            self.null_object.clone()
         } else {
             match self.evaluate(expr.as_ref().ok_or_else(|| InterpreterError::InternalError("Missing expression in value".to_string()))?)? {
                 EvaluationResult::Value(v) => v,
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
-                _ => Rc::new(RefCell::new(Object::Null)),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| self.null_object.clone()),
+                _ => self.null_object.clone(),
             }
         };
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
@@ -964,8 +994,20 @@ impl<'a> EvaluationContext<'a> {
 
     /// Handles variable assignment
     fn handle_variable_assignment(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let rhs = self.evaluate(rhs);
-        let rhs = self.extract_value(rhs)?;
+        // Handle null expressions specially in variable assignments
+        let expr = self.expr_pool.get(rhs.to_index())
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", rhs.to_index())))?;
+        
+        let rhs = match expr {
+            Expr::Null => {
+                // Use pre-created null object for variable assignments
+                self.null_object.clone()
+            }
+            _ => {
+                let rhs = self.evaluate(rhs);
+                self.extract_value(rhs)?
+            }
+        };
         let rhs_borrow = rhs.borrow();
 
         // type check
@@ -979,11 +1021,16 @@ impl<'a> EvaluationContext<'a> {
         let rhs_ty = rhs_borrow.get_type();
         
         if val_ty != rhs_ty {
-            return Err(InterpreterError::TypeError { 
-                expected: val_ty, 
-                found: rhs_ty, 
-                message: "Bad types for assignment due to different type".to_string()
-            });
+            // Allow null assignment to any type
+            if rhs_ty == TypeDecl::Null {
+                // Allow null assignment
+            } else {
+                return Err(InterpreterError::TypeError { 
+                    expected: val_ty, 
+                    found: rhs_ty, 
+                    message: "Bad types for assignment due to different type".to_string()
+                });
+            }
         }
         
         self.environment.set_var(name, rhs.clone(), VariableSetType::Overwrite, self.string_interner)?;
@@ -997,8 +1044,21 @@ impl<'a> EvaluationContext<'a> {
         let array_obj = self.extract_value(Ok(array_value))?;
         let index_value = self.evaluate(index)?;
         let index_obj = self.extract_value(Ok(index_value))?;
-        let rhs_value = self.evaluate(rhs)?;
-        let rhs_obj = self.extract_value(Ok(rhs_value))?;
+        
+        // Handle null expressions specially in array element assignments
+        let expr = self.expr_pool.get(rhs.to_index())
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", rhs.to_index())))?;
+        
+        let rhs_obj = match expr {
+            Expr::Null => {
+                // Use pre-created null object for array element assignments
+                self.null_object.clone()
+            }
+            _ => {
+                let rhs_value = self.evaluate(rhs)?;
+                self.extract_value(Ok(rhs_value))?
+            }
+        };
         
         let index_borrowed = index_obj.borrow();
         let index_val = match &*index_borrowed {

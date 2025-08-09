@@ -102,6 +102,89 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
     }
 }
 
+/// Check typing with frontend multiple error collection
+pub fn check_typing_multiple_errors(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
+    let mut all_errors: Vec<String> = vec![];
+    
+    // Use frontend's multiple type checking
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
+
+    // Register all defined functions
+    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+    
+    // Collect struct definitions first
+    let mut struct_definitions = Vec::new();
+    for stmt_ref in &program.statement.0 {
+        match stmt_ref {
+            frontend::ast::Stmt::StructDecl { name, fields } => {
+                struct_definitions.push((name.clone(), fields.clone()));
+            }
+            _ => {}
+        }
+    }
+    
+    // Register struct definitions
+    for (name, fields) in struct_definitions {
+        let struct_symbol = tc.core.string_interner.get(&name);
+        if let Some(symbol) = struct_symbol {
+            tc.context.register_struct(symbol, fields);
+        }
+    }
+
+    // Create error formatter if we have source code and filename
+    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
+        Some(ErrorFormatter::new(source, file))
+    } else {
+        None
+    };
+
+    // Process impl blocks to register methods
+    for stmt_ref in &program.statement.0 {
+        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
+            if let Err(err) = tc.visit_impl_block(target_type, methods) {
+                let formatted_error = if let Some(ref fmt) = formatter {
+                    fmt.format_type_check_error(&err)
+                } else {
+                    format!("Impl block error for {}: {}", target_type, err)
+                };
+                all_errors.push(formatted_error);
+            }
+        }
+    }
+
+    // Check all functions with multiple error collection
+    tc.clear_errors();
+    for func in &program.function {
+        if let Err(e) = tc.type_check(func.clone()) {
+            let formatted_error = if let Some(ref fmt) = formatter {
+                fmt.format_type_check_error(&e)
+            } else {
+                format!("Type check error: {}", e)
+            };
+            all_errors.push(formatted_error);
+        }
+    }
+    
+    // Check statements
+    for (index, _stmt) in program.statement.0.iter().enumerate() {
+        let stmt_ref = frontend::ast::StmtRef(index as u32);
+        if let Err(e) = tc.visit_stmt(&stmt_ref) {
+            let formatted_error = if let Some(ref fmt) = formatter {
+                fmt.format_type_check_error(&e)
+            } else {
+                format!("Type check error: {}", e)
+            };
+            all_errors.push(formatted_error);
+        }
+    }
+    
+    if all_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(all_errors)
+    }
+}
+
 fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
     let mut line = 1u32;
     let mut column = 1u32;

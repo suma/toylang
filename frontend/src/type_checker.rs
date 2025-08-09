@@ -33,6 +33,7 @@ pub struct TypeCheckerVisitor <'a, 'b> {
     pub type_inference: TypeInferenceState,
     pub function_checking: FunctionCheckingState,
     pub optimization: PerformanceOptimization,
+    pub errors: Vec<TypeCheckError>,
 }
 
 
@@ -51,6 +52,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
+            errors: Vec::new(),
         }
     }
     
@@ -2118,5 +2120,42 @@ mod tests {
         // Test that the setup_type_hint_for_val method works with struct arrays
         let old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
         assert!(type_checker.type_inference.type_hint.is_some());
+    }
+}
+
+impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+    /// Add error to collection without returning immediately
+    pub fn collect_error(&mut self, error: TypeCheckError) {
+        self.errors.push(error);
+    }
+
+    /// Type check program with multiple error collection
+    pub fn check_program_multiple_errors(&mut self, program: &Program) -> error::MultipleTypeCheckResult<()> {
+        self.errors.clear();
+        
+        // Collect errors during type checking instead of returning immediately
+        for func in &program.function {
+            if let Err(e) = self.type_check(func.clone()) {
+                self.errors.push(e);
+            }
+        }
+        
+        for (index, _stmt) in program.statement.0.iter().enumerate() {
+            let stmt_ref = StmtRef(index as u32);
+            if let Err(e) = self.visit_stmt(&stmt_ref) {
+                self.errors.push(e);
+            }
+        }
+        
+        if self.errors.is_empty() {
+            error::MultipleTypeCheckResult::success(())
+        } else {
+            error::MultipleTypeCheckResult::with_errors((), self.errors.clone())
+        }
+    }
+    
+    /// Clear collected errors
+    pub fn clear_errors(&mut self) {
+        self.errors.clear();
     }
 }

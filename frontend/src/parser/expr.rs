@@ -35,9 +35,15 @@ impl<'a> Parser<'a> {
             Some(x) => {
                 let x = x.clone();
                 let line = self.line_count();
-                Err(anyhow!("parse_expr: expected expression but Kind ({:?}) at {}", x, line))
+                self.collect_error(&format!("expected expression but found {:?} at line {}", x, line));
+                // Return a dummy expression to continue parsing
+                Ok(self.ast_builder.null_expr(None))
             }
-            None => Err(anyhow!("parse_expr: unexpected EOF")),
+            None => {
+                self.collect_error("unexpected EOF while parsing expression");
+                // Return a dummy expression to continue parsing
+                Ok(self.ast_builder.null_expr(None))
+            }
         }
     }
 
@@ -129,7 +135,8 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Re
 
     let lhs = super::stmt::parse_stmt(parser);
     if lhs.is_err() {
-        return Err(anyhow!("parse_expression_block: expected stmt: {:?}", lhs.err()));
+        parser.collect_error(&format!("expected statement in block: {:?}", lhs.err()));
+        return Ok(statements); // Return current statements and continue
     }
     statements.push(lhs?);
 
@@ -237,7 +244,10 @@ pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
                             expr = parser.ast_builder.field_access_expr(expr, field_symbol, Some(location));
                         }
                     }
-                    _ => return Err(anyhow!("parse_postfix: expected field name after '.'")),
+                    _ => {
+                        parser.collect_error("expected field name after '.'");
+                        break; // Stop processing and return current expr
+                    }
                 }
             }
             _ => break,
@@ -346,7 +356,9 @@ pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
                             parse_if(parser)
                         }
                         _ => {
-                            Err(anyhow!("parse_primary: unexpected token {:?}", x))
+                            let x_cloned = x.cloned();
+                            parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
+                            Ok(parser.ast_builder.null_expr(None)) // Return dummy expression
                         }
                     }
                 }
@@ -375,7 +387,11 @@ pub fn parse_expr_list(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Ve
             parse_expr_list(parser, args)
         }
         Some(Kind::ParenClose) => Ok(args),
-        x => Err(anyhow!("parse_expr_list: unexpected token {:?}", x)),
+        x => {
+            let x_cloned = x.cloned();
+            parser.collect_error(&format!("unexpected token in expression list: {:?}", x_cloned));
+            Ok(args) // Return current args and stop
+        }
     }
 }
 
@@ -410,7 +426,11 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
                 _ => parse_array_elements(parser, elements)
             }
         }
-        x => Err(anyhow!("parse_array_elements: unexpected token {:?}", x)),
+        x => {
+            let x_cloned = x.cloned();
+            parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
+            Ok(elements) // Return current elements and stop
+        }
     }
 }
 
@@ -427,7 +447,10 @@ pub fn parse_struct_literal_fields(parser: &mut Parser, mut fields: Vec<(Default
                 parser.next();
                 symbol
             }
-            _ => return Err(anyhow!("parse_struct_literal_fields: expected field name")),
+            _ => {
+                parser.collect_error("expected field name in struct literal");
+                return Ok(fields); // Return current fields and stop
+            }
         };
 
         parser.expect_err(&Kind::Colon)?;
@@ -444,7 +467,10 @@ pub fn parse_struct_literal_fields(parser: &mut Parser, mut fields: Vec<(Default
                 }
             }
             Some(&Kind::BraceClose) => break,
-            _ => return Err(anyhow!("parse_struct_literal_fields: expected ',' or '}}'")),
+            _ => {
+                parser.collect_error("expected ',' or '}' in struct literal fields");
+                break; // Stop processing and return current fields
+            }
         }
     }
 

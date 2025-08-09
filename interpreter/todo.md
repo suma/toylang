@@ -428,6 +428,26 @@
     - 全テスト成功：frontend 107テスト・interpreter 120テスト（lib: 3、main: 117、doc: 0）
     - 追加実装は不要：既存アーキテクチャで完全な機能サポートを確認
 
+44. **frontendでの複数エラー収集・返却機能** ✅ (2024-08-09完了)
+    - パーサーでの複数構文エラー収集：`MultipleParserResult<T>` 型を実装
+    - 型チェッカーでの複数型エラー収集：`MultipleTypeCheckResult<T>` 型を実装
+    - Parser::expect_errと他のエラー処理を統一：
+      - `collect_error()` メソッドでエラー収集を統一化
+      - `expect_or_collect()` メソッドで条件チェックとエラー収集を統合
+      - `anyhow!`エラーを全て`collect_error`に置き換えて継続解析を実現
+    - 統合されたエラー収集ポイント：
+      - expect_err: 期待トークン不一致エラー
+      - parse_program: 関数/構造体/impl宣言の構文エラー
+      - parse_expr_impl: 式解析でのEOF・予期しないトークンエラー
+      - parse_block_impl: ブロック内ステートメント解析エラー
+      - その他：フィールドアクセス、配列要素、構造体リテラル等のエラー
+    - 包括的テストスイート：6個のテストケース
+      - 複数パーサーエラー・複数型エラー・成功ケース・混合エラーのテスト
+      - 統合エラー収集・expect_err統合のテスト
+    - APIエクスポート：`MultipleParserResult`、`MultipleTypeCheckResult`をlib.rsで公開
+    - 全テスト成功：frontend 6個の複数エラーテスト + 既存テスト全通過
+    - エラー発生時も解析を継続し、一度に複数のエラーを報告して開発効率を大幅改善
+
 
 ## 進行中 🚧
 

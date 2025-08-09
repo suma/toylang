@@ -7,7 +7,7 @@ use super::token_source::{TokenProvider, LexerTokenSource};
 
 use anyhow::{anyhow, Result};
 use string_interner::DefaultStringInterner;
-use crate::parser::error::ParserError;
+use crate::parser::error::{ParserError, MultipleParserResult};
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -123,6 +123,22 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Collect error without stopping parse, used for multiple error collection
+    pub fn collect_error(&mut self, error_msg: &str) {
+        let location = self.current_source_location();
+        self.errors.push(ParserError::unexpected_token(location, error_msg.to_string()));
+    }
+
+    /// Check condition and collect error if failed, continue parsing  
+    pub fn expect_or_collect(&mut self, condition: bool, error_msg: &str) -> bool {
+        if !condition {
+            self.collect_error(error_msg);
+            false
+        } else {
+            true
+        }
+    }
+
     pub fn next_expr(&self) -> u32 {
         self.ast_builder.get_expr_pool().len() as u32
     }
@@ -198,7 +214,10 @@ impl<'a> Parser<'a> {
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
                             }));
                         }
-                        _ => return Err(anyhow!("expected function")),
+                        _ => {
+                            self.collect_error("expected function name");
+                            self.next(); // Skip invalid token and continue
+                        }
                     }
                 }
                 Some(Kind::Struct) => {
@@ -218,7 +237,10 @@ impl<'a> Parser<'a> {
                             
                             self.ast_builder.struct_decl_stmt(struct_name, fields, Some(location));
                         }
-                        _ => return Err(anyhow!("expected struct name")),
+                        _ => {
+                            self.collect_error("expected struct name");
+                            self.next(); // Skip invalid token and continue
+                        }
                     }
                 }
                 Some(Kind::Impl) => {
@@ -238,14 +260,21 @@ impl<'a> Parser<'a> {
                             
                             self.ast_builder.impl_block_stmt(target_type, methods, Some(location));
                         }
-                        _ => return Err(anyhow!("expected type name for impl block")),
+                        _ => {
+                            self.collect_error("expected type name for impl block");
+                            self.next(); // Skip invalid token and continue
+                        }
                     }
                 }
                 Some(Kind::NewLine) => {
                     self.next()
                 }
                 None | Some(Kind::EOF) => break,
-                x => return Err(anyhow!("not implemented!!: {:?}", x)),
+                x => {
+                    let x_cloned = x.cloned();
+                    self.collect_error(&format!("unexpected token: {:?}", x_cloned));
+                    self.next(); // Skip invalid token and continue
+                }
             }
         }
 
@@ -357,6 +386,24 @@ impl<'a> Parser<'a> {
     pub fn skip_newlines(&mut self) {
         while let Some(Kind::NewLine) = self.peek() {
             self.next();
+        }
+    }
+
+    /// Parse program with multiple error collection
+    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
+        self.errors.clear();
+        
+        match self.parse_program() {
+            Ok(program) => {
+                if self.errors.is_empty() {
+                    MultipleParserResult::success(program)
+                } else {
+                    MultipleParserResult::with_errors(program, self.errors.clone())
+                }
+            }
+            Err(_) => {
+                MultipleParserResult::failure(self.errors.clone())
+            }
         }
     }
 }

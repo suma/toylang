@@ -8,6 +8,39 @@ pub struct SourceLocation {
 }
 
 #[derive(Debug)]
+pub struct MultipleTypeCheckResult<T> {
+    pub result: Option<T>,
+    pub errors: Vec<TypeCheckError>,
+}
+
+impl<T> MultipleTypeCheckResult<T> {
+    pub fn success(value: T) -> Self {
+        Self {
+            result: Some(value),
+            errors: Vec::new(),
+        }
+    }
+
+    pub fn failure(errors: Vec<TypeCheckError>) -> Self {
+        Self {
+            result: None,
+            errors,
+        }
+    }
+
+    pub fn with_errors(value: T, errors: Vec<TypeCheckError>) -> Self {
+        Self {
+            result: Some(value),
+            errors,
+        }
+    }
+
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum TypeCheckErrorKind {
     TypeMismatch { expected: TypeDecl, actual: TypeDecl },
     TypeMismatchOperation { operation: String, left: TypeDecl, right: TypeDecl },
@@ -20,7 +53,7 @@ pub enum TypeCheckErrorKind {
     GenericError { message: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TypeCheckError {
     pub kind: TypeCheckErrorKind,
     pub context: Option<String>,

@@ -1,7 +1,7 @@
 use crate::ast::*;
 use crate::token::Kind;
 use super::core::Parser;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use string_interner::DefaultSymbol;
 
 #[derive(Debug)]
@@ -188,6 +188,16 @@ pub fn parse_relational(parser: &mut Parser) -> Result<ExprRef> {
 }
 
 pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> Result<ExprRef> {
+    // Add recursion protection
+    parser.check_and_increment_recursion()?;
+    
+    let result = parse_binary_impl(parser, group);
+    
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> Result<ExprRef> {
     let mut lhs = (group.next_precedence)(parser)?;
 
     loop {
@@ -230,6 +240,16 @@ pub fn parse_mul(parser: &mut Parser) -> Result<ExprRef> {
 }
 
 pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
+    // Add recursion protection
+    parser.check_and_increment_recursion()?;
+    
+    let result = parse_postfix_impl(parser);
+    
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_postfix_impl(parser: &mut Parser) -> Result<ExprRef> {
     let mut expr = parse_primary(parser)?;
     
     loop {
@@ -259,6 +279,7 @@ pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
                     }
                 }
             }
+            // Array access is handled in parse_primary for identifiers
             _ => break,
         }
     }
@@ -267,6 +288,16 @@ pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
 }
 
 pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
+    // Add recursion protection
+    parser.check_and_increment_recursion()?;
+    
+    let result = parse_primary_impl(parser);
+    
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_primary_impl(parser: &mut Parser) -> Result<ExprRef> {
     match parser.peek() {
         Some(Kind::ParenOpen) => {
             parser.next();
@@ -378,7 +409,17 @@ pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
     }
 }
 
-pub fn parse_expr_list(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+pub fn parse_expr_list(parser: &mut Parser, args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+    // Add recursion protection for expression list parsing
+    parser.check_and_increment_recursion()?;
+    
+    let result = parse_expr_list_impl(parser, args);
+    
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
     match parser.peek() {
         Some(Kind::ParenClose) => return Ok(args),
         _ => (),
@@ -405,8 +446,18 @@ pub fn parse_expr_list(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Ve
 }
 
 pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+    // Limit maximum elements to prevent infinite loops
+    const MAX_ELEMENTS: usize = 1000;
+    let mut element_count = 0;
+
     loop {
         parser.skip_newlines();
+        
+        element_count += 1;
+        if element_count > MAX_ELEMENTS {
+            parser.collect_error("too many elements in array literal");
+            return Ok(elements);
+        }
         
         match parser.peek() {
             Some(Kind::BracketClose) => return Ok(elements),
@@ -445,12 +496,32 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
     }
 }
 
-pub fn parse_struct_literal_fields(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+pub fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+    // Add recursion protection for struct literal field parsing
+    parser.check_and_increment_recursion()?;
+    
+    let result = parse_struct_literal_fields_impl(parser, fields);
+    
+    parser.decrement_recursion();
+    result
+}
+
+fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
     if parser.peek() == Some(&Kind::BraceClose) {
         return Ok(fields);
     }
 
+    // Limit maximum fields to prevent infinite loops in malformed input
+    const MAX_FIELDS: usize = 100;
+    let mut field_count = 0;
+
     loop {
+        field_count += 1;
+        if field_count > MAX_FIELDS {
+            parser.collect_error("too many fields in struct literal");
+            return Ok(fields);
+        }
+
         let field_name = match parser.peek() {
             Some(Kind::Identifier(name)) => {
                 let name = name.to_string();
@@ -464,9 +535,19 @@ pub fn parse_struct_literal_fields(parser: &mut Parser, mut fields: Vec<(Default
             }
         };
 
-        parser.expect_err(&Kind::Colon)?;
+        let has_colon = parser.peek() == Some(&Kind::Colon);
+        if !parser.expect_or_collect(has_colon, "expected ':' after field name") {
+            return Ok(fields);
+        }
+        parser.next();
 
-        let field_value = parser.parse_expr_impl()?;
+        let field_value = match parser.parse_expr_impl() {
+            Ok(expr) => expr,
+            Err(_) => {
+                parser.collect_error("failed to parse field value");
+                return Ok(fields);
+            }
+        };
 
         fields.push((field_name, field_value));
 

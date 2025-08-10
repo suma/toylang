@@ -32,7 +32,7 @@ impl<'a> Parser<'a> {
             errors: Vec::with_capacity(4),
             input,
             recursion_depth: 0,
-            max_recursion_depth: 5, // Very low to catch infinite recursion early
+            max_recursion_depth: 100, // Further increased for complex formatting patterns
         }
     }
 

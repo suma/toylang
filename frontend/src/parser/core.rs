@@ -18,6 +18,8 @@ pub struct Parser<'a> {
     pub string_interner: DefaultStringInterner,
     pub errors: Vec<ParserError>,
     input: &'a str,
+    recursion_depth: u32,
+    max_recursion_depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -29,6 +31,8 @@ impl<'a> Parser<'a> {
             string_interner: DefaultStringInterner::new(),
             errors: Vec::with_capacity(4),
             input,
+            recursion_depth: 0,
+            max_recursion_depth: 5, // Very low to catch infinite recursion early
         }
     }
 
@@ -136,6 +140,23 @@ impl<'a> Parser<'a> {
             false
         } else {
             true
+        }
+    }
+
+    /// Check recursion depth and increment if safe
+    pub fn check_and_increment_recursion(&mut self) -> Result<()> {
+        if self.recursion_depth >= self.max_recursion_depth {
+            self.collect_error("Maximum recursion depth reached in parser");
+            return Err(anyhow!("Maximum recursion depth reached"));
+        }
+        self.recursion_depth += 1;
+        Ok(())
+    }
+
+    /// Decrement recursion depth
+    pub fn decrement_recursion(&mut self) {
+        if self.recursion_depth > 0 {
+            self.recursion_depth -= 1;
         }
     }
 

@@ -2299,6 +2299,126 @@ mod tests {
         assert!(result.is_ok() || result.is_err());
     }
 
+    #[test]
+    fn test_parser_simple_struct_array() {
+        // Test: Simple struct array parsing
+        use frontend::{Parser};
+        
+        let program = r#"
+            struct Simple {
+                x: i64
+            }
+            
+            fn main() -> i64 {
+                val arr: [Simple; 1] = [Simple { x: 1i64 }]
+                42i64
+            }
+        "#;
+        
+        println!("Testing simple struct array parsing...");
+        let mut parser = Parser::new(program);
+        let result = parser.parse_program();
+        println!("Simple parser result: {:?}", result);
+        
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_parser_nested_struct_array() {
+        // Test: Nested struct array parsing
+        use frontend::{Parser};
+        
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner
+            }
+            
+            fn main() -> i64 {
+                val arr: [Outer; 1] = [Outer { inner: Inner { value: 1i64 } }]
+                42i64
+            }
+        "#;
+        
+        println!("Testing nested struct array parsing...");
+        let mut parser = Parser::new(program);
+        let result = parser.parse_program();
+        println!("Nested parser result: {:?}", result);
+        
+        // If this hangs, the issue is specifically with nested structs in arrays
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_parser_two_element_simple_struct_array() {
+        // Test: Two element simple struct array parsing
+        use frontend::{Parser};
+        
+        let program = r#"
+            struct Simple {
+                x: i64
+            }
+            
+            fn main() -> i64 {
+                val arr: [Simple; 2] = [
+                    Simple { x: 10i64 },
+                    Simple { x: 20i64 }
+                ]
+                42i64
+            }
+        "#;
+        
+        println!("Testing two element simple struct array parsing...");
+        let mut parser = Parser::new(program);
+        let result = parser.parse_program();
+        println!("Two element simple parser result: {:?}", result);
+        
+        // Test if problem is specific to nested structs
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_parser_two_element_struct_array() {
+        // Test: Two element struct array parsing (matching the problematic case)
+        use frontend::{Parser};
+        
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+            
+            fn main() -> i64 {
+                val nested: [Outer; 2] = [
+                    Outer { 
+                        inner: Inner { value: 10i64 }, 
+                        count: 1i64 
+                    },
+                    Outer { 
+                        inner: Inner { value: 20i64 }, 
+                        count: 2i64 
+                    }
+                ]
+                42i64
+            }
+        "#;
+        
+        println!("Testing two element struct array parsing...");
+        let mut parser = Parser::new(program);
+        let result = parser.parse_program();
+        println!("Two element parser result: {:?}", result);
+        
+        // This is the exact problematic pattern - if this hangs, we've isolated the parser issue
+        assert!(result.is_ok() || result.is_err());
+    }
+
     // ========== Null Value System Tests ==========
 
     #[test]

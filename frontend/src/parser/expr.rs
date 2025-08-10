@@ -17,6 +17,15 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_expr_impl(&mut self) -> Result<ExprRef> {
+        self.check_and_increment_recursion()?;
+        
+        let result = self.parse_expr_impl_internal();
+        
+        self.decrement_recursion();
+        result
+    }
+
+    fn parse_expr_impl_internal(&mut self) -> Result<ExprRef> {
         let lhs = parse_logical_expr(self);
         if lhs.is_ok() {
             return match self.peek() {
@@ -396,40 +405,42 @@ pub fn parse_expr_list(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Ve
 }
 
 pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
-    parser.skip_newlines();
-    
-    match parser.peek() {
-        Some(Kind::BracketClose) => return Ok(elements),
-        _ => (),
-    }
-
-    let expr = parser.parse_expr_impl();
-    if expr.is_err() {
-        return Ok(elements);
-    }
-    elements.push(expr?);
-
-    match parser.peek() {
-        Some(Kind::Comma) => {
-            parser.next();
-            parser.skip_newlines();
-            match parser.peek() {
-                Some(Kind::BracketClose) => Ok(elements),
-                _ => parse_array_elements(parser, elements)
-            }
+    loop {
+        parser.skip_newlines();
+        
+        match parser.peek() {
+            Some(Kind::BracketClose) => return Ok(elements),
+            _ => (),
         }
-        Some(Kind::BracketClose) => Ok(elements),
-        Some(Kind::NewLine) => {
-            parser.skip_newlines();
-            match parser.peek() {
-                Some(Kind::BracketClose) => Ok(elements),
-                _ => parse_array_elements(parser, elements)
-            }
+
+        let expr = parser.parse_expr_impl();
+        if expr.is_err() {
+            return Ok(elements);
         }
-        x => {
-            let x_cloned = x.cloned();
-            parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
-            Ok(elements) // Return current elements and stop
+        elements.push(expr?);
+
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+                parser.skip_newlines();
+                match parser.peek() {
+                    Some(Kind::BracketClose) => return Ok(elements),
+                    _ => continue, // Continue the loop for next element
+                }
+            }
+            Some(Kind::BracketClose) => return Ok(elements),
+            Some(Kind::NewLine) => {
+                parser.skip_newlines();
+                match parser.peek() {
+                    Some(Kind::BracketClose) => return Ok(elements),
+                    _ => continue, // Continue the loop for next element
+                }
+            }
+            x => {
+                let x_cloned = x.cloned();
+                parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
+                return Ok(elements); // Return current elements and stop
+            }
         }
     }
 }

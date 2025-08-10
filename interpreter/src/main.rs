@@ -55,27 +55,42 @@ fn handle_execution(program: &frontend::ast::Program, source: &str, filename: &s
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        println!("Usage: {} <file>", args[0]);
+    let verbose = env::args().any(|arg| arg == "-v");
+    if args.len() != 2 && !verbose {
+        println!("Usage:");
+        println!("  {} <file>", args[0]);
+        println!("  {} <file> -v", args[0]);
         return;
     }
-    
+
+    if (verbose) {
+        println!("Reading file {}", args[1]);
+    }
     let file = fs::read_to_string(&args[1]).expect("Failed to read file");
     let source = file.as_str();
     let filename = args[1].as_str();
     
     // Parse the source file
+    if (verbose) {
+        println!("Parsing source file");
+    }
     let mut program = match handle_parsing(source, filename) {
         Ok(prog) => prog,
         Err(()) => return,
     };
     
     // Perform type checking
+    if (verbose) {
+        println!("Performing type checking");
+    }
     if handle_type_checking(&mut program, source, filename).is_err() {
         return;
     }
     
     // Execute the program
+    if (verbose) {
+        println!("Executing program");
+    }
     let _ = handle_execution(&program, source, filename);
 }
 

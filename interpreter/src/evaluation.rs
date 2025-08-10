@@ -136,6 +136,8 @@ pub struct EvaluationContext<'a> {
     pub environment: Environment,
     method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
     null_object: RcObject, // Pre-created null object for reuse
+    recursion_depth: u32,
+    max_recursion_depth: u32,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -219,6 +221,8 @@ impl<'a> EvaluationContext<'a> {
             environment: Environment::new(),
             method_registry: HashMap::new(),
             null_object: Rc::new(RefCell::new(Object::Null)),
+            recursion_depth: 0,
+            max_recursion_depth: 10, // Very low to catch recursion early
         }
     }
 
@@ -454,6 +458,20 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Check recursion depth to prevent stack overflow
+        if self.recursion_depth >= self.max_recursion_depth {
+            return Err(InterpreterError::InternalError(
+                "Maximum recursion depth reached in expression evaluation - possible circular reference".to_string()
+            ));
+        }
+        
+        self.recursion_depth += 1;
+        let result = self.evaluate_impl(e);
+        self.recursion_depth -= 1;
+        result
+    }
+    
+    fn evaluate_impl(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let expr = self.expr_pool.get(e.to_index())
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", e.to_index())))?;
         match expr {

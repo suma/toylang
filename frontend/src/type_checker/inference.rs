@@ -19,7 +19,7 @@ impl TypeInferenceState {
             number_usage_context: Vec::new(),
             variable_expr_mapping: HashMap::new(),
             recursion_depth: 0,
-            max_recursion_depth: 5, // Very strict limit to catch infinite loops quickly
+            max_recursion_depth: 3, // Even stricter limit to catch infinite loops quickly
         }
     }
 

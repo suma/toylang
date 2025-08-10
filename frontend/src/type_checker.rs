@@ -1053,7 +1053,18 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     }
 
     fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        let obj_type = self.visit_expr(obj)?;
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in field access type inference - possible circular reference"
+            ));
+        }
+        
+        self.type_inference.recursion_depth += 1;
+        let obj_type_result = self.visit_expr(obj);
+        self.type_inference.recursion_depth -= 1;
+        
+        let obj_type = obj_type_result?;
         
         match obj_type {
             TypeDecl::Identifier(struct_name) => {
@@ -1096,7 +1107,18 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     }
 
     fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        let obj_type = self.visit_expr(obj)?;
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in method call type inference - possible circular reference"
+            ));
+        }
+        
+        self.type_inference.recursion_depth += 1;
+        let obj_type_result = self.visit_expr(obj);
+        self.type_inference.recursion_depth -= 1;
+        
+        let obj_type = obj_type_result?;
         
         // Type check all arguments
         for arg in args {

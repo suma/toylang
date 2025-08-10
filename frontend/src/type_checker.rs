@@ -281,6 +281,8 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
         let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+        
+        
         let result = expr_obj.clone().accept(self);
         
         // If an error occurred, try to add location information if not already present
@@ -675,154 +677,24 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
             return Err(TypeCheckError::array_error("Empty array literals are not supported"));
         }
 
-        // Save the original type hint to restore later
-        let original_hint = self.type_inference.type_hint.clone();
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in array literal type inference - possible circular reference"
+            ));
+        }
         
-        // If we have a type hint for the array element type, use it for element type inference
-        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_inference.type_hint {
-            if !element_types.is_empty() {
-                Some(element_types[0].clone())
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Type check all elements with proper type hint for each element
-        let mut element_types = Vec::new();
-        for element in elements {
-            // Set the element type hint for each element individually
-            if let Some(ref hint) = element_type_hint {
-                self.type_inference.type_hint = Some(hint.clone());
-            }
-            
-            let element_type = self.visit_expr(element)?;
-            element_types.push(element_type);
-            
-            // Restore original hint after processing each element
-            self.type_inference.type_hint = original_hint.clone();
-        }
-
-        // If we have array type hint, handle type inference for all elements
-        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint {
-            if !expected_element_types.is_empty() {
-                let expected_element_type = &expected_element_types[0];
-                
-                // Handle type inference for each element
-                for (i, element) in elements.iter().enumerate() {
-                    match &element_types[i] {
-                        TypeDecl::Number => {
-                            // Transform Number literals to the expected type
-                            self.transform_numeric_expr(element, expected_element_type)?;
-                            element_types[i] = expected_element_type.clone();
-                        },
-                        TypeDecl::Bool => {
-                            // Bool literals - check type compatibility
-                            if expected_element_type != &TypeDecl::Bool {
-                                return Err(TypeCheckError::array_error(&format!(
-                                    "Array element {} has type Bool but expected {:?}",
-                                    i, expected_element_type
-                                )));
-                            }
-                            // Type is correct, no transformation needed
-                        },
-                        TypeDecl::Struct(actual_struct) => {
-                            // Struct literals - check type compatibility
-                            if let TypeDecl::Struct(expected_struct) = expected_element_type {
-                                if actual_struct != expected_struct {
-                                    return Err(TypeCheckError::array_error(&format!(
-                                        "Array element {} has struct type {:?} but expected {:?}",
-                                        i, actual_struct, expected_struct
-                                    )));
-                                }
-                                // Same struct type, no transformation needed
-                            } else {
-                                return Err(TypeCheckError::array_error(&format!(
-                                    "Array element {} has struct type {:?} but expected {:?}",
-                                    i, actual_struct, expected_element_type
-                                )));
-                            }
-                        },
-                        actual_type if actual_type == expected_element_type => {
-                            // Element already has the expected type, but may need AST transformation
-                            // Check if this is a number literal that needs transformation
-                            if let Some(expr) = self.core.expr_pool.get(element.to_index()) {
-                                if matches!(expr, Expr::Number(_)) {
-                                    self.transform_numeric_expr(element, expected_element_type)?;
-                                }
-                            }
-                        },
-                        TypeDecl::Unknown => {
-                            // For variables with unknown type, try to infer from context
-                            element_types[i] = expected_element_type.clone();
-                        },
-                        actual_type if actual_type != expected_element_type => {
-                            // Check if type conversion is possible
-                            match (actual_type, expected_element_type) {
-                                (TypeDecl::Int64, TypeDecl::UInt64) | 
-                                (TypeDecl::UInt64, TypeDecl::Int64) => {
-                                    return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
-                                        i, actual_type, expected_element_type
-                                    )));
-                                },
-                                (TypeDecl::Bool, _other_type) | (_other_type, TypeDecl::Bool) => {
-                                    return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix Bool with other types in array. Element {} has type {:?} but expected {:?}",
-                                        i, actual_type, expected_element_type
-                                    )));
-                                },
-                                (TypeDecl::Struct(struct1), TypeDecl::Struct(struct2)) => {
-                                    if struct1 != struct2 {
-                                        return Err(TypeCheckError::array_error(&format!(
-                                            "Array element {} has struct type {:?} but expected {:?}",
-                                            i, struct1, struct2
-                                        )));
-                                    }
-                                },
-                                (TypeDecl::Struct(struct_name), other_type) | (other_type, TypeDecl::Struct(struct_name)) => {
-                                    return Err(TypeCheckError::array_error(&format!(
-                                        "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
-                                        struct_name, other_type, i
-                                    )));
-                                },
-                                _ => {
-                                    // Accept the actual type if it matches expectations
-                                    if actual_type == expected_element_type {
-                                        // Already matches, no change needed
-                                    } else {
-                                        return Err(TypeCheckError::array_error(&format!(
-                                            "Array element {} has type {:?} but expected {:?}",
-                                            i, actual_type, expected_element_type
-                                        )));
-                                    }
-                                }
-                            }
-                        },
-                        _ => {
-                            // Type already matches expected type
-                        }
-                    }
-                }
-            }
-        }
-
-        // Restore the original type hint
-        self.type_inference.type_hint = original_hint;
-
-        let first_type = &element_types[0];
-        for (i, element_type) in element_types.iter().enumerate() {
-            if element_type != first_type {
-                return Err(TypeCheckError::array_error(&format!(
-                    "Array elements must have the same type, but element {} has type {:?} while first element has type {:?}",
-                    i, element_type, first_type
-                )));
-            }
-        }
-
-        Ok(TypeDecl::Array(element_types, elements.len()))
+        self.type_inference.recursion_depth += 1;
+        
+        // Execute the main logic and capture result
+        let result = self.visit_array_literal_impl(elements);
+        
+        // Always decrement recursion depth before returning
+        self.type_inference.recursion_depth -= 1;
+        
+        result
     }
+
 
     fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let array_type = self.visit_expr(array)?;
@@ -1198,6 +1070,156 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
 }
 
 impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+    fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Save the original type hint to restore later
+        let original_hint = self.type_inference.type_hint.clone();
+        
+        // If we have a type hint for the array element type, use it for element type inference
+        let element_type_hint = if let Some(TypeDecl::Array(element_types, _)) = &self.type_inference.type_hint {
+            if !element_types.is_empty() {
+                Some(element_types[0].clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Type check all elements with proper type hint for each element
+        let mut element_types = Vec::new();
+        for element in elements {
+            // Set the element type hint for each element individually
+            if let Some(ref hint) = element_type_hint {
+                self.type_inference.type_hint = Some(hint.clone());
+            }
+            
+            let element_type = self.visit_expr(element)?;
+            element_types.push(element_type);
+            
+            // Restore original hint after processing each element
+            self.type_inference.type_hint = original_hint.clone();
+        }
+
+        // If we have array type hint, handle type inference for all elements
+        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint {
+            if !expected_element_types.is_empty() {
+                let expected_element_type = &expected_element_types[0];
+                
+                // Handle type inference for each element
+                for (i, element) in elements.iter().enumerate() {
+                    match &element_types[i] {
+                        TypeDecl::Number => {
+                            // Transform Number literals to the expected type
+                            self.transform_numeric_expr(element, expected_element_type)?;
+                            element_types[i] = expected_element_type.clone();
+                        },
+                        TypeDecl::Bool => {
+                            // Bool literals - check type compatibility
+                            if expected_element_type != &TypeDecl::Bool {
+                                return Err(TypeCheckError::array_error(&format!(
+                                    "Array element {} has type Bool but expected {:?}",
+                                    i, expected_element_type
+                                )));
+                            }
+                            // Type is correct, no transformation needed
+                        },
+                        TypeDecl::Struct(actual_struct) => {
+                            // Struct literals - check type compatibility
+                            if let TypeDecl::Struct(expected_struct) = expected_element_type {
+                                if actual_struct != expected_struct {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Array element {} has struct type {:?} but expected {:?}",
+                                        i, actual_struct, expected_struct
+                                    )));
+                                }
+                                // Same struct type, no transformation needed
+                            } else {
+                                return Err(TypeCheckError::array_error(&format!(
+                                    "Array element {} has struct type {:?} but expected {:?}",
+                                    i, actual_struct, expected_element_type
+                                )));
+                            }
+                        },
+                        actual_type if actual_type == expected_element_type => {
+                            // Element already has the expected type, but may need AST transformation
+                            // Check if this is a number literal that needs transformation
+                            if let Some(expr) = self.core.expr_pool.get(element.to_index()) {
+                                if matches!(expr, Expr::Number(_)) {
+                                    self.transform_numeric_expr(element, expected_element_type)?;
+                                }
+                            }
+                        },
+                        TypeDecl::Unknown => {
+                            // For variables with unknown type, try to infer from context
+                            element_types[i] = expected_element_type.clone();
+                        },
+                        actual_type if actual_type != expected_element_type => {
+                            // Check if type conversion is possible
+                            match (actual_type, expected_element_type) {
+                                (TypeDecl::Int64, TypeDecl::UInt64) | 
+                                (TypeDecl::UInt64, TypeDecl::Int64) => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Cannot mix signed and unsigned integers in array. Element {} has type {:?} but expected {:?}",
+                                        i, actual_type, expected_element_type
+                                    )));
+                                },
+                                (TypeDecl::Bool, _other_type) | (_other_type, TypeDecl::Bool) => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Cannot mix Bool with other types in array. Element {} has type {:?} but expected {:?}",
+                                        i, actual_type, expected_element_type
+                                    )));
+                                },
+                                (TypeDecl::Struct(struct1), TypeDecl::Struct(struct2)) => {
+                                    if struct1 != struct2 {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Array element {} has struct type {:?} but expected {:?}",
+                                            i, struct1, struct2
+                                        )));
+                                    }
+                                },
+                                (TypeDecl::Struct(struct_name), other_type) | (other_type, TypeDecl::Struct(struct_name)) => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
+                                        struct_name, other_type, i
+                                    )));
+                                },
+                                _ => {
+                                    // Accept the actual type if it matches expectations
+                                    if actual_type == expected_element_type {
+                                        // Already matches, no change needed
+                                    } else {
+                                        return Err(TypeCheckError::array_error(&format!(
+                                            "Array element {} has type {:?} but expected {:?}",
+                                            i, actual_type, expected_element_type
+                                        )));
+                                    }
+                                }
+                            }
+                        },
+                        _ => {
+                            // Type already matches expected type
+                        }
+                    }
+                }
+            }
+        }
+
+        // Restore the original type hint
+        self.type_inference.type_hint = original_hint;
+
+        let first_type = &element_types[0];
+        for (i, element_type) in element_types.iter().enumerate() {
+            if element_type != first_type {
+                return Err(TypeCheckError::array_error(&format!(
+                    "Array elements must have the same type, but element {} has type {:?} while first element has type {:?}",
+                    i, element_type, first_type
+                )));
+            }
+        }
+
+        Ok(TypeDecl::Array(element_types, elements.len()))
+    }
+
     fn visit_struct_literal_impl(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check if struct definition exists and clone it
         let struct_definition = self.context.get_struct_definition(*struct_name)

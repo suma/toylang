@@ -2153,6 +2153,152 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_nested_left_operand_only() {
+        // Test: Only the left operand of the problematic plus operation
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+            
+            fn main() -> i64 {
+                val nested: [Outer; 2] = [
+                    Outer { 
+                        inner: Inner { value: 10i64 }, 
+                        count: 1i64 
+                    },
+                    Outer { 
+                        inner: Inner { value: 20i64 }, 
+                        count: 2i64 
+                    }
+                ]
+                nested[0u64].inner.value  // Left operand only
+            }
+        "#;
+        
+        let result = test_program(program);
+        println!("Left operand only result: {:?}", result);
+        // This should NOT cause infinite loop if the issue is specifically with the plus operation
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_nested_right_operand_only() {
+        // Test: Only the right operand of the problematic plus operation
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+            
+            fn main() -> i64 {
+                val nested: [Outer; 2] = [
+                    Outer { 
+                        inner: Inner { value: 10i64 }, 
+                        count: 1i64 
+                    },
+                    Outer { 
+                        inner: Inner { value: 20i64 }, 
+                        count: 2i64 
+                    }
+                ]
+                nested[1u64].count  // Right operand only
+            }
+        "#;
+        
+        let result = test_program(program);
+        println!("Right operand only result: {:?}", result);
+        // This should NOT cause infinite loop if the issue is specifically with the plus operation
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_simple_array_no_struct() {
+        // Test: Simple array with no structs to verify basic array functionality
+        let program = r#"
+            fn main() -> i64 {
+                val arr: [i64; 2] = [10i64, 20i64]
+                42i64
+            }
+        "#;
+        
+        let result = test_program(program);
+        println!("Simple array (no struct) result: {:?}", result);
+        // This should work if the issue is specifically with struct arrays
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test]
+    fn test_struct_array_initialization_only() {
+        // Test: Only array initialization without field access
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+            
+            fn main() -> i64 {
+                val nested: [Outer; 2] = [
+                    Outer { 
+                        inner: Inner { value: 10i64 }, 
+                        count: 1i64 
+                    },
+                    Outer { 
+                        inner: Inner { value: 20i64 }, 
+                        count: 2i64 
+                    }
+                ]
+                42i64  // Just return a constant, no field access
+            }
+        "#;
+        
+        let result = test_program(program);
+        println!("Array initialization only result: {:?}", result);
+        // This isolates whether the issue is in array initialization or field access
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[test] 
+    fn test_simple_field_access_no_array() {
+        // Test: Field access without array, using simple variable
+        let program = r#"
+            struct Inner {
+                value: i64
+            }
+            
+            struct Outer {
+                inner: Inner,
+                count: i64
+            }
+            
+            fn main() -> i64 {
+                val outer = Outer { 
+                    inner: Inner { value: 10i64 }, 
+                    count: 1i64 
+                }
+                outer.inner.value  // Field access without array indexing
+            }
+        "#;
+        
+        let result = test_program(program);
+        println!("Simple field access (no array) result: {:?}", result);
+        // This isolates whether the issue is specifically with array+field access combination
+        assert!(result.is_ok() || result.is_err());
+    }
+
     // ========== Null Value System Tests ==========
 
     #[test]

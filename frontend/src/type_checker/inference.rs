@@ -19,7 +19,7 @@ impl TypeInferenceState {
             number_usage_context: Vec::new(),
             variable_expr_mapping: HashMap::new(),
             recursion_depth: 0,
-            max_recursion_depth: 5, // Restored to reasonable default value
+            max_recursion_depth: 3, // Very low value to catch infinite recursion early
         }
     }
 

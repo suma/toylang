@@ -1156,6 +1156,27 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     }
 
     fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in struct type inference - possible circular reference"
+            ));
+        }
+        
+        self.type_inference.recursion_depth += 1;
+        
+        // Execute the main logic and capture result
+        let result = self.visit_struct_literal_impl(struct_name, fields);
+        
+        // Always decrement recursion depth before returning
+        self.type_inference.recursion_depth -= 1;
+        
+        result
+    }
+}
+
+impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+    fn visit_struct_literal_impl(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check if struct definition exists and clone it
         let struct_definition = self.context.get_struct_definition(*struct_name)
             .ok_or_else(|| TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))?

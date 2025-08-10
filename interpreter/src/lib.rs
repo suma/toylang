@@ -18,12 +18,7 @@ use crate::error_formatter::ErrorFormatter;
 
 /// Common setup for TypeCheckerVisitor with struct and impl registration
 fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
-
-    // Register all defined functions
-    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
-    
-    // Collect and register struct definitions
+    // First, collect and register struct definitions in the program's string_interner
     let mut struct_definitions = Vec::new();
     for stmt_ref in &program.statement.0 {
         match stmt_ref {
@@ -34,12 +29,22 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
         }
     }
     
-    // Register struct definitions
+    // Register struct names in string_interner and collect symbols
+    let mut struct_symbols_and_fields = Vec::new();
     for (name, fields) in struct_definitions {
-        let struct_symbol = tc.core.string_interner.get(&name);
-        if let Some(symbol) = struct_symbol {
-            tc.context.register_struct(symbol, fields);
-        }
+        let struct_symbol = program.string_interner.get_or_intern(name);
+        struct_symbols_and_fields.push((struct_symbol, fields));
+    }
+
+    // Now create the type checker
+    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
+
+    // Register all defined functions
+    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+    
+    // Register struct definitions with their symbols
+    for (struct_symbol, fields) in struct_symbols_and_fields {
+        tc.context.register_struct(struct_symbol, fields);
     }
 
     tc

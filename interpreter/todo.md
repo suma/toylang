@@ -471,6 +471,17 @@
     - 統一されたエラーハンドリングパターンによる開発効率向上
     - 全テスト通過（frontend・interpreterの機能完全互換性維持）
 
+47. **単体テスト tests::test_impl_block_parsing の修正** ✅ (2024-08-10完了)
+    - 問題の原因を特定：`setup_type_checker`関数で構造体登録時に`get(&name)`を使用していたが、構造体名がまだ文字列インターナに登録されていなかった
+    - `setup_type_checker`関数をリファクタリング：
+      - 構造体定義の収集と構造体名の事前登録を分離
+      - `program.string_interner.get_or_intern(name)`で構造体名を確実に登録
+      - 登録されたシンボルを使って構造体定義をコンテキストに登録
+    - `impl`ブロック処理時に「struct type 'Point' not found」エラーを解消
+    - `test_impl_block_parsing`テストが正常に通過するよう修正完了
+    - 構造体定義と`impl`ブロックの処理順序問題を根本解決
+    - 全テスト通過：interpreter 117テスト（lib: 3、main: 117、doc: 0）が引き続き成功
+
 
 ## 進行中 🚧
 

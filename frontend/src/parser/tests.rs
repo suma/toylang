@@ -829,4 +829,119 @@ mod parser_tests {
             _ => panic!("Expected impl block declaration"),
         }
     }
+
+    #[test]
+    fn parser_nested_field_access_simple() {
+        let input = "obj.field";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_stmt();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+        
+        // Get symbols before accessing expr_pool
+        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
+        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
+        
+        let expr_pool = parser.get_expr_pool();
+        assert_eq!(2, expr_pool.len(), "should have 2 expressions for obj.field");
+        
+        // obj (identifier)
+        let obj_expr = expr_pool.get(0).unwrap();
+        assert_eq!(Expr::Identifier(expected_obj), *obj_expr);
+        
+        // field access
+        let field_access = expr_pool.get(1).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), *field_access);
+    }
+
+    #[test]
+    fn parser_nested_field_access_chain() {
+        let input = "obj.inner.field";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_stmt();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+        
+        // Get symbols before accessing expr_pool
+        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
+        let expected_inner = parser.get_string_interner().get_or_intern("inner".to_string());
+        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
+        
+        let expr_pool = parser.get_expr_pool();
+        assert_eq!(3, expr_pool.len(), "should have 3 expressions for obj.inner.field");
+        
+        // obj (identifier)
+        let obj_expr = expr_pool.get(0).unwrap();
+        assert_eq!(Expr::Identifier(expected_obj), *obj_expr);
+        
+        // obj.inner
+        let inner_access = expr_pool.get(1).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_inner), *inner_access);
+        
+        // obj.inner.field
+        let field_access = expr_pool.get(2).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_field), *field_access);
+    }
+
+    #[test]
+    fn parser_deeply_nested_field_access() {
+        let input = "a.b.c.d.e.f";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_stmt();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+        
+        // Get symbols before accessing expr_pool
+        let expected_a = parser.get_string_interner().get_or_intern("a".to_string());
+        let expected_b = parser.get_string_interner().get_or_intern("b".to_string());
+        let expected_c = parser.get_string_interner().get_or_intern("c".to_string());
+        let expected_d = parser.get_string_interner().get_or_intern("d".to_string());
+        let expected_e = parser.get_string_interner().get_or_intern("e".to_string());
+        let expected_f = parser.get_string_interner().get_or_intern("f".to_string());
+        
+        let expr_pool = parser.get_expr_pool();
+        assert_eq!(6, expr_pool.len(), "should have 6 expressions for deeply nested access");
+        
+        // Verify the chain is built correctly
+        assert_eq!(Expr::Identifier(expected_a), *expr_pool.get(0).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_b), *expr_pool.get(1).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_c), *expr_pool.get(2).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(2), expected_d), *expr_pool.get(3).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(3), expected_e), *expr_pool.get(4).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(4), expected_f), *expr_pool.get(5).unwrap());
+    }
+
+    #[test]
+    fn parser_field_access_with_method_call() {
+        let input = "obj.field.method()";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_stmt();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+        
+        // Get symbols before accessing expr_pool
+        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
+        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
+        let expected_method = parser.get_string_interner().get_or_intern("method".to_string());
+        
+        let expr_pool = parser.get_expr_pool();
+        assert_eq!(3, expr_pool.len(), "should have 3 expressions for field access with method call");
+        
+        assert_eq!(Expr::Identifier(expected_obj), *expr_pool.get(0).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), *expr_pool.get(1).unwrap());
+        assert_eq!(Expr::MethodCall(ExprRef(1), expected_method, vec![]), *expr_pool.get(2).unwrap());
+    }
+
+    #[test] 
+    fn parser_nested_field_access_stress_test() {
+        // Test with very deep nesting to potentially trigger infinite loop issues
+        let parts: Vec<&str> = (0..50).map(|i| match i {
+            0 => "root",
+            _ => "field"
+        }).collect();
+        let input = parts.join(".");
+        
+        let mut parser = Parser::new(&input);
+        let result = parser.parse_stmt();
+        assert!(result.is_ok(), "parse err {:?}", result.err());
+        
+        let expr_pool = parser.get_expr_pool();
+        assert_eq!(50, expr_pool.len(), "should have 50 expressions for 50-level nesting");
+    }
 }

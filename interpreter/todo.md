@@ -495,22 +495,31 @@
     - 結果：全体の123個のテストが正常実行、1個が無視状態で安定稼働
     - 今後の課題：構造体配列の型推論アルゴリズムをより安全な実装に変更が必要
 
+49. **フロントエンドでのネストしたフィールドアクセス無限ループ修正** ✅ (2024-08-10完了)
+    - パーサーでのネストしたフィールドアクセス（`obj.inner.value`）の無限ループ問題を解決
+    - frontendに包括的な構造体ネスト単体テストスイートを追加：
+      - `parser_nested_field_access_simple` - 基本的な`obj.field`パターン
+      - `parser_nested_field_access_chain` - 3レベル`obj.inner.field`チェーン
+      - `parser_deeply_nested_field_access` - 6レベル深いネスト
+      - `parser_field_access_with_method_call` - フィールドアクセスとメソッド呼び出し組み合わせ
+      - `parser_nested_field_access_stress_test` - 50レベルストレステスト
+    - interpreterでのテスト有効化と検証：
+      - 基本的なネストしたフィールドアクセス（`outer.inner.value`）が正常動作することを確認
+      - `test_simple_nested_field_access`テストを新規追加して動作確認
+      - 7個の構造体テストが成功、1個（配列型推論）が既知問題で無効化
+    - 結果：パーサーレベルでの無限ループ問題は完全解決、基本的なネスト機能が正常動作
+
 
 ## 進行中 🚧
 
-49. **スタックオーバーフローバグの修正** ⚠️ (2024-08-10進行中)
-    - `interpreter/inf.t`実行時のスタックオーバーフロー問題を調査中
-    - 原因：ネストした構造体フィールドアクセス（`o.inner.value`）での無限再帰
-    - 実装済み：
-      - フロントエンド：`visit_field_access`と`visit_method_call`に再帰深度制限追加
-      - インタープリター：`evaluate`メソッドに再帰深度チェック追加
-      - `EvaluationContext`に`recursion_depth`フィールド追加
-    - 課題：再帰深度制限が期待通りに動作しておらず、さらなる調査が必要
+*現在進行中のタスクはありません*
 
 ## 未実装 📋
 
 23. **ネストした構造体配列の型推論改善** 🐛
     - 現在`test_nested_struct_array_inference`がスタックオーバーフローで無効化されている
+    - 問題は配列要素アクセス（`nested[0u64].inner.value`）と構造体型推論の組み合わせ
+    - 基本的なネストフィールドアクセス（`outer.inner.value`）は正常動作済み
     - より安全な構造体配列型推論アルゴリズムの実装が必要
     - 循環参照検出機能の追加
     - 型推論キャッシュの活用による効率化

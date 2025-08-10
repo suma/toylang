@@ -1,6 +1,34 @@
 use frontend::parser::error::ParserError;
 use frontend::type_checker::{SourceLocation, TypeCheckError};
 
+/// Enum for different types of errors that can occur
+#[derive(Debug)]
+pub enum ErrorType {
+    Parse,
+    TypeCheck,
+    Runtime,
+}
+
+impl ErrorType {
+    /// Get the header message for this error type
+    pub fn header(&self) -> &'static str {
+        match self {
+            ErrorType::Parse => "Parse errors found:",
+            ErrorType::TypeCheck => "Type check errors found:",
+            ErrorType::Runtime => "Runtime error occurred:",
+        }
+    }
+
+    /// Get the prefix for individual error messages
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            ErrorType::Parse => "  ",
+            ErrorType::TypeCheck => "  ", 
+            ErrorType::Runtime => "",
+        }
+    }
+}
+
 pub struct ErrorFormatter<'a> {
     source_code: &'a str,
     filename: &'a str,
@@ -30,7 +58,7 @@ impl<'a> ErrorFormatter<'a> {
         if let Some(loc) = location {
             self.format_error_with_location(error_msg, loc)
         } else {
-            format!("Runtime Error: {}", error_msg)
+            error_msg.to_string()  // Don't add "Runtime Error:" prefix here since it's handled by display method
         }
     }
 
@@ -80,6 +108,53 @@ impl<'a> ErrorFormatter<'a> {
 
     pub fn format_simple_error(&self, error_msg: &str) -> String {
         format!("Error: {}", error_msg)
+    }
+
+    /// Display multiple parse errors with unified formatting
+    pub fn display_parse_errors(&self, errors: &[ParserError]) {
+        if errors.is_empty() {
+            return;
+        }
+
+        eprintln!("{}", ErrorType::Parse.header());
+        for error in errors {
+            let formatted_error = self.format_parse_error(error);
+            eprintln!("{}{}", ErrorType::Parse.prefix(), formatted_error);
+        }
+    }
+
+    /// Display multiple type check errors with unified formatting
+    pub fn display_type_check_errors(&self, errors: &[String]) {
+        if errors.is_empty() {
+            return;
+        }
+
+        eprintln!("{}", ErrorType::TypeCheck.header());
+        for error in errors {
+            eprintln!("{}{}", ErrorType::TypeCheck.prefix(), error);
+        }
+    }
+
+    /// Display a single runtime error with unified formatting
+    pub fn display_runtime_error(&self, error: &str) {
+        eprintln!("{}", ErrorType::Runtime.header());
+        
+        // Remove "Runtime Error:" prefix if it already exists to avoid duplication
+        let clean_error = error.strip_prefix("Runtime Error: ").unwrap_or(error);
+        let formatted_error = self.format_runtime_error(clean_error, None);
+        eprintln!("{}{}", ErrorType::Runtime.prefix(), formatted_error);
+    }
+
+    /// Generic method to display any collection of errors with unified formatting
+    pub fn display_errors<T: std::fmt::Display>(&self, error_type: ErrorType, errors: &[T]) {
+        if errors.is_empty() {
+            return;
+        }
+
+        eprintln!("{}", error_type.header());
+        for error in errors {
+            eprintln!("{}{}", error_type.prefix(), error);
+        }
     }
 
     fn find_error_position_in_line(&self, error_msg: &str, source_line: &str) -> Option<usize> {

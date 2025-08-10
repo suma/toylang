@@ -16,46 +16,45 @@ use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
 use crate::error_formatter::ErrorFormatter;
 
-pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
-    let mut errors: Vec<String> = vec![];
-    
-    // Collect struct and impl information before creating type checker
-    let mut struct_definitions: Vec<(DefaultSymbol, Vec<StructField>)> = Vec::new();
-    let mut impl_blocks: Vec<(String, Vec<std::rc::Rc<MethodFunction>>)> = Vec::new();
-    
-    for stmt_ref in &program.statement.0 {
-        match stmt_ref {
-            frontend::ast::Stmt::StructDecl { name, fields } => {
-                let struct_symbol = program.string_interner.get_or_intern(name);
-                struct_definitions.push((struct_symbol, fields.clone()));
-            }
-            frontend::ast::Stmt::ImplBlock { target_type, methods } => {
-                impl_blocks.push((target_type.clone(), methods.clone()));
-            }
-            _ => {}
-        }
-    }
-    
+/// Common setup for TypeCheckerVisitor with struct and impl registration
+fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
 
     // Register all defined functions
     program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
     
-    // Register all struct definitions
-    for (symbol, fields) in struct_definitions {
-        tc.context.register_struct(symbol, fields);
+    // Collect and register struct definitions
+    let mut struct_definitions = Vec::new();
+    for stmt_ref in &program.statement.0 {
+        match stmt_ref {
+            frontend::ast::Stmt::StructDecl { name, fields } => {
+                struct_definitions.push((name.clone(), fields.clone()));
+            }
+            _ => {}
+        }
+    }
+    
+    // Register struct definitions
+    for (name, fields) in struct_definitions {
+        let struct_symbol = tc.core.string_interner.get(&name);
+        if let Some(symbol) = struct_symbol {
+            tc.context.register_struct(symbol, fields);
+        }
     }
 
-    // Create error formatter if we have source code and filename
-    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
-        Some(ErrorFormatter::new(source, file))
-    } else {
-        None
-    };
+    tc
+}
 
-    // Process impl blocks to register methods
+/// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
+fn process_impl_blocks_extracted(
+    tc: &mut TypeCheckerVisitor,
+    impl_blocks: &[(String, Vec<std::rc::Rc<MethodFunction>>)],
+    formatter: &Option<ErrorFormatter>
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
     for (target_type, methods) in impl_blocks {
-        if let Err(err) = tc.visit_impl_block(&target_type, &methods) {
+        if let Err(err) = tc.visit_impl_block(target_type, methods) {
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
@@ -65,8 +64,38 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
         }
     }
 
-    program.function.iter().for_each(|func| {
-        let name = program.string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
+    errors
+}
+
+pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
+    let mut errors: Vec<String> = vec![];
+    
+    // Extract data before setting up TypeChecker to avoid borrowing conflicts
+    let functions = program.function.clone();
+    let string_interner = program.string_interner.clone();
+    let mut impl_blocks = Vec::new();
+    for stmt_ref in &program.statement.0 {
+        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
+            impl_blocks.push((target_type.clone(), methods.clone()));
+        }
+    }
+    
+    // Setup TypeChecker with struct and function registration
+    let mut tc = setup_type_checker(program);
+
+    // Create error formatter if we have source code and filename
+    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
+        Some(ErrorFormatter::new(source, file))
+    } else {
+        None
+    };
+
+    // Process impl blocks and collect errors
+    errors.extend(process_impl_blocks_extracted(&mut tc, &impl_blocks, &formatter));
+
+    // Process functions
+    functions.iter().for_each(|func| {
+        let name = string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
         // Commented out for performance benchmarking
         // println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
@@ -102,88 +131,6 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
     }
 }
 
-/// Check typing with frontend multiple error collection
-pub fn check_typing_multiple_errors(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
-    let mut all_errors: Vec<String> = vec![];
-    
-    // Use frontend's multiple type checking
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
-
-    // Register all defined functions
-    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
-    
-    // Collect struct definitions first
-    let mut struct_definitions = Vec::new();
-    for stmt_ref in &program.statement.0 {
-        match stmt_ref {
-            frontend::ast::Stmt::StructDecl { name, fields } => {
-                struct_definitions.push((name.clone(), fields.clone()));
-            }
-            _ => {}
-        }
-    }
-    
-    // Register struct definitions
-    for (name, fields) in struct_definitions {
-        let struct_symbol = tc.core.string_interner.get(&name);
-        if let Some(symbol) = struct_symbol {
-            tc.context.register_struct(symbol, fields);
-        }
-    }
-
-    // Create error formatter if we have source code and filename
-    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
-        Some(ErrorFormatter::new(source, file))
-    } else {
-        None
-    };
-
-    // Process impl blocks to register methods
-    for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
-            if let Err(err) = tc.visit_impl_block(target_type, methods) {
-                let formatted_error = if let Some(ref fmt) = formatter {
-                    fmt.format_type_check_error(&err)
-                } else {
-                    format!("Impl block error for {}: {}", target_type, err)
-                };
-                all_errors.push(formatted_error);
-            }
-        }
-    }
-
-    // Check all functions with multiple error collection
-    tc.clear_errors();
-    for func in &program.function {
-        if let Err(e) = tc.type_check(func.clone()) {
-            let formatted_error = if let Some(ref fmt) = formatter {
-                fmt.format_type_check_error(&e)
-            } else {
-                format!("Type check error: {}", e)
-            };
-            all_errors.push(formatted_error);
-        }
-    }
-    
-    // Check statements
-    for (index, _stmt) in program.statement.0.iter().enumerate() {
-        let stmt_ref = frontend::ast::StmtRef(index as u32);
-        if let Err(e) = tc.visit_stmt(&stmt_ref) {
-            let formatted_error = if let Some(ref fmt) = formatter {
-                fmt.format_type_check_error(&e)
-            } else {
-                format!("Type check error: {}", e)
-            };
-            all_errors.push(formatted_error);
-        }
-    }
-    
-    if all_errors.is_empty() {
-        Ok(())
-    } else {
-        Err(all_errors)
-    }
-}
 
 fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
     let mut line = 1u32;

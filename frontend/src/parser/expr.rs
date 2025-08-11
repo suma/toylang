@@ -1,7 +1,7 @@
 use crate::ast::*;
 use crate::token::Kind;
 use super::core::Parser;
-use crate::parser::error::ParserResult;
+use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
 
 #[derive(Debug)]
@@ -26,6 +26,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr_impl_internal(&mut self) -> ParserResult<ExprRef> {
+        // Check for tokens that should not start an expression
+        match self.peek() {
+            Some(Kind::ParenClose) | Some(Kind::BracketClose) | Some(Kind::BraceClose) => {
+                // These tokens should not start an expression
+                // Don't consume them - let the parent handle them
+                let token = self.peek().cloned();
+                let line = self.line_count();
+                let location = self.current_source_location();
+                return Err(ParserError::generic_error(location, 
+                    format!("unexpected token {:?} at line {}, expected expression", token, line)));
+            }
+            _ => {}
+        }
+        
         let lhs = parse_logical_expr(self);
         if lhs.is_ok() {
             return match self.peek() {
@@ -45,6 +59,8 @@ impl<'a> Parser<'a> {
                 let x = x.clone();
                 let line = self.line_count();
                 self.collect_error(&format!("expected expression but found {:?} at line {}", x, line));
+                // Skip the problematic token to avoid infinite loop
+                self.next();
                 // Return a dummy expression to continue parsing
                 Ok(self.ast_builder.null_expr(None))
             }
@@ -120,36 +136,42 @@ pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> ParserResult<Vec<StmtRef>> {
-    match parser.peek() {
-        Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
-            return Ok(statements),
-        _ => (),
-    }
-
     loop {
+        // Skip newlines
+        while parser.peek() == Some(&Kind::NewLine) {
+            parser.next();
+        }
+        
+        // Check for end of block
         match parser.peek() {
-            Some(Kind::NewLine) =>
-                parser.next(),
-            Some(_) | None =>
-                break,
+            Some(Kind::BraceClose) | Some(Kind::EOF) | None => {
+                return Ok(statements);
+            }
+            _ => {}
+        }
+        
+        // Parse statement
+        let lhs = super::stmt::parse_stmt(parser);
+        match lhs {
+            Ok(stmt) => {
+                statements.push(stmt);
+            }
+            Err(err) => {
+                parser.collect_error(&format!("expected statement in block: {:?}", err));
+                
+                // Skip the problematic token to avoid infinite loop
+                // But check if we're at a block terminator first
+                match parser.peek() {
+                    Some(Kind::BraceClose) | Some(Kind::EOF) | None => {
+                        return Ok(statements);
+                    }
+                    _ => {
+                        parser.next(); // Skip the problematic token
+                    }
+                }
+            }
         }
     }
-
-    match parser.peek() {
-        Some(Kind::BraceClose) | Some(Kind::EOF) | None => {
-            return Ok(statements);
-        }
-        _ => (),
-    }
-
-    let lhs = super::stmt::parse_stmt(parser);
-    if lhs.is_err() {
-        parser.collect_error(&format!("expected statement in block: {:?}", lhs.err()));
-        return Ok(statements); // Return current statements and continue
-    }
-    statements.push(lhs?);
-
-    parse_block_impl(parser, statements)
 }
 
 pub fn parse_logical_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
@@ -398,6 +420,8 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         _ => {
                             let x_cloned = x.cloned();
                             parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
+                            // Don't consume the token here - let the caller handle it
+                            // This is inside a nested return statement, so we don't call parser.next()
                             Ok(parser.ast_builder.null_expr(None)) // Return dummy expression
                         }
                     }

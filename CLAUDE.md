@@ -85,6 +85,7 @@ fn main() -> u64 {
 - All programs must have a `main()` function
 - **No semicolons required**: Statements are separated by newlines, not semicolons
 - Use '#' symbol for single-line comment
+- Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
 
 ## Architecture Notes
 

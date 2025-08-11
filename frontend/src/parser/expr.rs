@@ -590,7 +590,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
         };
 
         let has_colon = parser.peek() == Some(&Kind::Colon);
-        if !parser.expect_or_collect(has_colon, "expected ':' after field name") {
+        if !parser.expect_or_collect(has_colon, "expected ':' after struct field name") {
             parser.exit_nested_structure(true);
             return Ok(fields);
         }

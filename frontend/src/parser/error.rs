@@ -1,9 +1,11 @@
-use crate::parser::error::ParserErrorKind::UnexpectedToken;
 use crate::type_checker::SourceLocation;
 
 #[derive(Debug, Clone)]
 pub enum ParserErrorKind {
     UnexpectedToken { expected: String },
+    RecursionLimitExceeded,
+    GenericError { message: String },
+    IoError { message: String },
 }
 
 #[derive(Debug)]
@@ -47,7 +49,28 @@ pub struct ParserError {
 impl ParserError {
     pub fn unexpected_token(location: SourceLocation, expected: String) -> Self {
         Self {
-            kind: UnexpectedToken { expected },
+            kind: ParserErrorKind::UnexpectedToken { expected },
+            location,
+        }
+    }
+    
+    pub fn recursion_limit_exceeded(location: SourceLocation) -> Self {
+        Self {
+            kind: ParserErrorKind::RecursionLimitExceeded,
+            location,
+        }
+    }
+    
+    pub fn generic_error(location: SourceLocation, message: String) -> Self {
+        Self {
+            kind: ParserErrorKind::GenericError { message },
+            location,
+        }
+    }
+    
+    pub fn io_error(location: SourceLocation, message: String) -> Self {
+        Self {
+            kind: ParserErrorKind::IoError { message },
             location,
         }
     }
@@ -57,6 +80,15 @@ impl std::fmt::Display for ParserError {
         let base_message = match &self.kind {
             ParserErrorKind::UnexpectedToken { expected} => {
                 format!("Expected {:?}", expected)
+            }
+            ParserErrorKind::RecursionLimitExceeded => {
+                "Recursion limit exceeded".to_string()
+            }
+            ParserErrorKind::GenericError { message } => {
+                message.clone()
+            }
+            ParserErrorKind::IoError { message } => {
+                format!("IO error: {}", message)
             }
         };
 
@@ -68,3 +100,8 @@ impl std::fmt::Display for ParserError {
         write!(f, "{}", result)
     }
 }
+
+impl std::error::Error for ParserError {}
+
+// Type alias for parser results
+pub type ParserResult<T> = std::result::Result<T, ParserError>;

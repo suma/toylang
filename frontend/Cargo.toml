@@ -8,7 +8,6 @@ description = "Compiler front-end library"
 build = "build.rs"
 
 [dependencies]
-anyhow = "1.0"
 string-interner = "0.19.0"
 
 [dev-dependencies]

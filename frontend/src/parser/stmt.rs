@@ -3,16 +3,16 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::token::Kind;
 use super::core::Parser;
-use anyhow::{anyhow, Result};
+use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
 
 impl<'a> Parser<'a> {
-    pub fn parse_stmt(&mut self) -> Result<StmtRef> {
+    pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
         parse_stmt(self)
     }
 }
 
-pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
+pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
     match parser.peek() {
         Some(Kind::Val) | Some(Kind::Var) => {
             parse_var_def(parser)
@@ -48,9 +48,9 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
         }
         Some(Kind::For) => {
             parser.next();
-            match parser.peek() {
+            let current_token = parser.peek().cloned();
+            match current_token {
                 Some(Kind::Identifier(s)) => {
-                    let s = s.to_string();
                     let ident = parser.string_interner.get_or_intern(s);
                     parser.next();
                     parser.expect_err(&Kind::In)?;
@@ -61,7 +61,10 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
                     let location = parser.current_source_location();
                     Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
                 }
-                x => Err(anyhow!("parse_stmt for: expected identifier but {:?}", x)),
+                x => {
+                    let location = parser.current_source_location();
+                    Err(ParserError::generic_error(location, format!("parse_stmt for: expected identifier but {:?}", x)))
+                },
             }
         }
         Some(Kind::While) => {
@@ -75,22 +78,28 @@ pub fn parse_stmt(parser: &mut Parser) -> Result<StmtRef> {
     }
 }
 
-pub fn parse_var_def(parser: &mut Parser) -> Result<StmtRef> {
+pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     let is_val = match parser.peek() {
         Some(Kind::Val) => true,
         Some(Kind::Var) => false,
-        _ => return Err(anyhow!("parse_var_def: expected val or var")),
+        _ => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, "parse_var_def: expected val or var".to_string()))
+        },
     };
     parser.next();
 
-    let ident: DefaultSymbol = match parser.peek() {
+    let current_token = parser.peek().cloned();
+    let ident: DefaultSymbol = match current_token {
         Some(Kind::Identifier(s)) => {
-            let s = s.to_string();
-            let s = parser.string_interner.get_or_intern(s);
+            let sym = parser.string_interner.get_or_intern(s);
             parser.next();
-            s
+            sym
         }
-        x => return Err(anyhow!("parse_var_def: expected identifier but {:?}", x)),
+        x => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, format!("parse_var_def: expected identifier but {:?}", x)))
+        },
     };
 
     let ty: TypeDecl = match parser.peek() {
@@ -111,7 +120,10 @@ pub fn parse_var_def(parser: &mut Parser) -> Result<StmtRef> {
             Some(expr?)
         }
         Some(Kind::NewLine) => None,
-        _ => return Err(anyhow!("parse_var_def: expected expression but {:?}", parser.peek())),
+        _ => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, format!("parse_var_def: expected expression but {:?}", parser.peek())))
+        },
     };
     let location = parser.current_source_location();
     if is_val {
@@ -121,7 +133,7 @@ pub fn parse_var_def(parser: &mut Parser) -> Result<StmtRef> {
     }
 }
 
-pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) -> Result<Vec<StructField>> {
+pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
     parser.skip_newlines();
     
     match parser.peek() {
@@ -143,7 +155,10 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
             parser.next();
             name
         }
-        _ => return Err(anyhow!("expected field name")),
+        _ => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, "expected field name".to_string()))
+        },
     };
 
     parser.expect_err(&Kind::Colon)?;
@@ -170,7 +185,7 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
     }
 }
 
-pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>) -> Result<Vec<Rc<MethodFunction>>> {
+pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
     parser.skip_newlines();
     
     match parser.peek() {
@@ -217,14 +232,17 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                     parser.skip_newlines();
                     parse_impl_methods(parser, methods)
                 }
-                _ => Err(anyhow!("expected method name after fn")),
+                _ => {
+                    let location = parser.current_source_location();
+                    Err(ParserError::generic_error(location, "expected method name after fn".to_string()))
+                },
             }
         }
         _ => Ok(methods),
     }
 }
 
-pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Result<(Vec<Parameter>, bool)> {
+pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
     let mut has_self = false;
     
     match parser.peek() {
@@ -246,7 +264,10 @@ pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Res
                         return Ok((rest_params, has_self));
                     }
                     Some(Kind::ParenClose) => return Ok((args, has_self)),
-                    _ => return Err(anyhow!("expected comma or closing paren after &self")),
+                    _ => {
+                        let location = parser.current_source_location();
+                        return Err(ParserError::generic_error(location, "expected comma or closing paren after &self".to_string()))
+                    },
                 }
             }
         }
@@ -256,7 +277,7 @@ pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Res
     Ok((params, has_self))
 }
 
-pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) -> Result<(Vec<Parameter>, bool)> {
+pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
     match parser.peek() {
         Some(Kind::ParenClose) => return Ok((args, false)),
         _ => (),

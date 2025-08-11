@@ -1,11 +1,11 @@
 use crate::token::{Token, Kind};
 use super::lookahead::LookaheadBuffer;
-use anyhow::Result;
+use crate::parser::error::ParserResult;
 
 /// Trait for token sources that can provide tokens to the parser
 pub trait TokenSource {
     /// Get the next token from the source
-    fn next_token(&mut self) -> Result<Option<Token>>;
+    fn next_token(&mut self) -> ParserResult<Option<Token>>;
     
     /// Get current line count for error reporting
     fn line_count(&self) -> usize;
@@ -140,7 +140,7 @@ impl<T: TokenSource> TokenProvider<T> {
     }
 
     /// Fetch the next token from the source, filtering comments and applying normalization
-    fn fetch_next_token(&mut self) -> Result<Option<Token>> {
+    fn fetch_next_token(&mut self) -> ParserResult<Option<Token>> {
         loop {
             match self.source.next_token()? {
                 Some(token) => {
@@ -200,7 +200,7 @@ impl<'a> LexerTokenSource<'a> {
 }
 
 impl<'a> TokenSource for LexerTokenSource<'a> {
-    fn next_token(&mut self) -> Result<Option<Token>> {
+    fn next_token(&mut self) -> ParserResult<Option<Token>> {
         match self.lexer.yylex() {
             Ok(token) => Ok(Some(token)),
             Err(_) => Ok(None), // End of input or error
@@ -235,7 +235,7 @@ mod tests {
     }
 
     impl TokenSource for MockTokenSource {
-        fn next_token(&mut self) -> Result<Option<Token>> {
+        fn next_token(&mut self) -> ParserResult<Option<Token>> {
             if self.position < self.tokens.len() {
                 let token = self.tokens[self.position].clone();
                 self.position += 1;

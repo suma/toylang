@@ -5,9 +5,8 @@ use crate::token::Kind;
 use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
-use anyhow::{anyhow, Result};
 use string_interner::DefaultStringInterner;
-use crate::parser::error::{ParserError, MultipleParserResult};
+use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -106,18 +105,20 @@ impl<'a> Parser<'a> {
         self.token_provider.line_count()
     }
 
-    pub fn expect(&mut self, accept: &Kind) -> Result<()> {
+    pub fn expect(&mut self, accept: &Kind) -> ParserResult<()> {
         let tk = self.peek();
         if tk.is_some() && *tk.unwrap() == *accept {
             self.next();
             Ok(())
         } else {
-            let current = self.peek().unwrap_or(&Kind::EOF);
-            Err(anyhow!("Expected {:?} but found {:?}", accept, current))
+            let current = self.peek().map(|k| k.clone()).unwrap_or(Kind::EOF);
+            let location = self.current_source_location();
+            Err(ParserError::generic_error(location, 
+                format!("Expected {:?} but found {:?}", accept, current)))
         }
     }
 
-    pub fn expect_err(&mut self, accept: &Kind) -> Result<()> {
+    pub fn expect_err(&mut self, accept: &Kind) -> ParserResult<()> {
         let tk = self.peek();
         if tk.is_some() && *tk.unwrap() == *accept {
             self.next();
@@ -147,7 +148,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Check recursion depth using normalized complexity scoring
-    pub fn check_and_increment_recursion(&mut self) -> Result<()> {
+    pub fn check_and_increment_recursion(&mut self) -> ParserResult<()> {
         // Use significantly more aggressive depth management for format-independent parsing
         let complexity_score = self.normalization_context.complexity_score();
         
@@ -158,7 +159,8 @@ impl<'a> Parser<'a> {
         if self.recursion_depth >= adjusted_max_depth {
             self.collect_error(&format!("Maximum recursion depth reached in parser (depth: {}, complexity: {}, adjusted_max: {})", 
                                       self.recursion_depth, complexity_score, adjusted_max_depth));
-            return Err(anyhow!("Maximum recursion depth reached"));
+            let location = self.current_source_location();
+            return Err(ParserError::recursion_limit_exceeded(location));
         }
         self.recursion_depth += 1;
         Ok(())
@@ -202,17 +204,17 @@ impl<'a> Parser<'a> {
         &mut self.string_interner
     }
 
-    pub fn parse_stmt_line(&mut self) -> Result<(StmtRef, StmtPool)> {
+    pub fn parse_stmt_line(&mut self) -> ParserResult<(StmtRef, StmtPool)> {
         let e = self.parse_stmt();
         if e.is_err() {
-            return Err(anyhow!(e.err().unwrap()));
+            return Err(e.err().unwrap());
         }
         let mut stmt: StmtPool = StmtPool(vec![]);
         std::mem::swap(&mut stmt, self.ast_builder.get_stmt_pool_mut());
         Ok((e?, stmt))
     }
 
-    pub fn parse_program(&mut self) -> Result<Program> {
+    pub fn parse_program(&mut self) -> ParserResult<Program> {
         let mut start_pos: Option<usize> = None;
         let mut end_pos: Option<usize> = None;
         let mut update_start_pos = |start: usize| {
@@ -341,21 +343,24 @@ impl<'a> Parser<'a> {
         })
     }
 
-    pub fn parse_param_def(&mut self) -> Result<Parameter> {
-        match self.peek() {
+    pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
+        let current_token = self.peek().cloned();
+        match current_token {
             Some(Kind::Identifier(s)) => {
-                let s = s.to_string();
                 let name = self.string_interner.get_or_intern(s);
                 self.next();
                 self.expect_err(&Kind::Colon)?;
                 let typ = self.parse_type_declaration()?;
                 Ok((name, typ))
             }
-            x => Err(anyhow!("expect type parameter of function but: {:?}", x)),
+            x => {
+                let location = self.current_source_location();
+                Err(ParserError::generic_error(location, format!("expect type parameter of function but: {:?}", x)))
+            },
         }
     }
 
-    pub fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> Result<Vec<Parameter>> {
+    pub fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
         match self.peek() {
             Some(Kind::ParenClose) => return Ok(args),
             _ => (),
@@ -376,7 +381,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_type_declaration(&mut self) -> Result<TypeDecl> {
+    pub fn parse_type_declaration(&mut self) -> ParserResult<TypeDecl> {
         match self.peek() {
             Some(Kind::BracketOpen) => {
                 self.next();
@@ -390,13 +395,19 @@ impl<'a> Parser<'a> {
                     }
                     Some(Kind::Integer(s)) => {
                         self.next();
-                        s.parse::<usize>().map_err(|_| anyhow!("Invalid array size: {}", s))?
+                        s.parse::<usize>().map_err(|_| {
+                            let location = self.current_source_location();
+                            ParserError::generic_error(location, format!("Invalid array size: {}", s))
+                        })?
                     }
                     Some(Kind::Underscore) => {
                         self.next();
                         0
                     }
-                    _ => return Err(anyhow!("Expected array size or underscore"))
+                    _ => {
+                        let location = self.current_source_location();
+                        return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))
+                    }
                 };
                 
                 self.expect_err(&Kind::BracketClose)?;
@@ -425,7 +436,8 @@ impl<'a> Parser<'a> {
                 Ok(TypeDecl::String)
             }
             Some(_) | None => {
-                Err(anyhow!("parse_type_declaration: unexpected token {:?}", self.peek()))
+                let location = self.current_source_location();
+                Err(ParserError::generic_error(location, format!("parse_type_declaration: unexpected token {:?}", self.peek())))
             }
         }
     }

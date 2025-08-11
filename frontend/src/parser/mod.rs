@@ -9,3 +9,4 @@ pub mod tests;
 pub mod error;
 
 pub use core::Parser;
+pub use error::{ParserError, ParserResult, MultipleParserResult};

@@ -1,22 +1,22 @@
 use crate::ast::*;
 use crate::token::Kind;
 use super::core::Parser;
-use anyhow::Result;
+use crate::parser::error::ParserResult;
 use string_interner::DefaultSymbol;
 
 #[derive(Debug)]
 pub struct OperatorGroup<'a> {
     pub tokens: Vec<(Kind, Operator)>,
-    pub next_precedence: fn(&mut Parser<'a>) -> Result<ExprRef>,
+    pub next_precedence: fn(&mut Parser<'a>) -> ParserResult<ExprRef>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse_expr(&mut self) -> Result<StmtRef> {
+    pub fn parse_expr(&mut self) -> ParserResult<StmtRef> {
         let e = self.parse_expr_impl();
         Ok(self.expr_to_stmt(e?))
     }
 
-    pub fn parse_expr_impl(&mut self) -> Result<ExprRef> {
+    pub fn parse_expr_impl(&mut self) -> ParserResult<ExprRef> {
         self.check_and_increment_recursion()?;
         
         let result = self.parse_expr_impl_internal();
@@ -25,7 +25,7 @@ impl<'a> Parser<'a> {
         result
     }
 
-    fn parse_expr_impl_internal(&mut self) -> Result<ExprRef> {
+    fn parse_expr_impl_internal(&mut self) -> ParserResult<ExprRef> {
         let lhs = parse_logical_expr(self);
         if lhs.is_ok() {
             return match self.peek() {
@@ -61,7 +61,7 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> Result<ExprRef> {
+pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprRef> {
     loop {
         match parser.peek() {
             Some(Kind::Equal) => {
@@ -75,7 +75,7 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> Result<ExprRef> {
     }
 }
 
-pub fn parse_if(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
     let cond = parse_logical_expr(parser)?;
     let if_block = parse_block(parser)?;
 
@@ -102,7 +102,7 @@ pub fn parse_if(parser: &mut Parser) -> Result<ExprRef> {
     Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block, Some(location)))
 }
 
-pub fn parse_block(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.expect_err(&Kind::BraceOpen)?;
     match parser.peek() {
         Some(Kind::BraceClose) | None => {
@@ -119,7 +119,7 @@ pub fn parse_block(parser: &mut Parser) -> Result<ExprRef> {
     }
 }
 
-pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Result<Vec<StmtRef>> {
+pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> ParserResult<Vec<StmtRef>> {
     match parser.peek() {
         Some(Kind::BraceClose) | Some(Kind::EOF) | None =>
             return Ok(statements),
@@ -152,7 +152,7 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Re
     parse_block_impl(parser, statements)
 }
 
-pub fn parse_logical_expr(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_logical_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
     let group = OperatorGroup {
         tokens: vec![
             (Kind::DoubleAnd, Operator::LogicalAnd),
@@ -163,7 +163,7 @@ pub fn parse_logical_expr(parser: &mut Parser) -> Result<ExprRef> {
     parse_binary(parser, &group)
 }
 
-pub fn parse_equality(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_equality(parser: &mut Parser) -> ParserResult<ExprRef> {
     let group = OperatorGroup {
         tokens: vec![
             (Kind::DoubleEqual, Operator::EQ),
@@ -174,7 +174,7 @@ pub fn parse_equality(parser: &mut Parser) -> Result<ExprRef> {
     parse_binary(parser, &group)
 }
 
-pub fn parse_relational(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
     let group = OperatorGroup {
         tokens: vec![
             (Kind::LT, Operator::LT),
@@ -187,7 +187,7 @@ pub fn parse_relational(parser: &mut Parser) -> Result<ExprRef> {
     parse_binary(parser, &group)
 }
 
-pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> Result<ExprRef> {
+pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> ParserResult<ExprRef> {
     // Add recursion protection
     parser.check_and_increment_recursion()?;
     
@@ -197,7 +197,7 @@ pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> R
     result
 }
 
-fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> Result<ExprRef> {
+fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> ParserResult<ExprRef> {
     let mut lhs = (group.next_precedence)(parser)?;
 
     loop {
@@ -217,7 +217,7 @@ fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> 
     }
 }
 
-pub fn parse_add(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_add(parser: &mut Parser) -> ParserResult<ExprRef> {
     let group = OperatorGroup {
         tokens: vec![
             (Kind::IAdd, Operator::IAdd),
@@ -228,7 +228,7 @@ pub fn parse_add(parser: &mut Parser) -> Result<ExprRef> {
     parse_binary(parser, &group)
 }
 
-pub fn parse_mul(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_mul(parser: &mut Parser) -> ParserResult<ExprRef> {
     let group = OperatorGroup {
         tokens: vec![
             (Kind::IMul, Operator::IMul),
@@ -239,7 +239,7 @@ pub fn parse_mul(parser: &mut Parser) -> Result<ExprRef> {
     parse_binary(parser, &group)
 }
 
-pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_postfix(parser: &mut Parser) -> ParserResult<ExprRef> {
     // Add recursion protection
     parser.check_and_increment_recursion()?;
     
@@ -249,7 +249,7 @@ pub fn parse_postfix(parser: &mut Parser) -> Result<ExprRef> {
     result
 }
 
-fn parse_postfix_impl(parser: &mut Parser) -> Result<ExprRef> {
+fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     let mut expr = parse_primary(parser)?;
     
     loop {
@@ -287,7 +287,7 @@ fn parse_postfix_impl(parser: &mut Parser) -> Result<ExprRef> {
     Ok(expr)
 }
 
-pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
+pub fn parse_primary(parser: &mut Parser) -> ParserResult<ExprRef> {
     // Add recursion protection
     parser.check_and_increment_recursion()?;
     
@@ -297,7 +297,7 @@ pub fn parse_primary(parser: &mut Parser) -> Result<ExprRef> {
     result
 }
 
-fn parse_primary_impl(parser: &mut Parser) -> Result<ExprRef> {
+fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     match parser.peek() {
         Some(Kind::ParenOpen) => {
             parser.next();
@@ -409,7 +409,7 @@ fn parse_primary_impl(parser: &mut Parser) -> Result<ExprRef> {
     }
 }
 
-pub fn parse_expr_list(parser: &mut Parser, args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+pub fn parse_expr_list(parser: &mut Parser, args: Vec<ExprRef>) -> ParserResult<Vec<ExprRef>> {
     // Add recursion protection for expression list parsing
     parser.check_and_increment_recursion()?;
     
@@ -419,7 +419,7 @@ pub fn parse_expr_list(parser: &mut Parser, args: Vec<ExprRef>) -> Result<Vec<Ex
     result
 }
 
-fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> ParserResult<Vec<ExprRef>> {
     match parser.peek() {
         Some(Kind::ParenClose) => return Ok(args),
         _ => (),
@@ -445,7 +445,7 @@ fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<V
     }
 }
 
-pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
+pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> ParserResult<Vec<ExprRef>> {
     // Enter array literal context for format-independent parsing
     parser.enter_nested_structure(false);
     
@@ -517,7 +517,7 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
     }
 }
 
-pub fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+pub fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {
     // Add recursion protection for struct literal field parsing
     parser.check_and_increment_recursion()?;
     
@@ -527,7 +527,7 @@ pub fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymb
     result
 }
 
-fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {
     // Enter struct literal context for format-independent parsing
     parser.enter_nested_structure(true);
     

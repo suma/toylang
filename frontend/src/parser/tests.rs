@@ -944,4 +944,52 @@ mod parser_tests {
         let expr_pool = parser.get_expr_pool();
         assert_eq!(50, expr_pool.len(), "should have 50 expressions for 50-level nesting");
     }
+
+    // Test for underscore variable infinite loop issue - ORIGINAL
+    #[test]
+    fn parser_underscore_variable_usage_hang_test() {
+        let input = "fn main() -> i64 {\nval _ = 1i64\n_\n}";
+        println!("DEBUG: Starting parse with input: {:?}", input);
+        let mut parser = Parser::new(input);
+        println!("DEBUG: Parser created, calling parse_program");
+        let result = parser.parse_program();
+        println!("DEBUG: parse_program completed: {:?}", result.is_ok());
+        
+        // This pattern previously caused infinite loop, now fixed
+        assert!(result.is_ok(), "Underscore variable definition and usage should parse correctly");
+    }
+
+    #[test]
+    fn parser_underscore_single_expression_works() {
+        // Test just the problematic part: single underscore as expression
+        let input = "_";
+        println!("DEBUG: Testing single underscore expression: {:?}", input);
+        let mut parser = Parser::new(input);
+        println!("DEBUG: Parser created, calling parse_expr_impl");
+        let result = parser.parse_expr_impl();
+        println!("DEBUG: parse_expr_impl completed: {:?}", result.is_ok());
+        
+        // Single underscore should be parsed as identifier expression
+        assert!(result.is_ok(), "Single underscore should parse as identifier");
+    }
+
+    #[test] 
+    fn parser_underscore_prefix_variable_should_work() {
+        let input = "fn main() -> i64 {\nval _var = 1i64\n_var\n}";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_program();
+        
+        // This should work since underscore-prefixed variables are allowed
+        assert!(result.is_ok(), "Underscore-prefixed variable '_var' should be accepted");
+    }
+
+    #[test]
+    fn parser_valid_underscore_in_middle_variable() {
+        let input = "fn main() -> i64 {\nval var_name = 1i64\n0i64\n}";
+        let mut parser = Parser::new(input);
+        let result = parser.parse_program();
+        
+        // This should pass because underscores in the middle are allowed
+        assert!(result.is_ok(), "Variable with underscore in middle 'var_name' should be accepted");
+    }
 }

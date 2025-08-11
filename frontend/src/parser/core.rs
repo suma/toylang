@@ -409,10 +409,6 @@ impl<'a> Parser<'a> {
                             ParserError::generic_error(location, format!("Invalid array size: {}", s))
                         })?
                     }
-                    Some(Kind::Underscore) => {
-                        self.next();
-                        0
-                    }
                     _ => {
                         let location = self.current_source_location();
                         return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))

@@ -70,7 +70,6 @@ macro_rules! parse_number {
 "."         return Ok(token!(self, Kind::Dot));
 ":"         return Ok(token!(self, Kind::Colon));
 ";"         return Ok(token!(self, Kind::Semicolon));
-"_"         return Ok(token!(self, Kind::Underscore));
 "!"         return Ok(token!(self, Kind::Exclamation));
 "="         return Ok(token!(self, Kind::Equal));
 "<"         return Ok(token!(self, Kind::LT));

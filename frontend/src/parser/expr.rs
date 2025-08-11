@@ -136,7 +136,18 @@ pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> ParserResult<Vec<StmtRef>> {
+    // Add maximum iteration limit to prevent infinite loops
+    const MAX_ITERATIONS: usize = 1000;
+    let mut iteration_count = 0;
+    
     loop {
+        // Safety check for infinite loop prevention
+        iteration_count += 1;
+        if iteration_count > MAX_ITERATIONS {
+            parser.collect_error("Maximum parse iterations reached in block - possible infinite loop");
+            return Ok(statements);
+        }
+        
         // Skip newlines
         while parser.peek() == Some(&Kind::NewLine) {
             parser.next();
@@ -150,23 +161,33 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Pa
             _ => {}
         }
         
+        // Store current state before parsing
+        let token_before = parser.peek().cloned();
+        
         // Parse statement
         let lhs = super::stmt::parse_stmt(parser);
+        
         match lhs {
             Ok(stmt) => {
                 statements.push(stmt);
             }
             Err(err) => {
-                parser.collect_error(&format!("expected statement in block: {:?}", err));
+                let error_token = parser.peek().cloned();
+                parser.collect_error(&format!("expected statement in block: {:?} at token {:?}", err, error_token));
                 
-                // Skip the problematic token to avoid infinite loop
-                // But check if we're at a block terminator first
+                // Critical: Always ensure we make progress to avoid infinite loop
                 match parser.peek() {
                     Some(Kind::BraceClose) | Some(Kind::EOF) | None => {
                         return Ok(statements);
                     }
                     _ => {
-                        parser.next(); // Skip the problematic token
+                        // ALWAYS consume a token on error to guarantee progress
+                        if parser.peek() == token_before.as_ref() {
+                            parser.next(); // Skip the problematic token
+                        } else {
+                            // If token changed but we still have an error, skip current token anyway
+                            parser.next();
+                        }
                     }
                 }
             }

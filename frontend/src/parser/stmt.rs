@@ -134,121 +134,142 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
 }
 
 pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
-    parser.skip_newlines();
+    // Limit maximum number of fields to prevent infinite loops
+    const MAX_FIELDS: usize = 1000;
     
-    match parser.peek() {
-        Some(Kind::BraceClose) => return Ok(fields),
-        _ => (),
-    }
-
-    let visibility = match parser.peek() {
-        Some(Kind::Public) => {
-            parser.next();
-            Visibility::Public
-        }
-        _ => Visibility::Private,
-    };
-
-    let field_name = match parser.peek() {
-        Some(Kind::Identifier(s)) => {
-            let name = s.to_string();
-            parser.next();
-            name
-        }
-        _ => {
-            let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, "expected field name".to_string()))
-        },
-    };
-
-    parser.expect_err(&Kind::Colon)?;
-    let field_type = match parser.parse_type_declaration() {
-        Ok(ty) => ty,
-        Err(e) => {
-            parser.collect_error(&format!("expected type after ':' in struct field: {}", e));
+    loop {
+        parser.skip_newlines();
+        
+        // Check for end of fields or too many fields
+        if parser.peek() == Some(&Kind::BraceClose) || fields.len() >= MAX_FIELDS {
+            if fields.len() >= MAX_FIELDS {
+                parser.collect_error(&format!("too many struct fields (max: {})", MAX_FIELDS));
+            }
             return Ok(fields);
         }
-    };
 
-    fields.push(StructField {
-        name: field_name,
-        type_decl: field_type,
-        visibility,
-    });
-
-    parser.skip_newlines();
-    match parser.peek() {
-        Some(Kind::Comma) => {
-            parser.next();
-            parser.skip_newlines();
-            match parser.peek() {
-                Some(Kind::BraceClose) => Ok(fields),
-                _ => parse_struct_fields(parser, fields)
+        let visibility = match parser.peek() {
+            Some(Kind::Public) => {
+                parser.next();
+                Visibility::Public
             }
-        }
-        Some(Kind::BraceClose) => Ok(fields),
-        _ => {
-            let current_token = parser.peek().cloned();
-            parser.collect_error(&format!("expected ',' or '}}' after struct field, found {:?}", current_token));
-            Ok(fields)
+            _ => Visibility::Private,
+        };
+
+        let field_name = match parser.peek() {
+            Some(Kind::Identifier(s)) => {
+                let name = s.to_string();
+                parser.next();
+                name
+            }
+            _ => {
+                let location = parser.current_source_location();
+                return Err(ParserError::generic_error(location, "expected field name".to_string()))
+            },
+        };
+
+        parser.expect_err(&Kind::Colon)?;
+        let field_type = match parser.parse_type_declaration() {
+            Ok(ty) => ty,
+            Err(e) => {
+                parser.collect_error(&format!("expected type after ':' in struct field: {}", e));
+                return Ok(fields);
+            }
+        };
+
+        fields.push(StructField {
+            name: field_name,
+            type_decl: field_type,
+            visibility,
+        });
+
+        parser.skip_newlines();
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+                parser.skip_newlines();
+                // Continue loop to parse next field
+                if parser.peek() == Some(&Kind::BraceClose) {
+                    return Ok(fields);
+                }
+            }
+            Some(Kind::BraceClose) => {
+                return Ok(fields);
+            }
+            _ => {
+                let current_token = parser.peek().cloned();
+                parser.collect_error(&format!("expected ',' or '}}' after struct field, found {:?}", current_token));
+                return Ok(fields);
+            }
         }
     }
 }
 
 pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
-    parser.skip_newlines();
+    // Limit maximum number of methods to prevent infinite loops
+    const MAX_METHODS: usize = 500;
     
-    match parser.peek() {
-        Some(Kind::BraceClose) => return Ok(methods),
-        _ => (),
-    }
+    loop {
+        parser.skip_newlines();
+        
+        // Check for end of methods or too many methods
+        if parser.peek() == Some(&Kind::BraceClose) || methods.len() >= MAX_METHODS {
+            if methods.len() >= MAX_METHODS {
+                parser.collect_error(&format!("too many impl methods (max: {})", MAX_METHODS));
+            }
+            return Ok(methods);
+        }
 
-    match parser.peek() {
-        Some(Kind::Function) => {
-            let fn_start_pos = parser.peek_position_n(0).unwrap().start;
-            let location = parser.current_source_location();
-            parser.next();
-            match parser.peek() {
-                Some(Kind::Identifier(s)) => {
-                    let s = s.to_string();
-                    parser.next();
-                    let method_name = parser.string_interner.get_or_intern(s);
-                    
-                    parser.expect_err(&Kind::ParenOpen)?;
-                    let (params, has_self) = parse_method_param_list(parser, vec![])?;
-                    parser.expect_err(&Kind::ParenClose)?;
-                    
-                    let mut ret_ty: Option<TypeDecl> = None;
-                    match parser.peek() {
-                        Some(Kind::Arrow) => {
-                            parser.expect_err(&Kind::Arrow)?;
-                            ret_ty = Some(parser.parse_type_declaration()?);
+        match parser.peek() {
+            Some(Kind::Function) => {
+                let fn_start_pos = parser.peek_position_n(0).unwrap().start;
+                let location = parser.current_source_location();
+                parser.next();
+                match parser.peek() {
+                    Some(Kind::Identifier(s)) => {
+                        let s = s.to_string();
+                        parser.next();
+                        let method_name = parser.string_interner.get_or_intern(s);
+                        
+                        parser.expect_err(&Kind::ParenOpen)?;
+                        let (params, has_self) = parse_method_param_list(parser, vec![])?;
+                        parser.expect_err(&Kind::ParenClose)?;
+                        
+                        let mut ret_ty: Option<TypeDecl> = None;
+                        match parser.peek() {
+                            Some(Kind::Arrow) => {
+                                parser.expect_err(&Kind::Arrow)?;
+                                ret_ty = Some(parser.parse_type_declaration()?);
+                            }
+                            _ => (),
                         }
-                        _ => (),
+                        
+                        let block = super::expr::parse_block(parser)?;
+                        let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
+                        
+                        methods.push(Rc::new(MethodFunction {
+                            node: Node::new(fn_start_pos, fn_end_pos),
+                            name: method_name,
+                            parameter: params,
+                            return_type: ret_ty,
+                            code: parser.ast_builder.expression_stmt(block, Some(location)),
+                            has_self_param: has_self,
+                        }));
+                        
+                        parser.skip_newlines();
+                        // Continue loop to parse next method
                     }
-                    
-                    let block = super::expr::parse_block(parser)?;
-                    let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
-                    
-                    methods.push(Rc::new(MethodFunction {
-                        node: Node::new(fn_start_pos, fn_end_pos),
-                        name: method_name,
-                        parameter: params,
-                        return_type: ret_ty,
-                        code: parser.ast_builder.expression_stmt(block, Some(location)),
-                        has_self_param: has_self,
-                    }));
-                    
-                    parser.skip_newlines();
-                    parse_impl_methods(parser, methods)
+                    _ => {
+                        let location = parser.current_source_location();
+                        return Err(ParserError::generic_error(location, "expected method name after fn".to_string()));
+                    }
                 }
-                _ => {
-                    let location = parser.current_source_location();
-                    Err(ParserError::generic_error(location, "expected method name after fn".to_string()))
-                },
+            }
+            _ => {
+                // Not a function, we're done
+                return Ok(methods);
             }
         }
-        _ => Ok(methods),
     }
 }
 

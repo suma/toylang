@@ -24,3 +24,6 @@ mod error_handling_tests;
 #[cfg(test)]
 mod boundary_tests;
 
+#[cfg(test)]
+mod infinite_recursion_test;
+

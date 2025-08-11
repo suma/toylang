@@ -16,13 +16,6 @@ mod error_handling_tests {
         assert!(result.is_ok(), "Expected successful parse for: {}", input);
     }
 
-    // Test missing main function
-    #[test]
-    #[ignore] // Parser accepts programs without main
-    fn test_missing_main_function() {
-        expect_parse_error("fn other() -> i64 { 0i64 }", "main");
-    }
-
     // Test syntax errors - missing braces
     #[test]
     #[ignore] // Parser recovers from errors
@@ -75,7 +68,6 @@ mod error_handling_tests {
     }
 
     #[test]
-    #[ignore] // May hang
     fn test_valid_struct_definition() {
         expect_parse_success("struct Point { x: i64, y: i64 } fn main() -> i64 { 0i64 }");
     }

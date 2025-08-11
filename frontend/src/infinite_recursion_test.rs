@@ -49,21 +49,20 @@ mod infinite_recursion_tests {
         for _ in 0..20 {
             array = format!("[{}]", array);
         }
-        let input = format!("fn main() -> i64 {{ val a = {}; 0i64 }}", array);
+        let input = format!("fn main() -> i64 {{ val a = {}\n 0i64 }}", array);
         let mut parser = Parser::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok() || result.is_err(), "Parser should handle deeply nested arrays");
     }
 
     #[test]
-    #[ignore] // May hang due to deep nesting  
     fn test_deeply_nested_struct_literals() {
         // Test deeply nested struct literals
         let input = r#"
             struct Inner { x: i64 }
             struct Outer { inner: Inner }
             fn main() -> i64 {
-                val o = Outer { inner: Inner { x: 1i64 } };
+                val o = Outer { inner: Inner { x: 1i64 } }
                 0i64
             }
         "#;

@@ -2096,7 +2096,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Stack overflow issue - needs investigation after frontend parser fixes
     fn test_nested_struct_array_inference() {
         let program = r#"
             struct Inner {
@@ -2123,8 +2122,10 @@ mod tests {
             }
         "#;
         let result = test_program(program);
-        // This will also fail until struct syntax is implemented
-        assert!(result.is_err());
+        // Test passes now that struct syntax and nested array processing are implemented
+        assert!(result.is_ok());
+        let value = result.unwrap().borrow().unwrap_int64();
+        assert_eq!(value, 12i64);  // 10 + 2 = 12
     }
 
     #[test]

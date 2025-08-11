@@ -162,7 +162,13 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
     };
 
     parser.expect_err(&Kind::Colon)?;
-    let field_type = parser.parse_type_declaration()?;
+    let field_type = match parser.parse_type_declaration() {
+        Ok(ty) => ty,
+        Err(e) => {
+            parser.collect_error(&format!("expected type after ':' in struct field: {}", e));
+            return Ok(fields);
+        }
+    };
 
     fields.push(StructField {
         name: field_name,
@@ -181,7 +187,11 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
             }
         }
         Some(Kind::BraceClose) => Ok(fields),
-        _ => parse_struct_fields(parser, fields),
+        _ => {
+            let current_token = parser.peek().cloned();
+            parser.collect_error(&format!("expected ',' or '}}' after struct field, found {:?}", current_token));
+            Ok(fields)
+        }
     }
 }
 

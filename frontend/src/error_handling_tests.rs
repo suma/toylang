@@ -62,7 +62,7 @@ mod error_handling_tests {
     }
 
     #[test]
-    #[ignore] // May hang
+    // #[ignore] // May hang
     fn test_valid_variable_declaration() {
         expect_parse_success("fn main() -> i64 { val x = 1i64\nx }");
     }

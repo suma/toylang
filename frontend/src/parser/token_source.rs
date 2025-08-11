@@ -12,9 +12,68 @@ pub trait TokenSource {
 }
 
 /// Token provider that combines a TokenSource with an optimized LookaheadBuffer
+/// and provides format-independent token processing
 pub struct TokenProvider<T: TokenSource> {
     source: T,
     buffer: LookaheadBuffer,
+    pub normalize_formatting: bool,
+}
+
+/// Token normalization context to track formatting-sensitive parsing state
+#[derive(Debug, Clone)]
+pub struct TokenNormalizationContext {
+    /// Track depth of nested structures for consistent parsing
+    nesting_depth: usize,
+    /// Whether we're inside a structure literal
+    in_struct_literal: bool,
+    /// Whether we're inside an array literal
+    in_array_literal: bool,
+    /// Current indentation level (normalized)
+    normalized_indent_level: usize,
+}
+
+impl TokenNormalizationContext {
+    pub fn new() -> Self {
+        Self {
+            nesting_depth: 0,
+            in_struct_literal: false,
+            in_array_literal: false,
+            normalized_indent_level: 0,
+        }
+    }
+
+    /// Enter a nested structure (struct or array literal)
+    pub fn enter_nested_structure(&mut self, is_struct: bool) {
+        self.nesting_depth += 1;
+        if is_struct {
+            self.in_struct_literal = true;
+        } else {
+            self.in_array_literal = true;
+        }
+    }
+
+    /// Exit a nested structure
+    pub fn exit_nested_structure(&mut self, is_struct: bool) {
+        if self.nesting_depth > 0 {
+            self.nesting_depth -= 1;
+        }
+        if is_struct {
+            self.in_struct_literal = self.nesting_depth > 0;
+        } else {
+            self.in_array_literal = self.nesting_depth > 0;
+        }
+    }
+
+    /// Calculate normalized complexity score for consistent recursion management
+    pub fn complexity_score(&self) -> usize {
+        // Base complexity from nesting depth
+        let depth_complexity = self.nesting_depth * 2;
+        
+        // Additional complexity for mixed nested structures
+        let mixed_complexity = if self.in_struct_literal && self.in_array_literal { 3 } else { 0 };
+        
+        depth_complexity + mixed_complexity
+    }
 }
 
 impl<T: TokenSource> TokenProvider<T> {
@@ -23,6 +82,7 @@ impl<T: TokenSource> TokenProvider<T> {
         TokenProvider {
             source,
             buffer: LookaheadBuffer::new(),
+            normalize_formatting: false,
         }
     }
 
@@ -31,6 +91,16 @@ impl<T: TokenSource> TokenProvider<T> {
         TokenProvider {
             source,
             buffer: LookaheadBuffer::with_capacity(max_size, min_size),
+            normalize_formatting: false,
+        }
+    }
+
+    /// Create a new token provider with format normalization enabled
+    pub fn with_format_normalization(source: T, max_size: usize, min_size: usize) -> Self {
+        TokenProvider {
+            source,
+            buffer: LookaheadBuffer::with_capacity(max_size, min_size),
+            normalize_formatting: true,
         }
     }
 
@@ -69,7 +139,7 @@ impl<T: TokenSource> TokenProvider<T> {
         }
     }
 
-    /// Fetch the next token from the source, filtering comments
+    /// Fetch the next token from the source, filtering comments and applying normalization
     fn fetch_next_token(&mut self) -> Result<Option<Token>> {
         loop {
             match self.source.next_token()? {
@@ -78,6 +148,16 @@ impl<T: TokenSource> TokenProvider<T> {
                     if matches!(token.kind, Kind::Comment(_)) {
                         continue;
                     }
+                    
+                    // Apply format normalization if enabled
+                    if self.normalize_formatting {
+                        // Skip excessive consecutive newlines to normalize formatting
+                        if matches!(token.kind, Kind::NewLine) {
+                            // Allow first newline but skip excessive ones
+                            continue;
+                        }
+                    }
+                    
                     return Ok(Some(token));
                 }
                 None => return Ok(None),

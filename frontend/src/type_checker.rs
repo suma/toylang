@@ -845,7 +845,7 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
                 TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
                     // Basic types are valid
                 },
-                TypeDecl::Struct(struct_name) => {
+                TypeDecl::Identifier(struct_name) => {
                     // Check if referenced struct is already defined
                     if !self.context.struct_definitions.contains_key(struct_name) {
                         return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
@@ -854,7 +854,7 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
                 TypeDecl::Array(element_types, _) => {
                     // Validate array element types
                     for element_type in element_types {
-                        if let TypeDecl::Struct(struct_name) = element_type {
+                        if let TypeDecl::Identifier(struct_name) = element_type {
                             if !self.context.struct_definitions.contains_key(struct_name) {
                                 return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
                             }
@@ -1123,9 +1123,9 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
                             }
                             // Type is correct, no transformation needed
                         },
-                        TypeDecl::Struct(actual_struct) => {
+                        TypeDecl::Identifier(actual_struct) => {
                             // Struct literals - check type compatibility
-                            if let TypeDecl::Struct(expected_struct) = expected_element_type {
+                            if let TypeDecl::Identifier(expected_struct) = expected_element_type {
                                 if actual_struct != expected_struct {
                                     return Err(TypeCheckError::array_error(&format!(
                                         "Array element {} has struct type {:?} but expected {:?}",
@@ -1169,7 +1169,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
                                         i, actual_type, expected_element_type
                                     )));
                                 },
-                                (TypeDecl::Struct(struct1), TypeDecl::Struct(struct2)) => {
+                                (TypeDecl::Identifier(struct1), TypeDecl::Identifier(struct2)) => {
                                     if struct1 != struct2 {
                                         return Err(TypeCheckError::array_error(&format!(
                                             "Array element {} has struct type {:?} but expected {:?}",
@@ -1177,7 +1177,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
                                         )));
                                     }
                                 },
-                                (TypeDecl::Struct(struct_name), other_type) | (other_type, TypeDecl::Struct(struct_name)) => {
+                                (TypeDecl::Identifier(struct_name), other_type) | (other_type, TypeDecl::Identifier(struct_name)) => {
                                     return Err(TypeCheckError::array_error(&format!(
                                         "Cannot mix struct type {:?} with {:?} in array. Element {} has incompatible type",
                                         struct_name, other_type, i
@@ -1268,7 +1268,7 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
         
         // 4. Verify all required fields are provided (already done in validate_struct_fields)
         
-        Ok(TypeDecl::Struct(*struct_name))
+        Ok(TypeDecl::Identifier(*struct_name))
     }
 }
 

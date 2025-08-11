@@ -3,7 +3,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::token::Kind;
 use crate::type_checker::SourceLocation;
-use super::token_source::{TokenProvider, LexerTokenSource};
+use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
 use anyhow::{anyhow, Result};
 use string_interner::DefaultStringInterner;
@@ -20,19 +20,22 @@ pub struct Parser<'a> {
     input: &'a str,
     recursion_depth: u32,
     max_recursion_depth: u32,
+    /// Context for format-independent token processing
+    normalization_context: TokenNormalizationContext,
 }
 
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str) -> Self {
         let source = LexerTokenSource::new(input);
         Parser {
-            token_provider: TokenProvider::with_buffer_capacity(source, 128, 64),
+            token_provider: TokenProvider::with_format_normalization(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner: DefaultStringInterner::new(),
             errors: Vec::with_capacity(4),
             input,
             recursion_depth: 0,
-            max_recursion_depth: 100, // Further increased for complex formatting patterns
+            max_recursion_depth: 500, // Significantly increased for complex nested structures
+            normalization_context: TokenNormalizationContext::new(),
         }
     }
 
@@ -143,10 +146,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Check recursion depth and increment if safe
+    /// Check recursion depth using normalized complexity scoring
     pub fn check_and_increment_recursion(&mut self) -> Result<()> {
-        if self.recursion_depth >= self.max_recursion_depth {
-            self.collect_error("Maximum recursion depth reached in parser");
+        // Use significantly more aggressive depth management for format-independent parsing
+        let complexity_score = self.normalization_context.complexity_score();
+        
+        // For format-normalized parsing, be much more permissive
+        let base_depth = if self.token_provider.normalize_formatting { 800 } else { self.max_recursion_depth };
+        let adjusted_max_depth = base_depth + (complexity_score / 2) as u32;
+        
+        if self.recursion_depth >= adjusted_max_depth {
+            self.collect_error(&format!("Maximum recursion depth reached in parser (depth: {}, complexity: {}, adjusted_max: {})", 
+                                      self.recursion_depth, complexity_score, adjusted_max_depth));
             return Err(anyhow!("Maximum recursion depth reached"));
         }
         self.recursion_depth += 1;
@@ -158,6 +169,21 @@ impl<'a> Parser<'a> {
         if self.recursion_depth > 0 {
             self.recursion_depth -= 1;
         }
+    }
+
+    /// Enter a nested structure context (for format-independent parsing)
+    pub fn enter_nested_structure(&mut self, is_struct: bool) {
+        self.normalization_context.enter_nested_structure(is_struct);
+    }
+
+    /// Exit a nested structure context
+    pub fn exit_nested_structure(&mut self, is_struct: bool) {
+        self.normalization_context.exit_nested_structure(is_struct);
+    }
+
+    /// Get current parsing complexity score
+    pub fn get_complexity_score(&self) -> usize {
+        self.normalization_context.complexity_score()
     }
 
     pub fn next_expr(&self) -> u32 {

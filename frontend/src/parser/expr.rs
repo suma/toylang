@@ -446,26 +446,37 @@ fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> Result<V
 }
 
 pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> Result<Vec<ExprRef>> {
-    // Limit maximum elements to prevent infinite loops
-    const MAX_ELEMENTS: usize = 1000;
+    // Enter array literal context for format-independent parsing
+    parser.enter_nested_structure(false);
+    
+    // Dynamic element limit based on parsing complexity
+    let base_max_elements = 2000;
+    let complexity_score = parser.get_complexity_score();
+    let max_elements = base_max_elements + (complexity_score * 100); // More elements allowed for complex structures
     let mut element_count = 0;
 
     loop {
         parser.skip_newlines();
         
         element_count += 1;
-        if element_count > MAX_ELEMENTS {
-            parser.collect_error("too many elements in array literal");
+        if element_count > max_elements {
+            parser.collect_error(&format!("too many elements in array literal (max: {}, complexity: {})", 
+                                         max_elements, complexity_score));
+            parser.exit_nested_structure(false);
             return Ok(elements);
         }
         
         match parser.peek() {
-            Some(Kind::BracketClose) => return Ok(elements),
+            Some(Kind::BracketClose) => {
+                parser.exit_nested_structure(false);
+                return Ok(elements);
+            }
             _ => (),
         }
 
         let expr = parser.parse_expr_impl();
         if expr.is_err() {
+            parser.exit_nested_structure(false);
             return Ok(elements);
         }
         elements.push(expr?);
@@ -475,21 +486,31 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
                 parser.next();
                 parser.skip_newlines();
                 match parser.peek() {
-                    Some(Kind::BracketClose) => return Ok(elements),
+                    Some(Kind::BracketClose) => {
+                        parser.exit_nested_structure(false);
+                        return Ok(elements);
+                    }
                     _ => continue, // Continue the loop for next element
                 }
             }
-            Some(Kind::BracketClose) => return Ok(elements),
+            Some(Kind::BracketClose) => {
+                parser.exit_nested_structure(false);
+                return Ok(elements);
+            }
             Some(Kind::NewLine) => {
                 parser.skip_newlines();
                 match parser.peek() {
-                    Some(Kind::BracketClose) => return Ok(elements),
+                    Some(Kind::BracketClose) => {
+                        parser.exit_nested_structure(false);
+                        return Ok(elements);
+                    }
                     _ => continue, // Continue the loop for next element
                 }
             }
             x => {
                 let x_cloned = x.cloned();
                 parser.collect_error(&format!("unexpected token in array elements: {:?}", x_cloned));
+                parser.exit_nested_structure(false);
                 return Ok(elements); // Return current elements and stop
             }
         }
@@ -507,18 +528,26 @@ pub fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymb
 }
 
 fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> Result<Vec<(DefaultSymbol, ExprRef)>> {
+    // Enter struct literal context for format-independent parsing
+    parser.enter_nested_structure(true);
+    
     if parser.peek() == Some(&Kind::BraceClose) {
+        parser.exit_nested_structure(true);
         return Ok(fields);
     }
 
-    // Limit maximum fields to prevent infinite loops in malformed input
-    const MAX_FIELDS: usize = 100;
+    // Dynamic field limit based on parsing complexity
+    let base_max_fields = 200;
+    let complexity_score = parser.get_complexity_score();
+    let max_fields = base_max_fields + (complexity_score * 20); // More fields allowed for complex structures
     let mut field_count = 0;
 
     loop {
         field_count += 1;
-        if field_count > MAX_FIELDS {
-            parser.collect_error("too many fields in struct literal");
+        if field_count > max_fields {
+            parser.collect_error(&format!("too many fields in struct literal (max: {}, complexity: {})", 
+                                         max_fields, complexity_score));
+            parser.exit_nested_structure(true);
             return Ok(fields);
         }
 
@@ -531,12 +560,14 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             }
             _ => {
                 parser.collect_error("expected field name in struct literal");
+                parser.exit_nested_structure(true);
                 return Ok(fields); // Return current fields and stop
             }
         };
 
         let has_colon = parser.peek() == Some(&Kind::Colon);
         if !parser.expect_or_collect(has_colon, "expected ':' after field name") {
+            parser.exit_nested_structure(true);
             return Ok(fields);
         }
         parser.next();
@@ -545,6 +576,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
             Ok(expr) => expr,
             Err(_) => {
                 parser.collect_error("failed to parse field value");
+                parser.exit_nested_structure(true);
                 return Ok(fields);
             }
         };
@@ -566,5 +598,7 @@ fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(Defaul
         }
     }
 
+    // Exit struct literal context before returning
+    parser.exit_nested_structure(true);
     Ok(fields)
 }

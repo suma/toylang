@@ -82,13 +82,31 @@ macro_rules! parse_number {
 "/"         return Ok(token!(self, Kind::IDiv));
 
 
--?[0-9]+"i64"       return Ok(token!(self, Kind::Int64(
-                        parse_number!(self, 3, |s: String| s.parse::<i64>().unwrap())
-                    )));
+-?[0-9]+"i64"       {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<i64>() {
+                            Ok(value) => return Ok(token!(self, Kind::Int64(value))),
+                            Err(_) => {
+                                // Return as regular integer token for large values
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            }
+                        }
+                    }
 
-[0-9]+"u64"         return Ok(token!(self, Kind::UInt64(
-                        parse_number!(self, 3, |s: String| s.parse::<u64>().unwrap())
-                    )));
+[0-9]+"u64"         {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<u64>() {
+                            Ok(value) => return Ok(token!(self, Kind::UInt64(value))),
+                            Err(_) => {
+                                // Return as regular integer token for large values
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            }
+                        }
+                    }
 
 -?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
 

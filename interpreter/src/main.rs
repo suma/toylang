@@ -18,7 +18,7 @@ fn handle_parsing(source: &str, filename: &str) -> Result<frontend::ast::Program
     match program {
         Ok(prog) => Ok(prog),
         Err(err) => {
-            eprintln!("Parse program failed: {:?}", err);
+            formatter.format_parse_error(&err);
             Err(())
         }
     }

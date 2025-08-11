@@ -2845,9 +2845,8 @@ fn main() -> i64 {
     }
 
     #[test] 
-    #[ignore = "Deep nesting causes stack overflow - replaced by equivalent test"]
     fn test_original_problematic_case_parse_only() {
-        // Test: Only parse the problematic case
+        // Test: Parse the complex nested struct array case (previously caused stack overflow, now resolved)
         use frontend::Parser;
         
         let program = r#"
@@ -2889,9 +2888,8 @@ fn main() -> i64 {
     }
     
     #[test]
-    #[ignore = "Deep nesting causes stack overflow - needs investigation"]
     fn test_original_problematic_case() {
-        // Test: The exact case that was causing infinite loop
+        // Test: Complex nested struct array execution (previously caused stack overflow, now resolved)
         let program = r#"
             struct Inner { 
                 value: i64 

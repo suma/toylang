@@ -64,7 +64,7 @@ mod error_handling_tests {
     #[test]
     #[ignore] // May hang
     fn test_valid_variable_declaration() {
-        expect_parse_success("fn main() -> i64 { val x = 1i64; x }");
+        expect_parse_success("fn main() -> i64 { val x = 1i64\nx }");
     }
 
     #[test]
@@ -114,7 +114,7 @@ mod error_handling_tests {
     #[test]
     #[ignore] // May hang
     fn test_multiple_syntax_errors() {
-        expect_parse_error("fn main() -> i64 { val x = ; val y = ; }", "");
+        expect_parse_error("fn main() -> i64 { val x = \nval y = \n}", "");
     }
 
     // Test error recovery in function parameters
@@ -129,8 +129,8 @@ mod error_handling_tests {
     #[test]
     #[ignore] // May hang
     fn test_invalid_array_literal() {
-        expect_parse_error("fn main() -> i64 { val a = [1i64, , 3i64]; 0i64 }", "");
-        expect_parse_error("fn main() -> i64 { val a = [1i64 2i64]; 0i64 }", "");
+        expect_parse_error("fn main() -> i64 { val a = [1i64, , 3i64]\n0i64 }", "");
+        expect_parse_error("fn main() -> i64 { val a = [1i64 2i64]\n0i64 }", "");
     }
 
     // Test error in struct literal
@@ -139,12 +139,12 @@ mod error_handling_tests {
     fn test_invalid_struct_literal() {
         expect_parse_error(r#"
             struct Point { x: i64, y: i64 }
-            fn main() -> i64 { val p = Point { x: 1i64, : 2i64 }; 0i64 }
+            fn main() -> i64 { val p = Point { x: 1i64, : 2i64 }\n0i64 }
         "#, "");
         
         expect_parse_error(r#"
             struct Point { x: i64, y: i64 }
-            fn main() -> i64 { val p = Point { x = 1i64, y: 2i64 }; 0i64 }
+            fn main() -> i64 { val p = Point { x = 1i64, y: 2i64 }\n0i64 }
         "#, "");
     }
 

@@ -34,6 +34,7 @@ pub struct TypeCheckerVisitor <'a, 'b> {
     pub function_checking: FunctionCheckingState,
     pub optimization: PerformanceOptimization,
     pub errors: Vec<TypeCheckError>,
+    pub source_code: Option<&'a str>,
 }
 
 
@@ -53,7 +54,13 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            source_code: None,
         }
+    }
+    
+    pub fn with_source_code(mut self, source: &'a str) -> Self {
+        self.source_code = Some(source);
+        self
     }
     
     fn get_expr_location(&self, expr_ref: &ExprRef) -> Option<SourceLocation> {
@@ -62,6 +69,41 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
     
     fn get_stmt_location(&self, stmt_ref: &StmtRef) -> Option<SourceLocation> {
         self.core.location_pool.get_stmt_location(stmt_ref).cloned()
+    }
+    
+    /// Calculate line and column from offset position in source code
+    fn calculate_line_col_from_offset(&self, offset: usize) -> (u32, u32) {
+        if let Some(source) = self.source_code {
+            let mut line = 1u32;
+            let mut column = 1u32;
+            
+            for (i, ch) in source.char_indices() {
+                if i >= offset {
+                    break;
+                }
+                if ch == '\n' {
+                    line += 1;
+                    column = 1;
+                } else {
+                    column += 1;
+                }
+            }
+            
+            (line, column)
+        } else {
+            // Fallback if source code is not available
+            (1, 1)
+        }
+    }
+    
+    /// Create SourceLocation from Node with calculated line and column
+    fn node_to_source_location(&self, node: &Node) -> SourceLocation {
+        let (line, column) = self.calculate_line_col_from_offset(node.start);
+        SourceLocation {
+            line,
+            column,
+            offset: node.start as u32,
+        }
     }
     
     // Helper methods for location tracking (can be used for future error reporting enhancements)
@@ -202,12 +244,8 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
         // Check if the function body type matches the declared return type
         if let Some(ref expected_return_type) = func.return_type {
             if &last != expected_return_type {
-                // Create location information from function node
-                let func_location = SourceLocation {
-                    line: 1, // TODO: Calculate actual line from func.node
-                    column: 1, // TODO: Calculate actual column from func.node
-                    offset: func.node.start as u32,
-                };
+                // Create location information from function node with calculated line and column
+                let func_location = self.node_to_source_location(&func.node);
                 
                 return Err(TypeCheckError::type_mismatch(
                     expected_return_type.clone(),
@@ -2184,6 +2222,79 @@ mod tests {
         // Test that the setup_type_hint_for_val method works with struct arrays
         let _old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
         assert!(type_checker.type_inference.type_hint.is_some());
+    }
+
+    #[test]
+    fn test_line_col_calculation() {
+        let source_code = "fn main() -> u64 {\n    val x = 42\n    x\n}";
+        let builder = create_test_ast_builder();
+        let string_interner = DefaultStringInterner::new();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
+            .with_source_code(source_code);
+        
+        // Test various offsets
+        // Offset 0: "fn" - should be line 1, column 1
+        let (line, col) = type_checker.calculate_line_col_from_offset(0);
+        assert_eq!((line, col), (1, 1));
+        
+        // Offset 19: First char of line 2 - should be line 2, column 1
+        let (line, col) = type_checker.calculate_line_col_from_offset(19);
+        assert_eq!((line, col), (2, 1));
+        
+        // Offset 23: "val" on line 2 - should be line 2, column 5
+        let (line, col) = type_checker.calculate_line_col_from_offset(23);
+        assert_eq!((line, col), (2, 5));
+        
+        // Offset 35: Line 3, column 2 (after 4 spaces) - should be line 3, column 2
+        let (line, col) = type_checker.calculate_line_col_from_offset(35);
+        assert_eq!((line, col), (3, 2));
+    }
+
+    #[test]
+    fn test_node_to_source_location() {
+        let source_code = "fn test() -> bool {\n    true\n}";
+        let builder = create_test_ast_builder();
+        let string_interner = DefaultStringInterner::new();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
+            .with_source_code(source_code);
+        
+        // Create a node at the start of the function (offset 0)
+        let node = Node::new(0, 2);
+        let location = type_checker.node_to_source_location(&node);
+        assert_eq!(location.line, 1);
+        assert_eq!(location.column, 1);
+        assert_eq!(location.offset, 0);
+        
+        // Create a node at line 2 (offset 20)
+        let node = Node::new(20, 24);
+        let location = type_checker.node_to_source_location(&node);
+        assert_eq!(location.line, 2);
+        assert_eq!(location.column, 1);
+        assert_eq!(location.offset, 20);
+    }
+
+    #[test]
+    fn test_source_location_without_source() {
+        // Test fallback behavior when source code is not provided
+        let builder = create_test_ast_builder();
+        let string_interner = DefaultStringInterner::new();
+        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let mut expr_pool_mut = expr_pool;
+        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        
+        // Without source code, should return (1, 1) as fallback
+        let (line, col) = type_checker.calculate_line_col_from_offset(100);
+        assert_eq!((line, col), (1, 1));
+        
+        let node = Node::new(50, 55);
+        let location = type_checker.node_to_source_location(&node);
+        assert_eq!(location.line, 1);
+        assert_eq!(location.column, 1);
+        assert_eq!(location.offset, 50);
     }
 }
 

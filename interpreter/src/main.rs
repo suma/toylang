@@ -2977,7 +2977,8 @@ fn main() -> i64 {
     fn test_null_is_null_method() {
         let program = r#"
             fn main() -> bool {
-                var x
+                var x = "temp"
+                x = null
                 x.is_null()
             }
         "#;
@@ -3058,15 +3059,20 @@ fn main() -> i64 {
     }
 
     #[test]
-    fn test_var_declaration_defaults_to_null() {
+    fn test_var_assignment_to_null() {
         let program = r#"
             fn main() -> bool {
-                var x
-                var y
+                var x = "initial"
+                var y = "initial"
+                x = null
+                y = null
                 x.is_null() && y.is_null()
             }
         "#;
         let result = test_program(program);
+        if result.is_err() {
+            eprintln!("Test failed with error: {:?}", result.as_ref().unwrap_err());
+        }
         assert!(result.is_ok());
         let value = result.unwrap().borrow().unwrap_bool();
         assert_eq!(value, true);

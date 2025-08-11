@@ -1706,7 +1706,6 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::*;
     use crate::type_decl::TypeDecl;
     use string_interner::DefaultStringInterner;
 
@@ -1726,7 +1725,7 @@ mod tests {
     #[test]
     fn test_bool_array_literal_type_inference() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create bool literals: [true, false, true]
         let true_expr = builder.bool_true_expr(None);
@@ -1734,7 +1733,7 @@ mod tests {
         let true_expr2 = builder.bool_true_expr(None);
         
         let array_elements = vec![true_expr, false_expr, true_expr2];
-        let array_expr = builder.array_literal_expr(array_elements, None);
+        let _array_expr = builder.array_literal_expr(array_elements, None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1761,14 +1760,14 @@ mod tests {
     #[test]
     fn test_bool_array_literal_with_type_hint() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create bool literals: [true, false]
         let true_expr = builder.bool_true_expr(None);
         let false_expr = builder.bool_false_expr(None);
         
         let array_elements = vec![true_expr, false_expr];
-        let array_expr = builder.array_literal_expr(array_elements, None);
+        let _array_expr = builder.array_literal_expr(array_elements, None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1805,7 +1804,7 @@ mod tests {
         let number_expr = builder.number_expr(number_symbol, None);
         
         let array_elements = vec![true_expr, number_expr];
-        let array_expr = builder.array_literal_expr(array_elements, None);
+        let _array_expr = builder.array_literal_expr(array_elements, None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1830,8 +1829,8 @@ mod tests {
 
     #[test]
     fn test_bool_array_empty_error() {
-        let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let builder = create_test_ast_builder();
+        let string_interner = DefaultStringInterner::new();
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1855,14 +1854,14 @@ mod tests {
     #[test]
     fn test_bool_array_with_wrong_type_hint() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create bool literals: [true, false]
         let true_expr = builder.bool_true_expr(None);
         let false_expr = builder.bool_false_expr(None);
         
         let array_elements = vec![true_expr, false_expr];
-        let array_expr = builder.array_literal_expr(array_elements, None);
+        let _array_expr = builder.array_literal_expr(array_elements, None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1890,11 +1889,11 @@ mod tests {
     #[test]
     fn test_bool_literal_type_checking() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create bool literals
-        let true_expr = builder.bool_true_expr(None);
-        let false_expr = builder.bool_false_expr(None);
+        let _true_expr = builder.bool_true_expr(None);
+        let _false_expr = builder.bool_false_expr(None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1914,13 +1913,13 @@ mod tests {
     #[test]
     fn test_bool_array_single_element() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create single bool literal: [true]
         let true_expr = builder.bool_true_expr(None);
         
         let array_elements = vec![true_expr];
-        let array_expr = builder.array_literal_expr(array_elements, None);
+        let _array_expr = builder.array_literal_expr(array_elements, None);
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -1945,7 +1944,7 @@ mod tests {
     #[test]
     fn test_bool_array_large_array_performance() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Create large bool array: [true, false, true, false, ...] (100 elements)
         let mut elements = Vec::new();
@@ -1990,7 +1989,7 @@ mod tests {
     #[test]
     fn test_bool_array_edge_cases() {
         let mut builder = create_test_ast_builder();
-        let mut string_interner = DefaultStringInterner::new();
+        let string_interner = DefaultStringInterner::new();
         
         // Test with maximum realistic array size
         let mut elements = Vec::new();
@@ -2085,7 +2084,7 @@ mod tests {
         let mut string_interner = DefaultStringInterner::new();
         let point_symbol = string_interner.get_or_intern("Point");
         let x_symbol = string_interner.get_or_intern("x");
-        let y_symbol = string_interner.get_or_intern("y");
+        let _y_symbol = string_interner.get_or_intern("y");
         
         let builder = create_test_ast_builder();
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
@@ -2183,7 +2182,7 @@ mod tests {
         assert_eq!(type_checker.type_inference.type_hint, Some(array_hint));
         
         // Test that the setup_type_hint_for_val method works with struct arrays
-        let old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
+        let _old_hint = type_checker.setup_type_hint_for_val(&Some(TypeDecl::Array(vec![point_type], 2)));
         assert!(type_checker.type_inference.type_hint.is_some());
     }
 }

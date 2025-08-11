@@ -29,7 +29,7 @@ pub struct TokenNormalizationContext {
     /// Whether we're inside an array literal
     in_array_literal: bool,
     /// Current indentation level (normalized)
-    normalized_indent_level: usize,
+    _normalized_indent_level: usize,
 }
 
 impl TokenNormalizationContext {
@@ -38,7 +38,7 @@ impl TokenNormalizationContext {
             nesting_depth: 0,
             in_struct_literal: false,
             in_array_literal: false,
-            normalized_indent_level: 0,
+            _normalized_indent_level: 0,
         }
     }
 

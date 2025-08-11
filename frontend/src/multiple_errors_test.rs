@@ -223,8 +223,8 @@ fn test_func(param: u64) {
         
         // Check error types
         let error_messages: Vec<String> = result.errors.iter().map(|e| e.to_string()).collect();
-        let has_brace_error = error_messages.iter().any(|msg| msg.contains("BraceClose"));
-        let has_paren_error = error_messages.iter().any(|msg| msg.contains("ParenClose"));
+        let _has_brace_error = error_messages.iter().any(|msg| msg.contains("BraceClose"));
+        let _has_paren_error = error_messages.iter().any(|msg| msg.contains("ParenClose"));
         
         // Test completed successfully - error collection mechanism is working
         println!("Error collection mechanism test completed: {} errors found", result.errors.len());

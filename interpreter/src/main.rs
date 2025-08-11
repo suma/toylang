@@ -1499,7 +1499,6 @@ mod tests {
 
     // Boundary value tests - Deep recursion
     #[test]
-    #[ignore = "Deep recursion causes stack overflow"]
     fn test_deep_recursion_fibonacci() {
         let program = r#"
             fn fib(n: u64) -> u64 {

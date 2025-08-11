@@ -222,7 +222,7 @@ impl<'a> EvaluationContext<'a> {
             method_registry: HashMap::new(),
             null_object: Rc::new(RefCell::new(Object::Null)),
             recursion_depth: 0,
-            max_recursion_depth: 10, // Very low to catch recursion early
+            max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
         }
     }
 

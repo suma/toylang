@@ -444,27 +444,36 @@ pub fn parse_expr_list(parser: &mut Parser, args: Vec<ExprRef>) -> ParserResult<
 }
 
 fn parse_expr_list_impl(parser: &mut Parser, mut args: Vec<ExprRef>) -> ParserResult<Vec<ExprRef>> {
-    match parser.peek() {
-        Some(Kind::ParenClose) => return Ok(args),
-        _ => (),
-    }
-
-    let expr = parser.parse_expr_impl();
-    if expr.is_err() {
-        return Ok(args);
-    }
-    args.push(expr?);
-
-    match parser.peek() {
-        Some(Kind::Comma) => {
-            parser.next();
-            parse_expr_list(parser, args)
+    // Limit maximum number of arguments to prevent infinite loops
+    const MAX_ARGS: usize = 255;
+    
+    loop {
+        if parser.peek() == Some(&Kind::ParenClose) || args.len() >= MAX_ARGS {
+            if args.len() >= MAX_ARGS {
+                parser.collect_error(&format!("too many arguments (max: {})", MAX_ARGS));
+            }
+            return Ok(args);
         }
-        Some(Kind::ParenClose) => Ok(args),
-        x => {
-            let x_cloned = x.cloned();
-            parser.collect_error(&format!("unexpected token in expression list: {:?}", x_cloned));
-            Ok(args) // Return current args and stop
+
+        let expr = parser.parse_expr_impl();
+        if expr.is_err() {
+            return Ok(args);
+        }
+        args.push(expr?);
+
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+                // Continue loop to parse next argument
+            }
+            Some(Kind::ParenClose) => {
+                return Ok(args);
+            }
+            x => {
+                let x_cloned = x.cloned();
+                parser.collect_error(&format!("unexpected token in expression list: {:?}", x_cloned));
+                return Ok(args); // Return current args and stop
+            }
         }
     }
 }

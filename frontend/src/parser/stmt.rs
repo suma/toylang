@@ -309,22 +309,31 @@ pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Par
 }
 
 pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
-    match parser.peek() {
-        Some(Kind::ParenClose) => return Ok((args, false)),
-        _ => (),
-    }
-
-    let def = parser.parse_param_def();
-    if def.is_err() {
-        return Ok((args, false));
-    }
-    args.push(def?);
-
-    match parser.peek() {
-        Some(Kind::Comma) => {
-            parser.next();
-            parse_param_def_list_impl(parser, args)
+    // Limit maximum number of parameters to prevent infinite loops
+    const MAX_PARAMS: usize = 255;
+    
+    loop {
+        if parser.peek() == Some(&Kind::ParenClose) || args.len() >= MAX_PARAMS {
+            if args.len() >= MAX_PARAMS {
+                parser.collect_error(&format!("too many parameters (max: {})", MAX_PARAMS));
+            }
+            return Ok((args, false));
         }
-        _ => Ok((args, false)),
+
+        let def = parser.parse_param_def();
+        if def.is_err() {
+            return Ok((args, false));
+        }
+        args.push(def?);
+
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+                // Continue loop to parse next parameter
+            }
+            _ => {
+                return Ok((args, false));
+            }
+        }
     }
 }

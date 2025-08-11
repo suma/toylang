@@ -105,6 +105,19 @@ mod tests {
     use interpreter::object::Object;
     use interpreter::evaluation::{EvaluationContext, EvaluationResult};
 
+    fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
+        let mut parser = frontend::Parser::new(source_code);
+        let mut program = parser.parse_program()
+            .map_err(|e| format!("Parse error: {:?}", e))?;
+        
+        // Check typing
+        interpreter::check_typing(&mut program, Some(source_code), Some("test.t"))
+            .map_err(|errors| format!("Type check errors: {:?}", errors))?;
+        
+        // Execute program
+        interpreter::execute_program(&program, Some(source_code), Some("test.t"))
+    }
+
     #[test]
     fn test_evaluate_integer() {
         let stmt_pool = StmtPool::new();
@@ -152,19 +165,6 @@ mod tests {
         let res = interpreter::execute_program(&program, Some("fn main() -> u64 { 1u64 + 2u64 }"), Some("test.t"));
         assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
-    }
-
-    fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
-        let mut parser = frontend::Parser::new(source_code);
-        let mut program = parser.parse_program()
-            .map_err(|e| format!("Parse error: {:?}", e))?;
-        
-        // Check typing
-        interpreter::check_typing(&mut program, Some(source_code), Some("test.t"))
-            .map_err(|errors| format!("Type check errors: {:?}", errors))?;
-        
-        // Execute program
-        interpreter::execute_program(&program, Some(source_code), Some("test.t"))
     }
 
     #[test]
@@ -2241,6 +2241,7 @@ mod tests {
     #[test]
     fn test_struct_array_initialization_only() {
         // Test: Only array initialization without field access
+        // Now with nested structs
         let program = r#"
             struct Inner {
                 value: i64
@@ -2262,7 +2263,7 @@ mod tests {
                         count: 2i64 
                     }
                 ]
-                42i64  // Just return a constant, no field access
+                42i64  
             }
         "#;
         

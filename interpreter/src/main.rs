@@ -1444,13 +1444,13 @@ mod tests {
         let program = r#"
             fn main() -> u64 {
                 # No explicit type annotation, infer from string array (multiple elements)
-                # Known limitation: Multiple string elements in array literals have parsing issues
                 val arr = ["hello", "world"]
                 
                 # Currently only the first element is accessible due to parser limitations
                 val first_len = arr[0u64].len()
-                
-                first_len
+                val second_len = arr[1u64].len()
+
+                first_len + second_len
             }
         "#;
         let result = test_program(program);

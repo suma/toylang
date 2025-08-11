@@ -92,7 +92,7 @@ macro_rules! parse_number {
 
 -?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
 
-\".*\"              {
+\"[^"]*\"              {
                         let mut text = self.yytext();
                         let drain = text.drain(1..(text.len()-1));
                         return Ok(token!(self, Kind::String(drain.collect::<String>())));

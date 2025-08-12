@@ -6,15 +6,6 @@ macro_rules! token {
     }
 }
 
-macro_rules! parse_number {
-    ($self: ident, $suffix_len: expr, $parser: expr) => {{
-        let mut text = $self.yytext();
-        let drain = text.drain(0..(text.len() - $suffix_len));
-        let s = drain.collect::<String>();
-        $parser(s)
-    }}
-}
-
 %%
 %class Lexer
 %result_type Token
@@ -115,6 +106,7 @@ macro_rules! parse_number {
                         return Ok(token!(self, Kind::String(drain.collect::<String>())));
                     }
 
+[0-9][A-Za-z_0-9]*      return Err(Error::Unmatch);
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
 "#".*               {

@@ -84,7 +84,7 @@ mod error_handling_tests {
 
     // Test invalid escape sequences in strings
     #[test]
-    #[ignore] // May hang
+    #[ignore] // Parser doesn't validate escape sequences
     fn test_invalid_escape_sequence() {
         expect_parse_error(r#"fn main() -> i64 { val s = "hello\x"; 0i64 }"#, "");
     }

@@ -42,7 +42,6 @@ mod infinite_recursion_tests {
     }
 
     #[test]
-    #[ignore] // May hang due to deep nesting
     fn test_deeply_nested_arrays() {
         // Test deeply nested arrays
         let mut array = String::from("[0i64]");
@@ -115,7 +114,6 @@ mod infinite_recursion_tests {
     }
 
     #[test]
-    #[ignore] // This test may hang - needs further investigation
     fn test_malformed_parameters() {
         // Test malformed parameters that might cause infinite recursion
         let input = "fn test(a: , b: , c: , d: , e: , f: ) -> i64 { 0i64 } fn main() -> i64 { 0i64 }";
@@ -136,7 +134,6 @@ mod infinite_recursion_tests {
     }
 
     #[test]
-    #[ignore] // This test might be slow
     fn test_extreme_struct_fields() {
         // Test with extreme number of fields
         let mut fields = String::new();

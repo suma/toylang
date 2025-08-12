@@ -204,15 +204,6 @@ impl<'a> Parser<'a> {
         &mut self.string_interner
     }
 
-    pub fn parse_stmt_line(&mut self) -> ParserResult<(StmtRef, StmtPool)> {
-        let e = self.parse_stmt();
-        if e.is_err() {
-            return Err(e.err().unwrap());
-        }
-        let mut stmt: StmtPool = StmtPool(vec![]);
-        std::mem::swap(&mut stmt, self.ast_builder.get_stmt_pool_mut());
-        Ok((e?, stmt))
-    }
 
     pub fn parse_program(&mut self) -> ParserResult<Program> {
         let mut start_pos: Option<usize> = None;

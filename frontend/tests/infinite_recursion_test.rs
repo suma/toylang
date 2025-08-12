@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod infinite_recursion_tests {
-    use crate::parser::core::Parser;
+    use frontend::Parser;
 
     #[test]
     fn test_malformed_struct_fields() {

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod boundary_tests {
-    use crate::parser::core::Parser;
+    use frontend::Parser;
 
     // Helper function for parser-only testing
     fn parse_program_only(input: &str) -> Result<(), String> {

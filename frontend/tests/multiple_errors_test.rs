@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod multiple_errors_tests {
-    use crate::Parser;
-    use crate::type_checker::TypeCheckerVisitor;
+    use frontend::Parser;
+    use frontend::type_checker::TypeCheckerVisitor;
     
     #[test]
     fn test_multiple_parser_errors() {

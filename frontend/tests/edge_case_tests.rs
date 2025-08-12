@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod edge_case_tests {
-    use crate::parser::core::Parser;
+    use frontend::Parser;
 
     // Test helper function for parser-only tests
     fn parse_program(input: &str) -> Result<(), String> {

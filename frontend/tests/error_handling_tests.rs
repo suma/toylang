@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod error_handling_tests {
-    use crate::parser::core::Parser;
+    use frontend::Parser;
 
     // Helper function to parse and expect error
     fn expect_parse_error(input: &str, _expected_error_pattern: &str) {

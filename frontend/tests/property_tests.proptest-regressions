@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4e049f3d2b3842dc7dda58961446a20eb821b57f01d1a252b7a5423ded6dcb63 # shrinks to vars = ["fn"], value = "0i64"
+cc f693f502f653d64d33e16163892bea482797096c44c5625441642209663542bc # shrinks to struct_name = "_", method_name = "_", field_name = "if"

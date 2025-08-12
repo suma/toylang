@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod property_tests {
     use proptest::prelude::*;
-    use crate::parser::core::Parser;
+    use frontend::Parser;
 
     // Helper to parse program
     fn parse_program(input: &str) -> Result<(), String> {
@@ -14,7 +14,10 @@ mod property_tests {
 
     // Strategy for generating valid identifiers (reduced complexity)
     fn valid_identifier() -> impl Strategy<Value = String> {
-        "[a-z_][a-zA-Z0-9_]{0,5}".prop_map(|s| s.to_string()) // Reduced from 20
+        "[a-z_][a-zA-Z0-9_]{0,5}".prop_map(|s| s.to_string())
+            .prop_filter("Not a reserved keyword", |s| {
+                !matches!(s.as_str(), "if" | "else" | "while" | "for" | "fn" | "return" | "break" | "continue" | "val" | "var" | "struct" | "impl" | "true" | "false" | "null")
+            })
     }
 
     // Strategy for generating integer literals
@@ -22,6 +25,7 @@ mod property_tests {
         (-1000i64..1000i64).prop_map(|n| format!("{}i64", n))
     }
 
+    #[allow(dead_code)]
     fn uint64_literal() -> impl Strategy<Value = String> {
         (0u64..1000u64).prop_map(|n| format!("{}u64", n))
     }

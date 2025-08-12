@@ -50,7 +50,7 @@ impl<'a> ErrorFormatter<'a> {
         if let Some(location) = &error.location {
             self.format_error_with_location(&error.to_string(), location)
         } else {
-            format!("Error: {}", error)
+            format!("Error: {error}")
         }
     }
 
@@ -75,7 +75,7 @@ impl<'a> ErrorFormatter<'a> {
         };
         
         // Create line number display
-        let line_display = format!("{:2}", line_number);
+        let line_display = format!("{line_number:2}");
         
         // Create the caret indicator
         let caret = if column > 0 {
@@ -107,7 +107,7 @@ impl<'a> ErrorFormatter<'a> {
     }
 
     pub fn format_simple_error(&self, error_msg: &str) -> String {
-        format!("Error: {}", error_msg)
+        format!("Error: {error_msg}")
     }
 
     /// Display multiple parse errors with unified formatting

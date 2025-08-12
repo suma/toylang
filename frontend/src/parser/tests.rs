@@ -8,7 +8,6 @@ use crate::type_checker::TypeCheckerVisitor;
 use rstest::rstest;
 
 #[cfg(test)]
-
 mod lexer_tests{
     use crate::token::Kind;
     use rayon::prelude::*;

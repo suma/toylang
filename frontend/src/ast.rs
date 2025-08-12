@@ -16,6 +16,12 @@ pub struct LocationPool {
     pub stmt_locations: Vec<Option<SourceLocation>>,
 }
 
+impl Default for LocationPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocationPool {
     pub fn new() -> Self {
         Self {
@@ -120,6 +126,12 @@ impl StmtRef {
     }
 }
 
+impl Default for ExprPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExprPool {
     pub fn new() -> ExprPool {
         ExprPool(Vec::new())
@@ -149,6 +161,10 @@ impl ExprPool {
     pub fn len(&self) -> usize {
         self.0.len()
     }
+    
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 
     pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor)
                        -> Result<TypeDecl, TypeCheckError> {
@@ -159,6 +175,12 @@ impl ExprPool {
     }
 
 
+}
+
+impl Default for StmtPool {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StmtPool {
@@ -189,6 +211,10 @@ impl StmtPool {
 
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+    
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
 }

@@ -22,6 +22,12 @@ pub enum VariableSetType {
     Overwrite,
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub fn new() -> Self {
         Self {
@@ -56,17 +62,15 @@ impl Environment {
             if let Some(last) = self.var.last_mut() {
                 last.insert(name, val);
             }
-        } else {
-            if let Some(current) = current {
-                // Overwrite variable
-                if let Some(entry) = current.get_mut(&name) {
-                    if !entry.mutable {
-                        let name = string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
-                        return Err(InterpreterError::ImmutableAssignment(format!("Variable {} already defined as immutable (val)", name)));
-                    }
-
-                    entry.value = value;
+        } else if let Some(current) = current {
+            // Overwrite variable
+            if let Some(entry) = current.get_mut(&name) {
+                if !entry.mutable {
+                    let name = string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+                    return Err(InterpreterError::ImmutableAssignment(format!("Variable {name} already defined as immutable (val)")));
                 }
+
+                entry.value = value;
             }
         }
 

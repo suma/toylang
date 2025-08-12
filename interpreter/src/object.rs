@@ -57,10 +57,7 @@ impl Object {
     }
 
     pub fn is_null(&self) -> bool {
-        match self {
-            Object::Null => true,
-            _ => false,
-        }
+        matches!(self, Object::Null)
     }
 
     pub fn check_not_null(&self) -> Result<(), ObjectError> {
@@ -72,16 +69,13 @@ impl Object {
     }
 
     pub fn is_unit(&self) -> bool {
-        match self {
-            Object::Unit => true,
-            _ => false,
-        }
+        matches!(self, Object::Unit)
     }
 
     pub fn unwrap_bool(&self) -> bool {
         match self {
             Object::Bool(v) => *v,
-            _ => panic!("unwrap_bool: expected bool but {:?}", self),
+            _ => panic!("unwrap_bool: expected bool but {self:?}"),
         }
     }
 
@@ -95,7 +89,7 @@ impl Object {
     pub fn unwrap_int64(&self) -> i64 {
         match self {
             Object::Int64(v) => *v,
-            _ => panic!("unwrap_int64: expected int64 but {:?}", self),
+            _ => panic!("unwrap_int64: expected int64 but {self:?}"),
         }
     }
 
@@ -109,7 +103,7 @@ impl Object {
     pub fn unwrap_uint64(&self) -> u64 {
         match self {
             Object::UInt64(v) => *v,
-            _ => panic!("unwrap_uint64: expected uint64 but {:?}", self),
+            _ => panic!("unwrap_uint64: expected uint64 but {self:?}"),
         }
     }
 
@@ -123,7 +117,7 @@ impl Object {
     pub fn unwrap_string(&self) -> DefaultSymbol {
         match self {
             Object::String(v) => *v,
-            _ => panic!("unwrap_string: expected string but {:?}", self),
+            _ => panic!("unwrap_string: expected string but {self:?}"),
         }
     }
 
@@ -137,14 +131,14 @@ impl Object {
     pub fn unwrap_array(&self) -> &Vec<RcObject> {
         match self {
             Object::Array(v) => v.as_ref(),
-            _ => panic!("unwrap_array: expected array but {:?}", self),
+            _ => panic!("unwrap_array: expected array but {self:?}"),
         }
     }
 
     pub fn unwrap_array_mut(&mut self) -> &mut Vec<RcObject> {
         match self {
             Object::Array(v) => v.as_mut(),
-            _ => panic!("unwrap_array_mut: expected array but {:?}", self),
+            _ => panic!("unwrap_array_mut: expected array but {self:?}"),
         }
     }
 
@@ -275,7 +269,7 @@ impl Object {
                 fields.get(field_name)
                     .cloned()
                     .ok_or_else(|| ObjectError::FieldNotFound { 
-                        struct_type: format!("struct_{:?}", type_name), 
+                        struct_type: format!("struct_{type_name:?}"), 
                         field_name: field_name.to_string() 
                     })
             }

@@ -229,7 +229,7 @@ impl<'a> EvaluationContext<'a> {
     pub fn register_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
         self.method_registry
             .entry(struct_name)
-            .or_insert_with(HashMap::new)
+            .or_default()
             .insert(method_name, method);
     }
 
@@ -250,7 +250,7 @@ impl<'a> EvaluationContext<'a> {
         // If method has &self parameter, bind it
         if method.has_self_param {
             // For now, we'll use a placeholder symbol for self
-            let self_symbol = self.string_interner.get_or_intern("self".to_string());
+            let self_symbol = self.string_interner.get_or_intern("self");
             self.environment.set_val(self_symbol, self_obj);
         }
         
@@ -286,7 +286,7 @@ impl<'a> EvaluationContext<'a> {
                     self.evaluate(expr_ref)
                 }
             }
-            _ => Err(InterpreterError::InternalError(format!("evaluate_method: unexpected method body type: {:?}", stmt)))
+            _ => Err(InterpreterError::InternalError(format!("evaluate_method: unexpected method body type: {stmt:?}")))
         }
     }
 
@@ -397,7 +397,7 @@ impl<'a> EvaluationContext<'a> {
 
         Ok(match (lhs, rhs) {
             (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l && *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_and: Bad types for binary '&&' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_and: Bad types for binary '&&' operation due to different type: {lhs:?}")}),
         })
     }
 
@@ -407,7 +407,7 @@ impl<'a> EvaluationContext<'a> {
 
         Ok(match (lhs, rhs) {
             (Object::Bool(l), Object::Bool(r)) => Object::Bool(*l || *r),
-            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_or: Bad types for binary '||' operation due to different type: {:?}", lhs)}),
+            _ => return Err(InterpreterError::TypeError{expected: lhs_ty, found: rhs_ty, message: format!("evaluate_logical_or: Bad types for binary '||' operation due to different type: {lhs:?}")}),
         })
     }
 
@@ -487,7 +487,7 @@ impl<'a> EvaluationContext<'a> {
             }
             Expr::Identifier(s) => {
                 let val = self.environment.get_val(*s)
-                    .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {:?}", s)))?;
+                    .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {s:?}")))?;
                 Ok(EvaluationResult::Value(val))
             }
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
@@ -514,7 +514,7 @@ impl<'a> EvaluationContext<'a> {
             Expr::Null => {
                 Err(InterpreterError::InternalError("Null reference error".to_string()))
             }
-            _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {:?}", expr))),
+            _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }
 
@@ -681,9 +681,9 @@ impl<'a> EvaluationContext<'a> {
                 fields.get(field_name)
                     .cloned()
                     .map(EvaluationResult::Value)
-                    .ok_or_else(|| InterpreterError::InternalError(format!("Field '{}' not found", field_name)))
+                    .ok_or_else(|| InterpreterError::InternalError(format!("Field '{field_name}' not found")))
             }
-            _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {:?}", obj_borrowed)))
+            _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {obj_borrowed:?}")))
         }
     }
 
@@ -728,8 +728,7 @@ impl<'a> EvaluationContext<'a> {
                     }
                     _ => {
                         Err(InterpreterError::InternalError(format!(
-                            "Method '{}' not found for String type",
-                            method_name
+                            "Method '{method_name}' not found for String type"
                         )))
                     }
                 }
@@ -751,11 +750,11 @@ impl<'a> EvaluationContext<'a> {
                     // Call method with self as first argument
                     self.call_method(method_func, obj_val, arg_values)
                 } else {
-                    Err(InterpreterError::InternalError(format!("Method '{}' not found for struct '{:?}'", method_name, type_name)))
+                    Err(InterpreterError::InternalError(format!("Method '{method_name}' not found for struct '{type_name:?}'")))
                 }
             }
             _ => {
-                Err(InterpreterError::InternalError(format!("Cannot call method '{}' on non-struct object: {:?}", method_name, obj_borrowed)))
+                Err(InterpreterError::InternalError(format!("Cannot call method '{method_name}' on non-struct object: {obj_borrowed:?}")))
             }
         }
     }
@@ -793,13 +792,13 @@ impl<'a> EvaluationContext<'a> {
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
     }
 
-    pub fn evaluate_block(&mut self, statements: &Vec<StmtRef> ) -> Result<EvaluationResult, InterpreterError> {
+    pub fn evaluate_block(&mut self, statements: &[StmtRef] ) -> Result<EvaluationResult, InterpreterError> {
         let to_stmt = |s: &StmtRef| -> Result<&Stmt, InterpreterError> {
             self.stmt_pool.get(s.to_index())
                 .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
         };
         let statements = statements.iter()
-            .map(|s| to_stmt(s))
+            .map(to_stmt)
             .collect::<Result<Vec<_>, _>>()?;
         let mut last: Option<EvaluationResult> = None;
         
@@ -1122,20 +1121,20 @@ impl<'a> EvaluationContext<'a> {
         let obj_ref = obj.clone();
         if obj.is_none() || obj.unwrap().borrow().is_null() {
             let s = self.string_interner.resolve(symbol).unwrap_or("<NOT_FOUND>");
-            return Err(InterpreterError::UndefinedVariable(format!("Identifier {} is null", s)));
+            return Err(InterpreterError::UndefinedVariable(format!("Identifier {s} is null")));
         }
         Ok(EvaluationResult::Value(obj_ref.unwrap()))
     }
 
     /// Handles nested block expressions
-    fn handle_nested_block(&mut self, statements: &Vec<StmtRef>) -> Result<EvaluationResult, InterpreterError> {
+    fn handle_nested_block(&mut self, statements: &[StmtRef]) -> Result<EvaluationResult, InterpreterError> {
         self.environment.enter_block();
         let result = self.evaluate_block(statements)?;
         self.environment.exit_block();
         Ok(result)
     }
 
-    pub fn evaluate_function(&mut self, function: Rc<Function>, args: &Vec<ExprRef>) -> Result<RcObject, InterpreterError> {
+    pub fn evaluate_function(&mut self, function: Rc<Function>, args: &[ExprRef]) -> Result<RcObject, InterpreterError> {
         let block = match self.stmt_pool.get(function.code.to_index()) {
             Some(Stmt::Expression(e)) => {
                 match self.expr_pool.get(e.to_index()) {
@@ -1147,10 +1146,10 @@ impl<'a> EvaluationContext<'a> {
         };
 
         self.environment.enter_block();
-        for i in 0..args.len() {
+        for (i, arg) in args.iter().enumerate() {
             let name = function.parameter.get(i)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
-            let value = match self.evaluate(&args[i]) {
+            let value = match self.evaluate(arg) {
                 Ok(EvaluationResult::Value(v)) => v,
                 Ok(EvaluationResult::Return(v)) => {
                     self.environment.exit_block();
@@ -1172,7 +1171,7 @@ impl<'a> EvaluationContext<'a> {
         let res = self.evaluate_block(block)?;
         self.environment.exit_block();
 
-        if function.return_type.as_ref().map_or(true, |t| *t == TypeDecl::Unit) {
+        if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
             Ok(match res {
@@ -1195,11 +1194,11 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         Expr::Number(_v) => {
             // Type-unspecified numbers should be resolved during type checking
             Err(InterpreterError::InternalError(format!(
-                "Expr::Number should be transformed to concrete type during type checking: {:?}", e
+                "Expr::Number should be transformed to concrete type during type checking: {e:?}"
             )))
         },
         _ => Err(InterpreterError::InternalError(format!(
-            "Expression type not handled in convert_object: {:?}", e
+            "Expression type not handled in convert_object: {e:?}"
         ))),
     }
 }

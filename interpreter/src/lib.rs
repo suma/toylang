@@ -6,7 +6,6 @@ pub mod error_formatter;
 
 use std::rc::Rc;
 use std::collections::HashMap;
-use frontend;
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::visitor::AstVisitor;
@@ -21,11 +20,8 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     // First, collect and register struct definitions in the program's string_interner
     let mut struct_definitions = Vec::new();
     for stmt_ref in &program.statement.0 {
-        match stmt_ref {
-            frontend::ast::Stmt::StructDecl { name, fields } => {
-                struct_definitions.push((name.clone(), fields.clone()));
-            }
-            _ => {}
+        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
+            struct_definitions.push((name.clone(), fields.clone()));
         }
     }
     
@@ -63,7 +59,7 @@ fn process_impl_blocks_extracted(
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
-                format!("Impl block error for {}: {}", target_type, err)
+                format!("Impl block error for {target_type}: {err}")
             };
             errors.push(formatted_error);
         }
@@ -104,8 +100,7 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
         // Commented out for performance benchmarking
         // println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
-        if r.is_err() {
-            let mut error = r.unwrap_err();
+        if let Err(mut error) = r {
             
             // Add source location information if available
             if let (Some(source), Some(location)) = (source_code, error.location.as_ref()) {
@@ -122,14 +117,14 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&error)
             } else {
-                format!("type_check failed in {}: {}", name, error)
+                format!("type_check failed in {name}: {error}")
             };
             
             errors.push(formatted_error);
         }
     });
 
-    if errors.len() == 0 {
+    if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
@@ -213,7 +208,7 @@ fn register_methods(
 pub fn execute_program(program: &Program, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
     let main_function = match find_main_function(program) {
         Ok(func) => func,
-        Err(e) => return Err(format!("Runtime Error: {}", e)),
+        Err(e) => return Err(format!("Runtime Error: {e}")),
     };
     
     let func_map = build_function_map(program);
@@ -239,7 +234,7 @@ pub fn execute_program(program: &Program, source_code: Option<&str>, filename: O
                 // Try to extract location from runtime error if possible
                 formatter.format_runtime_error(&runtime_error.to_string(), None)
             } else {
-                format!("Runtime Error: {}", runtime_error)
+                format!("Runtime Error: {runtime_error}")
             };
             Err(formatted_error)
         }

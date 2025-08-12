@@ -1,6 +1,5 @@
 use std::env;
 use std::fs;
-use interpreter;
 use interpreter::error_formatter::ErrorFormatter;
 
 /// Parse the source file and handle parse errors
@@ -10,7 +9,7 @@ fn handle_parsing(source: &str, filename: &str) -> Result<frontend::ast::Program
     let formatter = ErrorFormatter::new(source, filename);
     
     // Handle parse errors using unified error display
-    if parser.errors.len() > 0 {
+    if !parser.errors.is_empty() {
         formatter.display_parse_errors(&parser.errors);
         return Err(());
     }
@@ -43,7 +42,7 @@ fn handle_execution(program: &frontend::ast::Program, source: &str, filename: &s
     
     match interpreter::execute_program(program, Some(source), Some(filename)) {
         Ok(result) => {
-            println!("Result: {:?}", result);
+            println!("Result: {result:?}");
             Ok(())
         }
         Err(error) => {
@@ -99,7 +98,6 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::rc::Rc;
-    use frontend;
     use frontend::ast::*;
     use string_interner::DefaultStringInterner;
     use interpreter::object::Object;
@@ -108,11 +106,11 @@ mod tests {
     fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
         let mut parser = frontend::Parser::new(source_code);
         let mut program = parser.parse_program()
-            .map_err(|e| format!("Parse error: {:?}", e))?;
+            .map_err(|e| format!("Parse error: {e:?}"))?;
         
         // Check typing
         interpreter::check_typing(&mut program, Some(source_code), Some("test.t"))
-            .map_err(|errors| format!("Type check errors: {:?}", errors))?;
+            .map_err(|errors| format!("Type check errors: {errors:?}"))?;
         
         // Execute program
         interpreter::execute_program(&program, Some(source_code), Some("test.t"))
@@ -128,8 +126,8 @@ mod tests {
         let mut ctx = EvaluationContext::new(&stmt_pool, &expr_pool, &mut interner, HashMap::new());
         let result = match ctx.evaluate(&expr_ref) {
             Ok(EvaluationResult::Value(v)) => v,
-            Ok(other) => panic!("Expected Value but got {:?}", other),
-            Err(e) => panic!("Evaluation failed: {:?}", e),
+            Ok(other) => panic!("Expected Value but got {other:?}"),
+            Err(e) => panic!("Evaluation failed: {e:?}"),
         };
 
         assert_eq!(result.borrow().unwrap_int64(), 42);

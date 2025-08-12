@@ -2,6 +2,28 @@
 
 ## 完了済み ✅
 
+70. **関数引数型チェック機能実装** ✅ (2025-08-12完了)
+   - **対象**: evaluation.rs:599の未実装TODO（Function argument type checking）
+   - **実装内容**:
+     - runtime時の関数呼び出しで引数型と仮引数型の厳密チェック
+     - 型不一致時に詳細なエラーメッセージ（関数名と引数位置を表示）
+     - 評価済み引数を使う新しいhelperメソッド `evaluate_function_with_values` 追加
+   - **テストケース追加**:
+     - `test_function_argument_type_check_success`: 正常な型チェック成功
+     - `test_function_argument_type_check_error`: 型不一致エラー検出
+     - `test_function_wrong_argument_type_bool`: bool型の型チェック
+     - `test_function_multiple_arguments_type_check`: 複数引数の型チェック
+   - **検証結果**: 
+     - 全4個の新規テストが成功
+     - 全160個のテストスイートが正常実行
+     - 既存機能への影響なし
+   - **技術的成果**: 
+     - runtime型安全性の向上
+     - 関数引数の型ミスマッチを即座に検出
+     - デバッグ体験の大幅改善（明確なエラーメッセージ）
+
+## 完了済み ✅
+
 63. **frontendの位置情報計算機能実装** ✅ (2025-01-11完了)
    - TypeCheckerVisitorにsource_codeフィールドを追加してソースコードテキストを保持
    - calculate_line_col_from_offset()メソッドでオフセットから行・列番号を計算

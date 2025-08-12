@@ -595,8 +595,7 @@ impl<'a> EvaluationContext<'a> {
 
     /// Evaluates function calls
     fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(func) = self.function.get::<DefaultSymbol>(name) {
-            // TODO: check arguments type
+        if let Some(func) = self.function.get::<DefaultSymbol>(name).cloned() {
             let args = self.expr_pool.get(args.to_index())
                 .ok_or_else(|| InterpreterError::InternalError("Invalid arguments reference".to_string()))?;
             match args {
@@ -611,7 +610,27 @@ impl<'a> EvaluationContext<'a> {
                         );
                     }
 
-                    Ok(EvaluationResult::Value(self.evaluate_function(func.clone(), args)?))
+                    // Evaluate arguments once and perform type checking
+                    let mut evaluated_args = Vec::new();
+                    for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
+                        let arg_result = self.evaluate(arg_expr)?;
+                        let arg_value = self.extract_value(Ok(arg_result))?;
+                        let actual_type = arg_value.borrow().get_type();
+                        
+                        if actual_type != *expected_type {
+                            let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
+                            return Err(InterpreterError::TypeError {
+                                expected: expected_type.clone(),
+                                found: actual_type,
+                                message: format!("Function '{}' argument {} type mismatch", func_name, i + 1)
+                            });
+                        }
+                        
+                        evaluated_args.push(arg_value);
+                    }
+
+                    // Call function with pre-evaluated arguments
+                    Ok(EvaluationResult::Value(self.evaluate_function_with_values(func, &evaluated_args)?))
                 }
                 _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
             }
@@ -1166,6 +1185,40 @@ impl<'a> EvaluationContext<'a> {
                 },
             };
             self.environment.set_val(name, value);
+        }
+
+        let res = self.evaluate_block(block)?;
+        self.environment.exit_block();
+
+        if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
+            Ok(Rc::new(RefCell::new(Object::Unit)))
+        } else {
+            Ok(match res {
+                EvaluationResult::Value(v) => v,
+                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
+                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
+            })
+        }
+    }
+
+    /// Evaluates function with pre-evaluated argument values (used when type checking has already been done)
+    pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[RcObject]) -> Result<RcObject, InterpreterError> {
+        let block = match self.stmt_pool.get(function.code.to_index()) {
+            Some(Stmt::Expression(e)) => {
+                match self.expr_pool.get(e.to_index()) {
+                    Some(Expr::Block(statements)) => statements,
+                    _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function_with_values: Not handled yet {:?}", function.code))),
+                }
+            }
+            _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function_with_values: Not handled yet {:?}", function.code))),
+        };
+
+        self.environment.enter_block();
+        for (i, value) in args.iter().enumerate() {
+            let name = function.parameter.get(i)
+                .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
+            self.environment.set_val(name, value.clone());
         }
 
         let res = self.evaluate_block(block)?;

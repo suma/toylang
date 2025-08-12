@@ -96,6 +96,26 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
             parser.next();
             sym
         }
+        Some(ref kind) if kind.is_keyword() => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, format!("parse_var_def: reserved keyword '{}' cannot be used as identifier", 
+                match kind {
+                    Kind::If => "if",
+                    Kind::Else => "else", 
+                    Kind::While => "while",
+                    Kind::For => "for",
+                    Kind::Function => "fn",
+                    Kind::Return => "return",
+                    Kind::Break => "break", 
+                    Kind::Continue => "continue",
+                    Kind::Val => "val",
+                    Kind::Var => "var",
+                    Kind::Struct => "struct",
+                    Kind::Impl => "impl",
+                    _ => "keyword"
+                }
+            )))
+        }
         x => {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(location, format!("parse_var_def: expected identifier but {:?}", x)))

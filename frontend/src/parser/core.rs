@@ -6,7 +6,7 @@ use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
 use string_interner::DefaultStringInterner;
-use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
+use crate::parser::error::{ParserError, ParserErrorKind, ParserResult, MultipleParserResult};
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -324,6 +324,24 @@ impl<'a> Parser<'a> {
                     self.collect_error(&format!("unexpected token: {:?}", x_cloned));
                     self.next(); // Skip invalid token and continue
                 }
+            }
+        }
+
+        // Check if there were critical errors during parsing (like keyword usage)
+        for error in &self.errors {
+            // Check both direct GenericError and nested errors in UnexpectedToken
+            match &error.kind {
+                ParserErrorKind::GenericError { message } => {
+                    if message.contains("reserved keyword") {
+                        return Err(error.clone());
+                    }
+                }
+                ParserErrorKind::UnexpectedToken { expected } => {
+                    if expected.contains("reserved keyword") {
+                        return Err(error.clone());
+                    }
+                }
+                _ => {}
             }
         }
 

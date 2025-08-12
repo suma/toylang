@@ -348,6 +348,10 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
             parser.expect_err(&Kind::ParenClose)?;
             Ok(node)
         }
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If) => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
+        }
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
             let s = parser.string_interner.get_or_intern(s);

@@ -43,14 +43,28 @@ impl<T> MultipleTypeCheckResult<T> {
 #[derive(Debug, Clone)]
 pub enum TypeCheckErrorKind {
     TypeMismatch { expected: TypeDecl, actual: TypeDecl },
-    TypeMismatchOperation { operation: String, left: TypeDecl, right: TypeDecl },
+    TypeMismatchOperation(Box<TypeMismatchOperationError>),
     NotFound { item_type: String, name: String },
     UnsupportedOperation { operation: String, type_name: TypeDecl },
     ConversionError { from: String, to: String },
     ArrayError { message: String },
-    MethodError { method: String, type_name: TypeDecl, reason: String },
+    MethodError(Box<MethodErrorData>),
     InvalidLiteral { value: String, expected_type: String },
     GenericError { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeMismatchOperationError {
+    pub operation: String,
+    pub left: TypeDecl,
+    pub right: TypeDecl,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodErrorData {
+    pub method: String,
+    pub type_name: TypeDecl,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,11 +85,11 @@ impl TypeCheckError {
 
     pub fn type_mismatch_operation(operation: &str, left: TypeDecl, right: TypeDecl) -> Self {
         Self {
-            kind: TypeCheckErrorKind::TypeMismatchOperation {
+            kind: TypeCheckErrorKind::TypeMismatchOperation(Box::new(TypeMismatchOperationError {
                 operation: operation.to_string(),
                 left,
                 right,
-            },
+            })),
             context: None,
             location: None,
         }
@@ -126,11 +140,11 @@ impl TypeCheckError {
 
     pub fn method_error(method: &str, type_name: TypeDecl, reason: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::MethodError {
+            kind: TypeCheckErrorKind::MethodError(Box::new(MethodErrorData {
                 method: method.to_string(),
                 type_name,
                 reason: reason.to_string(),
-            },
+            })),
             context: None,
             location: None,
         }
@@ -178,8 +192,8 @@ impl std::fmt::Display for TypeCheckError {
             TypeCheckErrorKind::TypeMismatch { expected, actual } => {
                 format!("Type mismatch: expected {:?}, but got {:?}", expected, actual)
             }
-            TypeCheckErrorKind::TypeMismatchOperation { operation, left, right } => {
-                format!("Type mismatch in {} operation: incompatible types {:?} and {:?}", operation, left, right)
+            TypeCheckErrorKind::TypeMismatchOperation(data) => {
+                format!("Type mismatch in {} operation: incompatible types {:?} and {:?}", data.operation, data.left, data.right)
             }
             TypeCheckErrorKind::NotFound { item_type, name } => {
                 format!("{} '{}' not found", item_type, name)
@@ -193,8 +207,8 @@ impl std::fmt::Display for TypeCheckError {
             TypeCheckErrorKind::ArrayError { message } => {
                 format!("Array error: {}", message)
             }
-            TypeCheckErrorKind::MethodError { method, type_name, reason } => {
-                format!("Method '{}' error for type {:?}: {}", method, type_name, reason)
+            TypeCheckErrorKind::MethodError(data) => {
+                format!("Method '{}' error for type {:?}: {}", data.method, data.type_name, data.reason)
             }
             TypeCheckErrorKind::InvalidLiteral { value, expected_type } => {
                 format!("Invalid {} literal: '{}'", expected_type, value)

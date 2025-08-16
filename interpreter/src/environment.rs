@@ -12,8 +12,27 @@ pub struct VariableValue {
 }
 
 #[derive(Debug, Clone)]
+pub struct ModuleEnvironment {
+    pub name: Vec<DefaultSymbol>,  // Module path: [math, basic]
+    pub variables: HashMap<DefaultSymbol, VariableValue>,
+    pub functions: HashMap<DefaultSymbol, frontend::ast::Function>,
+}
+
+impl ModuleEnvironment {
+    pub fn new(name: Vec<DefaultSymbol>) -> Self {
+        Self {
+            name,
+            variables: HashMap::new(),
+            functions: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Environment {
     var: Vec<HashMap<DefaultSymbol, VariableValue>>,
+    pub modules: HashMap<Vec<DefaultSymbol>, ModuleEnvironment>,  // Module registry
+    pub current_module: Option<Vec<DefaultSymbol>>,               // Current module path
 }
 
 #[derive(Eq, PartialEq)]
@@ -32,6 +51,8 @@ impl Environment {
     pub fn new() -> Self {
         Self {
             var: vec![HashMap::new()],
+            modules: HashMap::new(),
+            current_module: None,
         }
     }
 
@@ -84,5 +105,46 @@ impl Environment {
             }
         }
         None
+    }
+
+    // Module management methods
+    pub fn register_module(&mut self, module_path: Vec<DefaultSymbol>) {
+        let module_env = ModuleEnvironment::new(module_path.clone());
+        self.modules.insert(module_path, module_env);
+    }
+
+    pub fn set_current_module(&mut self, module_path: Option<Vec<DefaultSymbol>>) {
+        self.current_module = module_path;
+    }
+
+    pub fn get_current_module(&self) -> Option<&Vec<DefaultSymbol>> {
+        self.current_module.as_ref()
+    }
+
+    pub fn get_module(&self, module_path: &[DefaultSymbol]) -> Option<&ModuleEnvironment> {
+        self.modules.get(module_path)
+    }
+
+    pub fn get_module_mut(&mut self, module_path: &[DefaultSymbol]) -> Option<&mut ModuleEnvironment> {
+        self.modules.get_mut(module_path)
+    }
+
+    /// Resolve qualified name (e.g., math.add) to find function or variable
+    pub fn resolve_qualified_name(&self, module_path: &[DefaultSymbol], name: DefaultSymbol) -> Option<&VariableValue> {
+        if let Some(module) = self.get_module(module_path) {
+            module.variables.get(&name)
+        } else {
+            None
+        }
+    }
+
+    /// Set variable in a specific module
+    pub fn set_module_variable(&mut self, module_path: &[DefaultSymbol], name: DefaultSymbol, value: VariableValue) -> Result<(), InterpreterError> {
+        if let Some(module) = self.get_module_mut(module_path) {
+            module.variables.insert(name, value);
+            Ok(())
+        } else {
+            Err(InterpreterError::InternalError(format!("Module {:?} not found", module_path)))
+        }
     }
 }

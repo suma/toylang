@@ -688,6 +688,14 @@ impl<'a> EvaluationContext<'a> {
 
     /// Evaluates field access expressions
     fn evaluate_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
+        // First check if this is a module qualified name (e.g., math.add)
+        if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(obj.to_index()) {
+            if let Some(module_value) = self.resolve_module_qualified_name(*module_name, *field) {
+                return Ok(EvaluationResult::Value(module_value));
+            }
+        }
+        
+        // If not a module qualified name, evaluate as struct field access
         let obj_val = self.evaluate(obj)?;
         let obj_val = self.extract_value(Ok(obj_val))?;
         let obj_borrowed = obj_val.borrow();
@@ -1253,5 +1261,20 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         _ => Err(InterpreterError::InternalError(format!(
             "Expression type not handled in convert_object: {e:?}"
         ))),
+    }
+}
+
+impl EvaluationContext<'_> {
+    /// Resolve module qualified name (e.g., math.add -> module [math], variable add)
+    fn resolve_module_qualified_name(&self, module_name: DefaultSymbol, variable_name: DefaultSymbol) -> Option<RcObject> {
+        // Convert single module name to module path (could be extended for nested modules)
+        let module_path = vec![module_name];
+        
+        // Look up variable in the specified module
+        if let Some(variable_value) = self.environment.resolve_qualified_name(&module_path, variable_name) {
+            Some(variable_value.value.clone())
+        } else {
+            None
+        }
     }
 }

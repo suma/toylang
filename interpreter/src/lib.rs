@@ -172,6 +172,23 @@ fn build_function_map(program: &Program) -> HashMap<DefaultSymbol, Rc<Function>>
     func_map
 }
 
+/// Initialize module environment based on package and import declarations
+fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program) {
+    // Set current module from package declaration
+    if let Some(package_decl) = &program.package_decl {
+        eval.environment.set_current_module(Some(package_decl.name.clone()));
+        eval.environment.register_module(package_decl.name.clone());
+    }
+    
+    // Register imported modules
+    for import_decl in &program.imports {
+        eval.environment.register_module(import_decl.module_path.clone());
+    }
+    
+    // Note: Actual module loading and variable population would happen here
+    // For now, we just register the module namespaces
+}
+
 fn build_method_registry(
     program: &Program, 
     string_interner: &mut DefaultStringInterner
@@ -221,6 +238,9 @@ pub fn execute_program(program: &Program, source_code: Option<&str>, filename: O
         &mut string_interner, 
         func_map
     );
+    
+    // Initialize module system
+    initialize_module_environment(&mut eval, program);
     
     register_methods(&mut eval, method_registry);
     

@@ -481,7 +481,8 @@ impl AstBuilder {
 #[derive(Debug)]
 pub struct Program {
     pub node: Node,
-    pub import: Vec<String>,
+    pub package_decl: Option<PackageDecl>,
+    pub imports: Vec<ImportDecl>,
     pub function: Vec<Rc<Function>>,
 
     pub statement: StmtPool,
@@ -542,6 +543,17 @@ pub struct MethodFunction {
     pub has_self_param: bool, // true if first parameter is &self
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageDecl {
+    pub name: Vec<DefaultSymbol>,  // package path components: [math_symbol, basic_symbol]
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ImportDecl {
+    pub module_path: Vec<DefaultSymbol>,  // module path: [math_symbol, basic_symbol]
+    pub alias: Option<DefaultSymbol>,     // alias from "as" clause
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Stmt {
     Expression(ExprRef),
@@ -552,6 +564,8 @@ pub enum Stmt {
     Continue,
     For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
+    Package(PackageDecl),
+    Import(ImportDecl),
     StructDecl {
         name: String,
         fields: Vec<StructField>,

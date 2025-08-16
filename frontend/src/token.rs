@@ -22,6 +22,9 @@ pub enum Kind {
     Return,
     Extern,
     Public,
+    Package,
+    Import,
+    As,
     Val,
     Var,
 

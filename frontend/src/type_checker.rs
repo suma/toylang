@@ -301,6 +301,8 @@ impl Acceptable for Stmt {
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, fields } => visitor.visit_struct_decl(name, fields),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
+            Stmt::Package(package_decl) => visitor.visit_package(package_decl),
+            Stmt::Import(import_decl) => visitor.visit_import(import_decl),
         }
     }
 }
@@ -959,6 +961,18 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         }
         
         // Impl block declaration returns Unit
+        Ok(TypeDecl::Unit)
+    }
+    
+    fn visit_package(&mut self, _package_decl: &crate::ast::PackageDecl) -> Result<TypeDecl, TypeCheckError> {
+        // For now, package declarations are just recorded and don't produce a type
+        // TODO: Implement package validation and namespace management
+        Ok(TypeDecl::Unit)
+    }
+    
+    fn visit_import(&mut self, _import_decl: &crate::ast::ImportDecl) -> Result<TypeDecl, TypeCheckError> {
+        // For now, import declarations are just recorded and don't produce a type
+        // TODO: Implement module resolution and import validation
         Ok(TypeDecl::Unit)
     }
 

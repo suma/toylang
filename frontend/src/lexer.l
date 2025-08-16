@@ -28,6 +28,9 @@ macro_rules! token {
 "fn"        return Ok(token!(self, Kind::Function));
 "extern"    return Ok(token!(self, Kind::Extern));
 "pub"       return Ok(token!(self, Kind::Public));
+"package"   return Ok(token!(self, Kind::Package));
+"import"    return Ok(token!(self, Kind::Import));
+"as"        return Ok(token!(self, Kind::As));
 "val"       return Ok(token!(self, Kind::Val));
 "var"       return Ok(token!(self, Kind::Var));
 

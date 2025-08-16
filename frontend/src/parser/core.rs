@@ -217,6 +217,19 @@ impl<'a> Parser<'a> {
             end_pos = Some(end);
         };
         let mut def_func = vec![];
+        
+        // Parse package declaration (optional, at beginning of file)
+        let package_decl = if matches!(self.peek(), Some(Kind::Package)) {
+            Some(self.parse_package_decl()?)
+        } else {
+            None
+        };
+        
+        // Parse import declarations (multiple allowed)
+        let mut imports = Vec::new();
+        while matches!(self.peek(), Some(Kind::Import)) {
+            imports.push(self.parse_import_decl()?);
+        }
 
         loop {
             match self.peek() {
@@ -343,7 +356,8 @@ impl<'a> Parser<'a> {
         std::mem::swap(&mut string_interner, &mut self.string_interner);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
-            import: vec![],
+            package_decl,
+            imports,
             function: def_func,
             statement: stmt,
             expression: expr,
@@ -460,6 +474,82 @@ impl<'a> Parser<'a> {
         while let Some(Kind::NewLine) = self.peek() {
             self.next();
         }
+    }
+    
+    /// Parse package declaration: package math.basic
+    pub fn parse_package_decl(&mut self) -> ParserResult<PackageDecl> {
+        self.expect_err(&Kind::Package)?;
+        
+        let mut name_parts = Vec::new();
+        
+        // Parse first identifier
+        if let Some(Kind::Identifier(s)) = self.peek().cloned() {
+            let symbol = self.string_interner.get_or_intern(s);
+            name_parts.push(symbol);
+            self.next();
+        } else {
+            return Err(ParserError::generic_error(self.current_source_location(), "expected package name".to_string()));
+        }
+        
+        // Parse additional parts separated by dots
+        while matches!(self.peek(), Some(Kind::Dot)) {
+            self.next(); // consume dot
+            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
+                let symbol = self.string_interner.get_or_intern(s);
+                name_parts.push(symbol);
+                self.next();
+            } else {
+                return Err(ParserError::generic_error(self.current_source_location(), "expected identifier after '.'".to_string()));
+            }
+        }
+        
+        self.skip_newlines();
+        Ok(PackageDecl { name: name_parts })
+    }
+    
+    /// Parse import declaration: import math.basic [as alias]
+    pub fn parse_import_decl(&mut self) -> ParserResult<ImportDecl> {
+        self.expect_err(&Kind::Import)?;
+        
+        let mut module_path = Vec::new();
+        
+        // Parse first identifier
+        if let Some(Kind::Identifier(s)) = self.peek().cloned() {
+            let symbol = self.string_interner.get_or_intern(s);
+            module_path.push(symbol);
+            self.next();
+        } else {
+            return Err(ParserError::generic_error(self.current_source_location(), "expected module name".to_string()));
+        }
+        
+        // Parse additional parts separated by dots
+        while matches!(self.peek(), Some(Kind::Dot)) {
+            self.next(); // consume dot
+            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
+                let symbol = self.string_interner.get_or_intern(s);
+                module_path.push(symbol);
+                self.next();
+            } else {
+                return Err(ParserError::generic_error(self.current_source_location(), "expected identifier after '.'".to_string()));
+            }
+        }
+        
+        // Parse optional alias: as alias_name
+        let alias = if matches!(self.peek(), Some(Kind::As)) {
+            self.next(); // consume 'as'
+            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
+                let alias_symbol = self.string_interner.get_or_intern(s);
+                self.next();
+                Some(alias_symbol)
+            } else {
+                return Err(ParserError::generic_error(self.current_source_location(), "expected alias name after 'as'".to_string()));
+            }
+        } else {
+            None
+        };
+        
+        self.skip_newlines();
+        Ok(ImportDecl { module_path, alias })
     }
 
     /// Parse program with multiple error collection

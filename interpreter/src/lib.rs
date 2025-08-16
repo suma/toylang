@@ -46,6 +46,112 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     tc
 }
 
+/// Setup TypeCheckerVisitor with module resolution support
+fn setup_type_checker_with_modules(program: &mut Program) -> Result<TypeCheckerVisitor, Vec<String>> {
+    let mut errors: Vec<String> = Vec::new();
+    
+    // Clone imports before creating TypeChecker to avoid borrowing conflicts
+    let imports = program.imports.clone();
+    
+    // Check if program has imports that need resolution
+    if !imports.is_empty() {
+        // FIRST: Load and integrate all modules into the main program before creating TypeChecker
+        for import in &imports {
+            if let Err(err) = load_and_integrate_module(program, import) {
+                errors.push(format!("Module integration error for {:?}: {}", import, err));
+            }
+        }
+        
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        
+        // NOW: Create TypeCheckerVisitor with integrated program using standard setup
+        Ok(setup_type_checker(program))
+    } else {
+        // No imports, use standard setup
+        Ok(setup_type_checker(program))
+    }
+}
+
+/// Load and integrate a module directly into the main program before TypeChecker creation
+fn load_and_integrate_module(program: &mut Program, import: &ImportDecl) -> Result<(), String> {
+    // Simple module resolution: look for module files in modules/ directory
+    let module_name = import.module_path.first()
+        .and_then(|&symbol| program.string_interner.resolve(symbol))
+        .ok_or("Invalid module path")?;
+    
+    // Construct module file path
+    let module_file = format!("modules/{}/{}.t", module_name, module_name);
+    eprintln!("Attempting to load module: {}", module_file);
+    
+    // Try to read and parse the module file
+    match std::fs::read_to_string(&module_file) {
+        Ok(source) => {
+            eprintln!("Successfully read module file");
+            
+            // Parse module and integrate into main program
+            integrate_module_into_program(&source, program)?;
+            
+            Ok(())
+        }
+        Err(err) => Err(format!("Failed to read module file {}: {}", module_file, err))
+    }
+}
+
+/// Integrate a module's AST directly into the main program with symbol remapping
+fn integrate_module_into_program(source: &str, main_program: &mut Program) -> Result<(), String> {
+    // Parse the module with its own interner first
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let module_program = parser.parse_program()
+        .map_err(|e| format!("Parse error in module: {}", e))?;
+    
+    eprintln!("Successfully parsed module, {} functions found", module_program.function.len());
+    
+    // Integrate functions with symbol remapping
+    for function in &module_program.function {
+        // Get function name from module's interner
+        if let Some(func_name_str) = module_program.string_interner.resolve(function.name) {
+            // Create new symbol in main program's interner
+            let new_function_symbol = main_program.string_interner.get_or_intern(func_name_str);
+            
+            // Create a new function with remapped symbols
+            let mut new_function = function.as_ref().clone();
+            new_function.name = new_function_symbol;
+            
+            // Remap parameter symbols
+            for param in &mut new_function.parameter {
+                if let Some(param_name_str) = module_program.string_interner.resolve(param.0) {
+                    let new_param_symbol = main_program.string_interner.get_or_intern(param_name_str);
+                    param.0 = new_param_symbol;
+                }
+            }
+            
+            // Add the remapped function to main program
+            main_program.function.push(Rc::new(new_function));
+            eprintln!("Integrated function: {} -> {:?}", func_name_str, new_function_symbol);
+        }
+    }
+    
+    // Integrate struct declarations (both name and field.name are Strings, no symbol remapping needed)
+    for stmt_ref in &module_program.statement.0 {
+        if let frontend::ast::Stmt::StructDecl { name, fields, visibility } = stmt_ref {
+            // Create new struct declaration (no symbol remapping needed as all names are Strings)
+            let new_struct_stmt = frontend::ast::Stmt::StructDecl {
+                name: name.clone(),
+                fields: fields.clone(),
+                visibility: visibility.clone(),
+            };
+            
+            // Add to main program's statements
+            main_program.statement.0.push(new_struct_stmt);
+            eprintln!("Integrated struct: {}", name);
+        }
+    }
+    
+    Ok(())
+}
+
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
@@ -81,8 +187,14 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
         }
     }
     
-    // Setup TypeChecker with struct and function registration
-    let mut tc = setup_type_checker(program);
+    // Setup TypeChecker with module resolution support
+    let mut tc = match setup_type_checker_with_modules(program) {
+        Ok(tc) => tc,
+        Err(module_errors) => {
+            errors.extend(module_errors);
+            return Err(errors);
+        }
+    };
 
     // Create error formatter if we have source code and filename
     let formatter = if let (Some(source), Some(file)) = (source_code, filename) {

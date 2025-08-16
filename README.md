@@ -22,6 +22,8 @@ This project implements a statically-typed programming language with comprehensi
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
 - **Comments**: Line comments with `#` symbol support
+- **Module System**: Go-style modules with `package`/`import` declarations
+- **Qualified Identifiers**: Rust-style `module::function` syntax for module access
 
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
@@ -35,11 +37,13 @@ This project implements a statically-typed programming language with comprehensi
 - **Lexer Generation**: Uses `rflex` crate to generate lexer from flex-style `.l` files
 - **AST Design**: Memory-efficient representation with reference-based pools
 - **Type Checker**: Sophisticated inference engine with caching and context propagation
+- **Module Resolution**: Go-style package/import system with AST integration
 - **Error System**: Structured error reporting with consistent formatting
 
 ### Interpreter (`interpreter/`)
 - **Tree-walking Execution**: Direct AST traversal with `Rc<RefCell<Object>>` runtime values
 - **Environment Management**: Proper variable scoping and lifetime management
+- **Module Integration**: Seamless AST integration with qualified identifier support
 - **Built-in Operations**: Comprehensive arithmetic, logical, and comparison operators
 - **Method Registry**: Support for both struct methods and built-in type methods
 
@@ -69,6 +73,7 @@ cd interpreter && cargo run example/fib.t
 cargo run example/fibonacci_array.t    # Array-based fibonacci
 cargo run example/string_len_test.t    # String operations
 cargo run example/array_test.t         # Array manipulation
+cargo run example/test_qualified_identifier.t  # Module system with qualified identifiers
 ```
 
 ### Testing
@@ -130,6 +135,25 @@ impl Point {
     fn distance(&self) -> i64 {
         self.x * self.x + self.y * self.y
     }
+}
+```
+
+### Module System
+```rust
+# math.t (in modules/math/math.t)
+pub fn add(a: u64, b: u64) -> u64 {
+    a + b
+}
+
+pub fn multiply(a: u64, b: u64) -> u64 {
+    a * b
+}
+
+# main.t
+import math
+
+fn main() -> u64 {
+    math::add(10u64, 20u64)  # Returns 30
 }
 ```
 

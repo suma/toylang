@@ -3,7 +3,7 @@ use crate::type_decl::TypeDecl;
 use super::{TypeCheckError, LiteralTypeChecker, TypeCheckerVisitor};
 use string_interner::DefaultSymbol;
 
-impl<'a, 'b, 'c> LiteralTypeChecker for TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> LiteralTypeChecker for TypeCheckerVisitor<'a> {
     fn check_int64_literal(&mut self, _value: &i64) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Int64)
     }

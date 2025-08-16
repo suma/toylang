@@ -504,8 +504,6 @@ impl<'a> Parser<'a> {
         let mut ast_builder = AstBuilder::new();
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
-        let mut string_interner = DefaultStringInterner::new();
-        std::mem::swap(&mut string_interner, &mut self.string_interner);
         Ok(Program{
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             package_decl,
@@ -514,7 +512,6 @@ impl<'a> Parser<'a> {
             statement: stmt,
             expression: expr,
             location_pool,
-            string_interner,
         })
     }
 

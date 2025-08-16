@@ -40,10 +40,10 @@ fn handle_parsing_from_file(file_path: &str) -> Result<frontend::ast::Program, (
 }
 
 /// Perform type checking and handle type check errors
-fn handle_type_checking(program: &mut frontend::ast::Program, source: &str, filename: &str) -> Result<(), ()> {
+fn handle_type_checking(program: &mut frontend::ast::Program, string_interner: &mut string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<(), ()> {
     let formatter = ErrorFormatter::new(source, filename);
     
-    match interpreter::check_typing(program, Some(source), Some(filename)) {
+    match interpreter::check_typing(program, string_interner, Some(source), Some(filename)) {
         Ok(()) => Ok(()),
         Err(errors) => {
             formatter.display_type_check_errors(&errors);
@@ -53,10 +53,10 @@ fn handle_type_checking(program: &mut frontend::ast::Program, source: &str, file
 }
 
 /// Execute the program and handle runtime errors
-fn handle_execution(program: &frontend::ast::Program, source: &str, filename: &str) -> Result<(), ()> {
+fn handle_execution(program: &frontend::ast::Program, string_interner: &string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<(), ()> {
     let formatter = ErrorFormatter::new(source, filename);
     
-    match interpreter::execute_program(program, Some(source), Some(filename)) {
+    match interpreter::execute_program(program, string_interner, Some(source), Some(filename)) {
         Ok(result) => {
             println!("Result: {result:?}");
             Ok(())
@@ -80,16 +80,10 @@ fn main() {
 
     let filename = args[1].as_str();
     
-    // Parse the source file using CompilerSession
-    if verbose {
-        println!("Parsing source file: {}", filename);
-    }
-    let mut program = match handle_parsing_from_file(filename) {
-        Ok(prog) => prog,
-        Err(()) => return,
-    };
+    // Create a compiler session as the central compilation context
+    let mut session = CompilerSession::new();
     
-    // Read source for error formatting in subsequent steps
+    // Read source first for error formatting
     let source = match fs::read_to_string(filename) {
         Ok(content) => content,
         Err(e) => {
@@ -98,17 +92,30 @@ fn main() {
         }
     };
     
-    // Perform type checking
+    // Parse the source file within the compiler session context
+    if verbose {
+        println!("Parsing source file: {}", filename);
+    }
+    let mut program = match session.parse_program(&source) {
+        Ok(prog) => prog,
+        Err(err) => {
+            let formatter = ErrorFormatter::new(&source, filename);
+            formatter.format_parse_error(&err);
+            return;
+        }
+    };
+    
+    // Perform type checking with session's shared resources
     if verbose {
         println!("Performing type checking");
     }
-    if handle_type_checking(&mut program, &source, filename).is_err() {
+    if handle_type_checking(&mut program, session.string_interner_mut(), &source, filename).is_err() {
         return;
     }
     
-    // Execute the program
+    // Execute the program using session's context
     if verbose {
         println!("Executing program");
     }
-    let _ = handle_execution(&program, &source, filename);
+    let _ = handle_execution(&program, session.string_interner(), &source, filename);
 }

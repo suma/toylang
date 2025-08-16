@@ -547,17 +547,17 @@ mod parser_tests {
         let mut p = ParserWithInterner::new(input.as_str());
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
-        let program = result.unwrap();
+        let mut program = result.unwrap();
+        let string_interner = p.get_string_interner();
 
-        let stmt_pool = &program.statement;
-        let mut expr_pool = program.expression;
-        let string_interner = &program.string_interner;
+        // Collect functions before creating type checker
+        let functions_to_register: Vec<_> = program.function.iter().cloned().collect();
+        let functions_to_check: Vec<_> = program.function.iter().cloned().collect();
 
-        let location_pool = &program.location_pool;
-        let mut tc = TypeCheckerVisitor::new(stmt_pool, &mut expr_pool, string_interner, location_pool);
-        program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+        let mut tc = TypeCheckerVisitor::with_program(&mut program, string_interner);
+        functions_to_register.iter().for_each(|f| { tc.add_function(f.clone()) });
 
-        program.function.iter().for_each(|f| {
+        functions_to_check.iter().for_each(|f| {
             let res = tc.type_check(f.clone());
             assert!(res.is_ok(), "type check err {:?}", res.err().unwrap());
         });
@@ -571,16 +571,15 @@ mod parser_tests {
         let mut p = ParserWithInterner::new(input.as_str());
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
-        let program = result.unwrap();
+        let mut program = result.unwrap();
+        let string_interner = p.get_string_interner();
 
-        let stmt_pool = program.statement;
-        let mut expr_pool = program.expression;
-        let interner = program.string_interner;
+        // Collect functions before creating type checker
+        let functions_to_check: Vec<_> = program.function.iter().cloned().collect();
 
-        let location_pool = program.location_pool;
-        let mut tc = TypeCheckerVisitor::new(&stmt_pool, &mut expr_pool, &interner, &location_pool);
+        let mut tc = TypeCheckerVisitor::with_program(&mut program, string_interner);
         let mut res = true;
-        program.function.iter().for_each(|f| {
+        functions_to_check.iter().for_each(|f| {
             let r = tc.type_check(f.clone());
             if r.is_err() {
                 res = false;
@@ -704,7 +703,7 @@ mod parser_tests {
         }
         
         let func = &program.function[0];
-        assert_eq!(program.string_interner.resolve(func.name), Some("main"));
+        assert_eq!(parser.get_string_interner().resolve(func.name), Some("main"));
     }
 
     #[test]
@@ -727,7 +726,7 @@ mod parser_tests {
                 assert_eq!(1, methods.len());
                 
                 let method = &methods[0];
-                assert_eq!(program.string_interner.resolve(method.name), Some("new"));
+                assert_eq!(parser.get_string_interner().resolve(method.name), Some("new"));
                 assert!(!method.has_self_param);
                 assert_eq!(2, method.parameter.len());
             }
@@ -755,7 +754,7 @@ mod parser_tests {
                 assert_eq!(1, methods.len());
                 
                 let method = &methods[0];
-                assert_eq!(program.string_interner.resolve(method.name), Some("distance"));
+                assert_eq!(parser.get_string_interner().resolve(method.name), Some("distance"));
                 assert!(method.has_self_param);
                 assert_eq!(0, method.parameter.len());
             }
@@ -783,11 +782,12 @@ mod parser_tests {
                 assert_eq!(2, methods.len());
                 
                 let method1 = &methods[0];
-                assert_eq!(program.string_interner.resolve(method1.name), Some("new"));
+                let string_interner = parser.get_string_interner();
+                assert_eq!(string_interner.resolve(method1.name), Some("new"));
                 assert!(!method1.has_self_param);
                 
                 let method2 = &methods[1];
-                assert_eq!(program.string_interner.resolve(method2.name), Some("get_x"));
+                assert_eq!(string_interner.resolve(method2.name), Some("get_x"));
                 assert!(method2.has_self_param);
             }
             _ => panic!("Expected impl block declaration"),

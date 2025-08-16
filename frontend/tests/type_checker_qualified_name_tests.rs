@@ -20,9 +20,10 @@ mod type_checker_qualified_name_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Test module qualified name resolution  
-        let type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // Verify the import was registered
         assert_eq!(type_checker.imported_modules.len(), 1);
@@ -44,10 +45,11 @@ mod type_checker_qualified_name_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Create type checker and test it
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import, so check results directly
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -82,10 +84,11 @@ mod type_checker_qualified_name_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Test that regular struct field access still works
         let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             Ok(()) // with_program already processes package/import
         };
         
@@ -107,10 +110,11 @@ mod type_checker_qualified_name_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Test that accessing unimported module is handled appropriately
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -141,10 +145,11 @@ mod type_checker_qualified_name_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Test multiple imports
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());

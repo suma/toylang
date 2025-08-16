@@ -46,13 +46,13 @@ pub struct TypeCheckerVisitor<'a> {
 
 impl<'a> TypeCheckerVisitor<'a> {
     /// Create a TypeCheckerVisitor with program - processes package and imports automatically
-    pub fn with_program(program: &'a mut Program) -> Self {
+    pub fn with_program(program: &'a mut Program, string_interner: &'a DefaultStringInterner) -> Self {
         // Clone package and imports to avoid borrowing conflicts
         let package_decl = program.package_decl.clone();
         let imports = program.imports.clone();
         
         let mut visitor = Self {
-            core: CoreReferences::from_program(program),
+            core: CoreReferences::from_program(program, string_interner),
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
@@ -2612,30 +2612,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         Ok(())
     }
-    
-    /// Check if a struct can be accessed based on visibility and module context
-    fn check_struct_access(&self, _struct_name: &str, _visibility: &Visibility) -> Result<(), TypeCheckError> {
-        // TODO: Implement struct access control similar to function access
-        // For now, allow all struct access
-        Ok(())
-    }
-    
+
     /// Check if current access is within the same module
     fn is_same_module_access(&self) -> bool {
         // For Phase 3 initial implementation, assume same module access
         // TODO: Implement proper module context tracking
         // This should compare current_package with the function/struct's defining module
         true
-    }
-    
-    /// Check qualified name access (e.g., math.add)
-    fn check_qualified_access(&self, _module_path: &[DefaultSymbol], _item_name: DefaultSymbol) -> Result<(), TypeCheckError> {
-        // TODO: Implement qualified name access control
-        // This should check:
-        // 1. If the module is imported
-        // 2. If the item is public in the target module
-        // 3. If there are any access restrictions
-        Ok(())
     }
 }
 

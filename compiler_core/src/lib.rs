@@ -4,11 +4,12 @@ use frontend::ast::Program;
 use frontend::parser::error::ParserResult;
 use std::path::Path;
 
-/// Global compiler session that manages shared state across compilation phases
+/// Compiler session that serves as the central context for compilation
 /// 
-/// This serves as the central coordinator for all compilation activities,
-/// managing string interning and module resolution consistently across
-/// different compiler backends.
+/// This structure holds all shared compiler state and resources that need to be
+/// accessible across different compilation phases (parsing, type checking, code generation).
+/// It provides a unified interface for managing compiler-wide resources such as
+/// string interning, module resolution, and other compilation context.
 pub struct CompilerSession {
     string_interner: DefaultStringInterner,
     module_resolver: ModuleResolver,
@@ -31,24 +32,21 @@ impl CompilerSession {
         }
     }
     
-    /// Parse a program string using the session's string interner
+    /// Parse a program string within the compiler session context
     /// 
-    /// This ensures all symbols are consistently interned in the session's
-    /// global string table.
+    /// Uses the session's shared resources (string interner, module resolver, etc.)
+    /// to parse the input and produce an AST.
     pub fn parse_program(&mut self, input: &str) -> ParserResult<Program> {
         let mut parser = Parser::new(input, &mut self.string_interner);
-        let mut program = parser.parse_program()?;
-        
-        // Merge the program's string_interner back into the session's interner
-        self.merge_string_interner(&mut program.string_interner);
+        let program = parser.parse_program()?;
         
         Ok(program)
     }
     
     /// Merge symbols from another string interner into the session's interner
     /// 
-    /// This ensures that all symbols from parallel parsing operations are
-    /// consolidated into the session's global string table.
+    /// This is useful when integrating separately parsed modules or when
+    /// combining ASTs from different parsing contexts into a single compilation unit.
     pub fn merge_string_interner(&mut self, other: &mut DefaultStringInterner) {
         // Merge all symbols from other interner into session's interner
         for (_symbol, string) in other.iter() {
@@ -135,11 +133,6 @@ mod tests {
         // The session should be able to resolve this symbol
         let resolved_name = session.string_interner().resolve(function_name);
         println!("Resolved name: {:?}", resolved_name);
-        
-        // Check if the symbol exists in the program's string_interner instead
-        if let Some(program_resolved) = program.string_interner.resolve(function_name) {
-            println!("Found in program string_interner: {}", program_resolved);
-        }
         
         assert_eq!(resolved_name, Some("test"));
     }

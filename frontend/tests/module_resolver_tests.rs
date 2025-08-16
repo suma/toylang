@@ -18,18 +18,10 @@ mod module_resolver_tests {
         file_path
     }
 
-    fn sync_import_with_parser(import: &ImportDecl, program: &Program, parser_string_interner: &mut DefaultStringInterner) -> ImportDecl {
-        let mut synced_import = import.clone();
-        let mut synced_module_path = Vec::new();
-        
-        for symbol in &import.module_path {
-            if let Some(string_value) = program.string_interner.resolve(*symbol) {
-                let synced_symbol = parser_string_interner.get_or_intern(string_value);
-                synced_module_path.push(synced_symbol);
-            }
-        }
-        synced_import.module_path = synced_module_path;
-        synced_import
+    fn sync_import_with_parser(import: &ImportDecl, string_interner: &DefaultStringInterner) -> ImportDecl {
+        // Since we're now using the same string_interner for both program and parser,
+        // we can just return the import as-is
+        import.clone()
     }
 
     #[test]
@@ -60,11 +52,11 @@ fn main() -> u64 {
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
         // Sync ImportDecl symbols with parser's string_interner
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
         
         // Test import resolution
-        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner).unwrap();
+        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner).unwrap();
         
         assert_eq!(resolved.package_name.len(), 1);
         assert!(resolved.file_path.ends_with("math.t"));
@@ -97,9 +89,9 @@ fn main() -> u64 {
         
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
-        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner).unwrap();
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
+        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner).unwrap();
         
         assert_eq!(resolved.package_name.len(), 2);
         assert!(resolved.file_path.ends_with("math/basic.t"));
@@ -131,9 +123,9 @@ fn main() -> u64 {
         
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
-        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner).unwrap();
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
+        let resolved = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner).unwrap();
         
         assert_eq!(resolved.package_name.len(), 1);
         assert!(resolved.file_path.ends_with("math/mod.t"));
@@ -156,9 +148,9 @@ fn main() -> u64 {
         
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
-        let result = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner);
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
+        let result = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner);
         
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
@@ -191,9 +183,9 @@ fn main() -> u64 {
         
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
-        let result = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner);
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
+        let result = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner);
         
         assert!(result.is_err());
         let error_msg = format!("{}", result.unwrap_err());
@@ -226,14 +218,14 @@ fn main() -> u64 {
         let mut resolver = ModuleResolver::with_search_paths(vec![temp_dir.path().to_path_buf()]);
         
         let import = &program.imports[0];
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(import, &program, parser_string_interner);
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(import, string_interner);
         
         // First resolution
-        let resolved1 = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner).unwrap();
+        let resolved1 = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner).unwrap();
         
         // Second resolution should use cache
-        let resolved2 = resolver.resolve_import(&synced_import, Some(temp_dir.path()), parser_string_interner).unwrap();
+        let resolved2 = resolver.resolve_import(&synced_import, Some(temp_dir.path()), string_interner).unwrap();
         
         // Should be the same (cached)
         assert_eq!(resolved1.file_path, resolved2.file_path);
@@ -279,9 +271,9 @@ fn main() -> u64 {
             temp_dir2.path().to_path_buf()
         ]);
         
-        let parser_string_interner = parser.get_string_interner();
-        let synced_import = sync_import_with_parser(&program.imports[0], &program, parser_string_interner);
-        let resolved = resolver.resolve_import(&synced_import, None, parser_string_interner).unwrap();
+        let string_interner = parser.get_string_interner();
+        let synced_import = sync_import_with_parser(&program.imports[0], string_interner);
+        let resolved = resolver.resolve_import(&synced_import, None, string_interner).unwrap();
         
         // Should resolve to first directory
         assert!(resolved.file_path.starts_with(temp_dir1.path()));

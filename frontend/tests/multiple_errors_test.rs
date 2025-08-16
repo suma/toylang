@@ -63,13 +63,14 @@ fn another_function() -> bool {
             }
         }
         let program = parse_result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // 型チェックで複数エラーを収集
         let mut expr_pool = program.expression.clone();
         let mut type_checker = TypeCheckerVisitor::new(
             &program.statement,
             &mut expr_pool,
-            &program.string_interner,
+            string_interner,
             &program.location_pool
         );
         
@@ -106,13 +107,14 @@ fn simple_function() -> u64 {
         assert!(parse_result.result.is_some());
         
         let program = parse_result.result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // 型チェックでもエラーがないことを確認
         let mut expr_pool = program.expression.clone();
         let mut type_checker = TypeCheckerVisitor::new(
             &program.statement,
             &mut expr_pool,
-            &program.string_interner,
+            string_interner,
             &program.location_pool
         );
         
@@ -147,11 +149,12 @@ fn parser_error_function(missing_type) -> u64 {
         
         // パースが部分的に成功した場合は型チェックも実行
         if let Some(program) = parse_result.result {
+            let string_interner = parser.get_string_interner();
             let mut expr_pool = program.expression.clone();
             let mut type_checker = TypeCheckerVisitor::new(
                 &program.statement,
                 &mut expr_pool,
-                &program.string_interner,
+                string_interner,
                 &program.location_pool
             );
             

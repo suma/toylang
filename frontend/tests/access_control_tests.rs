@@ -23,7 +23,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // For initial implementation, just validate basic parsing
         // Function registration and access control enforcement will be enhanced in later iterations
@@ -49,7 +50,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // For initial implementation, validate basic parsing and structure
         // Private function access control will be fully tested when module boundaries are implemented
@@ -74,7 +76,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // Verify that struct visibility is properly parsed
         // The actual visibility enforcement will be tested when module system is complete
@@ -99,7 +102,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // Verify that private struct parsing works correctly
     }
@@ -125,7 +129,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // For initial implementation, validate that mixed visibility functions parse correctly
         // Full function counting and access control will be implemented in subsequent iterations
@@ -144,7 +149,8 @@ mod access_control_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
-        let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+        let string_interner = parser.get_string_interner();
+        let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
         
         // Test that access control infrastructure is in place
         // Check if we can find the function and verify its visibility

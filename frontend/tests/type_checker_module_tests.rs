@@ -19,10 +19,11 @@ mod type_checker_module_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         
         // Create type checker and test it
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import, so no need to call visit_program
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -50,8 +51,9 @@ mod type_checker_module_tests {
         let result = parser.parse_program();
         // This should already fail at parse time, but if it doesn't:
         if let Ok(mut program) = result {
+            let string_interner = parser.get_string_interner();
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-                let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+                let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
                 Ok(()) // with_program already processes package/import
             };
             // Should either fail here or at parse time
@@ -75,8 +77,9 @@ mod type_checker_module_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -104,8 +107,9 @@ mod type_checker_module_tests {
         assert!(result.is_ok(), "Program should parse successfully");
         
         let mut program = result.unwrap();
+        let string_interner = parser.get_string_interner();
         let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-            let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+            let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             // For self-import error test, we expect this to fail, but with_program might not catch it
             // Let's simulate the error for test consistency
             Err(frontend::type_checker::TypeCheckError::generic_error("Cannot import current package"))
@@ -131,8 +135,9 @@ mod type_checker_module_tests {
         let result = parser.parse_program();
         
         if let Ok(mut program) = result {
+            let string_interner = parser.get_string_interner();
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-                let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+                let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
                 // For reserved keyword test, simulate error for test consistency
                 Err(frontend::type_checker::TypeCheckError::generic_error("Reserved keyword in package"))
             };
@@ -156,8 +161,9 @@ mod type_checker_module_tests {
         let result = parser.parse_program();
         
         if let Ok(mut program) = result {
+            let string_interner = parser.get_string_interner();
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-                let _type_checker = TypeCheckerVisitor::with_program(&mut program);
+                let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
                 // For reserved keyword test, simulate error for test consistency
                 Err(frontend::type_checker::TypeCheckError::generic_error("Reserved keyword in import"))
             };

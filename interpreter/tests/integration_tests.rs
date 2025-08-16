@@ -19,8 +19,9 @@ mod integration_tests {
         assert!(program.is_ok());
 
         let program = program.unwrap();
+        let string_interner = parser.get_string_interner();
 
-        let res = interpreter::execute_program(&program, Some("fn main() -> u64 { 1u64 + 2u64 }"), Some("test.t"));
+        let res = interpreter::execute_program(&program, string_interner, Some("fn main() -> u64 { 1u64 + 2u64 }"), Some("test.t"));
         assert!(res.is_ok());
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3);
     }

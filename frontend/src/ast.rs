@@ -1,5 +1,5 @@
 use std::rc::Rc;
-use string_interner::{DefaultStringInterner, DefaultSymbol};
+use string_interner::DefaultSymbol;
 use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
@@ -486,8 +486,6 @@ impl AstBuilder {
 
 #[derive(Debug, Clone)]
 pub struct Program {
-    // TODO: add pub session: compiler_core::CompilerSession
-    
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
@@ -496,7 +494,6 @@ pub struct Program {
     pub statement: StmtPool,
     pub expression: ExprPool,
     pub location_pool: LocationPool,
-    pub string_interner: DefaultStringInterner,
 }
 
 impl Program {

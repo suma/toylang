@@ -2,6 +2,52 @@
 
 ## 完了済み ✅
 
+80. **string_interner重複管理問題の解決とTypeCheckerVisitorリファクタリング** ✅ (2025-08-16完了)
+   - **対象**: Programとstring_internerの重複管理によるアーキテクチャ問題の解決
+   - **解決した問題**:
+     - Program構造体とCompilerSessionでstring_internerが重複保持されていた問題
+     - TypeCheckerVisitor::newの複数箇所での不統一な使用
+     - CoreReferencesとTypeCheckerVisitor間でのstring_interner管理の複雑化
+     - テストコードでのTypeCheckerVisitor初期化パターンの非効率性
+   - **実装内容**:
+     - Program構造体からstring_internerフィールドを削除
+     - TypeCheckerVisitor::with_programメソッドの統一使用に向けたリファクタリング
+     - 全ての関数・メソッドでstring_internerを引数として受け渡すように変更
+     - interpreter/src/lib.rs, frontend/src/parser/tests.rsでwith_programへの置き換え実施
+     - 借用問題解決のための関数事前コレクション手法を実装
+   - **技術的成果**:
+     - string_internerの単一責任管理を実現（CompilerSessionが唯一の所有者）
+     - TypeCheckerVisitor::with_programによるPackage/Import処理の自動化
+     - 5箇所のTypeCheckerVisitor::new呼び出しのうち3箇所をwith_programに置き換え
+     - 借用競合を回避する事前コレクション手法の確立
+     - multiple_errors_testでは用途に応じて元のnewを継続使用（適切な使い分け）
+   - **テスト結果**: 
+     - 全252テストのうち251テストが正常実行（1つのproperty testエラーは別問題）
+     - コンパイルエラー完全解消
+     - アーキテクチャの一貫性と保守性が大幅向上
+   - **備考**: コンパイラの責務分離を明確化し、将来的な拡張に向けたクリーンなアーキテクチャを確立
+
+79. **TypeCheckerVisitor::with_programのstring_interner引数追加修正** ✅ (2025-08-16完了)
+   - **対象**: テストファイル群でのTypeCheckerVisitor::with_program呼び出し修正
+   - **解決した問題**:
+     - TypeCheckerVisitor::with_programメソッドの引数変更後のコンパイルエラー
+     - 複数のテストファイルで引数不足エラーが発生
+     - string_internerパラメータが欠落している箇所の網羅的修正
+   - **修正対象ファイル**:
+     - frontend/tests/access_control_tests.rs（4箇所修正）
+     - frontend/tests/type_checker_qualified_name_tests.rs（5箇所修正）
+     - frontend/tests/type_checker_module_tests.rs（6箇所修正）
+     - interpreter/tests/基本テストファイル群の修正
+   - **技術的成果**:
+     - 15箇所のTypeCheckerVisitor::with_program呼び出しの完全修正
+     - 全テストファイルでのコンパイルエラー解消
+     - parser.get_string_interner()を適切に追加してstring_interner引数を提供
+     - テストの一貫性と保守性の向上
+   - **テスト結果**: 
+     - 全252テスト正常実行
+     - コンパイルエラー完全解消
+     - 既存機能への影響なし
+
 78. **AST統合によるモジュール循環参照問題の完全解決** ✅ (2025-08-16完了)
    - **対象**: モジュール統合時のAST破損による"Maximum recursion depth reached"ランタイムエラーの根本解決
    - **解決した問題**:

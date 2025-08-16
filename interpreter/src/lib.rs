@@ -19,15 +19,24 @@ use crate::error_formatter::ErrorFormatter;
 struct AstIntegrationContext<'a> {
     main_program: &'a mut Program,
     module_program: &'a Program,
+    main_string_interner: &'a mut DefaultStringInterner,
+    module_string_interner: &'a DefaultStringInterner,
     expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
     stmt_mapping: HashMap<u32, StmtRef>, // module StmtRef -> main StmtRef
 }
 
 impl<'a> AstIntegrationContext<'a> {
-    fn new(main_program: &'a mut Program, module_program: &'a Program) -> Self {
+    fn new(
+        main_program: &'a mut Program,
+        module_program: &'a Program,
+        main_string_interner: &'a mut DefaultStringInterner,
+        module_string_interner: &'a DefaultStringInterner,
+    ) -> Self {
         Self {
             main_program,
             module_program,
+            main_string_interner,
+            module_string_interner,
             expr_mapping: HashMap::new(),
             stmt_mapping: HashMap::new(),
         }
@@ -43,23 +52,23 @@ impl<'a> AstIntegrationContext<'a> {
             Expr::UInt64(v) => Ok(Expr::UInt64(*v)),
             Expr::Number(symbol) => {
                 // Remap symbol to main program's string interner
-                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                let symbol_str = self.module_string_interner.resolve(*symbol)
                     .ok_or("Cannot resolve Number symbol")?;
-                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
                 Ok(Expr::Number(new_symbol))
             }
             Expr::String(symbol) => {
                 // Remap symbol to main program's string interner  
-                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                let symbol_str = self.module_string_interner.resolve(*symbol)
                     .ok_or("Cannot resolve String symbol")?;
-                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
                 Ok(Expr::String(new_symbol))
             }
             Expr::Identifier(symbol) => {
                 // Remap symbol to main program's string interner
-                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                let symbol_str = self.module_string_interner.resolve(*symbol)
                     .ok_or("Cannot resolve Identifier symbol")?;
-                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
                 Ok(Expr::Identifier(new_symbol))
             }
             Expr::Binary(op, lhs, rhs) => {
@@ -71,9 +80,9 @@ impl<'a> AstIntegrationContext<'a> {
             }
             Expr::Call(symbol, args) => {
                 // Remap function name symbol
-                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                let symbol_str = self.module_string_interner.resolve(*symbol)
                     .ok_or("Cannot resolve Call symbol")?;
-                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
                 
                 // Remap arguments expression reference
                 let new_args = self.expr_mapping.get(&args.0)
@@ -222,9 +231,9 @@ impl<'a> AstIntegrationContext<'a> {
     
     /// Remap a symbol from module to main program's string interner
     fn remap_symbol(&mut self, symbol: DefaultSymbol) -> Result<DefaultSymbol, String> {
-        let symbol_str = self.module_program.string_interner.resolve(symbol)
+        let symbol_str = self.module_string_interner.resolve(symbol)
             .ok_or("Cannot resolve symbol")?;
-        Ok(self.main_program.string_interner.get_or_intern(symbol_str))
+        Ok(self.main_string_interner.get_or_intern(symbol_str))
     }
     
     /// Remap a function with all its symbols and AST references
@@ -366,8 +375,8 @@ impl<'a> AstIntegrationContext<'a> {
 }
 
 /// Common setup for TypeCheckerVisitor with struct and impl registration
-fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
-    // First, collect and register struct definitions in the program's string_interner
+fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
+    // First, collect and register struct definitions
     let mut struct_definitions = Vec::new();
     for stmt_ref in &program.statement.0 {
         if let frontend::ast::Stmt::StructDecl { name, fields, .. } = stmt_ref {
@@ -378,15 +387,18 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     // Register struct names in string_interner and collect symbols
     let mut struct_symbols_and_fields = Vec::new();
     for (name, fields) in struct_definitions {
-        let struct_symbol = program.string_interner.get_or_intern(name);
+        let struct_symbol = string_interner.get_or_intern(name);
         struct_symbols_and_fields.push((struct_symbol, fields));
     }
 
+    // Register all defined functions before creating the type checker
+    let functions_to_register: Vec<_> = program.function.iter().cloned().collect();
+
     // Now create the type checker
-    let mut tc = TypeCheckerVisitor::new(&program.statement, &mut program.expression, &program.string_interner, &program.location_pool);
+    let mut tc = TypeCheckerVisitor::with_program(program, string_interner);
 
     // Register all defined functions
-    program.function.iter().for_each(|f| { tc.add_function(f.clone()) });
+    functions_to_register.iter().for_each(|f| { tc.add_function(f.clone()) });
     
     // Register struct definitions with their symbols
     for (struct_symbol, fields) in struct_symbols_and_fields {
@@ -397,7 +409,7 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
 }
 
 /// Setup TypeCheckerVisitor with module resolution support
-fn setup_type_checker_with_modules(program: &mut Program) -> Result<TypeCheckerVisitor, Vec<String>> {
+fn setup_type_checker_with_modules<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> Result<TypeCheckerVisitor<'a>, Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
     
     // Clone imports before creating TypeChecker to avoid borrowing conflicts
@@ -409,7 +421,7 @@ fn setup_type_checker_with_modules(program: &mut Program) -> Result<TypeCheckerV
         
         // Load and integrate each imported module
         for import in &imports {
-            if let Err(err) = load_and_integrate_module(program, import) {
+            if let Err(err) = load_and_integrate_module(program, import, string_interner) {
                 errors.push(format!("Module integration error: {}", err));
             }
         }
@@ -420,18 +432,18 @@ fn setup_type_checker_with_modules(program: &mut Program) -> Result<TypeCheckerV
         }
         
         // Create TypeChecker with integrated modules
-        Ok(setup_type_checker(program))
+        Ok(setup_type_checker(program, string_interner))
     } else {
         // No imports, use standard setup
-        Ok(setup_type_checker(program))
+        Ok(setup_type_checker(program, string_interner))
     }
 }
 
 /// Load and integrate a module directly into the main program before TypeChecker creation
-fn load_and_integrate_module(program: &mut Program, import: &ImportDecl) -> Result<(), String> {
+fn load_and_integrate_module(program: &mut Program, import: &ImportDecl, string_interner: &mut DefaultStringInterner) -> Result<(), String> {
     // Simple module resolution: look for module files in modules/ directory
     let module_name = import.module_path.first()
-        .and_then(|&symbol| program.string_interner.resolve(symbol))
+        .and_then(|&symbol| string_interner.resolve(symbol))
         .ok_or("Invalid module path")?;
     
     // Construct module file path
@@ -444,7 +456,7 @@ fn load_and_integrate_module(program: &mut Program, import: &ImportDecl) -> Resu
             eprintln!("Successfully read module file");
             
             // Parse module and integrate into main program
-            integrate_module_into_program(&source, program)?;
+            integrate_module_into_program(&source, program, string_interner)?;
             
             Ok(())
         }
@@ -453,7 +465,11 @@ fn load_and_integrate_module(program: &mut Program, import: &ImportDecl) -> Resu
 }
 
 /// Integrate module into main program using comprehensive AST deep-copy
-pub fn integrate_module_into_program(source: &str, main_program: &mut Program) -> Result<(), String> {
+pub fn integrate_module_into_program(
+    source: &str, 
+    main_program: &mut Program, 
+    main_string_interner: &mut DefaultStringInterner
+) -> Result<(), String> {
     eprintln!("Starting AST-based module integration...");
     
     // Parse the module with its own interner
@@ -461,21 +477,29 @@ pub fn integrate_module_into_program(source: &str, main_program: &mut Program) -
     let module_program = parser.parse_program()
         .map_err(|e| format!("Parse error in module: {}", e))?;
     
+    // Get the module's string interner
+    let module_string_interner = parser.get_string_interner();
+    
     eprintln!("Successfully parsed module: {} functions, {} expressions, {} statements", 
         module_program.function.len(),
         module_program.expression.0.len(),
         module_program.statement.0.len()
     );
     
-    // Create AST integration context
-    let mut integration_context = AstIntegrationContext::new(main_program, &module_program);
+    // Create AST integration context with both string interners
+    let mut integration_context = AstIntegrationContext::new(
+        main_program, 
+        &module_program,
+        main_string_interner,
+        module_string_interner
+    );
     
     // Perform complete AST integration
     let integrated_functions = integration_context.integrate()?;
     
     // Add integrated functions to main program
     for function in integrated_functions {
-        let func_name = main_program.string_interner.resolve(function.name).unwrap_or("<unknown>");
+        let func_name = main_string_interner.resolve(function.name).unwrap_or("<unknown>");
         eprintln!("Successfully integrated function: {}", func_name);
         main_program.function.push(function);
     }
@@ -506,12 +530,19 @@ fn process_impl_blocks_extracted(
     errors
 }
 
-pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: Option<&str>) -> Result<(), Vec<String>> {
+pub fn check_typing(
+    program: &mut Program, 
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>, 
+    filename: Option<&str>
+) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
+    
+    // Clone string_interner for later use
+    let string_interner_for_names = string_interner.clone();
     
     // Extract data before setting up TypeChecker to avoid borrowing conflicts
     let functions = program.function.clone();
-    let string_interner = program.string_interner.clone();
     let mut impl_blocks = Vec::new();
     for stmt_ref in &program.statement.0 {
         if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
@@ -520,7 +551,7 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
     }
     
     // Setup TypeChecker with module resolution support
-    let mut tc = match setup_type_checker_with_modules(program) {
+    let mut tc = match setup_type_checker_with_modules(program, string_interner) {
         Ok(tc) => tc,
         Err(module_errors) => {
             errors.extend(module_errors);
@@ -540,7 +571,7 @@ pub fn check_typing(program: &mut Program, source_code: Option<&str>, filename: 
 
     // Process functions
     functions.iter().for_each(|func| {
-        let name = string_interner.resolve(func.name).unwrap_or("<NOT_FOUND>");
+        let name = string_interner_for_names.resolve(func.name).unwrap_or("<NOT_FOUND>");
         // Commented out for performance benchmarking
         // println!("Checking function {}", name);
         let r = tc.type_check(func.clone());
@@ -595,8 +626,8 @@ fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
     (line, column)
 }
 
-fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterError> {
-    let main_id = program.string_interner.get("main")
+fn find_main_function(program: &Program, string_interner: &DefaultStringInterner) -> Result<Rc<Function>, InterpreterError> {
+    let main_id = string_interner.get("main")
         .ok_or_else(|| InterpreterError::FunctionNotFound("main function symbol not found".to_string()))?;
     
     for func in &program.function {
@@ -608,13 +639,13 @@ fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterErro
     Err(InterpreterError::FunctionNotFound("main".to_string()))
 }
 
-fn build_function_map(program: &Program) -> HashMap<DefaultSymbol, Rc<Function>> {
+fn build_function_map(program: &Program, string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
     let mut func_map = HashMap::new();
     for f in &program.function {
-        let func_name = program.string_interner.resolve(f.name).unwrap_or("<unknown>");
+        let func_name = string_interner.resolve(f.name).unwrap_or("<unknown>");
         eprintln!("DEBUG: build_function_map: Adding function '{}' with symbol {:?}", func_name, f.name);
         if let Some(existing) = func_map.insert(f.name, f.clone()) {
-            let existing_name = program.string_interner.resolve(existing.name).unwrap_or("<unknown>");
+            let existing_name = string_interner.resolve(existing.name).unwrap_or("<unknown>");
             eprintln!("DEBUG: WARNING: Function '{}' was overwritten! Previous function: '{}'", func_name, existing_name);
         }
     }
@@ -672,20 +703,20 @@ fn register_methods(
     }
 }
 
-pub fn execute_program(program: &Program, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
-    let main_function = match find_main_function(program) {
+pub fn execute_program(program: &Program, string_interner: &DefaultStringInterner, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
+    let main_function = match find_main_function(program, string_interner) {
         Ok(func) => func,
         Err(e) => return Err(format!("Runtime Error: {e}")),
     };
     
-    let func_map = build_function_map(program);
-    let mut string_interner = program.string_interner.clone();
-    let method_registry = build_method_registry(program, &mut string_interner);
+    let func_map = build_function_map(program, string_interner);
+    let mut string_interner_mut = string_interner.clone();
+    let method_registry = build_method_registry(program, &mut string_interner_mut);
     
     let mut eval = EvaluationContext::new(
         &program.statement, 
         &program.expression, 
-        &mut string_interner, 
+        &mut string_interner_mut, 
         func_map
     );
     

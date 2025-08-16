@@ -3,7 +3,7 @@ use std::rc::Rc;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::*;
 use crate::type_decl::*;
-use crate::visitor::AstVisitor;
+use crate::visitor::{AstVisitor, ProgramVisitor};
 
 // Import new modular structure
 pub mod core;
@@ -27,8 +27,8 @@ mod literal_checker;
 
 // Struct definitions moved to separate modules
 
-pub struct TypeCheckerVisitor <'a, 'b> {
-    pub core: CoreReferences<'a, 'b>,
+pub struct TypeCheckerVisitor <'a, 'b, 'c> {
+    pub core: CoreReferences<'a, 'b, 'c>,
     pub context: TypeCheckContext,
     pub type_inference: TypeInferenceState,
     pub function_checking: FunctionCheckingState,
@@ -40,15 +40,35 @@ pub struct TypeCheckerVisitor <'a, 'b> {
 
 
 
-impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
-            core: CoreReferences {
+            core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
+            context: TypeCheckContext::new(),
+            type_inference: TypeInferenceState::new(),
+            function_checking: FunctionCheckingState::new(),
+            optimization: PerformanceOptimization::new(),
+            errors: Vec::new(),
+            source_code: None,
+        }
+    }
+    
+    /// Create a TypeCheckerVisitor with module resolver for import handling
+    pub fn with_module_resolver(
+        stmt_pool: &'a StmtPool,
+        expr_pool: &'b mut ExprPool,
+        string_interner: &'a DefaultStringInterner,
+        location_pool: &'a LocationPool,
+        module_resolver: &'c mut crate::ModuleResolver,
+    ) -> Self {
+        Self {
+            core: CoreReferences::with_module_resolver(
                 stmt_pool,
                 expr_pool,
                 string_interner,
                 location_pool,
-            },
+                module_resolver,
+            ),
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
@@ -301,13 +321,49 @@ impl Acceptable for Stmt {
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, fields } => visitor.visit_struct_decl(name, fields),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
-            Stmt::Package(package_decl) => visitor.visit_package(package_decl),
-            Stmt::Import(import_decl) => visitor.visit_import(import_decl),
         }
     }
 }
 
-impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> ProgramVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
+    fn visit_program(&mut self, program: &Program) -> Result<(), TypeCheckError> {
+        // Process package declaration if present
+        if let Some(package_decl) = &program.package_decl {
+            self.visit_package(package_decl)?;
+        }
+        
+        // Process all import declarations
+        for import_decl in &program.imports {
+            self.visit_import(import_decl)?;
+        }
+        
+        Ok(())
+    }
+    
+    fn visit_package(&mut self, _package_decl: &PackageDecl) -> Result<(), TypeCheckError> {
+        // For now, package declarations are just recorded
+        // TODO: Implement package validation and namespace management
+        Ok(())
+    }
+    
+    fn visit_import(&mut self, import_decl: &ImportDecl) -> Result<(), TypeCheckError> {
+        // For now, just record the import declaration
+        // Module resolution will be handled at a higher level (e.g., in CompilerSession)
+        // TODO: Implement proper module resolution integration
+        // This approach avoids unsafe pointer casting and maintains type safety
+        
+        // We can validate the import syntax here
+        if import_decl.module_path.is_empty() {
+            return Err(TypeCheckError::generic_error("Import path cannot be empty"));
+        }
+        
+        // Record the import for later processing
+        // The actual module resolution should happen before type checking
+        Ok(())
+    }
+}
+
+impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     // =========================================================================
     // Core Visitor Methods
     // =========================================================================
@@ -964,17 +1020,6 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
         Ok(TypeDecl::Unit)
     }
     
-    fn visit_package(&mut self, _package_decl: &crate::ast::PackageDecl) -> Result<TypeDecl, TypeCheckError> {
-        // For now, package declarations are just recorded and don't produce a type
-        // TODO: Implement package validation and namespace management
-        Ok(TypeDecl::Unit)
-    }
-    
-    fn visit_import(&mut self, _import_decl: &crate::ast::ImportDecl) -> Result<TypeDecl, TypeCheckError> {
-        // For now, import declarations are just recorded and don't produce a type
-        // TODO: Implement module resolution and import validation
-        Ok(TypeDecl::Unit)
-    }
 
     fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         // Check recursion depth to prevent stack overflow
@@ -1121,7 +1166,7 @@ impl<'a, 'b> AstVisitor for TypeCheckerVisitor<'a, 'b> {
     }
 }
 
-impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Save the original type hint to restore later
         let original_hint = self.type_inference.type_hint.clone();
@@ -1325,12 +1370,12 @@ impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
 }
 
 // Core trait implementations
-impl<'a, 'b> TypeCheckerCore<'a, 'b> for TypeCheckerVisitor<'a, 'b> {
-    fn get_core_refs(&self) -> &CoreReferences<'a, 'b> {
+impl<'a, 'b, 'c> TypeCheckerCore<'a, 'b, 'c> for TypeCheckerVisitor<'a, 'b, 'c> {
+    fn get_core_refs(&self) -> &CoreReferences<'a, 'b, 'c> {
         &self.core
     }
     
-    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a, 'b> {
+    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a, 'b, 'c> {
         &mut self.core
     }
     
@@ -1351,7 +1396,7 @@ impl<'a, 'b> TypeCheckerCore<'a, 'b> for TypeCheckerVisitor<'a, 'b> {
     }
 }
 
-impl<'a, 'b> TypeInferenceManager for TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> TypeInferenceManager for TypeCheckerVisitor<'a, 'b, 'c> {
     fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
         self.optimization.type_cache.get(expr_ref)
     }
@@ -1403,7 +1448,7 @@ impl<'a, 'b> TypeInferenceManager for TypeCheckerVisitor<'a, 'b> {
     }
 }
 
-impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     /// Updates variable-expression mapping for type inference (internal implementation)
     fn update_variable_expr_mapping_internal(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
         if *expr_ty == TypeDecl::Number || (*expr_ty != TypeDecl::Number && self.has_number_in_expr(expr_ref)) {
@@ -1770,7 +1815,7 @@ mod tests {
         expr_pool: &'a mut ExprPool, 
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool
-    ) -> TypeCheckerVisitor<'a, 'a> {
+    ) -> TypeCheckerVisitor<'a, 'a, 'a> {
         TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner, location_pool)
     }
 
@@ -2312,7 +2357,7 @@ mod tests {
     }
 }
 
-impl<'a, 'b> TypeCheckerVisitor<'a, 'b> {
+impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     /// Add error to collection without returning immediately
     pub fn collect_error(&mut self, error: TypeCheckError) {
         self.errors.push(error);

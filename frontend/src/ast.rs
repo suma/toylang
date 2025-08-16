@@ -478,7 +478,7 @@ impl AstBuilder {
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Program {
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
@@ -564,8 +564,6 @@ pub enum Stmt {
     Continue,
     For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
-    Package(PackageDecl),
-    Import(ImportDecl),
     StructDecl {
         name: String,
         fields: Vec<StructField>,

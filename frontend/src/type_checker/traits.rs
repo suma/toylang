@@ -65,9 +65,9 @@ pub trait TypeInferenceManager {
 }
 
 /// Trait providing core functionality for TypeCheckerVisitor
-pub trait TypeCheckerCore<'a, 'b> {
-    fn get_core_refs(&self) -> &CoreReferences<'a, 'b>;
-    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a, 'b>;
+pub trait TypeCheckerCore<'a, 'b, 'c> {
+    fn get_core_refs(&self) -> &CoreReferences<'a, 'b, 'c>;
+    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a, 'b, 'c>;
     fn get_context(&self) -> &TypeCheckContext;
     fn get_context_mut(&mut self) -> &mut TypeCheckContext;
     fn get_type_inference(&self) -> &TypeInferenceState;

@@ -15,6 +15,7 @@ pub struct ResolvedModule {
 }
 
 /// Module resolver for handling import statements and file discovery
+#[derive(Debug)]
 pub struct ModuleResolver {
     /// Cache of already loaded modules (path -> module)
     loaded_modules: HashMap<Vec<DefaultSymbol>, ResolvedModule>,

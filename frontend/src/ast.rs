@@ -464,8 +464,8 @@ impl AstBuilder {
         stmt_ref
     }
     
-    pub fn struct_decl_stmt(&mut self, name: String, fields: Vec<StructField>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, fields });
+    pub fn struct_decl_stmt(&mut self, name: String, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, fields, visibility });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
@@ -509,6 +509,7 @@ pub struct Function {
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,
+    pub visibility: Visibility,
 }
 
 pub type Parameter = (DefaultSymbol, TypeDecl);
@@ -567,6 +568,7 @@ pub enum Stmt {
     StructDecl {
         name: String,
         fields: Vec<StructField>,
+        visibility: Visibility,
     },
     ImplBlock {
         target_type: String,

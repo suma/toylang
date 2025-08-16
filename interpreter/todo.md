@@ -2,6 +2,33 @@
 
 ## 完了済み ✅
 
+74. **Go-style Module System Phase 2: Visibility Control and Access Management** ✅ (2025-08-16 completed)
+   - **Target**: Implement pub/private visibility control for functions and structs
+   - **Implementation**:
+     - Added `visibility: Visibility` field to `Function` struct in ast.rs
+     - Added `visibility: Visibility` field to `Stmt::StructDecl` in ast.rs
+     - Enhanced parser to recognize `pub` keyword and parse visibility modifiers
+     - Implemented `pub fn`/`fn` (private) function declaration parsing
+     - Implemented `pub struct`/`struct` (private) struct declaration parsing
+     - Added comprehensive error handling for invalid `pub` usage
+   - **Test Suite**:
+     - Created visibility_tests.rs with 6 comprehensive test cases
+     - Test private/public function parsing and verification
+     - Test private/public struct parsing and verification
+     - Test mixed visibility scenarios (public and private in same program)
+     - Test error handling for `pub` without declaration
+     - All 6 visibility tests pass successfully
+   - **Technical Achievements**: 
+     - Complete Go-style visibility control implementation
+     - Parser correctly handles `pub` keyword in all supported contexts
+     - Proper error messages for unsupported `pub` usage
+     - Foundation for access control enforcement in type checker
+     - Phase 2 of 4-phase module system successfully completed
+   - **Test Results**: 
+     - Frontend: 213 tests successful (including new visibility tests)
+     - Interpreter: 31 tests successful 
+     - Total: 244 tests passing, new functionality fully verified
+
 73. **Go-style Module System Phase 4: Runtime Support** ✅ (2025-08-16 completed)
    - **Target**: Runtime integration of Phase 1-3 completed module system
    - **Implementation**:

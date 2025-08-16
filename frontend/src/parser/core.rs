@@ -358,6 +358,14 @@ impl<'a> Parser<'a> {
         }
 
         loop {
+            // Check for visibility modifier first
+            let visibility = if matches!(self.peek(), Some(Kind::Public)) {
+                self.next(); // consume 'pub'
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
+            
             match self.peek() {
                 Some(Kind::Function) => {
                     let fn_start_pos = self.peek_position_n(0).unwrap().start;
@@ -391,6 +399,7 @@ impl<'a> Parser<'a> {
                                 parameter: params,
                                 return_type: ret_ty,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
+                                visibility,
                             }));
                         }
                         _ => {
@@ -414,7 +423,7 @@ impl<'a> Parser<'a> {
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
                             
-                            self.ast_builder.struct_decl_stmt(struct_name, fields, Some(location));
+                            self.ast_builder.struct_decl_stmt(struct_name, fields, visibility, Some(location));
                         }
                         _ => {
                             self.collect_error("expected struct name");
@@ -448,9 +457,26 @@ impl<'a> Parser<'a> {
                 Some(Kind::NewLine) => {
                     self.next()
                 }
-                None | Some(Kind::EOF) => break,
+                None | Some(Kind::EOF) => {
+                    // Check if 'pub' was used without any declaration
+                    if matches!(visibility, Visibility::Public) {
+                        self.collect_error("'pub' keyword must be followed by a function or struct declaration");
+                    }
+                    break;
+                }
                 x => {
                     let x_cloned = x.cloned();
+                    // Check if 'pub' was used with unsupported elements
+                    if matches!(visibility, Visibility::Public) {
+                        match &x_cloned {
+                            Some(Kind::Impl) => {
+                                self.collect_error("'pub' is not yet supported for impl blocks");
+                            }
+                            _ => {
+                                self.collect_error("'pub' can only be used with function and struct declarations");
+                            }
+                        }
+                    }
                     self.collect_error(&format!("unexpected token: {:?}", x_cloned));
                     self.next(); // Skip invalid token and continue
                 }

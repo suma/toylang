@@ -601,7 +601,7 @@ mod parser_tests {
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
         match program.statement.get(0).unwrap() {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
                 
@@ -628,7 +628,7 @@ mod parser_tests {
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
         match program.statement.get(0).unwrap() {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Person", name);
                 assert_eq!(2, fields.len());
                 
@@ -655,7 +655,7 @@ mod parser_tests {
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
         match program.statement.get(0).unwrap() {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Empty", name);
                 assert_eq!(0, fields.len());
             }
@@ -674,7 +674,7 @@ mod parser_tests {
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
         match program.statement.get(0).unwrap() {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
                 assert_eq!("x", fields[0].name);
@@ -696,7 +696,7 @@ mod parser_tests {
         assert_eq!(1, program.function.len(), "should have one function");
         
         match program.statement.get(0).unwrap() {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
             }
@@ -813,7 +813,7 @@ mod parser_tests {
         }).expect("Should have impl block");
         
         match struct_stmt {
-            Stmt::StructDecl { name, fields } => {
+            Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
             }

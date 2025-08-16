@@ -20,7 +20,7 @@ fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     // First, collect and register struct definitions in the program's string_interner
     let mut struct_definitions = Vec::new();
     for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields } = stmt_ref {
+        if let frontend::ast::Stmt::StructDecl { name, fields, .. } = stmt_ref {
             struct_definitions.push((name.clone(), fields.clone()));
         }
     }

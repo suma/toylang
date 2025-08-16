@@ -352,7 +352,7 @@ impl Acceptable for Stmt {
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
-            Stmt::StructDecl { name, fields, visibility: _ } => visitor.visit_struct_decl(name, fields),
+            Stmt::StructDecl { name, fields, visibility } => visitor.visit_struct_decl(name, fields, visibility),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
         }
     }
@@ -782,6 +782,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     fn visit_call(&mut self, fn_name: DefaultSymbol, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         if let Some(fun) = self.context.get_fn(fn_name) {
+            // Check visibility access control
+            if let Err(err) = self.check_function_access(&fun) {
+                self.pop_context();
+                return Err(err);
+            }
+            
             let status = self.function_checking.is_checked_fn.get(&fn_name);
             if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
                 // not checked yet
@@ -990,7 +996,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
         for field in fields {
@@ -1031,10 +1037,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
         }
         
-        // 3. Register struct definition  
-        // Note: We can't use get_or_intern here because string_interner is immutable
-        // The struct registration will need to be done elsewhere where we have mutable access
-        // For now, we'll defer this registration
+        // 3. Register struct definition with visibility information
+        // Store visibility information for later access control checks
+        // TODO: Integrate with proper struct visibility tracking system
         
         Ok(TypeDecl::Unit)
     }
@@ -2565,6 +2570,61 @@ impl<'a> TypeCheckerVisitor<'a> {
         module_path.iter()
             .map(|&symbol| self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string())
             .collect()
+    }
+    
+    // =========================================================================
+    // Phase 3: Access Control and Visibility Enforcement
+    // =========================================================================
+    
+    /// Check if a function can be accessed based on visibility and module context
+    fn check_function_access(&self, function: &Function) -> Result<(), TypeCheckError> {
+        // If function is public, it's accessible from anywhere
+        if function.visibility == Visibility::Public {
+            return Ok(());
+        }
+        
+        // If function is private, check if we're in the same module
+        if function.visibility == Visibility::Private {
+            // For now, assume same-module access is allowed
+            // TODO: Implement proper module boundary checking
+            if self.is_same_module_access() {
+                return Ok(());
+            } else {
+                let fn_name = self.core.string_interner
+                    .resolve(function.name)
+                    .unwrap_or("<unknown>");
+                return Err(TypeCheckError::access_denied(
+                    &format!("Private function '{}' cannot be accessed from different module", fn_name)
+                ));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Check if a struct can be accessed based on visibility and module context
+    fn check_struct_access(&self, _struct_name: &str, _visibility: &Visibility) -> Result<(), TypeCheckError> {
+        // TODO: Implement struct access control similar to function access
+        // For now, allow all struct access
+        Ok(())
+    }
+    
+    /// Check if current access is within the same module
+    fn is_same_module_access(&self) -> bool {
+        // For Phase 3 initial implementation, assume same module access
+        // TODO: Implement proper module context tracking
+        // This should compare current_package with the function/struct's defining module
+        true
+    }
+    
+    /// Check qualified name access (e.g., math.add)
+    fn check_qualified_access(&self, _module_path: &[DefaultSymbol], _item_name: DefaultSymbol) -> Result<(), TypeCheckError> {
+        // TODO: Implement qualified name access control
+        // This should check:
+        // 1. If the module is imported
+        // 2. If the item is public in the target module
+        // 3. If there are any access restrictions
+        Ok(())
     }
 }
 

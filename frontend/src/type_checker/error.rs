@@ -50,6 +50,7 @@ pub enum TypeCheckErrorKind {
     ArrayError { message: String },
     MethodError(Box<MethodErrorData>),
     InvalidLiteral { value: String, expected_type: String },
+    AccessDenied { message: String },
     GenericError { message: String },
 }
 
@@ -161,6 +162,16 @@ impl TypeCheckError {
         }
     }
 
+    pub fn access_denied(message: &str) -> Self {
+        Self {
+            kind: TypeCheckErrorKind::AccessDenied {
+                message: message.to_string(),
+            },
+            context: None,
+            location: None,
+        }
+    }
+
     pub fn generic_error(message: &str) -> Self {
         Self {
             kind: TypeCheckErrorKind::GenericError {
@@ -212,6 +223,9 @@ impl std::fmt::Display for TypeCheckError {
             }
             TypeCheckErrorKind::InvalidLiteral { value, expected_type } => {
                 format!("Invalid {} literal: '{}'", expected_type, value)
+            }
+            TypeCheckErrorKind::AccessDenied { message } => {
+                format!("Access denied: {}", message)
             }
             TypeCheckErrorKind::GenericError { message } => {
                 message.clone()

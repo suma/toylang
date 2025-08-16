@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod multiple_errors_tests {
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
     use frontend::type_checker::TypeCheckerVisitor;
     
     #[test]
@@ -20,7 +20,7 @@ struct MissingBrace {
 // missing closing brace
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program_multiple_errors();
         
         // エラーが複数収集されることを確認
@@ -51,7 +51,7 @@ fn another_function() -> bool {
 }
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program();
         
         // パースは成功することを確認
@@ -98,7 +98,7 @@ fn simple_function() -> u64 {
 }
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program_multiple_errors();
         
         // パースにエラーがないことを確認
@@ -139,7 +139,7 @@ fn parser_error_function(missing_type) -> u64 {
 }
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program_multiple_errors();
         
         // パースエラーが存在することを確認
@@ -182,7 +182,7 @@ struct MissingBrace {
     field: u64
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program_multiple_errors();
         
         // Verify that multiple types of errors are collected
@@ -209,7 +209,7 @@ fn test_func(param: u64) {
     // missing closing brace
 "#;
         
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program_multiple_errors();
         
         // Debug: print all errors found

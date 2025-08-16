@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod boundary_tests {
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
 
     // Helper function for parser-only testing
     fn parse_program_only(input: &str) -> Result<(), String> {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         match parser.parse_program() {
             Ok(_) => Ok(()),
             Err(errors) => Err(format!("Parse error: {:?}", errors))

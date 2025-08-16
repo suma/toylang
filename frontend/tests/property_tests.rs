@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod property_tests {
     use proptest::prelude::*;
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
 
     // Helper to parse program
     fn parse_program(input: &str) -> Result<(), String> {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         match parser.parse_program() {
             Ok(_) => Ok(()),
             Err(errors) => Err(format!("{:?}", errors))

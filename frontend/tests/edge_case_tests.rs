@@ -1,10 +1,10 @@
 #[cfg(test)]
 mod edge_case_tests {
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
 
     // Test helper function for parser-only tests
     fn parse_program(input: &str) -> Result<(), String> {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         
         match result {

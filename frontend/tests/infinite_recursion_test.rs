@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod infinite_recursion_tests {
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
 
     #[test]
     fn test_malformed_struct_fields() {
         // Test malformed struct fields that might cause infinite recursion
         let input = "struct Test { a:, b:, c:, d:, e:, f:, g:, h:, i:, j:, k:, l:, m:, n:, o:, p: } fn main() -> i64 { 0i64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         // Should not hang or stack overflow
         assert!(result.is_ok() || result.is_err(), "Parser should handle malformed fields");
@@ -23,7 +23,7 @@ mod infinite_recursion_tests {
             fields.push_str(&format!("field{}: i64", i));
         }
         let input = format!("struct Test {{ {} }} fn main() -> i64 {{ 0i64 }}", fields);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Parser should handle many struct fields");
     }
@@ -36,7 +36,7 @@ mod infinite_recursion_tests {
             methods.push_str(&format!("fn method{}(&self) -> i64 {{ 0i64 }} ", i));
         }
         let input = format!("struct Test {{ x: i64 }} impl Test {{ {} }} fn main() -> i64 {{ 0i64 }}", methods);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Parser should handle many impl methods");
     }
@@ -49,7 +49,7 @@ mod infinite_recursion_tests {
             array = format!("[{}]", array);
         }
         let input = format!("fn main() -> i64 {{ val a = {}\n 0i64 }}", array);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok() || result.is_err(), "Parser should handle deeply nested arrays");
     }
@@ -65,7 +65,7 @@ mod infinite_recursion_tests {
                 0i64
             }
         "#;
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Parser should handle nested struct literals");
     }
@@ -74,7 +74,7 @@ mod infinite_recursion_tests {
     fn test_malformed_impl_methods() {
         // Test malformed impl methods that might cause issues
         let input = "struct Test { x: i64 } impl Test { fn fn fn fn fn } fn main() -> i64 { 0i64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         // Should not hang or stack overflow
         assert!(result.is_ok() || result.is_err(), "Parser should handle malformed methods");
@@ -91,7 +91,7 @@ mod infinite_recursion_tests {
             params.push_str(&format!("p{}: i64", i));
         }
         let input = format!("fn test({}) -> i64 {{ 0i64 }} fn main() -> i64 {{ test(0i64) }}", params);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Parser should handle many function parameters");
     }
@@ -107,7 +107,7 @@ mod infinite_recursion_tests {
             args.push_str(&format!("{}i64", i));
         }
         let input = format!("fn test() -> i64 {{ 0i64 }} fn main() -> i64 {{ test({}) }}", args);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         // Should handle gracefully even if it fails due to parameter mismatch
         assert!(result.is_ok() || result.is_err(), "Parser should handle many arguments");
@@ -117,7 +117,7 @@ mod infinite_recursion_tests {
     fn test_malformed_parameters() {
         // Test malformed parameters that might cause infinite recursion
         let input = "fn test(a: , b: , c: , d: , e: , f: ) -> i64 { 0i64 } fn main() -> i64 { 0i64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         // Should not hang or stack overflow
         assert!(result.is_ok() || result.is_err(), "Parser should handle malformed parameters");
@@ -127,7 +127,7 @@ mod infinite_recursion_tests {
     fn test_malformed_arguments() {
         // Test malformed function arguments
         let input = "fn test() -> i64 { 0i64 } fn main() -> i64 { test(,,,,,) }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         // Should not hang or stack overflow
         assert!(result.is_ok() || result.is_err(), "Parser should handle malformed arguments");
@@ -144,7 +144,7 @@ mod infinite_recursion_tests {
             fields.push_str(&format!("f{}: i64", i));
         }
         let input = format!("struct Test {{ {} }} fn main() -> i64 {{ 0i64 }}", fields);
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_program();
         assert!(result.is_ok() || result.is_err(), "Parser should handle extreme fields");
     }

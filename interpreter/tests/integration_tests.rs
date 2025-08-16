@@ -7,7 +7,7 @@ mod integration_tests {
 
     #[test]
     fn test_simple_program() {
-        let mut parser = frontend::Parser::new(r"
+        let mut parser = frontend::ParserWithInterner::new(r"
         fn main() -> u64 {
             val a = 1u64
             val b = 2u64

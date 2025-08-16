@@ -4,7 +4,7 @@ use interpreter::object::Object;
 
 /// Test helper function to parse, type-check and execute a program
 pub fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
-    let mut parser = frontend::Parser::new(source_code);
+    let mut parser = frontend::ParserWithInterner::new(source_code);
     let mut program = parser.parse_program()
         .map_err(|e| format!("Parse error: {e:?}"))?;
     

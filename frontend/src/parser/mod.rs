@@ -8,5 +8,5 @@ pub mod token_source;
 pub mod tests;
 pub mod error;
 
-pub use core::Parser;
+pub use core::{Parser, ParserWithInterner};
 pub use error::{ParserError, ParserResult, MultipleParserResult};

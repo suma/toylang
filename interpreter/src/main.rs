@@ -4,7 +4,7 @@ use interpreter::error_formatter::ErrorFormatter;
 
 /// Parse the source file and handle parse errors
 fn handle_parsing(source: &str, filename: &str) -> Result<frontend::ast::Program, ()> {
-    let mut parser = frontend::Parser::new(source);
+    let mut parser = frontend::ParserWithInterner::new(source);
     let program = parser.parse_program();
     let formatter = ErrorFormatter::new(source, filename);
     

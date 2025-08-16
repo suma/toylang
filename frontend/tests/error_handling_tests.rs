@@ -1,17 +1,17 @@
 #[cfg(test)]
 mod error_handling_tests {
-    use frontend::Parser;
+    use frontend::ParserWithInterner;
 
     // Helper function to parse and expect error
     fn expect_parse_error(input: &str, _expected_error_pattern: &str) {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_err(), "Expected parse error for: {}", input);
     }
 
     // Helper function to expect successful parsing (for syntax-only tests)
     fn expect_parse_success(input: &str) {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Expected successful parse for: {}", input);
     }
@@ -77,7 +77,7 @@ mod error_handling_tests {
     fn test_division_by_zero_literal() {
         // This should parse but might be caught at type checking or runtime
         let input = "fn main() -> i64 { 1i64 / 0i64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "Division by zero should parse (error at runtime)");
     }

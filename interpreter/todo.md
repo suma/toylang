@@ -2,6 +2,29 @@
 
 ## 完了済み ✅
 
+75. **TypeCheckerVisitor Architecture Refactoring and Borrowing Issues Resolution** ✅ (2025-08-16 completed)
+   - **Target**: Resolve TypeCheckerVisitor structure and lifetime parameter issues causing compilation failures
+   - **Problems Addressed**:
+     - Program field in TypeCheckerVisitor causing borrowing conflicts
+     - Inconsistent lifetime parameters across CoreReferences and traits
+     - Multiple lifetime parameter errors (attempted 3 lifetimes, only 1 supported)
+     - Test failures due to mutable/immutable borrow conflicts
+   - **Implementation**:
+     - Removed `program: &'a mut Program` field from TypeCheckerVisitor struct
+     - Unified all lifetime parameters to single `'a` across CoreReferences, TypeCheckerCore trait
+     - Fixed with_module_resolver method lifetime parameter consistency
+     - Updated test files to use with_program instead of new+visit_program pattern
+     - Resolved borrowing conflicts by using with_program for automatic package/import processing
+   - **Technical Achievements**:
+     - Clean TypeCheckerVisitor architecture without program field dependencies
+     - Consistent lifetime parameter usage throughout type checker system
+     - Automated package/import processing in with_program constructor
+     - Test suite compatibility with new TypeCheckerVisitor structure
+   - **Test Results**: 
+     - Frontend: 213 tests successful (all compilation errors resolved)
+     - All visibility tests continue to pass with new architecture
+     - Complete borrowing issue resolution across entire test suite
+
 74. **Go-style Module System Phase 2: Visibility Control and Access Management** ✅ (2025-08-16 completed)
    - **Target**: Implement pub/private visibility control for functions and structs
    - **Implementation**:

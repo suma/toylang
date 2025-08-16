@@ -4,6 +4,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::{AstVisitor, ProgramVisitor};
+use crate::module_resolver::ModuleResolver;
 
 // Import new modular structure
 pub mod core;
@@ -27,21 +28,55 @@ mod literal_checker;
 
 // Struct definitions moved to separate modules
 
-pub struct TypeCheckerVisitor <'a, 'b, 'c> {
-    pub core: CoreReferences<'a, 'b, 'c>,
+pub struct TypeCheckerVisitor<'a> {
+    pub core: CoreReferences<'a>,
     pub context: TypeCheckContext,
     pub type_inference: TypeInferenceState,
     pub function_checking: FunctionCheckingState,
     pub optimization: PerformanceOptimization,
     pub errors: Vec<TypeCheckError>,
     pub source_code: Option<&'a str>,
+    // Module system support
+    pub current_package: Option<Vec<DefaultSymbol>>,
+    pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
 }
 
 
 
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'b mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
+impl<'a> TypeCheckerVisitor<'a> {
+    /// Create a TypeCheckerVisitor with program - processes package and imports automatically
+    pub fn with_program(program: &'a mut Program) -> Self {
+        // Clone package and imports to avoid borrowing conflicts
+        let package_decl = program.package_decl.clone();
+        let imports = program.imports.clone();
+        
+        let mut visitor = Self {
+            core: CoreReferences::from_program(program),
+            context: TypeCheckContext::new(),
+            type_inference: TypeInferenceState::new(),
+            function_checking: FunctionCheckingState::new(),
+            optimization: PerformanceOptimization::new(),
+            errors: Vec::new(),
+            source_code: None,
+            current_package: None,
+            imported_modules: HashMap::new(),
+        };
+        
+        // Process package and imports immediately
+        if let Some(ref package_decl) = package_decl {
+            let _ = visitor.visit_package(package_decl);
+        }
+        
+        for import_decl in &imports {
+            let _ = visitor.visit_import(&import_decl);
+        }
+        
+        visitor
+    }
+
+    // Keep the old API for backward compatibility
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
             context: TypeCheckContext::new(),
@@ -50,31 +85,29 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
             source_code: None,
+            current_package: None,
+            imported_modules: HashMap::new(),
         }
     }
     
     /// Create a TypeCheckerVisitor with module resolver for import handling
     pub fn with_module_resolver(
         stmt_pool: &'a StmtPool,
-        expr_pool: &'b mut ExprPool,
+        expr_pool: &'a mut ExprPool,
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool,
-        module_resolver: &'c mut crate::ModuleResolver,
+        module_resolver: &'a mut ModuleResolver,
     ) -> Self {
         Self {
-            core: CoreReferences::with_module_resolver(
-                stmt_pool,
-                expr_pool,
-                string_interner,
-                location_pool,
-                module_resolver,
-            ),
+            core: CoreReferences::with_module_resolver(stmt_pool, expr_pool, string_interner, location_pool, module_resolver),
             context: TypeCheckContext::new(),
             type_inference: TypeInferenceState::new(),
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
             source_code: None,
+            current_package: None,
+            imported_modules: HashMap::new(),
         }
     }
     
@@ -319,13 +352,13 @@ impl Acceptable for Stmt {
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
-            Stmt::StructDecl { name, fields } => visitor.visit_struct_decl(name, fields),
+            Stmt::StructDecl { name, fields, visibility: _ } => visitor.visit_struct_decl(name, fields),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
         }
     }
 }
 
-impl<'a, 'b, 'c> ProgramVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
     fn visit_program(&mut self, program: &Program) -> Result<(), TypeCheckError> {
         // Process package declaration if present
         if let Some(package_decl) = &program.package_decl {
@@ -340,30 +373,63 @@ impl<'a, 'b, 'c> ProgramVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
         Ok(())
     }
     
-    fn visit_package(&mut self, _package_decl: &PackageDecl) -> Result<(), TypeCheckError> {
-        // For now, package declarations are just recorded
-        // TODO: Implement package validation and namespace management
+    fn visit_package(&mut self, package_decl: &PackageDecl) -> Result<(), TypeCheckError> {
+        // Phase 1: Basic package validation and context setting
+        
+        // Validate package name is not empty
+        if package_decl.name.is_empty() {
+            return Err(TypeCheckError::generic_error("Package name cannot be empty"));
+        }
+        
+        // Check for reserved keywords in package name
+        for &symbol in &package_decl.name {
+            let name_str = self.core.string_interner.resolve(symbol)
+                .ok_or_else(|| TypeCheckError::generic_error("Package name symbol not found in interner"))?;
+            
+            // Check if any part is a reserved keyword
+            if is_reserved_keyword(name_str) {
+                return Err(TypeCheckError::generic_error(&format!("Package name '{}' cannot use reserved keyword", name_str)));
+            }
+        }
+        
+        // Set current package context
+        self.set_current_package(package_decl.name.clone());
+        
         Ok(())
     }
     
     fn visit_import(&mut self, import_decl: &ImportDecl) -> Result<(), TypeCheckError> {
-        // For now, just record the import declaration
-        // Module resolution will be handled at a higher level (e.g., in CompilerSession)
-        // TODO: Implement proper module resolution integration
-        // This approach avoids unsafe pointer casting and maintains type safety
+        // Phase 1: Basic import validation and registration
         
-        // We can validate the import syntax here
+        // Validate import path is not empty
         if import_decl.module_path.is_empty() {
             return Err(TypeCheckError::generic_error("Import path cannot be empty"));
         }
         
-        // Record the import for later processing
-        // The actual module resolution should happen before type checking
+        // Check for self-import
+        if !self.is_valid_import(&import_decl.module_path) {
+            return Err(TypeCheckError::generic_error("Cannot import current package (self-import)"));
+        }
+        
+        // Validate each component of import path
+        for &symbol in &import_decl.module_path {
+            let name_str = self.core.string_interner.resolve(symbol)
+                .ok_or_else(|| TypeCheckError::generic_error("Import path symbol not found in interner"))?;
+            
+            // Check if any part is a reserved keyword  
+            if is_reserved_keyword(name_str) {
+                return Err(TypeCheckError::generic_error(&format!("Import path '{}' cannot use reserved keyword", name_str)));
+            }
+        }
+        
+        // Register the import for later name resolution
+        self.register_import(import_decl.module_path.clone());
+        
         Ok(())
     }
 }
 
-impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
     // Core Visitor Methods
     // =========================================================================
@@ -1029,6 +1095,11 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
             ));
         }
         
+        // Phase 4: Check if this might be a module qualified name (math.add)
+        if let Some(module_function_type) = self.try_resolve_module_qualified_name(obj, field)? {
+            return Ok(module_function_type);
+        }
+        
         self.type_inference.recursion_depth += 1;
         let obj_type_result = self.visit_expr(obj);
         self.type_inference.recursion_depth -= 1;
@@ -1166,7 +1237,7 @@ impl<'a, 'b, 'c> AstVisitor for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 }
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> TypeCheckerVisitor<'a> {
     fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Save the original type hint to restore later
         let original_hint = self.type_inference.type_hint.clone();
@@ -1370,12 +1441,12 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
 }
 
 // Core trait implementations
-impl<'a, 'b, 'c> TypeCheckerCore<'a, 'b, 'c> for TypeCheckerVisitor<'a, 'b, 'c> {
-    fn get_core_refs(&self) -> &CoreReferences<'a, 'b, 'c> {
+impl<'a> TypeCheckerCore<'a> for TypeCheckerVisitor<'a> {
+    fn get_core_refs(&self) -> &CoreReferences<'a> {
         &self.core
     }
     
-    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a, 'b, 'c> {
+    fn get_core_refs_mut(&mut self) -> &mut CoreReferences<'a> {
         &mut self.core
     }
     
@@ -1396,7 +1467,7 @@ impl<'a, 'b, 'c> TypeCheckerCore<'a, 'b, 'c> for TypeCheckerVisitor<'a, 'b, 'c> 
     }
 }
 
-impl<'a, 'b, 'c> TypeInferenceManager for TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> TypeInferenceManager for TypeCheckerVisitor<'a> {
     fn get_cached_type(&self, expr_ref: &ExprRef) -> Option<&TypeDecl> {
         self.optimization.type_cache.get(expr_ref)
     }
@@ -1448,7 +1519,7 @@ impl<'a, 'b, 'c> TypeInferenceManager for TypeCheckerVisitor<'a, 'b, 'c> {
     }
 }
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> TypeCheckerVisitor<'a> {
     /// Updates variable-expression mapping for type inference (internal implementation)
     fn update_variable_expr_mapping_internal(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
         if *expr_ty == TypeDecl::Number || (*expr_ty != TypeDecl::Number && self.has_number_in_expr(expr_ref)) {
@@ -1815,8 +1886,18 @@ mod tests {
         expr_pool: &'a mut ExprPool, 
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool
-    ) -> TypeCheckerVisitor<'a, 'a, 'a> {
-        TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner, location_pool)
+    ) -> TypeCheckerVisitor<'a> {
+        TypeCheckerVisitor {
+            core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
+            context: TypeCheckContext::new(),
+            type_inference: TypeInferenceState::new(),
+            function_checking: FunctionCheckingState::new(),
+            optimization: PerformanceOptimization::new(),
+            errors: Vec::new(),
+            source_code: None,
+            current_package: None,
+            imported_modules: HashMap::new(),
+        }
     }
 
     #[test]
@@ -2357,7 +2438,7 @@ mod tests {
     }
 }
 
-impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
+impl<'a> TypeCheckerVisitor<'a> {
     /// Add error to collection without returning immediately
     pub fn collect_error(&mut self, error: TypeCheckError) {
         self.errors.push(error);
@@ -2392,4 +2473,107 @@ impl<'a, 'b, 'c> TypeCheckerVisitor<'a, 'b, 'c> {
     pub fn clear_errors(&mut self) {
         self.errors.clear();
     }
+    
+    // Module management methods (Phase 1: Basic namespace management)
+    
+    /// Set the current package context
+    pub fn set_current_package(&mut self, package_path: Vec<DefaultSymbol>) {
+        self.current_package = Some(package_path);
+    }
+    
+    /// Get the current package path
+    pub fn get_current_package(&self) -> Option<&Vec<DefaultSymbol>> {
+        self.current_package.as_ref()
+    }
+    
+    /// Register an imported module (simple alias -> full_path mapping)
+    pub fn register_import(&mut self, module_path: Vec<DefaultSymbol>) {
+        // Use the last component as alias (e.g., math.utils -> utils)
+        let alias = if let Some(&last) = module_path.last() {
+            vec![last]
+        } else {
+            module_path.clone()
+        };
+        self.imported_modules.insert(alias, module_path);
+    }
+    
+    /// Check if a module path is valid for import (not self-referencing)
+    pub fn is_valid_import(&self, module_path: &[DefaultSymbol]) -> bool {
+        if let Some(current_pkg) = &self.current_package {
+            // Prevent self-import
+            current_pkg != module_path
+        } else {
+            true
+        }
+    }
+    
+    /// Try to resolve a module qualified name (e.g., math.add)
+    /// Returns Some(TypeDecl) if it's a valid module qualified name, None if it's a regular field access
+    pub fn try_resolve_module_qualified_name(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<Option<TypeDecl>, TypeCheckError> {
+        // Check if obj is an identifier that matches an imported module
+        if let Some(obj_expr) = self.core.expr_pool.0.get(obj.to_index()) {
+            if let Expr::Identifier(module_symbol) = obj_expr {
+                let module_alias = vec![*module_symbol];
+                
+                // Check if this identifier matches an imported module
+                if let Some(full_module_path) = self.imported_modules.get(&module_alias) {
+                    // Clone the module path to avoid borrowing issues
+                    let module_path_clone = full_module_path.clone();
+                    // This is a module qualified name: module.identifier
+                    return self.resolve_module_member_type(&module_path_clone, field);
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+    
+    /// Resolve the type of a member in a specific module
+    fn resolve_module_member_type(&mut self, module_path: &[DefaultSymbol], member_name: &DefaultSymbol) -> Result<Option<TypeDecl>, TypeCheckError> {
+        // Phase 4: Basic implementation - assume functions return their declared type
+        // For now, we'll look for functions in the current scope that might belong to the module
+        
+        // Convert member name to string for lookup
+        let member_str = self.core.string_interner.resolve(*member_name)
+            .ok_or_else(|| TypeCheckError::generic_error("Member name not found in string interner"))?;
+        
+        // Simple heuristic: if it's a known function pattern, return a generic function type
+        // In a full implementation, this would query the module resolver for actual module contents
+        if self.is_likely_function_name(member_str) {
+            // Return a placeholder function type - in practice this would be looked up from module metadata
+            // For now, we'll use TypeDecl::Unknown to represent a module function
+            Ok(Some(TypeDecl::Unknown))
+        } else {
+            // Could be a variable, constant, or type - for now return error
+            Err(TypeCheckError::generic_error(&format!(
+                "Member '{}' not found in module '{:?}'", 
+                member_str, 
+                self.resolve_module_path_names(module_path)
+            )))
+        }
+    }
+    
+    /// Helper to check if a name looks like a function (simple heuristic)
+    fn is_likely_function_name(&self, name: &str) -> bool {
+        // Common function name patterns
+        name.chars().all(|c| c.is_alphanumeric() || c == '_') && 
+        !name.chars().next().unwrap_or('0').is_uppercase() // Not a type name
+    }
+    
+    /// Helper to convert module path symbols to readable names
+    fn resolve_module_path_names(&self, module_path: &[DefaultSymbol]) -> Vec<String> {
+        module_path.iter()
+            .map(|&symbol| self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string())
+            .collect()
+    }
+}
+
+/// Check if a string is a reserved keyword
+fn is_reserved_keyword(name: &str) -> bool {
+    matches!(name, 
+        "fn" | "val" | "var" | "if" | "else" | "for" | "in" | "to" | 
+        "while" | "break" | "continue" | "return" | "struct" | "impl" | 
+        "package" | "import" | "pub" | "true" | "false" | "u64" | "i64" | 
+        "bool" | "str" | "self"
+    )
 }

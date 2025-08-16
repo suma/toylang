@@ -356,33 +356,72 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
             let s = s.to_string();
             let s = parser.string_interner.get_or_intern(s);
             parser.next();
-            match parser.peek() {
-                Some(Kind::ParenOpen) => {
-                    let location = parser.current_source_location();
-                    parser.next();
-                    let args = parse_expr_list(parser, vec![])?;
-                    parser.expect_err(&Kind::ParenClose)?;
-                    let expr = parser.ast_builder.call_expr(s, args, Some(location));
-                    Ok(expr)
+            
+            // Check for qualified identifier (module::function)
+            if parser.peek() == Some(&Kind::DoubleColon) {
+                let mut qualified_path = vec![s];
+                
+                while parser.peek() == Some(&Kind::DoubleColon) {
+                    parser.next(); // consume '::'
+                    
+                    if let Some(Kind::Identifier(next_part)) = parser.peek() {
+                        let next_part = next_part.to_string();
+                        let next_symbol = parser.string_interner.get_or_intern(next_part);
+                        qualified_path.push(next_symbol);
+                        parser.next();
+                    } else {
+                        parser.collect_error("expected identifier after '::'");
+                        break;
+                    }
                 }
-                Some(Kind::BracketOpen) => {
-                    let location = parser.current_source_location();
-                    parser.next();
-                    let index = parser.parse_expr_impl()?;
-                    parser.expect_err(&Kind::BracketClose)?;
-                    let array_ref = parser.ast_builder.identifier_expr(s, None);
-                    Ok(parser.ast_builder.array_access_expr(array_ref, index, Some(location)))
+                
+                // Handle qualified function calls
+                match parser.peek() {
+                    Some(Kind::ParenOpen) => {
+                        let location = parser.current_source_location();
+                        parser.next();
+                        let args = parse_expr_list(parser, vec![])?;
+                        parser.expect_err(&Kind::ParenClose)?;
+                        // For qualified function calls, use the last part as function name
+                        let function_name = qualified_path.last().copied().unwrap_or(s);
+                        let expr = parser.ast_builder.call_expr(function_name, args, Some(location));
+                        Ok(expr)
+                    }
+                    _ => {
+                        let location = parser.current_source_location();
+                        Ok(parser.ast_builder.qualified_identifier_expr(qualified_path, Some(location)))
+                    }
                 }
-                Some(Kind::BraceOpen) => {
-                    let location = parser.current_source_location();
-                    parser.next();
-                    let fields = parse_struct_literal_fields(parser, vec![])?;
-                    parser.expect_err(&Kind::BraceClose)?;
-                    Ok(parser.ast_builder.struct_literal_expr(s, fields, Some(location)))
-                }
-                _ => {
-                    let location = parser.current_source_location();
-                    Ok(parser.ast_builder.identifier_expr(s, Some(location)))
+            } else {
+                // Regular identifier handling
+                match parser.peek() {
+                    Some(Kind::ParenOpen) => {
+                        let location = parser.current_source_location();
+                        parser.next();
+                        let args = parse_expr_list(parser, vec![])?;
+                        parser.expect_err(&Kind::ParenClose)?;
+                        let expr = parser.ast_builder.call_expr(s, args, Some(location));
+                        Ok(expr)
+                    }
+                    Some(Kind::BracketOpen) => {
+                        let location = parser.current_source_location();
+                        parser.next();
+                        let index = parser.parse_expr_impl()?;
+                        parser.expect_err(&Kind::BracketClose)?;
+                        let array_ref = parser.ast_builder.identifier_expr(s, None);
+                        Ok(parser.ast_builder.array_access_expr(array_ref, index, Some(location)))
+                    }
+                    Some(Kind::BraceOpen) => {
+                        let location = parser.current_source_location();
+                        parser.next();
+                        let fields = parse_struct_literal_fields(parser, vec![])?;
+                        parser.expect_err(&Kind::BraceClose)?;
+                        Ok(parser.ast_builder.struct_literal_expr(s, fields, Some(location)))
+                    }
+                    _ => {
+                        let location = parser.current_source_location();
+                        Ok(parser.ast_builder.identifier_expr(s, Some(location)))
+                    }
                 }
             }
         }

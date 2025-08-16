@@ -337,6 +337,7 @@ impl Acceptable for Expr {
             Expr::FieldAccess(obj, field) => visitor.visit_field_access(obj, field),
             Expr::MethodCall(obj, method, args) => visitor.visit_method_call(obj, method, args),
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
+            Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
         }
     }
 }
@@ -1239,6 +1240,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.type_inference.recursion_depth -= 1;
         
         result
+    }
+
+    fn visit_qualified_identifier(&mut self, path: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        // For now, treat qualified identifiers like regular identifiers using the last component
+        // Later this can be enhanced for proper module resolution
+        if let Some(last_symbol) = path.last() {
+            self.visit_identifier(*last_symbol)
+        } else {
+            Err(TypeCheckError::generic_error("empty qualified identifier path"))
+        }
     }
 }
 

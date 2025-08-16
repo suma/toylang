@@ -511,6 +511,9 @@ impl<'a> EvaluationContext<'a> {
             Expr::StructLiteral(struct_name, fields) => {
                 self.evaluate_struct_literal(struct_name, fields)
             }
+            Expr::QualifiedIdentifier(path) => {
+                self.evaluate_qualified_identifier(path)
+            }
             Expr::Null => {
                 Err(InterpreterError::InternalError("Null reference error".to_string()))
             }
@@ -1275,6 +1278,26 @@ impl EvaluationContext<'_> {
             Some(variable_value.value.clone())
         } else {
             None
+        }
+    }
+
+    /// Evaluate qualified identifier (e.g., math::add)
+    fn evaluate_qualified_identifier(&mut self, path: &Vec<DefaultSymbol>) -> Result<EvaluationResult, InterpreterError> {
+        if path.is_empty() {
+            return Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()));
+        }
+        
+        // For now, treat qualified identifiers as simple variable lookups using the last component
+        // In the future, this can be enhanced for proper module resolution
+        if let Some(last_symbol) = path.last() {
+            // Try to look up the qualified name in the environment
+            if let Some(val) = self.environment.get_val(*last_symbol) {
+                Ok(EvaluationResult::Value(val))
+            } else {
+                Err(InterpreterError::UndefinedVariable(format!("Qualified identifier not found: {:?}", path)))
+            }
+        } else {
+            Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()))
         }
     }
 }

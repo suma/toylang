@@ -414,6 +414,12 @@ impl AstBuilder {
         self.location_pool.add_expr_location(location);
         expr_ref
     }
+    
+    pub fn qualified_identifier_expr(&mut self, path: Vec<DefaultSymbol>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::QualifiedIdentifier(path));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
 
     // Statement builders
     pub fn expression_stmt(&mut self, expr: ExprRef, location: Option<SourceLocation>) -> StmtRef {
@@ -480,6 +486,8 @@ impl AstBuilder {
 
 #[derive(Debug, Clone)]
 pub struct Program {
+    // TODO: add pub session: compiler_core::CompilerSession
+    
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
@@ -597,6 +605,7 @@ pub enum Expr {
     FieldAccess(ExprRef, DefaultSymbol),  // obj.field
     MethodCall(ExprRef, DefaultSymbol, Vec<ExprRef>),  // obj.method(args)
     StructLiteral(DefaultSymbol, Vec<(DefaultSymbol, ExprRef)>),  // Point { x: 10, y: 20 }
+    QualifiedIdentifier(Vec<DefaultSymbol>),  // math::add
 }
 
 impl Expr {

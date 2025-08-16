@@ -132,6 +132,15 @@ impl<'a> AstIntegrationContext<'a> {
                 
                 Ok(Expr::IfElifElse(new_if_cond, new_if_block, new_elif_pairs, new_else_block))
             }
+            Expr::QualifiedIdentifier(path) => {
+                // Remap all symbols in the qualified identifier path
+                let mut new_path = Vec::new();
+                for symbol in path {
+                    let new_symbol = self.remap_symbol(*symbol)?;
+                    new_path.push(new_symbol);
+                }
+                Ok(Expr::QualifiedIdentifier(new_path))
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
         }

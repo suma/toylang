@@ -47,13 +47,19 @@ impl ParserWithInterner {
         self.parser.as_mut().unwrap()
     }
     
-    pub fn parse_program(&mut self) -> ParserResult<Program> {
-        let result = self.get_parser().parse_program();
-        
+    /// Helper method to execute parser method and copy errors
+    fn call_parser_with_error_copy<T, F>(&mut self, f: F) -> T
+    where
+        F: FnOnce(&mut Parser<'static>) -> T,
+    {
+        let result = f(self.get_parser());
         // Copy errors from the internal parser
         self.errors = self.get_parser().errors.clone();
-        
         result
+    }
+    
+    pub fn parse_program(&mut self) -> ParserResult<Program> {
+        self.call_parser_with_error_copy(|parser| parser.parse_program())
     }
     
     pub fn get_string_interner(&mut self) -> &mut DefaultStringInterner {
@@ -61,30 +67,15 @@ impl ParserWithInterner {
     }
     
     pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
-        let result = self.get_parser().parse_param_def();
-        
-        // Copy errors from the internal parser
-        self.errors = self.get_parser().errors.clone();
-        
-        result
+        self.call_parser_with_error_copy(|parser| parser.parse_param_def())
     }
     
     pub fn parse_param_def_list(&mut self, args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
-        let result = self.get_parser().parse_param_def_list(args);
-        
-        // Copy errors from the internal parser
-        self.errors = self.get_parser().errors.clone();
-        
-        result
+        self.call_parser_with_error_copy(|parser| parser.parse_param_def_list(args))
     }
     
     pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
-        let result = self.get_parser().parse_program_multiple_errors();
-        
-        // Copy errors from the internal parser
-        self.errors = self.get_parser().errors.clone();
-        
-        result
+        self.call_parser_with_error_copy(|parser| parser.parse_program_multiple_errors())
     }
     
     // Forward methods to internal parser
@@ -103,21 +94,11 @@ impl ParserWithInterner {
     }
     
     pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
-        let result = self.get_parser().parse_stmt();
-        
-        // Copy errors from the internal parser
-        self.errors = self.get_parser().errors.clone();
-        
-        result
+        self.call_parser_with_error_copy(|parser| parser.parse_stmt())
     }
     
     pub fn parse_expr_impl(&mut self) -> ParserResult<ExprRef> {
-        let result = self.get_parser().parse_expr_impl();
-        
-        // Copy errors from the internal parser
-        self.errors = self.get_parser().errors.clone();
-        
-        result
+        self.call_parser_with_error_copy(|parser| parser.parse_expr_impl())
     }
     
     pub fn get_expr_pool(&self) -> &ExprPool {

@@ -15,6 +15,347 @@ use crate::evaluation::EvaluationContext;
 use crate::error::InterpreterError;
 use crate::error_formatter::ErrorFormatter;
 
+/// Context for AST integration between modules and main program
+struct AstIntegrationContext<'a> {
+    main_program: &'a mut Program,
+    module_program: &'a Program,
+    expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
+    stmt_mapping: HashMap<u32, StmtRef>, // module StmtRef -> main StmtRef
+}
+
+impl<'a> AstIntegrationContext<'a> {
+    fn new(main_program: &'a mut Program, module_program: &'a Program) -> Self {
+        Self {
+            main_program,
+            module_program,
+            expr_mapping: HashMap::new(),
+            stmt_mapping: HashMap::new(),
+        }
+    }
+    
+    
+    /// Remap expression with updated references to main program's AST pools
+    fn remap_expression(&mut self, expr: &Expr) -> Result<Expr, String> {
+        match expr {
+            // Literals need no remapping
+            Expr::True | Expr::False | Expr::Null => Ok(expr.clone()),
+            Expr::Int64(v) => Ok(Expr::Int64(*v)),
+            Expr::UInt64(v) => Ok(Expr::UInt64(*v)),
+            Expr::Number(symbol) => {
+                // Remap symbol to main program's string interner
+                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                    .ok_or("Cannot resolve Number symbol")?;
+                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                Ok(Expr::Number(new_symbol))
+            }
+            Expr::String(symbol) => {
+                // Remap symbol to main program's string interner  
+                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                    .ok_or("Cannot resolve String symbol")?;
+                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                Ok(Expr::String(new_symbol))
+            }
+            Expr::Identifier(symbol) => {
+                // Remap symbol to main program's string interner
+                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                    .ok_or("Cannot resolve Identifier symbol")?;
+                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                Ok(Expr::Identifier(new_symbol))
+            }
+            Expr::Binary(op, lhs, rhs) => {
+                let new_lhs = self.expr_mapping.get(&lhs.0)
+                    .ok_or("Cannot find LHS expression mapping")?.clone();
+                let new_rhs = self.expr_mapping.get(&rhs.0)
+                    .ok_or("Cannot find RHS expression mapping")?.clone();
+                Ok(Expr::Binary(op.clone(), new_lhs, new_rhs))
+            }
+            Expr::Call(symbol, args) => {
+                // Remap function name symbol
+                let symbol_str = self.module_program.string_interner.resolve(*symbol)
+                    .ok_or("Cannot resolve Call symbol")?;
+                let new_symbol = self.main_program.string_interner.get_or_intern(symbol_str);
+                
+                // Remap arguments expression reference
+                let new_args = self.expr_mapping.get(&args.0)
+                    .ok_or("Cannot find Call args expression mapping")?.clone();
+                Ok(Expr::Call(new_symbol, new_args))
+            }
+            Expr::ExprList(exprs) => {
+                let mut new_exprs = Vec::new();
+                for expr_ref in exprs {
+                    let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
+                        .ok_or("Cannot find ExprList expression mapping")?.clone();
+                    new_exprs.push(new_expr_ref);
+                }
+                Ok(Expr::ExprList(new_exprs))
+            }
+            Expr::Block(stmts) => {
+                let mut new_stmts = Vec::new();
+                for stmt_ref in stmts {
+                    let new_stmt_ref = self.stmt_mapping.get(&stmt_ref.0)
+                        .ok_or_else(|| {
+                            eprintln!("DEBUG: Cannot find statement mapping for StmtRef({})", stmt_ref.0);
+                            eprintln!("DEBUG: Available stmt_mappings: {:?}", self.stmt_mapping.keys().collect::<Vec<_>>());
+                            eprintln!("DEBUG: Module has {} statements, main has {} statements", 
+                                self.module_program.statement.0.len(),
+                                self.main_program.statement.0.len());
+                            format!("Cannot find Block statement mapping for StmtRef({})", stmt_ref.0)
+                        })?.clone();
+                    new_stmts.push(new_stmt_ref);
+                }
+                Ok(Expr::Block(new_stmts))
+            }
+            Expr::Assign(lhs, rhs) => {
+                let new_lhs = self.expr_mapping.get(&lhs.0)
+                    .ok_or("Cannot find Assign LHS expression mapping")?.clone();
+                let new_rhs = self.expr_mapping.get(&rhs.0)
+                    .ok_or("Cannot find Assign RHS expression mapping")?.clone();
+                Ok(Expr::Assign(new_lhs, new_rhs))
+            }
+            Expr::IfElifElse(if_cond, if_block, elif_pairs, else_block) => {
+                let new_if_cond = self.expr_mapping.get(&if_cond.0)
+                    .ok_or("Cannot find IfElifElse condition expression mapping")?.clone();
+                let new_if_block = self.expr_mapping.get(&if_block.0)
+                    .ok_or("Cannot find IfElifElse if_block expression mapping")?.clone();
+                
+                let mut new_elif_pairs = Vec::new();
+                for (elif_cond, elif_block) in elif_pairs {
+                    let new_elif_cond = self.expr_mapping.get(&elif_cond.0)
+                        .ok_or("Cannot find IfElifElse elif_cond expression mapping")?.clone();
+                    let new_elif_block = self.expr_mapping.get(&elif_block.0)
+                        .ok_or("Cannot find IfElifElse elif_block expression mapping")?.clone();
+                    new_elif_pairs.push((new_elif_cond, new_elif_block));
+                }
+                
+                let new_else_block = self.expr_mapping.get(&else_block.0)
+                    .ok_or("Cannot find IfElifElse else_block expression mapping")?.clone();
+                
+                Ok(Expr::IfElifElse(new_if_cond, new_if_block, new_elif_pairs, new_else_block))
+            }
+            // Add other expression types as needed
+            _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
+        }
+    }
+    
+    /// Remap statement with updated references to main program's AST pools
+    fn remap_statement(&mut self, stmt: &Stmt) -> Result<Stmt, String> {
+        match stmt {
+            Stmt::Expression(expr_ref) => {
+                let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
+                    .ok_or("Cannot find Expression statement mapping")?.clone();
+                Ok(Stmt::Expression(new_expr_ref))
+            }
+            Stmt::Return(Some(expr_ref)) => {
+                let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
+                    .ok_or("Cannot find Return expression mapping")?.clone();
+                Ok(Stmt::Return(Some(new_expr_ref)))
+            }
+            Stmt::Return(None) => Ok(Stmt::Return(None)),
+            Stmt::Break => Ok(Stmt::Break),
+            Stmt::Continue => Ok(Stmt::Continue),
+            Stmt::Var(name, typ, value) => {
+                let new_name = self.remap_symbol(*name)?;
+                let new_value = if let Some(expr_ref) = value {
+                    let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
+                        .ok_or("Cannot find Var value expression mapping")?.clone();
+                    Some(new_expr_ref)
+                } else {
+                    None
+                };
+                Ok(Stmt::Var(new_name, typ.clone(), new_value))
+            }
+            Stmt::Val(name, typ, value) => {
+                let new_name = self.remap_symbol(*name)?;
+                let new_value = self.expr_mapping.get(&value.0)
+                    .ok_or("Cannot find Val value expression mapping")?.clone();
+                Ok(Stmt::Val(new_name, typ.clone(), new_value))
+            }
+            Stmt::For(variable, start, end, body) => {
+                let new_variable = self.remap_symbol(*variable)?;
+                let new_start = self.expr_mapping.get(&start.0)
+                    .ok_or("Cannot find For start expression mapping")?.clone();
+                let new_end = self.expr_mapping.get(&end.0)
+                    .ok_or("Cannot find For end expression mapping")?.clone();
+                let new_body = self.expr_mapping.get(&body.0)
+                    .ok_or("Cannot find For body expression mapping")?.clone();
+                Ok(Stmt::For(new_variable, new_start, new_end, new_body))
+            }
+            Stmt::While(condition, body) => {
+                let new_condition = self.expr_mapping.get(&condition.0)
+                    .ok_or("Cannot find While condition expression mapping")?.clone();
+                let new_body = self.expr_mapping.get(&body.0)
+                    .ok_or("Cannot find While body expression mapping")?.clone();
+                Ok(Stmt::While(new_condition, new_body))
+            }
+            // StructDecl and ImplBlock statements - preserve as string-based (no symbol remapping needed)
+            Stmt::StructDecl { name, fields, visibility } => {
+                Ok(Stmt::StructDecl {
+                    name: name.clone(),
+                    fields: fields.clone(),
+                    visibility: visibility.clone()
+                })
+            }
+            Stmt::ImplBlock { target_type, methods } => {
+                // MethodFunction symbols need remapping
+                let mut new_methods = Vec::new();
+                for method in methods {
+                    let new_method = self.remap_method_function(method)?;
+                    new_methods.push(new_method);
+                }
+                Ok(Stmt::ImplBlock {
+                    target_type: target_type.clone(),
+                    methods: new_methods
+                })
+            }
+            _ => Err(format!("Unsupported statement type for remapping: {:?}", stmt))
+        }
+    }
+    
+    /// Remap a symbol from module to main program's string interner
+    fn remap_symbol(&mut self, symbol: DefaultSymbol) -> Result<DefaultSymbol, String> {
+        let symbol_str = self.module_program.string_interner.resolve(symbol)
+            .ok_or("Cannot resolve symbol")?;
+        Ok(self.main_program.string_interner.get_or_intern(symbol_str))
+    }
+    
+    /// Remap a function with all its symbols and AST references
+    fn remap_function(&mut self, function: &Function) -> Result<Function, String> {
+        let new_name = self.remap_symbol(function.name)?;
+        
+        // Remap parameters
+        let mut new_parameters = Vec::new();
+        for (param_symbol, param_type) in &function.parameter {
+            let new_param_symbol = self.remap_symbol(*param_symbol)?;
+            new_parameters.push((new_param_symbol, param_type.clone()));
+        }
+        
+        // Remap function body statement reference
+        let new_code = self.stmt_mapping.get(&function.code.0)
+            .ok_or("Cannot find function code statement mapping")?.clone();
+        
+        Ok(Function {
+            node: function.node.clone(),
+            name: new_name,
+            parameter: new_parameters,
+            return_type: function.return_type.clone(),
+            code: new_code,
+            visibility: function.visibility.clone()
+        })
+    }
+    
+    /// Remap a method function with all its symbols and AST references
+    fn remap_method_function(&mut self, method: &MethodFunction) -> Result<Rc<MethodFunction>, String> {
+        let new_name = self.remap_symbol(method.name)?;
+        
+        // Remap parameters
+        let mut new_parameters = Vec::new();
+        for (param_symbol, param_type) in &method.parameter {
+            let new_param_symbol = self.remap_symbol(*param_symbol)?;
+            new_parameters.push((new_param_symbol, param_type.clone()));
+        }
+        
+        // Remap method body statement reference
+        let new_code = self.stmt_mapping.get(&method.code.0)
+            .ok_or("Cannot find method code statement mapping")?.clone();
+        
+        Ok(Rc::new(MethodFunction {
+            node: method.node.clone(),
+            name: new_name,
+            parameter: new_parameters,
+            return_type: method.return_type.clone(),
+            code: new_code,
+            has_self_param: method.has_self_param
+        }))
+    }
+    
+    /// Copy struct declarations from module to main program
+    fn copy_struct_declarations(&mut self) -> Result<(), String> {
+        for stmt in &self.module_program.statement.0 {
+            if let Stmt::StructDecl { name, fields, visibility } = stmt {
+                // StructDecl uses String names, no symbol remapping needed
+                let new_struct_stmt = Stmt::StructDecl {
+                    name: name.clone(),
+                    fields: fields.clone(),
+                    visibility: visibility.clone()
+                };
+                self.main_program.statement.0.push(new_struct_stmt);
+            }
+        }
+        Ok(())
+    }
+    
+    /// Copy functions from module to main program with proper AST integration
+    fn copy_functions(&mut self) -> Result<Vec<Rc<Function>>, String> {
+        let mut integrated_functions = Vec::new();
+        
+        for function in &self.module_program.function {
+            let new_function = self.remap_function(function)?;
+            integrated_functions.push(Rc::new(new_function));
+        }
+        
+        Ok(integrated_functions)
+    }
+    
+    /// Complete AST integration process using three-phase approach to handle circular dependencies
+    fn integrate(&mut self) -> Result<Vec<Rc<Function>>, String> {
+        eprintln!("AST Integration: Starting three-phase integration...");
+        
+        // Phase 1: Create placeholder mappings for all AST nodes
+        self.create_placeholder_mappings()?;
+        eprintln!("AST Integration: Created placeholders ({} expressions, {} statements)", 
+            self.expr_mapping.len(), self.stmt_mapping.len());
+        
+        // Phase 2: Replace placeholders with actual remapped content
+        self.update_with_remapped_content()?;
+        eprintln!("AST Integration: Updated with remapped content");
+        
+        // Phase 3: Copy struct declarations and functions
+        self.copy_struct_declarations()?;
+        let integrated_functions = self.copy_functions()?;
+        eprintln!("AST Integration: Integrated {} functions", integrated_functions.len());
+        
+        Ok(integrated_functions)
+    }
+    
+    /// Phase 1: Create placeholder mappings for all expressions and statements
+    fn create_placeholder_mappings(&mut self) -> Result<(), String> {
+        // Create placeholder mappings for all expressions
+        for index in 0..self.module_program.expression.0.len() {
+            let placeholder_expr = Expr::Null;
+            let main_expr_ref = self.main_program.expression.add(placeholder_expr);
+            self.expr_mapping.insert(index as u32, main_expr_ref);
+        }
+        
+        // Create placeholder mappings for all statements
+        for index in 0..self.module_program.statement.0.len() {
+            let placeholder_stmt = Stmt::Break;
+            let main_stmt_ref = self.main_program.statement.add(placeholder_stmt);
+            self.stmt_mapping.insert(index as u32, main_stmt_ref);
+        }
+        
+        Ok(())
+    }
+    
+    /// Phase 2: Replace placeholders with actual remapped content
+    fn update_with_remapped_content(&mut self) -> Result<(), String> {
+        // Update all expressions with correct content
+        for (index, expr) in self.module_program.expression.0.iter().enumerate() {
+            let remapped_expr = self.remap_expression(expr)?;
+            let main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
+            self.main_program.expression.0[main_expr_ref.0 as usize] = remapped_expr;
+        }
+        
+        // Update all statements with correct content
+        for (index, stmt) in self.module_program.statement.0.iter().enumerate() {
+            let remapped_stmt = self.remap_statement(stmt)?;
+            let main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
+            self.main_program.statement.0[main_stmt_ref.0 as usize] = remapped_stmt;
+        }
+        
+        Ok(())
+    }
+}
+
 /// Common setup for TypeCheckerVisitor with struct and impl registration
 fn setup_type_checker(program: &mut Program) -> TypeCheckerVisitor {
     // First, collect and register struct definitions in the program's string_interner
@@ -55,18 +396,21 @@ fn setup_type_checker_with_modules(program: &mut Program) -> Result<TypeCheckerV
     
     // Check if program has imports that need resolution
     if !imports.is_empty() {
-        // FIRST: Load and integrate all modules into the main program before creating TypeChecker
+        eprintln!("Setting up TypeChecker with module resolution for {} imports", imports.len());
+        
+        // Load and integrate each imported module
         for import in &imports {
             if let Err(err) = load_and_integrate_module(program, import) {
-                errors.push(format!("Module integration error for {:?}: {}", import, err));
+                errors.push(format!("Module integration error: {}", err));
             }
         }
         
+        // If there were module loading errors, return them
         if !errors.is_empty() {
             return Err(errors);
         }
         
-        // NOW: Create TypeCheckerVisitor with integrated program using standard setup
+        // Create TypeChecker with integrated modules
         Ok(setup_type_checker(program))
     } else {
         // No imports, use standard setup
@@ -99,56 +443,35 @@ fn load_and_integrate_module(program: &mut Program, import: &ImportDecl) -> Resu
     }
 }
 
-/// Integrate a module's AST directly into the main program with symbol remapping
-fn integrate_module_into_program(source: &str, main_program: &mut Program) -> Result<(), String> {
-    // Parse the module with its own interner first
+/// Integrate module into main program using comprehensive AST deep-copy
+pub fn integrate_module_into_program(source: &str, main_program: &mut Program) -> Result<(), String> {
+    eprintln!("Starting AST-based module integration...");
+    
+    // Parse the module with its own interner
     let mut parser = frontend::ParserWithInterner::new(source);
     let module_program = parser.parse_program()
         .map_err(|e| format!("Parse error in module: {}", e))?;
     
-    eprintln!("Successfully parsed module, {} functions found", module_program.function.len());
+    eprintln!("Successfully parsed module: {} functions, {} expressions, {} statements", 
+        module_program.function.len(),
+        module_program.expression.0.len(),
+        module_program.statement.0.len()
+    );
     
-    // Integrate functions with symbol remapping
-    for function in &module_program.function {
-        // Get function name from module's interner
-        if let Some(func_name_str) = module_program.string_interner.resolve(function.name) {
-            // Create new symbol in main program's interner
-            let new_function_symbol = main_program.string_interner.get_or_intern(func_name_str);
-            
-            // Create a new function with remapped symbols
-            let mut new_function = function.as_ref().clone();
-            new_function.name = new_function_symbol;
-            
-            // Remap parameter symbols
-            for param in &mut new_function.parameter {
-                if let Some(param_name_str) = module_program.string_interner.resolve(param.0) {
-                    let new_param_symbol = main_program.string_interner.get_or_intern(param_name_str);
-                    param.0 = new_param_symbol;
-                }
-            }
-            
-            // Add the remapped function to main program
-            main_program.function.push(Rc::new(new_function));
-            eprintln!("Integrated function: {} -> {:?}", func_name_str, new_function_symbol);
-        }
+    // Create AST integration context
+    let mut integration_context = AstIntegrationContext::new(main_program, &module_program);
+    
+    // Perform complete AST integration
+    let integrated_functions = integration_context.integrate()?;
+    
+    // Add integrated functions to main program
+    for function in integrated_functions {
+        let func_name = main_program.string_interner.resolve(function.name).unwrap_or("<unknown>");
+        eprintln!("Successfully integrated function: {}", func_name);
+        main_program.function.push(function);
     }
     
-    // Integrate struct declarations (both name and field.name are Strings, no symbol remapping needed)
-    for stmt_ref in &module_program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields, visibility } = stmt_ref {
-            // Create new struct declaration (no symbol remapping needed as all names are Strings)
-            let new_struct_stmt = frontend::ast::Stmt::StructDecl {
-                name: name.clone(),
-                fields: fields.clone(),
-                visibility: visibility.clone(),
-            };
-            
-            // Add to main program's statements
-            main_program.statement.0.push(new_struct_stmt);
-            eprintln!("Integrated struct: {}", name);
-        }
-    }
-    
+    eprintln!("AST-based module integration completed successfully");
     Ok(())
 }
 
@@ -279,8 +602,14 @@ fn find_main_function(program: &Program) -> Result<Rc<Function>, InterpreterErro
 fn build_function_map(program: &Program) -> HashMap<DefaultSymbol, Rc<Function>> {
     let mut func_map = HashMap::new();
     for f in &program.function {
-        func_map.insert(f.name, f.clone());
+        let func_name = program.string_interner.resolve(f.name).unwrap_or("<unknown>");
+        eprintln!("DEBUG: build_function_map: Adding function '{}' with symbol {:?}", func_name, f.name);
+        if let Some(existing) = func_map.insert(f.name, f.clone()) {
+            let existing_name = program.string_interner.resolve(existing.name).unwrap_or("<unknown>");
+            eprintln!("DEBUG: WARNING: Function '{}' was overwritten! Previous function: '{}'", func_name, existing_name);
+        }
     }
+    eprintln!("DEBUG: build_function_map: Final map has {} functions", func_map.len());
     func_map
 }
 

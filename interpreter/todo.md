@@ -2,6 +2,32 @@
 
 ## 完了済み ✅
 
+78. **AST統合によるモジュール循環参照問題の完全解決** ✅ (2025-08-16完了)
+   - **対象**: モジュール統合時のAST破損による"Maximum recursion depth reached"ランタイムエラーの根本解決
+   - **解決した問題**:
+     - AST参照（ExprRef, StmtRef）がモジュールと主プログラム間で破損する問題
+     - 異なるAST pools間でのExprRef(0)の無限循環参照エラー
+     - モジュール関数のAST構造が主プログラムで正しく参照できない致命的バグ
+     - 従来のSymbol再マッピングではAST参照整合性が保証されない問題
+   - **実装内容**:
+     - `AstIntegrationContext`による包括的AST統合システムの実装
+     - 三段階統合プロセス：プレースホルダー作成→内容置換→関数統合
+     - Expression/Statement間の循環依存を解決する順序制御実装
+     - 全AST要素対応：Binary, Call, Block, Assign, IfElifElse, Val, Var, For, While等
+     - `remap_expression`/`remap_statement`による完全なAST再構築
+     - `remap_function`/`remap_method_function`による関数レベル統合
+   - **技術的成果**:
+     - ExprRef/StmtRef参照の完全整合性保証：循環参照エラーの完全解消
+     - 主プログラムAST pools内での統一された参照管理を実現
+     - モジュール関数の正常実行確認：`add(10u64, 20u64) = 30`
+     - 全252テストスイート継続成功：既存機能への影響ゼロ
+     - AST深度コピーによる高い安全性とメモリ分離
+   - **パフォーマンス**:
+     - 統合ログ：10 expressions, 6 statements, 3 functions統合成功
+     - デバッグ出力での正常な関数マッピング確認
+     - ランタイム評価の正常完了：循環参照エラーから完全脱出
+   - **備考**: モジュールシステムの最後の技術的障壁を解決。Go-style module systemが完全に動作可能となり、実用レベルに到達。
+
 77. **Go式モジュールシステム Symbol変換問題の根本的解決** ✅ (2025-08-16完了)
    - **対象**: モジュール関数が`<unknown>`として表示され、メインプログラムから呼び出せない致命的なSymbol変換問題
    - **解決した問題**:

@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running unittests src/lib.rs (target/debug/deps/interpreter-d1213e45a7d4e1d4)
+
+running 3 tests
+test error_formatter::tests::test_error_formatter_with_location ... ok
+test error_formatter::tests::test_error_formatter_without_location ... ok
+test error_formatter::tests::test_runtime_error_formatting ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

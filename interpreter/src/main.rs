@@ -1,23 +1,39 @@
 use std::env;
 use std::fs;
 use interpreter::error_formatter::ErrorFormatter;
+use compiler_core::CompilerSession;
 
-/// Parse the source file and handle parse errors
-fn handle_parsing(source: &str, filename: &str) -> Result<frontend::ast::Program, ()> {
-    let mut parser = frontend::ParserWithInterner::new(source);
-    let program = parser.parse_program();
+/// Parse the source file using CompilerSession and handle parse errors
+#[allow(dead_code)]
+fn handle_parsing_from_source(source: &str, filename: &str) -> Result<frontend::ast::Program, ()> {
+    let mut session = CompilerSession::new();
     let formatter = ErrorFormatter::new(source, filename);
     
-    // Handle parse errors using unified error display
-    if !parser.errors.is_empty() {
-        formatter.display_parse_errors(&parser.errors);
-        return Err(());
-    }
-    
-    match program {
-        Ok(prog) => Ok(prog),
+    // Use CompilerSession's parse_program method which ensures consistent string interning
+    match session.parse_program(source) {
+        Ok(program) => Ok(program),
         Err(err) => {
             formatter.format_parse_error(&err);
+            Err(())
+        }
+    }
+}
+
+/// Parse a file using CompilerSession's parse_module_file method
+fn handle_parsing_from_file(file_path: &str) -> Result<frontend::ast::Program, ()> {
+    let mut session = CompilerSession::new();
+    
+    // Use CompilerSession's parse_module_file method for consistent file handling
+    match session.parse_module_file(file_path) {
+        Ok(program) => Ok(program),
+        Err(err) => {
+            // Read source for error formatting
+            if let Ok(source) = std::fs::read_to_string(file_path) {
+                let formatter = ErrorFormatter::new(&source, file_path);
+                formatter.format_parse_error(&err);
+            } else {
+                eprintln!("Parse error in {}: {}", file_path, err);
+            }
             Err(())
         }
     }
@@ -62,27 +78,31 @@ fn main() {
         return;
     }
 
-    if verbose {
-        println!("Reading file {}", args[1]);
-    }
-    let file = fs::read_to_string(&args[1]).expect("Failed to read file");
-    let source = file.as_str();
     let filename = args[1].as_str();
     
-    // Parse the source file
+    // Parse the source file using CompilerSession
     if verbose {
-        println!("Parsing source file");
+        println!("Parsing source file: {}", filename);
     }
-    let mut program = match handle_parsing(source, filename) {
+    let mut program = match handle_parsing_from_file(filename) {
         Ok(prog) => prog,
         Err(()) => return,
+    };
+    
+    // Read source for error formatting in subsequent steps
+    let source = match fs::read_to_string(filename) {
+        Ok(content) => content,
+        Err(e) => {
+            eprintln!("Failed to read file {}: {}", filename, e);
+            return;
+        }
     };
     
     // Perform type checking
     if verbose {
         println!("Performing type checking");
     }
-    if handle_type_checking(&mut program, source, filename).is_err() {
+    if handle_type_checking(&mut program, &source, filename).is_err() {
         return;
     }
     
@@ -90,5 +110,5 @@ fn main() {
     if verbose {
         println!("Executing program");
     }
-    let _ = handle_execution(&program, source, filename);
+    let _ = handle_execution(&program, &source, filename);
 }

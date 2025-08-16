@@ -1,0 +1,1 @@
+struct Inner { value: i64 } struct Outer { inner: Inner, count: i64 } fn main() -> i64 { val nested = [Outer { inner: Inner { value: 10i64 }, count: 1i64 }, Outer { inner: Inner { value: 20i64 }, count: 2i64 }] nested[0u64].inner.value + nested[1u64].count }

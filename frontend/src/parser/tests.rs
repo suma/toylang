@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use super::core::Parser;
+use super::core::{ParserWithInterner};
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::TypeCheckerVisitor;
@@ -219,7 +219,7 @@ mod parser_tests {
 
     #[test]
     fn parser_util_lookahead() {
-        let mut p = Parser::new("1u64 + 2u64");
+        let mut p = ParserWithInterner::new("1u64 + 2u64");
 
         let t0 = p.peek_n(0).unwrap().clone();
         let t1 = p.peek_n(1).unwrap().clone();
@@ -236,14 +236,14 @@ mod parser_tests {
 
     #[test]
     fn parser_comment_skip_test() {
-        let mut p = Parser::new("1u64 + 2u64 # another comment");
+        let mut p = ParserWithInterner::new("1u64 + 2u64 # another comment");
         let _ = p.parse_stmt().unwrap();
         assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
     }
 
     #[test]
     fn parser_simple_expr_test1() {
-        let mut p = Parser::new("1u64 + 2u64 ");
+        let mut p = ParserWithInterner::new("1u64 + 2u64 ");
         let _ = p.parse_stmt().unwrap();
         assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
         let a = p.get_expr_pool().get(0).unwrap();
@@ -264,7 +264,7 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_expr_mul() {
-        let mut p = Parser::new("(1u64) + 2u64 * 3u64");
+        let mut p = ParserWithInterner::new("(1u64) + 2u64 * 3u64");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -284,7 +284,7 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_relational_expr() {
-        let mut p = Parser::new("0u64 < 2u64 + 4u64");
+        let mut p = ParserWithInterner::new("0u64 < 2u64 + 4u64");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -304,7 +304,7 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_logical_expr() {
-        let mut p = Parser::new("1u64 && 2u64 < 3u64");
+        let mut p = ParserWithInterner::new("1u64 && 2u64 < 3u64");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -338,7 +338,7 @@ mod parser_tests {
         ];
         
         test_cases.par_iter().for_each(|&input| {
-            let mut p = Parser::new(input);
+            let mut p = ParserWithInterner::new(input);
             let e = p.parse_stmt();
             assert!(e.is_ok(), "failed: {}", input);
         });
@@ -356,14 +356,14 @@ mod parser_tests {
     #[case("a() + 1u64")]
     #[case("a(b,c) + 1u64")]
     fn parser_expr_accept(#[case] input: &str) {
-        let mut p = Parser::new(input);
+        let mut p = ParserWithInterner::new(input);
         let e = p.parse_stmt();
         assert!(e.is_ok(), "failed: {}", input);
     }
 
     #[test]
     fn parser_simple_ident_expr() {
-        let mut p = Parser::new("abc + 1u64");
+        let mut p = ParserWithInterner::new("abc + 1u64");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -380,7 +380,7 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_apply_empty() {
-        let mut p = Parser::new("abc()");
+        let mut p = ParserWithInterner::new("abc()");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -394,7 +394,7 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_assign_expr() {
-        let mut p = Parser::new("a = 1u64");
+        let mut p = ParserWithInterner::new("a = 1u64");
         let e = p.parse_stmt();
         assert!(e.is_ok());
 
@@ -439,7 +439,7 @@ mod parser_tests {
         ];
         
         test_cases.par_iter().for_each(|&input| {
-            let mut parser = Parser::new(input);
+            let mut parser = ParserWithInterner::new(input);
             let err = parser.parse_stmt();
             assert!(err.is_ok(), "input: {} err: {:?}", input, err);
         });
@@ -472,7 +472,7 @@ mod parser_tests {
     #[case("return true")]
     #[case("return")]
     fn parser_test_parse_stmt(#[case] input: &str) {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let err = parser.parse_stmt();
         assert!(err.is_ok(), "input: {} err: {:?}", input, err);
     }
@@ -482,13 +482,13 @@ mod parser_tests {
     #[case("*2u64")]
     #[case("(1u64+2u64")]
     fn parser_errors_parse_expr(#[case] input: &str) {
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         assert!(parser.parse_expr_impl().is_err() || parser.errors.len() > 0, "input: {}", input);
     }
 
     #[test]
     fn parser_simple_apply_expr() {
-        let mut p = Parser::new("abc(1u64, 2u64)");
+        let mut p = ParserWithInterner::new("abc(1u64, 2u64)");
         let e = p.parse_stmt();
         assert!(e.is_ok(), "{:?}", p.get_expr_pool());
 
@@ -507,17 +507,17 @@ mod parser_tests {
 
     #[test]
     fn parser_param_def() {
-        let mut p = Parser::new("test: u64");
+        let mut p = ParserWithInterner::new("test: u64");
         let param = p.parse_param_def();
         assert!(param.is_ok());
         let param = param.unwrap();
-        let test_id = p.string_interner.get_or_intern("test".to_string());
+        let test_id = p.get_string_interner().get_or_intern("test".to_string());
         assert_eq!((test_id, TypeDecl::UInt64), param);
     }
 
     #[test]
     fn parser_param_def_list_empty() {
-        let param = Parser::new("").parse_param_def_list(vec![]);
+        let param = ParserWithInterner::new("").parse_param_def_list(vec![]);
         assert!(param.is_ok());
         let p = param.unwrap();
         assert_eq!(0, p.len());
@@ -525,15 +525,15 @@ mod parser_tests {
 
     #[test]
     fn parser_param_def_list() {
-        let mut p = Parser::new("test: u64, test2: i64, test3: some_type");
+        let mut p = ParserWithInterner::new("test: u64, test2: i64, test3: some_type");
         let param = p.parse_param_def_list(vec![]);
         assert!(param.is_ok());
-        let some_type = p.string_interner.get_or_intern("some_type".to_string());
+        let some_type = p.get_string_interner().get_or_intern("some_type".to_string());
         assert_eq!(
             vec![
-                (p.string_interner.get_or_intern("test".to_string()), TypeDecl::UInt64),
-                (p.string_interner.get_or_intern("test2".to_string()), TypeDecl::Int64),
-                (p.string_interner.get_or_intern("test3".to_string()), TypeDecl::Identifier(some_type)),
+                (p.get_string_interner().get_or_intern("test".to_string()), TypeDecl::UInt64),
+                (p.get_string_interner().get_or_intern("test2".to_string()), TypeDecl::Int64),
+                (p.get_string_interner().get_or_intern("test3".to_string()), TypeDecl::Identifier(some_type)),
             ],
             param.unwrap()
         );
@@ -544,7 +544,7 @@ mod parser_tests {
         let file = File::open(&path);
         let mut input = String::new();
         assert!(file.unwrap().read_to_string(&mut input).is_ok());
-        let mut p = Parser::new(input.as_str());
+        let mut p = ParserWithInterner::new(input.as_str());
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
         let program = result.unwrap();
@@ -568,7 +568,7 @@ mod parser_tests {
         let file = File::open(&path);
         let mut input = String::new();
         assert!(file.unwrap().read_to_string(&mut input).is_ok());
-        let mut p = Parser::new(input.as_str());
+        let mut p = ParserWithInterner::new(input.as_str());
         let result = p.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err().unwrap());
         let program = result.unwrap();
@@ -593,7 +593,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_decl_simple() {
         let input = "struct Point { x: i64, y: i64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -620,7 +620,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_decl_with_visibility() {
         let input = "struct Person { pub name: str, age: u64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -647,7 +647,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_decl_empty() {
         let input = "struct Empty { }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -666,7 +666,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_decl_with_newlines() {
         let input = "struct Point {\n    x: i64,\n    y: i64\n}";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -687,7 +687,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_with_function() {
         let input = "struct Point { x: i64, y: i64 }\nfn main() -> u64 { 42u64 }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -710,7 +710,7 @@ mod parser_tests {
     #[test]
     fn parser_impl_block_simple() {
         let input = "impl Point { fn new(x: i64, y: i64) -> i64 { 42i64 } }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -738,7 +738,7 @@ mod parser_tests {
     #[test]
     fn parser_impl_block_with_self() {
         let input = "impl Point { fn distance(&self) -> i64 { 42i64 } }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -766,7 +766,7 @@ mod parser_tests {
     #[test]
     fn parser_impl_block_multiple_methods() {
         let input = "impl Point { fn new() -> i64 { 42i64 } fn get_x(&self) -> i64 { 0i64 } }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -797,7 +797,7 @@ mod parser_tests {
     #[test]
     fn parser_struct_with_impl() {
         let input = "struct Point { x: i64, y: i64 }\nimpl Point { fn new() -> i64 { 42i64 } }";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -832,7 +832,7 @@ mod parser_tests {
     #[test]
     fn parser_nested_field_access_simple() {
         let input = "obj.field";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_stmt();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -855,7 +855,7 @@ mod parser_tests {
     #[test]
     fn parser_nested_field_access_chain() {
         let input = "obj.inner.field";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_stmt();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -883,7 +883,7 @@ mod parser_tests {
     #[test]
     fn parser_deeply_nested_field_access() {
         let input = "a.b.c.d.e.f";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_stmt();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -910,7 +910,7 @@ mod parser_tests {
     #[test]
     fn parser_field_access_with_method_call() {
         let input = "obj.field.method()";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_stmt();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -936,7 +936,7 @@ mod parser_tests {
         }).collect();
         let input = parts.join(".");
         
-        let mut parser = Parser::new(&input);
+        let mut parser = ParserWithInterner::new(&input);
         let result = parser.parse_stmt();
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
@@ -949,7 +949,7 @@ mod parser_tests {
     fn parser_underscore_variable_usage_hang_test() {
         let input = "fn main() -> i64 {\nval _ = 1i64\n_\n}";
         println!("DEBUG: Starting parse with input: {:?}", input);
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         println!("DEBUG: Parser created, calling parse_program");
         let result = parser.parse_program();
         println!("DEBUG: parse_program completed: {:?}", result.is_ok());
@@ -963,7 +963,7 @@ mod parser_tests {
         // Test just the problematic part: single underscore as expression
         let input = "_";
         println!("DEBUG: Testing single underscore expression: {:?}", input);
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         println!("DEBUG: Parser created, calling parse_expr_impl");
         let result = parser.parse_expr_impl();
         println!("DEBUG: parse_expr_impl completed: {:?}", result.is_ok());
@@ -975,7 +975,7 @@ mod parser_tests {
     #[test] 
     fn parser_underscore_prefix_variable_should_work() {
         let input = "fn main() -> i64 {\nval _var = 1i64\n_var\n}";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         
         // This should work since underscore-prefixed variables are allowed
@@ -985,7 +985,7 @@ mod parser_tests {
     #[test]
     fn parser_valid_underscore_in_middle_variable() {
         let input = "fn main() -> i64 {\nval var_name = 1i64\n0i64\n}";
-        let mut parser = Parser::new(input);
+        let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
         
         // This should pass because underscores in the middle are allowed

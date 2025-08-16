@@ -11,10 +11,125 @@ use crate::parser::error::{ParserError, ParserErrorKind, ParserResult, MultipleP
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }
+
+/// Parser wrapper that owns its string interner (for backward compatibility)
+pub struct ParserWithInterner {
+    input: String,
+    string_interner: DefaultStringInterner,
+    parser: Option<Parser<'static>>,
+    pub errors: Vec<ParserError>,
+}
+
+impl ParserWithInterner {
+    pub fn new(input: &str) -> Self {
+        Self {
+            input: input.to_string(),
+            string_interner: DefaultStringInterner::new(),
+            parser: None,
+            errors: Vec::new(),
+        }
+    }
+    
+    fn ensure_parser(&mut self) {
+        if self.parser.is_none() {
+            // Create parser with 'static lifetime hack - safe because we own the input string
+            let parser = unsafe {
+                let input_ref: &'static str = std::mem::transmute(self.input.as_str());
+                let interner_ref: &'static mut DefaultStringInterner = std::mem::transmute(&mut self.string_interner);
+                Parser::new(input_ref, interner_ref)
+            };
+            self.parser = Some(parser);
+        }
+    }
+    
+    fn get_parser(&mut self) -> &mut Parser<'static> {
+        self.ensure_parser();
+        self.parser.as_mut().unwrap()
+    }
+    
+    pub fn parse_program(&mut self) -> ParserResult<Program> {
+        let result = self.get_parser().parse_program();
+        
+        // Copy errors from the internal parser
+        self.errors = self.get_parser().errors.clone();
+        
+        result
+    }
+    
+    pub fn get_string_interner(&mut self) -> &mut DefaultStringInterner {
+        &mut self.string_interner
+    }
+    
+    pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
+        self.get_parser().parse_param_def()
+    }
+    
+    pub fn parse_param_def_list(&mut self, args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
+        self.get_parser().parse_param_def_list(args)
+    }
+    
+    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
+        self.get_parser().parse_program_multiple_errors()
+    }
+    
+    // Forward methods to internal parser
+    pub fn peek(&mut self) -> Option<&Kind> {
+        self.get_parser().peek()
+    }
+    
+    pub fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
+        self.get_parser().peek_n(pos)
+    }
+    
+    pub fn next(&mut self) -> Option<Kind> {
+        let token = self.get_parser().peek().cloned();
+        self.get_parser().next();
+        token
+    }
+    
+    pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
+        self.get_parser().parse_stmt()
+    }
+    
+    pub fn parse_expr_impl(&mut self) -> ParserResult<ExprRef> {
+        self.get_parser().parse_expr_impl()
+    }
+    
+    pub fn get_expr_pool(&self) -> &ExprPool {
+        match &self.parser {
+            Some(parser) => parser.get_expr_pool(),
+            None => {
+                // Return reference to an empty pool - using thread_local for safety
+                thread_local! {
+                    static EMPTY_EXPR_POOL: ExprPool = ExprPool(Vec::new());
+                }
+                EMPTY_EXPR_POOL.with(|pool| unsafe { 
+                    std::mem::transmute::<&ExprPool, &'static ExprPool>(pool) 
+                })
+            }
+        }
+    }
+    
+    pub fn get_stmt_pool(&self) -> &StmtPool {
+        match &self.parser {
+            Some(parser) => parser.get_stmt_pool(),
+            None => {
+                // Return reference to an empty pool - using thread_local for safety
+                thread_local! {
+                    static EMPTY_STMT_POOL: StmtPool = StmtPool(Vec::new());
+                }
+                EMPTY_STMT_POOL.with(|pool| unsafe { 
+                    std::mem::transmute::<&StmtPool, &'static StmtPool>(pool) 
+                })
+            }
+        }
+    }
+}
+
 pub struct Parser<'a> {
     token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
-    pub string_interner: DefaultStringInterner,
+    pub string_interner: &'a mut DefaultStringInterner,
     pub errors: Vec<ParserError>,
     input: &'a str,
     recursion_depth: u32,
@@ -24,18 +139,23 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(input: &'a str) -> Self {
+    pub fn new(input: &'a str, string_interner: &'a mut DefaultStringInterner) -> Self {
         let source = LexerTokenSource::new(input);
         Parser {
             token_provider: TokenProvider::with_format_normalization(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
-            string_interner: DefaultStringInterner::new(),
+            string_interner,
             errors: Vec::with_capacity(4),
             input,
             recursion_depth: 0,
             max_recursion_depth: 500, // Significantly increased for complex nested structures
             normalization_context: TokenNormalizationContext::new(),
         }
+    }
+
+    /// Create a new parser with owned string interner (for backward compatibility/testing)
+    pub fn new_standalone(input: &str) -> ParserWithInterner {
+        ParserWithInterner::new(input)
     }
 
     pub fn peek(&mut self) -> Option<&Kind> {

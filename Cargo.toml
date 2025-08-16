@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = [
+    "frontend",
+    "interpreter", 
+    "compiler_core",
+]
+
+[workspace.dependencies]
+string-interner = "0.19.0"
+
+# Common metadata for all crates in the workspace
+[workspace.package]
+edition = "2024"
+license = "MIT"
+authors = ["Shuzo Kashihara <suman.orega.warukatta@gmail.com>"]

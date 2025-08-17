@@ -16,7 +16,13 @@ mod property_tests {
     fn valid_identifier() -> impl Strategy<Value = String> {
         "[a-z_][a-zA-Z0-9_]{0,5}".prop_map(|s| s.to_string())
             .prop_filter("Not a reserved keyword", |s| {
-                !matches!(s.as_str(), "if" | "else" | "while" | "for" | "fn" | "return" | "break" | "continue" | "val" | "var" | "struct" | "impl" | "true" | "false" | "null")
+                !matches!(s.as_str(), 
+                    "if" | "elif" | "else" | "while" | "for" | "in" | "to" | 
+                    "fn" | "return" | "break" | "continue" | 
+                    "val" | "var" | "struct" | "impl" | "class" | 
+                    "true" | "false" | "null" | 
+                    "u64" | "i64" | "str" | "ptr" | "usize" | "bool" |
+                    "pub" | "extern" | "package" | "import" | "as")
             })
     }
 

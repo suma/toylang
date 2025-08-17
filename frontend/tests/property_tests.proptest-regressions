@@ -6,3 +6,5 @@
 # everyone who runs the test benefits from these saved cases.
 cc 4e049f3d2b3842dc7dda58961446a20eb821b57f01d1a252b7a5423ded6dcb63 # shrinks to vars = ["fn"], value = "0i64"
 cc f693f502f653d64d33e16163892bea482797096c44c5625441642209663542bc # shrinks to struct_name = "_", method_name = "_", field_name = "if"
+cc cfce7f5e53c0adb284655f40241ac6f48159dc7875861a0abbefe412a3df53f0 # shrinks to struct_name = "a", method_name = "a", field_name = "in"
+cc 1dc7cb24d97d22db83d1953d625699077011544c1406c5371f038b52ceb5a231 # shrinks to name = "in", value = "0i64", is_const = false

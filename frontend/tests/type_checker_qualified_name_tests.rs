@@ -2,7 +2,6 @@
 mod type_checker_qualified_name_tests {
     use frontend::ParserWithInterner;
     use frontend::type_checker::TypeCheckerVisitor;
-    use frontend::visitor::ProgramVisitor;
 
     #[test]
     fn test_module_qualified_function_call() {
@@ -49,7 +48,7 @@ mod type_checker_qualified_name_tests {
         
         // Create type checker and test it
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import, so check results directly
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -88,7 +87,7 @@ mod type_checker_qualified_name_tests {
         
         // Test that regular struct field access still works
         let visit_result: Result<(), frontend::type_checker::TypeCheckError> = {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let _type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             Ok(()) // with_program already processes package/import
         };
         
@@ -114,7 +113,7 @@ mod type_checker_qualified_name_tests {
         
         // Test that accessing unimported module is handled appropriately
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -149,7 +148,7 @@ mod type_checker_qualified_name_tests {
         
         // Test multiple imports
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());

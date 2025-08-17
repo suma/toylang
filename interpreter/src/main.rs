@@ -19,26 +19,6 @@ fn handle_parsing_from_source(source: &str, filename: &str) -> Result<frontend::
     }
 }
 
-/// Parse a file using CompilerSession's parse_module_file method
-fn handle_parsing_from_file(file_path: &str) -> Result<frontend::ast::Program, ()> {
-    let mut session = CompilerSession::new();
-    
-    // Use CompilerSession's parse_module_file method for consistent file handling
-    match session.parse_module_file(file_path) {
-        Ok(program) => Ok(program),
-        Err(err) => {
-            // Read source for error formatting
-            if let Ok(source) = std::fs::read_to_string(file_path) {
-                let formatter = ErrorFormatter::new(&source, file_path);
-                formatter.format_parse_error(&err);
-            } else {
-                eprintln!("Parse error in {}: {}", file_path, err);
-            }
-            Err(())
-        }
-    }
-}
-
 /// Perform type checking and handle type check errors
 fn handle_type_checking(program: &mut frontend::ast::Program, string_interner: &mut string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<(), ()> {
     let formatter = ErrorFormatter::new(source, filename);

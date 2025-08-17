@@ -2,7 +2,6 @@
 mod type_checker_module_tests {
     use frontend::ParserWithInterner;
     use frontend::type_checker::TypeCheckerVisitor;
-    use frontend::visitor::ProgramVisitor;
 
     #[test]
     fn test_valid_package_declaration() {
@@ -23,7 +22,7 @@ mod type_checker_module_tests {
         
         // Create type checker and test it
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import, so no need to call visit_program
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());
@@ -79,7 +78,7 @@ mod type_checker_module_tests {
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
         {
-            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
             
             // with_program already processes package/import
             let visit_result: Result<(), frontend::type_checker::TypeCheckError> = Ok(());

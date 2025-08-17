@@ -997,7 +997,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
         for field in fields {

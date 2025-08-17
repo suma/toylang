@@ -1,5 +1,5 @@
 use frontend::{ModuleResolver, ParserWithInterner};
-use frontend::ast::{ImportDecl, Program};
+use frontend::ast::ImportDecl;
 use string_interner::DefaultStringInterner;
 use std::path::PathBuf;
 use std::fs;
@@ -18,7 +18,7 @@ mod module_resolver_tests {
         file_path
     }
 
-    fn sync_import_with_parser(import: &ImportDecl, string_interner: &DefaultStringInterner) -> ImportDecl {
+    fn sync_import_with_parser(import: &ImportDecl, _string_interner: &DefaultStringInterner) -> ImportDecl {
         // Since we're now using the same string_interner for both program and parser,
         // we can just return the import as-is
         import.clone()

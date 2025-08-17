@@ -225,7 +225,6 @@ impl<'a> AstIntegrationContext<'a> {
                     methods: new_methods
                 })
             }
-            _ => Err(format!("Unsupported statement type for remapping: {:?}", stmt))
         }
     }
     

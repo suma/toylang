@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::ast::{Function, StructField, MethodFunction};
+use crate::ast::{Function, StructField, MethodFunction, Visibility};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
 use crate::type_checker::core::CoreReferences;
@@ -11,11 +11,17 @@ pub struct VarState {
     pub ty: TypeDecl,
 }
 
+#[derive(Debug, Clone)]
+pub struct StructDefinition {
+    pub fields: Vec<StructField>,
+    pub visibility: Visibility,
+}
+
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
-    pub struct_definitions: HashMap<DefaultSymbol, Vec<StructField>>,
+    pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
 }
 
@@ -80,16 +86,32 @@ impl TypeCheckContext {
     }
 
     // Struct definition methods
-    pub fn register_struct(&mut self, name: DefaultSymbol, fields: Vec<StructField>) {
-        self.struct_definitions.insert(name, fields);
+    pub fn register_struct(&mut self, name: DefaultSymbol, fields: Vec<StructField>, visibility: Visibility) {
+        let struct_def = StructDefinition {
+            fields,
+            visibility,
+        };
+        self.struct_definitions.insert(name, struct_def);
     }
     
-    pub fn get_struct_definition(&self, name: DefaultSymbol) -> Option<&Vec<StructField>> {
+    pub fn get_struct_definition(&self, name: DefaultSymbol) -> Option<&StructDefinition> {
         self.struct_definitions.get(&name)
     }
     
+    pub fn get_struct_fields(&self, name: DefaultSymbol) -> Option<&Vec<StructField>> {
+        self.struct_definitions.get(&name).map(|def| &def.fields)
+    }
+    
+    pub fn get_struct_visibility(&self, name: DefaultSymbol) -> Option<&Visibility> {
+        self.struct_definitions.get(&name).map(|def| &def.visibility)
+    }
+    
+    pub fn is_struct_public(&self, name: DefaultSymbol) -> bool {
+        matches!(self.get_struct_visibility(name), Some(Visibility::Public))
+    }
+    
     pub fn validate_struct_fields(&self, struct_name: DefaultSymbol, provided_fields: &Vec<(DefaultSymbol, crate::ast::ExprRef)>, string_interner: &CoreReferences) -> Result<(), TypeCheckError> {
-        if let Some(definition) = self.get_struct_definition(struct_name) {
+        if let Some(definition) = self.get_struct_fields(struct_name) {
             // Check if all required fields are provided
             for required_field in definition {
                 let field_name_symbol = string_interner.string_interner.get(&required_field.name).unwrap_or_else(|| panic!("Field name not found in string interner"));

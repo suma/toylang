@@ -378,16 +378,16 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     // First, collect and register struct definitions
     let mut struct_definitions = Vec::new();
     for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields, .. } = stmt_ref {
-            struct_definitions.push((name.clone(), fields.clone()));
+        if let frontend::ast::Stmt::StructDecl { name, fields, visibility } = stmt_ref {
+            struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
         }
     }
     
     // Register struct names in string_interner and collect symbols
     let mut struct_symbols_and_fields = Vec::new();
-    for (name, fields) in struct_definitions {
+    for (name, fields, visibility) in struct_definitions {
         let struct_symbol = string_interner.get_or_intern(name);
-        struct_symbols_and_fields.push((struct_symbol, fields));
+        struct_symbols_and_fields.push((struct_symbol, fields, visibility));
     }
 
     // Register all defined functions before creating the type checker
@@ -400,8 +400,8 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     functions_to_register.iter().for_each(|f| { tc.add_function(f.clone()) });
     
     // Register struct definitions with their symbols
-    for (struct_symbol, fields) in struct_symbols_and_fields {
-        tc.context.register_struct(struct_symbol, fields);
+    for (struct_symbol, fields, visibility) in struct_symbols_and_fields {
+        tc.context.register_struct(struct_symbol, fields, visibility);
     }
 
     tc

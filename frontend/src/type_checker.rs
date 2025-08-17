@@ -997,7 +997,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
         for field in fields {
@@ -1039,8 +1039,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
         
         // 3. Register struct definition with visibility information
-        // Store visibility information for later access control checks
-        // TODO: Integrate with proper struct visibility tracking system
+        let struct_symbol = self.core.string_interner.get(name)
+            .unwrap_or_else(|| panic!("Struct name should already be in string interner: {}", name));
+        let struct_def = crate::type_checker::context::StructDefinition {
+            fields: fields.clone(),
+            visibility: visibility.clone(),
+        };
+        
+        // Store the struct definition for later type checking and access control
+        self.context.struct_definitions.insert(struct_symbol, struct_def);
         
         Ok(TypeDecl::Unit)
     }
@@ -1115,7 +1122,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         match obj_type {
             TypeDecl::Identifier(struct_name) => {
                 // Look up the struct definition and get the field type
-                if let Some(struct_fields) = self.context.get_struct_definition(struct_name) {
+                if let Some(struct_fields) = self.context.get_struct_fields(struct_name) {
                     let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
                     for struct_field in struct_fields {
                         if struct_field.name == field_name {
@@ -1130,7 +1137,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
             TypeDecl::Struct(struct_symbol) => {
                 // Handle symbol-based struct type  
-                if let Some(struct_fields) = self.context.get_struct_definition(struct_symbol) {
+                if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
                     let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
                     for struct_field in struct_fields {
                         if struct_field.name == field_name {
@@ -1418,7 +1425,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (field_name, field_expr) in fields {
             // Find expected field type from struct definition
             let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
-            let expected_field_type = struct_definition.iter()
+            let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
             
@@ -2237,12 +2244,12 @@ mod tests {
             },
         ];
         
-        type_checker.context.register_struct(point_symbol, struct_fields);
+        type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Verify struct registration
         let definition = type_checker.context.get_struct_definition(point_symbol);
         assert!(definition.is_some());
-        assert_eq!(definition.unwrap().len(), 2);
+        assert_eq!(definition.unwrap().fields.len(), 2);
     }
 
     #[test]
@@ -2263,7 +2270,7 @@ mod tests {
                 visibility: crate::ast::Visibility::Public,
             },
         ];
-        type_checker.context.register_struct(point_symbol, struct_fields);
+        type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Test array with same struct types
         let point_type = TypeDecl::Struct(point_symbol);
@@ -2298,7 +2305,7 @@ mod tests {
                 visibility: crate::ast::Visibility::Public,
             },
         ];
-        type_checker.context.register_struct(point_symbol, struct_fields);
+        type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Test struct literal validation with missing field - should fail
         let incomplete_fields = vec![(x_symbol, ExprRef(0))]; // missing y field
@@ -2336,8 +2343,8 @@ mod tests {
             },
         ];
         
-        type_checker.context.register_struct(point_symbol, point_fields);
-        type_checker.context.register_struct(circle_symbol, circle_fields);
+        type_checker.context.register_struct(point_symbol, point_fields, crate::ast::Visibility::Private);
+        type_checker.context.register_struct(circle_symbol, circle_fields, crate::ast::Visibility::Private);
         
         // Test array with mixed struct types - should be caught by array type checker
         let point_type = TypeDecl::Struct(point_symbol);
@@ -2365,7 +2372,7 @@ mod tests {
                 visibility: crate::ast::Visibility::Public,
             },
         ];
-        type_checker.context.register_struct(point_symbol, struct_fields);
+        type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Set type hint for struct array
         let point_type = TypeDecl::Struct(point_symbol);

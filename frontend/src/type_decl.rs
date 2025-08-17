@@ -1,6 +1,6 @@
 use string_interner::DefaultSymbol;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash)]
 pub enum TypeDecl {
     Unknown,
     Unit,

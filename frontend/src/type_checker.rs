@@ -39,6 +39,8 @@ pub struct TypeCheckerVisitor<'a> {
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
+    // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
+    pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
 }
 
 
@@ -61,6 +63,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            builtin_methods: Self::create_builtin_method_registry(),
         };
         
         // Process package and imports immediately
@@ -87,7 +90,31 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            builtin_methods: Self::create_builtin_method_registry(),
         }
+    }
+    
+    fn create_builtin_method_registry() -> HashMap<(TypeDecl, String), BuiltinMethod> {
+        let mut registry = HashMap::new();
+        
+        // Universal methods (available for all types - we'll handle these specially)
+        // is_null is handled separately in visit_method_call
+        
+        // String methods
+        registry.insert((TypeDecl::String, "len".to_string()), BuiltinMethod::StrLen);
+        registry.insert((TypeDecl::String, "concat".to_string()), BuiltinMethod::StrConcat);
+        registry.insert((TypeDecl::String, "substring".to_string()), BuiltinMethod::StrSubstring);
+        registry.insert((TypeDecl::String, "contains".to_string()), BuiltinMethod::StrContains);
+        registry.insert((TypeDecl::String, "split".to_string()), BuiltinMethod::StrSplit);
+        registry.insert((TypeDecl::String, "trim".to_string()), BuiltinMethod::StrTrim);
+        registry.insert((TypeDecl::String, "to_upper".to_string()), BuiltinMethod::StrToUpper);
+        registry.insert((TypeDecl::String, "to_lower".to_string()), BuiltinMethod::StrToLower);
+        
+        // Future: Array methods (when ArrayLen etc. are added)
+        // registry.insert((TypeDecl::Array(vec![], 0), "len".to_string()), BuiltinMethod::ArrayLen);
+        // Note: For arrays, we'll need special handling since TypeDecl::Array contains element types
+        
+        registry
     }
     
     /// Create a TypeCheckerVisitor with module resolver for import handling
@@ -108,6 +135,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            builtin_methods: Self::create_builtin_method_registry(),
         }
     }
     
@@ -338,6 +366,7 @@ impl Acceptable for Expr {
             Expr::MethodCall(obj, method, args) => visitor.visit_method_call(obj, method, args),
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
             Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
+            Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
         }
     }
 }
@@ -1174,13 +1203,24 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let obj_type = obj_type_result?;
         
         // Type check all arguments
+        let mut arg_types = Vec::new();
         for arg in args {
-            self.visit_expr(arg)?;
+            arg_types.push(self.visit_expr(arg)?);
         }
         
         let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
         
-        // Handle universal is_null() method first
+        // First, check if this is a user-defined method for a struct
+        if let TypeDecl::Struct(struct_name) = &obj_type {
+            let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+            if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name) {
+                // User-defined method found - use it (priority over builtin)
+                return Ok(method_return_type.clone());
+            }
+        }
+        
+        // Second, check if this could be a builtin method
+        // Special case for is_null - available for all types
         if method_name == "is_null" {
             if !args.is_empty() {
                 return Err(TypeCheckError::method_error(
@@ -1188,6 +1228,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 ));
             }
             return Ok(TypeDecl::Bool);
+        }
+        
+        // Check builtin method registry
+        if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
+            // Delegate to builtin method handler
+            return self.visit_builtin_method_call(obj, &builtin_method, args);
         }
         
         // Handle built-in methods for basic types
@@ -1256,6 +1302,133 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             self.visit_identifier(*last_symbol)
         } else {
             Err(TypeCheckError::generic_error("empty qualified identifier path"))
+        }
+    }
+    
+    fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in builtin method call type inference - possible circular reference"
+            ));
+        }
+        
+        self.type_inference.recursion_depth += 1;
+        let receiver_type_result = self.visit_expr(receiver);
+        self.type_inference.recursion_depth -= 1;
+        
+        let receiver_type = receiver_type_result?;
+        
+        // Special case: is_null() is available for all types
+        if *method == BuiltinMethod::IsNull {
+            if !args.is_empty() {
+                return Err(TypeCheckError::method_error(
+                    "is_null", receiver_type, &format!("takes no arguments, but {} provided", args.len())
+                ));
+            }
+            return Ok(TypeDecl::Bool);
+        }
+        
+        // Method signature table: (method, receiver_type, arg_count, arg_types, return_type)
+        struct MethodSignature {
+            method: BuiltinMethod,
+            receiver_type: TypeDecl,
+            arg_count: usize,
+            arg_types: Vec<TypeDecl>,
+            return_type: TypeDecl,
+        }
+        
+        let method_table = vec![
+            // String methods
+            MethodSignature {
+                method: BuiltinMethod::StrLen,
+                receiver_type: TypeDecl::String,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::UInt64,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrConcat,
+                receiver_type: TypeDecl::String,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::String,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrSubstring,
+                receiver_type: TypeDecl::String,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::String,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrContains,
+                receiver_type: TypeDecl::String,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::Bool,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrSplit,
+                receiver_type: TypeDecl::String,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::Array(vec![TypeDecl::String], 0), // Dynamic array
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrTrim,
+                receiver_type: TypeDecl::String,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::String,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrToUpper,
+                receiver_type: TypeDecl::String,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::String,
+            },
+            MethodSignature {
+                method: BuiltinMethod::StrToLower,
+                receiver_type: TypeDecl::String,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::String,
+            },
+        ];
+        
+        // Find matching method signature
+        let signature = method_table.iter().find(|sig| 
+            sig.method == *method && sig.receiver_type == receiver_type
+        );
+        
+        if let Some(sig) = signature {
+            // Check argument count
+            if args.len() != sig.arg_count {
+                return Err(TypeCheckError::method_error(
+                    &format!("{:?}", method), receiver_type, 
+                    &format!("takes {} argument(s), but {} provided", sig.arg_count, args.len())
+                ));
+            }
+            
+            // Check argument types
+            for (i, (arg, expected_type)) in args.iter().zip(&sig.arg_types).enumerate() {
+                let arg_type = self.visit_expr(arg)?;
+                if arg_type != *expected_type {
+                    return Err(TypeCheckError::type_mismatch(
+                        expected_type.clone(), arg_type
+                    ));
+                }
+            }
+            
+            Ok(sig.return_type.clone())
+        } else {
+            // Method not available for this type
+            Err(TypeCheckError::method_error(
+                &format!("{:?}", method), receiver_type.clone(), 
+                &format!("method '{:?}' is not available for type '{:?}'", method, receiver_type)
+            ))
         }
     }
 }
@@ -1920,6 +2093,7 @@ mod tests {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
         }
     }
 

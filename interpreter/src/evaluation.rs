@@ -508,6 +508,9 @@ impl<'a> EvaluationContext<'a> {
             Expr::MethodCall(obj, method, args) => {
                 self.evaluate_method_call(obj, method, args)
             }
+            Expr::BuiltinMethodCall(receiver, method, args) => {
+                self.evaluate_builtin_method_call(receiver, method, args)
+            }
             Expr::StructLiteral(struct_name, fields) => {
                 self.evaluate_struct_literal(struct_name, fields)
             }
@@ -755,6 +758,99 @@ impl<'a> EvaluationContext<'a> {
                         let len = string_value.len() as u64;
                         
                         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
+                    }
+                    "contains" => {
+                        if args.len() != 1 {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.contains() method takes 1 argument, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let arg_value = self.evaluate(&args[0])?;
+                        let arg_obj = self.extract_value(Ok(arg_value))?;
+                        let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                        let arg_string = self.string_interner.resolve(arg_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("Argument string not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let contains = string_value.contains(&arg_string);
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(contains)))))
+                    }
+                    "concat" => {
+                        if args.len() != 1 {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.concat() method takes 1 argument, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let arg_value = self.evaluate(&args[0])?;
+                        let arg_obj = self.extract_value(Ok(arg_value))?;
+                        let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                        let arg_string = self.string_interner.resolve(arg_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("Argument string not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let concatenated = format!("{}{}", string_value, arg_string);
+                        let new_symbol = self.string_interner.get_or_intern(concatenated);
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                    }
+                    "trim" => {
+                        if !args.is_empty() {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.trim() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let trimmed = string_value.trim();
+                        let new_symbol = self.string_interner.get_or_intern(trimmed.to_string());
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                    }
+                    "to_upper" => {
+                        if !args.is_empty() {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.to_upper() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let upper = string_value.to_uppercase();
+                        let new_symbol = self.string_interner.get_or_intern(upper);
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                    }
+                    "to_lower" => {
+                        if !args.is_empty() {
+                            return Err(InterpreterError::InternalError(format!(
+                                "String.to_lower() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        
+                        let string_value = self.string_interner.resolve(*string_symbol)
+                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
+                            .to_string();
+                        
+                        let lower = string_value.to_lowercase();
+                        let new_symbol = self.string_interner.get_or_intern(lower);
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
                     }
                     _ => {
                         Err(InterpreterError::InternalError(format!(
@@ -1298,6 +1394,217 @@ impl EvaluationContext<'_> {
             }
         } else {
             Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()))
+        }
+    }
+
+    /// Evaluate builtin method calls
+    fn evaluate_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+        let receiver_value = self.evaluate(receiver)?;
+        let receiver_obj = self.extract_value(Ok(receiver_value))?;
+
+        self.execute_builtin_method(&receiver_obj, method, args)
+    }
+
+    /// Execute builtin method with table-driven approach
+    fn execute_builtin_method(&mut self, receiver: &RcObject, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+        match method {
+            BuiltinMethod::IsNull => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "is_null() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len()
+                    });
+                }
+                let is_null = receiver.borrow().is_null();
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(is_null)))))
+            }
+            
+            BuiltinMethod::StrLen => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "len() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?;
+                let length = string_value.len() as u64;
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(length)))))
+            }
+            
+            BuiltinMethod::StrConcat => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "concat(str) takes exactly one string argument".to_string(),
+                        expected: 1,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let arg_value = self.evaluate(&args[0])?;
+                let arg_obj = self.extract_value(Ok(arg_value))?;
+                let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let arg_string = self.string_interner.resolve(arg_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("Argument string symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let concatenated = format!("{}{}", string_value, arg_string);
+                let new_symbol = self.string_interner.get_or_intern(concatenated);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+            }
+            
+            BuiltinMethod::StrSubstring => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "substring(start, end) takes exactly two u64 arguments".to_string(),
+                        expected: 2,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let start_value = self.evaluate(&args[0])?;
+                let start_obj = self.extract_value(Ok(start_value))?;
+                let start = start_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
+                
+                let end_value = self.evaluate(&args[1])?;
+                let end_obj = self.extract_value(Ok(end_value))?;
+                let end = end_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
+                
+                if start >= string_value.len() || end > string_value.len() || start > end {
+                    return Err(InterpreterError::InternalError("Invalid substring indices".to_string()));
+                }
+                
+                let substring = &string_value[start..end];
+                let new_symbol = self.string_interner.get_or_intern(substring.to_string());
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+            }
+            
+            BuiltinMethod::StrContains => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "contains(str) takes exactly one string argument".to_string(),
+                        expected: 1,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let arg_value = self.evaluate(&args[0])?;
+                let arg_obj = self.extract_value(Ok(arg_value))?;
+                let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let arg_string = self.string_interner.resolve(arg_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("Argument string symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let contains = string_value.contains(&arg_string);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(contains)))))
+            }
+            
+            BuiltinMethod::StrTrim => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "trim() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let trimmed = string_value.trim();
+                let new_symbol = self.string_interner.get_or_intern(trimmed.to_string());
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+            }
+            
+            BuiltinMethod::StrToUpper => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "to_upper() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let upper = string_value.to_uppercase();
+                let new_symbol = self.string_interner.get_or_intern(upper);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+            }
+            
+            BuiltinMethod::StrToLower => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "to_lower() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let lower = string_value.to_lowercase();
+                let new_symbol = self.string_interner.get_or_intern(lower);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+            }
+            
+            BuiltinMethod::StrSplit => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "split(str) takes exactly one string argument".to_string(),
+                        expected: 1,
+                        found: args.len()
+                    });
+                }
+                
+                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let string_value = self.string_interner.resolve(string_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let separator_value = self.evaluate(&args[0])?;
+                let separator_obj = self.extract_value(Ok(separator_value))?;
+                let separator_symbol = separator_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
+                let separator = self.string_interner.resolve(separator_symbol)
+                    .ok_or_else(|| InterpreterError::InternalError("Separator string symbol not found in interner".to_string()))?
+                    .to_string();
+                
+                let parts: Vec<_> = string_value.split(&separator)
+                    .map(|part| {
+                        let part_symbol = self.string_interner.get_or_intern(part.to_string());
+                        Rc::new(RefCell::new(Object::String(part_symbol)))
+                    })
+                    .collect();
+                
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(parts))))))
+            }
         }
     }
 }

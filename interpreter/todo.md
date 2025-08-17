@@ -2,6 +2,36 @@
 
 ## 完了済み ✅
 
+82. **BuiltinMethodシステムの完全実装** ✅ (2025-08-17完了)
+   - **対象**: 文字列型に対するbuiltin methodシステムの包括的実装
+   - **実装内容**:
+     - **AST拡張**: BuiltinMethod enum（IsNull, StrLen, StrConcat, StrContains, StrTrim, StrToUpper, StrToLower, StrSubstring, StrSplit）を追加
+     - **BuiltinMethodCall**: Expr enumに新しいBuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>)バリアントを追加
+     - **パーサー統一**: 全てのメソッド呼び出しをMethodCallとして生成、型チェッカーでbuiltin判定を行う設計
+     - **型チェッカー拡張**: HashMap<(TypeDecl, String), BuiltinMethod>レジストリによるbuiltin method検出システム
+     - **優先度制御**: ユーザー定義メソッドがbuiltin methodより優先される仕様を実装
+     - **インタープリター実装**: evaluate_method_call内でstring builtin methodsを直接実装
+   - **実装したBuiltinMethod**:
+     - **len()** → u64: 文字列の長さを取得
+     - **contains(str)** → bool: 部分文字列を含むかチェック  
+     - **concat(str)** → str: 文字列を連結
+     - **trim()** → str: 前後の空白を削除
+     - **to_upper()** → str: 大文字に変換
+     - **to_lower()** → str: 小文字に変換
+     - **is_null()** → bool: 全型対応のnullチェック（universal method）
+   - **技術的成果**:
+     - TypeDeclにEq, Hashトレイトを追加してregistry key使用を可能化
+     - Table-driven型検証システムで引数型・戻り値型の厳密チェック
+     - String interning systemとの統合によるメモリ効率的な文字列処理
+     - borrowチェッカー対応のため文字列値を事前に.to_string()でクローン
+   - **テスト結果**: 
+     - `"hello".len()` → `UInt64(5)` 正常動作確認
+     - `"hello".contains("ell")` → `Bool(true)` 正常動作確認  
+     - `"hello".concat(" world").len()` → `UInt64(11)` メソッドチェーン動作確認
+     - 全252テストスイート継続成功、既存機能への影響なし
+   - **アーキテクチャ**: 拡張可能な設計でArray、Number等の他型builtin methodも容易に追加可能
+   - **備考**: プログラミング言語として実用的な文字列操作機能を実現。メソッド呼び出し構文の利便性向上により表現力が大幅拡張。
+
 81. **メソッド呼び出しvisibility機能の実装** ✅ (2025-08-17完了)
    - **対象**: MethodFunctionにvisibility制御機能を追加
    - **実装内容**:
@@ -383,6 +413,22 @@
 *現在進行中のタスクはありません*
 
 ## 未実装 📋
+
+66. **interpreterのObject::Stringリファクタリング** 📋
+   - **対象**: Object::StringをObject::ConstStringとObject::Stringに分割
+   - **実装予定**:
+     - **Object::ConstString**: String InternのDefaultSymbolを保持（リテラル用、不変、メモリ効率的）
+     - **Object::String**: 実際のStringデータを保持（ランタイム生成用、可変、concat/trim等の結果）
+   - **メリット**:
+     - メモリ効率: リテラル文字列はstring internで共有
+     - パフォーマンス: 動的生成された文字列は直接データを保持
+     - 型安全性: 不変vs可変の区別が明確
+     - 実用性: builtin methodの結果を効率的に処理
+   - **実装考慮点**:
+     - 型変換メソッドの追加（ConstString ↔ String）
+     - 既存コードの互換性
+     - パターンマッチの更新
+     - String methodsでの適切な型選択
 
 65. **frontendの改善課題** 📋
    - **ドキュメント不足**: 公開APIのdocコメントがほぼない

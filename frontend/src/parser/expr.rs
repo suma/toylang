@@ -310,6 +310,7 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                             parser.next();
                             let args = parse_expr_list(parser, vec![])?;
                             parser.expect_err(&Kind::ParenClose)?;
+                            // Always parse as regular method call - let type checker decide if it's builtin
                             expr = parser.ast_builder.method_call_expr(expr, field_symbol, args, Some(location));
                         } else {
                             let location = parser.current_source_location();

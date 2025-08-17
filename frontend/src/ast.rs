@@ -420,6 +420,12 @@ impl AstBuilder {
         self.location_pool.add_expr_location(location);
         expr_ref
     }
+    
+    pub fn builtin_method_call_expr(&mut self, receiver: ExprRef, method: BuiltinMethod, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::BuiltinMethodCall(receiver, method, args));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
 
     // Statement builders
     pub fn expression_stmt(&mut self, expr: ExprRef, location: Option<SourceLocation>) -> StmtRef {
@@ -604,6 +610,23 @@ pub enum Expr {
     MethodCall(ExprRef, DefaultSymbol, Vec<ExprRef>),  // obj.method(args)
     StructLiteral(DefaultSymbol, Vec<(DefaultSymbol, ExprRef)>),  // Point { x: 10, y: 20 }
     QualifiedIdentifier(Vec<DefaultSymbol>),  // math::add
+    BuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>),  // "hello".len(), str.concat("world")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BuiltinMethod {
+    // Universal methods (available for all types)
+    IsNull,       // any.is_null() -> bool
+    
+    // String methods
+    StrLen,       // str.len() -> u64
+    StrConcat,    // str.concat(str) -> str
+    StrSubstring, // str.substring(u64, u64) -> str
+    StrContains,  // str.contains(str) -> bool
+    StrSplit,     // str.split(str) -> [str]
+    StrTrim,      // str.trim() -> str
+    StrToUpper,   // str.to_upper() -> str
+    StrToLower,   // str.to_lower() -> str
 }
 
 impl Expr {

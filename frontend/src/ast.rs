@@ -547,6 +547,7 @@ pub struct MethodFunction {
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
+    pub visibility: Visibility,
 }
 
 #[derive(Debug, Clone, PartialEq)]

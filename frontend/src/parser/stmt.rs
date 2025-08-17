@@ -240,6 +240,14 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
             return Ok(methods);
         }
 
+        // Check for visibility modifier first
+        let visibility = if matches!(parser.peek(), Some(Kind::Public)) {
+            parser.next(); // consume 'pub'
+            crate::ast::Visibility::Public
+        } else {
+            crate::ast::Visibility::Private
+        };
+        
         match parser.peek() {
             Some(Kind::Function) => {
                 let fn_start_pos = parser.peek_position_n(0).unwrap().start;
@@ -274,6 +282,7 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                             return_type: ret_ty,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,
+                            visibility,
                         }));
                         
                         parser.skip_newlines();

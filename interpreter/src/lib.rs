@@ -281,7 +281,8 @@ impl<'a> AstIntegrationContext<'a> {
             parameter: new_parameters,
             return_type: method.return_type.clone(),
             code: new_code,
-            has_self_param: method.has_self_param
+            has_self_param: method.has_self_param,
+            visibility: method.visibility.clone()
         }))
     }
     

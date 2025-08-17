@@ -2,6 +2,25 @@
 
 ## 完了済み ✅
 
+81. **メソッド呼び出しvisibility機能の実装** ✅ (2025-08-17完了)
+   - **対象**: MethodFunctionにvisibility制御機能を追加
+   - **実装内容**:
+     - MethodFunction構造体にvisibilityフィールドを追加
+     - parse_impl_methodsでpubキーワード検出機能を実装（core.rsと同様のフラグ方式）
+     - デフォルトでPrivateメソッド、pubキーワードでPublicメソッドを設定
+     - TypeCheckContextにメソッドvisibilityチェック機能を追加
+       - get_method_visibility(): メソッドのvisibilityを取得
+       - is_method_accessible(): 同一モジュール内は制限なし、クロスモジュールはpublicのみアクセス可能
+     - interpreterでMethodFunction作成時のvisibility処理を修正
+   - **技術的成果**:
+     - struct visibility（前回実装）に続き、メソッドレベルでのアクセス制御基盤を確立
+     - パーサーレベルでのpub/privateキーワード解析の統一実装
+     - 同一モジュール内では制限なし、クロスモジュールでは適切なアクセス制御を行う仕組み
+   - **テスト結果**: 
+     - pub fn / fn を含むimplブロックが正常にパースされることを確認
+     - 全テストが成功
+   - **備考**: 将来的なモジュール間アクセス制御機能の完全な基盤が整備完了
+
 80. **string_interner重複管理問題の解決とTypeCheckerVisitorリファクタリング** ✅ (2025-08-16完了)
    - **対象**: Programとstring_internerの重複管理によるアーキテクチャ問題の解決
    - **解決した問題**:

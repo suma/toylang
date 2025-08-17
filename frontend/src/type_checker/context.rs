@@ -110,6 +110,23 @@ impl TypeCheckContext {
         matches!(self.get_struct_visibility(name), Some(Visibility::Public))
     }
     
+    pub fn get_method_visibility(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Visibility> {
+        self.struct_methods.get(&struct_name)
+            .and_then(|methods| methods.get(&method_name))
+            .map(|method| &method.visibility)
+    }
+    
+    pub fn is_method_accessible(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol, _same_module: bool) -> bool {
+        // For now, always allow access within the same module (as requested)
+        // In the future, this can be extended for cross-module access control
+        if _same_module {
+            return true;
+        }
+        
+        // For cross-module access, check if method is public
+        matches!(self.get_method_visibility(struct_name, method_name), Some(Visibility::Public))
+    }
+    
     pub fn validate_struct_fields(&self, struct_name: DefaultSymbol, provided_fields: &Vec<(DefaultSymbol, crate::ast::ExprRef)>, string_interner: &CoreReferences) -> Result<(), TypeCheckError> {
         if let Some(definition) = self.get_struct_fields(struct_name) {
             // Check if all required fields are provided

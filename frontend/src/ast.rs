@@ -409,6 +409,12 @@ impl AstBuilder {
         expr_ref
     }
     
+    pub fn dict_literal_expr(&mut self, entries: Vec<(ExprRef, ExprRef)>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::DictLiteral(entries));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);
@@ -625,6 +631,7 @@ pub enum Expr {
     BuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>),  // "hello".len(), str.concat("world")
     IndexAccess(ExprRef, ExprRef),  // x[key] - generic index access
     IndexAssign(ExprRef, ExprRef, ExprRef),  // x[key] = value - index assignment
+    DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

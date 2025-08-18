@@ -2,6 +2,42 @@
 
 ## 完了済み ✅
 
+84. **辞書（Dict）型と索引アクセス機能の完全実装** ✅ (2025-08-18完了)
+   - **対象**: ハッシュ/辞書型の基本機能を完全実装（`dict{key: value}` 構文、インデックスアクセス、代入）
+   - **実装内容**:
+     - **AST拡張**: 
+       - `Expr::DictLiteral(Vec<(ExprRef, ExprRef)>)` - 辞書リテラル式を追加
+       - `TypeDecl::Dict(Box<TypeDecl>, Box<TypeDecl>)` - key-value型システム追加
+       - `IndexAccess`/`IndexAssign`の汎用実装で配列と辞書の両方をサポート
+     - **パーサー実装**:
+       - `dict{key: value}` 構文の完全実装（空辞書、複数エントリ、改行対応）
+       - `parse_dict_literal`、`parse_dict_entries`による辞書構文解析
+       - `dict`キーワードをトークン化、レクサーとパーサーで正しく処理
+       - 識別子の`[index]`をArrayAccessからIndexAccessに変更
+     - **型チェッカー実装**:
+       - `visit_dict_literal`による静的型チェック（key/value型の一貫性強制）
+       - `visit_index_access`で辞書のkey型とindex型のマッチング検証
+       - 混合型エラーの適切な検出とエラーメッセージ
+     - **インタープリター実装**:
+       - `Object::Dict(Box<HashMap<String, RcObject>>)` - ランタイム辞書サポート
+       - `evaluate_dict_literal`、`evaluate_index_access`、`evaluate_index_assign`
+       - 辞書とArrayの統一されたインデックス操作
+   - **技術的成果**:
+     - **静的型安全性**: 辞書の値は単一型で統一、混合型は型チェック段階で検出
+     - **汎用インデックス**: 配列と辞書で統一された `x[key]` 構文
+     - **包括的テスト**: 25+テストケース（パース、型チェック、エラーケース）
+     - **実行時動作確認**: 空辞書、文字列辞書、インデックスアクセス・代入全て正常動作
+   - **テスト結果**: 
+     - パーサーテスト: `dict{}`、`dict{"key": "value"}`、マルチライン、新しいトークン等
+     - 型チェッカーテスト: 一貫性チェック、混合型エラー検出
+     - インタープリターテスト: 辞書作成、インデックスアクセス、代入全て成功
+     - 総合テスト: `dict1["city"] = "Tokyo"` → 正常に値取得・変更可能
+   - **実装ファイル**: 
+     - frontend: ast.rs, type_decl.rs, parser/expr.rs, lexer.l, token.rs, type_checker.rs, visitor.rs
+     - tests: dict_index_tests.rs (新規)
+     - interpreter: object.rs, evaluation.rs
+   - **備考**: 基本的な辞書機能は完成。struct/implでの索引演算子オーバーロードは今後実装予定。
+
 83. **索引アクセス構文のAST/パーサー実装** ✅ (2025-08-18完了)
    - **対象**: ハッシュ/辞書型の索引アクセス構文 `x[key]` と代入構文 `x[key] = value` の基盤実装
    - **実装内容**:

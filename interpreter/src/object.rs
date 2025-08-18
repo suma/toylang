@@ -25,6 +25,7 @@ pub enum Object {
         type_name: DefaultSymbol,
         fields: Box<HashMap<String, RcObject>>,
     },
+    Dict(Box<HashMap<String, RcObject>>),  // Using String keys for simplicity
     //Function: Rc<Function>,
     Null,
     Unit,
@@ -52,6 +53,11 @@ impl Object {
             }
             Object::Struct { type_name, .. } => {
                 TypeDecl::Struct(*type_name)
+            }
+            Object::Dict(_) => {
+                // For now, return Dict with Unknown types
+                // In a real implementation, we'd track key/value types
+                TypeDecl::Dict(Box::new(TypeDecl::String), Box::new(TypeDecl::Unknown))
             }
         }
     }

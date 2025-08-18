@@ -44,6 +44,7 @@ macro_rules! token {
 "usize"     return Ok(token!(self, Kind::USize));
 "null"      return Ok(token!(self, Kind::Null));
 "bool"      return Ok(token!(self, Kind::Bool));
+"dict"      return Ok(token!(self, Kind::Dict));
 
 "::"        return Ok(token!(self, Kind::DoubleColon));
 "->"        return Ok(token!(self, Kind::Arrow));

@@ -369,6 +369,7 @@ impl Acceptable for Expr {
             Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
             Expr::IndexAccess(object, index) => visitor.visit_index_access(object, index),
             Expr::IndexAssign(object, index, value) => visitor.visit_index_assign(object, index, value),
+            Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
         }
     }
 }
@@ -945,24 +946,126 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
     
     fn visit_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        // For now, treat it the same as array access
-        // Later, this will check for __getitem__ methods on structs
-        self.visit_array_access(object, index)
+        let object_type = self.visit_expr(object)?;
+        
+        match object_type {
+            TypeDecl::Array(ref element_types, _size) => {
+                // Array indexing - expects UInt64 index
+                let original_hint = self.type_inference.type_hint.clone();
+                self.type_inference.type_hint = Some(TypeDecl::UInt64);
+                let _index_type = self.visit_expr(index)?;
+                self.type_inference.type_hint = original_hint;
+                
+                if element_types.is_empty() {
+                    return Err(TypeCheckError::array_error("Cannot access elements of empty array"));
+                }
+                Ok(element_types[0].clone())
+            }
+            TypeDecl::Dict(ref key_type, ref value_type) => {
+                // Dict indexing - check key type matches
+                let index_type = self.visit_expr(index)?;
+                
+                // Verify the index type matches the key type
+                if index_type != **key_type {
+                    return Err(TypeCheckError::type_mismatch(
+                        *key_type.clone(), index_type
+                    ));
+                }
+                
+                Ok(*value_type.clone())
+            }
+            _ => {
+                // Later, check for __getitem__ methods on structs
+                Err(TypeCheckError::generic_error(&format!(
+                    "Cannot index into type {:?}", object_type
+                )))
+            }
+        }
     }
     
     fn visit_index_assign(&mut self, object: &ExprRef, index: &ExprRef, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Type check the object being indexed
-        let _object_type = self.visit_expr(object)?;
+        let object_type = self.visit_expr(object)?;
         
         // Type check the index
-        let _index_type = self.visit_expr(index)?;
+        let index_type = self.visit_expr(index)?;
         
         // Type check the value being assigned
         let value_type = self.visit_expr(value)?;
         
-        // For now, just return the value type
-        // Later, this will check for __setitem__ methods on structs
-        Ok(value_type)
+        // Check type compatibility based on container type
+        match object_type {
+            TypeDecl::Array(ref element_types, _size) => {
+                // Array assignment - check index and value types
+                if index_type != TypeDecl::UInt64 {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Array index must be UInt64, found {:?}", index_type
+                    )));
+                }
+                if !element_types.is_empty() && element_types[0] != value_type {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Array element type mismatch: expected {:?}, found {:?}", 
+                        element_types[0], value_type
+                    )));
+                }
+                Ok(value_type)
+            }
+            TypeDecl::Dict(ref key_type, ref val_type) => {
+                // Dict assignment - check key and value types
+                if **key_type != TypeDecl::Unknown && **key_type != index_type {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Dict key type mismatch: expected {:?}, found {:?}", 
+                        key_type, index_type
+                    )));
+                }
+                if **val_type != TypeDecl::Unknown && **val_type != value_type {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Dict value type mismatch: expected {:?}, found {:?}. All values must have the same type.", 
+                        val_type, value_type
+                    )));
+                }
+                Ok(value_type)
+            }
+            _ => {
+                // Later, check for __setitem__ methods on structs
+                Err(TypeCheckError::generic_error(&format!(
+                    "Cannot assign index to type {:?}", object_type
+                )))
+            }
+        }
+    }
+    
+    fn visit_dict_literal(&mut self, entries: &Vec<(ExprRef, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+        if entries.is_empty() {
+            // Empty dict - type will be inferred from usage
+            return Ok(TypeDecl::Dict(Box::new(TypeDecl::Unknown), Box::new(TypeDecl::Unknown)));
+        }
+        
+        // Check first entry to determine key and value types
+        let (first_key, first_value) = &entries[0];
+        let key_type = self.visit_expr(first_key)?;
+        let value_type = self.visit_expr(first_value)?;
+        
+        // Verify all entries have consistent types - static typing requirement
+        for (entry_index, (key_ref, value_ref)) in entries.iter().skip(1).enumerate() {
+            let k_type = self.visit_expr(key_ref)?;
+            let v_type = self.visit_expr(value_ref)?;
+            
+            if k_type != key_type {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Dict key type mismatch at entry {}: expected {:?}, found {:?}. All keys must have the same type.",
+                    entry_index + 1, key_type, k_type
+                )));
+            }
+            if v_type != value_type {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Dict value type mismatch at entry {}: expected {:?}, found {:?}. All values must have the same type.",
+                    entry_index + 1, value_type, v_type
+                )));
+            }
+        }
+        
+        Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
     }
     
     // =========================================================================

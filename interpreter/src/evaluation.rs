@@ -520,6 +520,15 @@ impl<'a> EvaluationContext<'a> {
             Expr::Null => {
                 Err(InterpreterError::InternalError("Null reference error".to_string()))
             }
+            Expr::IndexAccess(object, index) => {
+                self.evaluate_index_access(object, index)
+            }
+            Expr::IndexAssign(object, index, value) => {
+                self.evaluate_index_assign(object, index, value)
+            }
+            Expr::DictLiteral(entries) => {
+                self.evaluate_dict_literal(entries)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }
@@ -1403,6 +1412,132 @@ impl EvaluationContext<'_> {
         let receiver_obj = self.extract_value(Ok(receiver_value))?;
 
         self.execute_builtin_method(&receiver_obj, method, args)
+    }
+    
+    fn evaluate_dict_literal(&mut self, entries: &[(ExprRef, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
+        let mut dict = HashMap::new();
+        
+        for (key_ref, value_ref) in entries {
+            // Evaluate key and convert to String
+            let key_val = self.evaluate(key_ref)?;
+            let key_obj = self.extract_value(Ok(key_val))?;
+            let key_str = match &*key_obj.borrow() {
+                Object::String(sym) => {
+                    self.string_interner.resolve(*sym)
+                        .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
+                        .to_string()
+                }
+                _ => {
+                    return Err(InterpreterError::InternalError("Dict keys must be strings".to_string()));
+                }
+            };
+            
+            // Evaluate value
+            let value_val = self.evaluate(value_ref)?;
+            let value_obj = self.extract_value(Ok(value_val))?;
+            
+            dict.insert(key_str, value_obj);
+        }
+        
+        let dict_obj = Object::Dict(Box::new(dict));
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(dict_obj))))
+    }
+    
+    fn evaluate_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let object_val = self.evaluate(object)?;
+        let object_obj = self.extract_value(Ok(object_val))?;
+        let index_val = self.evaluate(index)?;
+        let index_obj = self.extract_value(Ok(index_val))?;
+        
+        let obj_borrowed = object_obj.borrow();
+        match &*obj_borrowed {
+            Object::Array(elements) => {
+                // Array indexing with UInt64
+                let index_borrowed = index_obj.borrow();
+                match &*index_borrowed {
+                    Object::UInt64(idx) => {
+                        let idx = *idx as usize;
+                        if idx >= elements.len() {
+                            return Err(InterpreterError::IndexOutOfBounds { 
+                                index: idx as isize, 
+                                size: elements.len() 
+                            });
+                        }
+                        Ok(EvaluationResult::Value(elements[idx].clone()))
+                    }
+                    _ => Err(InterpreterError::InternalError("Array index must be UInt64".to_string()))
+                }
+            }
+            Object::Dict(dict) => {
+                // Dict indexing with String key
+                let index_borrowed = index_obj.borrow();
+                match &*index_borrowed {
+                    Object::String(sym) => {
+                        let key_str = self.string_interner.resolve(*sym)
+                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?;
+                        
+                        dict.get(key_str)
+                            .cloned()
+                            .map(EvaluationResult::Value)
+                            .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {}", key_str)))
+                    }
+                    _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
+                }
+            }
+            _ => Err(InterpreterError::InternalError(format!("Cannot index into type {:?}", obj_borrowed.get_type())))
+        }
+    }
+    
+    fn evaluate_index_assign(&mut self, object: &ExprRef, index: &ExprRef, value: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Get the object being indexed
+        let object_val = self.evaluate(object)?;
+        let object_obj = self.extract_value(Ok(object_val))?;
+        
+        // Evaluate the index
+        let index_val = self.evaluate(index)?;
+        let index_obj = self.extract_value(Ok(index_val))?;
+        
+        // Evaluate the value to assign
+        let value_val = self.evaluate(value)?;
+        let value_obj = self.extract_value(Ok(value_val))?;
+        
+        let mut obj_borrowed = object_obj.borrow_mut();
+        match &mut *obj_borrowed {
+            Object::Array(elements) => {
+                // Array assignment with UInt64 index
+                let index_borrowed = index_obj.borrow();
+                match &*index_borrowed {
+                    Object::UInt64(idx) => {
+                        let idx = *idx as usize;
+                        if idx >= elements.len() {
+                            return Err(InterpreterError::IndexOutOfBounds { 
+                                index: idx as isize, 
+                                size: elements.len() 
+                            });
+                        }
+                        elements[idx] = value_obj.clone();
+                        Ok(EvaluationResult::Value(value_obj))
+                    }
+                    _ => Err(InterpreterError::InternalError("Array index must be UInt64".to_string()))
+                }
+            }
+            Object::Dict(dict) => {
+                // Dict assignment with String key
+                let index_borrowed = index_obj.borrow();
+                match &*index_borrowed {
+                    Object::String(sym) => {
+                        let key_str = self.string_interner.resolve(*sym)
+                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
+                            .to_string();
+                        
+                        dict.insert(key_str, value_obj.clone());
+                        Ok(EvaluationResult::Value(value_obj))
+                    }
+                    _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
+                }
+            }
+            _ => Err(InterpreterError::InternalError(format!("Cannot assign index to type {:?}", obj_borrowed.get_type())))
+        }
     }
 
     /// Execute builtin method with table-driven approach

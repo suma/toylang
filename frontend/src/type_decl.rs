@@ -13,4 +13,5 @@ pub enum TypeDecl {
     Number,  // Type-unspecified numeric literal for type inference
     Array(Vec<TypeDecl>, usize),  // element types and fixed size
     Struct(DefaultSymbol),  // struct type
+    Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
 }

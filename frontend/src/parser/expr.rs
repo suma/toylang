@@ -77,6 +77,70 @@ impl<'a> Parser<'a> {
     }
 }
 
+
+fn parse_dict_literal(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let location = parser.current_source_location();
+    
+    // Expect opening brace after 'dict' keyword
+    parser.expect_err(&Kind::BraceOpen)?;
+    
+    parser.skip_newlines(); // Skip newlines after opening brace
+    
+    // Handle empty dict{}
+    if parser.peek() == Some(&Kind::BraceClose) {
+        parser.next();
+        return Ok(parser.ast_builder.dict_literal_expr(vec![], Some(location)));
+    }
+    
+    let entries = parse_dict_entries(parser, vec![])?;
+    
+    parser.skip_newlines(); // Skip newlines before closing brace
+    parser.expect_err(&Kind::BraceClose)?;
+    Ok(parser.ast_builder.dict_literal_expr(entries, Some(location)))
+}
+
+fn parse_dict_entries(parser: &mut Parser, mut entries: Vec<(ExprRef, ExprRef)>) -> ParserResult<Vec<(ExprRef, ExprRef)>> {
+    loop {
+        parser.skip_newlines(); // Skip newlines before key
+        
+        // Parse key
+        let key = parser.parse_expr_impl()?;
+        
+        parser.skip_newlines(); // Skip newlines before colon
+        
+        // Expect colon
+        parser.expect_err(&Kind::Colon)?;
+        
+        parser.skip_newlines(); // Skip newlines after colon
+        
+        // Parse value
+        let value = parser.parse_expr_impl()?;
+        
+        entries.push((key, value));
+        
+        parser.skip_newlines(); // Skip newlines after value
+        
+        match parser.peek() {
+            Some(Kind::Comma) => {
+                parser.next();
+                parser.skip_newlines(); // Skip newlines after comma
+                // Allow trailing comma
+                if parser.peek() == Some(&Kind::BraceClose) {
+                    break;
+                }
+                continue;
+            }
+            Some(Kind::BraceClose) => break,
+            _ => {
+                parser.collect_error("Expected ',' or '}' in dict literal");
+                break;
+            }
+        }
+    }
+    
+    Ok(entries)
+}
+
 pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprRef> {
     loop {
         match parser.peek() {
@@ -364,7 +428,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
             parser.expect_err(&Kind::ParenClose)?;
             Ok(node)
         }
-        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If) => {
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict) => {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
         }
@@ -424,8 +488,8 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         parser.next();
                         let index = parser.parse_expr_impl()?;
                         parser.expect_err(&Kind::BracketClose)?;
-                        let array_ref = parser.ast_builder.identifier_expr(s, None);
-                        Ok(parser.ast_builder.array_access_expr(array_ref, index, Some(location)))
+                        let object_ref = parser.ast_builder.identifier_expr(s, None);
+                        Ok(parser.ast_builder.index_access_expr(object_ref, index, Some(location)))
                     }
                     Some(Kind::BraceOpen) => {
                         let location = parser.current_source_location();
@@ -496,6 +560,10 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         Some(Kind::If) => {
                             parser.next();
                             parse_if(parser)
+                        }
+                        Some(Kind::Dict) => {
+                            parser.next();
+                            parse_dict_literal(parser)
                         }
                         _ => {
                             let x_cloned = x.cloned();

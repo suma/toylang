@@ -54,10 +54,22 @@ impl Object {
             Object::Struct { type_name, .. } => {
                 TypeDecl::Struct(*type_name)
             }
-            Object::Dict(_) => {
-                // For now, return Dict with Unknown types
-                // In a real implementation, we'd track key/value types
-                TypeDecl::Dict(Box::new(TypeDecl::String), Box::new(TypeDecl::Unknown))
+            Object::Dict(map) => {
+                // Key type is always String
+                let key_type = TypeDecl::String;
+                
+                // Determine value type from the first value in the dict
+                let value_type = if map.is_empty() {
+                    TypeDecl::Unknown
+                } else {
+                    // Get the type of the first value
+                    map.values()
+                        .next()
+                        .map(|v| v.borrow().get_type())
+                        .unwrap_or(TypeDecl::Unknown)
+                };
+                
+                TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
             }
         }
     }

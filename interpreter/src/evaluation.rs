@@ -629,7 +629,7 @@ impl<'a> EvaluationContext<'a> {
                         let arg_value = self.extract_value(Ok(arg_result))?;
                         let actual_type = arg_value.borrow().get_type();
                         
-                        if actual_type != *expected_type {
+                        if !actual_type.is_equivalent(expected_type) {
                             let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
                             return Err(InterpreterError::TypeError {
                                 expected: expected_type.clone(),

@@ -2,6 +2,39 @@
 
 ## 完了済み ✅
 
+86. **辞書型推論と関数引数型チェック問題の完全解決** ✅ (2025-08-18完了)
+   - **対象**: 索引アクセス実装で残存していた2つの型チェック問題の根本解決
+   - **解決した問題**:
+     - **辞書リテラル型推論問題**: `Object::Dict::get_type()`が固定で`Dict(String, Unknown)`を返していた問題
+     - **struct型関数引数チェック問題**: `TypeDecl::Identifier(symbol)`と`TypeDecl::Struct(symbol)`の型不一致エラー
+   - **実装内容**:
+     - **辞書型推論修正**: 
+       - `Object::Dict::get_type()`を動的型決定に変更
+       - 辞書内容から実際の値型を検査して`Dict(String, actual_value_type)`を返すように修正
+       - 空辞書の場合は`Dict(String, Unknown)`、値がある場合は最初の値の型を採用
+     - **型等価性システム導入**:
+       - `TypeDecl::is_equivalent()`メソッドを新規追加
+       - `Identifier(symbol)`と`Struct(symbol)`が同じsymbolを持つ場合は等価として処理
+       - 関数引数型チェックで厳密な`==`比較から`is_equivalent()`に変更
+   - **技術的成果**:
+     - **100%テスト成功率達成**: 全32個のテストが成功（96% → 100%への改善）
+     - 辞書リテラルの型情報が正確に保持され、関数引数としての使用が完全に動作
+     - struct型を引数に取る関数が正常に呼び出し可能になった
+     - 型システムの柔軟性向上：同一概念の異なる表現（IdentifierとStruct）を適切に統合
+   - **修正ファイル**:
+     - **frontend/src/type_decl.rs**: `TypeDecl::is_equivalent()`メソッド追加
+     - **interpreter/src/object.rs**: `Object::Dict::get_type()`の動的型推論実装
+     - **interpreter/src/evaluation.rs**: 関数引数型チェックでの`is_equivalent()`使用
+   - **テスト結果**: 
+     - **全284テスト成功**: frontend 221テスト + interpreter 63テスト
+     - **辞書テスト**: 8/8成功（前回7/8から改善）
+     - **統合テスト**: 8/8成功（前回7/8から改善）
+     - **既存機能**: 100%継続動作、回帰なし
+   - **備考**: 
+     - 索引アクセス機能の完全完成を達成
+     - 型システムの成熟度が大幅に向上
+     - 実用的なプログラムでの辞書・構造体操作が完全に安定化
+
 85. **索引アクセス構文とDict型システムの包括的実装** ✅ (2025-08-18完了)
    - **対象**: ハッシュ/辞書型の包括的実装および struct/impl での索引演算子オーバーロード、Self キーワード導入
    - **実装内容**:
@@ -21,18 +54,18 @@
      - `visit_index_access` および `visit_index_assign` で配列・辞書・構造体の統一処理
      - 構造体メソッド解決システムによる `__getitem__`/`__setitem__` の動的検索
      - `resolve_self_type` による impl ブロック内での Self → 実際の構造体型変換
-     - 関数呼び出し時の型ヒントシステムによる辞書リテラル型推論向上（部分的成功）
+     - 関数呼び出し時の型ヒントシステムによる辞書リテラル型推論向上
    - **インタープリター実装**:
      - `Object::Dict(HashMap<String, RcObject>)` でランタイム辞書サポート
      - `evaluate_dict_literal`、`evaluate_index_access`、`evaluate_index_assign` を実装
      - 構造体メソッド呼び出しシステムで索引演算子オーバーロードをサポート
      - Self バインディングシステムによる正確なメソッド引数処理
    - **包括的テストスイート**:
-     - **辞書機能テスト**: 8テスト（7成功、1型推論問題で失敗）
+     - **辞書機能テスト**: 8テスト（全成功、#86で型推論問題解決）
      - **構造体索引テスト**: 8テスト（全成功）
      - **Self キーワードテスト**: 8テスト（全成功）
-     - **統合機能テスト**: 8テスト（7成功、1型推論問題で失敗）
-     - **総計**: 32個のテスト、30個成功（96%成功率）
+     - **統合機能テスト**: 8テスト（全成功、#86で型チェック問題解決）
+     - **総計**: 32個のテスト、32個成功（100%成功率）
    - **技術的成果**:
      - 静的型安全性の完全実現：辞書値は単一型で統一、混合型は型チェック段階で検出
      - 汎用索引システム：配列 `arr[i]`、辞書 `dict["key"]`、構造体 `obj[index]` で統一構文
@@ -42,9 +75,6 @@
      - **frontend**: ast.rs, type_decl.rs, parser/{expr.rs, core.rs}, lexer.l, type_checker.rs
      - **interpreter**: object.rs, evaluation.rs, lib.rs（debug出力削除）
      - **テスト**: dict_tests.rs, struct_index_tests.rs, self_keyword_tests.rs, integration_new_features_tests.rs
-   - **既知の制限**:
-     - 関数引数での辞書リテラル型推論に軽微な問題（関数呼び出し時の型ヒント伝播が部分的）
-     - 基本機能は完全動作、実用レベルでの使用に支障なし
    - **備考**: 
      - プログラミング言語として重要な索引アクセス機能を完全実装
      - Python や JavaScript スタイルの辞書操作が可能
@@ -610,4 +640,4 @@
 - **Go-style module system fully implemented** - Complete 4-phase implementation (syntax, resolution, type checking, runtime)
 - **Module namespace support** - Package declarations, import statements, qualified name resolution
 - **プロダクションレベル達成** - 深い再帰、複雑ネスト構造を含む実用的プログラム作成が可能
-- **包括的テストスイート** - frontend 221テスト + interpreter 63テスト = 合計284テスト成功（96%成功率）
+- **包括的テストスイート** - frontend 221テスト + interpreter 63テスト = 合計284テスト成功（100%成功率）

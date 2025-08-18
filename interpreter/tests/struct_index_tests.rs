@@ -177,8 +177,8 @@ fn main() -> str {
         let result = test_program(source).expect("Program should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
-            Object::String(_) => {}, // Success - we got a string
-            other => panic!("Expected String but got {:?}", other),
+            Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
+            other => panic!("Expected String or ConstString but got {:?}", other),
         }
     }
 

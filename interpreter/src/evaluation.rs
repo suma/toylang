@@ -192,9 +192,48 @@ impl<'a> EvaluationContext<'a> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(op.apply_i64(*l, *r)),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(op.apply_u64(*l, *r)),
-            (Object::String(l), Object::String(r)) => {
+            (Object::ConstString(l), Object::ConstString(r)) => {
                 match op {
                     ComparisonOp::Eq | ComparisonOp::Ne => Object::Bool(op.apply_string(*l, *r)),
+                    _ => return Err(InterpreterError::TypeError{
+                        expected: lhs_ty, 
+                        found: rhs_ty, 
+                        message: format!("{}: String comparison only supports == and !=: {:?}", 
+                                       op.name(), lhs)
+                    }),
+                }
+            }
+            (Object::String(l), Object::String(r)) => {
+                match op {
+                    ComparisonOp::Eq => Object::Bool(l == r),
+                    ComparisonOp::Ne => Object::Bool(l != r),
+                    _ => return Err(InterpreterError::TypeError{
+                        expected: lhs_ty, 
+                        found: rhs_ty, 
+                        message: format!("{}: String comparison only supports == and !=: {:?}", 
+                                       op.name(), lhs)
+                    }),
+                }
+            }
+            // Mixed string type comparisons
+            (Object::ConstString(l), Object::String(r)) => {
+                let l_str = self.string_interner.resolve(*l).unwrap_or("");
+                match op {
+                    ComparisonOp::Eq => Object::Bool(l_str == r),
+                    ComparisonOp::Ne => Object::Bool(l_str != r),
+                    _ => return Err(InterpreterError::TypeError{
+                        expected: lhs_ty, 
+                        found: rhs_ty, 
+                        message: format!("{}: String comparison only supports == and !=: {:?}", 
+                                       op.name(), lhs)
+                    }),
+                }
+            }
+            (Object::String(l), Object::ConstString(r)) => {
+                let r_str = self.string_interner.resolve(*r).unwrap_or("");
+                match op {
+                    ComparisonOp::Eq => Object::Bool(l == r_str),
+                    ComparisonOp::Ne => Object::Bool(l != r_str),
                     _ => return Err(InterpreterError::TypeError{
                         expected: lhs_ty, 
                         found: rhs_ty, 
@@ -746,7 +785,7 @@ impl<'a> EvaluationContext<'a> {
         }
 
         match &*obj_borrowed {
-            Object::String(string_symbol) => {
+            Object::ConstString(_) | Object::String(_) => {
                 // Handle built-in String methods
                 match method_name {
                     "len" => {
@@ -758,9 +797,8 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        // Get the actual string from the interner and calculate its length
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?;
+                        // Get the actual string value regardless of internal representation
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let len = string_value.len() as u64;
                         
                         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
@@ -773,16 +811,12 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
-                            .to_string();
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         
                         let arg_value = self.evaluate(&args[0])?;
                         let arg_obj = self.extract_value(Ok(arg_value))?;
-                        let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                        let arg_string = self.string_interner.resolve(arg_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("Argument string not found in interner".to_string()))?
-                            .to_string();
+                        let arg_borrowed = arg_obj.borrow();
+                        let arg_string = arg_borrowed.to_string_value(&self.string_interner);
                         
                         let contains = string_value.contains(&arg_string);
                         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(contains)))))
@@ -795,20 +829,16 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
-                            .to_string();
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         
                         let arg_value = self.evaluate(&args[0])?;
                         let arg_obj = self.extract_value(Ok(arg_value))?;
-                        let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                        let arg_string = self.string_interner.resolve(arg_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("Argument string not found in interner".to_string()))?
-                            .to_string();
+                        let arg_borrowed = arg_obj.borrow();
+                        let arg_string = arg_borrowed.to_string_value(&self.string_interner);
                         
                         let concatenated = format!("{}{}", string_value, arg_string);
-                        let new_symbol = self.string_interner.get_or_intern(concatenated);
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                        // Return as dynamic String, not interned - this is the key improvement
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(concatenated)))))
                     }
                     "trim" => {
                         if !args.is_empty() {
@@ -818,13 +848,10 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
-                            .to_string();
-                        
-                        let trimmed = string_value.trim();
-                        let new_symbol = self.string_interner.get_or_intern(trimmed.to_string());
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let trimmed = string_value.trim().to_string();
+                        // Return as dynamic String, not interned
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(trimmed)))))
                     }
                     "to_upper" => {
                         if !args.is_empty() {
@@ -834,13 +861,10 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
-                            .to_string();
-                        
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let upper = string_value.to_uppercase();
-                        let new_symbol = self.string_interner.get_or_intern(upper);
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                        // Return as dynamic String, not interned
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(upper)))))
                     }
                     "to_lower" => {
                         if !args.is_empty() {
@@ -850,13 +874,10 @@ impl<'a> EvaluationContext<'a> {
                             )));
                         }
                         
-                        let string_value = self.string_interner.resolve(*string_symbol)
-                            .ok_or_else(|| InterpreterError::InternalError("String value not found in interner".to_string()))?
-                            .to_string();
-                        
+                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let lower = string_value.to_lowercase();
-                        let new_symbol = self.string_interner.get_or_intern(lower);
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                        // Return as dynamic String, not interned
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(lower)))))
                     }
                     _ => {
                         Err(InterpreterError::InternalError(format!(
@@ -1356,7 +1377,7 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         Expr::False => Ok(Object::Bool(false)),
         Expr::Int64(v) => Ok(Object::Int64(*v)),
         Expr::UInt64(v) => Ok(Object::UInt64(*v)),
-        Expr::String(v) => Ok(Object::String(*v)),
+        Expr::String(v) => Ok(Object::ConstString(*v)),
         Expr::Number(_v) => {
             // Type-unspecified numbers should be resolved during type checking
             Err(InterpreterError::InternalError(format!(
@@ -1419,11 +1440,12 @@ impl EvaluationContext<'_> {
             let key_val = self.evaluate(key_ref)?;
             let key_obj = self.extract_value(Ok(key_val))?;
             let key_str = match &*key_obj.borrow() {
-                Object::String(sym) => {
+                Object::ConstString(sym) => {
                     self.string_interner.resolve(*sym)
                         .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
                         .to_string()
                 }
+                Object::String(s) => s.clone(),
                 _ => {
                     return Err(InterpreterError::InternalError("Dict keys must be strings".to_string()));
                 }
@@ -1469,7 +1491,7 @@ impl EvaluationContext<'_> {
                 // Dict indexing with String key
                 let index_borrowed = index_obj.borrow();
                 match &*index_borrowed {
-                    Object::String(sym) => {
+                    Object::ConstString(sym) => {
                         let key_str = self.string_interner.resolve(*sym)
                             .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?;
                         
@@ -1477,6 +1499,12 @@ impl EvaluationContext<'_> {
                             .cloned()
                             .map(EvaluationResult::Value)
                             .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {}", key_str)))
+                    }
+                    Object::String(s) => {
+                        dict.get(s)
+                            .cloned()
+                            .map(EvaluationResult::Value)
+                            .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {}", s)))
                     }
                     _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
                 }
@@ -1537,12 +1565,16 @@ impl EvaluationContext<'_> {
                 // Dict assignment with String key
                 let index_borrowed = index_obj.borrow();
                 match &*index_borrowed {
-                    Object::String(sym) => {
+                    Object::ConstString(sym) => {
                         let key_str = self.string_interner.resolve(*sym)
                             .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
                             .to_string();
                         
                         dict.insert(key_str, value_obj.clone());
+                        Ok(EvaluationResult::Value(value_obj))
+                    }
+                    Object::String(s) => {
+                        dict.insert(s.clone(), value_obj.clone());
                         Ok(EvaluationResult::Value(value_obj))
                     }
                     _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
@@ -1594,9 +1626,7 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?;
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let length = string_value.len() as u64;
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(length)))))
             }
@@ -1610,21 +1640,15 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
-                    .to_string();
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 
                 let arg_value = self.evaluate(&args[0])?;
                 let arg_obj = self.extract_value(Ok(arg_value))?;
-                let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let arg_string = self.string_interner.resolve(arg_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("Argument string symbol not found in interner".to_string()))?
-                    .to_string();
+                let arg_string = arg_obj.borrow().to_string_value(&self.string_interner);
                 
                 let concatenated = format!("{}{}", string_value, arg_string);
-                let new_symbol = self.string_interner.get_or_intern(concatenated);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                // Return as dynamic String, not interned - this is the key improvement
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(concatenated)))))
             }
             
             BuiltinMethod::StrSubstring => {
@@ -1653,9 +1677,9 @@ impl EvaluationContext<'_> {
                     return Err(InterpreterError::InternalError("Invalid substring indices".to_string()));
                 }
                 
-                let substring = &string_value[start..end];
-                let new_symbol = self.string_interner.get_or_intern(substring.to_string());
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                let substring = string_value[start..end].to_string();
+                // Return as dynamic String, not interned
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(substring)))))
             }
             
             BuiltinMethod::StrContains => {
@@ -1692,14 +1716,10 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
-                    .to_string();
-                
-                let trimmed = string_value.trim();
-                let new_symbol = self.string_interner.get_or_intern(trimmed.to_string());
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let trimmed = string_value.trim().to_string();
+                // Return as dynamic String, not interned
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(trimmed)))))
             }
             
             BuiltinMethod::StrToUpper => {
@@ -1711,14 +1731,10 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
-                    .to_string();
-                
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let upper = string_value.to_uppercase();
-                let new_symbol = self.string_interner.get_or_intern(upper);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                // Return as dynamic String, not interned
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(upper)))))
             }
             
             BuiltinMethod::StrToLower => {
@@ -1730,14 +1746,10 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
-                    .to_string();
-                
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let lower = string_value.to_lowercase();
-                let new_symbol = self.string_interner.get_or_intern(lower);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(new_symbol)))))
+                // Return as dynamic String, not interned
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(lower)))))
             }
             
             BuiltinMethod::StrSplit => {
@@ -1749,22 +1761,16 @@ impl EvaluationContext<'_> {
                     });
                 }
                 
-                let string_symbol = receiver.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let string_value = self.string_interner.resolve(string_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("String symbol not found in interner".to_string()))?
-                    .to_string();
+                let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 
                 let separator_value = self.evaluate(&args[0])?;
                 let separator_obj = self.extract_value(Ok(separator_value))?;
-                let separator_symbol = separator_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
-                let separator = self.string_interner.resolve(separator_symbol)
-                    .ok_or_else(|| InterpreterError::InternalError("Separator string symbol not found in interner".to_string()))?
-                    .to_string();
+                let separator = separator_obj.borrow().to_string_value(&self.string_interner);
                 
                 let parts: Vec<_> = string_value.split(&separator)
                     .map(|part| {
-                        let part_symbol = self.string_interner.get_or_intern(part.to_string());
-                        Rc::new(RefCell::new(Object::String(part_symbol)))
+                        // Return split parts as dynamic Strings, not interned
+                        Rc::new(RefCell::new(Object::String(part.to_string())))
                     })
                     .collect();
                 

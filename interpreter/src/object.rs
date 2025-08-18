@@ -19,7 +19,8 @@ pub enum Object {
     Bool(bool),
     Int64(i64),
     UInt64(u64),
-    String(DefaultSymbol),
+    ConstString(DefaultSymbol),  // String literals and interned strings (immutable, memory efficient)
+    String(String),              // Runtime generated strings (mutable, direct data storage)
     Array(Box<Vec<RcObject>>),
     Struct {
         type_name: DefaultSymbol,
@@ -41,7 +42,7 @@ impl Object {
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
-            Object::String(_) => TypeDecl::String,
+            Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
                     TypeDecl::Array(vec![], 0)
@@ -134,15 +135,38 @@ impl Object {
 
     pub fn unwrap_string(&self) -> DefaultSymbol {
         match self {
-            Object::String(v) => *v,
-            _ => panic!("unwrap_string: expected string but {self:?}"),
+            Object::ConstString(v) => *v,
+            _ => panic!("unwrap_string: expected ConstString but {self:?}"),
         }
     }
 
     pub fn try_unwrap_string(&self) -> Result<DefaultSymbol, ObjectError> {
         match self {
-            Object::String(v) => Ok(*v),
+            Object::ConstString(v) => Ok(*v),
             _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::String, found: self.get_type() }),
+        }
+    }
+
+    /// Get string value as String regardless of internal representation
+    pub fn to_string_value(&self, string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>) -> String {
+        match self {
+            Object::ConstString(symbol) => {
+                string_interner.resolve(*symbol).unwrap_or("").to_string()
+            }
+            Object::String(s) => s.clone(),
+            _ => panic!("to_string_value: expected string type but {self:?}")
+        }
+    }
+
+    /// Convert ConstString to mutable String if needed
+    pub fn promote_to_mutable_string(self, string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>) -> Object {
+        match self {
+            Object::ConstString(symbol) => {
+                let s = string_interner.resolve(symbol).unwrap_or("").to_string();
+                Object::String(s)
+            }
+            Object::String(_) => self,  // Already mutable
+            _ => panic!("promote_to_mutable_string: expected string type but {self:?}")
         }
     }
 
@@ -222,6 +246,10 @@ impl Object {
                 *self = Object::Null;
                 Ok(())
             }
+            (Object::ConstString(_), Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
             (Object::String(_), Object::Null) => {
                 *self = Object::Null;
                 Ok(())
@@ -247,9 +275,26 @@ impl Object {
                 *self_val = *v;
                 Ok(())
             }
-            (Object::String(self_val), Object::String(v)) => {
+            (Object::ConstString(self_val), Object::ConstString(v)) => {
                 *self_val = *v;
                 Ok(())
+            }
+            (Object::String(self_val), Object::String(v)) => {
+                *self_val = v.clone();
+                Ok(())
+            }
+            // Cross-type string assignments
+            (Object::ConstString(_), Object::String(v)) => {
+                *self = Object::String(v.clone());
+                Ok(())
+            }
+            (Object::String(self_val), Object::ConstString(_)) => {
+                // We need access to string_interner here, but it's not available
+                // For now, we'll keep the String type and require conversion elsewhere
+                Err(ObjectError::TypeMismatch { 
+                    expected: TypeDecl::String, 
+                    found: TypeDecl::String 
+                })
             }
             (Object::Array(self_val), Object::Array(v)) => {
                 self_val.clear();

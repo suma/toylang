@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use frontend::Parser;
 use interpreter::check_typing;
+use string_interner::DefaultStringInterner;
 
 fn detailed_type_check_profile(c: &mut Criterion) {
     // Clean program with type inference - should be successful
@@ -38,17 +39,19 @@ fn main() -> u64 {
 
     c.bench_function("type_inference_heavy", |b| {
         b.iter(|| {
-            let mut parser = Parser::new(black_box(type_inference_program));
+            let mut string_interner = DefaultStringInterner::default();
+            let mut parser = Parser::new(black_box(type_inference_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
-            let _ = check_typing(&mut program, Some(type_inference_program), Some("inference_test.t"));
+            let _ = check_typing(&mut program, &mut string_interner, Some("inference_test.t"), Some(type_inference_program));
         })
     });
 
     c.bench_function("type_simple", |b| {
         b.iter(|| {
-            let mut parser = Parser::new(black_box(simple_program));
+            let mut string_interner = DefaultStringInterner::default();
+            let mut parser = Parser::new(black_box(simple_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
-            let _ = check_typing(&mut program, Some(simple_program), Some("simple_test.t"));
+            let _ = check_typing(&mut program, &mut string_interner, Some("simple_test.t"), Some(simple_program));
         })
     });
 }
@@ -82,9 +85,10 @@ fn main() -> u64 {
 
     c.bench_function("struct_operations", |b| {
         b.iter(|| {
-            let mut parser = Parser::new(black_box(struct_program));
+            let mut string_interner = DefaultStringInterner::default();
+            let mut parser = Parser::new(black_box(struct_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
-            let _ = check_typing(&mut program, Some(struct_program), Some("struct_test.t"));
+            let _ = check_typing(&mut program, &mut string_interner, Some("struct_test.t"), Some(struct_program));
         })
     });
 }

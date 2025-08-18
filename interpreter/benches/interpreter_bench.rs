@@ -1,16 +1,18 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use frontend::Parser;
 use interpreter::{execute_program, check_typing};
+use string_interner::DefaultStringInterner;
 
 fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<interpreter::object::Object>>, String> {
-    let mut parser = Parser::new(source);
+    let mut string_interner = DefaultStringInterner::default();
+    let mut parser = Parser::new(source, &mut string_interner);
     let mut program = parser.parse_program()
         .map_err(|e| format!("Parse error: {:?}", e))?;
     
-    check_typing(&mut program, Some(source), Some("benchmark.t"))
+    check_typing(&mut program, &mut string_interner, Some("benchmark.t"), Some(source))
         .map_err(|err_msgs| format!("Type check errors: {:?}", err_msgs))?;
     
-    execute_program(&program, Some(source), Some("benchmark.t"))
+    execute_program(&program, &string_interner, Some("benchmark.t"), Some(source))
 }
 
 fn fibonacci_benchmark(c: &mut Criterion) {
@@ -148,10 +150,11 @@ fn main() -> u64 {
 
     c.bench_function("parsing_only", |b| {
         b.iter(|| {
-            let mut parser = Parser::new(black_box(complex_program));
+            let mut string_interner = DefaultStringInterner::default();
+            let mut parser = Parser::new(black_box(complex_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
             
-            let errors = check_typing(&mut program, Some(complex_program), Some("benchmark.t"));
+            let errors = check_typing(&mut program, &mut string_interner, Some("benchmark.t"), Some(complex_program));
             assert!(errors.is_ok());
             
             program

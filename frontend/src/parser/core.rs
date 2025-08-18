@@ -612,6 +612,21 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(TypeDecl::String)
             }
+            Some(Kind::Dict) => {
+                self.next();
+                self.expect_err(&Kind::BracketOpen)?;
+                
+                // Parse key type
+                let key_type = self.parse_type_declaration()?;
+                
+                self.expect_err(&Kind::Comma)?;
+                
+                // Parse value type
+                let value_type = self.parse_type_declaration()?;
+                
+                self.expect_err(&Kind::BracketClose)?;
+                Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
+            }
             Some(_) | None => {
                 let location = self.current_source_location();
                 Err(ParserError::generic_error(location, format!("parse_type_declaration: unexpected token {:?}", self.peek())))

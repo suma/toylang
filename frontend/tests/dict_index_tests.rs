@@ -268,6 +268,30 @@ arr[0] = "text"
 }
 
 #[test]
+fn test_dict_type_syntax_parsing() {
+    let source = r#"fn test(param: dict[str, u64]) -> u64 { 1u64 }"#;
+    assert!(parse_succeeds(source));
+}
+
+#[test]
+fn test_dict_type_declaration_parsing() {
+    let source = r#"fn main() -> u64 {
+        val d: dict[str, u64] = dict{}
+        1u64
+    }"#;
+    assert!(parse_succeeds(source));
+}
+
+#[test]
+fn test_nested_dict_type_parsing() {
+    let source = r#"fn main() -> u64 {
+        val d: dict[str, dict[str, u64]] = dict{}
+        1u64
+    }"#;
+    assert!(parse_succeeds(source));
+}
+
+#[test]
 fn test_dict_and_array_different_contexts() {
     let source = r#"
 val dict_data = dict{"key": "value"}

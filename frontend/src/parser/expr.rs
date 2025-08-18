@@ -84,7 +84,15 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
                 parser.next();
                 let new_rhs = parse_logical_expr(parser)?;
                 let location = parser.current_source_location();
-                lhs = parser.ast_builder.assign_expr(lhs, new_rhs, Some(location));
+                
+                // Check if lhs is an IndexAccess expression and convert to IndexAssign
+                if let Some(Expr::IndexAccess(object, index)) = parser.ast_builder.expr_pool.get(lhs.to_index()) {
+                    let object = *object;
+                    let index = *index;
+                    lhs = parser.ast_builder.index_assign_expr(object, index, new_rhs, Some(location));
+                } else {
+                    lhs = parser.ast_builder.assign_expr(lhs, new_rhs, Some(location));
+                }
             }
             _ => return Ok(lhs),
         }
@@ -323,7 +331,14 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                     }
                 }
             }
-            // Array access is handled in parse_primary for identifiers
+            Some(Kind::BracketOpen) => {
+                // Generic index access - works on any expression
+                let location = parser.current_source_location();
+                parser.next();
+                let index = parser.parse_expr_impl()?;
+                parser.expect_err(&Kind::BracketClose)?;
+                expr = parser.ast_builder.index_access_expr(expr, index, Some(location));
+            }
             _ => break,
         }
     }

@@ -397,6 +397,18 @@ impl AstBuilder {
         expr_ref
     }
     
+    pub fn index_access_expr(&mut self, object: ExprRef, index: ExprRef, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::IndexAccess(object, index));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
+    pub fn index_assign_expr(&mut self, object: ExprRef, index: ExprRef, value: ExprRef, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::IndexAssign(object, index, value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);
@@ -611,6 +623,8 @@ pub enum Expr {
     StructLiteral(DefaultSymbol, Vec<(DefaultSymbol, ExprRef)>),  // Point { x: 10, y: 20 }
     QualifiedIdentifier(Vec<DefaultSymbol>),  // math::add
     BuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>),  // "hello".len(), str.concat("world")
+    IndexAccess(ExprRef, ExprRef),  // x[key] - generic index access
+    IndexAssign(ExprRef, ExprRef, ExprRef),  // x[key] = value - index assignment
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

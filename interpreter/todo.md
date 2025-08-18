@@ -2,6 +2,29 @@
 
 ## 完了済み ✅
 
+83. **索引アクセス構文のAST/パーサー実装** ✅ (2025-08-18完了)
+   - **対象**: ハッシュ/辞書型の索引アクセス構文 `x[key]` と代入構文 `x[key] = value` の基盤実装
+   - **実装内容**:
+     - **AST拡張**: 
+       - `Expr::IndexAccess(object, index)` - 汎用的な索引アクセス式を追加
+       - `Expr::IndexAssign(object, index, value)` - 索引代入式を追加
+     - **パーサー拡張**:
+       - `parse_postfix_impl`に`BracketOpen`処理を追加、任意の式に対して`[index]`構文をサポート
+       - `parse_assign`で`IndexAccess`を検出して`IndexAssign`に自動変換する機能を実装
+       - 既存の配列専用処理から汎用的な索引処理へ拡張
+     - **ASTビルダー**: `index_access_expr`と`index_assign_expr`メソッドを追加
+     - **Visitorパターン拡張**: 
+       - `AstVisitor`トレイトに`visit_index_access`と`visit_index_assign`メソッドを追加
+       - `TypeCheckerVisitor`に基本実装を追加（現時点では配列アクセスと同等の処理）
+   - **技術的成果**:
+     - 任意の式に対する索引操作が可能な汎用的な構文基盤を確立
+     - `x[a][b][c]`のような連鎖的な索引アクセスもサポート
+     - 将来的な`__getitem__`/`__setitem__`メソッドオーバーロードへの準備完了
+   - **テスト結果**: 
+     - フロントエンドライブラリのコンパイル成功
+     - 警告3件のみ（未使用変数）、エラーなし
+   - **備考**: Dict/Map型の実装、struct/implでの演算子オーバーロード、インタープリターでの実行は今後実装予定
+
 82. **BuiltinMethodシステムの完全実装** ✅ (2025-08-17完了)
    - **対象**: 文字列型に対するbuiltin methodシステムの包括的実装
    - **実装内容**:

@@ -367,6 +367,8 @@ impl Acceptable for Expr {
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
             Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
             Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
+            Expr::IndexAccess(object, index) => visitor.visit_index_access(object, index),
+            Expr::IndexAssign(object, index, value) => visitor.visit_index_assign(object, index, value),
         }
     }
 }
@@ -940,6 +942,27 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 "Cannot index into non-array type {:?}", array_type
             )))
         }
+    }
+    
+    fn visit_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // For now, treat it the same as array access
+        // Later, this will check for __getitem__ methods on structs
+        self.visit_array_access(object, index)
+    }
+    
+    fn visit_index_assign(&mut self, object: &ExprRef, index: &ExprRef, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // Type check the object being indexed
+        let _object_type = self.visit_expr(object)?;
+        
+        // Type check the index
+        let _index_type = self.visit_expr(index)?;
+        
+        // Type check the value being assigned
+        let value_type = self.visit_expr(value)?;
+        
+        // For now, just return the value type
+        // Later, this will check for __setitem__ methods on structs
+        Ok(value_type)
     }
     
     // =========================================================================

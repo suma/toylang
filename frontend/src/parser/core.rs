@@ -612,6 +612,10 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(TypeDecl::String)
             }
+            Some(Kind::Self_) => {
+                self.next();
+                Ok(TypeDecl::Self_)
+            }
             Some(Kind::Dict) => {
                 self.next();
                 self.expect_err(&Kind::BracketOpen)?;

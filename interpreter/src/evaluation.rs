@@ -247,19 +247,16 @@ impl<'a> EvaluationContext<'a> {
         // Set up method parameters
         let mut param_index = 0;
         
-        // If method has &self parameter, bind it
-        if method.has_self_param {
-            // For now, we'll use a placeholder symbol for self
-            let self_symbol = self.string_interner.get_or_intern("self");
-            self.environment.set_val(self_symbol, self_obj);
-        }
-        
-        // Bind regular parameters
-        for (param_symbol, _param_type) in &method.parameter {
-            if param_index < args.len() {
-                self.environment.set_val(*param_symbol, args[param_index].clone());
-                param_index += 1;
+        // Bind method parameters - first parameter should be self
+        for (param_symbol, param_type) in &method.parameter {
+            if param_index == 0 {
+                // First parameter is 'self' - bind the object
+                self.environment.set_val(*param_symbol, self_obj.clone());
+            } else if param_index - 1 < args.len() {
+                // Subsequent parameters are regular args
+                self.environment.set_val(*param_symbol, args[param_index - 1].clone());
             }
+            param_index += 1;
         }
         
         // Execute method body
@@ -1484,6 +1481,21 @@ impl EvaluationContext<'_> {
                     _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
                 }
             }
+            Object::Struct { type_name, .. } => {
+                // Struct index overloading - look for __getitem__ method
+                let struct_name_val = *type_name;
+                drop(obj_borrowed); // Release borrow before method call
+                
+                // Resolve names first before method call
+                let struct_name_str = self.string_interner.resolve(struct_name_val)
+                    .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                    .to_string();
+                let getitem_method = self.string_interner.get_or_intern("__getitem__");
+                
+                // Call __getitem__(self, index)
+                let args = vec![index_obj];
+                self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+            }
             _ => Err(InterpreterError::InternalError(format!("Cannot index into type {:?}", obj_borrowed.get_type())))
         }
     }
@@ -1535,6 +1547,24 @@ impl EvaluationContext<'_> {
                     }
                     _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
                 }
+            }
+            Object::Struct { type_name, .. } => {
+                // Struct index assignment overloading - look for __setitem__ method
+                let struct_name_val = *type_name;
+                drop(obj_borrowed); // Release borrow before method call
+                
+                // Resolve names first before method call  
+                let struct_name_str = self.string_interner.resolve(struct_name_val)
+                    .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                    .to_string();
+                let setitem_method = self.string_interner.get_or_intern("__setitem__");
+                
+                // Call __setitem__(self, index, value)
+                let args = vec![index_obj, value_obj.clone()];
+                self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str)?;
+                
+                // Return the assigned value
+                Ok(EvaluationResult::Value(value_obj))
             }
             _ => Err(InterpreterError::InternalError(format!("Cannot assign index to type {:?}", obj_borrowed.get_type())))
         }
@@ -1741,5 +1771,40 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(parts))))))
             }
         }
+    }
+
+    /// Call a struct method by name
+    fn call_struct_method(
+        &mut self, 
+        object: RcObject, 
+        method_name: DefaultSymbol, 
+        args: &[RcObject], 
+        struct_name: &str
+    ) -> Result<EvaluationResult, InterpreterError> {
+        // Look for the method in the function map first
+        if let Some(method_func) = self.function.get(&method_name).cloned() {
+            // This is a regular function, call it directly
+            let mut method_args = vec![object];
+            method_args.extend_from_slice(args);
+            let result = self.evaluate_function_with_values(method_func, &method_args)?;
+            return Ok(EvaluationResult::Value(result));
+        }
+        
+        // Look for struct method
+        let struct_symbol = self.string_interner.get(struct_name)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unknown struct: {}", struct_name)))?;
+        
+        if let Some(struct_methods) = self.method_registry.get(&struct_symbol) {
+            if let Some(method) = struct_methods.get(&method_name) {
+                let method_args = args.to_vec();
+                return self.call_method(method.clone(), object, method_args);
+            }
+        }
+        
+        Err(InterpreterError::FunctionNotFound(
+            format!("Method '{}' not found for struct '{}'", 
+                    self.string_interner.resolve(method_name).unwrap_or("<unknown>"),
+                    struct_name)
+        ))
     }
 }

@@ -36,6 +36,7 @@ pub enum Kind {
     Ptr,
     Null,
     Dict,
+    Self_,       // Self keyword
 
     ParenOpen,
     ParenClose,
@@ -96,7 +97,7 @@ impl Kind {
             Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct | 
             Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public | 
             Kind::Val | Kind::Var | Kind::Bool | Kind::U64 | Kind::I64 | Kind::USize | 
-            Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::True | Kind::False
+            Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )
     }
 }

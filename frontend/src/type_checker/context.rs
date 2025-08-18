@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::rc::Rc;
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::ast::{Function, StructField, MethodFunction, Visibility};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
@@ -23,6 +23,7 @@ pub struct TypeCheckContext {
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
+    pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
 }
 
 impl TypeCheckContext {
@@ -32,6 +33,7 @@ impl TypeCheckContext {
             functions: HashMap::new(),
             struct_definitions: HashMap::new(),
             struct_methods: HashMap::new(),
+            current_impl_target: None,
         }
     }
 
@@ -168,6 +170,20 @@ impl TypeCheckContext {
 
     pub fn get_struct_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Rc<MethodFunction>> {
         self.struct_methods.get(&struct_name)?.get(&method_name)
+    }
+
+    pub fn get_method_function_by_name(&self, struct_name: &str, method_name: &str, string_interner: &DefaultStringInterner) -> Option<&Rc<MethodFunction>> {
+        // Find struct symbol by name
+        let struct_symbol = self.struct_definitions.iter()
+            .find(|(symbol, _)| {
+                string_interner.resolve(**symbol).map_or(false, |name| name == struct_name)
+            })
+            .map(|(symbol, _)| *symbol)?;
+        
+        // Find method symbol by name
+        let method_symbol = string_interner.get(method_name)?;
+        
+        self.struct_methods.get(&struct_symbol)?.get(&method_symbol)
     }
 
     pub fn get_method_return_type(&self, struct_name: &str, method_name: &str) -> Option<&TypeDecl> {

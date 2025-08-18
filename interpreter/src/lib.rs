@@ -639,17 +639,11 @@ fn find_main_function(program: &Program, string_interner: &DefaultStringInterner
     Err(InterpreterError::FunctionNotFound("main".to_string()))
 }
 
-fn build_function_map(program: &Program, string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
+fn build_function_map(program: &Program, _string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
     let mut func_map = HashMap::new();
     for f in &program.function {
-        let func_name = string_interner.resolve(f.name).unwrap_or("<unknown>");
-        eprintln!("DEBUG: build_function_map: Adding function '{}' with symbol {:?}", func_name, f.name);
-        if let Some(existing) = func_map.insert(f.name, f.clone()) {
-            let existing_name = string_interner.resolve(existing.name).unwrap_or("<unknown>");
-            eprintln!("DEBUG: WARNING: Function '{}' was overwritten! Previous function: '{}'", func_name, existing_name);
-        }
+        func_map.insert(f.name, f.clone());
     }
-    eprintln!("DEBUG: build_function_map: Final map has {} functions", func_map.len());
     func_map
 }
 

@@ -45,6 +45,7 @@ macro_rules! token {
 "null"      return Ok(token!(self, Kind::Null));
 "bool"      return Ok(token!(self, Kind::Bool));
 "dict"      return Ok(token!(self, Kind::Dict));
+"Self"      return Ok(token!(self, Kind::Self_));
 
 "::"        return Ok(token!(self, Kind::DoubleColon));
 "->"        return Ok(token!(self, Kind::Arrow));

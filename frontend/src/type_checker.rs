@@ -812,7 +812,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Function and Method Type Checking
     // =========================================================================
 
-    fn visit_call(&mut self, fn_name: DefaultSymbol, _args: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         if let Some(fun) = self.context.get_fn(fn_name) {
             // Check visibility access control
@@ -824,10 +824,59 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             let status = self.function_checking.is_checked_fn.get(&fn_name);
             if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
                 // not checked yet
-                let fun = self.context.get_fn(fn_name).ok_or_else(|| TypeCheckError::not_found("Function", "<INTERNAL_ERROR>"))?;
-                self.type_check(fun.clone())?;
+                let fun_copy = self.context.get_fn(fn_name).ok_or_else(|| TypeCheckError::not_found("Function", "<INTERNAL_ERROR>"))?;
+                self.type_check(fun_copy.clone())?;
             }
 
+            // Type check function arguments with proper type hints
+            // Clone data we need to avoid borrowing conflicts
+            let args_data = if let Some(args_expr) = self.core.expr_pool.get(args_ref.to_index()) {
+                if let Expr::ExprList(args) = args_expr {
+                    Some(args.clone())
+                } else {
+                    None
+                }
+            } else {
+                self.pop_context();
+                return Err(TypeCheckError::generic_error("Invalid arguments reference"));
+            };
+            
+            if let Some(args) = args_data {
+                let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| ty.clone()).collect();
+                
+                // Check argument count
+                if args.len() != param_types.len() {
+                    self.pop_context();
+                    let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Function '{}' argument count mismatch: expected {}, found {}",
+                        fn_name_str, param_types.len(), args.len()
+                    )));
+                }
+                
+                // Type check each argument with expected type as hint
+                let original_hint = self.type_inference.type_hint.clone();
+                for (arg_index, (arg, expected_type)) in args.iter().zip(&param_types).enumerate() {
+                    // Set type hint for this argument
+                    self.type_inference.type_hint = Some(expected_type.clone());
+                    let arg_type = self.visit_expr(arg)?;
+                    
+                    // Check type compatibility
+                    if arg_type != *expected_type && arg_type != TypeDecl::Unknown {
+                        // Restore hint before returning error
+                        self.type_inference.type_hint = original_hint;
+                        self.pop_context();
+                        let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
+                            expected_type, arg_type, fn_name_str, arg_index + 1
+                        )));
+                    }
+                }
+                // Restore original hint
+                self.type_inference.type_hint = original_hint;
+            }
+            
             self.pop_context();
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
@@ -841,28 +890,28 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Literal Type Checking
     // =========================================================================
 
-    fn visit_int64_literal(&mut self, value: &i64) -> Result<TypeDecl, TypeCheckError> {
-        self.check_int64_literal(value)
+    fn visit_int64_literal(&mut self, _value: &i64) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Int64)
     }
 
-    fn visit_uint64_literal(&mut self, value: &u64) -> Result<TypeDecl, TypeCheckError> {
-        self.check_uint64_literal(value)
+    fn visit_uint64_literal(&mut self, _value: &u64) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::UInt64)
     }
 
-    fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        self.check_number_literal(value)
+    fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Number)
     }
 
-    fn visit_string_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        self.check_string_literal(value)
+    fn visit_string_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::String)
     }
 
-    fn visit_boolean_literal(&mut self, value: &Expr) -> Result<TypeDecl, TypeCheckError> {
-        self.check_boolean_literal(value)
+    fn visit_boolean_literal(&mut self, _value: &Expr) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Bool)
     }
 
     fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        self.check_null_literal()
+        Ok(TypeDecl::Null)
     }
     
     // =========================================================================
@@ -974,8 +1023,42 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 
                 Ok(*value_type.clone())
             }
+            TypeDecl::Identifier(struct_name) => {
+                // Check for __getitem__ method on struct
+                let struct_name_str = self.core.string_interner.resolve(struct_name)
+                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+                
+                // Type check the index first to avoid borrowing conflicts
+                let index_type = self.visit_expr(index)?;
+                
+                // Look for __getitem__ method
+                if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
+                    
+                    // Check if method has correct signature: __getitem__(self, index: T) -> U
+                    if getitem_method.parameter.len() >= 2 {
+                        let index_param_type = &getitem_method.parameter[1].1;
+                        if index_type != *index_param_type {
+                            return Err(TypeCheckError::type_mismatch(
+                                index_param_type.clone(), index_type
+                            ));
+                        }
+                        
+                        // Return the method's return type
+                        if let Some(return_type) = &getitem_method.return_type {
+                            Ok(return_type.clone())
+                        } else {
+                            Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
+                        }
+                    } else {
+                        Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
+                    }
+                } else {
+                    Err(TypeCheckError::generic_error(&format!(
+                        "Cannot index into type {:?} - no __getitem__ method found", object_type
+                    )))
+                }
+            }
             _ => {
-                // Later, check for __getitem__ methods on structs
                 Err(TypeCheckError::generic_error(&format!(
                     "Cannot index into type {:?}", object_type
                 )))
@@ -1026,8 +1109,44 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 }
                 Ok(value_type)
             }
+            TypeDecl::Identifier(struct_name) => {
+                // Check for __setitem__ method on struct
+                let struct_name_str = self.core.string_interner.resolve(struct_name)
+                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+                
+                // Look for __setitem__ method
+                if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
+                    // Check if method has correct signature: __setitem__(self, index: T, value: U)
+                    if setitem_method.parameter.len() >= 3 {
+                        let index_param_type = &setitem_method.parameter[1].1;
+                        let value_param_type = &setitem_method.parameter[2].1;
+                        
+                        // Check index type matches
+                        if index_type != *index_param_type {
+                            return Err(TypeCheckError::type_mismatch(
+                                index_param_type.clone(), index_type
+                            ));
+                        }
+                        
+                        // Check value type matches
+                        if value_type != *value_param_type {
+                            return Err(TypeCheckError::type_mismatch(
+                                value_param_type.clone(), value_type
+                            ));
+                        }
+                        
+                        // Assignment returns the value type
+                        Ok(value_type)
+                    } else {
+                        Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, index, value)"))
+                    }
+                } else {
+                    Err(TypeCheckError::generic_error(&format!(
+                        "Cannot assign index to type {:?} - no __setitem__ method found", object_type
+                    )))
+                }
+            }
             _ => {
-                // Later, check for __setitem__ methods on structs
                 Err(TypeCheckError::generic_error(&format!(
                     "Cannot assign index to type {:?}", object_type
                 )))
@@ -1037,35 +1156,101 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     
     fn visit_dict_literal(&mut self, entries: &Vec<(ExprRef, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         if entries.is_empty() {
-            // Empty dict - type will be inferred from usage
+            // Empty dict - type will be inferred from usage or type hint
+            if let Some(TypeDecl::Dict(key_type, value_type)) = &self.type_inference.type_hint {
+                return Ok(TypeDecl::Dict(key_type.clone(), value_type.clone()));
+            }
             return Ok(TypeDecl::Dict(Box::new(TypeDecl::Unknown), Box::new(TypeDecl::Unknown)));
         }
         
+        // Save the original type hint to restore later
+        let original_hint = self.type_inference.type_hint.clone();
+        
+        // Extract expected types from type hint if available (clone to avoid borrow issues)
+        let (expected_key_type, expected_value_type) = if let Some(TypeDecl::Dict(key_type, value_type)) = &self.type_inference.type_hint {
+            (Some(key_type.as_ref().clone()), Some(value_type.as_ref().clone()))
+        } else {
+            (None, None)
+        };
+        
         // Check first entry to determine key and value types
         let (first_key, first_value) = &entries[0];
+        
+        // Set type hints for key and value if we have them
+        if let Some(expected_key) = &expected_key_type {
+            self.type_inference.type_hint = Some(expected_key.clone());
+        }
         let key_type = self.visit_expr(first_key)?;
+        
+        if let Some(expected_value) = &expected_value_type {
+            self.type_inference.type_hint = Some(expected_value.clone());
+        }
         let value_type = self.visit_expr(first_value)?;
+        
+        // Debug: print inferred types for troubleshooting
+        // eprintln!("DEBUG dict_literal: key_type={:?}, value_type={:?}, expected_key={:?}, expected_value={:?}", 
+        //           key_type, value_type, expected_key_type, expected_value_type);
+        
+        // Restore original hint
+        self.type_inference.type_hint = original_hint.clone();
+        
+        // If we have type hints and the inferred types are Unknown, use the hint types
+        let final_key_type = if key_type == TypeDecl::Unknown && expected_key_type.is_some() {
+            expected_key_type.clone().unwrap()
+        } else {
+            key_type
+        };
+        
+        let final_value_type = if value_type == TypeDecl::Unknown && expected_value_type.is_some() {
+            expected_value_type.clone().unwrap()
+        } else {
+            value_type
+        };
         
         // Verify all entries have consistent types - static typing requirement
         for (entry_index, (key_ref, value_ref)) in entries.iter().skip(1).enumerate() {
+            // Set type hints for consistency checking
+            if let Some(expected_key) = &expected_key_type {
+                self.type_inference.type_hint = Some(expected_key.clone());
+            }
             let k_type = self.visit_expr(key_ref)?;
+            
+            if let Some(expected_value) = &expected_value_type {
+                self.type_inference.type_hint = Some(expected_value.clone());
+            }
             let v_type = self.visit_expr(value_ref)?;
             
-            if k_type != key_type {
+            // Restore original hint
+            self.type_inference.type_hint = original_hint.clone();
+            
+            // Use final types for consistency checking
+            let check_key_type = if k_type == TypeDecl::Unknown && expected_key_type.is_some() {
+                expected_key_type.clone().unwrap()
+            } else {
+                k_type
+            };
+            
+            let check_value_type = if v_type == TypeDecl::Unknown && expected_value_type.is_some() {
+                expected_value_type.clone().unwrap()
+            } else {
+                v_type
+            };
+            
+            if check_key_type != final_key_type {
                 return Err(TypeCheckError::generic_error(&format!(
                     "Dict key type mismatch at entry {}: expected {:?}, found {:?}. All keys must have the same type.",
-                    entry_index + 1, key_type, k_type
+                    entry_index + 1, final_key_type, check_key_type
                 )));
             }
-            if v_type != value_type {
+            if check_value_type != final_value_type {
                 return Err(TypeCheckError::generic_error(&format!(
                     "Dict value type mismatch at entry {}: expected {:?}, found {:?}. All values must have the same type.",
-                    entry_index + 1, value_type, v_type
+                    entry_index + 1, final_value_type, check_value_type
                 )));
             }
         }
         
-        Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
+        Ok(TypeDecl::Dict(Box::new(final_key_type), Box::new(final_value_type)))
     }
     
     // =========================================================================
@@ -1212,19 +1397,27 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let struct_symbol = self.core.string_interner.get(target_type)
             .ok_or_else(|| TypeCheckError::not_found("struct type", target_type))?;
 
+        // Set current impl target for Self resolution
+        let old_impl_target = self.context.current_impl_target;
+        self.context.current_impl_target = Some(struct_symbol);
+
         // Impl block type checking - validate methods
         for method in methods {
             // Check method parameter types
             for (_, param_type) in &method.parameter {
-                match param_type {
-                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
-                        // Valid parameter types
+                // Resolve Self type to the actual struct type
+                let resolved_type = self.resolve_self_type(param_type);
+                
+                match &resolved_type {
+                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
+                    TypeDecl::Identifier(_) => {
+                        // Valid parameter types (including struct types)
                     },
                     _ => {
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
                             &format!("parameter type in method '{}' for impl block '{}'", method_name, target_type),
-                            param_type.clone()
+                            resolved_type
                         ));
                     }
                 }
@@ -1232,15 +1425,19 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             
             // Check return type if specified
             if let Some(ref ret_type) = method.return_type {
-                match ret_type {
-                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | TypeDecl::Unit => {
-                        // Valid return types
+                // Resolve Self type to the actual struct type
+                let resolved_ret_type = self.resolve_self_type(ret_type);
+                
+                match &resolved_ret_type {
+                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
+                    TypeDecl::Unit | TypeDecl::Identifier(_) => {
+                        // Valid return types (including struct types)
                     },
                     _ => {
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
                             &format!("return type in method '{}' for impl block '{}'", method_name, target_type),
-                            ret_type.clone()
+                            resolved_ret_type
                         ));
                     }
                 }
@@ -1249,6 +1446,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             // Register method in context
             self.context.register_struct_method(struct_symbol, method.name, method.clone());
         }
+        
+        // Restore previous impl target context
+        self.context.current_impl_target = old_impl_target;
         
         // Impl block declaration returns Unit
         Ok(TypeDecl::Unit)
@@ -1560,6 +1760,21 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
+    /// Resolve Self type to the actual struct type in impl block context
+    pub fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
+        match type_decl {
+            TypeDecl::Self_ => {
+                if let Some(target_symbol) = self.context.current_impl_target {
+                    TypeDecl::Identifier(target_symbol)
+                } else {
+                    // Self used outside impl context - should be an error
+                    type_decl.clone()
+                }
+            }
+            _ => type_decl.clone(),
+        }
+    }
+
     fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Save the original type hint to restore later
         let original_hint = self.type_inference.type_hint.clone();
@@ -1817,6 +2032,10 @@ impl<'a> TypeInferenceManager for TypeCheckerVisitor<'a> {
                     // For struct types, set the struct type as hint for struct literal processing
                     self.type_inference.type_hint = Some(decl.clone());
                 },
+                TypeDecl::Dict(_, _) => {
+                    // For dict types, set the dict type as hint for dict literal processing
+                    self.type_inference.type_hint = Some(decl.clone());
+                },
                 _ if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => {
                     self.type_inference.type_hint = Some(decl.clone());
                 },
@@ -1915,6 +2134,15 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn determine_final_type_for_expr(&self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl) -> TypeDecl {
         match (type_decl, expr_ty) {
             (Some(TypeDecl::Unknown), _) => expr_ty.clone(),
+            // For dict types, if we have explicit type annotation, prefer it over inferred type
+            (Some(TypeDecl::Dict(key_type, value_type)), TypeDecl::Dict(inferred_key, inferred_value)) => {
+                // If both key and value types are explicit (not Unknown), use the declared type
+                if **key_type != TypeDecl::Unknown && **value_type != TypeDecl::Unknown {
+                    TypeDecl::Dict(key_type.clone(), value_type.clone())
+                } else {
+                    TypeDecl::Dict(inferred_key.clone(), inferred_value.clone())
+                }
+            },
             (Some(decl), _) if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number => decl.clone(),
             (None, _) => expr_ty.clone(),
             _ => expr_ty.clone(),

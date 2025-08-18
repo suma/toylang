@@ -14,4 +14,5 @@ pub enum TypeDecl {
     Array(Vec<TypeDecl>, usize),  // element types and fixed size
     Struct(DefaultSymbol),  // struct type
     Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
+    Self_,  // Self type within impl blocks
 }

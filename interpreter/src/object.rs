@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -14,7 +15,7 @@ pub enum ObjectError {
     InvalidOperation { operation: String, object_type: TypeDecl },
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub enum Object {
     Bool(bool),
     Int64(i64),
@@ -26,13 +27,188 @@ pub enum Object {
         type_name: DefaultSymbol,
         fields: Box<HashMap<String, RcObject>>,
     },
-    Dict(Box<HashMap<String, RcObject>>),  // Using String keys for simplicity
+    Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
     //Function: Rc<Function>,
     Null,
     Unit,
 }
 
 pub type RcObject = Rc<RefCell<Object>>;
+
+/// A wrapper for Object that can be used as a HashMap key
+/// This ensures immutability during the lifetime of its use as a key
+#[derive(Debug, Clone)]
+pub struct ObjectKey(Object);
+
+impl ObjectKey {
+    pub fn new(obj: Object) -> Self {
+        ObjectKey(obj)
+    }
+    
+    pub fn from_rc(rc_obj: &RcObject) -> Self {
+        ObjectKey(rc_obj.borrow().clone())
+    }
+    
+    pub fn into_object(self) -> Object {
+        self.0
+    }
+    
+    pub fn as_object(&self) -> &Object {
+        &self.0
+    }
+}
+
+impl PartialEq for ObjectKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq(&other.0)
+    }
+}
+
+impl Eq for ObjectKey {}
+
+impl Hash for ObjectKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
+
+impl PartialOrd for ObjectKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ObjectKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match (&self.0, &other.0) {
+            (Object::Bool(a), Object::Bool(b)) => a.cmp(b),
+            (Object::Int64(a), Object::Int64(b)) => a.cmp(b),
+            (Object::UInt64(a), Object::UInt64(b)) => a.cmp(b),
+            (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
+            (Object::String(a), Object::String(b)) => a.cmp(b),
+            (Object::Null, Object::Null) => Ordering::Equal,
+            (Object::Unit, Object::Unit) => Ordering::Equal,
+            // For different types, define a fixed ordering
+            (Object::Bool(_), _) => Ordering::Less,
+            (_, Object::Bool(_)) => Ordering::Greater,
+            (Object::Int64(_), _) => Ordering::Less,
+            (_, Object::Int64(_)) => Ordering::Greater,
+            (Object::UInt64(_), _) => Ordering::Less,
+            (_, Object::UInt64(_)) => Ordering::Greater,
+            (Object::ConstString(_), _) => Ordering::Less,
+            (_, Object::ConstString(_)) => Ordering::Greater,
+            (Object::String(_), _) => Ordering::Less,
+            (_, Object::String(_)) => Ordering::Greater,
+            (Object::Array(_), _) => Ordering::Less,
+            (_, Object::Array(_)) => Ordering::Greater,
+            (Object::Struct { .. }, _) => Ordering::Less,
+            (_, Object::Struct { .. }) => Ordering::Greater,
+            (Object::Dict(_), _) => Ordering::Less,
+            (_, Object::Dict(_)) => Ordering::Greater,
+            (Object::Null, _) => Ordering::Less,
+            (_, Object::Null) => Ordering::Greater,
+        }
+    }
+}
+
+impl PartialEq for Object {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Object::Bool(a), Object::Bool(b)) => a == b,
+            (Object::Int64(a), Object::Int64(b)) => a == b,
+            (Object::UInt64(a), Object::UInt64(b)) => a == b,
+            (Object::ConstString(a), Object::ConstString(b)) => a == b,
+            (Object::String(a), Object::String(b)) => a == b,
+            (Object::Array(a), Object::Array(b)) => {
+                a.len() == b.len() && 
+                a.iter().zip(b.iter()).all(|(x, y)| x.borrow().eq(&*y.borrow()))
+            }
+            (Object::Struct { type_name: name_a, fields: fields_a }, 
+             Object::Struct { type_name: name_b, fields: fields_b }) => {
+                name_a == name_b && 
+                fields_a.len() == fields_b.len() &&
+                fields_a.iter().all(|(k, v)| {
+                    fields_b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
+                })
+            }
+            (Object::Dict(a), Object::Dict(b)) => {
+                a.len() == b.len() &&
+                a.iter().all(|(k, v)| {
+                    b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
+                })
+            }
+            (Object::Null, Object::Null) => true,
+            (Object::Unit, Object::Unit) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Object {}
+
+impl Hash for Object {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Object::Bool(v) => {
+                0u8.hash(state);
+                v.hash(state);
+            }
+            Object::Int64(v) => {
+                1u8.hash(state);
+                v.hash(state);
+            }
+            Object::UInt64(v) => {
+                2u8.hash(state);
+                v.hash(state);
+            }
+            Object::ConstString(v) => {
+                3u8.hash(state);
+                v.hash(state);
+            }
+            Object::String(v) => {
+                4u8.hash(state);
+                v.hash(state);
+            }
+            Object::Array(v) => {
+                5u8.hash(state);
+                v.len().hash(state);
+                for item in v.iter() {
+                    item.borrow().hash(state);
+                }
+            }
+            Object::Struct { type_name, fields } => {
+                6u8.hash(state);
+                type_name.hash(state);
+                fields.len().hash(state);
+                // Sort keys for consistent hashing
+                let mut sorted_fields: Vec<_> = fields.iter().collect();
+                sorted_fields.sort_by_key(|(k, _)| *k);
+                for (k, v) in sorted_fields {
+                    k.hash(state);
+                    v.borrow().hash(state);
+                }
+            }
+            Object::Dict(v) => {
+                7u8.hash(state);
+                v.len().hash(state);
+                // Sort keys for consistent hashing
+                let mut sorted_items: Vec<_> = v.iter().collect();
+                sorted_items.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+                for (k, v) in sorted_items {
+                    k.hash(state);
+                    v.borrow().hash(state);
+                }
+            }
+            Object::Null => {
+                8u8.hash(state);
+            }
+            Object::Unit => {
+                9u8.hash(state);
+            }
+        }
+    }
+}
 
 impl Object {
     pub fn get_type(&self) -> TypeDecl {
@@ -56,21 +232,17 @@ impl Object {
                 TypeDecl::Struct(*type_name)
             }
             Object::Dict(map) => {
-                // Key type is always String
-                let key_type = TypeDecl::String;
-                
-                // Determine value type from the first value in the dict
-                let value_type = if map.is_empty() {
-                    TypeDecl::Unknown
+                // Determine key and value types from the first entry in the dict
+                if map.is_empty() {
+                    TypeDecl::Dict(Box::new(TypeDecl::Unknown), Box::new(TypeDecl::Unknown))
                 } else {
-                    // Get the type of the first value
-                    map.values()
-                        .next()
-                        .map(|v| v.borrow().get_type())
-                        .unwrap_or(TypeDecl::Unknown)
-                };
-                
-                TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
+                    // Get the types of the first key-value pair
+                    let (key, value) = map.iter().next().unwrap();
+                    let key_type = key.as_object().get_type();
+                    let value_type = value.borrow().get_type();
+                    
+                    TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
+                }
             }
         }
     }
@@ -351,6 +523,60 @@ impl Object {
             }
             _ => Err(ObjectError::InvalidOperation { 
                 operation: "field_assignment".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn get_dict_value(&self, key: &ObjectKey) -> Result<RcObject, ObjectError> {
+        match self {
+            Object::Dict(dict) => {
+                dict.get(key)
+                    .cloned()
+                    .ok_or_else(|| ObjectError::InvalidOperation { 
+                        operation: "dict_key_not_found".to_string(), 
+                        object_type: self.get_type() 
+                    })
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "dict_access".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn set_dict_value(&mut self, key: ObjectKey, value: RcObject) -> Result<(), ObjectError> {
+        match self {
+            Object::Dict(dict) => {
+                dict.insert(key, value);
+                Ok(())
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "dict_assignment".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn remove_dict_value(&mut self, key: &ObjectKey) -> Result<Option<RcObject>, ObjectError> {
+        match self {
+            Object::Dict(dict) => {
+                Ok(dict.remove(key))
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "dict_removal".to_string(), 
+                object_type: self.get_type() 
+            }),
+        }
+    }
+
+    pub fn dict_contains_key(&self, key: &ObjectKey) -> Result<bool, ObjectError> {
+        match self {
+            Object::Dict(dict) => {
+                Ok(dict.contains_key(key))
+            }
+            _ => Err(ObjectError::InvalidOperation { 
+                operation: "dict_contains_key".to_string(), 
                 object_type: self.get_type() 
             }),
         }

@@ -5,7 +5,7 @@ use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::environment::{Environment, VariableSetType};
-use crate::object::{Object, RcObject};
+use crate::object::{Object, ObjectKey, RcObject};
 use crate::error::InterpreterError;
 
 #[derive(Debug)]
@@ -1436,26 +1436,19 @@ impl EvaluationContext<'_> {
         let mut dict = HashMap::new();
         
         for (key_ref, value_ref) in entries {
-            // Evaluate key and convert to String
+            // Evaluate key - now supports any Object type that can be used as a key
             let key_val = self.evaluate(key_ref)?;
-            let key_obj = self.extract_value(Ok(key_val))?;
-            let key_str = match &*key_obj.borrow() {
-                Object::ConstString(sym) => {
-                    self.string_interner.resolve(*sym)
-                        .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
-                        .to_string()
-                }
-                Object::String(s) => s.clone(),
-                _ => {
-                    return Err(InterpreterError::InternalError("Dict keys must be strings".to_string()));
-                }
-            };
+            let key_obj_rc = self.extract_value(Ok(key_val))?;
+            
+            // Convert to ObjectKey - clone the object for use as a key
+            let key_object = key_obj_rc.borrow().clone();
+            let object_key = ObjectKey::new(key_object);
             
             // Evaluate value
             let value_val = self.evaluate(value_ref)?;
             let value_obj = self.extract_value(Ok(value_val))?;
             
-            dict.insert(key_str, value_obj);
+            dict.insert(object_key, value_obj);
         }
         
         let dict_obj = Object::Dict(Box::new(dict));
@@ -1488,26 +1481,15 @@ impl EvaluationContext<'_> {
                 }
             }
             Object::Dict(dict) => {
-                // Dict indexing with String key
+                // Dict indexing with any Object key
                 let index_borrowed = index_obj.borrow();
-                match &*index_borrowed {
-                    Object::ConstString(sym) => {
-                        let key_str = self.string_interner.resolve(*sym)
-                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?;
-                        
-                        dict.get(key_str)
-                            .cloned()
-                            .map(EvaluationResult::Value)
-                            .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {}", key_str)))
-                    }
-                    Object::String(s) => {
-                        dict.get(s)
-                            .cloned()
-                            .map(EvaluationResult::Value)
-                            .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {}", s)))
-                    }
-                    _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
-                }
+                let key_object = index_borrowed.clone();
+                let object_key = ObjectKey::new(key_object);
+                
+                dict.get(&object_key)
+                    .cloned()
+                    .map(EvaluationResult::Value)
+                    .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {:?}", object_key)))
             }
             Object::Struct { type_name, .. } => {
                 // Struct index overloading - look for __getitem__ method
@@ -1562,23 +1544,13 @@ impl EvaluationContext<'_> {
                 }
             }
             Object::Dict(dict) => {
-                // Dict assignment with String key
+                // Dict assignment with any Object key
                 let index_borrowed = index_obj.borrow();
-                match &*index_borrowed {
-                    Object::ConstString(sym) => {
-                        let key_str = self.string_interner.resolve(*sym)
-                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve string key".to_string()))?
-                            .to_string();
-                        
-                        dict.insert(key_str, value_obj.clone());
-                        Ok(EvaluationResult::Value(value_obj))
-                    }
-                    Object::String(s) => {
-                        dict.insert(s.clone(), value_obj.clone());
-                        Ok(EvaluationResult::Value(value_obj))
-                    }
-                    _ => Err(InterpreterError::InternalError("Dict key must be string".to_string()))
-                }
+                let key_object = index_borrowed.clone();
+                let object_key = ObjectKey::new(key_object);
+                
+                dict.insert(object_key, value_obj.clone());
+                Ok(EvaluationResult::Value(value_obj))
             }
             Object::Struct { type_name, .. } => {
                 // Struct index assignment overloading - look for __setitem__ method

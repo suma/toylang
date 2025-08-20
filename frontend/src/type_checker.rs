@@ -367,8 +367,14 @@ impl Acceptable for Expr {
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
             Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
             Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
-            Expr::IndexAccess(object, index) => visitor.visit_index_access(object, index),
-            Expr::IndexAssign(object, index, value) => visitor.visit_index_assign(object, index, value),
+            Expr::IndexAccess(object, index) => {
+                eprintln!("DEBUG: Processing IndexAccess expression");
+                visitor.visit_index_access(object, index)
+            },
+            Expr::IndexAssign(object, index, value) => {
+                eprintln!("DEBUG: Processing IndexAssign expression");
+                visitor.visit_index_assign(object, index, value)
+            },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
         }
     }
@@ -1076,6 +1082,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Type check the value being assigned
         let value_type = self.visit_expr(value)?;
         
+        
         // Check type compatibility based on container type
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
@@ -1198,13 +1205,23 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let final_key_type = if key_type == TypeDecl::Unknown && expected_key_type.is_some() {
             expected_key_type.clone().unwrap()
         } else {
-            key_type
+            // Convert Number to concrete type
+            if key_type == TypeDecl::Number {
+                TypeDecl::UInt64  // Default numeric type for keys
+            } else {
+                key_type
+            }
         };
         
         let final_value_type = if value_type == TypeDecl::Unknown && expected_value_type.is_some() {
             expected_value_type.clone().unwrap()
         } else {
-            value_type
+            // Convert Number to concrete type  
+            if value_type == TypeDecl::Number {
+                TypeDecl::UInt64  // Default numeric type for values
+            } else {
+                value_type
+            }
         };
         
         // Verify all entries have consistent types - static typing requirement
@@ -1227,13 +1244,23 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             let check_key_type = if k_type == TypeDecl::Unknown && expected_key_type.is_some() {
                 expected_key_type.clone().unwrap()
             } else {
-                k_type
+                // Convert Number to concrete type
+                if k_type == TypeDecl::Number {
+                    TypeDecl::UInt64
+                } else {
+                    k_type
+                }
             };
             
             let check_value_type = if v_type == TypeDecl::Unknown && expected_value_type.is_some() {
                 expected_value_type.clone().unwrap()
             } else {
-                v_type
+                // Convert Number to concrete type
+                if v_type == TypeDecl::Number {
+                    TypeDecl::UInt64
+                } else {
+                    v_type
+                }
             };
             
             if check_key_type != final_key_type {
@@ -1258,7 +1285,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        eprintln!("DEBUG: Processing expression statement: {:?}", expr);
         let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
+        match expr_obj {
+            Expr::IndexAssign(_, _, _) => eprintln!("DEBUG: Found IndexAssign expression"),
+            _ => eprintln!("DEBUG: Expression type: {:?}", expr_obj),
+        }
         expr_obj.clone().accept(self)
     }
 
@@ -1285,6 +1317,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
+        
+        
         self.context.set_var(name, final_type);
         
         // Restore previous type hint

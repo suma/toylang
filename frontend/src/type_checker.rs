@@ -1087,18 +1087,53 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
                 // Array assignment - check index and value types
-                if index_type != TypeDecl::UInt64 {
+                let resolved_index_type = if index_type == TypeDecl::Number {
+                    // Transform Number index to UInt64 for arrays
+                    self.transform_numeric_expr(index, &TypeDecl::UInt64)?;
+                    TypeDecl::UInt64
+                } else {
+                    index_type
+                };
+                
+                if resolved_index_type != TypeDecl::UInt64 {
                     return Err(TypeCheckError::generic_error(&format!(
-                        "Array index must be UInt64, found {:?}", index_type
+                        "Array index must be UInt64, found {:?}", resolved_index_type
                     )));
                 }
-                if !element_types.is_empty() && element_types[0] != value_type {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Array element type mismatch: expected {:?}, found {:?}", 
-                        element_types[0], value_type
-                    )));
+                
+                if !element_types.is_empty() {
+                    let expected_element_type = &element_types[0];
+                    let resolved_value_type = if value_type == TypeDecl::Number {
+                        // If element type is also Number, convert both to UInt64
+                        if *expected_element_type == TypeDecl::Number {
+                            self.transform_numeric_expr(value, &TypeDecl::UInt64)?;
+                            TypeDecl::UInt64
+                        } else {
+                            // Transform Number value to expected element type
+                            self.transform_numeric_expr(value, expected_element_type)?;
+                            expected_element_type.clone()
+                        }
+                    } else {
+                        value_type
+                    };
+                    
+                    let final_expected_type = if *expected_element_type == TypeDecl::Number && resolved_value_type == TypeDecl::UInt64 {
+                        // Update array element type from Number to UInt64
+                        TypeDecl::UInt64
+                    } else {
+                        expected_element_type.clone()
+                    };
+                    
+                    if final_expected_type != resolved_value_type {
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "Array element type mismatch: expected {:?}, found {:?}", 
+                            final_expected_type, resolved_value_type
+                        )));
+                    }
+                    Ok(resolved_value_type)
+                } else {
+                    Ok(value_type)
                 }
-                Ok(value_type)
             }
             TypeDecl::Dict(ref key_type, ref val_type) => {
                 // Dict assignment - check key and value types
@@ -1108,13 +1143,26 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         key_type, index_type
                     )));
                 }
-                if **val_type != TypeDecl::Unknown && **val_type != value_type {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Dict value type mismatch: expected {:?}, found {:?}. All values must have the same type.", 
-                        val_type, value_type
-                    )));
+                
+                if **val_type != TypeDecl::Unknown {
+                    let resolved_value_type = if value_type == TypeDecl::Number {
+                        // Transform Number value to expected dict value type
+                        self.transform_numeric_expr(value, val_type)?;
+                        (**val_type).clone()
+                    } else {
+                        value_type
+                    };
+                    
+                    if **val_type != resolved_value_type {
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "Dict value type mismatch: expected {:?}, found {:?}. All values must have the same type.", 
+                            val_type, resolved_value_type
+                        )));
+                    }
+                    Ok(resolved_value_type)
+                } else {
+                    Ok(value_type)
                 }
-                Ok(value_type)
             }
             TypeDecl::Identifier(struct_name) => {
                 // Check for __setitem__ method on struct
@@ -1285,12 +1333,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        eprintln!("DEBUG: Processing expression statement: {:?}", expr);
         let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
-        match expr_obj {
-            Expr::IndexAssign(_, _, _) => eprintln!("DEBUG: Found IndexAssign expression"),
-            _ => eprintln!("DEBUG: Expression type: {:?}", expr_obj),
-        }
         expr_obj.clone().accept(self)
     }
 

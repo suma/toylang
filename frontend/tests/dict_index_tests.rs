@@ -14,13 +14,21 @@ fn parse_and_check(source: &str) -> Result<TypeDecl, String> {
             if program.statement.0.is_empty() {
                 return Err("No statements found".to_string());
             }
-            
+
+            let functions = program.function.clone();
             let string_interner = parser.get_string_interner();
-            let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-            
-            // Since with_program processes the program and detects errors,
-            // we should check if there were any type check errors
-            // For now, simply return success as other tests do
+            let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            let mut errors: Vec<String> = vec![];
+
+            functions.iter().for_each(|func| {
+                let res = type_checker.type_check(func.clone());
+                if let Err(e) = res {
+                    errors.push(format!("Type check error: {:?}", e));
+                }
+            });
+            if !errors.is_empty() {
+                return Err(errors.join("\n"));
+            }
             Ok(TypeDecl::Unit)
         }
         Err(e) => Err(format!("Parse error: {:?}", e))

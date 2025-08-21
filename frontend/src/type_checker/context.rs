@@ -29,10 +29,10 @@ pub struct TypeCheckContext {
 impl TypeCheckContext {
     pub fn new() -> Self {
         Self {
-            vars: vec![HashMap::new()],
-            functions: HashMap::new(),
-            struct_definitions: HashMap::new(),
-            struct_methods: HashMap::new(),
+            vars: vec![HashMap::with_capacity(16)],
+            functions: HashMap::with_capacity(32),
+            struct_definitions: HashMap::with_capacity(16),
+            struct_methods: HashMap::with_capacity(16),
             current_impl_target: None,
         }
     }
@@ -80,7 +80,7 @@ impl TypeCheckContext {
     }
 
     pub fn push_scope(&mut self) {
-        self.vars.push(HashMap::new());
+        self.vars.push(HashMap::with_capacity(8));
     }
 
     pub fn pop_scope(&mut self) {

@@ -24,9 +24,9 @@ impl ParserWithInterner {
     pub fn new(input: &str) -> Self {
         Self {
             input: input.to_string(),
-            string_interner: DefaultStringInterner::new(),
+            string_interner: DefaultStringInterner::with_capacity(256),
             parser: None,
-            errors: Vec::new(),
+            errors: Vec::with_capacity(16),
         }
     }
     

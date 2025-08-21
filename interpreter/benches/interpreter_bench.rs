@@ -4,7 +4,7 @@ use interpreter::{execute_program, check_typing};
 use string_interner::DefaultStringInterner;
 
 fn parse_and_execute(source: &str) -> Result<std::rc::Rc<std::cell::RefCell<interpreter::object::Object>>, String> {
-    let mut string_interner = DefaultStringInterner::default();
+    let mut string_interner = DefaultStringInterner::with_capacity(256);
     let mut parser = Parser::new(source, &mut string_interner);
     let mut program = parser.parse_program()
         .map_err(|e| format!("Parse error: {:?}", e))?;
@@ -150,7 +150,7 @@ fn main() -> u64 {
 
     c.bench_function("parsing_only", |b| {
         b.iter(|| {
-            let mut string_interner = DefaultStringInterner::default();
+            let mut string_interner = DefaultStringInterner::with_capacity(256);
             let mut parser = Parser::new(black_box(complex_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
             

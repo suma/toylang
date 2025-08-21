@@ -35,6 +35,45 @@ pub enum Object {
 
 pub type RcObject = Rc<RefCell<Object>>;
 
+use std::sync::Mutex;
+
+/// Tracks object destruction for debugging and resource management
+static DESTRUCTION_LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Conditional logging macro for destruction events
+/// Only active in debug builds or when debug-logging feature is enabled
+#[cfg(any(debug_assertions, feature = "debug-logging"))]
+macro_rules! destruction_log {
+    ($msg:expr) => {
+        if let Ok(mut log) = DESTRUCTION_LOG.lock() {
+            log.push($msg);
+        }
+    };
+}
+
+/// No-op logging macro for release builds without debug-logging feature
+#[cfg(not(any(debug_assertions, feature = "debug-logging")))]
+macro_rules! destruction_log {
+    ($msg:expr) => {};
+}
+
+/// Get the destruction log (for testing purposes)
+/// Always available regardless of logging state for testing compatibility
+pub fn get_destruction_log() -> Vec<String> {
+    DESTRUCTION_LOG.lock().unwrap().clone()
+}
+
+/// Clear the destruction log (for testing purposes)
+/// Always available regardless of logging state for testing compatibility
+pub fn clear_destruction_log() {
+    DESTRUCTION_LOG.lock().unwrap().clear()
+}
+
+/// Check if destruction logging is currently enabled
+pub fn is_destruction_logging_enabled() -> bool {
+    cfg!(any(debug_assertions, feature = "debug-logging"))
+}
+
 /// A wrapper for Object that can be used as a HashMap key
 /// This ensures immutability during the lifetime of its use as a key
 #[derive(Debug, Clone)]
@@ -579,6 +618,87 @@ impl Object {
                 operation: "dict_contains_key".to_string(), 
                 object_type: self.get_type() 
             }),
+        }
+    }
+}
+
+/// Explicit destructor support for objects with __drop__ methods
+pub trait ExplicitDestructor {
+    /// Call the __drop__ method if it exists for this object
+    fn call_drop_method(&self, evaluator: &mut crate::evaluation::EvaluationContext) -> Result<(), crate::error::InterpreterError>;
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        match self {
+            Object::Struct { type_name, fields: _ } => {
+                // Log destruction for debugging
+                let struct_name = format!("struct_{:?}", type_name);
+                destruction_log!(format!("Destructing {}", struct_name));
+                
+                // Note: Custom __drop__ method should be called explicitly before object destruction
+                // This is done via the ExplicitDestructor trait in user code
+                
+                // Cleanup struct fields (automatic via Drop trait of HashMap)
+                // Each field (RcObject) will be automatically decremented and dropped if ref count reaches 0
+            }
+            Object::Array(elements) => {
+                // Log array destruction
+                destruction_log!(format!("Destructing array with {} elements", elements.len()));
+                // Elements will be automatically dropped via Vec's Drop implementation
+            }
+            Object::Dict(dict) => {
+                // Log dictionary destruction
+                destruction_log!(format!("Destructing dict with {} entries", dict.len()));
+                // Dictionary entries will be automatically dropped via HashMap's Drop implementation
+            }
+            Object::String(s) => {
+                // Log dynamic string destruction
+                destruction_log!(format!("Destructing dynamic string: {}", s));
+                // String will be automatically dropped
+            }
+            _ => {
+                // Other primitive types don't need special cleanup
+                // Bool, Int64, UInt64, ConstString, Null, Unit are Copy types or don't own resources
+            }
+        }
+    }
+}
+
+impl ExplicitDestructor for RcObject {
+    fn call_drop_method(&self, evaluator: &mut crate::evaluation::EvaluationContext) -> Result<(), crate::error::InterpreterError> {
+        let (type_name, struct_name_str) = {
+            let obj_borrowed = self.borrow();
+            match &*obj_borrowed {
+                Object::Struct { type_name, .. } => {
+                    // Resolve struct name while borrowed
+                    let struct_name_str = evaluator.string_interner.resolve(*type_name)
+                        .ok_or_else(|| crate::error::InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                        .to_string();
+                    (*type_name, struct_name_str)
+                }
+                _ => {
+                    // Non-struct objects don't have __drop__ methods
+                    return Ok(());
+                }
+            }
+        };
+        
+        // Check if __drop__ method exists
+        let drop_method = evaluator.string_interner.get_or_intern("__drop__");
+        
+        // Try to call __drop__ method
+        match evaluator.call_struct_method(self.clone(), drop_method, &[], &struct_name_str) {
+            Ok(_) => {
+                // Log successful __drop__ call
+                destruction_log!(format!("Called __drop__ method for struct_{:?}", type_name));
+                Ok(())
+            }
+            Err(crate::error::InterpreterError::FunctionNotFound(_)) => {
+                // __drop__ method doesn't exist, which is fine
+                Ok(())
+            }
+            Err(e) => Err(e)
         }
     }
 }

@@ -1752,7 +1752,7 @@ impl EvaluationContext<'_> {
     }
 
     /// Call a struct method by name
-    fn call_struct_method(
+    pub fn call_struct_method(
         &mut self, 
         object: RcObject, 
         method_name: DefaultSymbol, 

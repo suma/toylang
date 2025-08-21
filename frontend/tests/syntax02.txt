@@ -10,6 +10,7 @@ fn println(x: u64, y: u64, z: str) {
 }
 
 fn main() {
+	val abc = 1u64
 	println(abc, 10000u64, "str")
 	return
 }

@@ -21,6 +21,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
+- **Resource Management**: Automatic destruction system with custom `__drop__` methods
 - **Comments**: Line comments with `#` symbol support
 - **Module System**: Go-style modules with `package`/`import` declarations
 - **Qualified Identifiers**: Rust-style `module::function` syntax for module access
@@ -46,6 +47,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Module Integration**: Seamless AST integration with qualified identifier support
 - **Built-in Operations**: Comprehensive arithmetic, logical, and comparison operators
 - **Method Registry**: Support for both struct methods and built-in type methods
+- **Resource Management**: Automatic object destruction with custom destructor support
 
 ## Getting Started
 
@@ -61,6 +63,12 @@ cd frontend && cargo build
 
 # Build interpreter
 cd interpreter && cargo build
+
+# Build with debug logging enabled (for development)
+cd interpreter && cargo build --features debug-logging
+
+# Build release version (production-optimized, no logging overhead)
+cd interpreter && cargo build --release
 ```
 
 ### Running Programs
@@ -87,6 +95,12 @@ cd frontend && cargo test
 
 # Run property-based tests
 cd interpreter && cargo test proptest
+
+# Run destruction system tests specifically
+cd interpreter && cargo test destruction_tests custom_destructor_tests
+
+# Run tests with logging enabled (useful for debugging)
+cd interpreter && cargo test --features test-logging
 ```
 
 ## Language Syntax
@@ -138,6 +152,41 @@ impl Point {
 }
 ```
 
+### Resource Management with Custom Destructors
+```rust
+struct FileResource {
+    path: str,
+    handle: u64
+}
+
+impl FileResource {
+    fn open(path: str) -> FileResource {
+        FileResource { 
+            path: path, 
+            handle: 42u64  # Simulated file handle
+        }
+    }
+    
+    fn read_data(self: Self) -> str {
+        # Read operation using self.handle
+        "file content"
+    }
+    
+    # Custom destructor for cleanup
+    fn __drop__(self: Self) {
+        # Close file handle, release resources
+        # Log cleanup actions, etc.
+    }
+}
+
+fn main() -> u64 {
+    val file = FileResource::open("data.txt")
+    val content = file.read_data()
+    # FileResource.__drop__() automatically called when 'file' goes out of scope
+    0u64
+}
+```
+
 ### Module System
 ```rust
 # math.t (in modules/math/math.t)
@@ -160,14 +209,16 @@ fn main() -> u64 {
 ## Development Features
 
 ### Comprehensive Testing
-- **Extensive Test Coverage**: All language features tested with edge cases
+- **Extensive Test Coverage**: All language features tested with edge cases including destruction system
 - **Property-based Testing**: Automated testing of language invariants
 - **Performance Benchmarks**: Detailed performance analysis with Criterion
+- **Resource Management Tests**: Validation of automatic destruction and custom `__drop__` methods
 
 ### Performance Optimizations
 - **Type Inference Caching**: Efficient memoization of type resolution
 - **Memory Pool Design**: Reduced allocation overhead for AST nodes
 - **Structured Error System**: Fast error categorization and reporting
+- **Conditional Debug Logging**: Zero-overhead resource tracking in production builds
 
 ### Development Tools
 - **Rich Example Suite**: Multiple example programs demonstrating language features
@@ -187,8 +238,10 @@ The implementation includes comprehensive documentation, extensive testing, and 
 ## Technical Highlights
 
 - **Zero-cost Type Checking**: Type validation occurs before execution
-- **Efficient Memory Management**: Minimal allocation overhead with pool-based design
+- **Efficient Memory Management**: Minimal allocation overhead with pool-based design and automatic destruction
 - **Extensible Architecture**: Clean separation between frontend and backend components
 - **Production-quality Testing**: Comprehensive test suite with full pass rate
+- **Resource Management**: Automatic object destruction with custom `__drop__` method support
+- **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 
 All major language features are implemented and thoroughly tested, providing a solid foundation for both learning and practical use.

@@ -75,7 +75,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
-            builtin_function_signatures: Self::create_builtin_function_signatures(),
+            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
         };
         
         // Process package and imports immediately
@@ -103,7 +103,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
-            builtin_function_signatures: Self::create_builtin_function_signatures(),
+            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
         }
     }
     
@@ -213,7 +213,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
-            builtin_function_signatures: Self::create_builtin_function_signatures(),
+            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
         }
     }
     
@@ -310,8 +310,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.context.set_var(name, decl.clone());
             }
             (None, None) => {
-                // No type declaration and no initial value - default to null (Any type)
-                self.context.set_var(name, TypeDecl::Null);
+                // No type declaration and no initial value - use Unknown type
+                self.context.set_var(name, TypeDecl::Unknown);
             }
         }
 
@@ -860,17 +860,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept(self)?
         };
-        // Allow null assignment to any type except Any
+        // Allow assignment compatibility
         if lhs_ty != rhs_ty {
             match (&lhs_ty, &rhs_ty) {
-                // Allow null assignment to non-Any types
-                (TypeDecl::Int64, TypeDecl::Null) |
-                (TypeDecl::UInt64, TypeDecl::Null) |
-                (TypeDecl::Bool, TypeDecl::Null) |
-                (TypeDecl::String, TypeDecl::Null) |
-                (TypeDecl::Array(_, _), TypeDecl::Null) |
-                (TypeDecl::Struct(_), TypeDecl::Null) => {
-                    // Allow null assignment
+                // Allow unknown type (null values) assignment to any concrete type
+                (_, TypeDecl::Unknown) => {
+                    // Allow assignment of unknown/null to any type
+                }
+                // Allow assignment when types are equivalent (for type inference)
+                (TypeDecl::Unknown, _) => {
+                    // Allow assignment from any type to unknown (type inference)
                 }
                 _ => {
                     return Err(TypeCheckError::type_mismatch(lhs_ty, rhs_ty).with_context("assignment"));
@@ -996,7 +995,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Null)
+        // Null value type is determined by context
+        Ok(TypeDecl::Unknown)
     }
     
     // =========================================================================
@@ -1894,7 +1894,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
             
             // Check argument types
-            for (i, (arg, expected_type)) in args.iter().zip(&sig.arg_types).enumerate() {
+            for (_i, (arg, expected_type)) in args.iter().zip(&sig.arg_types).enumerate() {
                 let arg_type = self.visit_expr(arg)?;
                 if arg_type != *expected_type {
                     return Err(TypeCheckError::type_mismatch(
@@ -2153,8 +2153,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if field_type == TypeDecl::Number && (expected_type == &TypeDecl::Int64 || expected_type == &TypeDecl::UInt64) {
                         self.transform_numeric_expr(field_expr, expected_type)?;
                     // Allow null assignment to any type
-                    } else if field_type == TypeDecl::Null {
-                        // Allow null assignment to struct fields
+                    } else if field_type == TypeDecl::Unknown {
+                        // Allow unknown type (including null values) assignment to struct fields
                     } else {
                         return Err(TypeCheckError::type_mismatch(expected_type.clone(), field_type));
                     }
@@ -2637,6 +2637,7 @@ mod tests {
             function_checking: FunctionCheckingState::new(),
             optimization: PerformanceOptimization::new(),
             errors: Vec::new(),
+            builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),

@@ -186,7 +186,7 @@ impl TypeCheckContext {
         self.struct_methods.get(&struct_symbol)?.get(&method_symbol)
     }
 
-    pub fn get_method_return_type(&self, struct_name: &str, method_name: &str) -> Option<&TypeDecl> {
+    pub fn get_method_return_type(&self, _struct_name: &str, _method_name: &str) -> Option<&TypeDecl> {
         // For now, this is a placeholder - we'd need to implement method resolution
         // based on struct_name and method_name
         None

@@ -8,7 +8,6 @@ pub enum TypeDecl {
     UInt64,
     Bool,
     Identifier(DefaultSymbol),
-    Null,  // null
     String,
     Number,  // Type-unspecified numeric literal for type inference
     Array(Vec<TypeDecl>, usize),  // element types and fixed size

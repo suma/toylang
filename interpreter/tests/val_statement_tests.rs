@@ -1,8 +1,3 @@
-use std::collections::HashMap;
-use interpreter::*;
-use frontend::ast::*;
-use frontend::type_decl::TypeDecl;
-use string_interner::DefaultStringInterner;
 use compiler_core::CompilerSession;
 
 // Helper function to create a test program and execute it

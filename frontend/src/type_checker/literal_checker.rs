@@ -66,6 +66,7 @@ impl<'a> LiteralTypeChecker for TypeCheckerVisitor<'a> {
     }
 
     fn check_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Null)
+        // Null value type is determined by context
+        Ok(TypeDecl::Unknown)
     }
 }

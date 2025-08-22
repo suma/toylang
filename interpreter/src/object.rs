@@ -30,7 +30,7 @@ pub enum Object {
     Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
     //Function: Rc<Function>,
     Pointer(usize),  // Raw pointer as memory address (0 = null pointer)
-    Null,
+    Null(TypeDecl), // Null reference with type information
     Unit,
 }
 
@@ -128,7 +128,7 @@ impl Ord for ObjectKey {
             (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
             (Object::String(a), Object::String(b)) => a.cmp(b),
             (Object::Pointer(a), Object::Pointer(b)) => a.cmp(b),
-            (Object::Null, Object::Null) => Ordering::Equal,
+            (Object::Null(_), Object::Null(_)) => Ordering::Equal,
             (Object::Unit, Object::Unit) => Ordering::Equal,
             // For different types, define a fixed ordering
             (Object::Bool(_), _) => Ordering::Less,
@@ -149,8 +149,8 @@ impl Ord for ObjectKey {
             (_, Object::Dict(_)) => Ordering::Greater,
             (Object::Pointer(_), _) => Ordering::Less,
             (_, Object::Pointer(_)) => Ordering::Greater,
-            (Object::Null, _) => Ordering::Less,
-            (_, Object::Null) => Ordering::Greater,
+            (Object::Null(_), _) => Ordering::Less,
+            (_, Object::Null(_)) => Ordering::Greater,
         }
     }
 }
@@ -182,7 +182,7 @@ impl PartialEq for Object {
                 })
             }
             (Object::Pointer(a), Object::Pointer(b)) => a == b,
-            (Object::Null, Object::Null) => true,
+            (Object::Null(_), Object::Null(_)) => true,
             (Object::Unit, Object::Unit) => true,
             _ => false,
         }
@@ -248,8 +248,10 @@ impl Hash for Object {
                 8u8.hash(state);
                 v.hash(state);
             }
-            Object::Null => {
+            Object::Null(type_decl) => {
                 9u8.hash(state);
+                // Hash the type information for different null types
+                std::mem::discriminant(type_decl).hash(state);
             }
             Object::Unit => {
                 10u8.hash(state);
@@ -259,10 +261,20 @@ impl Hash for Object {
 }
 
 impl Object {
+    // Helper to create a null object with specific type
+    pub fn null_of_type(type_decl: TypeDecl) -> Object {
+        Object::Null(type_decl)
+    }
+    
+    // Helper to create a null object with unknown type (for inference)
+    pub fn null_unknown() -> Object {
+        Object::Null(TypeDecl::Unknown)
+    }
+
     pub fn get_type(&self) -> TypeDecl {
         match self {
             Object::Unit => TypeDecl::Unit,
-            Object::Null => TypeDecl::Null,
+            Object::Null(type_decl) => type_decl.clone(),
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
@@ -297,7 +309,7 @@ impl Object {
     }
 
     pub fn is_null(&self) -> bool {
-        matches!(self, Object::Null | Object::Pointer(0))
+        matches!(self, Object::Null(_) | Object::Pointer(0))
     }
 
     pub fn check_not_null(&self) -> Result<(), ObjectError> {
@@ -473,36 +485,38 @@ impl Object {
         
         match (&mut *self, &*other_borrowed) {
             // All types allow null assignment
-            (Object::Bool(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::Bool(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::Bool);
                 Ok(())
             }
-            (Object::Int64(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::Int64(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::Int64);
                 Ok(())
             }
-            (Object::UInt64(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::UInt64(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::UInt64);
                 Ok(())
             }
-            (Object::ConstString(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::ConstString(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::String);
                 Ok(())
             }
-            (Object::String(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::String(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::String);
                 Ok(())
             }
-            (Object::Array(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::Array(_), Object::Null(_)) => {
+                // For arrays, we need to preserve the original array type
+                let original_type = self.get_type();
+                *self = Object::Null(original_type);
                 Ok(())
             }
-            (Object::Struct { .. }, Object::Null) => {
-                *self = Object::Null;
+            (Object::Struct { type_name, .. }, Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::Struct(*type_name));
                 Ok(())
             }
-            (Object::Pointer(_), Object::Null) => {
-                *self = Object::Null;
+            (Object::Pointer(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::Ptr);
                 Ok(())
             }
             // Same type assignments
@@ -531,7 +545,7 @@ impl Object {
                 *self = Object::String(v.clone());
                 Ok(())
             }
-            (Object::String(self_val), Object::ConstString(_)) => {
+            (Object::String(_self_val), Object::ConstString(_)) => {
                 // We need access to string_interner here, but it's not available
                 // For now, we'll keep the String type and require conversion elsewhere
                 Err(ObjectError::TypeMismatch { 
@@ -558,7 +572,7 @@ impl Object {
                 }
             }
             // Null and Unit can accept any value
-            (Object::Null, _) | (Object::Unit, _) => {
+            (Object::Null(_), _) | (Object::Unit, _) => {
                 *self = other_borrowed.clone();
                 Ok(())
             }

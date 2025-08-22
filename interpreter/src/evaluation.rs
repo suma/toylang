@@ -184,7 +184,7 @@ impl<'a> EvaluationContext<'a> {
             current = current + one;
         }
         
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Null))))
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::null_unknown()))))
     }
 
     fn evaluate_comparison_op(&self, lhs: &Object, rhs: &Object, op: ComparisonOp) -> Result<Object, InterpreterError> {
@@ -261,7 +261,7 @@ impl<'a> EvaluationContext<'a> {
             function,
             environment: Environment::new(),
             method_registry: HashMap::new(),
-            null_object: Rc::new(RefCell::new(Object::Null)),
+            null_object: Rc::new(RefCell::new(Object::null_unknown())),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
             heap_manager: HeapManager::new(),
@@ -290,7 +290,7 @@ impl<'a> EvaluationContext<'a> {
         let mut param_index = 0;
         
         // Bind method parameters - first parameter should be self
-        for (param_symbol, param_type) in &method.parameter {
+        for (param_symbol, _param_type) in &method.parameter {
             if param_index == 0 {
                 // First parameter is 'self' - bind the object
                 self.environment.set_val(*param_symbol, self_obj.clone());
@@ -1198,7 +1198,7 @@ impl<'a> EvaluationContext<'a> {
         
         if val_ty != rhs_ty {
             // Allow null assignment to any type
-            if rhs_ty == TypeDecl::Null {
+            if matches!(rhs_ty, TypeDecl::Unknown) {
                 // Allow null assignment
             } else {
                 return Err(InterpreterError::TypeError { 
@@ -1312,7 +1312,7 @@ impl<'a> EvaluationContext<'a> {
                 Ok(EvaluationResult::Value(v)) => v,
                 Ok(EvaluationResult::Return(v)) => {
                     self.environment.exit_block();
-                    return Ok(v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))));
+                    return Ok(v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))));
                 },
                 Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => {
                     self.environment.exit_block();
@@ -1336,7 +1336,7 @@ impl<'a> EvaluationContext<'a> {
             Ok(match res {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }
@@ -1370,7 +1370,7 @@ impl<'a> EvaluationContext<'a> {
             Ok(match res {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::Null))),
+                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }

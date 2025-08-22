@@ -136,6 +136,7 @@ pub struct Parser<'a> {
     token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
     pub string_interner: &'a mut DefaultStringInterner,
+    pub builtin_symbols: BuiltinFunctionSymbols,
     pub errors: Vec<ParserError>,
     input: &'a str,
     recursion_depth: u32,
@@ -147,10 +148,12 @@ pub struct Parser<'a> {
 impl<'a> Parser<'a> {
     pub fn new(input: &'a str, string_interner: &'a mut DefaultStringInterner) -> Self {
         let source = LexerTokenSource::new(input);
+        let builtin_symbols = BuiltinFunctionSymbols::new(string_interner);
         Parser {
             token_provider: TokenProvider::with_format_normalization(source, 128, 64),
             ast_builder: AstBuilder::with_capacity(1024, 1024),
             string_interner,
+            builtin_symbols,
             errors: Vec::with_capacity(4),
             input,
             recursion_depth: 0,

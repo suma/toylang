@@ -480,8 +480,15 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         parser.next();
                         let args = parse_expr_list(parser, vec![])?;
                         parser.expect_err(&Kind::ParenClose)?;
-                        let expr = parser.ast_builder.call_expr(s, args, Some(location));
-                        Ok(expr)
+                        
+                        // Check if this is a builtin function using symbol comparison
+                        if let Some(builtin_func) = parser.builtin_symbols.symbol_to_builtin(s) {
+                            let expr = parser.ast_builder.builtin_call_expr(builtin_func, args, Some(location));
+                            Ok(expr)
+                        } else {
+                            let expr = parser.ast_builder.call_expr(s, args, Some(location));
+                            Ok(expr)
+                        }
                     }
                     Some(Kind::BracketOpen) => {
                         let location = parser.current_source_location();

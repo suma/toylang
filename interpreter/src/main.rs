@@ -97,5 +97,9 @@ fn main() {
     if verbose {
         println!("Executing program");
     }
-    let _ = handle_execution(&program, session.string_interner(), &source, filename);
+    if let Err(()) = handle_execution(&program, session.string_interner(), &source, filename) {
+        if verbose {
+            println!("Execution failed");
+        }
+    }
 }

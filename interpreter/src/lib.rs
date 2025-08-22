@@ -3,6 +3,7 @@ pub mod object;
 pub mod evaluation;
 pub mod error;
 pub mod error_formatter;
+pub mod heap;
 
 use std::rc::Rc;
 use std::collections::HashMap;

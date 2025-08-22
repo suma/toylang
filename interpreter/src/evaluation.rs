@@ -7,6 +7,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::environment::{Environment, VariableSetType};
 use crate::object::{Object, ObjectKey, RcObject};
 use crate::error::InterpreterError;
+use crate::heap::HeapManager;
 
 #[derive(Debug)]
 enum ArithmeticOp {
@@ -138,6 +139,7 @@ pub struct EvaluationContext<'a> {
     null_object: RcObject, // Pre-created null object for reuse
     recursion_depth: u32,
     max_recursion_depth: u32,
+    heap_manager: HeapManager, // Heap memory manager for pointer operations
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -262,6 +264,7 @@ impl<'a> EvaluationContext<'a> {
             null_object: Rc::new(RefCell::new(Object::Null)),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
+            heap_manager: HeapManager::new(),
         }
     }
 
@@ -546,6 +549,9 @@ impl<'a> EvaluationContext<'a> {
             }
             Expr::BuiltinMethodCall(receiver, method, args) => {
                 self.evaluate_builtin_method_call(receiver, method, args)
+            }
+            Expr::BuiltinCall(func, args) => {
+                self.evaluate_builtin_call(func, args)
             }
             Expr::StructLiteral(struct_name, fields) => {
                 self.evaluate_struct_literal(struct_name, fields)
@@ -1784,5 +1790,238 @@ impl EvaluationContext<'_> {
                     self.string_interner.resolve(method_name).unwrap_or("<unknown>"),
                     struct_name)
         ))
+    }
+
+    /// Evaluate builtin function calls
+    fn evaluate_builtin_call(&mut self, func: &BuiltinFunction, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        match func {
+            // Memory management
+            BuiltinFunction::HeapAlloc => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "heap_alloc takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                
+                let size_result = self.evaluate(&args[0])?;
+                let size_obj = self.extract_value(Ok(size_result))?;
+                let size = size_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("heap_alloc expects u64 size".to_string()))?;
+                
+                let addr = self.heap_manager.alloc(size as usize);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(addr)))))
+            }
+            
+            BuiltinFunction::HeapFree => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "heap_free takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("heap_free expects pointer".to_string()))?;
+                
+                self.heap_manager.free(addr);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+            }
+            
+            BuiltinFunction::HeapRealloc => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "heap_realloc takes 2 arguments".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let old_addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("heap_realloc expects pointer as first argument".to_string()))?;
+                
+                let size_result = self.evaluate(&args[1])?;
+                let size_obj = self.extract_value(Ok(size_result))?;
+                let new_size = size_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("heap_realloc expects u64 size as second argument".to_string()))?;
+                
+                let new_addr = self.heap_manager.realloc(old_addr, new_size as usize);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(new_addr)))))
+            }
+            
+            // Pointer operations
+            BuiltinFunction::PtrRead => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "ptr_read takes 2 arguments".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("ptr_read expects pointer as first argument".to_string()))?;
+                
+                let offset_result = self.evaluate(&args[1])?;
+                let offset_obj = self.extract_value(Ok(offset_result))?;
+                let offset = offset_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
+                
+                match self.heap_manager.read_u64(addr, offset as usize) {
+                    Some(value) => Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(value))))),
+                    None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
+                }
+            }
+            
+            BuiltinFunction::PtrWrite => {
+                if args.len() != 3 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "ptr_write takes 3 arguments".to_string(),
+                        expected: 3,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("ptr_write expects pointer as first argument".to_string()))?;
+                
+                let offset_result = self.evaluate(&args[1])?;
+                let offset_obj = self.extract_value(Ok(offset_result))?;
+                let offset = offset_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("ptr_write expects u64 offset as second argument".to_string()))?;
+                
+                let value_result = self.evaluate(&args[2])?;
+                let value_obj = self.extract_value(Ok(value_result))?;
+                let value = value_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("ptr_write expects u64 value as third argument".to_string()))?;
+                
+                if self.heap_manager.write_u64(addr, offset as usize, value) {
+                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                } else {
+                    Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()))
+                }
+            }
+            
+            BuiltinFunction::PtrIsNull => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "ptr_is_null takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("ptr_is_null expects pointer".to_string()))?;
+                println!("addr is {:?}", addr);
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(addr == 0)))))
+            }
+            
+            // Memory operations
+            BuiltinFunction::MemCopy => {
+                if args.len() != 3 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "mem_copy takes 3 arguments".to_string(),
+                        expected: 3,
+                        found: args.len(),
+                    });
+                }
+                
+                let src_result = self.evaluate(&args[0])?;
+                let src_obj = self.extract_value(Ok(src_result))?;
+                let src_addr = src_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("mem_copy expects pointer as first argument".to_string()))?;
+                
+                let dest_result = self.evaluate(&args[1])?;
+                let dest_obj = self.extract_value(Ok(dest_result))?;
+                let dest_addr = dest_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("mem_copy expects pointer as second argument".to_string()))?;
+                
+                let size_result = self.evaluate(&args[2])?;
+                let size_obj = self.extract_value(Ok(size_result))?;
+                let size = size_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("mem_copy expects u64 size as third argument".to_string()))?;
+                
+                if self.heap_manager.copy_memory(src_addr, dest_addr, size as usize) {
+                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                } else {
+                    Err(InterpreterError::InternalError("Invalid memory access in mem_copy".to_string()))
+                }
+            }
+            
+            BuiltinFunction::MemMove => {
+                if args.len() != 3 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "mem_move takes 3 arguments".to_string(),
+                        expected: 3,
+                        found: args.len(),
+                    });
+                }
+                
+                let src_result = self.evaluate(&args[0])?;
+                let src_obj = self.extract_value(Ok(src_result))?;
+                let src_addr = src_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("mem_move expects pointer as first argument".to_string()))?;
+                
+                let dest_result = self.evaluate(&args[1])?;
+                let dest_obj = self.extract_value(Ok(dest_result))?;
+                let dest_addr = dest_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("mem_move expects pointer as second argument".to_string()))?;
+                
+                let size_result = self.evaluate(&args[2])?;
+                let size_obj = self.extract_value(Ok(size_result))?;
+                let size = size_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("mem_move expects u64 size as third argument".to_string()))?;
+                
+                if self.heap_manager.move_memory(src_addr, dest_addr, size as usize) {
+                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                } else {
+                    Err(InterpreterError::InternalError("Invalid memory access in mem_move".to_string()))
+                }
+            }
+            
+            BuiltinFunction::MemSet => {
+                if args.len() != 3 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "mem_set takes 3 arguments".to_string(),
+                        expected: 3,
+                        found: args.len(),
+                    });
+                }
+                
+                let ptr_result = self.evaluate(&args[0])?;
+                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let addr = ptr_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("mem_set expects pointer as first argument".to_string()))?;
+                
+                let value_result = self.evaluate(&args[1])?;
+                let value_obj = self.extract_value(Ok(value_result))?;
+                let value = value_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("mem_set expects u64 value as second argument".to_string()))?;
+                
+                let size_result = self.evaluate(&args[2])?;
+                let size_obj = self.extract_value(Ok(size_result))?;
+                let size = size_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError("mem_set expects u64 size as third argument".to_string()))?;
+                
+                if self.heap_manager.set_memory(addr, value as u8, size as usize) {
+                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                } else {
+                    Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))
+                }
+            }
+        }
     }
 }

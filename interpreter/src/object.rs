@@ -29,6 +29,7 @@ pub enum Object {
     },
     Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
     //Function: Rc<Function>,
+    Pointer(usize),  // Raw pointer as memory address (0 = null pointer)
     Null,
     Unit,
 }
@@ -126,6 +127,7 @@ impl Ord for ObjectKey {
             (Object::UInt64(a), Object::UInt64(b)) => a.cmp(b),
             (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
             (Object::String(a), Object::String(b)) => a.cmp(b),
+            (Object::Pointer(a), Object::Pointer(b)) => a.cmp(b),
             (Object::Null, Object::Null) => Ordering::Equal,
             (Object::Unit, Object::Unit) => Ordering::Equal,
             // For different types, define a fixed ordering
@@ -145,6 +147,8 @@ impl Ord for ObjectKey {
             (_, Object::Struct { .. }) => Ordering::Greater,
             (Object::Dict(_), _) => Ordering::Less,
             (_, Object::Dict(_)) => Ordering::Greater,
+            (Object::Pointer(_), _) => Ordering::Less,
+            (_, Object::Pointer(_)) => Ordering::Greater,
             (Object::Null, _) => Ordering::Less,
             (_, Object::Null) => Ordering::Greater,
         }
@@ -177,6 +181,7 @@ impl PartialEq for Object {
                     b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
                 })
             }
+            (Object::Pointer(a), Object::Pointer(b)) => a == b,
             (Object::Null, Object::Null) => true,
             (Object::Unit, Object::Unit) => true,
             _ => false,
@@ -239,11 +244,15 @@ impl Hash for Object {
                     v.borrow().hash(state);
                 }
             }
-            Object::Null => {
+            Object::Pointer(v) => {
                 8u8.hash(state);
+                v.hash(state);
+            }
+            Object::Null => {
+                9u8.hash(state);
             }
             Object::Unit => {
-                9u8.hash(state);
+                10u8.hash(state);
             }
         }
     }
@@ -283,11 +292,12 @@ impl Object {
                     TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
                 }
             }
+            Object::Pointer(_) => TypeDecl::Ptr,
         }
     }
 
     pub fn is_null(&self) -> bool {
-        matches!(self, Object::Null)
+        matches!(self, Object::Null | Object::Pointer(0))
     }
 
     pub fn check_not_null(&self) -> Result<(), ObjectError> {
@@ -342,6 +352,24 @@ impl Object {
             Object::UInt64(v) => Ok(*v),
             _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::UInt64, found: self.get_type() }),
         }
+    }
+
+    pub fn unwrap_pointer(&self) -> usize {
+        match self {
+            Object::Pointer(v) => *v,
+            _ => panic!("unwrap_pointer: expected pointer but {self:?}"),
+        }
+    }
+
+    pub fn try_unwrap_pointer(&self) -> Result<usize, ObjectError> {
+        match self {
+            Object::Pointer(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Ptr, found: self.get_type() }),
+        }
+    }
+
+    pub fn is_null_pointer(&self) -> bool {
+        matches!(self, Object::Pointer(0))
     }
 
     pub fn unwrap_string(&self) -> DefaultSymbol {
@@ -470,6 +498,10 @@ impl Object {
                 Ok(())
             }
             (Object::Struct { .. }, Object::Null) => {
+                *self = Object::Null;
+                Ok(())
+            }
+            (Object::Pointer(_), Object::Null) => {
                 *self = Object::Null;
                 Ok(())
             }

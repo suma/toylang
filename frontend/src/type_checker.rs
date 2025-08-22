@@ -6,6 +6,15 @@ use crate::type_decl::*;
 use crate::visitor::{AstVisitor, ProgramVisitor};
 use crate::module_resolver::ModuleResolver;
 
+// Builtin function signature definition
+#[derive(Debug, Clone)]
+pub struct BuiltinFunctionSignature {
+    pub func: BuiltinFunction,
+    pub arg_count: usize,
+    pub arg_types: Vec<TypeDecl>,
+    pub return_type: TypeDecl,
+}
+
 // Import new modular structure
 pub mod core;
 pub mod context;
@@ -41,6 +50,8 @@ pub struct TypeCheckerVisitor<'a> {
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
     // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
     pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
+    // Builtin function signatures table
+    pub builtin_function_signatures: Vec<BuiltinFunctionSignature>,
 }
 
 
@@ -64,6 +75,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
+            builtin_function_signatures: Self::create_builtin_function_signatures(),
         };
         
         // Process package and imports immediately
@@ -91,6 +103,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
+            builtin_function_signatures: Self::create_builtin_function_signatures(),
         }
     }
     
@@ -117,6 +130,70 @@ impl<'a> TypeCheckerVisitor<'a> {
         registry
     }
     
+    fn create_builtin_function_signatures() -> Vec<BuiltinFunctionSignature> {
+        vec![
+            // Memory management
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapAlloc,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::UInt64],
+                return_type: TypeDecl::Ptr,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapFree,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Ptr],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapRealloc,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Ptr,
+            },
+            
+            // Pointer operations
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrRead,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::UInt64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrWrite,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrIsNull,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Ptr],
+                return_type: TypeDecl::Bool,
+            },
+            
+            // Memory operations
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemCopy,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemMove,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemSet,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64], // Note: third arg should be u8 but using u64 for now
+                return_type: TypeDecl::Unit,
+            },
+        ]
+    }
+    
     /// Create a TypeCheckerVisitor with module resolver for import handling
     pub fn with_module_resolver(
         stmt_pool: &'a StmtPool,
@@ -136,6 +213,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             current_package: None,
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
+            builtin_function_signatures: Self::create_builtin_function_signatures(),
         }
     }
     
@@ -376,6 +454,7 @@ impl Acceptable for Expr {
                 visitor.visit_index_assign(object, index, value)
             },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
+            Expr::BuiltinCall(func, args) => visitor.visit_builtin_call(func, args),
         }
     }
 }
@@ -1361,7 +1440,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
         
-        
         self.context.set_var(name, final_type);
         
         // Restore previous type hint
@@ -1832,6 +1910,44 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 &format!("{:?}", method), receiver_type.clone(), 
                 &format!("method '{:?}' is not available for type '{:?}'", method, receiver_type)
             ))
+        }
+    }
+    
+    fn visit_builtin_call(&mut self, func: &BuiltinFunction, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Check recursion depth to prevent stack overflow
+        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
+            return Err(TypeCheckError::generic_error(
+                "Maximum recursion depth reached in builtin function call type inference - possible circular reference"
+            ));
+        }
+        
+        // Find matching function signature from pre-built table
+        let signature = self.builtin_function_signatures.iter().find(|sig| sig.func == *func).cloned();
+        
+        if let Some(sig) = signature {
+            // Check argument count
+            if args.len() != sig.arg_count {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "builtin function '{:?}' takes {} argument(s), but {} provided", 
+                    func, sig.arg_count, args.len()
+                )));
+            }
+            
+            // Check argument types
+            for (_i, (arg, expected_type)) in args.iter().zip(&sig.arg_types).enumerate() {
+                let arg_type = self.visit_expr(arg)?;
+                if arg_type != *expected_type {
+                    return Err(TypeCheckError::type_mismatch(
+                        expected_type.clone(), arg_type
+                    ));
+                }
+            }
+            
+            Ok(sig.return_type.clone())
+        } else {
+            Err(TypeCheckError::generic_error(&format!(
+                "unknown builtin function '{:?}'", func
+            )))
         }
     }
 }

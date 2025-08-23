@@ -52,14 +52,14 @@ fn test_regression_val_struct_literal_bug() {
 fn test_regression_val_heap_operations() {
     let source = r#"
         fn main() -> u64 {
-            val ptr = __builtin_heap_alloc(8u64)
-            val is_null = __builtin_ptr_is_null(ptr)
+            val heap_ptr = __builtin_heap_alloc(8u64)
+            val is_null = __builtin_ptr_is_null(heap_ptr)
             if is_null {
                 0u64
             } else {
-                __builtin_ptr_write(ptr, 0u64, 42u64)
-                val value = __builtin_ptr_read(ptr, 0u64)
-                __builtin_heap_free(ptr)
+                __builtin_ptr_write(heap_ptr, 0u64, 42u64)
+                val value = __builtin_ptr_read(heap_ptr, 0u64)
+                __builtin_heap_free(heap_ptr)
                 value
             }
         }

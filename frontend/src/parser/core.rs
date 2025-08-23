@@ -605,6 +605,10 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(TypeDecl::Int64)
             }
+            Some(Kind::Ptr) => {
+                self.next();
+                Ok(TypeDecl::Ptr)
+            }
             Some(Kind::Identifier(s)) => {
                 let s = s.to_string();
                 let ident = self.string_interner.get_or_intern(s);

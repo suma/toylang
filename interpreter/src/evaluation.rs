@@ -1159,12 +1159,16 @@ impl<'a> EvaluationContext<'a> {
 
     /// Handles assignment expressions (both variable and array element assignment)
     fn handle_assignment(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(Expr::Identifier(name)) = self.expr_pool.get(lhs.to_index()) {
-            self.handle_variable_assignment(*name, rhs)
-        } else if let Some(Expr::ArrayAccess(array, index)) = self.expr_pool.get(lhs.to_index()) {
-            self.handle_array_element_assignment(array, index, rhs)
+        if let Some(lhs_expr) = self.expr_pool.get(lhs.to_index()) {
+            match lhs_expr {
+                Expr::Identifier(name) => self.handle_variable_assignment(*name, rhs),
+                Expr::ArrayAccess(array, index) => self.handle_array_element_assignment(array, index, rhs),
+                _ => {
+                    Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
+                }
+            }
         } else {
-            Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
+            Err(InterpreterError::InternalError("bad assignment due to invalid lhs reference".to_string()))
         }
     }
 
@@ -1925,7 +1929,6 @@ impl EvaluationContext<'_> {
                 let ptr_obj = self.extract_value(Ok(ptr_result))?;
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("ptr_is_null expects pointer".to_string()))?;
-                println!("addr is {:?}", addr);
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(addr == 0)))))
             }
             

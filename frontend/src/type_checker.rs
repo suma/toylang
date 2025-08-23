@@ -1475,9 +1475,22 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         res
     }
 
-    fn visit_while(&mut self, _cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // Evaluate condition type first
+        let cond_obj = self.core.expr_pool.get(cond.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
+        let cond_type = cond_obj.clone().accept(self)?;
+        
+        // Verify condition is boolean
+        if cond_type != TypeDecl::Bool {
+            return Err(TypeCheckError::type_mismatch(TypeDecl::Bool, cond_type));
+        }
+        
+        // Create new scope for while body
+        self.push_context();
         let body_obj = self.core.expr_pool.get(body.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
-        body_obj.clone().accept(self)
+        let res = body_obj.clone().accept(self);
+        self.pop_context();
+        res
     }
 
     fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {
@@ -2225,6 +2238,10 @@ impl<'a> TypeInferenceManager for TypeCheckerVisitor<'a> {
                     // For struct types, set the struct type as hint for struct literal processing
                     self.type_inference.type_hint = Some(decl.clone());
                 },
+                TypeDecl::Ptr => {
+                    // For pointer types, set the pointer type as hint for builtin allocation functions
+                    self.type_inference.type_hint = Some(decl.clone());
+                },
                 TypeDecl::Dict(_, _) => {
                     // For dict types, set the dict type as hint for dict literal processing
                     self.type_inference.type_hint = Some(decl.clone());
@@ -2327,6 +2344,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn determine_final_type_for_expr(&self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl) -> TypeDecl {
         match (type_decl, expr_ty) {
             (Some(TypeDecl::Unknown), _) => expr_ty.clone(),
+            // For ptr types, the declared type should match the expression type
+            (Some(TypeDecl::Ptr), TypeDecl::Ptr) => TypeDecl::Ptr,
             // For dict types, if we have explicit type annotation, prefer it over inferred type
             (Some(TypeDecl::Dict(key_type, value_type)), TypeDecl::Dict(inferred_key, inferred_value)) => {
                 // If both key and value types are explicit (not Unknown), use the declared type

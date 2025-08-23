@@ -16,6 +16,20 @@ mod lexer_tests{
         include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
     }
 
+    // Helper function: Create lexer and verify single token
+    fn assert_token(input: &str, expected: Kind) {
+        let mut l = lexer::Lexer::new(input, 1u64);
+        assert_eq!(l.yylex().unwrap().kind, expected, "Input: '{}'", input);
+    }
+
+    // Helper function: Verify multiple tokens in sequence
+    fn assert_tokens(input: &str, expected: Vec<Kind>) {
+        let mut l = lexer::Lexer::new(input, 1u64);
+        for exp in expected {
+            assert_eq!(l.yylex().unwrap().kind, exp, "Input: '{}'", input);
+        }
+    }
+
     #[test]
     fn lexer_keyword_tests_parallel() {
         let test_cases = vec![
@@ -124,69 +138,69 @@ mod lexer_tests{
 
     #[test]
     fn lexer_simple_string() {
-        let s = " \"string\" ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::String("string".to_string()));
+        assert_token(" \"string\" ", Kind::String("string".to_string()));
     }
 
     #[test]
     fn lexer_simple_symbol1() {
         let s = " ( ) { } [ ] , . :: : = !";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ParenOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ParenClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BraceOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BraceClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BracketOpen);
-        assert_eq!(l.yylex().unwrap().kind, Kind::BracketClose);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Comma);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Dot);
-        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleColon);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Colon);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Equal);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Exclamation);
+        assert_tokens(&s, vec![
+            Kind::ParenOpen,
+            Kind::ParenClose,
+            Kind::BraceOpen,
+            Kind::BraceClose,
+            Kind::BracketOpen,
+            Kind::BracketClose,
+            Kind::Comma,
+            Kind::Dot,
+            Kind::DoubleColon,
+            Kind::Colon,
+            Kind::Equal,
+            Kind::Exclamation,
+        ]);
     }
 
     #[test]
     fn lexer_simple_number() {
         let s = " 100u64 123i64 ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(100));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Int64(123));
+        assert_tokens(&s, vec![
+            Kind::UInt64(100),
+            Kind::Int64(123),
+        ]);
     }
 
     #[test]
     fn lexer_simple_symbol2() {
         let s = "== != <= < >= >";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::DoubleEqual);
-        assert_eq!(l.yylex().unwrap().kind, Kind::NotEqual);
-        assert_eq!(l.yylex().unwrap().kind, Kind::LE);
-        assert_eq!(l.yylex().unwrap().kind, Kind::LT);
-        assert_eq!(l.yylex().unwrap().kind, Kind::GE);
-        assert_eq!(l.yylex().unwrap().kind, Kind::GT);
+        assert_tokens(&s, vec![
+            Kind::DoubleEqual,
+            Kind::NotEqual,
+            Kind::LE,
+            Kind::LT,
+            Kind::GE,
+            Kind::GT,
+        ]);
     }
 
     #[test]
     fn lexer_arithmetic_operator_symbol() {
         let s = " + - * /";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IAdd);
-        assert_eq!(l.yylex().unwrap().kind, Kind::ISub);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IMul);
-        assert_eq!(l.yylex().unwrap().kind, Kind::IDiv);
+        assert_tokens(&s, vec![
+            Kind::IAdd,
+            Kind::ISub,
+            Kind::IMul,
+            Kind::IDiv,
+        ]);
     }
 
     #[test]
     fn lexer_simple_identifier() {
         let s = " A _name Identifier ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
-        assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("_name".to_string()));
-        assert_eq!(
-            l.yylex().unwrap().kind,
-            Kind::Identifier("Identifier".to_string())
-        );
+        assert_tokens(&s, vec![
+            Kind::Identifier("A".to_string()),
+            Kind::Identifier("_name".to_string()),
+            Kind::Identifier("Identifier".to_string()),
+        ]);
     }
 
     #[test]
@@ -215,7 +229,36 @@ mod lexer_tests{
 mod parser_tests {
     use super::*;
     use crate::token::Kind;
-    use rayon::prelude::*;
+
+    // Helper function: Create parser and execute parse_stmt()
+    fn parse_stmt_success(input: &str) -> ParserWithInterner {
+        let mut p = ParserWithInterner::new(input);
+        let result = p.parse_stmt();
+        assert!(result.is_ok(), "Failed to parse: {} - Error: {:?}", input, result);
+        p
+    }
+
+    // Helper function: Get element from ExprPool and verify
+    fn assert_expr_at(parser: &ParserWithInterner, index: usize, expected: Expr) {
+        let actual = parser.get_expr_pool().get(index).unwrap();
+        assert_eq!(*actual, expected, "ExprPool[{}] mismatch", index);
+    }
+
+    // Helper function: Get element from StmtPool and verify
+    fn assert_stmt_at(parser: &ParserWithInterner, index: usize, expected: Stmt) {
+        let actual = parser.get_stmt_pool().get(index).unwrap();
+        assert_eq!(*actual, expected, "StmtPool[{}] mismatch", index);
+    }
+
+    // Helper function: Verify ExprPool size
+    fn assert_expr_pool_size(parser: &ParserWithInterner, expected: usize) {
+        assert_eq!(parser.get_expr_pool().len(), expected, "ExprPool size mismatch");
+    }
+
+    // Helper function: Verify StmtPool size
+    fn assert_stmt_pool_size(parser: &ParserWithInterner, expected: usize) {
+        assert_eq!(parser.get_stmt_pool().len(), expected, "StmtPool size mismatch");
+    }
 
     #[test]
     fn parser_util_lookahead() {
@@ -236,112 +279,56 @@ mod parser_tests {
 
     #[test]
     fn parser_comment_skip_test() {
-        let mut p = ParserWithInterner::new("1u64 + 2u64 # another comment");
-        let _ = p.parse_stmt().unwrap();
-        assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
+        let p = parse_stmt_success("1u64 + 2u64 # another comment");
+        assert_expr_pool_size(&p, 3);
     }
 
     #[test]
     fn parser_simple_expr_test1() {
-        let mut p = ParserWithInterner::new("1u64 + 2u64 ");
-        let _ = p.parse_stmt().unwrap();
-        assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
+        let p = parse_stmt_success("1u64 + 2u64 ");
+        assert_expr_pool_size(&p, 3);
+        assert_expr_at(&p, 0, Expr::UInt64(1));
+        assert_expr_at(&p, 1, Expr::UInt64(2));
+        assert_expr_at(&p, 2, Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)));
 
         println!("p.stmt: {:?}", p.get_stmt_pool());
         println!("INSTRUCTION {:?}", p.get_stmt_pool().get(0));
         println!("INSTRUCTION {:?}", p.get_stmt_pool().get(1));
-        assert_eq!(1, p.get_stmt_pool().len(), "stmt.len must be 1");
-
-        let d = p.get_stmt_pool().get(0).unwrap();
-        assert_eq!(Stmt::Expression(ExprRef(2)), *d);
+        assert_stmt_pool_size(&p, 1);
+        assert_stmt_at(&p, 0, Stmt::Expression(ExprRef(2)));
     }
 
     #[test]
     fn parser_simple_expr_mul() {
-        let mut p = ParserWithInterner::new("(1u64) + 2u64 * 3u64");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(5, p.get_expr_pool().len(), "ExprPool.len must be 3");
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::UInt64(3), *c);
-
-        let d = p.get_expr_pool().get(3).unwrap();
-        assert_eq!(Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get_expr_pool().get(4).unwrap();
-        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)), *e);
+        let p = parse_stmt_success("(1u64) + 2u64 * 3u64");
+        assert_expr_pool_size(&p, 5);
+        assert_expr_at(&p, 0, Expr::UInt64(1));
+        assert_expr_at(&p, 1, Expr::UInt64(2));
+        assert_expr_at(&p, 2, Expr::UInt64(3));
+        assert_expr_at(&p, 3, Expr::Binary(Operator::IMul, ExprRef(1), ExprRef(2)));
+        assert_expr_at(&p, 4, Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(3)));
     }
 
     #[test]
     fn parser_simple_relational_expr() {
-        let mut p = ParserWithInterner::new("0u64 < 2u64 + 4u64");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(5, p.get_expr_pool().len(), "ExprPool.len must be 3");
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::UInt64(0), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::UInt64(4), *c);
-
-        let d = p.get_expr_pool().get(3).unwrap();
-        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get_expr_pool().get(4).unwrap();
-        assert_eq!(Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)), *e);
+        let p = parse_stmt_success("0u64 < 2u64 + 4u64");
+        assert_expr_pool_size(&p, 5);
+        assert_expr_at(&p, 0, Expr::UInt64(0));
+        assert_expr_at(&p, 1, Expr::UInt64(2));
+        assert_expr_at(&p, 2, Expr::UInt64(4));
+        assert_expr_at(&p, 3, Expr::Binary(Operator::IAdd, ExprRef(1), ExprRef(2)));
+        assert_expr_at(&p, 4, Expr::Binary(Operator::LT, ExprRef(0), ExprRef(3)));
     }
 
     #[test]
     fn parser_simple_logical_expr() {
-        let mut p = ParserWithInterner::new("1u64 && 2u64 < 3u64");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(5, p.get_expr_pool().len(), "ExprPool.len must be 3");
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(2), *b);
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::UInt64(3), *c);
-
-        let d = p.get_expr_pool().get(3).unwrap();
-        assert_eq!(Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)), *d);
-        let e = p.get_expr_pool().get(4).unwrap();
-        assert_eq!(Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)), *e);
-    }
-
-    #[test]
-    fn parser_expr_accept_parallel() {
-        let test_cases = vec![
-            "1u64",
-            "(1u64 + 2u64)",
-            "1u64 && 2u64 < 3u64",
-            "1u64 || 2u64 < 3u64",
-            "1u64 || (2u64) < 3u64 + 4u64",
-            "variable",
-            "a + b",
-            "a + 1u64",
-            "a() + 1u64",
-            "a(b,c) + 1u64",
-        ];
-        
-        test_cases.par_iter().for_each(|&input| {
-            let mut p = ParserWithInterner::new(input);
-            let e = p.parse_stmt();
-            assert!(e.is_ok(), "failed: {}", input);
-        });
+        let p = parse_stmt_success("1u64 && 2u64 < 3u64");
+        assert_expr_pool_size(&p, 5);
+        assert_expr_at(&p, 0, Expr::UInt64(1));
+        assert_expr_at(&p, 1, Expr::UInt64(2));
+        assert_expr_at(&p, 2, Expr::UInt64(3));
+        assert_expr_at(&p, 3, Expr::Binary(Operator::LT, ExprRef(1), ExprRef(2)));
+        assert_expr_at(&p, 4, Expr::Binary(Operator::LogicalAnd, ExprRef(0), ExprRef(3)));
     }
 
     #[rstest]
@@ -363,86 +350,31 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_ident_expr() {
-        let mut p = ParserWithInterner::new("abc + 1u64");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
+        let mut p = parse_stmt_success("abc + 1u64");
+        assert_expr_pool_size(&p, 3);
         let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::Identifier(expected_symbol), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(1), *b);
-
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)), *c);
+        assert_expr_at(&p, 0, Expr::Identifier(expected_symbol));
+        assert_expr_at(&p, 1, Expr::UInt64(1));
+        assert_expr_at(&p, 2, Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)));
     }
 
     #[test]
     fn parser_simple_apply_empty() {
-        let mut p = ParserWithInterner::new("abc()");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(2, p.get_expr_pool().len(), "ExprPool.len must be 2");
+        let mut p = parse_stmt_success("abc()");
+        assert_expr_pool_size(&p, 2);
         let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::ExprList(vec![]), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::Call(expected_symbol, ExprRef(0)), *b);
+        assert_expr_at(&p, 0, Expr::ExprList(vec![]));
+        assert_expr_at(&p, 1, Expr::Call(expected_symbol, ExprRef(0)));
     }
 
     #[test]
     fn parser_simple_assign_expr() {
-        let mut p = ParserWithInterner::new("a = 1u64");
-        let e = p.parse_stmt();
-        assert!(e.is_ok());
-
-        assert_eq!(3, p.get_expr_pool().len(), "ExprPool.len must be 3");
+        let mut p = parse_stmt_success("a = 1u64");
+        assert_expr_pool_size(&p, 3);
         let expected_symbol = p.get_string_interner().get_or_intern("a".to_string());
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::Identifier(expected_symbol), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(1u64), *b);
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::Assign(ExprRef(0), ExprRef(1)), *c);
-    }
-
-    #[test]
-    fn parser_test_parse_stmt_parallel() {
-        let test_cases = vec![
-            "1u64",
-            "1i64",
-            "true",
-            "false",
-            "null",
-            "\"string\"",
-            "val x = 1u64",
-            "val x: u64 = 1u64",
-            "val x: u64 = if true { 1u64 } else { 2u64 }",
-            "var x = 1u64",
-            "x = y = z = 1u64",
-            "x = 1u64",
-            "if true { 1u64 }",
-            "if true { 1u64 } else { 2u64 }",
-            "{ if true { 1u64 } else { 2u64 } }",
-            "fn_call()",
-            "fn_call(a, b, c)",
-            "a + b * c / d",
-            "a || b && c",
-            "a <= b && c >= d && e < f && g > h",
-            "a == b && c != d",
-            "for i in 0u64 to 9u64 { continue }",
-            "while true { break }",
-            "return true",
-            "return",
-        ];
-        
-        test_cases.par_iter().for_each(|&input| {
-            let mut parser = ParserWithInterner::new(input);
-            let err = parser.parse_stmt();
-            assert!(err.is_ok(), "input: {} err: {:?}", input, err);
-        });
+        assert_expr_at(&p, 0, Expr::Identifier(expected_symbol));
+        assert_expr_at(&p, 1, Expr::UInt64(1u64));
+        assert_expr_at(&p, 2, Expr::Assign(ExprRef(0), ExprRef(1)));
     }
 
     #[rstest]
@@ -488,21 +420,13 @@ mod parser_tests {
 
     #[test]
     fn parser_simple_apply_expr() {
-        let mut p = ParserWithInterner::new("abc(1u64, 2u64)");
-        let e = p.parse_stmt();
-        assert!(e.is_ok(), "{:?}", p.get_expr_pool());
-
-        assert_eq!(4, p.get_expr_pool().len(), "ExprPool.len must be 4");
-        let a = p.get_expr_pool().get(0).unwrap();
-        assert_eq!(Expr::UInt64(1), *a);
-        let b = p.get_expr_pool().get(1).unwrap();
-        assert_eq!(Expr::UInt64(2), *b);
-
-        let c = p.get_expr_pool().get(2).unwrap();
-        assert_eq!(Expr::ExprList(vec![ExprRef(0), ExprRef(1)]), *c);
+        let mut p = parse_stmt_success("abc(1u64, 2u64)");
+        assert_expr_pool_size(&p, 4);
+        assert_expr_at(&p, 0, Expr::UInt64(1));
+        assert_expr_at(&p, 1, Expr::UInt64(2));
+        assert_expr_at(&p, 2, Expr::ExprList(vec![ExprRef(0), ExprRef(1)]));
         let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
-        let d = p.get_expr_pool().get(3).unwrap();
-        assert_eq!(Expr::Call(expected_symbol, ExprRef(2)), *d);
+        assert_expr_at(&p, 3, Expr::Call(expected_symbol, ExprRef(2)));
     }
 
     #[test]

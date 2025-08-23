@@ -1,5 +1,4 @@
 mod common;
-use common::test_program;
 
 use std::collections::HashMap;
 use frontend::ast::*;
@@ -29,14 +28,13 @@ mod basic_tests {
 
     #[test]
     fn test_i64_basic() {
-        let res = test_program(r"
+        common::assert_program_result_i64(r"
         fn main() -> i64 {
             val a: i64 = 42i64
             val b: i64 = -10i64
             a + b
         }
-        ");
-        assert_eq!(res.unwrap().borrow().unwrap_int64(), 32);
+        ", 32);
     }
 
     #[test]

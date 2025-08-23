@@ -109,14 +109,14 @@ fn test_val_with_arithmetic() {
 fn test_val_heap_integration() {
     let source = r#"
         fn main() -> u64 {
-            val ptr = __builtin_heap_alloc(8u64)
-            val is_null = __builtin_ptr_is_null(ptr)
+            val heap_ptr = __builtin_heap_alloc(8u64)
+            val is_null = __builtin_ptr_is_null(heap_ptr)
             if is_null {
                 0u64
             } else {
-                __builtin_ptr_write(ptr, 0u64, 100u64)
-                val value = __builtin_ptr_read(ptr, 0u64)
-                __builtin_heap_free(ptr)
+                __builtin_ptr_write(heap_ptr, 0u64, 100u64)
+                val value = __builtin_ptr_read(heap_ptr, 0u64)
+                __builtin_heap_free(heap_ptr)
                 value
             }
         }
@@ -191,13 +191,13 @@ fn test_val_function_parameters_vs_locals() {
 fn test_val_heap_realloc() {
     let source = r#"
         fn main() -> u64 {
-            val ptr1 = __builtin_heap_alloc(8u64)
-            __builtin_ptr_write(ptr1, 0u64, 200u64)
+            val heap_ptr1 = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(heap_ptr1, 0u64, 200u64)
             
-            val ptr2 = __builtin_heap_realloc(ptr1, 16u64)
-            val value = __builtin_ptr_read(ptr2, 0u64)
+            val heap_ptr2 = __builtin_heap_realloc(heap_ptr1, 16u64)
+            val value = __builtin_ptr_read(heap_ptr2, 0u64)
             
-            __builtin_heap_free(ptr2)
+            __builtin_heap_free(heap_ptr2)
             value
         }
     "#;
@@ -238,16 +238,16 @@ fn test_val_conditional_chains() {
 fn test_val_heap_memory_operations() {
     let source = r#"
         fn main() -> u64 {
-            val ptr = __builtin_heap_alloc(16u64)
+            val heap_ptr = __builtin_heap_alloc(16u64)
             
             // Set memory to a specific value
             val fill_value = 255u64
-            __builtin_mem_set(ptr, fill_value, 8u64)
+            __builtin_mem_set(heap_ptr, fill_value, 8u64)
             
             // Read back as u64 (should be all 0xFF bytes)
-            val result = __builtin_ptr_read(ptr, 0u64)
+            val result = __builtin_ptr_read(heap_ptr, 0u64)
             
-            __builtin_heap_free(ptr)
+            __builtin_heap_free(heap_ptr)
             
             // 0xFFFFFFFFFFFFFFFF = 18446744073709551615
             if result == 18446744073709551615u64 {
@@ -286,15 +286,15 @@ fn test_val_error_handling_immutable() {
 fn test_val_complex_heap_scenario() {
     let source = r#"
         fn allocate_and_fill(size: u64, value: u64) -> u64 {
-            val ptr = __builtin_heap_alloc(size)
-            val is_null = __builtin_ptr_is_null(ptr)
+            val heap_ptr = __builtin_heap_alloc(size)
+            val is_null = __builtin_ptr_is_null(heap_ptr)
             
             if is_null {
                 0u64
             } else {
-                __builtin_ptr_write(ptr, 0u64, value)
-                val stored = __builtin_ptr_read(ptr, 0u64)
-                __builtin_heap_free(ptr)
+                __builtin_ptr_write(heap_ptr, 0u64, value)
+                val stored = __builtin_ptr_read(heap_ptr, 0u64)
+                __builtin_heap_free(heap_ptr)
                 stored
             }
         }

@@ -164,13 +164,21 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
 }
 
 pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
+    // Push condition context to prevent struct literals in conditions
+    parser.push_context(crate::parser::core::ParseContext::Condition);
     let cond = parse_logical_expr(parser)?;
+    parser.pop_context();
+    
     let if_block = parse_block(parser)?;
 
     let mut elif_pairs = Vec::new();
     while let Some(Kind::Elif) = parser.peek() {
         parser.next();
+        // Push condition context for elif conditions
+        parser.push_context(crate::parser::core::ParseContext::Condition);
         let elif_cond = parse_logical_expr(parser)?;
+        parser.pop_context();
+        
         let elif_block = parse_block(parser)?;
         elif_pairs.push((elif_cond, elif_block));
     }
@@ -474,6 +482,9 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 }
             } else {
                 // Regular identifier handling
+                // Check struct literal condition before matching to avoid borrow issues
+                let struct_literal_allowed = parser.is_struct_literal_allowed();
+                
                 match parser.peek() {
                     Some(Kind::ParenOpen) => {
                         let location = parser.current_source_location();
@@ -498,7 +509,8 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         let object_ref = parser.ast_builder.identifier_expr(s, None);
                         Ok(parser.ast_builder.index_access_expr(object_ref, index, Some(location)))
                     }
-                    Some(Kind::BraceOpen) => {
+                    Some(Kind::BraceOpen) if struct_literal_allowed => {
+                        // Only parse as struct literal if allowed in current context
                         let location = parser.current_source_location();
                         parser.next();
                         let fields = parse_struct_literal_fields(parser, vec![])?;
@@ -506,6 +518,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         Ok(parser.ast_builder.struct_literal_expr(s, fields, Some(location)))
                     }
                     _ => {
+                        // Return as identifier - let the statement parser handle any following '{'
                         let location = parser.current_source_location();
                         Ok(parser.ast_builder.identifier_expr(s, Some(location)))
                     }

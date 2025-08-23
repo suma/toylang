@@ -69,7 +69,11 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
         }
         Some(Kind::While) => {
             parser.next();
+            // Push condition context to prevent struct literals in while conditions
+            parser.push_context(crate::parser::core::ParseContext::Condition);
             let cond = super::expr::parse_logical_expr(parser)?;
+            parser.pop_context();
+            
             let block = super::expr::parse_block(parser)?;
             let location = parser.current_source_location();
             Ok(parser.ast_builder.while_stmt(cond, block, Some(location)))

@@ -2,6 +2,33 @@
 
 ## 完了済み ✅
 
+94. **パーサーの構造体リテラル文脈依存解析の実装** ✅ (2025-08-23完了)
+   - **対象**: while/if文の条件式で識別子直後の`{`が構造体リテラルとして誤解析される問題の修正
+   - **解決した問題**:
+     - `while i < iterations {` で `iterations` が構造体リテラルとして解析される
+     - 制御フロー文の条件式と式コンテキストの区別がない
+   - **実装した機能**:
+     - **ParseContext列挙型**: Expression, Condition, Statement の文脈を管理
+     - **文脈スタック管理**: push_context/pop_context による階層的文脈管理
+     - **is_struct_literal_allowed()**: 現在の文脈で構造体リテラルが許可されるかの判定
+   - **技術的実装**:
+     - Parser構造体に `context_stack: Vec<ParseContext>` フィールド追加
+     - while/if文の条件式解析時に `Condition` 文脈を設定
+     - `parse_primary_impl` で文脈に応じた `identifier {` の解釈制御
+   - **テスト結果**: test_val_heap系テスト 7個中4個成功
+     - test_val_heap_alloc_free_cycle ✅
+     - test_val_heap_memory_consistency ✅
+     - test_val_heap_null_pointer_safety ✅
+     - test_val_heap_stress_small_allocations ✅
+   - **実装ファイル**:
+     - **frontend/src/parser/core.rs**: ParseContext定義と文脈管理メソッド
+     - **frontend/src/parser/expr.rs**: parse_primary_implの文脈依存解析、parse_ifの文脈設定
+     - **frontend/src/parser/stmt.rs**: while文解析時の文脈設定
+   - **技術的成果**:
+     - 構造体リテラルと制御フロー文のブロックの曖昧性を解決
+     - 文脈依存解析により言語の構文的一貫性を保持
+     - 将来的な文脈依存機能拡張の基盤を確立
+
 93. **Dropロギングのデバッグモード制御システムの実装** ✅ (2025-08-21完了)
    - **対象**: interpreterのオブジェクト破棄ロギングをデバッグモード時のみ有効化する制御システムの実装
    - **実装した機能**:
@@ -242,9 +269,12 @@
 
 ## 未実装 📋
 
-94. ヒープメモリの確保と解放
+95. **ヒープメモリ管理の完全実装**
+    - heap_realloc でのデータ保持
+    - mem_copy/mem_set の正確な実装
+    - 16進数リテラルのサポート
 
-95. パターンマッチングと列挙型（Enum）
+96. **パターンマッチングと列挙型（Enum）**
 
 30. **組み込み関数システム** 🔧
     - 関数呼び出し時の組み込み関数検索

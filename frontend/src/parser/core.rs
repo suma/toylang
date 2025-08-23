@@ -132,6 +132,17 @@ impl ParserWithInterner {
     }
 }
 
+/// Parsing context to track where we are in the syntax tree
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseContext {
+    /// Normal expression context where struct literals are allowed
+    Expression,
+    /// Condition context (while, if conditions) where struct literals are not allowed
+    Condition,
+    /// Statement context where struct literals may be restricted
+    Statement,
+}
+
 pub struct Parser<'a> {
     token_provider: TokenProvider<LexerTokenSource<'a>>,
     pub ast_builder: AstBuilder,
@@ -143,6 +154,8 @@ pub struct Parser<'a> {
     max_recursion_depth: u32,
     /// Context for format-independent token processing
     normalization_context: TokenNormalizationContext,
+    /// Stack of parsing contexts to track where we are
+    context_stack: Vec<ParseContext>,
 }
 
 impl<'a> Parser<'a> {
@@ -159,12 +172,39 @@ impl<'a> Parser<'a> {
             recursion_depth: 0,
             max_recursion_depth: 500, // Significantly increased for complex nested structures
             normalization_context: TokenNormalizationContext::new(),
+            context_stack: vec![ParseContext::Expression], // Start with expression context
         }
     }
 
     /// Create a new parser with owned string interner (for backward compatibility/testing)
     pub fn new_standalone(input: &str) -> ParserWithInterner {
         ParserWithInterner::new(input)
+    }
+
+    /// Push a new parsing context onto the stack
+    pub fn push_context(&mut self, context: ParseContext) {
+        self.context_stack.push(context);
+    }
+
+    /// Pop the current parsing context from the stack
+    pub fn pop_context(&mut self) {
+        if self.context_stack.len() > 1 {
+            self.context_stack.pop();
+        }
+    }
+
+    /// Get the current parsing context
+    pub fn current_context(&self) -> ParseContext {
+        *self.context_stack.last().unwrap_or(&ParseContext::Expression)
+    }
+
+    /// Check if struct literals are allowed in the current context
+    pub fn is_struct_literal_allowed(&self) -> bool {
+        match self.current_context() {
+            ParseContext::Expression => true,
+            ParseContext::Condition => false,
+            ParseContext::Statement => false,
+        }
     }
 
     pub fn peek(&mut self) -> Option<&Kind> {

@@ -101,7 +101,7 @@ fn test_val_heap_realloc_preserve_data() {
     let source = r#"
         fn main() -> u64 {
             val original_heap_ptr = __builtin_heap_alloc(8u64)
-            val test_value = 0x123456789ABCDEFu64
+            val test_value = 1311768467463790319u64
             
             __builtin_ptr_write(original_heap_ptr, 0u64, test_value)
             
@@ -112,7 +112,7 @@ fn test_val_heap_realloc_preserve_data() {
             val preserved_value = __builtin_ptr_read(new_heap_ptr, 0u64)
             
             # Write new data to the expanded area
-            val new_value = 0xFEDCBA987654321u64
+            val new_value = 1147797409030816545u64
             __builtin_ptr_write(new_heap_ptr, 8u64, new_value)
             val second_value = __builtin_ptr_read(new_heap_ptr, 8u64)
             
@@ -137,10 +137,10 @@ fn test_val_heap_mem_copy_operations() {
             val dst_heap_ptr = __builtin_heap_alloc(32u64)
             
             # Fill source with a pattern
-            val value1 = 0x1111111111111111u64
-            val value2 = 0x2222222222222222u64
-            val value3 = 0x3333333333333333u64
-            val value4 = 0x4444444444444444u64
+            val value1 = 1229782938247303441u64
+            val value2 = 2459565876494606882u64
+            val value3 = 3689348814741910323u64
+            val value4 = 4919131752989213764u64
             
             __builtin_ptr_write(src_heap_ptr, 0u64, value1)
             __builtin_ptr_write(src_heap_ptr, 8u64, value2)
@@ -177,17 +177,17 @@ fn test_val_heap_mem_set_operations() {
     let source = r#"
         fn main() -> u64 {
             val heap_ptr = __builtin_heap_alloc(16u64)
-            val fill_byte = 170u64  # 0xAA in binary: 10101010
+            val fill_byte = 170u64  # 170 = 0xAA in binary: 10101010
             
             # Fill first 8 bytes with pattern
             __builtin_mem_set(heap_ptr, fill_byte, 8u64)
             
-            # Read as u64 (should be 0xAAAAAAAAAAAAAAAA)
+            # Read as u64 (should be all 0xAA bytes = 12297829382473034410)
             val filled_value = __builtin_ptr_read(heap_ptr, 0u64)
-            val expected = 0xAAAAAAAAAAAAAAAAu64
+            val expected = 12297829382473034410u64
             
             # Write a different pattern to second 8 bytes
-            val different_value = 0x5555555555555555u64
+            val different_value = 6148914691236517205u64
             __builtin_ptr_write(heap_ptr, 8u64, different_value)
             val second_value = __builtin_ptr_read(heap_ptr, 8u64)
             

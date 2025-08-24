@@ -111,6 +111,61 @@ impl<'a> LuaCodeGenerator<'a> {
                 writeln!(self.output)?;
                 Ok(())
             }
+            ast::Stmt::For(var_name, start_expr, end_expr, block_expr) => {
+                self.write_indent()?;
+                let var_str = self.interner.resolve(*var_name).unwrap_or("<unknown>");
+                write!(self.output, "for {} = ", var_str)?;
+                self.generate_expr_ref(*start_expr)?;
+                write!(self.output, ", ")?;
+                self.generate_expr_ref(*end_expr)?;
+                writeln!(self.output, " do")?;
+                
+                self.indent_level += 1;
+                // Generate the loop body
+                let block_stmt = &self.program.expression.0[block_expr.0 as usize];
+                if let ast::Expr::Block(stmt_refs) = block_stmt {
+                    for stmt_ref in stmt_refs {
+                        self.generate_stmt_ref(*stmt_ref)?;
+                    }
+                }
+                self.indent_level -= 1;
+                
+                self.write_indent()?;
+                writeln!(self.output, "end")?;
+                Ok(())
+            }
+            ast::Stmt::While(cond_expr, block_expr) => {
+                self.write_indent()?;
+                write!(self.output, "while ")?;
+                self.generate_expr_ref(*cond_expr)?;
+                writeln!(self.output, " do")?;
+                
+                self.indent_level += 1;
+                // Generate the loop body
+                let block_stmt = &self.program.expression.0[block_expr.0 as usize];
+                if let ast::Expr::Block(stmt_refs) = block_stmt {
+                    for stmt_ref in stmt_refs {
+                        self.generate_stmt_ref(*stmt_ref)?;
+                    }
+                }
+                self.indent_level -= 1;
+                
+                self.write_indent()?;
+                writeln!(self.output, "end")?;
+                Ok(())
+            }
+            ast::Stmt::Break => {
+                self.write_indent()?;
+                writeln!(self.output, "break")?;
+                Ok(())
+            }
+            ast::Stmt::Continue => {
+                // Lua doesn't have continue, need to use a workaround
+                // For now, just add a comment
+                self.write_indent()?;
+                writeln!(self.output, "-- continue (not supported in Lua directly)")?;
+                Ok(())
+            }
             _ => Err(LuaGenError::UnsupportedStatement(format!("{:?}", stmt))),
         }
     }
@@ -133,6 +188,18 @@ impl<'a> LuaCodeGenerator<'a> {
             ast::Expr::Identifier(sym) => {
                 let var_name = self.interner.resolve(*sym).unwrap_or("<unknown>");
                 write!(self.output, "{}", var_name).map_err(LuaGenError::Fmt)
+            }
+            ast::Expr::Assign(lhs_ref, rhs_ref) => {
+                // In Lua, assignment is a statement, not an expression
+                // But we need to handle it for cases like x = x + 1
+                write!(self.output, "(function() ")?;
+                self.generate_expr_ref(*lhs_ref)?;
+                write!(self.output, " = ")?;
+                self.generate_expr_ref(*rhs_ref)?;
+                write!(self.output, " return ")?;
+                self.generate_expr_ref(*lhs_ref)?;
+                write!(self.output, " end)()")?;
+                Ok(())
             }
             ast::Expr::Binary(op, left_ref, right_ref) => {
                 write!(self.output, "(")?;

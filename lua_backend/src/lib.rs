@@ -31,8 +31,8 @@ impl<'a> LuaCodeGenerator<'a> {
         // Check if this is a tracked variable
         if let Some(&is_const) = self.const_vars.get(&symbol) {
             if is_const {
-                // Convert val with V_ prefix (uppercase V for const)
-                format!("V_{}", name)
+                // Convert val with V_ prefix (uppercase V for const, uppercase name)
+                format!("V_{}", name.to_uppercase())
             } else {
                 // Convert var with v_ prefix (lowercase v for mutable)
                 format!("v_{}", name)

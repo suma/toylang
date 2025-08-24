@@ -47,6 +47,20 @@ impl<'a> LuaCodeGenerator<'a> {
         self.output.clear();
         self.indent_level = 0;
 
+        // First generate struct declarations and impl blocks
+        for (index, stmt) in self.program.statement.0.iter().enumerate() {
+            match stmt {
+                ast::Stmt::StructDecl { .. } | ast::Stmt::ImplBlock { .. } => {
+                    self.generate_stmt(stmt)?;
+                    self.writeln("")?;
+                }
+                _ => {
+                    // Skip other statement types at program level for now
+                }
+            }
+        }
+
+        // Then generate functions
         for function in &self.program.function {
             self.generate_function(function)?;
             self.writeln("")?;
@@ -292,6 +306,56 @@ impl<'a> LuaCodeGenerator<'a> {
                 writeln!(self.output, "-- continue (not supported in Lua directly)")?;
                 Ok(())
             }
+            ast::Stmt::StructDecl { name, fields, visibility: _ } => {
+                // Generate Lua table constructor for struct
+                self.write_indent()?;
+                writeln!(self.output, "function {}()", name)?;
+                self.indent_level += 1;
+                
+                self.write_indent()?;
+                writeln!(self.output, "return {{")?;
+                self.indent_level += 1;
+                
+                for field in fields {
+                    self.write_indent()?;
+                    writeln!(self.output, "{} = nil,", field.name)?;
+                }
+                
+                self.indent_level -= 1;
+                self.write_indent()?;
+                writeln!(self.output, "}}")?;
+                
+                self.indent_level -= 1;
+                self.write_indent()?;
+                writeln!(self.output, "end")?;
+                Ok(())
+            }
+            ast::Stmt::ImplBlock { target_type, methods } => {
+                // Generate method implementations as separate functions with StructType_method naming
+                for method in methods {
+                    let method_name = self.interner.resolve(method.name).unwrap_or("<unknown>");
+                    self.write_indent()?;
+                    write!(self.output, "function {}_{}", target_type, method_name)?;
+                    write!(self.output, "(self")?;
+                    
+                    // Add method parameters (first parameter is always 'self')
+                    for (param_name, _param_type) in method.parameter.iter() {
+                        write!(self.output, ", ")?;
+                        let param_str = self.interner.resolve(*param_name).unwrap_or("<unknown>");
+                        write!(self.output, "{}", param_str)?;
+                    }
+                    writeln!(self.output, ")")?;
+                    
+                    self.indent_level += 1;
+                    self.generate_stmt_ref_as_body(method.code)?;
+                    self.indent_level -= 1;
+                    
+                    self.write_indent()?;
+                    writeln!(self.output, "end")?;
+                    writeln!(self.output)?;
+                }
+                Ok(())
+            }
             _ => Err(LuaGenError::UnsupportedStatement(format!("{:?}", stmt))),
         }
     }
@@ -505,6 +569,72 @@ impl<'a> LuaCodeGenerator<'a> {
                 write!(self.output, "[")?;
                 self.generate_expr_ref(*index_ref)?;
                 write!(self.output, "] end)()")?;
+                Ok(())
+            }
+            ast::Expr::StructLiteral(type_name, fields) => {
+                // Convert struct literal to Lua table: Point { x: 10, y: 20 } -> { x = 10, y = 20 }
+                write!(self.output, "{{")?;
+                for (i, (field_name, field_expr)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, ", ")?;
+                    }
+                    let field_str = self.interner.resolve(*field_name).unwrap_or("<unknown>");
+                    write!(self.output, "{} = ", field_str)?;
+                    self.generate_expr_ref(*field_expr)?;
+                }
+                write!(self.output, "}}")?;
+                Ok(())
+            }
+            ast::Expr::FieldAccess(obj_ref, field_name) => {
+                // Convert field access to Lua table access: obj.field -> obj.field
+                self.generate_expr_ref(*obj_ref)?;
+                write!(self.output, ".")?;
+                let field_str = self.interner.resolve(*field_name).unwrap_or("<unknown>");
+                write!(self.output, "{}", field_str)?;
+                Ok(())
+            }
+            ast::Expr::MethodCall(obj_ref, method_name, args) => {
+                // Convert method call to function call with object as first parameter
+                // obj.method(args) -> StructType_method(obj, args)
+                // We need to determine the struct type - for now, we'll use a placeholder
+                // In a real implementation, this would require type analysis
+                let method_str = self.interner.resolve(*method_name).unwrap_or("<unknown>");
+                
+                // TODO: Need to get actual struct type name from type checker
+                // For now, assume we can extract it somehow or use a generic approach
+                write!(self.output, "StructType_{}(", method_str)?;
+                
+                // First argument is the object itself
+                self.generate_expr_ref(*obj_ref)?;
+                
+                // Then the rest of the arguments
+                for arg_ref in args {
+                    write!(self.output, ", ")?;
+                    self.generate_expr_ref(*arg_ref)?;
+                }
+                
+                write!(self.output, ")")?;
+                Ok(())
+            }
+            ast::Expr::QualifiedIdentifier(path) => {
+                // Convert qualified identifier: Type::method -> Type_method
+                if path.len() == 2 {
+                    let type_name = self.interner.resolve(path[0]).unwrap_or("<unknown>");
+                    let method_name = self.interner.resolve(path[1]).unwrap_or("<unknown>");
+                    write!(self.output, "{}_{}", type_name, method_name)?;
+                } else if path.len() == 1 {
+                    let name = self.interner.resolve(path[0]).unwrap_or("<unknown>");
+                    write!(self.output, "{}", name)?;
+                } else {
+                    // Multiple segments, join with underscores
+                    for (i, segment) in path.iter().enumerate() {
+                        if i > 0 {
+                            write!(self.output, "_")?;
+                        }
+                        let segment_str = self.interner.resolve(*segment).unwrap_or("<unknown>");
+                        write!(self.output, "{}", segment_str)?;
+                    }
+                }
                 Ok(())
             }
             _ => Err(LuaGenError::UnsupportedExpression(format!("{:?}", expr))),

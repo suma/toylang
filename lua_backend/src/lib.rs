@@ -419,11 +419,13 @@ impl<'a> LuaCodeGenerator<'a> {
                     
                     let if_simple = matches!(if_expr, 
                         ast::Expr::Int64(_) | ast::Expr::UInt64(_) | ast::Expr::True | ast::Expr::False | 
-                        ast::Expr::String(_) | ast::Expr::Identifier(_) | ast::Expr::Binary(_, _, _)
+                        ast::Expr::String(_) | ast::Expr::Identifier(_) | ast::Expr::Binary(_, _, _) |
+                        ast::Expr::ArrayLiteral(_) | ast::Expr::ArrayAccess(_, _) | ast::Expr::IndexAccess(_, _)
                     );
                     let else_simple = matches!(else_expr, 
                         ast::Expr::Int64(_) | ast::Expr::UInt64(_) | ast::Expr::True | ast::Expr::False | 
-                        ast::Expr::String(_) | ast::Expr::Identifier(_) | ast::Expr::Binary(_, _, _)
+                        ast::Expr::String(_) | ast::Expr::Identifier(_) | ast::Expr::Binary(_, _, _) |
+                        ast::Expr::ArrayLiteral(_) | ast::Expr::ArrayAccess(_, _) | ast::Expr::IndexAccess(_, _)
                     );
                     
                     if if_simple && else_simple {
@@ -456,6 +458,53 @@ impl<'a> LuaCodeGenerator<'a> {
                 write!(self.output, " else return ")?;
                 self.generate_expr_ref_for_if_else(*else_block)?;
                 write!(self.output, " end end)()")?;
+                Ok(())
+            }
+            ast::Expr::ArrayLiteral(elements) => {
+                // Convert to Lua table: [1, 2, 3] -> {1, 2, 3}
+                write!(self.output, "{{")?;
+                for (i, element_ref) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, ", ")?;
+                    }
+                    self.generate_expr_ref(*element_ref)?;
+                }
+                write!(self.output, "}}")?;
+                Ok(())
+            }
+            ast::Expr::ArrayAccess(array_ref, index_ref) => {
+                // Convert to Lua table access: a[0] -> a[1] (Lua uses 1-based indexing)
+                self.generate_expr_ref(*array_ref)?;
+                write!(self.output, "[")?;
+                // Add 1 to convert from 0-based to 1-based indexing
+                write!(self.output, "(")?;
+                self.generate_expr_ref(*index_ref)?;
+                write!(self.output, " + 1)]")?;
+                Ok(())
+            }
+            ast::Expr::IndexAccess(object_ref, index_ref) => {
+                // Generic index access: x[key] -> x[key] (potentially array access)
+                // Convert 0-based to 1-based indexing for arrays
+                self.generate_expr_ref(*object_ref)?;
+                write!(self.output, "[")?;
+                write!(self.output, "(")?;
+                self.generate_expr_ref(*index_ref)?;
+                write!(self.output, " + 1)]")?;
+                Ok(())
+            }
+            ast::Expr::IndexAssign(object_ref, index_ref, value_ref) => {
+                // Index assignment as expression: x[key] = value -> (function() x[key] = value return x[key] end)()
+                write!(self.output, "(function() ")?;
+                self.generate_expr_ref(*object_ref)?;
+                write!(self.output, "[")?;
+                self.generate_expr_ref(*index_ref)?;
+                write!(self.output, "] = ")?;
+                self.generate_expr_ref(*value_ref)?;
+                write!(self.output, " return ")?;
+                self.generate_expr_ref(*object_ref)?;
+                write!(self.output, "[")?;
+                self.generate_expr_ref(*index_ref)?;
+                write!(self.output, "] end)()")?;
                 Ok(())
             }
             _ => Err(LuaGenError::UnsupportedExpression(format!("{:?}", expr))),

@@ -4,6 +4,7 @@ members = [
     "frontend",
     "interpreter", 
     "compiler_core",
+    "lua_backend",
 ]
 
 [workspace.dependencies]

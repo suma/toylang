@@ -240,16 +240,16 @@ fn test_val_heap_memory_operations() {
         fn main() -> u64 {
             val heap_ptr = __builtin_heap_alloc(16u64)
             
-            // Set memory to a specific value
+            # Set memory to a specific value
             val fill_value = 255u64
             __builtin_mem_set(heap_ptr, fill_value, 8u64)
             
-            // Read back as u64 (should be all 0xFF bytes)
+            # Read back as u64 (should be all 0xFF bytes)
             val result = __builtin_ptr_read(heap_ptr, 0u64)
             
             __builtin_heap_free(heap_ptr)
             
-            // 0xFFFFFFFFFFFFFFFF = 18446744073709551615
+            # 0xFFFFFFFFFFFFFFFF = 18446744073709551615
             if result == 18446744073709551615u64 {
                 1u64
             } else {
@@ -268,7 +268,7 @@ fn test_val_error_handling_immutable() {
     let source = r#"
         fn main() -> u64 {
             val x = 10u64
-            x = 20u64  // This should cause a compile error
+            x = 20u64  # This should cause a compile error
             x
         }
     "#;

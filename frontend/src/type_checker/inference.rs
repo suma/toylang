@@ -10,6 +10,8 @@ pub struct TypeInferenceState {
     pub variable_expr_mapping: HashMap<DefaultSymbol, ExprRef>,
     pub recursion_depth: u32,
     pub max_recursion_depth: u32,
+    /// Comprehensive mapping of all expression references to their types
+    pub expr_types: HashMap<ExprRef, TypeDecl>,
 }
 
 impl TypeInferenceState {
@@ -20,6 +22,7 @@ impl TypeInferenceState {
             variable_expr_mapping: HashMap::new(),
             recursion_depth: 0,
             max_recursion_depth: 50, // Further increased for complex nested structs
+            expr_types: HashMap::new(),
         }
     }
 
@@ -48,7 +51,14 @@ impl TypeInferenceState {
     }
 
     pub fn add_number_context(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
-        self.number_usage_context.push((expr_ref, type_decl));
+        self.number_usage_context.push((expr_ref, type_decl.clone()));
+        // Also add to comprehensive expr_types mapping
+        self.expr_types.insert(expr_ref, type_decl);
+    }
+    
+    /// Record the type of any expression
+    pub fn set_expr_type(&mut self, expr_ref: ExprRef, type_decl: TypeDecl) {
+        self.expr_types.insert(expr_ref, type_decl);
     }
 
     pub fn map_variable(&mut self, name: DefaultSymbol, expr_ref: ExprRef) {

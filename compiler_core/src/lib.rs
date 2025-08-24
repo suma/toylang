@@ -2,7 +2,9 @@ use string_interner::DefaultStringInterner;
 use frontend::{ModuleResolver, Parser};
 use frontend::ast::Program;
 use frontend::parser::error::ParserResult;
+use frontend::type_checker::{TypeCheckerVisitor, TypeCheckError};
 use std::path::Path;
+use std::collections::HashMap;
 
 /// Compiler session that serves as the central context for compilation
 /// 
@@ -13,6 +15,14 @@ use std::path::Path;
 pub struct CompilerSession {
     string_interner: DefaultStringInterner,
     module_resolver: ModuleResolver,
+    // Type checking results - stored after type checking is performed
+    type_check_results: Option<TypeCheckResults>,
+}
+
+/// Results from type checking that can be used by code generators
+pub struct TypeCheckResults {
+    pub expr_types: HashMap<frontend::ast::ExprRef, frontend::type_decl::TypeDecl>,
+    pub struct_types: HashMap<string_interner::DefaultSymbol, String>, // variable -> struct type name
 }
 
 impl CompilerSession {
@@ -21,6 +31,7 @@ impl CompilerSession {
         Self {
             string_interner: DefaultStringInterner::new(),
             module_resolver: ModuleResolver::new(),
+            type_check_results: None,
         }
     }
     
@@ -29,6 +40,7 @@ impl CompilerSession {
         Self {
             string_interner: DefaultStringInterner::new(),
             module_resolver: ModuleResolver::with_search_paths(search_paths),
+            type_check_results: None,
         }
     }
     
@@ -86,6 +98,59 @@ impl CompilerSession {
     /// Get a mutable reference to the module resolver
     pub fn module_resolver_mut(&mut self) -> &mut ModuleResolver {
         &mut self.module_resolver
+    }
+    
+    /// Type check a program and store the results in the session
+    pub fn type_check_program(&mut self, program: &Program) -> Result<(), Vec<TypeCheckError>> {
+        use frontend::visitor::ProgramVisitor;
+        
+        // Create a mutable copy of expression pool for type checking
+        let mut expr_pool = program.expression.clone();
+        let mut type_checker = TypeCheckerVisitor::new(
+            &program.statement, 
+            &mut expr_pool,
+            &self.string_interner, 
+            &program.location_pool
+        );
+        
+        // Run type checking
+        match type_checker.visit_program(program) {
+            Ok(_) => {
+                // Extract useful type information for code generation
+                let expr_types = type_checker.get_expr_types();
+                let struct_types = type_checker.get_struct_var_mappings(&self.string_interner);
+                
+                self.type_check_results = Some(TypeCheckResults {
+                    expr_types,
+                    struct_types,
+                });
+                
+                Ok(())
+            }
+            Err(error) => Err(vec![error])
+        }
+    }
+    
+    /// Get type check results if available
+    pub fn type_check_results(&self) -> Option<&TypeCheckResults> {
+        self.type_check_results.as_ref()
+    }
+    
+    /// Parse and type check a program in one step
+    pub fn parse_and_type_check_program(&mut self, input: &str) -> Result<Program, Box<dyn std::error::Error>> {
+        let program = self.parse_program(input)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            
+        self.type_check_program(&program)
+            .map_err(|errors| {
+                let error_msg = errors.into_iter()
+                    .map(|e| format!("{}", e))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error_msg)) as Box<dyn std::error::Error>
+            })?;
+            
+        Ok(program)
     }
 }
 

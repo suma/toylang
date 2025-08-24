@@ -1,4 +1,5 @@
 use frontend::ast;
+use compiler_core::TypeCheckResults;
 use std::fmt::{self, Write};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use std::collections::HashMap;
@@ -10,6 +11,8 @@ pub struct LuaCodeGenerator<'a> {
     interner: &'a DefaultStringInterner,
     // Track which variables are val (const) vs var
     const_vars: HashMap<DefaultSymbol, bool>,
+    // Type information for expressions (optional)
+    type_info: Option<&'a TypeCheckResults>,
 }
 
 impl<'a> LuaCodeGenerator<'a> {
@@ -20,6 +23,18 @@ impl<'a> LuaCodeGenerator<'a> {
             program,
             interner,
             const_vars: HashMap::new(),
+            type_info: None,
+        }
+    }
+    
+    pub fn with_type_info(program: &'a ast::Program, interner: &'a DefaultStringInterner, type_info: &'a TypeCheckResults) -> Self {
+        Self {
+            output: String::new(),
+            indent_level: 0,
+            program,
+            interner,
+            const_vars: HashMap::new(),
+            type_info: Some(type_info),
         }
     }
     
@@ -42,15 +57,75 @@ impl<'a> LuaCodeGenerator<'a> {
             name.to_string()
         }
     }
+    
+    /// Try to get the struct type name from an expression reference using type information
+    fn get_struct_type_name(&self, expr_ref: ast::ExprRef) -> Option<String> {
+        if let Some(type_info) = self.type_info {
+            // First try direct expression type lookup
+            if let Some(type_decl) = type_info.expr_types.get(&expr_ref) {
+                match type_decl {
+                    frontend::type_decl::TypeDecl::Struct(struct_name_symbol) => {
+                        let struct_name = self.interner.resolve(*struct_name_symbol).unwrap_or("<unknown>");
+                        Some(struct_name.to_string())
+                    }
+                    _ => None
+                }
+            } else {
+                // Try to resolve via variable mapping
+                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                if let ast::Expr::Identifier(var_symbol) = expr {
+                    if let Some(struct_type) = type_info.struct_types.get(var_symbol) {
+                        return Some(struct_type.clone());
+                    }
+                }
+                
+                // Fallback to inference
+                self.infer_struct_type_from_expr(expr_ref)
+            }
+        } else {
+            // Fallback: try to infer from the expression structure
+            self.infer_struct_type_from_expr(expr_ref)
+        }
+    }
+    
+    /// Try to infer struct type from expression structure (fallback method)
+    fn infer_struct_type_from_expr(&self, expr_ref: ast::ExprRef) -> Option<String> {
+        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        match expr {
+            ast::Expr::Identifier(var_symbol) => {
+                // Try to trace this identifier back to its definition
+                self.find_variable_struct_type(*var_symbol)
+            }
+            ast::Expr::StructLiteral(type_name, _fields) => {
+                // Direct struct literal, we know the type
+                Some(self.interner.resolve(*type_name).unwrap_or("<unknown>").to_string())
+            }
+            _ => None
+        }
+    }
 
     pub fn generate(&mut self) -> Result<String, LuaGenError> {
         self.output.clear();
         self.indent_level = 0;
 
         // First generate struct declarations and impl blocks
-        for (index, stmt) in self.program.statement.0.iter().enumerate() {
+        for (_index, stmt) in self.program.statement.0.iter().enumerate() {
             match stmt {
-                ast::Stmt::StructDecl { .. } | ast::Stmt::ImplBlock { .. } => {
+                ast::Stmt::StructDecl { .. } => {
+                    self.generate_stmt(stmt)?;
+                    self.writeln("")?;
+                }
+                ast::Stmt::ImplBlock { target_type, methods } => {
+                    // Debug: print what methods are in this impl block
+                    #[cfg(test)]
+                    {
+                        println!("ImplBlock for {}: {} methods", target_type, methods.len());
+                        for method in methods {
+                            let method_name = self.interner.resolve(method.name).unwrap_or("<unknown>");
+                            println!("  - Method: {}", method_name);
+                        }
+                    }
+                    
                     self.generate_stmt(stmt)?;
                     self.writeln("")?;
                 }
@@ -61,12 +136,93 @@ impl<'a> LuaCodeGenerator<'a> {
         }
 
         // Then generate functions
+        #[cfg(test)]
+        println!("Generating {} independent functions", self.program.function.len());
+        
         for function in &self.program.function {
+            let func_name = self.interner.resolve(function.name).unwrap_or("<unknown>");
+            
+            #[cfg(test)]
+            println!("Generating function: {}", func_name);
+            
             self.generate_function(function)?;
             self.writeln("")?;
         }
 
         Ok(self.output.clone())
+    }
+    
+    /// Find the struct type of a variable by searching through statements
+    fn find_variable_struct_type(&self, var_symbol: DefaultSymbol) -> Option<String> {
+        // Search through all statements for val/var declarations
+        for stmt in &self.program.statement.0 {
+            match stmt {
+                ast::Stmt::Val(name, _type_decl, expr_ref) if *name == var_symbol => {
+                    return self.extract_struct_type_from_assignment(*expr_ref);
+                }
+                ast::Stmt::Var(name, _type_decl, Some(expr_ref)) if *name == var_symbol => {
+                    return self.extract_struct_type_from_assignment(*expr_ref);
+                }
+                _ => {}
+            }
+        }
+        
+        // Also search in function bodies
+        for function in &self.program.function {
+            if let Some(struct_type) = self.find_variable_in_function_body(var_symbol, function.code) {
+                return Some(struct_type);
+            }
+        }
+        
+        None
+    }
+    
+    /// Extract struct type from an assignment expression
+    fn extract_struct_type_from_assignment(&self, expr_ref: ast::ExprRef) -> Option<String> {
+        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        match expr {
+            ast::Expr::StructLiteral(type_name, _fields) => {
+                Some(self.interner.resolve(*type_name).unwrap_or("<unknown>").to_string())
+            }
+            ast::Expr::Call(func_name, _args) => {
+                // Check if this is a qualified call like Point::new
+                let func_str = self.interner.resolve(*func_name).unwrap_or("");
+                if func_str == "new" {
+                    // This is likely a constructor call - try to infer from context
+                    // For now, return None to use fallback
+                    None
+                } else {
+                    None
+                }
+            }
+            _ => None
+        }
+    }
+    
+    /// Search for variable definition within a function body
+    fn find_variable_in_function_body(&self, var_symbol: DefaultSymbol, stmt_ref: ast::StmtRef) -> Option<String> {
+        let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+        match stmt {
+            ast::Stmt::Expression(expr_ref) => {
+                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                if let ast::Expr::Block(stmt_refs) = expr {
+                    for inner_stmt_ref in stmt_refs {
+                        let inner_stmt = &self.program.statement.0[inner_stmt_ref.0 as usize];
+                        match inner_stmt {
+                            ast::Stmt::Val(name, _type_decl, assign_expr) if *name == var_symbol => {
+                                return self.extract_struct_type_from_assignment(*assign_expr);
+                            }
+                            ast::Stmt::Var(name, _type_decl, Some(assign_expr)) if *name == var_symbol => {
+                                return self.extract_struct_type_from_assignment(*assign_expr);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        None
     }
 
     fn generate_function(&mut self, func: &ast::Function) -> Result<(), LuaGenError> {
@@ -334,17 +490,35 @@ impl<'a> LuaCodeGenerator<'a> {
                 // Generate method implementations as separate functions with StructType_method naming
                 for method in methods {
                     let method_name = self.interner.resolve(method.name).unwrap_or("<unknown>");
-                    self.write_indent()?;
-                    write!(self.output, "function {}_{}", target_type, method_name)?;
-                    write!(self.output, "(self")?;
                     
-                    // Add method parameters (first parameter is always 'self')
-                    for (param_name, _param_type) in method.parameter.iter() {
-                        write!(self.output, ", ")?;
-                        let param_str = self.interner.resolve(*param_name).unwrap_or("<unknown>");
-                        write!(self.output, "{}", param_str)?;
+                    // Special case: if this is 'main', generate as independent function
+                    if method_name == "main" {
+                        self.write_indent()?;
+                        write!(self.output, "function main(")?;
+                        
+                        // main function should not have 'self' parameter
+                        for (i, (param_name, _param_type)) in method.parameter.iter().enumerate() {
+                            if i > 0 {
+                                write!(self.output, ", ")?;
+                            }
+                            let param_str = self.interner.resolve(*param_name).unwrap_or("<unknown>");
+                            write!(self.output, "{}", param_str)?;
+                        }
+                        writeln!(self.output, ")")?;
+                    } else {
+                        // Normal method
+                        self.write_indent()?;
+                        write!(self.output, "function {}_{}", target_type, method_name)?;
+                        write!(self.output, "(self")?;
+                        
+                        // Add method parameters (first parameter is always 'self')
+                        for (param_name, _param_type) in method.parameter.iter() {
+                            write!(self.output, ", ")?;
+                            let param_str = self.interner.resolve(*param_name).unwrap_or("<unknown>");
+                            write!(self.output, "{}", param_str)?;
+                        }
+                        writeln!(self.output, ")")?;
                     }
-                    writeln!(self.output, ")")?;
                     
                     self.indent_level += 1;
                     self.generate_stmt_ref_as_body(method.code)?;
@@ -596,13 +770,13 @@ impl<'a> LuaCodeGenerator<'a> {
             ast::Expr::MethodCall(obj_ref, method_name, args) => {
                 // Convert method call to function call with object as first parameter
                 // obj.method(args) -> StructType_method(obj, args)
-                // We need to determine the struct type - for now, we'll use a placeholder
-                // In a real implementation, this would require type analysis
                 let method_str = self.interner.resolve(*method_name).unwrap_or("<unknown>");
                 
-                // TODO: Need to get actual struct type name from type checker
-                // For now, assume we can extract it somehow or use a generic approach
-                write!(self.output, "StructType_{}(", method_str)?;
+                // Try to get the actual struct type name from type information
+                let type_name = self.get_struct_type_name(*obj_ref)
+                    .unwrap_or_else(|| "StructType".to_string());
+                
+                write!(self.output, "{}_{}(", type_name, method_str)?;
                 
                 // First argument is the object itself
                 self.generate_expr_ref(*obj_ref)?;
@@ -687,8 +861,14 @@ mod tests {
     
     fn generate_lua_code(source: &str) -> String {
         let mut session = CompilerSession::new();
-        let program = session.parse_program(source).expect("Parse should succeed");
-        let mut generator = LuaCodeGenerator::new(&program, session.string_interner());
+        let program = session.parse_and_type_check_program(source).expect("Parse and type check should succeed");
+        
+        let mut generator = if let Some(type_info) = session.type_check_results() {
+            LuaCodeGenerator::with_type_info(&program, session.string_interner(), type_info)
+        } else {
+            LuaCodeGenerator::new(&program, session.string_interner())
+        };
+        
         generator.generate().expect("Generation should succeed")
     }
     
@@ -700,5 +880,62 @@ mod tests {
         assert!(lua_code.contains("function test()"));
         assert!(lua_code.contains("42"));
         assert!(lua_code.contains("end"));
+    }
+    
+    #[test]
+    fn test_type_info_extraction() {
+        let source = r#"
+struct Point {
+    x: u64,
+    y: u64
+}
+
+fn main() -> u64 {
+    val p = Point { x: 3u64, y: 4u64 }
+    p.x
+}
+"#;
+        let mut session = CompilerSession::new();
+        
+        // Debug: Let's check if parsing works
+        let program = session.parse_program(source).expect("Parse should succeed");
+        println!("Program parsed successfully. Functions: {}, Statements: {}, Expressions: {}", 
+                 program.function.len(), program.statement.len(), program.expression.len());
+        
+        // Now try type checking
+        match session.type_check_program(&program) {
+            Ok(_) => println!("Type checking succeeded"),
+            Err(errors) => {
+                println!("Type check errors: {:?}", errors);
+                panic!("Type checking failed");
+            }
+        }
+        
+        if let Some(type_info) = session.type_check_results() {
+            println!("Expression types count: {}", type_info.expr_types.len());
+            println!("Struct types count: {}", type_info.struct_types.len());
+            
+            // Print all entries for debugging
+            for (expr_ref, type_decl) in &type_info.expr_types {
+                println!("ExprRef({}) -> {:?}", expr_ref.0, type_decl);
+            }
+            
+            for (symbol, struct_name) in &type_info.struct_types {
+                let symbol_name = session.string_interner().resolve(*symbol).unwrap_or("<unknown>");
+                println!("Variable {} -> struct {}", symbol_name, struct_name);
+            }
+            
+            // Test the actual generation with type info
+            let mut generator = if let Some(type_info) = session.type_check_results() {
+                LuaCodeGenerator::with_type_info(&program, session.string_interner(), type_info)
+            } else {
+                LuaCodeGenerator::new(&program, session.string_interner())
+            };
+            
+            let lua_code = generator.generate().expect("Generation should succeed");
+            println!("Generated Lua code:\n{}", lua_code);
+        } else {
+            panic!("No type check results found");
+        }
     }
 }

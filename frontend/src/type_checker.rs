@@ -278,6 +278,30 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn add_function(&mut self, f: Rc<Function>) {
         self.context.set_fn(f.name, f.clone());
     }
+    
+    /// Extract expression type mappings after type checking
+    pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {
+        // Return a clone of the comprehensive expr_types mapping
+        self.type_inference.expr_types.clone()
+    }
+    
+    /// Extract variable -> struct type mappings after type checking
+    pub fn get_struct_var_mappings(&self, interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, String> {
+        let mut struct_types = HashMap::new();
+        
+        // Traverse all variable scopes
+        for scope in &self.context.vars {
+            for (var_symbol, var_state) in scope {
+                if let TypeDecl::Struct(struct_symbol) = &var_state.ty {
+                    if let Some(struct_name) = interner.resolve(*struct_symbol) {
+                        struct_types.insert(*var_symbol, struct_name.to_string());
+                    }
+                }
+            }
+        }
+        
+        struct_types
+    }
 
     fn process_val_type(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let expr_ty = match expr {
@@ -577,6 +601,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Cache the result if successful
         if let Ok(ref result_type) = result {
             self.cache_type(&expr, result_type.clone());
+            // Record the type in the comprehensive expr_types mapping
+            self.type_inference.set_expr_type(*expr, result_type.clone());
+            
+            // Debug: print expression type recording
+            #[cfg(test)]
+            println!("Recording type for ExprRef({}): {:?}", expr.0, result_type);
             
             // Context propagation: if this expression resolved to a concrete numeric type,
             // and we don't have a current hint, set it for sibling expressions

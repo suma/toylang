@@ -72,23 +72,126 @@ impl<'a> LuaCodeGenerator<'a> {
         writeln!(self.output, ")")?;
         self.indent_level += 1;
 
-        // Generate function body - need to ensure it returns a value
-        let stmt = &self.program.statement.0[func.code.0 as usize];
-        match stmt {
-            ast::Stmt::Expression(expr_ref) => {
-                self.write_indent()?;
-                write!(self.output, "return ")?;
-                self.generate_expr_ref(*expr_ref)?;
-                writeln!(self.output)?;
-            }
-            _ => {
-                self.generate_stmt_ref(func.code)?;
-            }
-        }
+        // Generate function body directly without IIFE wrapper
+        self.generate_stmt_ref_as_body(func.code)?;
 
         self.indent_level -= 1;
         self.write_indent()?;
         writeln!(self.output, "end")?;
+        Ok(())
+    }
+    
+    /// Generate a statement reference as a function body (with proper return handling)
+    fn generate_stmt_ref_as_body(&mut self, stmt_ref: ast::StmtRef) -> Result<(), LuaGenError> {
+        let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+        match stmt {
+            ast::Stmt::Expression(expr_ref) => {
+                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                match expr {
+                    ast::Expr::Block(_) => {
+                        // Block: generate its contents directly
+                        self.generate_expr_ref_unwrapped(*expr_ref)?;
+                    }
+                    _ => {
+                        // Single expression: add return
+                        self.write_indent()?;
+                        write!(self.output, "return ")?;
+                        self.generate_expr_ref(*expr_ref)?;
+                        writeln!(self.output)?;
+                    }
+                }
+            }
+            _ => {
+                // Other statements: generate normally (could be Return, etc.)
+                self.generate_stmt(stmt)?;
+            }
+        }
+        Ok(())
+    }
+    
+    /// Generate expression without unnecessary IIFE wrapper
+    fn generate_expr_ref_unwrapped(&mut self, expr_ref: ast::ExprRef) -> Result<(), LuaGenError> {
+        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        match expr {
+            // Block expressions need special handling to avoid IIFE
+            ast::Expr::Block(stmt_refs) => {
+                if stmt_refs.is_empty() {
+                    write!(self.output, "nil")?;
+                } else {
+                    // Generate block contents as statements with proper return
+                    for (i, stmt_ref) in stmt_refs.iter().enumerate() {
+                        if i == stmt_refs.len() - 1 {
+                            // Last statement: should be the return value
+                            let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                            match stmt {
+                                ast::Stmt::Expression(expr) => {
+                                    // Last expression in block: should be returned
+                                    self.write_indent()?;
+                                    write!(self.output, "return ")?;
+                                    self.generate_expr_ref(*expr)?;
+                                    writeln!(self.output)?;
+                                }
+                                _ => {
+                                    self.generate_stmt(stmt)?;
+                                }
+                            }
+                        } else {
+                            self.generate_stmt_ref(*stmt_ref)?;
+                        }
+                    }
+                }
+            }
+            _ => self.generate_expr(expr)?
+        }
+        Ok(())
+    }
+
+    /// Generate expression for if/else context - no indentation or newlines
+    fn generate_expr_ref_for_if_else(&mut self, expr_ref: ast::ExprRef) -> Result<(), LuaGenError> {
+        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        match expr {
+            // Block expressions - extract the final expression value
+            ast::Expr::Block(stmt_refs) => {
+                if stmt_refs.is_empty() {
+                    write!(self.output, "nil")?;
+                } else if stmt_refs.len() == 1 {
+                    // Single statement block - extract the value directly
+                    let stmt = &self.program.statement.0[stmt_refs[0].0 as usize];
+                    match stmt {
+                        ast::Stmt::Expression(expr_ref) => {
+                            self.generate_expr_ref(*expr_ref)?;
+                        }
+                        _ => {
+                            write!(self.output, "nil")?;
+                        }
+                    }
+                } else {
+                    // Multiple statements - still needs IIFE
+                    write!(self.output, "(function() ")?;
+                    for (i, stmt_ref) in stmt_refs.iter().enumerate() {
+                        if i == stmt_refs.len() - 1 {
+                            let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                            match stmt {
+                                ast::Stmt::Expression(expr_ref) => {
+                                    write!(self.output, " return ")?;
+                                    self.generate_expr_ref(*expr_ref)?;
+                                }
+                                _ => {
+                                    write!(self.output, " ")?;
+                                    self.generate_stmt(stmt)?;
+                                    write!(self.output, " return nil")?;
+                                }
+                            }
+                        } else {
+                            write!(self.output, " ")?;
+                            self.generate_stmt_ref(*stmt_ref)?;
+                        }
+                    }
+                    write!(self.output, " end)()")?;
+                }
+            }
+            _ => self.generate_expr(expr)?
+        }
         Ok(())
     }
 
@@ -100,9 +203,20 @@ impl<'a> LuaCodeGenerator<'a> {
     fn generate_stmt(&mut self, stmt: &ast::Stmt) -> Result<(), LuaGenError> {
         match stmt {
             ast::Stmt::Expression(expr_ref) => {
-                self.write_indent()?;
-                self.generate_expr_ref(*expr_ref)?;
-                writeln!(self.output)?;
+                // Check if this is an assignment that can be simplified
+                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                if let ast::Expr::Assign(lhs_ref, rhs_ref) = expr {
+                    // Generate assignment as a statement, not expression
+                    self.write_indent()?;
+                    self.generate_expr_ref(*lhs_ref)?;
+                    write!(self.output, " = ")?;
+                    self.generate_expr_ref(*rhs_ref)?;
+                    writeln!(self.output)?;
+                } else {
+                    self.write_indent()?;
+                    self.generate_expr_ref(*expr_ref)?;
+                    writeln!(self.output)?;
+                }
                 Ok(())
             }
             ast::Stmt::Val(name, _type_decl, expr_ref) => {
@@ -275,26 +389,34 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Expr::Block(stmt_refs) => {
+                // Block expression requires IIFE to return a value in Lua
                 write!(self.output, "(function() ")?;
                 
-                for (i, stmt_ref) in stmt_refs.iter().enumerate() {
-                    if i > 0 {
-                        write!(self.output, " ")?;
-                    }
-                    // For blocks in expressions, generate statements inline
-                    let stmt = &self.program.statement.0[stmt_ref.0 as usize];
-                    match stmt {
-                        ast::Stmt::Expression(expr_ref) => {
-                            write!(self.output, "return ")?;
-                            self.generate_expr_ref(*expr_ref)?;
-                        }
-                        ast::Stmt::Return(Some(expr_ref)) => {
-                            write!(self.output, "return ")?;
-                            self.generate_expr_ref(*expr_ref)?;
-                        }
-                        _ => {
-                            // For other statements, generate them normally but without newlines
-                            self.generate_stmt(stmt)?;
+                if stmt_refs.is_empty() {
+                    write!(self.output, "return nil")?;
+                } else {
+                    for (i, stmt_ref) in stmt_refs.iter().enumerate() {
+                        if i == stmt_refs.len() - 1 {
+                            // Last statement: should be returned
+                            let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                            match stmt {
+                                ast::Stmt::Expression(expr_ref) => {
+                                    write!(self.output, "return ")?;
+                                    self.generate_expr_ref_unwrapped(*expr_ref)?;
+                                }
+                                ast::Stmt::Return(Some(expr_ref)) => {
+                                    write!(self.output, "return ")?;
+                                    self.generate_expr_ref_unwrapped(*expr_ref)?;
+                                }
+                                _ => {
+                                    self.generate_stmt(stmt)?;
+                                    write!(self.output, " return nil")?;
+                                }
+                            }
+                        } else {
+                            // Not the last statement: generate normally
+                            write!(self.output, " ")?;
+                            self.generate_stmt_ref(*stmt_ref)?;
                         }
                     }
                 }
@@ -303,21 +425,22 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Expr::IfElifElse(if_cond, if_block, elif_pairs, else_block) => {
+                // Use IIFE for if expressions that need to return a value
                 write!(self.output, "(function() ")?;
                 write!(self.output, "if ")?;
                 self.generate_expr_ref(*if_cond)?;
                 write!(self.output, " then return ")?;
-                self.generate_expr_ref(*if_block)?;
+                self.generate_expr_ref_for_if_else(*if_block)?;
                 
                 for (elif_cond, elif_block) in elif_pairs {
                     write!(self.output, " elseif ")?;
                     self.generate_expr_ref(*elif_cond)?;
                     write!(self.output, " then return ")?;
-                    self.generate_expr_ref(*elif_block)?;
+                    self.generate_expr_ref_for_if_else(*elif_block)?;
                 }
                 
                 write!(self.output, " else return ")?;
-                self.generate_expr_ref(*else_block)?;
+                self.generate_expr_ref_for_if_else(*else_block)?;
                 write!(self.output, " end end)()")?;
                 Ok(())
             }
@@ -363,3 +486,26 @@ impl std::fmt::Display for LuaGenError {
 }
 
 impl std::error::Error for LuaGenError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use compiler_core::CompilerSession;
+    
+    fn generate_lua_code(source: &str) -> String {
+        let mut session = CompilerSession::new();
+        let program = session.parse_program(source).expect("Parse should succeed");
+        let mut generator = LuaCodeGenerator::new(&program, session.string_interner());
+        generator.generate().expect("Generation should succeed")
+    }
+    
+    #[test]
+    fn test_simple_generation() {
+        let source = "fn test() -> u64 { 42u64 }";
+        let lua_code = generate_lua_code(source);
+        println!("Generated Lua code: {}", lua_code);
+        assert!(lua_code.contains("function test()"));
+        assert!(lua_code.contains("42"));
+        assert!(lua_code.contains("end"));
+    }
+}

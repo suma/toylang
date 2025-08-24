@@ -48,7 +48,19 @@ impl<'a> LuaCodeGenerator<'a> {
         writeln!(self.output, ")")?;
         self.indent_level += 1;
 
-        self.generate_stmt_ref(func.code)?;
+        // Generate function body - need to ensure it returns a value
+        let stmt = &self.program.statement.0[func.code.0 as usize];
+        match stmt {
+            ast::Stmt::Expression(expr_ref) => {
+                self.write_indent()?;
+                write!(self.output, "return ")?;
+                self.generate_expr_ref(*expr_ref)?;
+                writeln!(self.output)?;
+            }
+            _ => {
+                self.generate_stmt_ref(func.code)?;
+            }
+        }
 
         self.indent_level -= 1;
         self.write_indent()?;
@@ -166,16 +178,31 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Expr::Block(stmt_refs) => {
-                writeln!(self.output, "(function()")?;
-                self.indent_level += 1;
+                write!(self.output, "(function() ")?;
                 
-                for stmt_ref in stmt_refs {
-                    self.generate_stmt_ref(*stmt_ref)?;
+                for (i, stmt_ref) in stmt_refs.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, " ")?;
+                    }
+                    // For blocks in expressions, generate statements inline
+                    let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                    match stmt {
+                        ast::Stmt::Expression(expr_ref) => {
+                            write!(self.output, "return ")?;
+                            self.generate_expr_ref(*expr_ref)?;
+                        }
+                        ast::Stmt::Return(Some(expr_ref)) => {
+                            write!(self.output, "return ")?;
+                            self.generate_expr_ref(*expr_ref)?;
+                        }
+                        _ => {
+                            // For other statements, generate them normally but without newlines
+                            self.generate_stmt(stmt)?;
+                        }
+                    }
                 }
                 
-                self.indent_level -= 1;
-                self.write_indent()?;
-                write!(self.output, "end)()")?;
+                write!(self.output, " end)()")?;
                 Ok(())
             }
             ast::Expr::IfElifElse(if_cond, if_block, elif_pairs, else_block) => {

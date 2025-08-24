@@ -1,12 +1,15 @@
 use frontend::ast;
 use std::fmt::{self, Write};
-use string_interner::DefaultStringInterner;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
+use std::collections::HashMap;
 
 pub struct LuaCodeGenerator<'a> {
     output: String,
     indent_level: usize,
     program: &'a ast::Program,
     interner: &'a DefaultStringInterner,
+    // Track which variables are val (const) vs var
+    const_vars: HashMap<DefaultSymbol, bool>,
 }
 
 impl<'a> LuaCodeGenerator<'a> {
@@ -16,6 +19,27 @@ impl<'a> LuaCodeGenerator<'a> {
             indent_level: 0,
             program,
             interner,
+            const_vars: HashMap::new(),
+        }
+    }
+    
+    /// Convert a variable name based on whether it's a val (const) or var
+    /// Returns None if the symbol is not a tracked variable (e.g., function parameters)
+    fn convert_var_name(&self, symbol: DefaultSymbol) -> String {
+        let name = self.interner.resolve(symbol).unwrap_or("<unknown>");
+        
+        // Check if this is a tracked variable
+        if let Some(&is_const) = self.const_vars.get(&symbol) {
+            if is_const {
+                // Convert val with V_ prefix (uppercase V for const)
+                format!("V_{}", name)
+            } else {
+                // Convert var with v_ prefix (lowercase v for mutable)
+                format!("v_{}", name)
+            }
+        } else {
+            // Not a tracked variable (function parameters, etc.), keep as-is
+            name.to_string()
         }
     }
 
@@ -82,16 +106,20 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Stmt::Val(name, _type_decl, expr_ref) => {
+                // Mark this as a const variable
+                self.const_vars.insert(*name, true);
                 self.write_indent()?;
-                let var_name = self.interner.resolve(*name).unwrap_or("<unknown>");
+                let var_name = self.convert_var_name(*name);
                 write!(self.output, "local {} = ", var_name)?;
                 self.generate_expr_ref(*expr_ref)?;
                 writeln!(self.output)?;
                 Ok(())
             }
             ast::Stmt::Var(name, _type_decl, init_expr) => {
+                // Mark this as a mutable variable
+                self.const_vars.insert(*name, false);
                 self.write_indent()?;
-                let var_name = self.interner.resolve(*name).unwrap_or("<unknown>");
+                let var_name = self.convert_var_name(*name);
                 write!(self.output, "local {} = ", var_name)?;
                 if let Some(expr_ref) = init_expr {
                     self.generate_expr_ref(*expr_ref)?;
@@ -112,8 +140,10 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Stmt::For(var_name, start_expr, end_expr, block_expr) => {
+                // For loop variables are implicitly immutable, treat as const
+                self.const_vars.insert(*var_name, true);
                 self.write_indent()?;
-                let var_str = self.interner.resolve(*var_name).unwrap_or("<unknown>");
+                let var_str = self.convert_var_name(*var_name);
                 write!(self.output, "for {} = ", var_str)?;
                 self.generate_expr_ref(*start_expr)?;
                 write!(self.output, ", ")?;
@@ -186,7 +216,7 @@ impl<'a> LuaCodeGenerator<'a> {
                 write!(self.output, "\"{}\"", str_val).map_err(LuaGenError::Fmt)
             }
             ast::Expr::Identifier(sym) => {
-                let var_name = self.interner.resolve(*sym).unwrap_or("<unknown>");
+                let var_name = self.convert_var_name(*sym);
                 write!(self.output, "{}", var_name).map_err(LuaGenError::Fmt)
             }
             ast::Expr::Assign(lhs_ref, rhs_ref) => {

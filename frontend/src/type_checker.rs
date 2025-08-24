@@ -512,6 +512,17 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
             self.visit_import(import_decl)?;
         }
         
+        // Process all statements in the program (this includes StructDecl and ImplBlock)
+        for (index, _stmt) in program.statement.0.iter().enumerate() {
+            let stmt_ref = StmtRef(index as u32);
+            self.visit_stmt(&stmt_ref)?;
+        }
+        
+        // Process all functions in the program
+        for function in &program.function {
+            self.type_check(function.clone())?;
+        }
+        
         Ok(())
     }
     
@@ -604,9 +615,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             // Record the type in the comprehensive expr_types mapping
             self.type_inference.set_expr_type(*expr, result_type.clone());
             
-            // Debug: print expression type recording
-            #[cfg(test)]
-            println!("Recording type for ExprRef({}): {:?}", expr.0, result_type);
+            // Record expression type for code generation
             
             // Context propagation: if this expression resolved to a concrete numeric type,
             // and we don't have a current hint, set it for sibling expressions

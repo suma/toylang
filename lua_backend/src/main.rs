@@ -21,7 +21,7 @@ fn main() {
     };
 
     let mut session = CompilerSession::new();
-    let program = match session.parse_and_type_check_program(&source_code) {
+    let program = match session.parse_program(&source_code) {
         Ok(program) => {
             // Debug: print program structure
             println!("Debug: Program structure:");
@@ -52,16 +52,13 @@ fn main() {
             program
         }
         Err(err) => {
-            eprintln!("Parse/Type check error: {}", err);
+            eprintln!("Parse error: {}", err);
             process::exit(1);
         }
     };
 
-    let mut generator = if let Some(type_info) = session.type_check_results() {
-        LuaCodeGenerator::with_type_info(&program, session.string_interner(), type_info)
-    } else {
-        LuaCodeGenerator::new(&program, session.string_interner())
-    };
+    // Skip type checking for now and use basic code generation
+    let mut generator = LuaCodeGenerator::new(&program, session.string_interner());
     
     let lua_code = match generator.generate() {
         Ok(code) => code,

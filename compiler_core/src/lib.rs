@@ -120,6 +120,8 @@ impl CompilerSession {
                 let expr_types = type_checker.get_expr_types();
                 let struct_types = type_checker.get_struct_var_mappings(&self.string_interner);
                 
+                // Note: Type information extracted for code generation
+                
                 self.type_check_results = Some(TypeCheckResults {
                     expr_types,
                     struct_types,

@@ -2,7 +2,7 @@ use frontend::ast;
 use compiler_core::TypeCheckResults;
 use std::fmt::{self, Write};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub struct LuaCodeGenerator<'a> {
     output: String,
@@ -13,6 +13,12 @@ pub struct LuaCodeGenerator<'a> {
     const_vars: HashMap<DefaultSymbol, bool>,
     // Type information for expressions (optional)
     type_info: Option<&'a TypeCheckResults>,
+    // Track scope depth for variable shadowing
+    scope_depth: usize,
+    // Track variables in each scope level for proper scoping
+    scoped_vars: Vec<HashSet<DefaultSymbol>>,
+    // Map original variable names to their scoped versions
+    var_name_map: HashMap<(DefaultSymbol, usize), String>,
 }
 
 impl<'a> LuaCodeGenerator<'a> {
@@ -24,6 +30,9 @@ impl<'a> LuaCodeGenerator<'a> {
             interner,
             const_vars: HashMap::new(),
             type_info: None,
+            scope_depth: 0,
+            scoped_vars: vec![HashSet::new()], // Start with global scope
+            var_name_map: HashMap::new(),
         }
     }
     
@@ -35,12 +44,72 @@ impl<'a> LuaCodeGenerator<'a> {
             interner,
             const_vars: HashMap::new(),
             type_info: Some(type_info),
+            scope_depth: 0,
+            scoped_vars: vec![HashSet::new()], // Start with global scope
+            var_name_map: HashMap::new(),
         }
+    }
+    
+    /// Enter a new scope
+    fn enter_scope(&mut self) {
+        self.scope_depth += 1;
+        self.scoped_vars.push(HashSet::new());
+    }
+    
+    /// Exit the current scope
+    fn exit_scope(&mut self) {
+        if self.scope_depth > 0 {
+            self.scope_depth -= 1;
+            self.scoped_vars.pop();
+        }
+    }
+    
+    /// Register a variable in the current scope
+    fn register_variable(&mut self, symbol: DefaultSymbol, is_const: bool) -> String {
+        let base_name = self.interner.resolve(symbol).unwrap_or("<unknown>");
+        
+        // Store const/var information
+        self.const_vars.insert(symbol, is_const);
+        
+        // Add to current scope
+        if let Some(current_scope) = self.scoped_vars.last_mut() {
+            current_scope.insert(symbol);
+        }
+        
+        // Generate scoped name with prefix and scope suffix if needed
+        let scoped_name = if self.scope_depth > 0 {
+            // Add scope suffix for non-global variables to avoid collisions
+            if is_const {
+                format!("V_{}_{}", base_name.to_uppercase(), self.scope_depth)
+            } else {
+                format!("v_{}_{}", base_name, self.scope_depth)
+            }
+        } else {
+            // Global scope - use simple prefix
+            if is_const {
+                format!("V_{}", base_name.to_uppercase())
+            } else {
+                format!("v_{}", base_name)
+            }
+        };
+        
+        // Store the mapping
+        self.var_name_map.insert((symbol, self.scope_depth), scoped_name.clone());
+        
+        scoped_name
     }
     
     /// Convert a variable name based on whether it's a val (const) or var
     /// Returns None if the symbol is not a tracked variable (e.g., function parameters)
     fn convert_var_name(&self, symbol: DefaultSymbol) -> String {
+        // Look up the variable in scopes from current to global
+        for depth in (0..=self.scope_depth).rev() {
+            if let Some(scoped_name) = self.var_name_map.get(&(symbol, depth)) {
+                return scoped_name.clone();
+            }
+        }
+        
+        // Fall back to original behavior for untracked variables
         let name = self.interner.resolve(symbol).unwrap_or("<unknown>");
         
         // Check if this is a tracked variable
@@ -372,20 +441,18 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Stmt::Val(name, _type_decl, expr_ref) => {
-                // Mark this as a const variable
-                self.const_vars.insert(*name, true);
+                // Register this as a const variable in current scope
+                let var_name = self.register_variable(*name, true);
                 self.write_indent()?;
-                let var_name = self.convert_var_name(*name);
                 write!(self.output, "local {} = ", var_name)?;
                 self.generate_expr_ref(*expr_ref)?;
                 writeln!(self.output)?;
                 Ok(())
             }
             ast::Stmt::Var(name, _type_decl, init_expr) => {
-                // Mark this as a mutable variable
-                self.const_vars.insert(*name, false);
+                // Register this as a mutable variable in current scope
+                let var_name = self.register_variable(*name, false);
                 self.write_indent()?;
-                let var_name = self.convert_var_name(*name);
                 write!(self.output, "local {} = ", var_name)?;
                 if let Some(expr_ref) = init_expr {
                     self.generate_expr_ref(*expr_ref)?;
@@ -406,10 +473,13 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Stmt::For(var_name, start_expr, end_expr, block_expr) => {
+                // Enter new scope for the loop
+                self.enter_scope();
+                
                 // For loop variables are implicitly immutable, treat as const
-                self.const_vars.insert(*var_name, true);
+                let var_str = self.register_variable(*var_name, true);
+                
                 self.write_indent()?;
-                let var_str = self.convert_var_name(*var_name);
                 write!(self.output, "for {} = ", var_str)?;
                 self.generate_expr_ref(*start_expr)?;
                 write!(self.output, ", ")?;
@@ -428,6 +498,10 @@ impl<'a> LuaCodeGenerator<'a> {
                 
                 self.write_indent()?;
                 writeln!(self.output, "end")?;
+                
+                // Exit scope after loop
+                self.exit_scope();
+                
                 Ok(())
             }
             ast::Stmt::While(cond_expr, block_expr) => {
@@ -435,6 +509,9 @@ impl<'a> LuaCodeGenerator<'a> {
                 write!(self.output, "while ")?;
                 self.generate_expr_ref(*cond_expr)?;
                 writeln!(self.output, " do")?;
+                
+                // Enter new scope for the loop body
+                self.enter_scope();
                 
                 self.indent_level += 1;
                 // Generate the loop body
@@ -448,6 +525,10 @@ impl<'a> LuaCodeGenerator<'a> {
                 
                 self.write_indent()?;
                 writeln!(self.output, "end")?;
+                
+                // Exit scope after loop
+                self.exit_scope();
+                
                 Ok(())
             }
             ast::Stmt::Break => {
@@ -626,8 +707,12 @@ impl<'a> LuaCodeGenerator<'a> {
                         }
                     }
                 } else {
-                    // Multiple statements - still needs IIFE for proper scoping
+                    // Multiple statements - use IIFE with proper scoping
                     write!(self.output, "(function() ")?;
+                    
+                    // Enter new scope for this block
+                    self.enter_scope();
+                    
                     for (i, stmt_ref) in stmt_refs.iter().enumerate() {
                         if i == stmt_refs.len() - 1 {
                             // Last statement: should be returned
@@ -652,6 +737,10 @@ impl<'a> LuaCodeGenerator<'a> {
                             self.generate_stmt_ref(*stmt_ref)?;
                         }
                     }
+                    
+                    // Exit scope after block
+                    self.exit_scope();
+                    
                     write!(self.output, " end)()")?;
                 }
                 Ok(())

@@ -155,8 +155,8 @@ fn collection_example() -> i64 {
     }
     
     # Dictionary example
-    val dict: Dict = {"key1": 100i64, "key2": 200i64}
-    sum = sum + dict["key1"]
+    val d: dict[str, i64] = dict{"key1": 100i64, "key2": 200i64}
+    sum = sum + d["key1"]
     
     sum
 }

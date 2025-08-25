@@ -434,9 +434,31 @@ impl<'a> LuaCodeGenerator<'a> {
                     self.generate_expr_ref(*rhs_ref)?;
                     writeln!(self.output)?;
                 } else {
-                    self.write_indent()?;
-                    self.generate_expr_ref(*expr_ref)?;
-                    writeln!(self.output)?;
+                    // For non-assignment expressions used as statements,
+                    // we need to handle them appropriately in Lua.
+                    // Simple expressions like identifiers should be ignored as they have no side effects
+                    let expr = &self.program.expression.0[expr_ref.0 as usize];
+                    match expr {
+                        // Call expressions should be executed as statements
+                        ast::Expr::Call(_, _) => {
+                            self.write_indent()?;
+                            self.generate_expr_ref(*expr_ref)?;
+                            writeln!(self.output)?;
+                        }
+                        // Block expressions should be executed
+                        ast::Expr::Block(_) => {
+                            self.write_indent()?;
+                            self.generate_expr_ref(*expr_ref)?;
+                            writeln!(self.output)?;
+                        }
+                        // Other expressions without side effects can be ignored or converted to comments
+                        _ => {
+                            // For simple expressions, just ignore them or create a safe comment
+                            self.write_indent()?;
+                            write!(self.output, "-- Unused expression")?;
+                            writeln!(self.output)?;
+                        }
+                    }
                 }
                 Ok(())
             }

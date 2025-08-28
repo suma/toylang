@@ -415,6 +415,18 @@ impl AstBuilder {
         expr_ref
     }
     
+    pub fn tuple_literal_expr(&mut self, elements: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::TupleLiteral(elements));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
+    pub fn tuple_access_expr(&mut self, tuple: ExprRef, index: usize, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::TupleAccess(tuple, index));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);
@@ -639,6 +651,8 @@ pub enum Expr {
     IndexAccess(ExprRef, ExprRef),  // x[key] - generic index access
     IndexAssign(ExprRef, ExprRef, ExprRef),  // x[key] = value - index assignment
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
+    TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
+    TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

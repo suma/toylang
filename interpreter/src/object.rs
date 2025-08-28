@@ -28,6 +28,7 @@ pub enum Object {
         fields: Box<HashMap<String, RcObject>>,
     },
     Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
+    Tuple(Box<Vec<RcObject>>),  // Tuple type - ordered collection of heterogeneous types
     //Function: Rc<Function>,
     Pointer(usize),  // Raw pointer as memory address (0 = null pointer)
     Null(TypeDecl), // Null reference with type information
@@ -147,6 +148,8 @@ impl Ord for ObjectKey {
             (_, Object::Struct { .. }) => Ordering::Greater,
             (Object::Dict(_), _) => Ordering::Less,
             (_, Object::Dict(_)) => Ordering::Greater,
+            (Object::Tuple(_), _) => Ordering::Less,
+            (_, Object::Tuple(_)) => Ordering::Greater,
             (Object::Pointer(_), _) => Ordering::Less,
             (_, Object::Pointer(_)) => Ordering::Greater,
             (Object::Null(_), _) => Ordering::Less,
@@ -180,6 +183,10 @@ impl PartialEq for Object {
                 a.iter().all(|(k, v)| {
                     b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
                 })
+            }
+            (Object::Tuple(a), Object::Tuple(b)) => {
+                a.len() == b.len() && 
+                a.iter().zip(b.iter()).all(|(x, y)| x.borrow().eq(&*y.borrow()))
             }
             (Object::Pointer(a), Object::Pointer(b)) => a == b,
             (Object::Null(_), Object::Null(_)) => true,
@@ -244,17 +251,24 @@ impl Hash for Object {
                     v.borrow().hash(state);
                 }
             }
-            Object::Pointer(v) => {
+            Object::Tuple(v) => {
                 8u8.hash(state);
+                v.len().hash(state);
+                for item in v.iter() {
+                    item.borrow().hash(state);
+                }
+            }
+            Object::Pointer(v) => {
+                9u8.hash(state);
                 v.hash(state);
             }
             Object::Null(type_decl) => {
-                9u8.hash(state);
+                10u8.hash(state);
                 // Hash the type information for different null types
                 std::mem::discriminant(type_decl).hash(state);
             }
             Object::Unit => {
-                10u8.hash(state);
+                11u8.hash(state);
             }
         }
     }
@@ -303,6 +317,13 @@ impl Object {
                     
                     TypeDecl::Dict(Box::new(key_type), Box::new(value_type))
                 }
+            }
+            Object::Tuple(elements) => {
+                let element_types: Vec<TypeDecl> = elements
+                    .iter()
+                    .map(|elem| elem.borrow().get_type())
+                    .collect();
+                TypeDecl::Tuple(element_types)
             }
             Object::Pointer(_) => TypeDecl::Ptr,
         }
@@ -570,6 +591,11 @@ impl Object {
                         found: TypeDecl::Struct(*other_type)
                     })
                 }
+            }
+            (Object::Tuple(self_val), Object::Tuple(v)) => {
+                self_val.clear();
+                self_val.extend(v.iter().cloned());
+                Ok(())
             }
             // Null and Unit can accept any value
             (Object::Null(_), _) | (Object::Unit, _) => {

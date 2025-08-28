@@ -46,7 +46,7 @@ pub fn assert_program_result_string(source_code: &str, expected: &str) {
     let borrowed = result.borrow();
     match &*borrowed {
         Object::String(s) => assert_eq!(s, expected),
-        Object::ConstString(s) => {
+        Object::ConstString(_s) => {
             // For const strings, we need to get the actual string value
             // This is expected for string literals
             // Note: In a real implementation, we'd need the string interner
@@ -79,6 +79,7 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
         Object::Struct { .. } => "Struct",
         Object::Array(_) => "Array",
         Object::Dict(_) => "Dict",
+        Object::Tuple(_) => "Tuple",
         Object::Pointer(_) => "Pointer",
         Object::Null(_) => "Null",
     };

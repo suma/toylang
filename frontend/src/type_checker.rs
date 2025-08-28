@@ -479,6 +479,8 @@ impl Acceptable for Expr {
             },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
             Expr::BuiltinCall(func, args) => visitor.visit_builtin_call(func, args),
+            Expr::TupleLiteral(elements) => visitor.visit_tuple_literal(elements),
+            Expr::TupleAccess(tuple, index) => visitor.visit_tuple_access(tuple, *index),
         }
     }
 }
@@ -1444,6 +1446,81 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
         
         Ok(TypeDecl::Dict(Box::new(final_key_type), Box::new(final_value_type)))
+    }
+    
+    fn visit_tuple_literal(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        if elements.is_empty() {
+            // Empty tuple is allowed and has type Tuple(vec![])
+            return Ok(TypeDecl::Tuple(vec![]));
+        }
+        
+        // Save the original type hint to restore later
+        let original_hint = self.type_inference.type_hint.clone();
+        
+        // Extract expected types from type hint if available
+        let expected_types = if let Some(TypeDecl::Tuple(types)) = &self.type_inference.type_hint {
+            Some(types.clone())
+        } else {
+            None
+        };
+        
+        // Check each element and collect their types
+        let mut element_types = Vec::new();
+        for (index, elem_ref) in elements.iter().enumerate() {
+            // Set type hint for this element if available
+            if let Some(ref expected) = expected_types {
+                if index < expected.len() {
+                    self.type_inference.type_hint = Some(expected[index].clone());
+                }
+            }
+            
+            let elem_type = self.visit_expr(elem_ref)?;
+            
+            // Convert Number to concrete type (default to UInt64)
+            let final_elem_type = if elem_type == TypeDecl::Number {
+                // If we have a hint, use it; otherwise default to UInt64
+                if let Some(ref expected) = expected_types {
+                    if index < expected.len() && expected[index] != TypeDecl::Unknown {
+                        expected[index].clone()
+                    } else {
+                        TypeDecl::UInt64
+                    }
+                } else {
+                    TypeDecl::UInt64
+                }
+            } else {
+                elem_type
+            };
+            
+            element_types.push(final_elem_type);
+        }
+        
+        // Restore original hint
+        self.type_inference.type_hint = original_hint;
+        
+        Ok(TypeDecl::Tuple(element_types))
+    }
+    
+    fn visit_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<TypeDecl, TypeCheckError> {
+        let tuple_type = self.visit_expr(tuple)?;
+        
+        match tuple_type {
+            TypeDecl::Tuple(ref types) => {
+                if index >= types.len() {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Tuple index {} out of bounds for tuple with {} elements",
+                        index, types.len()
+                    )));
+                }
+                Ok(types[index].clone())
+            }
+            _ => {
+                Err(TypeCheckError::generic_error(&format!(
+                    "Cannot access index {} on non-tuple type {:?}",
+                    index, tuple_type
+                )))
+            }
+        }
     }
     
     // =========================================================================

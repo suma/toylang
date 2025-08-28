@@ -571,6 +571,12 @@ impl<'a> EvaluationContext<'a> {
             Expr::DictLiteral(entries) => {
                 self.evaluate_dict_literal(entries)
             }
+            Expr::TupleLiteral(elements) => {
+                self.evaluate_tuple_literal(elements)
+            }
+            Expr::TupleAccess(tuple, index) => {
+                self.evaluate_tuple_access(tuple, *index)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }
@@ -1463,6 +1469,43 @@ impl EvaluationContext<'_> {
         
         let dict_obj = Object::Dict(Box::new(dict));
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(dict_obj))))
+    }
+    
+    fn evaluate_tuple_literal(&mut self, elements: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        let mut tuple_elements = Vec::new();
+        
+        for element_ref in elements {
+            let element_val = self.evaluate(element_ref);
+            let element_obj = self.extract_value(element_val)?;
+            tuple_elements.push(element_obj);
+        }
+        
+        let tuple_obj = Object::Tuple(Box::new(tuple_elements));
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(tuple_obj))))
+    }
+    
+    fn evaluate_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<EvaluationResult, InterpreterError> {
+        let tuple_val = self.evaluate(tuple);
+        let tuple_obj = self.extract_value(tuple_val)?;
+        
+        let tuple_borrowed = tuple_obj.borrow();
+        match &*tuple_borrowed {
+            Object::Tuple(elements) => {
+                if index >= elements.len() {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: index as isize, 
+                        size: elements.len() 
+                    });
+                }
+                Ok(EvaluationResult::Value(Rc::clone(&elements[index])))
+            }
+            _ => {
+                Err(InterpreterError::InternalError(format!(
+                    "Cannot access index {} on non-tuple type",
+                    index
+                )))
+            }
+        }
     }
     
     fn evaluate_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<EvaluationResult, InterpreterError> {

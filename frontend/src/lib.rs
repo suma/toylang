@@ -6,6 +6,9 @@ pub mod parser;
 pub mod visitor;
 pub mod module_resolver;
 
+#[cfg(test)]
+mod tuple_tests;
+
 pub use parser::{Parser, ParserWithInterner};
 pub use parser::error::{MultipleParserResult, ParserError};
 pub use type_checker::error::{MultipleTypeCheckResult, TypeCheckError};

@@ -2,6 +2,51 @@
 
 ## 完了済み ✅
 
+97. **Tuple型の実装 (frontend/interpreter)** ✅ (2025-08-28完了)
+   - **対象**: Tuple型の完全実装とプログラミング言語での統合
+   - **実装した機能**:
+     - **TypeDecl::Tuple追加**: 型システムレベルでのTuple型サポート
+     - **パーサーでのTuple構文サポート**: 
+       - Tupleリテラル: `(1, "hello", true)` 構文
+       - Tupleアクセス: `tuple.0`, `tuple.1` などのフィールドアクセス
+       - Tuple型宣言: `(i64, str, bool)` 形式の型注釈
+     - **インタープリターでの評価実装**: 
+       - Tuple値の作成と格納
+       - フィールドアクセス評価
+       - 型チェック統合
+     - **包括的なテストスイート**: 17個のテストケースで機能を完全検証
+   - **技術的実装**:
+     - **frontend/src/type_decl.rs**: `TypeDecl::Tuple(Vec<TypeDeclRef>)` 追加
+     - **frontend/src/ast.rs**: Tupleリテラル・アクセス用のASTノード追加
+     - **frontend/src/parser**: Tuple構文の解析ロジック実装
+     - **interpreter/src/object.rs**: `Object::Tuple(Vec<RcObject>)` 実装
+     - **interpreter/src/evaluation.rs**: Tuple評価とアクセス処理
+   - **サポートする構文**:
+     - **Tupleリテラル**: `val t = (42, "hello", true)` 
+     - **型注釈**: `val t: (i64, str, bool) = (42, "hello", true)`
+     - **フィールドアクセス**: `t.0`, `t.1`, `t.2` による要素取得
+     - **ネストTuple**: `((1, 2), (3, 4))` などの多重ネスト対応
+   - **テスト結果**: 17/17成功（100%成功率）
+     - 基本的なTupleリテラル作成とアクセス
+     - 異なる型の混合Tuple (数値、文字列、真偽値)
+     - 空Tuple `()` とUnit型との区別
+     - ネストしたTuple構造
+     - 型推論とのの統合
+     - 関数戻り値としてのTuple使用
+     - エラーケース（範囲外アクセス等）
+   - **実装ファイル**:
+     - **frontend/src/type_decl.rs**: Tuple型宣言
+     - **frontend/src/ast.rs**: TupleリテラルとTupleアクセスAST
+     - **frontend/src/parser/**: Tuple構文解析
+     - **interpreter/src/object.rs**: Tupleオブジェクト実装
+     - **interpreter/src/evaluation.rs**: Tuple評価ロジック
+     - **interpreter/tests/tuple_tests.rs**: 包括的テストスイート
+   - **技術的成果**:
+     - プログラミング言語の表現力向上: 複数値を一つの単位として扱う機能
+     - 関数の複数戻り値対応への基盤確立
+     - 型システムの拡張性向上: ジェネリック型システムへの準備
+     - 型安全なデータ構造操作の実現
+
 96. **Luaコード生成の最適化：不要なIIFE削減** ✅ (2025-08-24完了)
    - **対象**: LuaコードジェネレーターでImmediately-Invoked Function Expressions (IIFE)を削減し、より効率的なLuaコード生成を実現
    - **実装した最適化**:

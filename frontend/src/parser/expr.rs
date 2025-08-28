@@ -397,8 +397,20 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                             expr = parser.ast_builder.field_access_expr(expr, field_symbol, Some(location));
                         }
                     }
+                    Some(Kind::Integer(index_str)) => {
+                        // Handle tuple access like tuple.0, tuple.1
+                        let index_str = index_str.to_string();
+                        if let Ok(index) = index_str.parse::<usize>() {
+                            parser.next();
+                            let location = parser.current_source_location();
+                            expr = parser.ast_builder.tuple_access_expr(expr, index, Some(location));
+                        } else {
+                            parser.collect_error(&format!("invalid tuple index: {}", index_str));
+                            break;
+                        }
+                    }
                     _ => {
-                        parser.collect_error("expected field name after '.'");
+                        parser.collect_error("expected field name or tuple index after '.'");
                         break; // Stop processing and return current expr
                     }
                 }
@@ -428,13 +440,54 @@ pub fn parse_primary(parser: &mut Parser) -> ParserResult<ExprRef> {
     result
 }
 
+fn parse_tuple_or_grouped_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let location = parser.current_source_location();
+    parser.next(); // consume '('
+    
+    parser.skip_newlines();
+    
+    // Handle empty tuple: ()
+    if parser.peek() == Some(&Kind::ParenClose) {
+        parser.next();
+        return Ok(parser.ast_builder.tuple_literal_expr(vec![], Some(location)));
+    }
+    
+    // Parse first expression
+    let first_expr = parser.parse_expr_impl()?;
+    parser.skip_newlines();
+    
+    // Check if this is a tuple (has comma) or grouped expression
+    if parser.peek() == Some(&Kind::Comma) {
+        // This is a tuple literal
+        let mut elements = vec![first_expr];
+        
+        while parser.peek() == Some(&Kind::Comma) {
+            parser.next(); // consume comma
+            parser.skip_newlines();
+            
+            // Allow trailing comma
+            if parser.peek() == Some(&Kind::ParenClose) {
+                break;
+            }
+            
+            let expr = parser.parse_expr_impl()?;
+            elements.push(expr);
+            parser.skip_newlines();
+        }
+        
+        parser.expect_err(&Kind::ParenClose)?;
+        Ok(parser.ast_builder.tuple_literal_expr(elements, Some(location)))
+    } else {
+        // This is a grouped expression
+        parser.expect_err(&Kind::ParenClose)?;
+        Ok(first_expr)
+    }
+}
+
 fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
     match parser.peek() {
         Some(Kind::ParenOpen) => {
-            parser.next();
-            let node = parser.parse_expr_impl()?;
-            parser.expect_err(&Kind::ParenClose)?;
-            Ok(node)
+            parse_tuple_or_grouped_expr(parser)
         }
         Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_) => {
             let location = parser.current_source_location();

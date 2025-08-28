@@ -678,6 +678,42 @@ impl<'a> Parser<'a> {
                 self.expect_err(&Kind::BracketClose)?;
                 Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
             }
+            Some(Kind::ParenOpen) => {
+                // Parse tuple type: (type1, type2, ...)
+                self.next();
+                self.skip_newlines();
+                
+                // Handle empty tuple: ()
+                if self.peek() == Some(&Kind::ParenClose) {
+                    self.next();
+                    return Ok(TypeDecl::Tuple(vec![]));
+                }
+                
+                let mut element_types = Vec::new();
+                
+                // Parse first type
+                let first_type = self.parse_type_declaration()?;
+                element_types.push(first_type);
+                self.skip_newlines();
+                
+                // Parse remaining types
+                while self.peek() == Some(&Kind::Comma) {
+                    self.next(); // consume comma
+                    self.skip_newlines();
+                    
+                    // Allow trailing comma
+                    if self.peek() == Some(&Kind::ParenClose) {
+                        break;
+                    }
+                    
+                    let elem_type = self.parse_type_declaration()?;
+                    element_types.push(elem_type);
+                    self.skip_newlines();
+                }
+                
+                self.expect_err(&Kind::ParenClose)?;
+                Ok(TypeDecl::Tuple(element_types))
+            }
             Some(_) | None => {
                 let location = self.current_source_location();
                 Err(ParserError::generic_error(location, format!("parse_type_declaration: unexpected token {:?}", self.peek())))

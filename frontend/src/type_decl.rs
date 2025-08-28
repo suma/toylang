@@ -15,6 +15,7 @@ pub enum TypeDecl {
     Dict(Box<TypeDecl>, Box<TypeDecl>),  // Dict<K, V> - key type and value type
     Self_,  // Self type within impl blocks
     Ptr,  // Raw pointer type for heap memory
+    Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
 }
 
 impl TypeDecl {

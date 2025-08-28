@@ -944,6 +944,24 @@ impl<'a> LuaCodeGenerator<'a> {
                 }
                 Ok(())
             }
+            ast::Expr::TupleLiteral(elements) => {
+                // Convert tuple literal to Lua table: (1, 2, 3) -> {1, 2, 3}
+                write!(self.output, "{{")?;
+                for (i, element_ref) in elements.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, ", ")?;
+                    }
+                    self.generate_expr_ref(*element_ref)?;
+                }
+                write!(self.output, "}}")?;
+                Ok(())
+            }
+            ast::Expr::TupleAccess(tuple_ref, index) => {
+                // Convert tuple access to Lua table access: tuple.0 -> tuple[1] (Lua uses 1-based indexing)
+                self.generate_expr_ref(*tuple_ref)?;
+                write!(self.output, "[{}]", index + 1)?; // Convert 0-based to 1-based indexing
+                Ok(())
+            }
             _ => Err(LuaGenError::UnsupportedExpression(format!("{:?}", expr))),
         }
     }

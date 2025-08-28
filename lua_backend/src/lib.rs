@@ -840,13 +840,27 @@ impl<'a> LuaCodeGenerator<'a> {
                 Ok(())
             }
             ast::Expr::IndexAccess(object_ref, index_ref) => {
-                // Generic index access: x[key] -> x[key] (potentially array access)
-                // Convert 0-based to 1-based indexing for arrays
+                // Generic index access: x[key] -> x[key] 
+                // For dict access (string keys): use direct indexing
+                // For array access (numeric keys): convert 0-based to 1-based indexing
                 self.generate_expr_ref(*object_ref)?;
                 write!(self.output, "[")?;
-                write!(self.output, "(")?;
-                self.generate_expr_ref(*index_ref)?;
-                write!(self.output, " + 1)]")?;
+                
+                let index_expr = &self.program.expression.0[index_ref.0 as usize];
+                match index_expr {
+                    // String index: direct dict access
+                    ast::Expr::String(_) => {
+                        self.generate_expr_ref(*index_ref)?;
+                    }
+                    // Non-string index: assume array access, add 1 for 1-based indexing
+                    _ => {
+                        write!(self.output, "(")?;
+                        self.generate_expr_ref(*index_ref)?;
+                        write!(self.output, " + 1)")?;
+                    }
+                }
+                
+                write!(self.output, "]")?;
                 Ok(())
             }
             ast::Expr::IndexAssign(object_ref, index_ref, value_ref) => {
@@ -960,6 +974,36 @@ impl<'a> LuaCodeGenerator<'a> {
                 // Convert tuple access to Lua table access: tuple.0 -> tuple[1] (Lua uses 1-based indexing)
                 self.generate_expr_ref(*tuple_ref)?;
                 write!(self.output, "[{}]", index + 1)?; // Convert 0-based to 1-based indexing
+                Ok(())
+            }
+            ast::Expr::DictLiteral(entries) => {
+                // Convert dict literal to Lua table: dict{"key1": "value1", "key2": "value2"} -> {key1 = "value1", key2 = "value2"}
+                write!(self.output, "{{")?;
+                for (i, (key_ref, value_ref)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(self.output, ", ")?;
+                    }
+                    
+                    // Generate key - for string keys, we can use the shorthand notation
+                    let key_expr = &self.program.expression.0[key_ref.0 as usize];
+                    match key_expr {
+                        ast::Expr::String(sym) => {
+                            // String key: use key = value syntax
+                            let key_str = self.interner.resolve(*sym).unwrap_or("unknown");
+                            write!(self.output, "{} = ", key_str)?;
+                        }
+                        _ => {
+                            // Non-string key: use [key] = value syntax
+                            write!(self.output, "[")?;
+                            self.generate_expr_ref(*key_ref)?;
+                            write!(self.output, "] = ")?;
+                        }
+                    }
+                    
+                    // Generate value
+                    self.generate_expr_ref(*value_ref)?;
+                }
+                write!(self.output, "}}")?;
                 Ok(())
             }
             _ => Err(LuaGenError::UnsupportedExpression(format!("{:?}", expr))),

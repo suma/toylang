@@ -53,6 +53,8 @@ macro_rules! token {
 "!="        return Ok(token!(self, Kind::NotEqual));
 "<="        return Ok(token!(self, Kind::LE));
 ">="        return Ok(token!(self, Kind::GE));
+"<<"        return Ok(token!(self, Kind::LeftShift));
+">>"        return Ok(token!(self, Kind::RightShift));
 "&&"        return Ok(token!(self, Kind::DoubleAnd));
 "||"        return Ok(token!(self, Kind::DoubleOr));
 
@@ -71,6 +73,9 @@ macro_rules! token {
 "<"         return Ok(token!(self, Kind::LT));
 ">"         return Ok(token!(self, Kind::GT));
 "&"         return Ok(token!(self, Kind::And));
+"|"         return Ok(token!(self, Kind::Or));
+"^"         return Ok(token!(self, Kind::Xor));
+"~"         return Ok(token!(self, Kind::Tilde));
 "+"         return Ok(token!(self, Kind::IAdd));
 "-"         return Ok(token!(self, Kind::ISub));
 "*"         return Ok(token!(self, Kind::IMul));

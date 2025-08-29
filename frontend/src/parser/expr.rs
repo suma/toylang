@@ -281,6 +281,36 @@ pub fn parse_logical_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
             (Kind::DoubleAnd, Operator::LogicalAnd),
             (Kind::DoubleOr, Operator::LogicalOr),
         ],
+        next_precedence: parse_bitwise_or
+    };
+    parse_binary(parser, &group)
+}
+
+pub fn parse_bitwise_or(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let group = OperatorGroup {
+        tokens: vec![
+            (Kind::Or, Operator::BitwiseOr),
+        ],
+        next_precedence: parse_bitwise_xor
+    };
+    parse_binary(parser, &group)
+}
+
+pub fn parse_bitwise_xor(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let group = OperatorGroup {
+        tokens: vec![
+            (Kind::Xor, Operator::BitwiseXor),
+        ],
+        next_precedence: parse_bitwise_and
+    };
+    parse_binary(parser, &group)
+}
+
+pub fn parse_bitwise_and(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let group = OperatorGroup {
+        tokens: vec![
+            (Kind::And, Operator::BitwiseAnd),
+        ],
         next_precedence: parse_equality
     };
     parse_binary(parser, &group)
@@ -304,6 +334,17 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
             (Kind::LE, Operator::LE),
             (Kind::GT, Operator::GT),
             (Kind::GE, Operator::GE),
+        ],
+        next_precedence: parse_shift
+    };
+    parse_binary(parser, &group)
+}
+
+pub fn parse_shift(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let group = OperatorGroup {
+        tokens: vec![
+            (Kind::LeftShift, Operator::LeftShift),
+            (Kind::RightShift, Operator::RightShift),
         ],
         next_precedence: parse_add
     };
@@ -357,9 +398,27 @@ pub fn parse_mul(parser: &mut Parser) -> ParserResult<ExprRef> {
             (Kind::IMul, Operator::IMul),
             (Kind::IDiv, Operator::IDiv),
         ],
-        next_precedence: parse_postfix,
+        next_precedence: parse_unary,
     };
     parse_binary(parser, &group)
+}
+
+pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
+    match parser.peek() {
+        Some(Kind::Tilde) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let operand = parse_unary(parser)?;
+            Ok(parser.ast_builder.unary_expr(UnaryOp::BitwiseNot, operand, Some(location)))
+        }
+        Some(Kind::Exclamation) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let operand = parse_unary(parser)?;
+            Ok(parser.ast_builder.unary_expr(UnaryOp::LogicalNot, operand, Some(location)))
+        }
+        _ => parse_postfix(parser)
+    }
 }
 
 pub fn parse_postfix(parser: &mut Parser) -> ParserResult<ExprRef> {

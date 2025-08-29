@@ -450,6 +450,7 @@ impl Acceptable for Expr {
     fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Expr::Binary(op, lhs, rhs) => visitor.visit_binary(op, lhs, rhs),
+            Expr::Unary(op, operand) => visitor.visit_unary(op, operand),
             Expr::Block(statements) => visitor.visit_block(statements),
             Expr::IfElifElse(cond, then_block, elif_pairs, else_block) => visitor.visit_if_elif_else(cond, then_block, elif_pairs, else_block),
             Expr::Assign(lhs, rhs) => visitor.visit_assign(lhs, rhs),
@@ -648,6 +649,61 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Expression Type Checking
     // =========================================================================
 
+    fn visit_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        let op = op.clone();
+        let operand = operand.clone();
+        let operand_ty = {
+            let operand_obj = self.core.expr_pool.get(operand.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
+            operand_obj.clone().accept(self)?
+        };
+        
+        // Resolve type with automatic conversion for Number type
+        let resolved_ty = if operand_ty == TypeDecl::Number {
+            // For bitwise NOT, prefer UInt64 for Number type
+            if op == UnaryOp::BitwiseNot {
+                TypeDecl::UInt64
+            } else {
+                TypeDecl::Bool
+            }
+        } else {
+            operand_ty.clone()
+        };
+        
+        // Transform AST node if type conversion occurred
+        if operand_ty == TypeDecl::Number && resolved_ty != TypeDecl::Number {
+            self.transform_numeric_expr(&operand, &resolved_ty)?;
+        }
+        
+        let result_type = match op {
+            UnaryOp::BitwiseNot => {
+                if resolved_ty == TypeDecl::UInt64 {
+                    TypeDecl::UInt64
+                } else if resolved_ty == TypeDecl::Int64 {
+                    TypeDecl::Int64
+                } else {
+                    let mut error = TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit);
+                    if let Some(location) = self.get_expr_location(&operand) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
+                }
+            }
+            UnaryOp::LogicalNot => {
+                if resolved_ty == TypeDecl::Bool {
+                    TypeDecl::Bool
+                } else {
+                    let mut error = TypeCheckError::type_mismatch_operation("logical NOT", resolved_ty.clone(), TypeDecl::Unit);
+                    if let Some(location) = self.get_expr_location(&operand) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
+                }
+            }
+        };
+        
+        Ok(result_type)
+    }
+
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let op = op.clone();
         let lhs = lhs.clone();
@@ -661,16 +717,44 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             rhs_obj.clone().accept(self)?
         };
         
-        // Resolve types with automatic conversion for Number type
-        let (resolved_lhs_ty, resolved_rhs_ty) = self.resolve_numeric_types(&lhs_ty, &rhs_ty)
-            .map_err(|mut error| {
-                if error.location.is_none() {
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
+        // Special handling for shift operations where right operand must be UInt64
+        let (resolved_lhs_ty, resolved_rhs_ty) = if matches!(op, Operator::LeftShift | Operator::RightShift) {
+            // For shift operations, right operand must be UInt64
+            let resolved_rhs = if rhs_ty == TypeDecl::Number {
+                TypeDecl::UInt64
+            } else {
+                rhs_ty.clone()
+            };
+            
+            // Left operand can be Int64 or UInt64
+            let resolved_lhs = if lhs_ty == TypeDecl::Number {
+                // Default to UInt64 for Number type on left side
+                if let Some(hint) = &self.type_inference.type_hint {
+                    match hint {
+                        TypeDecl::Int64 => TypeDecl::Int64,
+                        TypeDecl::UInt64 => TypeDecl::UInt64,
+                        _ => TypeDecl::UInt64,
                     }
+                } else {
+                    TypeDecl::UInt64
                 }
-                error
-            })?;
+            } else {
+                lhs_ty.clone()
+            };
+            
+            (resolved_lhs, resolved_rhs)
+        } else {
+            // For other operations, use normal resolution
+            self.resolve_numeric_types(&lhs_ty, &rhs_ty)
+                .map_err(|mut error| {
+                    if error.location.is_none() {
+                        if let Some(location) = self.get_expr_location(&lhs) {
+                            error = error.with_location(location);
+                        }
+                    }
+                    error
+                })?
+        };
         
         // Context propagation: if we have a type hint, propagate it to Number expressions
         if let Some(hint) = self.type_inference.type_hint.clone() {
@@ -742,6 +826,41 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     TypeDecl::Bool
                 } else {
                     let mut error = TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
+                }
+            }
+            Operator::BitwiseAnd | Operator::BitwiseOr | Operator::BitwiseXor => {
+                if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
+                    TypeDecl::UInt64
+                } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
+                    TypeDecl::Int64
+                } else {
+                    let mut error = TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&lhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
+                }
+            }
+            Operator::LeftShift | Operator::RightShift => {
+                // For shift operations, right operand must be UInt64
+                if resolved_rhs_ty != TypeDecl::UInt64 {
+                    let mut error = TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, resolved_rhs_ty.clone());
+                    if let Some(location) = self.get_expr_location(&rhs) {
+                        error = error.with_location(location);
+                    }
+                    return Err(error);
+                }
+                // Left operand can be either UInt64 or Int64
+                if resolved_lhs_ty == TypeDecl::UInt64 {
+                    TypeDecl::UInt64
+                } else if resolved_lhs_ty == TypeDecl::Int64 {
+                    TypeDecl::Int64
+                } else {
+                    let mut error = TypeCheckError::type_mismatch_operation("shift", resolved_lhs_ty.clone(), TypeDecl::UInt64);
                     if let Some(location) = self.get_expr_location(&lhs) {
                         error = error.with_location(location);
                     }

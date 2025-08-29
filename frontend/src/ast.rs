@@ -352,6 +352,12 @@ impl AstBuilder {
         self.location_pool.add_expr_location(location);
         expr_ref
     }
+
+    pub fn unary_expr(&mut self, op: UnaryOp, operand: ExprRef, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Unary(op, operand));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
     
     pub fn assign_expr(&mut self, lhs: ExprRef, rhs: ExprRef, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::Assign(lhs, rhs));
@@ -629,6 +635,7 @@ pub enum Expr {
     Assign(ExprRef, ExprRef),   // lhs = rhs
     IfElifElse(ExprRef, ExprRef, Vec<(ExprRef, ExprRef)>, ExprRef), // if_cond, if_block, elif_pairs, else_block
     Binary(Operator, ExprRef, ExprRef),
+    Unary(UnaryOp, ExprRef),     // unary operations like ~expr
     Block(Vec<StmtRef>),
     True,
     False,
@@ -782,6 +789,12 @@ impl Expr {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum UnaryOp {
+    BitwiseNot,  // ~
+    LogicalNot,  // !
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum Operator {
     IAdd,
     ISub,
@@ -798,6 +811,13 @@ pub enum Operator {
 
     LogicalAnd,
     LogicalOr,
+
+    // Bitwise operators
+    BitwiseAnd,    // &
+    BitwiseOr,     // |
+    BitwiseXor,    // ^
+    LeftShift,     // <<
+    RightShift,    // >>
 }
 
 #[derive(Debug)]

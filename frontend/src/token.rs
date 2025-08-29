@@ -64,6 +64,11 @@ pub enum Kind {
     DoubleAnd, // &&
     DoubleOr,  // ||
     And,       // &
+    Or,        // |
+    Xor,       // ^
+    Tilde,     // ~
+    LeftShift, // <<
+    RightShift,// >>
 
     IAdd,
     ISub,

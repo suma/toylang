@@ -340,6 +340,34 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
+    pub fn evaluate_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        let operand_result = self.evaluate(operand);
+        let operand_val = self.extract_value(operand_result)?;
+        let operand_obj = operand_val.borrow();
+
+        let result = match op {
+            UnaryOp::BitwiseNot => match &*operand_obj {
+                Object::UInt64(v) => Object::UInt64(!v),
+                Object::Int64(v) => Object::Int64(!v),
+                _ => return Err(InterpreterError::TypeError{
+                    expected: TypeDecl::UInt64,
+                    found: operand_obj.get_type(),
+                    message: format!("Bitwise NOT requires integer type, got {:?}", operand_obj)
+                }),
+            },
+            UnaryOp::LogicalNot => match &*operand_obj {
+                Object::Bool(v) => Object::Bool(!v),
+                _ => return Err(InterpreterError::TypeError{
+                    expected: TypeDecl::Bool,
+                    found: operand_obj.get_type(),
+                    message: format!("Logical NOT requires boolean type, got {:?}", operand_obj)
+                }),
+            },
+        };
+
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
+    }
+
     pub fn evaluate_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Short-circuit evaluation for logical operators
         match op {
@@ -368,6 +396,11 @@ impl<'a> EvaluationContext<'a> {
             Operator::LE => self.evaluate_le(&lhs_obj, &rhs_obj)?,
             Operator::GT => self.evaluate_gt(&lhs_obj, &rhs_obj)?,
             Operator::GE => self.evaluate_ge(&lhs_obj, &rhs_obj)?,
+            Operator::BitwiseAnd => self.evaluate_bitwise_and(&lhs_obj, &rhs_obj)?,
+            Operator::BitwiseOr => self.evaluate_bitwise_or(&lhs_obj, &rhs_obj)?,
+            Operator::BitwiseXor => self.evaluate_bitwise_xor(&lhs_obj, &rhs_obj)?,
+            Operator::LeftShift => self.evaluate_left_shift(&lhs_obj, &rhs_obj)?,
+            Operator::RightShift => self.evaluate_right_shift(&lhs_obj, &rhs_obj)?,
             Operator::LogicalAnd | Operator::LogicalOr => unreachable!("Should be handled above"),
         };
 
@@ -450,6 +483,87 @@ impl<'a> EvaluationContext<'a> {
         })
     }
 
+    // Bitwise operations
+    pub fn evaluate_bitwise_and(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        match (lhs, rhs) {
+            (Object::UInt64(l), Object::UInt64(r)) => Ok(Object::UInt64(*l & *r)),
+            (Object::Int64(l), Object::Int64(r)) => Ok(Object::Int64(*l & *r)),
+            _ => Err(InterpreterError::TypeError{
+                expected: lhs.get_type(), 
+                found: rhs.get_type(), 
+                message: format!("Bitwise AND requires same integer types, got {:?} and {:?}", lhs, rhs)
+            }),
+        }
+    }
+
+    pub fn evaluate_bitwise_or(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        match (lhs, rhs) {
+            (Object::UInt64(l), Object::UInt64(r)) => Ok(Object::UInt64(*l | *r)),
+            (Object::Int64(l), Object::Int64(r)) => Ok(Object::Int64(*l | *r)),
+            _ => Err(InterpreterError::TypeError{
+                expected: lhs.get_type(), 
+                found: rhs.get_type(), 
+                message: format!("Bitwise OR requires same integer types, got {:?} and {:?}", lhs, rhs)
+            }),
+        }
+    }
+
+    pub fn evaluate_bitwise_xor(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        match (lhs, rhs) {
+            (Object::UInt64(l), Object::UInt64(r)) => Ok(Object::UInt64(*l ^ *r)),
+            (Object::Int64(l), Object::Int64(r)) => Ok(Object::Int64(*l ^ *r)),
+            _ => Err(InterpreterError::TypeError{
+                expected: lhs.get_type(), 
+                found: rhs.get_type(), 
+                message: format!("Bitwise XOR requires same integer types, got {:?} and {:?}", lhs, rhs)
+            }),
+        }
+    }
+
+    pub fn evaluate_left_shift(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        // For shift operations, right operand should always be UInt64
+        let shift_amount = match rhs {
+            Object::UInt64(r) => *r,
+            _ => return Err(InterpreterError::TypeError{
+                expected: TypeDecl::UInt64, 
+                found: rhs.get_type(), 
+                message: format!("Shift amount must be UInt64, got {:?}", rhs)
+            }),
+        };
+
+        match lhs {
+            Object::UInt64(l) => Ok(Object::UInt64(l.wrapping_shl(shift_amount as u32))),
+            Object::Int64(l) => Ok(Object::Int64(l.wrapping_shl(shift_amount as u32))),
+            _ => Err(InterpreterError::TypeError{
+                expected: TypeDecl::UInt64, 
+                found: lhs.get_type(), 
+                message: format!("Left shift requires integer type on left side, got {:?}", lhs)
+            }),
+        }
+    }
+
+    pub fn evaluate_right_shift(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        // For shift operations, right operand should always be UInt64
+        let shift_amount = match rhs {
+            Object::UInt64(r) => *r,
+            _ => return Err(InterpreterError::TypeError{
+                expected: TypeDecl::UInt64, 
+                found: rhs.get_type(), 
+                message: format!("Shift amount must be UInt64, got {:?}", rhs)
+            }),
+        };
+
+        match lhs {
+            Object::UInt64(l) => Ok(Object::UInt64(l.wrapping_shr(shift_amount as u32))),
+            Object::Int64(l) => Ok(Object::Int64(l.wrapping_shr(shift_amount as u32))),
+            _ => Err(InterpreterError::TypeError{
+                expected: TypeDecl::UInt64, 
+                found: lhs.get_type(), 
+                message: format!("Right shift requires integer type on left side, got {:?}", lhs)
+            }),
+        }
+    }
+
     // Short-circuit evaluation for logical AND
     pub fn evaluate_logical_and_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let lhs_result = self.evaluate(lhs);
@@ -516,6 +630,9 @@ impl<'a> EvaluationContext<'a> {
         match expr {
             Expr::Binary(op, lhs, rhs) => {
                 self.evaluate_binary(op, lhs, rhs)
+            }
+            Expr::Unary(op, operand) => {
+                self.evaluate_unary(op, operand)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
                 self.evaluate_literal(expr)

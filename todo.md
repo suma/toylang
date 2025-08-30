@@ -2,6 +2,46 @@
 
 ## 完了済み ✅
 
+99. **Lua backend LuaJIT bitopモジュール対応** ✅ (2025-08-30完了)
+   - **対象**: Lua backendでLuaJIT環境のbitopモジュールサポートとコマンドライン引数による実行時ターゲット選択機能
+   - **実装した機能**:
+     - **LuaTarget enum**: Lua53（Lua 5.3+）とLuaJIT（LuaJIT with bitop）の2つのターゲットをサポート
+     - **コマンドライン引数対応**: 
+       - `--luajit`: LuaJITのbitopモジュールを使用するコード生成
+       - `--lua53`: Lua 5.3+のネイティブビット演算子を使用（デフォルト）
+       - `--help`: 使用方法の表示
+     - **ビット演算の互換性レイヤー**:
+       - **LuaJIT**: `bit.band()`, `bit.bor()`, `bit.bxor()`, `bit.lshift()`, `bit.rshift()`, `bit.bnot()`関数呼び出し
+       - **Lua 5.3+**: `&`, `|`, `~`, `<<`, `>>` ネイティブビット演算子
+     - **自動require追加**: LuaJITモードでは生成コードの先頭に`local bit = require('bit')`を自動挿入
+   - **技術的実装**:
+     - **lua_backend/src/lib.rs**: 
+       - `LuaTarget` enum追加とコード生成の条件分岐実装
+       - `with_target()` メソッドでターゲット指定機能
+       - 単項・二項ビット演算の完全対応
+     - **lua_backend/src/main.rs**: 
+       - コマンドライン引数解析ロジックの実装
+       - 使用方法表示機能とエラーハンドリング
+     - **lua_backend/tests/bitwise_tests.rs**: 
+       - Lua 5.3+とLuaJIT両対応のテストスイート新規作成
+       - `generate_lua_code_with_target()` ヘルパー関数
+   - **生成コード例**:
+     - **Lua 5.3+**: `val result = 5u64 & 3u64` → `local V_RESULT = (5 & 3)`
+     - **LuaJIT**: `val result = 5u64 & 3u64` → `local V_RESULT = bit.band(5, 3)`
+   - **テスト結果**: 15/15成功（100%成功率）
+     - Lua 5.3+とLuaJIT両方のビット演算コード生成検証
+     - 実際のLua実行での動作確認（計算結果一致）
+     - 単項・二項演算子の完全テストカバレッジ
+   - **実装ファイル**:
+     - **lua_backend/src/lib.rs**: ターゲット対応コード生成ロジック
+     - **lua_backend/src/main.rs**: コマンドライン引数処理
+     - **lua_backend/tests/bitwise_tests.rs**: 包括的テストスイート
+   - **技術的成果**:
+     - **クロスプラットフォーム対応**: Lua 5.3+とLuaJIT両環境での動作保証
+     - **実行時選択**: 同一ソースコードから異なるLua環境向けコード生成
+     - **後方互換性**: 既存のLua 5.3+コード生成機能を完全保持
+     - **開発者フレンドリー**: コマンドライン引数による直感的なターゲット指定
+
 98. **ビットワイズ演算の実装** ✅ (2025-08-29完了)
    - **対象**: 整数型（u64, i64）に対するビット演算子の完全実装
    - **実装した機能**:

@@ -4,6 +4,12 @@ use std::fmt::{self, Write};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LuaTarget {
+    Lua53,   // Lua 5.3+ with native bitwise operators
+    LuaJIT,  // LuaJIT with bit module
+}
+
 pub struct LuaCodeGenerator<'a> {
     output: String,
     indent_level: usize,
@@ -19,6 +25,8 @@ pub struct LuaCodeGenerator<'a> {
     scoped_vars: Vec<HashSet<DefaultSymbol>>,
     // Map original variable names to their scoped versions
     var_name_map: HashMap<(DefaultSymbol, usize), String>,
+    // Target Lua version
+    target: LuaTarget,
 }
 
 impl<'a> LuaCodeGenerator<'a> {
@@ -33,6 +41,7 @@ impl<'a> LuaCodeGenerator<'a> {
             scope_depth: 0,
             scoped_vars: vec![HashSet::new()], // Start with global scope
             var_name_map: HashMap::new(),
+            target: LuaTarget::Lua53, // Default to Lua 5.3+
         }
     }
     
@@ -47,7 +56,13 @@ impl<'a> LuaCodeGenerator<'a> {
             scope_depth: 0,
             scoped_vars: vec![HashSet::new()], // Start with global scope
             var_name_map: HashMap::new(),
+            target: LuaTarget::Lua53, // Default to Lua 5.3+
         }
+    }
+    
+    pub fn with_target(mut self, target: LuaTarget) -> Self {
+        self.target = target;
+        self
     }
     
     /// Enter a new scope
@@ -176,6 +191,13 @@ impl<'a> LuaCodeGenerator<'a> {
     pub fn generate(&mut self) -> Result<String, LuaGenError> {
         self.output.clear();
         self.indent_level = 0;
+        
+        // Add bit module requirement for LuaJIT
+        if self.target == LuaTarget::LuaJIT {
+            writeln!(self.output, "-- LuaJIT bit operations support")?;
+            writeln!(self.output, "local bit = require('bit')")?;
+            writeln!(self.output)?;
+        }
 
         // First generate struct declarations and impl blocks
         for (_index, stmt) in self.program.statement.0.iter().enumerate() {
@@ -669,28 +691,83 @@ impl<'a> LuaCodeGenerator<'a> {
                 self.generate_expr_ref(*rhs_ref)?;
                 Ok(())
             }
+            ast::Expr::Unary(op, operand_ref) => {
+                match (op, self.target) {
+                    (ast::UnaryOp::BitwiseNot, LuaTarget::LuaJIT) => {
+                        // LuaJIT: use bit.bnot()
+                        write!(self.output, "bit.bnot(")?;
+                        self.generate_expr_ref(*operand_ref)?;
+                        write!(self.output, ")")?;
+                    }
+                    (ast::UnaryOp::BitwiseNot, LuaTarget::Lua53) => {
+                        // Lua 5.3+: use native ~
+                        write!(self.output, "(~")?;
+                        self.generate_expr_ref(*operand_ref)?;
+                        write!(self.output, ")")?;
+                    }
+                    (ast::UnaryOp::LogicalNot, _) => {
+                        // Logical NOT is same for both
+                        write!(self.output, "(not ")?;
+                        self.generate_expr_ref(*operand_ref)?;
+                        write!(self.output, ")")?;
+                    }
+                }
+                Ok(())
+            }
             ast::Expr::Binary(op, left_ref, right_ref) => {
-                write!(self.output, "(")?;
-                self.generate_expr_ref(*left_ref)?;
-                
-                let op_str = match op {
-                    ast::Operator::IAdd => " + ",
-                    ast::Operator::ISub => " - ",
-                    ast::Operator::IMul => " * ",
-                    ast::Operator::IDiv => " / ",
-                    ast::Operator::EQ => " == ",
-                    ast::Operator::NE => " ~= ",
-                    ast::Operator::LT => " < ",
-                    ast::Operator::LE => " <= ",
-                    ast::Operator::GT => " > ",
-                    ast::Operator::GE => " >= ",
-                    ast::Operator::LogicalAnd => " and ",
-                    ast::Operator::LogicalOr => " or ",
-                };
-                
-                write!(self.output, "{}", op_str)?;
-                self.generate_expr_ref(*right_ref)?;
-                write!(self.output, ")")?;
+                // Handle bitwise operations differently for LuaJIT
+                match (op, self.target) {
+                    (ast::Operator::BitwiseAnd, LuaTarget::LuaJIT) |
+                    (ast::Operator::BitwiseOr, LuaTarget::LuaJIT) |
+                    (ast::Operator::BitwiseXor, LuaTarget::LuaJIT) |
+                    (ast::Operator::LeftShift, LuaTarget::LuaJIT) |
+                    (ast::Operator::RightShift, LuaTarget::LuaJIT) => {
+                        // LuaJIT: use bit module functions
+                        let func_name = match op {
+                            ast::Operator::BitwiseAnd => "bit.band",
+                            ast::Operator::BitwiseOr => "bit.bor",
+                            ast::Operator::BitwiseXor => "bit.bxor",
+                            ast::Operator::LeftShift => "bit.lshift",
+                            ast::Operator::RightShift => "bit.rshift",
+                            _ => unreachable!(),
+                        };
+                        write!(self.output, "{}(", func_name)?;
+                        self.generate_expr_ref(*left_ref)?;
+                        write!(self.output, ", ")?;
+                        self.generate_expr_ref(*right_ref)?;
+                        write!(self.output, ")")?;
+                    }
+                    _ => {
+                        // For non-bitwise ops or Lua 5.3+ bitwise ops
+                        write!(self.output, "(")?;
+                        self.generate_expr_ref(*left_ref)?;
+                        
+                        let op_str = match op {
+                            ast::Operator::IAdd => " + ",
+                            ast::Operator::ISub => " - ",
+                            ast::Operator::IMul => " * ",
+                            ast::Operator::IDiv => " / ",
+                            ast::Operator::EQ => " == ",
+                            ast::Operator::NE => " ~= ",
+                            ast::Operator::LT => " < ",
+                            ast::Operator::LE => " <= ",
+                            ast::Operator::GT => " > ",
+                            ast::Operator::GE => " >= ",
+                            ast::Operator::LogicalAnd => " and ",
+                            ast::Operator::LogicalOr => " or ",
+                            // Bitwise operators (Lua 5.3+)
+                            ast::Operator::BitwiseAnd => " & ",
+                            ast::Operator::BitwiseOr => " | ",
+                            ast::Operator::BitwiseXor => " ~ ",  // Note: In Lua 5.3, ~ is both unary NOT and binary XOR
+                            ast::Operator::LeftShift => " << ",
+                            ast::Operator::RightShift => " >> ",
+                        };
+                        
+                        write!(self.output, "{}", op_str)?;
+                        self.generate_expr_ref(*right_ref)?;
+                        write!(self.output, ")")?;
+                    }
+                }
                 Ok(())
             }
             ast::Expr::Call(func_name, args_ref) => {

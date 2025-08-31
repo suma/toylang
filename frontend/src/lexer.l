@@ -168,6 +168,16 @@ macro_rules! token {
 [0-9][A-Za-z_0-9]*      return Err(Error::Unmatch);
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 
+"/*"([^*]|"*"[^/])*"*/"  {
+                        let text = self.yytext();
+                        // Remove /* and */ from the comment text
+                        let comment_text = &text[2..text.len()-2];
+                        // Count newlines for line tracking
+                        let newline_count = comment_text.matches('\n').count();
+                        self.line_count += newline_count as u64;
+                        return Ok(token!(self, Kind::Comment(comment_text.to_string())));
+                    }
+
 "#".*               {
                         let mut text = self.yytext();
                         let drain = text.drain(1..);

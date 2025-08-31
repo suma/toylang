@@ -116,8 +116,8 @@ fn sum_range() -> u64 {
         println!("Generated Lua code:\n{}", lua_code);
         
         // Check for loop structure
-        assert!(lua_code.contains("for V_I = 0, 5 do"));
-        assert!(lua_code.contains("v_total = (v_total + V_I)"));
+        assert!(lua_code.contains("for V_I_1 = 0, 5 do"));
+        assert!(lua_code.contains("v_total = (v_total + V_I_1)"));
         assert!(lua_code.contains("end"));
         
         // Test execution - sum from 0 to 5 should be 15 (0+1+2+3+4+5)

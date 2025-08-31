@@ -65,16 +65,23 @@ cd interpreter && cargo clippy --all-targets --all-features
 
 Example program structure:
 ```rust
+/*
+ * Fibonacci sequence calculator
+ * Demonstrates recursive function implementation
+ */
 fn fib(n: u64) -> u64 {
+    # Check base cases
     if n <= 1u64 {
         n
     } else {
+        /* Recursive case: sum of two previous numbers */
         fib(n - 1u64) + fib(n - 2u64)
     }
 }
 
 fn main() -> u64 {
-    fib(6u64)
+    val result: u64 = /* Calculate 6th Fibonacci number */ fib(6u64)
+    result # Returns 8
 }
 ```
 
@@ -84,7 +91,11 @@ fn main() -> u64 {
 - Control flow: `if/else`, `for i in start to end`, `break`, `continue`
 - All programs must have a `main()` function
 - **No semicolons required**: Statements are separated by newlines, not semicolons
-- Use '#' symbol for single-line comment
+- **Comments**:
+  - Single-line comments: `# comment text`
+  - Multi-line comments: `/* comment text */` (C/Java/Rust style)
+  - Both comment types can be used inline or as standalone statements
+  - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
 
 ## Architecture Notes

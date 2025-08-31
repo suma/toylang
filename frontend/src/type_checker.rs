@@ -2605,18 +2605,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                 
                 match target_type {
                     TypeDecl::UInt64 => {
-                        if let Ok(val) = num_str.parse::<u64>() {
-                            *expr = Expr::UInt64(val);
+                        let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
+                            // Parse hexadecimal literal
+                            u64::from_str_radix(&num_str[2..], 16)
+                                .map_err(|_| TypeCheckError::conversion_error(num_str, "UInt64"))?
                         } else {
-                            return Err(TypeCheckError::conversion_error(num_str, "UInt64"));
-                        }
+                            // Parse decimal literal
+                            num_str.parse::<u64>()
+                                .map_err(|_| TypeCheckError::conversion_error(num_str, "UInt64"))?
+                        };
+                        *expr = Expr::UInt64(val);
                     },
                     TypeDecl::Int64 => {
-                        if let Ok(val) = num_str.parse::<i64>() {
-                            *expr = Expr::Int64(val);
+                        let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
+                            // Parse hexadecimal literal
+                            i64::from_str_radix(&num_str[2..], 16)
+                                .map_err(|_| TypeCheckError::conversion_error(num_str, "Int64"))?
                         } else {
-                            return Err(TypeCheckError::conversion_error(num_str, "Int64"));
-                        }
+                            // Parse decimal literal
+                            num_str.parse::<i64>()
+                                .map_err(|_| TypeCheckError::conversion_error(num_str, "Int64"))?
+                        };
+                        *expr = Expr::Int64(val);
                     },
                     _ => {
                         return Err(TypeCheckError::unsupported_operation("transform", target_type.clone()));

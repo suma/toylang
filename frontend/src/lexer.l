@@ -108,6 +108,55 @@ macro_rules! token {
                         }
                     }
 
+-?0[xX][0-9a-fA-F]+"i64"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let (is_negative, hex_str) = if s.starts_with("-") {
+                            (true, &s[3..]) // Skip "-0x" or "-0X"
+                        } else {
+                            (false, &s[2..]) // Skip "0x" or "0X"
+                        };
+                        match i64::from_str_radix(hex_str, 16) {
+                            Ok(value) => {
+                                let final_value = if is_negative { -value } else { value };
+                                return Ok(token!(self, Kind::Int64(final_value)))
+                            },
+                            Err(_) => {
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            }
+                        }
+                    }
+
+0[xX][0-9a-fA-F]+"u64"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let hex_str = &s[2..]; // Skip "0x" or "0X"
+                        match u64::from_str_radix(hex_str, 16) {
+                            Ok(value) => return Ok(token!(self, Kind::UInt64(value))),
+                            Err(_) => {
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            }
+                        }
+                    }
+
+0[xX][0-9a-fA-F]+   {
+                        let text = self.yytext();
+                        let hex_str = &text[2..]; // Skip "0x" or "0X"
+                        // Try to parse as u64 first for untyped hex literals
+                        match u64::from_str_radix(hex_str, 16) {
+                            Ok(value) => {
+                                // For untyped hex, we'll treat it as an integer string
+                                // and let the parser/type checker handle it
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            },
+                            Err(_) => {
+                                return Ok(token!(self, Kind::Integer(self.yytext())))
+                            }
+                        }
+                    }
+
 -?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
 
 \"[^"]*\"              {

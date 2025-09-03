@@ -1238,7 +1238,7 @@ fn main() -> u64 {
             }
             
             for (symbol, struct_name) in &type_info.struct_types {
-                let symbol_name = session.string_interner().resolve(symbol).unwrap_or("<unknown>");
+                let symbol_name = session.string_interner().resolve(*symbol).unwrap_or("<unknown>");
                 println!("Variable {} -> struct {}", symbol_name, struct_name);
             }
             

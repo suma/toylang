@@ -363,8 +363,8 @@ impl<'a> AstIntegrationContext<'a> {
         // Pool structures don't support direct element replacement
         // We need a different approach - rebuild with correct mappings
         // For now, create new Pool structures with remapped content
-        let mut new_expr_pool = ExprPool::new();
-        let mut new_stmt_pool = StmtPool::new();
+        let _new_expr_pool = ExprPool::new();
+        let _new_stmt_pool = StmtPool::new();
         
         // Copy existing content from main program first
         // This is a placeholder implementation - needs proper solution
@@ -372,8 +372,8 @@ impl<'a> AstIntegrationContext<'a> {
         for index in 0..self.module_program.expression.len() {
             let expr_ref = ExprRef(index as u32);
             if let Some(expr) = self.module_program.expression.get(&expr_ref) {
-                let remapped_expr = self.remap_expression(&expr)?;
-                let main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
+                let _remapped_expr = self.remap_expression(&expr)?;
+                let _main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
                 // TODO: Need to implement proper Pool update mechanism
             }
         }
@@ -382,8 +382,8 @@ impl<'a> AstIntegrationContext<'a> {
         for index in 0..self.module_program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
-                let remapped_stmt = self.remap_statement(&stmt)?;
-                let main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
+                let _remapped_stmt = self.remap_statement(&stmt)?;
+                let _main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
                 // TODO: Need to implement proper Pool update mechanism
             }
         }

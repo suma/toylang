@@ -107,7 +107,7 @@ impl ParserWithInterner {
             None => {
                 // Return reference to an empty pool - using thread_local for safety
                 thread_local! {
-                    static EMPTY_EXPR_POOL: ExprPool = ExprPool(Vec::new());
+                    static EMPTY_EXPR_POOL: ExprPool = ExprPool::new();
                 }
                 EMPTY_EXPR_POOL.with(|pool| unsafe { 
                     std::mem::transmute::<&ExprPool, &'static ExprPool>(pool) 
@@ -122,7 +122,7 @@ impl ParserWithInterner {
             None => {
                 // Return reference to an empty pool - using thread_local for safety
                 thread_local! {
-                    static EMPTY_STMT_POOL: StmtPool = StmtPool(Vec::new());
+                    static EMPTY_STMT_POOL: StmtPool = StmtPool::new();
                 }
                 EMPTY_STMT_POOL.with(|pool| unsafe { 
                     std::mem::transmute::<&StmtPool, &'static StmtPool>(pool) 

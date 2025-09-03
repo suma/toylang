@@ -1,7 +1,5 @@
 use frontend::type_checker::TypeCheckerVisitor;
 use frontend::type_decl::TypeDecl;
-use frontend::visitor::AstVisitor;
-use frontend::ast::StmtRef;
 
 /// Test helper function to parse and type check a source string
 fn parse_and_check(source: &str) -> Result<TypeDecl, String> {
@@ -11,7 +9,7 @@ fn parse_and_check(source: &str) -> Result<TypeDecl, String> {
     
     match parser.parse_program() {
         Ok(mut program) => {
-            if program.statement.0.is_empty() {
+            if program.statement.is_empty() {
                 return Err("No statements found".to_string());
             }
 

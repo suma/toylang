@@ -48,6 +48,8 @@ pub struct TypeCheckerVisitor<'a> {
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
+    // Track transformed expressions for Number -> concrete type conversions
+    pub transformed_exprs: HashMap<ExprRef, Expr>,
     // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
     pub builtin_methods: HashMap<(TypeDecl, String), BuiltinMethod>,
     // Builtin function signatures table
@@ -76,6 +78,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            transformed_exprs: std::collections::HashMap::new(),
         };
         
         // Process package and imports immediately
@@ -102,6 +105,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            transformed_exprs: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
         }
@@ -214,6 +218,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             imported_modules: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
+            transformed_exprs: std::collections::HashMap::new(),
         }
     }
     
@@ -361,9 +366,9 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         self.function_checking.call_depth += 1;
 
-        let statements = match self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))? {
+        let statements = match self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))? {
             Stmt::Expression(e) => {
-                match self.core.expr_pool.0.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))? {
+                match self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))? {
                     Expr::Block(statements) => {
                         statements.clone()  // Clone required: statements is used in multiple loops and we need mutable access to self
                     }
@@ -384,7 +389,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
         for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(s.to_index()) {
+            if let Some(stmt) = self.core.stmt_pool.get(&s) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
                         if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
@@ -407,7 +412,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         for stmt in statements.iter() {
-            let stmt_obj = self.core.stmt_pool.get(stmt.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+            let stmt_obj = self.core.stmt_pool.get(&stmt).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
             let res = stmt_obj.clone().accept(self);
             if res.is_err() {
                 return res;
@@ -423,6 +428,9 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Final pass: convert any remaining Number literals to default type (UInt64)
         self.finalize_number_types()?;
+        
+        // Apply all accumulated expression transformations
+        self.apply_expr_transformations();
         
         // Check if the function body type matches the declared return type
         if let Some(ref expected_return_type) = func.return_type {
@@ -516,7 +524,7 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         }
         
         // Process all statements in the program (this includes StructDecl and ImplBlock)
-        for (index, _stmt) in program.statement.0.iter().enumerate() {
+        for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             self.visit_stmt(&stmt_ref)?;
         }
@@ -598,7 +606,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
-        let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+        let expr_obj = self.core.expr_pool.get(&expr).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
         
         
         let result = expr_obj.clone().accept(self);
@@ -633,7 +641,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        let result = self.core.stmt_pool.get(stmt.to_index()).unwrap_or(&Stmt::Break).clone().accept(self);
+        let result = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break).clone().accept(self);
         
         // If an error occurred, try to add location information if not already present
         match result {
@@ -653,7 +661,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let op = op.clone();
         let operand = operand.clone();
         let operand_ty = {
-            let operand_obj = self.core.expr_pool.get(operand.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
+            let operand_obj = self.core.expr_pool.get(&operand).ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
             operand_obj.clone().accept(self)?
         };
         
@@ -709,11 +717,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let lhs = lhs.clone();
         let rhs = rhs.clone();
         let lhs_ty = {
-            let lhs_obj = self.core.expr_pool.get(lhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+            let lhs_obj = self.core.expr_pool.get(&lhs).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
             lhs_obj.clone().accept(self)?
         };
         let rhs_ty = {
-            let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+            let rhs_obj = self.core.expr_pool.get(&rhs).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept(self)?
         };
         
@@ -882,7 +890,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Pre-scan for explicit type declarations and establish global type context
         let mut global_numeric_type: Option<TypeDecl> = None;
         for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(s.to_index()) {
+            if let Some(stmt) = self.core.stmt_pool.get(&s) {
                 match stmt {
                     Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
                         if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
@@ -904,13 +912,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            let stmt = self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
+            let stmt = self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
             let stmt_type = match stmt {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
                         let e = e.clone();
-                        let expr_obj = self.core.expr_pool.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+                        let expr_obj = self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
                         let ty = expr_obj.clone().accept(self)?;
                         if last_empty {
                             last_empty = false;
@@ -929,7 +937,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     }
                 }
                 _ => {
-                    let stmt_obj = self.core.stmt_pool.get(s.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
+                    let stmt_obj = self.core.stmt_pool.get(&s).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
                     stmt_obj.clone().accept(self)
                 }
             };
@@ -957,12 +965,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
         // Check if-block
         let if_block = then_block.clone();
-        let is_if_empty = match self.core.expr_pool.get(if_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))? {
+        let is_if_empty = match self.core.expr_pool.get(&if_block).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_if_empty {
-            let if_expr = self.core.expr_pool.get(if_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))?;
+            let if_expr = self.core.expr_pool.get(&if_block).ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))?;
             let if_ty = if_expr.clone().accept(self)?;
             block_types.push(if_ty);
         }
@@ -970,12 +978,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Check elif-blocks
         for (_, elif_block) in elif_pairs {
             let elif_block = elif_block.clone();
-            let is_elif_empty = match self.core.expr_pool.get(elif_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))? {
+            let is_elif_empty = match self.core.expr_pool.get(&elif_block).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))? {
                 Expr::Block(expressions) => expressions.is_empty(),
                 _ => false,
             };
             if !is_elif_empty {
-                let elif_expr = self.core.expr_pool.get(elif_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))?;
+                let elif_expr = self.core.expr_pool.get(&elif_block).ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))?;
                 let elif_ty = elif_expr.clone().accept(self)?;
                 block_types.push(elif_ty);
             }
@@ -983,12 +991,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
         // Check else-block
         let else_block = else_block.clone();
-        let is_else_empty = match self.core.expr_pool.get(else_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))? {
+        let is_else_empty = match self.core.expr_pool.get(&else_block).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
             _ => false,
         };
         if !is_else_empty {
-            let else_expr = self.core.expr_pool.get(else_block.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))?;
+            let else_expr = self.core.expr_pool.get(&else_block).ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))?;
             let else_ty = else_expr.clone().accept(self)?;
             block_types.push(else_ty);
         }
@@ -1013,11 +1021,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let lhs = lhs.clone();
         let rhs = rhs.clone();
         let lhs_ty = {
-            let lhs_obj = self.core.expr_pool.get(lhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
+            let lhs_obj = self.core.expr_pool.get(&lhs).ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
             lhs_obj.clone().accept(self)?
         };
         let rhs_ty = {
-            let rhs_obj = self.core.expr_pool.get(rhs.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
+            let rhs_obj = self.core.expr_pool.get(&rhs).ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept(self)?
         };
         // Allow assignment compatibility
@@ -1074,7 +1082,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
             // Type check function arguments with proper type hints
             // Clone data we need to avoid borrowing conflicts
-            let args_data = if let Some(args_expr) = self.core.expr_pool.get(args_ref.to_index()) {
+            let args_data = if let Some(args_expr) = self.core.expr_pool.get(&args_ref) {
                 if let Expr::ExprList(args) = args_expr {
                     Some(args.clone())
                 } else {
@@ -1647,7 +1655,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let expr_obj = self.core.expr_pool.get(expr.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
+        let expr_obj = self.core.expr_pool.get(&expr).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
         expr_obj.clone().accept(self)
     }
 
@@ -1688,7 +1696,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             Ok(TypeDecl::Unit)
         } else {
             let e = expr.as_ref().ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
-            let expr_obj = self.core.expr_pool.get(e.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
+            let expr_obj = self.core.expr_pool.get(&e).ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
             let return_type = expr_obj.clone().accept(self)?;
             Ok(return_type)
         }
@@ -1700,11 +1708,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
-        let range_obj = self.core.expr_pool.get(range.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
+        let range_obj = self.core.expr_pool.get(&range).ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
         let range_ty = range_obj.clone().accept(self)?;
         let ty = Some(range_ty);
         self.process_val_type(init, &ty, &Some(*range))?;
-        let body_obj = self.core.expr_pool.get(body.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
+        let body_obj = self.core.expr_pool.get(&body).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
         let res = body_obj.clone().accept(self);
         self.pop_context();
         res
@@ -1712,7 +1720,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first
-        let cond_obj = self.core.expr_pool.get(cond.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
+        let cond_obj = self.core.expr_pool.get(&cond).ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
         let cond_type = cond_obj.clone().accept(self)?;
         
         // Verify condition is boolean
@@ -1722,7 +1730,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Create new scope for while body
         self.push_context();
-        let body_obj = self.core.expr_pool.get(body.to_index()).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
+        let body_obj = self.core.expr_pool.get(&body).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
         let res = body_obj.clone().accept(self);
         self.pop_context();
         res
@@ -2289,7 +2297,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         actual_type if actual_type == expected_element_type => {
                             // Element already has the expected type, but may need AST transformation
                             // Check if this is a number literal that needs transformation
-                            if let Some(expr) = self.core.expr_pool.get(element.to_index()) {
+                            if let Some(expr) = self.core.expr_pool.get(&element) {
                                 if matches!(expr, Expr::Number(_)) {
                                     self.transform_numeric_expr(element, expected_element_type)?;
                                 }
@@ -2559,7 +2567,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else if let Some(decl) = type_decl {
             if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && *expr_ty == *decl {
                 // Expression returned the hinted type, transform Number literals to concrete type
-                if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+                if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
                     if let Expr::Number(_) = expr {
                         self.transform_numeric_expr(expr_ref, decl)?;
                     }
@@ -2598,12 +2606,14 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     // Transform Expr::Number nodes to concrete types based on resolved types
     fn transform_numeric_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get_mut(expr_ref.to_index()) {
+        // Get the expression from the pool
+        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
             if let Expr::Number(value) = expr {
-                let num_str = self.core.string_interner.resolve(*value)
+                let num_str = self.core.string_interner.resolve(value)
                     .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;
                 
-                match target_type {
+                // Create the new expression based on target type
+                let new_expr = match target_type {
                     TypeDecl::UInt64 => {
                         let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
                             // Parse hexadecimal literal
@@ -2614,7 +2624,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                             num_str.parse::<u64>()
                                 .map_err(|_| TypeCheckError::conversion_error(num_str, "UInt64"))?
                         };
-                        *expr = Expr::UInt64(val);
+                        Expr::UInt64(val)
                     },
                     TypeDecl::Int64 => {
                         let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
@@ -2626,24 +2636,37 @@ impl<'a> TypeCheckerVisitor<'a> {
                             num_str.parse::<i64>()
                                 .map_err(|_| TypeCheckError::conversion_error(num_str, "Int64"))?
                         };
-                        *expr = Expr::Int64(val);
+                        Expr::Int64(val)
                     },
                     _ => {
                         return Err(TypeCheckError::unsupported_operation("transform", target_type.clone()));
                     }
-                }
+                };
+                
+                // Replace the expression in the pool with the new one
+                // Since we can't modify the pool directly with the new API,
+                // we need to track this transformation separately
+                self.transformed_exprs.insert(*expr_ref, new_expr);
             }
         }
         Ok(())
     }
 
+    // Apply all accumulated expression transformations to the expression pool
+    fn apply_expr_transformations(&mut self) {
+        for (expr_ref, new_expr) in &self.transformed_exprs.clone() {
+            self.core.expr_pool.update(expr_ref, new_expr.clone());
+        }
+        self.transformed_exprs.clear();
+    }
+
     // Update variable type in context if identifier was type-converted
     fn update_identifier_types(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
                 if let Expr::Identifier(name) = expr {
                     // Update the variable's type
-                    self.context.update_var_type(*name, resolved_ty.clone());
+                    self.context.update_var_type(name, resolved_ty.clone());
                 }
             }
         }
@@ -2653,17 +2676,17 @@ impl<'a> TypeCheckerVisitor<'a> {
     // Record Number usage context for both identifiers and direct Number literals
     fn record_number_usage_context(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
         if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
                 match expr {
                     Expr::Identifier(name) => {
                         // Find all Number expressions that might belong to this variable
                         // and record the context type
                         for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(i) {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
                                 if let Expr::Number(_) = candidate_expr {
                                     let candidate_ref = ExprRef(i as u32);
                                     // Check if this Number might be associated with this variable
-                                    if self.is_number_for_variable(*name, &candidate_ref) {
+                                    if self.is_number_for_variable(name, &candidate_ref) {
                                         self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
                                     }
                                 }
@@ -2684,7 +2707,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     // Check if an expression contains Number literals
     fn has_number_in_expr(&self, expr_ref: &ExprRef) -> bool {
-        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
             match expr {
                 Expr::Number(_) => true,
                 _ => false, // For now, only check direct Number literals
@@ -2707,7 +2730,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn is_old_number_for_variable(&self, _var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
         // Check if this Number expression was previously mapped to this variable
         // This is used for cleanup when variables are redefined
-        if let Some(expr) = self.core.expr_pool.get(number_expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(&number_expr_ref) {
             if let Expr::Number(_) = expr {
                 // For now, we'll be conservative and remove all Number contexts when variables are redefined
                 return true;
@@ -2718,19 +2741,19 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     // Propagate concrete type to Number variable immediately
     fn propagate_to_number_variable(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
             if let Expr::Identifier(name) = expr {
-                if let Some(var_type) = self.context.get_var(*name) {
+                if let Some(var_type) = self.context.get_var(name) {
                     if var_type == TypeDecl::Number {
                         // Find and record the Number expression for this variable
                         for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(i) {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
                                 if let Expr::Number(_) = candidate_expr {
                                     let candidate_ref = ExprRef(i as u32);
-                                    if self.is_number_for_variable(*name, &candidate_ref) {
+                                    if self.is_number_for_variable(name, &candidate_ref) {
                                         self.type_inference.number_usage_context.push((candidate_ref, target_type.clone()));
                                         // Update variable type in context
-                                        self.context.update_var_type(*name, target_type.clone());
+                                        self.context.update_var_type(name, target_type.clone());
                                     }
                                 }
                             }
@@ -2747,7 +2770,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Use recorded context information to transform Number expressions
         let context_info = self.type_inference.number_usage_context.clone();
         for (expr_ref, target_type) in &context_info {
-            if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
                 if let Expr::Number(_) = expr {
                     self.transform_numeric_expr(&expr_ref, &target_type)?;
                     
@@ -2764,7 +2787,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Second pass: handle any remaining Number types by using variable context
         let expr_len = self.core.expr_pool.len();
         for i in 0..expr_len {
-            if let Some(expr) = self.core.expr_pool.get(i) {
+            if let Some(expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
                 if let Expr::Number(_) = expr {
                     let expr_ref = ExprRef(i as u32);
                     
@@ -2851,15 +2874,15 @@ impl<'a> TypeCheckerVisitor<'a> {
     
     // Propagate type to Number expression and associated variables
     fn propagate_type_to_number_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get(expr_ref.to_index()) {
+        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
             match expr {
                 Expr::Identifier(name) => {
                     // If this is an identifier with Number type, update it
-                    if let Some(var_type) = self.context.get_var(*name) {
+                    if let Some(var_type) = self.context.get_var(name) {
                         if var_type == TypeDecl::Number {
-                            self.context.update_var_type(*name, target_type.clone());
+                            self.context.update_var_type(name, target_type.clone());
                             // Also record for Number expression transformation
-                            if let Some(mapped_expr) = self.type_inference.variable_expr_mapping.get(name) {
+                            if let Some(mapped_expr) = self.type_inference.variable_expr_mapping.get(&name) {
                                 self.type_inference.number_usage_context.push((mapped_expr.clone(), target_type.clone()));
                             }
                         }
@@ -2905,6 +2928,7 @@ mod tests {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            transformed_exprs: HashMap::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
         }
     }
@@ -3464,7 +3488,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         
-        for (index, _stmt) in program.statement.0.iter().enumerate() {
+        for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
             if let Err(e) = self.visit_stmt(&stmt_ref) {
                 self.errors.push(e);
@@ -3520,9 +3544,9 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Returns Some(TypeDecl) if it's a valid module qualified name, None if it's a regular field access
     pub fn try_resolve_module_qualified_name(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<Option<TypeDecl>, TypeCheckError> {
         // Check if obj is an identifier that matches an imported module
-        if let Some(obj_expr) = self.core.expr_pool.0.get(obj.to_index()) {
+        if let Some(obj_expr) = self.core.expr_pool.get(&obj) {
             if let Expr::Identifier(module_symbol) = obj_expr {
-                let module_alias = vec![*module_symbol];
+                let module_alias = vec![module_symbol];
                 
                 // Check if this identifier matches an imported module
                 if let Some(full_module_path) = self.imported_modules.get(&module_alias) {

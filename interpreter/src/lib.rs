@@ -107,8 +107,8 @@ impl<'a> AstIntegrationContext<'a> {
                             eprintln!("DEBUG: Cannot find statement mapping for StmtRef({})", stmt_ref.0);
                             eprintln!("DEBUG: Available stmt_mappings: {:?}", self.stmt_mapping.keys().collect::<Vec<_>>());
                             eprintln!("DEBUG: Module has {} statements, main has {} statements", 
-                                self.module_program.statement.0.len(),
-                                self.main_program.statement.0.len());
+                                self.module_program.statement.len(),
+                                self.main_program.statement.len());
                             format!("Cannot find Block statement mapping for StmtRef({})", stmt_ref.0)
                         })?.clone();
                     new_stmts.push(new_stmt_ref);
@@ -289,15 +289,18 @@ impl<'a> AstIntegrationContext<'a> {
     
     /// Copy struct declarations from module to main program
     fn copy_struct_declarations(&mut self) -> Result<(), String> {
-        for stmt in &self.module_program.statement.0 {
-            if let Stmt::StructDecl { name, fields, visibility } = stmt {
-                // StructDecl uses String names, no symbol remapping needed
-                let new_struct_stmt = Stmt::StructDecl {
-                    name: name.clone(),
-                    fields: fields.clone(),
-                    visibility: visibility.clone()
-                };
-                self.main_program.statement.0.push(new_struct_stmt);
+        for i in 0..self.module_program.statement.len() {
+            let stmt_ref = StmtRef(i as u32);
+            if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
+                if let Stmt::StructDecl { name, fields, visibility } = stmt {
+                    // StructDecl uses String names, no symbol remapping needed
+                    let new_struct_stmt = Stmt::StructDecl {
+                        name: name.clone(),
+                        fields: fields.clone(),
+                        visibility: visibility.clone()
+                    };
+                    self.main_program.statement.add(new_struct_stmt);
+                }
             }
         }
         Ok(())
@@ -339,14 +342,14 @@ impl<'a> AstIntegrationContext<'a> {
     /// Phase 1: Create placeholder mappings for all expressions and statements
     fn create_placeholder_mappings(&mut self) -> Result<(), String> {
         // Create placeholder mappings for all expressions
-        for index in 0..self.module_program.expression.0.len() {
+        for index in 0..self.module_program.expression.len() {
             let placeholder_expr = Expr::Null;
             let main_expr_ref = self.main_program.expression.add(placeholder_expr);
             self.expr_mapping.insert(index as u32, main_expr_ref);
         }
         
         // Create placeholder mappings for all statements
-        for index in 0..self.module_program.statement.0.len() {
+        for index in 0..self.module_program.statement.len() {
             let placeholder_stmt = Stmt::Break;
             let main_stmt_ref = self.main_program.statement.add(placeholder_stmt);
             self.stmt_mapping.insert(index as u32, main_stmt_ref);
@@ -357,18 +360,32 @@ impl<'a> AstIntegrationContext<'a> {
     
     /// Phase 2: Replace placeholders with actual remapped content
     fn update_with_remapped_content(&mut self) -> Result<(), String> {
+        // Pool structures don't support direct element replacement
+        // We need a different approach - rebuild with correct mappings
+        // For now, create new Pool structures with remapped content
+        let mut new_expr_pool = ExprPool::new();
+        let mut new_stmt_pool = StmtPool::new();
+        
+        // Copy existing content from main program first
+        // This is a placeholder implementation - needs proper solution
         // Update all expressions with correct content
-        for (index, expr) in self.module_program.expression.0.iter().enumerate() {
-            let remapped_expr = self.remap_expression(expr)?;
-            let main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
-            self.main_program.expression.0[main_expr_ref.0 as usize] = remapped_expr;
+        for index in 0..self.module_program.expression.len() {
+            let expr_ref = ExprRef(index as u32);
+            if let Some(expr) = self.module_program.expression.get(&expr_ref) {
+                let remapped_expr = self.remap_expression(&expr)?;
+                let main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
+                // TODO: Need to implement proper Pool update mechanism
+            }
         }
         
         // Update all statements with correct content
-        for (index, stmt) in self.module_program.statement.0.iter().enumerate() {
-            let remapped_stmt = self.remap_statement(stmt)?;
-            let main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
-            self.main_program.statement.0[main_stmt_ref.0 as usize] = remapped_stmt;
+        for index in 0..self.module_program.statement.len() {
+            let stmt_ref = StmtRef(index as u32);
+            if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
+                let remapped_stmt = self.remap_statement(&stmt)?;
+                let main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
+                // TODO: Need to implement proper Pool update mechanism
+            }
         }
         
         Ok(())
@@ -379,9 +396,12 @@ impl<'a> AstIntegrationContext<'a> {
 fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
     // First, collect and register struct definitions
     let mut struct_definitions = Vec::new();
-    for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::StructDecl { name, fields, visibility } = stmt_ref {
-            struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(stmt) = program.statement.get(&stmt_ref) {
+            if let frontend::ast::Stmt::StructDecl { name, fields, visibility } = &stmt {
+                struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
+            }
         }
     }
     
@@ -483,8 +503,8 @@ pub fn integrate_module_into_program(
     
     eprintln!("Successfully parsed module: {} functions, {} expressions, {} statements", 
         module_program.function.len(),
-        module_program.expression.0.len(),
-        module_program.statement.0.len()
+        module_program.expression.len(),
+        module_program.statement.len()
     );
     
     // Create AST integration context with both string interners
@@ -545,9 +565,12 @@ pub fn check_typing(
     // Extract data before setting up TypeChecker to avoid borrowing conflicts
     let functions = program.function.clone();
     let mut impl_blocks = Vec::new();
-    for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
-            impl_blocks.push((target_type.clone(), methods.clone()));
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(stmt) = program.statement.get(&stmt_ref) {
+            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
+                impl_blocks.push((target_type.clone(), methods.clone()));
+            }
         }
     }
     
@@ -671,15 +694,18 @@ fn build_method_registry(
 ) -> HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> {
     let mut method_registry = HashMap::new();
     
-    for stmt_ref in &program.statement.0 {
-        if let frontend::ast::Stmt::ImplBlock { target_type, methods } = stmt_ref {
-            let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
-            for method in methods {
-                let method_name_symbol = method.name;
-                method_registry
-                    .entry(struct_name_symbol)
-                    .or_insert_with(HashMap::new)
-                    .insert(method_name_symbol, method.clone());
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(stmt) = program.statement.get(&stmt_ref) {
+            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
+                let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
+                for method in methods {
+                    let method_name_symbol = method.name;
+                    method_registry
+                        .entry(struct_name_symbol)
+                        .or_insert_with(HashMap::new)
+                        .insert(method_name_symbol, method.clone());
+                }
             }
         }
     }

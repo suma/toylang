@@ -156,9 +156,9 @@ impl<'a> LuaCodeGenerator<'a> {
                 }
             } else {
                 // Try to resolve via variable mapping
-                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                let expr = self.program.expression.get(&expr_ref).unwrap();
                 if let ast::Expr::Identifier(var_symbol) = expr {
-                    if let Some(struct_type) = type_info.struct_types.get(var_symbol) {
+                    if let Some(struct_type) = type_info.struct_types.get(&var_symbol) {
                         return Some(struct_type.clone());
                     }
                 }
@@ -174,15 +174,15 @@ impl<'a> LuaCodeGenerator<'a> {
     
     /// Try to infer struct type from expression structure (fallback method)
     fn infer_struct_type_from_expr(&self, expr_ref: ast::ExprRef) -> Option<String> {
-        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        let expr = self.program.expression.get(&expr_ref).unwrap();
         match expr {
             ast::Expr::Identifier(var_symbol) => {
                 // Try to trace this identifier back to its definition
-                self.find_variable_struct_type(*var_symbol)
+                self.find_variable_struct_type(var_symbol)
             }
             ast::Expr::StructLiteral(type_name, _fields) => {
                 // Direct struct literal, we know the type
-                Some(self.interner.resolve(*type_name).unwrap_or("<unknown>").to_string())
+                Some(self.interner.resolve(type_name).unwrap_or("<unknown>").to_string())
             }
             _ => None
         }
@@ -200,28 +200,22 @@ impl<'a> LuaCodeGenerator<'a> {
         }
 
         // First generate struct declarations and impl blocks
-        for (_index, stmt) in self.program.statement.0.iter().enumerate() {
-            match stmt {
-                ast::Stmt::StructDecl { .. } => {
-                    self.generate_stmt(stmt)?;
-                    self.writeln("")?;
-                }
-                ast::Stmt::ImplBlock { target_type, methods } => {
-                    // Debug: print what methods are in this impl block
-                    #[cfg(test)]
-                    {
-                        println!("ImplBlock for {}: {} methods", target_type, methods.len());
-                        for method in methods {
-                            let method_name = self.interner.resolve(method.name).unwrap_or("<unknown>");
-                            println!("  - Method: {}", method_name);
-                        }
+        for index in 0..self.program.statement.stmt_types.len() {
+            if let Some(stmt) = self.program.statement.get(&ast::StmtRef(index as u32)) {
+                match stmt {
+                    ast::Stmt::StructDecl { .. } => {
+                        self.generate_stmt(&stmt)?;
+                        self.writeln("")?;
                     }
-                    
-                    self.generate_stmt(stmt)?;
-                    self.writeln("")?;
-                }
-                _ => {
-                    // Skip other statement types at program level for now
+                    ast::Stmt::ImplBlock { target_type: _, methods: _ } => {
+                        // Skip ImplBlock statements at program level
+                        
+                        self.generate_stmt(&stmt)?;
+                        self.writeln("")?;
+                    }
+                    _ => {
+                        // Skip other statement types at program level for now
+                    }
                 }
             }
         }
@@ -231,10 +225,10 @@ impl<'a> LuaCodeGenerator<'a> {
         println!("Generating {} independent functions", self.program.function.len());
         
         for function in &self.program.function {
-            let func_name = self.interner.resolve(function.name).unwrap_or("<unknown>");
+            let _func_name = self.interner.resolve(function.name).unwrap_or("<unknown>");
             
             #[cfg(test)]
-            println!("Generating function: {}", func_name);
+            println!("Generating function: {}", _func_name);
             
             self.generate_function(function)?;
             self.writeln("")?;
@@ -246,15 +240,17 @@ impl<'a> LuaCodeGenerator<'a> {
     /// Find the struct type of a variable by searching through statements
     fn find_variable_struct_type(&self, var_symbol: DefaultSymbol) -> Option<String> {
         // Search through all statements for val/var declarations
-        for stmt in &self.program.statement.0 {
-            match stmt {
-                ast::Stmt::Val(name, _type_decl, expr_ref) if *name == var_symbol => {
-                    return self.extract_struct_type_from_assignment(*expr_ref);
+        for index in 0..self.program.statement.stmt_types.len() {
+            if let Some(stmt) = self.program.statement.get(&ast::StmtRef(index as u32)) {
+                match stmt {
+                    ast::Stmt::Val(name, _type_decl, expr_ref) if name == var_symbol => {
+                        return self.extract_struct_type_from_assignment(expr_ref);
+                    }
+                    ast::Stmt::Var(name, _type_decl, Some(expr_ref)) if name == var_symbol => {
+                        return self.extract_struct_type_from_assignment(expr_ref);
+                    }
+                    _ => {}
                 }
-                ast::Stmt::Var(name, _type_decl, Some(expr_ref)) if *name == var_symbol => {
-                    return self.extract_struct_type_from_assignment(*expr_ref);
-                }
-                _ => {}
             }
         }
         
@@ -270,14 +266,14 @@ impl<'a> LuaCodeGenerator<'a> {
     
     /// Extract struct type from an assignment expression
     fn extract_struct_type_from_assignment(&self, expr_ref: ast::ExprRef) -> Option<String> {
-        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        let expr = self.program.expression.get(&expr_ref).unwrap();
         match expr {
             ast::Expr::StructLiteral(type_name, _fields) => {
-                Some(self.interner.resolve(*type_name).unwrap_or("<unknown>").to_string())
+                Some(self.interner.resolve(type_name).unwrap_or("<unknown>").to_string())
             }
             ast::Expr::Call(func_name, _args) => {
                 // Check if this is a qualified call like Point::new
-                let func_str = self.interner.resolve(*func_name).unwrap_or("");
+                let func_str = self.interner.resolve(func_name).unwrap_or("");
                 if func_str == "new" {
                     // This is likely a constructor call - try to infer from context
                     // For now, return None to use fallback
@@ -292,19 +288,19 @@ impl<'a> LuaCodeGenerator<'a> {
     
     /// Search for variable definition within a function body
     fn find_variable_in_function_body(&self, var_symbol: DefaultSymbol, stmt_ref: ast::StmtRef) -> Option<String> {
-        let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+        let stmt = self.program.statement.get(&stmt_ref).unwrap();
         match stmt {
             ast::Stmt::Expression(expr_ref) => {
-                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                let expr = self.program.expression.get(&expr_ref).unwrap();
                 if let ast::Expr::Block(stmt_refs) = expr {
                     for inner_stmt_ref in stmt_refs {
-                        let inner_stmt = &self.program.statement.0[inner_stmt_ref.0 as usize];
+                        let inner_stmt = self.program.statement.get(&inner_stmt_ref).unwrap();
                         match inner_stmt {
-                            ast::Stmt::Val(name, _type_decl, assign_expr) if *name == var_symbol => {
-                                return self.extract_struct_type_from_assignment(*assign_expr);
+                            ast::Stmt::Val(name, _type_decl, assign_expr) if name == var_symbol => {
+                                return self.extract_struct_type_from_assignment(assign_expr);
                             }
-                            ast::Stmt::Var(name, _type_decl, Some(assign_expr)) if *name == var_symbol => {
-                                return self.extract_struct_type_from_assignment(*assign_expr);
+                            ast::Stmt::Var(name, _type_decl, Some(assign_expr)) if name == var_symbol => {
+                                return self.extract_struct_type_from_assignment(assign_expr);
                             }
                             _ => {}
                         }
@@ -344,26 +340,26 @@ impl<'a> LuaCodeGenerator<'a> {
     
     /// Generate a statement reference as a function body (with proper return handling)
     fn generate_stmt_ref_as_body(&mut self, stmt_ref: ast::StmtRef) -> Result<(), LuaGenError> {
-        let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+        let stmt = self.program.statement.get(&stmt_ref).unwrap();
         match stmt {
             ast::Stmt::Expression(expr_ref) => {
-                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                let expr = self.program.expression.get(&expr_ref).unwrap();
                 match expr {
                     ast::Expr::Block(stmt_refs) => {
                         // Block: generate its contents as statements with proper return for last
                         for (i, inner_stmt_ref) in stmt_refs.iter().enumerate() {
                             if i == stmt_refs.len() - 1 {
                                 // Last statement in block: should return its value if it's an expression
-                                let last_stmt = &self.program.statement.0[inner_stmt_ref.0 as usize];
+                                let last_stmt = self.program.statement.get(inner_stmt_ref).unwrap();
                                 match last_stmt {
                                     ast::Stmt::Expression(last_expr_ref) => {
                                         self.write_indent()?;
                                         write!(self.output, "return ")?;
-                                        self.generate_expr_ref(*last_expr_ref)?;
+                                        self.generate_expr_ref(last_expr_ref)?;
                                         writeln!(self.output)?;
                                     }
                                     _ => {
-                                        self.generate_stmt(last_stmt)?;
+                                        self.generate_stmt(&last_stmt)?;
                                     }
                                 }
                             } else {
@@ -375,14 +371,14 @@ impl<'a> LuaCodeGenerator<'a> {
                         // Single expression: add return
                         self.write_indent()?;
                         write!(self.output, "return ")?;
-                        self.generate_expr_ref(*expr_ref)?;
+                        self.generate_expr_ref(expr_ref)?;
                         writeln!(self.output)?;
                     }
                 }
             }
             _ => {
                 // Other statements: generate normally (could be Return, etc.)
-                self.generate_stmt(stmt)?;
+                self.generate_stmt(&stmt)?;
             }
         }
         Ok(())
@@ -391,7 +387,7 @@ impl<'a> LuaCodeGenerator<'a> {
 
     /// Generate expression for if/else context - no indentation or newlines
     fn generate_expr_ref_for_if_else(&mut self, expr_ref: ast::ExprRef) -> Result<(), LuaGenError> {
-        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        let expr = self.program.expression.get(&expr_ref).unwrap();
         match expr {
             // Block expressions - extract the final expression value
             ast::Expr::Block(stmt_refs) => {
@@ -399,10 +395,10 @@ impl<'a> LuaCodeGenerator<'a> {
                     write!(self.output, "nil")?;
                 } else if stmt_refs.len() == 1 {
                     // Single statement block - extract the value directly
-                    let stmt = &self.program.statement.0[stmt_refs[0].0 as usize];
+                    let stmt = self.program.statement.get(&stmt_refs[0]).unwrap();
                     match stmt {
                         ast::Stmt::Expression(expr_ref) => {
-                            self.generate_expr_ref(*expr_ref)?;
+                            self.generate_expr_ref(expr_ref)?;
                         }
                         _ => {
                             write!(self.output, "nil")?;
@@ -413,15 +409,15 @@ impl<'a> LuaCodeGenerator<'a> {
                     write!(self.output, "(function() ")?;
                     for (i, stmt_ref) in stmt_refs.iter().enumerate() {
                         if i == stmt_refs.len() - 1 {
-                            let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                            let stmt = self.program.statement.get(stmt_ref).unwrap();
                             match stmt {
                                 ast::Stmt::Expression(expr_ref) => {
                                     write!(self.output, " return ")?;
-                                    self.generate_expr_ref(*expr_ref)?;
+                                    self.generate_expr_ref(expr_ref)?;
                                 }
                                 _ => {
                                     write!(self.output, " ")?;
-                                    self.generate_stmt(stmt)?;
+                                    self.generate_stmt(&stmt)?;
                                     write!(self.output, " return nil")?;
                                 }
                             }
@@ -433,33 +429,33 @@ impl<'a> LuaCodeGenerator<'a> {
                     write!(self.output, " end)()")?;
                 }
             }
-            _ => self.generate_expr(expr)?
+            _ => self.generate_expr(&expr)?
         }
         Ok(())
     }
 
     fn generate_stmt_ref(&mut self, stmt_ref: ast::StmtRef) -> Result<(), LuaGenError> {
-        let stmt = &self.program.statement.0[stmt_ref.0 as usize];
-        self.generate_stmt(stmt)
+        let stmt = self.program.statement.get(&stmt_ref).unwrap();
+        self.generate_stmt(&stmt)
     }
 
     fn generate_stmt(&mut self, stmt: &ast::Stmt) -> Result<(), LuaGenError> {
         match stmt {
             ast::Stmt::Expression(expr_ref) => {
                 // Check if this is an assignment that can be simplified
-                let expr = &self.program.expression.0[expr_ref.0 as usize];
+                let expr = self.program.expression.get(expr_ref).unwrap();
                 if let ast::Expr::Assign(lhs_ref, rhs_ref) = expr {
                     // Generate assignment as a statement, not expression
                     self.write_indent()?;
-                    self.generate_expr_ref(*lhs_ref)?;
+                    self.generate_expr_ref(lhs_ref)?;
                     write!(self.output, " = ")?;
-                    self.generate_expr_ref(*rhs_ref)?;
+                    self.generate_expr_ref(rhs_ref)?;
                     writeln!(self.output)?;
                 } else {
                     // For non-assignment expressions used as statements,
                     // we need to handle them appropriately in Lua.
                     // Simple expressions like identifiers should be ignored as they have no side effects
-                    let expr = &self.program.expression.0[expr_ref.0 as usize];
+                    let expr = self.program.expression.get(expr_ref).unwrap();
                     match expr {
                         // Call expressions should be executed as statements
                         ast::Expr::Call(_, _) => {
@@ -532,10 +528,10 @@ impl<'a> LuaCodeGenerator<'a> {
                 
                 self.indent_level += 1;
                 // Generate the loop body
-                let block_stmt = &self.program.expression.0[block_expr.0 as usize];
+                let block_stmt = self.program.expression.get(block_expr).unwrap();
                 if let ast::Expr::Block(stmt_refs) = block_stmt {
                     for stmt_ref in stmt_refs {
-                        self.generate_stmt_ref(*stmt_ref)?;
+                        self.generate_stmt_ref(stmt_ref)?;
                     }
                 }
                 self.indent_level -= 1;
@@ -559,10 +555,10 @@ impl<'a> LuaCodeGenerator<'a> {
                 
                 self.indent_level += 1;
                 // Generate the loop body
-                let block_stmt = &self.program.expression.0[block_expr.0 as usize];
+                let block_stmt = self.program.expression.get(block_expr).unwrap();
                 if let ast::Expr::Block(stmt_refs) = block_stmt {
                     for stmt_ref in stmt_refs {
-                        self.generate_stmt_ref(*stmt_ref)?;
+                        self.generate_stmt_ref(stmt_ref)?;
                     }
                 }
                 self.indent_level -= 1;
@@ -611,7 +607,7 @@ impl<'a> LuaCodeGenerator<'a> {
                 writeln!(self.output, "end")?;
                 Ok(())
             }
-            ast::Stmt::ImplBlock { target_type, methods } => {
+            ast::Stmt::ImplBlock { ref target_type, ref methods } => {
                 // Generate method implementations as separate functions with StructType_method naming
                 for method in methods {
                     let method_name = self.interner.resolve(method.name).unwrap_or("<unknown>");
@@ -655,19 +651,19 @@ impl<'a> LuaCodeGenerator<'a> {
                 }
                 Ok(())
             }
-            _ => Err(LuaGenError::UnsupportedStatement(format!("{:?}", stmt))),
+            // Removed unreachable pattern - all Stmt variants are now handled explicitly
         }
     }
 
     fn generate_expr_ref(&mut self, expr_ref: ast::ExprRef) -> Result<(), LuaGenError> {
-        let expr = &self.program.expression.0[expr_ref.0 as usize];
+        let expr = self.program.expression.get(&expr_ref).unwrap();
         
         // Special handling for Call expressions to enable qualified identifier resolution
         if let ast::Expr::Call(func_name, args_ref) = expr {
-            return self.generate_qualified_call(*func_name, *args_ref, expr_ref);
+            return self.generate_qualified_call(func_name, args_ref, expr_ref);
         }
         
-        self.generate_expr(expr)
+        self.generate_expr(&expr)
     }
 
     fn generate_expr(&mut self, expr: &ast::Expr) -> Result<(), LuaGenError> {
@@ -776,7 +772,7 @@ impl<'a> LuaCodeGenerator<'a> {
                 let func_str = self.interner.resolve(*func_name).unwrap_or("<unknown>");
                 write!(self.output, "{}(", func_str)?;
                 
-                let args_expr = &self.program.expression.0[args_ref.0 as usize];
+                let args_expr = self.program.expression.get(args_ref).unwrap();
                 if let ast::Expr::ExprList(arg_refs) = args_expr {
                     for (i, arg_ref) in arg_refs.iter().enumerate() {
                         if i > 0 {
@@ -796,10 +792,10 @@ impl<'a> LuaCodeGenerator<'a> {
                     write!(self.output, "nil")?;
                 } else if stmt_refs.len() == 1 {
                     // Single statement block - extract value directly
-                    let stmt = &self.program.statement.0[stmt_refs[0].0 as usize];
+                    let stmt = self.program.statement.get(&stmt_refs[0]).unwrap();
                     match stmt {
                         ast::Stmt::Expression(expr_ref) => {
-                            self.generate_expr_ref(*expr_ref)?;
+                            self.generate_expr_ref(expr_ref)?;
                         }
                         _ => {
                             write!(self.output, "nil")?;
@@ -815,18 +811,18 @@ impl<'a> LuaCodeGenerator<'a> {
                     for (i, stmt_ref) in stmt_refs.iter().enumerate() {
                         if i == stmt_refs.len() - 1 {
                             // Last statement: should be returned
-                            let stmt = &self.program.statement.0[stmt_ref.0 as usize];
+                            let stmt = self.program.statement.get(stmt_ref).unwrap();
                             match stmt {
                                 ast::Stmt::Expression(expr_ref) => {
                                     write!(self.output, "return ")?;
-                                    self.generate_expr_ref(*expr_ref)?;
+                                    self.generate_expr_ref(expr_ref)?;
                                 }
                                 ast::Stmt::Return(Some(expr_ref)) => {
                                     write!(self.output, "return ")?;
-                                    self.generate_expr_ref(*expr_ref)?;
+                                    self.generate_expr_ref(expr_ref)?;
                                 }
                                 _ => {
-                                    self.generate_stmt(stmt)?;
+                                    self.generate_stmt(&stmt)?;
                                     write!(self.output, " return nil")?;
                                 }
                             }
@@ -848,8 +844,8 @@ impl<'a> LuaCodeGenerator<'a> {
                 // Check if this is a simple if-else that can be optimized
                 if elif_pairs.is_empty() {
                     // Simple if-else case - check if both branches are simple expressions
-                    let if_expr = &self.program.expression.0[if_block.0 as usize];
-                    let else_expr = &self.program.expression.0[else_block.0 as usize];
+                    let if_expr = self.program.expression.get(if_block).unwrap();
+                    let else_expr = self.program.expression.get(else_block).unwrap();
                     
                     let if_simple = matches!(if_expr, 
                         ast::Expr::Int64(_) | ast::Expr::UInt64(_) | ast::Expr::True | ast::Expr::False | 
@@ -923,7 +919,7 @@ impl<'a> LuaCodeGenerator<'a> {
                 self.generate_expr_ref(*object_ref)?;
                 write!(self.output, "[")?;
                 
-                let index_expr = &self.program.expression.0[index_ref.0 as usize];
+                let index_expr = self.program.expression.get(index_ref).unwrap();
                 match index_expr {
                     // String index: direct dict access
                     ast::Expr::String(_) => {
@@ -955,7 +951,7 @@ impl<'a> LuaCodeGenerator<'a> {
                 write!(self.output, "] end)()")?;
                 Ok(())
             }
-            ast::Expr::StructLiteral(type_name, fields) => {
+            ast::Expr::StructLiteral(_type_name, fields) => {
                 // Convert struct literal to Lua table: Point { x: 10, y: 20 } -> { x = 10, y = 20 }
                 write!(self.output, "{{")?;
                 for (i, (field_name, field_expr)) in fields.iter().enumerate() {
@@ -986,9 +982,9 @@ impl<'a> LuaCodeGenerator<'a> {
                 let type_name = self.get_struct_type_name(*obj_ref)
                     .unwrap_or_else(|| {
                         // Manual fallback for common struct types when type_info is not available
-                        let expr = &self.program.expression.0[obj_ref.0 as usize];
+                        let expr = self.program.expression.get(obj_ref).unwrap();
                         if let ast::Expr::Identifier(var_symbol) = expr {
-                            let var_name = self.interner.resolve(*var_symbol).unwrap_or("<unknown>");
+                            let var_name = self.interner.resolve(var_symbol).unwrap_or("<unknown>");
                             // Heuristic: variable names starting with 'p' are likely Point instances
                             if var_name.starts_with("p") || var_name.contains("point") || var_name.contains("Point") {
                                 "Point".to_string()
@@ -1062,11 +1058,11 @@ impl<'a> LuaCodeGenerator<'a> {
                     }
                     
                     // Generate key - for string keys, we can use the shorthand notation
-                    let key_expr = &self.program.expression.0[key_ref.0 as usize];
+                    let key_expr = self.program.expression.get(key_ref).unwrap();
                     match key_expr {
                         ast::Expr::String(sym) => {
                             // String key: use key = value syntax
-                            let key_str = self.interner.resolve(*sym).unwrap_or("unknown");
+                            let key_str = self.interner.resolve(sym).unwrap_or("unknown");
                             write!(self.output, "{} = ", key_str)?;
                         }
                         _ => {
@@ -1131,7 +1127,7 @@ impl<'a> LuaCodeGenerator<'a> {
         
         write!(self.output, "{}(", enhanced_func_name)?;
         
-        let args_expr = &self.program.expression.0[args_ref.0 as usize];
+        let args_expr = self.program.expression.get(&args_ref).unwrap();
         if let ast::Expr::ExprList(arg_refs) = args_expr {
             for (i, arg_ref) in arg_refs.iter().enumerate() {
                 if i > 0 {
@@ -1242,7 +1238,7 @@ fn main() -> u64 {
             }
             
             for (symbol, struct_name) in &type_info.struct_types {
-                let symbol_name = session.string_interner().resolve(*symbol).unwrap_or("<unknown>");
+                let symbol_name = session.string_interner().resolve(symbol).unwrap_or("<unknown>");
                 println!("Variable {} -> struct {}", symbol_name, struct_name);
             }
             

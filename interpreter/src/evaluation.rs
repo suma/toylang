@@ -166,7 +166,7 @@ impl<'a> EvaluationContext<'a> {
                 self.string_interner,
             )?;
 
-            let res_block = self.evaluate_block(statements);
+            let res_block = self.evaluate_block(&statements);
             self.environment.exit_block();
 
             match res_block {
@@ -312,17 +312,17 @@ impl<'a> EvaluationContext<'a> {
 
     fn evaluate_method(&mut self, method: &MethodFunction) -> Result<EvaluationResult, InterpreterError> {
         // Get the method body from the statement pool
-        let stmt = self.stmt_pool.get(method.code.to_index())
+        let stmt = self.stmt_pool.get(&method.code)
             .ok_or_else(|| InterpreterError::InternalError("Invalid method code reference".to_string()))?;
         
         // Execute the method body 
         match stmt {
             frontend::ast::Stmt::Expression(expr_ref) => {
-                if let Some(Expr::Block(statements)) = self.expr_pool.get(expr_ref.to_index()) {
-                    self.evaluate_block(statements)
+                if let Some(Expr::Block(statements)) = self.expr_pool.get(&expr_ref) {
+                    self.evaluate_block(&statements)
                 } else {
                     // Single expression method body
-                    self.evaluate(expr_ref)
+                    self.evaluate(&expr_ref)
                 }
             }
             _ => Err(InterpreterError::InternalError(format!("evaluate_method: unexpected method body type: {stmt:?}")))
@@ -625,74 +625,74 @@ impl<'a> EvaluationContext<'a> {
     }
     
     fn evaluate_impl(&mut self, e: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let expr = self.expr_pool.get(e.to_index())
-            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", e.to_index())))?;
+        let expr = self.expr_pool.get(e)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", e)))?;
         match expr {
             Expr::Binary(op, lhs, rhs) => {
-                self.evaluate_binary(op, lhs, rhs)
+                self.evaluate_binary(&op, &lhs, &rhs)
             }
             Expr::Unary(op, operand) => {
-                self.evaluate_unary(op, operand)
+                self.evaluate_unary(&op, &operand)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
-                self.evaluate_literal(expr)
+                self.evaluate_literal(&expr)
             }
             Expr::Number(_v) => {
                 // Type-unspecified numbers should be resolved during type checking
                 Err(InterpreterError::InternalError("Expr::Number should be transformed to concrete type during type checking".to_string()))
             }
             Expr::Identifier(s) => {
-                let val = self.environment.get_val(*s)
+                let val = self.environment.get_val(s)
                     .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {s:?}")))?;
                 Ok(EvaluationResult::Value(val))
             }
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
-                self.evaluate_if_elif_else(cond, then, elif_pairs, _else)
+                self.evaluate_if_elif_else(&cond, &then, &elif_pairs, &_else)
             }
             Expr::Call(name, args) => {
-                self.evaluate_function_call(name, args)
+                self.evaluate_function_call(&name, &args)
             }
             Expr::ArrayLiteral(elements) => {
-                self.evaluate_array_literal(elements)
+                self.evaluate_array_literal(&elements)
             }
             Expr::ArrayAccess(array, index) => {
-                self.evaluate_array_access(array, index)
+                self.evaluate_array_access(&array, &index)
             }
             Expr::FieldAccess(obj, field) => {
-                self.evaluate_field_access(obj, field)
+                self.evaluate_field_access(&obj, &field)
             }
             Expr::MethodCall(obj, method, args) => {
-                self.evaluate_method_call(obj, method, args)
+                self.evaluate_method_call(&obj, &method, &args)
             }
             Expr::BuiltinMethodCall(receiver, method, args) => {
-                self.evaluate_builtin_method_call(receiver, method, args)
+                self.evaluate_builtin_method_call(&receiver, &method, &args)
             }
             Expr::BuiltinCall(func, args) => {
-                self.evaluate_builtin_call(func, args)
+                self.evaluate_builtin_call(&func, &args)
             }
             Expr::StructLiteral(struct_name, fields) => {
-                self.evaluate_struct_literal(struct_name, fields)
+                self.evaluate_struct_literal(&struct_name, &fields)
             }
             Expr::QualifiedIdentifier(path) => {
-                self.evaluate_qualified_identifier(path)
+                self.evaluate_qualified_identifier(&path)
             }
             Expr::Null => {
                 Err(InterpreterError::InternalError("Null reference error".to_string()))
             }
             Expr::IndexAccess(object, index) => {
-                self.evaluate_index_access(object, index)
+                self.evaluate_index_access(&object, &index)
             }
             Expr::IndexAssign(object, index, value) => {
-                self.evaluate_index_assign(object, index, value)
+                self.evaluate_index_assign(&object, &index, &value)
             }
             Expr::DictLiteral(entries) => {
-                self.evaluate_dict_literal(entries)
+                self.evaluate_dict_literal(&entries)
             }
             Expr::TupleLiteral(elements) => {
-                self.evaluate_tuple_literal(elements)
+                self.evaluate_tuple_literal(&elements)
             }
             Expr::TupleAccess(tuple, index) => {
-                self.evaluate_tuple_access(tuple, *index)
+                self.evaluate_tuple_access(&tuple, index)
             }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
@@ -718,7 +718,7 @@ impl<'a> EvaluationContext<'a> {
 
         // Check if condition
         if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-            let then_expr = self.expr_pool.get(then.to_index())
+            let then_expr = self.expr_pool.get(&then)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid then block reference".to_string()))?;
             if !then_expr.is_block() {
                 return Err(InterpreterError::InternalError("if-then is not block".to_string()));
@@ -735,7 +735,7 @@ impl<'a> EvaluationContext<'a> {
                 }
 
                 if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
-                    let elif_expr = self.expr_pool.get(elif_block.to_index())
+                    let elif_expr = self.expr_pool.get(&elif_block)
                         .ok_or_else(|| InterpreterError::InternalError("Invalid elif block reference".to_string()))?;
                     if !elif_expr.is_block() {
                         return Err(InterpreterError::InternalError("elif block is not block".to_string()));
@@ -747,7 +747,7 @@ impl<'a> EvaluationContext<'a> {
 
             // If no elif condition matched, use else block
             if selected_block.is_none() {
-                let else_expr = self.expr_pool.get(_else.to_index())
+                let else_expr = self.expr_pool.get(&_else)
                     .ok_or_else(|| InterpreterError::InternalError("Invalid else block reference".to_string()))?;
                 if !else_expr.is_block() {
                     return Err(InterpreterError::InternalError("else block is not block".to_string()));
@@ -760,8 +760,8 @@ impl<'a> EvaluationContext<'a> {
         if let Some(block_expr) = selected_block {
             self.environment.enter_block();
             let res = {
-                if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr.to_index()) {
-                    self.evaluate_block(statements)
+                if let Some(Expr::Block(statements)) = self.expr_pool.get(&block_expr) {
+                    self.evaluate_block(&statements)
                 } else {
                     return Err(InterpreterError::InternalError("evaluate: selected block is not block".to_string()))
                 }
@@ -776,7 +776,7 @@ impl<'a> EvaluationContext<'a> {
     /// Evaluates function calls
     fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         if let Some(func) = self.function.get::<DefaultSymbol>(name).cloned() {
-            let args = self.expr_pool.get(args.to_index())
+            let args = self.expr_pool.get(&args)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid arguments reference".to_string()))?;
             match args {
                 Expr::ExprList(args) => {
@@ -869,8 +869,8 @@ impl<'a> EvaluationContext<'a> {
     /// Evaluates field access expressions
     fn evaluate_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
         // First check if this is a module qualified name (e.g., math.add)
-        if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(obj.to_index()) {
-            if let Some(module_value) = self.resolve_module_qualified_name(*module_name, *field) {
+        if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(&obj) {
+            if let Some(module_value) = self.resolve_module_qualified_name(module_name, *field) {
                 return Ok(EvaluationResult::Value(module_value));
             }
         }
@@ -1048,8 +1048,8 @@ impl<'a> EvaluationContext<'a> {
         
         for (field_name, field_expr) in fields {
             // Handle null expressions specially in struct literals
-            let expr = self.expr_pool.get(field_expr.to_index())
-                .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", field_expr.to_index())))?;
+            let expr = self.expr_pool.get(&field_expr)
+                .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", field_expr)))?;
             
             let field_value = match expr {
                 Expr::Null => {
@@ -1075,8 +1075,8 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate_block(&mut self, statements: &[StmtRef] ) -> Result<EvaluationResult, InterpreterError> {
-        let to_stmt = |s: &StmtRef| -> Result<&Stmt, InterpreterError> {
-            self.stmt_pool.get(s.to_index())
+        let to_stmt = |s: &StmtRef| -> Result<Stmt, InterpreterError> {
+            self.stmt_pool.get(&s)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
         };
         let statements = statements.iter()
@@ -1087,13 +1087,13 @@ impl<'a> EvaluationContext<'a> {
         for stmt in statements {
             match stmt {
                 Stmt::Val(name, _, e) => {
-                    last = self.handle_val_declaration(*name, e)?;
+                    last = self.handle_val_declaration(name, &e)?;
                 }
                 Stmt::Var(name, _, e) => {
-                    last = self.handle_var_declaration(*name, e)?;
+                    last = self.handle_var_declaration(name, &e)?;
                 }
                 Stmt::Return(e) => {
-                    return self.handle_return_statement(e);
+                    return self.handle_return_statement(&e);
                 }
                 Stmt::Break => {
                     return Ok(EvaluationResult::Break);
@@ -1110,10 +1110,10 @@ impl<'a> EvaluationContext<'a> {
                     last = None;
                 }
                 Stmt::While(cond, body) => {
-                    last = Some(self.handle_while_loop(cond, body)?);
+                    last = Some(self.handle_while_loop(&cond, &body)?);
                 }
                 Stmt::For(identifier, start, end, block) => {
-                    let result = self.handle_for_loop(*identifier, start, end, block)?;
+                    let result = self.handle_for_loop(identifier, &start, &end, &block)?;
                     match result {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
                         EvaluationResult::Break => return Ok(EvaluationResult::Break),
@@ -1122,7 +1122,7 @@ impl<'a> EvaluationContext<'a> {
                     }
                 }
                 Stmt::Expression(expr) => {
-                    let result = self.handle_expression_statement(expr)?;
+                    let result = self.handle_expression_statement(&expr)?;
                     match result {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
                         EvaluationResult::Break => return Ok(EvaluationResult::Break),
@@ -1188,11 +1188,11 @@ impl<'a> EvaluationContext<'a> {
                 break;
             }
             
-            let body_expr = self.expr_pool.get(body.to_index())
+            let body_expr = self.expr_pool.get(&body)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid body expression reference".to_string()))?;
             if let Expr::Block(statements) = body_expr {
                 self.environment.enter_block();
-                let res = self.evaluate_block(statements);
+                let res = self.evaluate_block(&statements);
                 self.environment.exit_block();
                 
                 match res {
@@ -1227,19 +1227,19 @@ impl<'a> EvaluationContext<'a> {
             });
         }
         
-        let block = self.expr_pool.get(block.to_index())
+        let block = self.expr_pool.get(&block)
             .ok_or_else(|| InterpreterError::InternalError("Invalid block expression reference".to_string()))?;
         if let Expr::Block(statements) = block {
             match start_ty {
                 TypeDecl::UInt64 => {
                     let start_val = start.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
                     let end_val = end.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(identifier, start_val, end_val, statements, Object::UInt64)
+                    self.execute_for_loop(identifier, start_val, end_val, &statements, Object::UInt64)
                 }
                 TypeDecl::Int64 => {
                     let start_val = start.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
                     let end_val = end.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(identifier, start_val, end_val, statements, Object::Int64)
+                    self.execute_for_loop(identifier, start_val, end_val, &statements, Object::Int64)
                 }
                 _ => {
                     Err(InterpreterError::TypeError {
@@ -1256,21 +1256,21 @@ impl<'a> EvaluationContext<'a> {
 
     /// Handles expression statements
     fn handle_expression_statement(&mut self, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let e = self.expr_pool.get(expr.to_index())
+        let e = self.expr_pool.get(&expr)
             .ok_or_else(|| InterpreterError::InternalError("Invalid expression reference".to_string()))?;
         match e {
             Expr::Assign(lhs, rhs) => {
-                self.handle_assignment(lhs, rhs)
+                self.handle_assignment(&lhs, &rhs)
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
-                let obj = convert_object(e)?;
+                let obj = convert_object(&e)?;
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
             }
             Expr::Identifier(s) => {
-                self.handle_identifier_expression(*s)
+                self.handle_identifier_expression(s)
             }
             Expr::Block(blk_expr) => {
-                self.handle_nested_block(blk_expr)
+                self.handle_nested_block(&blk_expr)
             }
             _ => {
                 // Take care to handle loop control flow correctly when break/continue is executed
@@ -1282,10 +1282,10 @@ impl<'a> EvaluationContext<'a> {
 
     /// Handles assignment expressions (both variable and array element assignment)
     fn handle_assignment(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(lhs_expr) = self.expr_pool.get(lhs.to_index()) {
+        if let Some(lhs_expr) = self.expr_pool.get(&lhs) {
             match lhs_expr {
-                Expr::Identifier(name) => self.handle_variable_assignment(*name, rhs),
-                Expr::ArrayAccess(array, index) => self.handle_array_element_assignment(array, index, rhs),
+                Expr::Identifier(name) => self.handle_variable_assignment(name, rhs),
+                Expr::ArrayAccess(array, index) => self.handle_array_element_assignment(&array, &index, rhs),
                 _ => {
                     Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
                 }
@@ -1298,8 +1298,8 @@ impl<'a> EvaluationContext<'a> {
     /// Handles variable assignment
     fn handle_variable_assignment(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Handle null expressions specially in variable assignments
-        let expr = self.expr_pool.get(rhs.to_index())
-            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", rhs.to_index())))?;
+        let expr = self.expr_pool.get(&rhs)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
         
         let rhs = match expr {
             Expr::Null => {
@@ -1349,8 +1349,8 @@ impl<'a> EvaluationContext<'a> {
         let index_obj = self.extract_value(Ok(index_value))?;
         
         // Handle null expressions specially in array element assignments
-        let expr = self.expr_pool.get(rhs.to_index())
-            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {}", rhs.to_index())))?;
+        let expr = self.expr_pool.get(&rhs)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
         
         let rhs_obj = match expr {
             Expr::Null => {
@@ -1421,9 +1421,9 @@ impl<'a> EvaluationContext<'a> {
     }
 
     pub fn evaluate_function(&mut self, function: Rc<Function>, args: &[ExprRef]) -> Result<RcObject, InterpreterError> {
-        let block = match self.stmt_pool.get(function.code.to_index()) {
+        let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
-                match self.expr_pool.get(e.to_index()) {
+                match self.expr_pool.get(&e) {
                     Some(Expr::Block(statements)) => statements,
                     _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function: Not handled yet {:?}", function.code))),
                 }
@@ -1454,7 +1454,7 @@ impl<'a> EvaluationContext<'a> {
             self.environment.set_val(name, value);
         }
 
-        let res = self.evaluate_block(block)?;
+        let res = self.evaluate_block(&block)?;
         self.environment.exit_block();
 
         if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
@@ -1471,9 +1471,9 @@ impl<'a> EvaluationContext<'a> {
 
     /// Evaluates function with pre-evaluated argument values (used when type checking has already been done)
     pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[RcObject]) -> Result<RcObject, InterpreterError> {
-        let block = match self.stmt_pool.get(function.code.to_index()) {
+        let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
-                match self.expr_pool.get(e.to_index()) {
+                match self.expr_pool.get(&e) {
                     Some(Expr::Block(statements)) => statements,
                     _ => return Err(InterpreterError::FunctionNotFound(format!("evaluate_function_with_values: Not handled yet {:?}", function.code))),
                 }
@@ -1488,7 +1488,7 @@ impl<'a> EvaluationContext<'a> {
             self.environment.set_val(name, value.clone());
         }
 
-        let res = self.evaluate_block(block)?;
+        let res = self.evaluate_block(&block)?;
         self.environment.exit_block();
 
         if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {

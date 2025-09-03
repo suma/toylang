@@ -3,6 +3,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use super::core::{ParserWithInterner};
 use crate::ast::*;
+use crate::ast::{ExprRef, StmtRef};
 use crate::type_decl::*;
 use crate::type_checker::TypeCheckerVisitor;
 use rstest::rstest;
@@ -240,14 +241,14 @@ mod parser_tests {
 
     // Helper function: Get element from ExprPool and verify
     fn assert_expr_at(parser: &ParserWithInterner, index: usize, expected: Expr) {
-        let actual = parser.get_expr_pool().get(index).unwrap();
-        assert_eq!(*actual, expected, "ExprPool[{}] mismatch", index);
+        let actual = parser.get_expr_pool().get(&ExprRef(index as u32)).unwrap();
+        assert_eq!(actual, expected, "ExprPool[{}] mismatch", index);
     }
 
     // Helper function: Get element from StmtPool and verify
     fn assert_stmt_at(parser: &ParserWithInterner, index: usize, expected: Stmt) {
-        let actual = parser.get_stmt_pool().get(index).unwrap();
-        assert_eq!(*actual, expected, "StmtPool[{}] mismatch", index);
+        let actual = parser.get_stmt_pool().get(&StmtRef(index as u32)).unwrap();
+        assert_eq!(actual, expected, "StmtPool[{}] mismatch", index);
     }
 
     // Helper function: Verify ExprPool size
@@ -292,8 +293,8 @@ mod parser_tests {
         assert_expr_at(&p, 2, Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)));
 
         println!("p.stmt: {:?}", p.get_stmt_pool());
-        println!("INSTRUCTION {:?}", p.get_stmt_pool().get(0));
-        println!("INSTRUCTION {:?}", p.get_stmt_pool().get(1));
+        println!("INSTRUCTION {:?}", p.get_stmt_pool().get(&StmtRef(0)));
+        println!("INSTRUCTION {:?}", p.get_stmt_pool().get(&StmtRef(1)));
         assert_stmt_pool_size(&p, 1);
         assert_stmt_at(&p, 0, Stmt::Expression(ExprRef(2)));
     }
@@ -523,7 +524,7 @@ mod parser_tests {
         let program = result.unwrap();
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
-        match program.statement.get(0).unwrap() {
+        match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
@@ -550,7 +551,7 @@ mod parser_tests {
         let program = result.unwrap();
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
-        match program.statement.get(0).unwrap() {
+        match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Person", name);
                 assert_eq!(2, fields.len());
@@ -577,7 +578,7 @@ mod parser_tests {
         let program = result.unwrap();
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
-        match program.statement.get(0).unwrap() {
+        match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Empty", name);
                 assert_eq!(0, fields.len());
@@ -596,7 +597,7 @@ mod parser_tests {
         let program = result.unwrap();
         assert_eq!(1, program.statement.len(), "should have one struct declaration");
         
-        match program.statement.get(0).unwrap() {
+        match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
@@ -618,7 +619,7 @@ mod parser_tests {
         assert!(program.statement.len() >= 1, "should have at least one struct declaration");
         assert_eq!(1, program.function.len(), "should have one function");
         
-        match program.statement.get(0).unwrap() {
+        match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
                 assert_eq!("Point", name);
                 assert_eq!(2, fields.len());
@@ -640,9 +641,10 @@ mod parser_tests {
         let program = result.unwrap();
         assert!(program.statement.len() >= 1, "should have at least one impl block");
         
-        let impl_stmt = program.statement.0.iter().find(|stmt| {
-            matches!(stmt, Stmt::ImplBlock { .. })
-        }).expect("Should have impl block");
+        let impl_stmt = (0..program.statement.len())
+            .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
+            .find(|stmt| matches!(stmt, Stmt::ImplBlock { .. }))
+            .expect("Should have impl block");
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
@@ -668,9 +670,10 @@ mod parser_tests {
         let program = result.unwrap();
         assert!(program.statement.len() >= 1, "should have at least one impl block");
         
-        let impl_stmt = program.statement.0.iter().find(|stmt| {
-            matches!(stmt, Stmt::ImplBlock { .. })
-        }).expect("Should have impl block");
+        let impl_stmt = (0..program.statement.len())
+            .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
+            .find(|stmt| matches!(stmt, Stmt::ImplBlock { .. }))
+            .expect("Should have impl block");
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
@@ -696,9 +699,10 @@ mod parser_tests {
         let program = result.unwrap();
         assert!(program.statement.len() >= 1, "should have at least one impl block");
         
-        let impl_stmt = program.statement.0.iter().find(|stmt| {
-            matches!(stmt, Stmt::ImplBlock { .. })
-        }).expect("Should have impl block");
+        let impl_stmt = (0..program.statement.len())
+            .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
+            .find(|stmt| matches!(stmt, Stmt::ImplBlock { .. }))
+            .expect("Should have impl block");
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
@@ -728,13 +732,15 @@ mod parser_tests {
         let program = result.unwrap();
         assert!(program.statement.len() >= 2, "should have struct and impl declarations");
         
-        let struct_stmt = program.statement.0.iter().find(|stmt| {
-            matches!(stmt, Stmt::StructDecl { .. })
-        }).expect("Should have struct declaration");
+        let struct_stmt = (0..program.statement.len())
+            .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
+            .find(|stmt| matches!(stmt, Stmt::StructDecl { .. }))
+            .expect("Should have struct declaration");
         
-        let impl_stmt = program.statement.0.iter().find(|stmt| {
-            matches!(stmt, Stmt::ImplBlock { .. })
-        }).expect("Should have impl block");
+        let impl_stmt = (0..program.statement.len())
+            .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
+            .find(|stmt| matches!(stmt, Stmt::ImplBlock { .. }))
+            .expect("Should have impl block");
         
         match struct_stmt {
             Stmt::StructDecl { name, fields, .. } => {
@@ -768,12 +774,12 @@ mod parser_tests {
         assert_eq!(2, expr_pool.len(), "should have 2 expressions for obj.field");
         
         // obj (identifier)
-        let obj_expr = expr_pool.get(0).unwrap();
-        assert_eq!(Expr::Identifier(expected_obj), *obj_expr);
+        let obj_expr = expr_pool.get(&ExprRef(0)).unwrap();
+        assert_eq!(Expr::Identifier(expected_obj), obj_expr);
         
         // field access
-        let field_access = expr_pool.get(1).unwrap();
-        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), *field_access);
+        let field_access = expr_pool.get(&ExprRef(1)).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), field_access);
     }
 
     #[test]
@@ -792,16 +798,16 @@ mod parser_tests {
         assert_eq!(3, expr_pool.len(), "should have 3 expressions for obj.inner.field");
         
         // obj (identifier)
-        let obj_expr = expr_pool.get(0).unwrap();
-        assert_eq!(Expr::Identifier(expected_obj), *obj_expr);
+        let obj_expr = expr_pool.get(&ExprRef(0)).unwrap();
+        assert_eq!(Expr::Identifier(expected_obj), obj_expr);
         
         // obj.inner
-        let inner_access = expr_pool.get(1).unwrap();
-        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_inner), *inner_access);
+        let inner_access = expr_pool.get(&ExprRef(1)).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_inner), inner_access);
         
         // obj.inner.field
-        let field_access = expr_pool.get(2).unwrap();
-        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_field), *field_access);
+        let field_access = expr_pool.get(&ExprRef(2)).unwrap();
+        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_field), field_access);
     }
 
     #[test]
@@ -823,12 +829,12 @@ mod parser_tests {
         assert_eq!(6, expr_pool.len(), "should have 6 expressions for deeply nested access");
         
         // Verify the chain is built correctly
-        assert_eq!(Expr::Identifier(expected_a), *expr_pool.get(0).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_b), *expr_pool.get(1).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_c), *expr_pool.get(2).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(2), expected_d), *expr_pool.get(3).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(3), expected_e), *expr_pool.get(4).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(4), expected_f), *expr_pool.get(5).unwrap());
+        assert_eq!(Expr::Identifier(expected_a), expr_pool.get(&ExprRef(0)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_b), expr_pool.get(&ExprRef(1)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(1), expected_c), expr_pool.get(&ExprRef(2)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(2), expected_d), expr_pool.get(&ExprRef(3)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(3), expected_e), expr_pool.get(&ExprRef(4)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(4), expected_f), expr_pool.get(&ExprRef(5)).unwrap());
     }
 
     #[test]
@@ -846,9 +852,9 @@ mod parser_tests {
         let expr_pool = parser.get_expr_pool();
         assert_eq!(3, expr_pool.len(), "should have 3 expressions for field access with method call");
         
-        assert_eq!(Expr::Identifier(expected_obj), *expr_pool.get(0).unwrap());
-        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), *expr_pool.get(1).unwrap());
-        assert_eq!(Expr::MethodCall(ExprRef(1), expected_method, vec![]), *expr_pool.get(2).unwrap());
+        assert_eq!(Expr::Identifier(expected_obj), expr_pool.get(&ExprRef(0)).unwrap());
+        assert_eq!(Expr::FieldAccess(ExprRef(0), expected_field), expr_pool.get(&ExprRef(1)).unwrap());
+        assert_eq!(Expr::MethodCall(ExprRef(1), expected_method, vec![]), expr_pool.get(&ExprRef(2)).unwrap());
     }
 
     #[test] 

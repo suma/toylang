@@ -150,9 +150,9 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
                 let location = parser.current_source_location();
                 
                 // Check if lhs is an IndexAccess expression and convert to IndexAssign
-                if let Some(Expr::IndexAccess(object, index)) = parser.ast_builder.expr_pool.get(lhs.to_index()) {
-                    let object = *object;
-                    let index = *index;
+                if let Some(Expr::IndexAccess(object, index)) = parser.ast_builder.expr_pool.get(&lhs) {
+                    let object = object;
+                    let index = index;
                     lhs = parser.ast_builder.index_assign_expr(object, index, new_rhs, Some(location));
                 } else {
                     lhs = parser.ast_builder.assign_expr(lhs, new_rhs, Some(location));

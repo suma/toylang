@@ -526,7 +526,8 @@ mod parser_tests {
         
         match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Point", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Point", name_str);
                 assert_eq!(2, fields.len());
                 
                 assert_eq!("x", fields[0].name);
@@ -553,7 +554,8 @@ mod parser_tests {
         
         match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Person", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Person", name_str);
                 assert_eq!(2, fields.len());
                 
                 assert_eq!("name", fields[0].name);
@@ -580,7 +582,8 @@ mod parser_tests {
         
         match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Empty", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Empty", name_str);
                 assert_eq!(0, fields.len());
             }
             _ => panic!("Expected struct declaration"),
@@ -599,7 +602,8 @@ mod parser_tests {
         
         match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Point", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Point", name_str);
                 assert_eq!(2, fields.len());
                 assert_eq!("x", fields[0].name);
                 assert_eq!("y", fields[1].name);
@@ -621,7 +625,8 @@ mod parser_tests {
         
         match program.statement.get(&StmtRef(0)).unwrap() {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Point", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Point", name_str);
                 assert_eq!(2, fields.len());
             }
             _ => panic!("Expected struct declaration as first statement"),
@@ -648,7 +653,8 @@ mod parser_tests {
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
-                assert_eq!("Point", target_type);
+                let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
+                assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());
                 
                 let method = &methods[0];
@@ -677,7 +683,8 @@ mod parser_tests {
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
-                assert_eq!("Point", target_type);
+                let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
+                assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());
                 
                 let method = &methods[0];
@@ -706,7 +713,8 @@ mod parser_tests {
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
-                assert_eq!("Point", target_type);
+                let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
+                assert_eq!("Point", target_type_str);
                 assert_eq!(2, methods.len());
                 
                 let method1 = &methods[0];
@@ -744,7 +752,8 @@ mod parser_tests {
         
         match struct_stmt {
             Stmt::StructDecl { name, fields, .. } => {
-                assert_eq!("Point", name);
+                let name_str = parser.get_string_interner().resolve(name).unwrap();
+                assert_eq!("Point", name_str);
                 assert_eq!(2, fields.len());
             }
             _ => panic!("Expected struct declaration"),
@@ -752,7 +761,8 @@ mod parser_tests {
         
         match impl_stmt {
             Stmt::ImplBlock { target_type, methods } => {
-                assert_eq!("Point", target_type);
+                let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
+                assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());
             }
             _ => panic!("Expected impl block declaration"),

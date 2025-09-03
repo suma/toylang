@@ -150,7 +150,7 @@ pub struct StmtPool {
     pub block_expr: Vec<Option<ExprRef>>,        // For loop/while bodies
     
     // Declaration fields
-    pub struct_name: Vec<Option<String>>,                    // For struct declarations
+    pub struct_name: Vec<Option<DefaultSymbol>>,             // For struct declarations
     pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
@@ -1246,13 +1246,13 @@ impl AstBuilder {
         stmt_ref
     }
     
-    pub fn struct_decl_stmt(&mut self, name: String, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
+    pub fn struct_decl_stmt(&mut self, name: DefaultSymbol, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
         let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, fields, visibility });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
     
-    pub fn impl_block_stmt(&mut self, target_type: String, methods: Vec<Rc<MethodFunction>>, location: Option<SourceLocation>) -> StmtRef {
+    pub fn impl_block_stmt(&mut self, target_type: DefaultSymbol, methods: Vec<Rc<MethodFunction>>, location: Option<SourceLocation>) -> StmtRef {
         let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock { target_type, methods });
         self.location_pool.add_stmt_location(location);
         stmt_ref
@@ -1347,12 +1347,12 @@ pub enum Stmt {
     For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
     While(ExprRef, ExprRef), // cond, block
     StructDecl {
-        name: String,
+        name: DefaultSymbol,
         fields: Vec<StructField>,
         visibility: Visibility,
     },
     ImplBlock {
-        target_type: String,
+        target_type: DefaultSymbol,
         methods: Vec<Rc<MethodFunction>>,
     },
 }

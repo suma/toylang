@@ -505,8 +505,8 @@ impl Acceptable for Stmt {
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
-            Stmt::StructDecl { name, fields, visibility } => visitor.visit_struct_decl(name, fields, visibility),
-            Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(target_type, methods),
+            Stmt::StructDecl { name, fields, visibility } => visitor.visit_struct_decl(*name, fields, visibility),
+            Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
         }
     }
 }
@@ -1748,13 +1748,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: &String, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
         for field in fields {
             if !field_names.insert(field.name.clone()) {
                 return Err(TypeCheckError::generic_error(&format!(
-                    "Duplicate field '{}' in struct '{}'", field.name, name
+                    "Duplicate field '{}' in struct '{:?}'", field.name, name
                 )));
             }
         }
@@ -1783,15 +1783,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 },
                 _ => {
                     return Err(TypeCheckError::unsupported_operation(
-                        &format!("field type in struct '{}'", name), field.type_decl.clone()
+                        &format!("field type in struct '{:?}'", name), field.type_decl.clone()
                     ));
                 }
             }
         }
         
         // 3. Register struct definition with visibility information
-        let struct_symbol = self.core.string_interner.get(name)
-            .unwrap_or_else(|| panic!("Struct name should already be in string interner: {}", name));
+        let struct_symbol = name;
         let struct_def = crate::type_checker::context::StructDefinition {
             fields: fields.clone(),
             visibility: visibility.clone(),
@@ -1803,10 +1802,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
 
-    fn visit_impl_block(&mut self, target_type: &String, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {
-        // Get the struct symbol for the target type
-        let struct_symbol = self.core.string_interner.get(target_type)
-            .ok_or_else(|| TypeCheckError::not_found("struct type", target_type))?;
+    fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {
+        // target_type is already a symbol
+        let struct_symbol = target_type;
 
         // Set current impl target for Self resolution
         let old_impl_target = self.context.current_impl_target;
@@ -1827,7 +1825,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     _ => {
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
-                            &format!("parameter type in method '{}' for impl block '{}'", method_name, target_type),
+                            &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
                             resolved_type
                         ));
                     }
@@ -1847,7 +1845,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     _ => {
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
-                            &format!("return type in method '{}' for impl block '{}'", method_name, target_type),
+                            &format!("return type in method '{}' for impl block '{:?}'", method_name, target_type),
                             resolved_ret_type
                         ));
                     }

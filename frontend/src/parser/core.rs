@@ -461,7 +461,8 @@ impl<'a> Parser<'a> {
                     self.next();
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
-                            let struct_name = s.to_string();
+                            let s_copy = s.clone();
+                            let struct_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
                             self.expect_err(&Kind::BraceOpen)?;
                             let fields = super::stmt::parse_struct_fields(self, vec![])?;
@@ -469,7 +470,7 @@ impl<'a> Parser<'a> {
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
                             
-                            self.ast_builder.struct_decl_stmt(struct_name, fields, visibility, Some(location));
+                            self.ast_builder.struct_decl_stmt(struct_symbol, fields, visibility, Some(location));
                         }
                         _ => {
                             self.collect_error("expected struct name");
@@ -484,7 +485,8 @@ impl<'a> Parser<'a> {
                     self.next();
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
-                            let target_type = s.to_string();
+                            let s_copy = s.clone();
+                            let target_type_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
                             self.expect_err(&Kind::BraceOpen)?;
                             let methods = super::stmt::parse_impl_methods(self, vec![])?;
@@ -492,7 +494,7 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(impl_end_pos);
                             
-                            self.ast_builder.impl_block_stmt(target_type, methods, Some(location));
+                            self.ast_builder.impl_block_stmt(target_type_symbol, methods, Some(location));
                         }
                         _ => {
                             self.collect_error("expected type name for impl block");

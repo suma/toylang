@@ -586,7 +586,8 @@ impl<'a> LuaCodeGenerator<'a> {
             ast::Stmt::StructDecl { name, fields, visibility: _ } => {
                 // Generate Lua table constructor for struct
                 self.write_indent()?;
-                writeln!(self.output, "function {}()", name)?;
+                let name_str = self.interner.resolve(*name).unwrap_or("<unknown>");
+                writeln!(self.output, "function {}()", name_str)?;
                 self.indent_level += 1;
                 
                 self.write_indent()?;
@@ -629,7 +630,9 @@ impl<'a> LuaCodeGenerator<'a> {
                     } else {
                         // Normal method
                         self.write_indent()?;
-                        write!(self.output, "function {}_{}", target_type, method_name)?;
+                        let target_type_str = self.interner.resolve(*target_type).unwrap_or("<unknown>");
+                        let method_name_str = self.interner.resolve(method.name).unwrap_or("<unknown>");
+                        write!(self.output, "function {}_{}", target_type_str, method_name_str)?;
                         write!(self.output, "(self")?;
                         
                         // Add method parameters (first parameter is always 'self')

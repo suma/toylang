@@ -408,8 +408,8 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     // Register struct names in string_interner and collect symbols
     let mut struct_symbols_and_fields = Vec::new();
     for (name, fields, visibility) in struct_definitions {
-        let struct_symbol = string_interner.get_or_intern(name);
-        struct_symbols_and_fields.push((struct_symbol, fields, visibility));
+        // name is already a DefaultSymbol, no need to intern again
+        struct_symbols_and_fields.push((name, fields, visibility));
     }
 
     // Register all defined functions before creating the type checker
@@ -532,17 +532,18 @@ pub fn integrate_module_into_program(
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
-    impl_blocks: &[(String, Vec<std::rc::Rc<MethodFunction>>)],
+    impl_blocks: &[(DefaultSymbol, Vec<std::rc::Rc<MethodFunction>>)],
     formatter: &Option<ErrorFormatter>
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
     for (target_type, methods) in impl_blocks {
-        if let Err(err) = tc.visit_impl_block(target_type, methods) {
+        if let Err(err) = tc.visit_impl_block(*target_type, methods) {
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
-                format!("Impl block error for {target_type}: {err}")
+                let target_type_str = tc.core.string_interner.resolve(*target_type).unwrap_or("<unknown>");
+                format!("Impl block error for {target_type_str}: {err}")
             };
             errors.push(formatted_error);
         }
@@ -569,7 +570,7 @@ pub fn check_typing(
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
-                impl_blocks.push((target_type.clone(), methods.clone()));
+                impl_blocks.push((*target_type, methods.clone()));
             }
         }
     }
@@ -689,8 +690,7 @@ fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program
 }
 
 fn build_method_registry(
-    program: &Program, 
-    string_interner: &mut DefaultStringInterner
+    program: &Program
 ) -> HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> {
     let mut method_registry = HashMap::new();
     
@@ -698,7 +698,7 @@ fn build_method_registry(
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
-                let struct_name_symbol = string_interner.get_or_intern(target_type.clone());
+                let struct_name_symbol = *target_type;
                 for method in methods {
                     let method_name_symbol = method.name;
                     method_registry
@@ -732,7 +732,7 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     
     let func_map = build_function_map(program, string_interner);
     let mut string_interner_mut = string_interner.clone();
-    let method_registry = build_method_registry(program, &mut string_interner_mut);
+    let method_registry = build_method_registry(program);
     
     let mut eval = EvaluationContext::new(
         &program.statement, 

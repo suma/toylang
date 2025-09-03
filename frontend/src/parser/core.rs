@@ -164,7 +164,10 @@ impl<'a> Parser<'a> {
         let builtin_symbols = BuiltinFunctionSymbols::new(string_interner);
         Parser {
             token_provider: TokenProvider::with_format_normalization(source, 128, 64),
-            ast_builder: AstBuilder::with_capacity(1024, 1024),
+            // Increased initial capacity for large codebases (1000-10000 lines)
+            // Expression density: ~3000-5000 nodes per 1000 lines
+            // Statement density: ~1500-2500 nodes per 1000 lines
+            ast_builder: AstBuilder::with_capacity(16384, 8192),
             string_interner,
             builtin_symbols,
             errors: Vec::with_capacity(4),

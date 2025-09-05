@@ -88,6 +88,10 @@ fn main() -> u64 {
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
 - Types: `u64`, `i64`, `bool`
+- **Numeric literals**: 
+  - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit)
+  - Without suffix: defaults to `u64`, or automatically determined by type inference
+  - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
 - Control flow: `if/else`, `for i in start to end`, `break`, `continue`
 - All programs must have a `main()` function
 - **No semicolons required**: Statements are separated by newlines, not semicolons

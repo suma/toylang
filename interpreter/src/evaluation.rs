@@ -1674,7 +1674,40 @@ impl EvaluationContext<'_> {
                 // Dictionary access uses the original method
                 self.evaluate_slice_access(object, &slice_info.start, &slice_info.end)
             }
-            _ => Err(InterpreterError::InternalError("Slice access is only supported on arrays and dictionaries".to_string()))
+            Object::Struct { type_name, .. } => {
+                // Struct access: check for __getitem__ method (only single element access)
+                match slice_info.slice_type {
+                    SliceType::SingleElement => {
+                        // Single element access: struct[key]
+                        if let Some(start_expr) = &slice_info.start {
+                            let struct_name_val = *type_name;
+                            drop(obj_borrowed); // Release borrow before method call
+                            
+                            let start_val = self.evaluate(start_expr)?;
+                            let start_obj = self.extract_value(Ok(start_val))?;
+                            
+                            // Resolve names first before method call
+                            let struct_name_str = self.string_interner.resolve(struct_name_val)
+                                .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                                .to_string();
+                            let getitem_method = self.string_interner.get_or_intern("__getitem__");
+                            
+                            // Call __getitem__(self, index)
+                            let args = vec![start_obj];
+                            self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+                        } else {
+                            Err(InterpreterError::InternalError("Struct access requires index".to_string()))
+                        }
+                    }
+                    SliceType::RangeSlice => {
+                        // Range slicing not supported for structs
+                        Err(InterpreterError::InternalError("Struct slicing not supported - use single index access struct[key]".to_string()))
+                    }
+                }
+            }
+            _ => Err(InterpreterError::InternalError(
+                format!("Cannot access type: {:?} - only arrays, dictionaries, and structs with __getitem__ are supported", obj_borrowed.get_type())
+            ))
         }
     }
     

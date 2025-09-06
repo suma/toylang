@@ -2,6 +2,95 @@
 
 ## 完了済み ✅
 
+107. **負数インデックス推論問題の修正** ✅ (2025-09-06完了)
+   - **対象**: `a[-1]`、`a[-2..]`等の負数リテラル推論で「Cannot convert '-1' to UInt64」エラーが発生していた問題
+   - **問題の根本原因**:
+     - `finalize_number_types`メソッドで型ヒント未提供時にデフォルトでUInt64を選択
+     - 負数リテラルでも強制的にUInt64への変換を試み、パースエラーが発生
+     - slice_testsの `test_negative_index_inference`、`test_slice_negative_inference` が失敗
+   - **実装した解決策**:
+     - **負数自動判定ロジック**: 数値リテラルの文字列表現を確認し、`-`で始まる場合は自動的にInt64を選択
+     - **型推論優先度変更**: 型ヒント > 負数判定 > デフォルトUInt64 の順序で型決定
+     - **String Interner連携**: `self.core.string_interner.resolve(value)` で数値文字列を取得し判定
+   - **修正コード詳細**:
+     ```rust
+     let mut target_type = if let Some(hint) = self.type_inference.type_hint.clone() {
+         hint
+     } else {
+         // Check if the number is negative by looking at the actual value
+         if let Expr::Number(value) = expr {
+             let num_str = self.core.string_interner.resolve(value).unwrap_or("");
+             if num_str.starts_with('-') {
+                 TypeDecl::Int64  // Negative numbers default to Int64
+             } else {
+                 TypeDecl::UInt64  // Positive numbers default to UInt64
+             }
+         } else {
+             TypeDecl::UInt64  // Fallback
+         }
+     };
+     ```
+   - **テスト結果の改善**:
+     - **修正前**: slice_testsで2テスト失敗（`test_negative_index_inference`、`test_slice_negative_inference`）
+     - **修正後**: **28テスト全て成功（100%成功率）**
+     - **動作確認**: `a[-1]` → i64として正常に推論され、最後の要素にアクセス
+   - **実装ファイル**:
+     - **frontend/src/type_checker.rs**: `finalize_number_types`メソッド内の型決定ロジック修正
+   - **技術的成果**:
+     - **型推論精度向上**: 負数リテラルの自動Int64推論により直感的な動作を実現
+     - **後方互換性**: 既存の正数リテラル処理に影響なし
+     - **エラー除去**: 型変換エラーの根本的解決
+     - **使い勝手改善**: `a[-1i64]` の明示的型指定が不要、`a[-1]` で自動推論
+
+106. **構造体スライスアクセス問題の修正** ✅ (2025-09-06完了)
+   - **対象**: 構造体での`__getitem__`メソッド呼び出しが「Internal error: Slice access is only supported on arrays and dictionaries」エラーで失敗していた問題
+   - **問題の根本原因**:
+     - `evaluate_slice_access_with_info`メソッドで構造体の`__getitem__`メソッド呼び出しが未実装
+     - 既存の`evaluate_slice_access`メソッドでは構造体サポートが実装されていたが、新しい統一アーキテクチャで未対応
+     - integration_new_features_testsの3テストが失敗: `test_dict_and_struct_integration`、`test_nested_struct_indexing`、`test_complex_struct_indexing_with_self`
+   - **実装した解決策**:
+     - **構造体サポート追加**: `evaluate_slice_access_with_info`に構造体の`__getitem__`呼び出しロジックを追加
+     - **SliceType対応**: SingleElementアクセス（`struct[key]`）とRangeSlice（範囲アクセス）の適切な処理分岐
+     - **エラーハンドリング改善**: 構造体スライスアクセスの詳細なエラーメッセージ提供
+   - **修正コード詳細**:
+     ```rust
+     Object::Struct { type_name, .. } => {
+         match slice_info.slice_type {
+             SliceType::SingleElement => {
+                 if let Some(start_expr) = &slice_info.start {
+                     let struct_name_val = *type_name;
+                     drop(obj_borrowed); // Release borrow before method call
+                     
+                     let start_val = self.evaluate(start_expr)?;
+                     let start_obj = self.extract_value(Ok(start_val))?;
+                     
+                     let struct_name_str = self.string_interner.resolve(struct_name_val)...;
+                     let getitem_method = self.string_interner.get_or_intern("__getitem__");
+                     
+                     let args = vec![start_obj];
+                     self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+                 } else {
+                     Err(InterpreterError::InternalError("Struct access requires index".to_string()))
+                 }
+             }
+             SliceType::RangeSlice => {
+                 Err(InterpreterError::InternalError("Struct slicing not supported".to_string()))
+             }
+         }
+     }
+     ```
+   - **テスト結果の改善**:
+     - **修正前**: integration_new_features_testsで3テスト失敗
+     - **修正後**: **8テスト全て成功（100%成功率）**
+     - **動作確認**: `matrix[0u64]` → 構造体の`__getitem__`メソッドが正常に呼び出され、適切な値を返却
+   - **実装ファイル**:
+     - **interpreter/src/evaluation.rs**: `evaluate_slice_access_with_info`メソッドに構造体サポート追加
+   - **技術的成果**:
+     - **統一アーキテクチャ完成**: 配列、辞書、構造体での統一された`[key]`アクセス構文を実現
+     - **構造体索引演算子**: `__getitem__`メソッドによるカスタム索引操作が完全動作
+     - **型安全性**: 構造体でのインデックスアクセス時の適切な型チェックとメソッド呼び出し
+     - **拡張性**: 新しいSliceInfo統一アーキテクチャでの構造体サポート基盤確立
+
 105. **スライス機能完全実装（SliceInfo統一アーキテクチャ）** ✅ (2025-09-06完了)
    - **対象**: SliceInfo構造体による統一アーキテクチャ実装とスライス機能の大幅改善
    - **主要技術変更**:
@@ -369,5 +458,6 @@
 - **統一インデックスシステム完了** - 配列、辞書、構造体、スライスで一貫した `x[key]` 構文を提供
 - **プロダクションレベル達成** - 深い再帰、複雑ネスト構造を含む実用的プログラム作成が可能
 - **包括的テストスイート** - frontend 221テスト + interpreter 77テスト = 合計298テスト成功（99.3%成功率）
-- **スライス機能完全実用化** - SliceInfo統一アーキテクチャにより28個のslice_testsのうち26個成功（93%成功率）
-- **負のインデックス完全対応** - `a[-1]`, `a[-2..]`, `a[1..-1]` 等のPython/Rust風構文が実用レベルで動作
+- **スライス機能完全実用化** - SliceInfo統一アーキテクチャにより28個のslice_testsが全て成功（100%成功率）
+- **負のインデックス完全対応** - `a[-1]`, `a[-2..]`, `a[1..-1]` 等のPython/Rust風構文が完全動作、負数推論も自動化
+- **構造体索引システム完成** - `__getitem__`メソッドによる構造体でのインデックスアクセスが統一アーキテクチャで完全動作

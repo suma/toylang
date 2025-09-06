@@ -2992,8 +2992,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                     
                     // Find if this Number is associated with a variable and use its final type
-                    // Use type hint if available, otherwise default to UInt64
-                    let mut target_type = self.type_inference.type_hint.clone().unwrap_or(TypeDecl::UInt64);
+                    // Use type hint if available, otherwise determine based on the literal value
+                    let mut target_type = if let Some(hint) = self.type_inference.type_hint.clone() {
+                        hint
+                    } else {
+                        // Check if the number is negative by looking at the actual value
+                        if let Expr::Number(value) = expr {
+                            let num_str = self.core.string_interner.resolve(value)
+                                .unwrap_or("");
+                            if num_str.starts_with('-') {
+                                TypeDecl::Int64  // Negative numbers default to Int64
+                            } else {
+                                TypeDecl::UInt64  // Positive numbers default to UInt64
+                            }
+                        } else {
+                            TypeDecl::UInt64  // Fallback
+                        }
+                    };
                     
                     for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
                         if mapped_expr_ref == &expr_ref {

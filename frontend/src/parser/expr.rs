@@ -475,12 +475,48 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 }
             }
             Some(Kind::BracketOpen) => {
-                // Generic index access - works on any expression
+                // Generic index access or slice - works on any expression
                 let location = parser.current_source_location();
                 parser.next();
-                let index = parser.parse_expr_impl()?;
-                parser.expect_err(&Kind::BracketClose)?;
-                expr = parser.ast_builder.index_access_expr(expr, index, Some(location));
+                
+                // Check for slice syntax [..end], [start..], or [start..end]
+                // First check if we start with ".."
+                if parser.peek() == Some(&Kind::DotDot) {
+                    parser.next();
+                    // [..end] form
+                    if parser.peek() == Some(&Kind::BracketClose) {
+                        // [..] form - slice entire array
+                        parser.next();
+                        expr = parser.ast_builder.slice_access_expr(expr, None, None, Some(location));
+                    } else {
+                        let end = parser.parse_expr_impl()?;
+                        parser.expect_err(&Kind::BracketClose)?;
+                        expr = parser.ast_builder.slice_access_expr(expr, None, Some(end), Some(location));
+                    }
+                } else {
+                    // Parse the first expression
+                    let first_expr = parser.parse_expr_impl()?;
+                    
+                    // Check if this is a slice or regular index
+                    if parser.peek() == Some(&Kind::DotDot) {
+                        parser.next();
+                        // This is a slice [start..] or [start..end]
+                        if parser.peek() == Some(&Kind::BracketClose) {
+                            // [start..] form
+                            parser.next();
+                            expr = parser.ast_builder.slice_access_expr(expr, Some(first_expr), None, Some(location));
+                        } else {
+                            // [start..end] form
+                            let end = parser.parse_expr_impl()?;
+                            parser.expect_err(&Kind::BracketClose)?;
+                            expr = parser.ast_builder.slice_access_expr(expr, Some(first_expr), Some(end), Some(location));
+                        }
+                    } else {
+                        // Regular index access [index]
+                        parser.expect_err(&Kind::BracketClose)?;
+                        expr = parser.ast_builder.index_access_expr(expr, first_expr, Some(location));
+                    }
+                }
             }
             _ => break,
         }

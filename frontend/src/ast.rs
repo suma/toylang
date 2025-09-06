@@ -58,15 +58,15 @@ pub enum ExprType {
     Call = 13,
     String = 14,
     ArrayLiteral = 15,
-    ArrayAccess = 16,
-    FieldAccess = 17,
-    MethodCall = 18,
-    StructLiteral = 19,
-    QualifiedIdentifier = 20,
-    BuiltinMethodCall = 21,
-    BuiltinCall = 22,
-    IndexAccess = 23,
-    IndexAssign = 24,
+    FieldAccess = 16,
+    MethodCall = 17,
+    StructLiteral = 18,
+    QualifiedIdentifier = 19,
+    BuiltinMethodCall = 20,
+    BuiltinCall = 21,
+    IndexAccess = 22,
+    IndexAssign = 23,
+    SliceAccess = 24,
     DictLiteral = 25,
     TupleLiteral = 26,
     TupleAccess = 27,
@@ -382,11 +382,6 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::ArrayLiteral;
                 self.expr_list[index] = Some(elements);
             }
-            Expr::ArrayAccess(array, index_expr) => {
-                self.expr_types[index] = ExprType::ArrayAccess;
-                self.lhs[index] = Some(array);
-                self.rhs[index] = Some(index_expr);
-            }
             Expr::FieldAccess(object, field) => {
                 self.expr_types[index] = ExprType::FieldAccess;
                 self.lhs[index] = Some(object);
@@ -428,6 +423,12 @@ impl ExprPool {
                 self.lhs[index] = Some(object);
                 self.rhs[index] = Some(index_expr);
                 self.third_operand[index] = Some(value);
+            }
+            Expr::SliceAccess(object, start, end) => {
+                self.expr_types[index] = ExprType::SliceAccess;
+                self.lhs[index] = Some(object);
+                self.rhs[index] = start;
+                self.third_operand[index] = end;
             }
             Expr::DictLiteral(entries) => {
                 self.expr_types[index] = ExprType::DictLiteral;
@@ -514,12 +515,6 @@ impl ExprPool {
             ExprType::ArrayLiteral => {
                 Some(Expr::ArrayLiteral(self.expr_list[index].clone()?))
             }
-            ExprType::ArrayAccess => {
-                Some(Expr::ArrayAccess(
-                    self.lhs[index]?,
-                    self.rhs[index]?
-                ))
-            }
             ExprType::FieldAccess => {
                 Some(Expr::FieldAccess(
                     self.lhs[index]?,
@@ -566,6 +561,13 @@ impl ExprPool {
                     self.lhs[index]?,
                     self.rhs[index]?,
                     self.third_operand[index]?
+                ))
+            }
+            ExprType::SliceAccess => {
+                Some(Expr::SliceAccess(
+                    self.lhs[index]?,
+                    self.rhs[index],
+                    self.third_operand[index]
                 ))
             }
             ExprType::DictLiteral => {
@@ -714,6 +716,12 @@ impl ExprPool {
                 self.rhs[index] = Some(index_expr);
                 self.third_operand[index] = Some(value);
             }
+            Expr::SliceAccess(obj, start, end) => {
+                self.expr_types[index] = ExprType::SliceAccess;
+                self.lhs[index] = Some(obj);
+                self.rhs[index] = start;
+                self.third_operand[index] = end;
+            }
             Expr::DictLiteral(entries) => {
                 self.expr_types[index] = ExprType::DictLiteral;
                 self.entry_list[index] = Some(entries);
@@ -737,11 +745,6 @@ impl ExprPool {
             Expr::String(sym) => {
                 self.expr_types[index] = ExprType::String;
                 self.symbol_val[index] = Some(sym);
-            }
-            Expr::ArrayAccess(array, index_expr) => {
-                self.expr_types[index] = ExprType::ArrayAccess;
-                self.lhs[index] = Some(array);
-                self.rhs[index] = Some(index_expr);
             }
             Expr::FieldAccess(obj, field) => {
                 self.expr_types[index] = ExprType::FieldAccess;
@@ -1125,11 +1128,6 @@ impl AstBuilder {
         expr_ref
     }
     
-    pub fn array_access_expr(&mut self, array: ExprRef, index: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::ArrayAccess(array, index));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
     
     pub fn index_access_expr(&mut self, object: ExprRef, index: ExprRef, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::IndexAccess(object, index));
@@ -1139,6 +1137,12 @@ impl AstBuilder {
     
     pub fn index_assign_expr(&mut self, object: ExprRef, index: ExprRef, value: ExprRef, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::IndexAssign(object, index, value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
+    pub fn slice_access_expr(&mut self, object: ExprRef, start: Option<ExprRef>, end: Option<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::SliceAccess(object, start, end));
         self.location_pool.add_expr_location(location);
         expr_ref
     }
@@ -1375,7 +1379,6 @@ pub enum Expr {
     Call(DefaultSymbol, ExprRef), // apply, function call, etc
     String(DefaultSymbol),
     ArrayLiteral(Vec<ExprRef>),  // [1, 2, 3, 4, 5]
-    ArrayAccess(ExprRef, ExprRef),  // a[0]
     FieldAccess(ExprRef, DefaultSymbol),  // obj.field
     MethodCall(ExprRef, DefaultSymbol, Vec<ExprRef>),  // obj.method(args)
     StructLiteral(DefaultSymbol, Vec<(DefaultSymbol, ExprRef)>),  // Point { x: 10, y: 20 }
@@ -1384,6 +1387,7 @@ pub enum Expr {
     BuiltinCall(BuiltinFunction, Vec<ExprRef>),  // __builtin_heap_alloc(), __builtin_print_ln(), etc.
     IndexAccess(ExprRef, ExprRef),  // x[key] - generic index access
     IndexAssign(ExprRef, ExprRef, ExprRef),  // x[key] = value - index assignment
+    SliceAccess(ExprRef, Option<ExprRef>, Option<ExprRef>),  // arr[start..end] - slice access
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access

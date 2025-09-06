@@ -46,6 +46,7 @@ pub enum Kind {
     BracketClose,
     Comma,
     Dot,
+    DotDot,      // ..
     DoubleColon,
     Colon,
     Semicolon,   // ;

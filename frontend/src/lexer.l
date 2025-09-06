@@ -65,6 +65,7 @@ macro_rules! token {
 "["         return Ok(token!(self, Kind::BracketOpen));
 "]"         return Ok(token!(self, Kind::BracketClose));
 ","         return Ok(token!(self, Kind::Comma));
+".."        return Ok(token!(self, Kind::DotDot));
 "."         return Ok(token!(self, Kind::Dot));
 ":"         return Ok(token!(self, Kind::Colon));
 ";"         return Ok(token!(self, Kind::Semicolon));

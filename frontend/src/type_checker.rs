@@ -472,7 +472,6 @@ impl Acceptable for Expr {
             Expr::Null => visitor.visit_null_literal(),
             Expr::ExprList(items) => visitor.visit_expr_list(items),
             Expr::ArrayLiteral(elements) => visitor.visit_array_literal(elements),
-            Expr::ArrayAccess(array, index) => visitor.visit_array_access(array, index),
             Expr::FieldAccess(obj, field) => visitor.visit_field_access(obj, field),
             Expr::MethodCall(obj, method, args) => visitor.visit_method_call(obj, method, args),
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
@@ -485,6 +484,10 @@ impl Acceptable for Expr {
             Expr::IndexAssign(object, index, value) => {
                 eprintln!("DEBUG: Processing IndexAssign expression");
                 visitor.visit_index_assign(object, index, value)
+            },
+            Expr::SliceAccess(object, start, end) => {
+                eprintln!("DEBUG: Processing SliceAccess expression");
+                visitor.visit_slice_access(object, start, end)
             },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
             Expr::BuiltinCall(func, args) => visitor.visit_builtin_call(func, args),
@@ -1199,53 +1202,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
 
-    fn visit_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let array_type = self.visit_expr(array)?;
-        
-        // Set type hint for index to UInt64 (default for array indexing)
-        let original_hint = self.type_inference.type_hint.clone();
-        self.type_inference.type_hint = Some(TypeDecl::UInt64);
-        
-        let index_type = self.visit_expr(index)?;
-        
-        // Restore original type hint
-        self.type_inference.type_hint = original_hint;
-
-        // Handle index type inference and conversion
-        let _final_index_type = match index_type {
-            TypeDecl::Number => {
-                // Transform Number index to UInt64 (default for array indexing)
-                self.transform_numeric_expr(index, &TypeDecl::UInt64)?;
-                TypeDecl::UInt64
-            },
-            TypeDecl::Unknown => {
-                // Infer index as UInt64 for unknown types (likely variables)
-                TypeDecl::UInt64
-            },
-            TypeDecl::UInt64 | TypeDecl::Int64 => {
-                // Already a valid integer type
-                index_type
-            },
-            _ => {
-                return Err(TypeCheckError::array_error(&format!(
-                    "Array index must be an integer type, but got {:?}", index_type
-                )));
-            }
-        };
-
-        // Array must be an array type
-        match array_type {
-            TypeDecl::Array(ref element_types, _size) => {
-                if element_types.is_empty() {
-                    return Err(TypeCheckError::array_error("Cannot access elements of empty array"));
-                }
-                Ok(element_types[0].clone())
-            }
-            _ => Err(TypeCheckError::array_error(&format!(
-                "Cannot index into non-array type {:?}", array_type
-            )))
-        }
-    }
     
     fn visit_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let object_type = self.visit_expr(object)?;
@@ -1314,6 +1270,44 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             _ => {
                 Err(TypeCheckError::generic_error(&format!(
                     "Cannot index into type {:?}", object_type
+                )))
+            }
+        }
+    }
+    
+    fn visit_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        let object_type = self.visit_expr(object)?;
+        
+        match object_type {
+            TypeDecl::Array(ref element_types, size) => {
+                // Validate start index if provided
+                if let Some(start_expr) = start {
+                    let original_hint = self.type_inference.type_hint.clone();
+                    self.type_inference.type_hint = Some(TypeDecl::UInt64);
+                    let _start_type = self.visit_expr(start_expr)?;
+                    self.type_inference.type_hint = original_hint;
+                }
+                
+                // Validate end index if provided  
+                if let Some(end_expr) = end {
+                    let original_hint = self.type_inference.type_hint.clone();
+                    self.type_inference.type_hint = Some(TypeDecl::UInt64);
+                    let _end_type = self.visit_expr(end_expr)?;
+                    self.type_inference.type_hint = original_hint;
+                }
+                
+                if element_types.is_empty() {
+                    return Err(TypeCheckError::array_error("Cannot slice empty array"));
+                }
+                
+                // For now, we can't determine the exact size at compile time,
+                // so we'll return the same array type with original size
+                // The actual size will be validated at runtime
+                Ok(TypeDecl::Array(element_types.clone(), size))
+            }
+            _ => {
+                Err(TypeCheckError::generic_error(&format!(
+                    "Cannot slice type {:?} - only arrays are supported", object_type
                 )))
             }
         }

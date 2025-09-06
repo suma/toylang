@@ -2,6 +2,46 @@
 
 ## 完了済み ✅
 
+101. **配列スライス機能 Phase 1 (基本範囲指定) 完全実装** ✅ (2025-09-06完了)
+   - **対象**: 配列の部分配列アクセス機能 `arr[start..end]` の実装
+   - **実装した機能**:
+     - **基本スライス構文**: `arr[start..end]`, `arr[..end]`, `arr[start..]`, `arr[..]` をサポート
+     - **型推論対応**: 数値リテラルはu64サフィックス有無どちらでも使用可能
+     - **実行時安全性**: 境界外アクセス、不正範囲（start > end）のエラー処理
+     - **メモリ効率**: スライス結果は新しい配列として作成（元配列に影響なし）
+   - **技術的実装**:
+     - **AST拡張**: `SliceAccess(ExprRef, Option<ExprRef>, Option<ExprRef>)` 新規追加
+     - **レクサー拡張**: `..` トークン (`Kind::DotDot`) のサポート追加
+     - **パーサー拡張**: 4種類のスライス構文の完全解析対応
+     - **型チェッカー拡張**: スライス式の型検証とインデックス型推論
+     - **インタープリター拡張**: ランタイムスライス処理と範囲検証
+   - **コードクリーンアップ**:
+     - **重複排除**: `ArrayAccess` を削除し `IndexAccess` に統一
+     - **API一貫性**: 全てのインデックス操作を統一インターフェースに集約
+   - **構文例**:
+     - `arr[1..3]` → 1番目から3番目手前まで `[arr[1], arr[2]]`
+     - `arr[..3]` → 最初から3番目手前まで `[arr[0], arr[1], arr[2]]`
+     - `arr[2..]` → 2番目から最後まで `[arr[2], arr[3], ...]`
+     - `arr[..]` → 全体をコピー `[arr[0], arr[1], ..., arr[n-1]]`
+   - **テスト結果**: 包括的テストスイート作成
+     - u64サフィックス有無両方のパターンテスト
+     - エラーケース検証（境界外、無効範囲）
+     - ネストしたスライス操作の検証
+     - i64配列での動作確認
+   - **実装ファイル**:
+     - **frontend/src/ast.rs**: AST型拡張とbuilder API追加
+     - **frontend/src/lexer.l**: `..` トークン定義
+     - **frontend/src/parser/expr.rs**: スライス構文解析ロジック
+     - **frontend/src/type_checker.rs**: スライス型検証実装
+     - **frontend/src/visitor.rs**: visitor pattern拡張
+     - **interpreter/src/evaluation.rs**: スライス実行時処理
+     - **interpreter/tests/slice_tests.rs**: 包括的テストスイート
+   - **技術的成果**:
+     - **言語表現力向上**: 配列操作がより直感的で柔軟に
+     - **型安全性**: コンパイル時の型検証とランタイム範囲チェック
+     - **パフォーマンス**: メモリ効率的なスライス実装
+     - **拡張基盤確立**: Phase 2 (..= 構文) やPhase 3 (負のインデックス) への準備完了
+
 100. **Structure of Arrays (multiarraylist) パターンへの変換と数値変換機能の復旧** ✅ (2025-09-03完了)
    - **対象**: フロントエンドASTをFlat ASTsからZigのStructure of Arrays (multiarraylist) パターンに変換し、hex literalの数値変換機能を完全復旧
    - **主要変更内容**:
@@ -150,5 +190,8 @@
 - **文字列メモリ効率化完了** - String Interner汚染回避、動的文字列の直接アクセス、不変vs可変の型レベル区別
 - **Go-style module system fully implemented** - Complete 4-phase implementation (syntax, resolution, type checking, runtime)
 - **Module namespace support** - Package declarations, import statements, qualified name resolution
+- **配列スライス機能が完全実装済み** - `arr[start..end]`, `arr[..end]`, `arr[start..]`, `arr[..]` 構文をサポート
+- 型推論対応スライス：数値リテラル（u64サフィックス有無）、境界チェック、メモリ安全な部分配列作成
+- **統一インデックスシステム完了** - 配列、辞書、構造体、スライスで一貫した `x[key]` 構文を提供
 - **プロダクションレベル達成** - 深い再帰、複雑ネスト構造を含む実用的プログラム作成が可能
 - **包括的テストスイート** - frontend 221テスト + interpreter 74テスト = 合計295テスト成功（100%成功率）

@@ -655,9 +655,6 @@ impl<'a> EvaluationContext<'a> {
             Expr::ArrayLiteral(elements) => {
                 self.evaluate_array_literal(&elements)
             }
-            Expr::ArrayAccess(array, index) => {
-                self.evaluate_array_access(&array, &index)
-            }
             Expr::FieldAccess(obj, field) => {
                 self.evaluate_field_access(&obj, &field)
             }
@@ -684,6 +681,9 @@ impl<'a> EvaluationContext<'a> {
             }
             Expr::IndexAssign(object, index, value) => {
                 self.evaluate_index_assign(&object, &index, &value)
+            }
+            Expr::SliceAccess(object, start, end) => {
+                self.evaluate_slice_access(&object, &start, &end)
             }
             Expr::DictLiteral(entries) => {
                 self.evaluate_dict_literal(&entries)
@@ -829,41 +829,6 @@ impl<'a> EvaluationContext<'a> {
             array_objects.push(obj);
         }
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(array_objects))))))
-    }
-
-    /// Evaluates array access expressions
-    fn evaluate_array_access(&mut self, array: &ExprRef, index: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let array_value = self.evaluate(array)?;
-        let array_obj = self.extract_value(Ok(array_value))?;
-        let index_value = self.evaluate(index)?;
-        let index_obj = self.extract_value(Ok(index_value))?;
-        
-        let array_borrowed = array_obj.borrow();
-        let index_borrowed = index_obj.borrow();
-        
-        let array_vec = array_borrowed.try_unwrap_array()
-            .map_err(InterpreterError::ObjectError)?;
-            
-        let index_val = match &*index_borrowed {
-            Object::UInt64(i) => *i as usize,
-            Object::Int64(i) => {
-                if *i < 0 {
-                    return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: array_vec.len() });
-                }
-                *i as usize
-            }
-            _ => return Err(InterpreterError::TypeError {
-                expected: TypeDecl::UInt64,
-                found: index_borrowed.get_type(),
-                message: "Array index must be an integer".to_string()
-            })
-        };
-        
-        if index_val >= array_vec.len() {
-            return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
-        }
-        
-        Ok(EvaluationResult::Value(array_vec[index_val].clone()))
     }
 
     /// Evaluates field access expressions
@@ -1285,7 +1250,6 @@ impl<'a> EvaluationContext<'a> {
         if let Some(lhs_expr) = self.expr_pool.get(&lhs) {
             match lhs_expr {
                 Expr::Identifier(name) => self.handle_variable_assignment(name, rhs),
-                Expr::ArrayAccess(array, index) => self.handle_array_element_assignment(&array, &index, rhs),
                 _ => {
                     Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
                 }
@@ -1341,65 +1305,6 @@ impl<'a> EvaluationContext<'a> {
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(cloned_value))))
     }
 
-    /// Handles array element assignment
-    fn handle_array_element_assignment(&mut self, array: &ExprRef, index: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let array_value = self.evaluate(array)?;
-        let array_obj = self.extract_value(Ok(array_value))?;
-        let index_value = self.evaluate(index)?;
-        let index_obj = self.extract_value(Ok(index_value))?;
-        
-        // Handle null expressions specially in array element assignments
-        let expr = self.expr_pool.get(&rhs)
-            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
-        
-        let rhs_obj = match expr {
-            Expr::Null => {
-                // Use pre-created null object for array element assignments
-                self.null_object.clone()
-            }
-            _ => {
-                let rhs_value = self.evaluate(rhs)?;
-                self.extract_value(Ok(rhs_value))?
-            }
-        };
-        
-        let index_borrowed = index_obj.borrow();
-        let index_val = match &*index_borrowed {
-            Object::UInt64(i) => *i as usize,
-            Object::Int64(i) => {
-                if *i < 0 {
-                    return Err(InterpreterError::IndexOutOfBounds { index: *i as isize, size: 0 });
-                }
-                *i as usize
-            }
-            _ => return Err(InterpreterError::TypeError {
-                expected: TypeDecl::UInt64,
-                found: index_borrowed.get_type(),
-                message: "Array index must be an integer".to_string()
-            })
-        };
-        
-        let mut array_borrowed = array_obj.borrow_mut();
-        let array_vec = array_borrowed.unwrap_array_mut();
-        
-        if index_val >= array_vec.len() {
-            return Err(InterpreterError::IndexOutOfBounds { index: index_val as isize, size: array_vec.len() });
-        }
-        
-        // Type check
-        let existing_element_type = array_vec[index_val].borrow().get_type();
-        let rhs_type = rhs_obj.borrow().get_type();
-        if existing_element_type != rhs_type {
-            return Err(InterpreterError::TypeError {
-                expected: existing_element_type,
-                found: rhs_type,
-                message: "Array element assignment type mismatch".to_string()
-            });
-        }
-        
-        array_vec[index_val] = rhs_obj.clone();
-        Ok(EvaluationResult::Value(rhs_obj))
-    }
 
     /// Handles identifier expressions
     fn handle_identifier_expression(&mut self, symbol: DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
@@ -1677,6 +1582,70 @@ impl EvaluationContext<'_> {
                 self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
             }
             _ => Err(InterpreterError::InternalError(format!("Cannot index into type {:?}", obj_borrowed.get_type())))
+        }
+    }
+    
+    fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+        let object_val = self.evaluate(object)?;
+        let object_obj = self.extract_value(Ok(object_val))?;
+        
+        let obj_borrowed = object_obj.borrow();
+        match &*obj_borrowed {
+            Object::Array(elements) => {
+                let array_len = elements.len();
+                
+                // Evaluate start index (default to 0)
+                let start_idx = if let Some(start_expr) = start {
+                    let start_val = self.evaluate(start_expr)?;
+                    let start_obj = self.extract_value(Ok(start_val))?;
+                    let start_borrowed = start_obj.borrow();
+                    match &*start_borrowed {
+                        Object::UInt64(idx) => *idx as usize,
+                        _ => return Err(InterpreterError::InternalError("Slice start index must be UInt64".to_string()))
+                    }
+                } else {
+                    0
+                };
+                
+                // Evaluate end index (default to array length)
+                let end_idx = if let Some(end_expr) = end {
+                    let end_val = self.evaluate(end_expr)?;
+                    let end_obj = self.extract_value(Ok(end_val))?;
+                    let end_borrowed = end_obj.borrow();
+                    match &*end_borrowed {
+                        Object::UInt64(idx) => *idx as usize,
+                        _ => return Err(InterpreterError::InternalError("Slice end index must be UInt64".to_string()))
+                    }
+                } else {
+                    array_len
+                };
+                
+                // Validate indices
+                if start_idx > array_len {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: start_idx as isize, 
+                        size: array_len 
+                    });
+                }
+                if end_idx > array_len {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: end_idx as isize, 
+                        size: array_len 
+                    });
+                }
+                if start_idx > end_idx {
+                    return Err(InterpreterError::InternalError(
+                        format!("Invalid slice range: start ({}) > end ({})", start_idx, end_idx)
+                    ));
+                }
+                
+                // Create the slice
+                let slice_elements = elements[start_idx..end_idx].to_vec();
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+            }
+            _ => Err(InterpreterError::InternalError(
+                format!("Cannot slice non-array type: {:?}", obj_borrowed.get_type())
+            ))
         }
     }
     

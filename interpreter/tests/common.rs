@@ -56,6 +56,46 @@ pub fn assert_program_result_string(source_code: &str, expected: &str) {
     }
 }
 
+/// Helper function to execute a program and assert the result is a u64 array
+pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
+    let result = test_program(source_code)
+        .expect("Program execution failed");
+    let borrowed = result.borrow();
+    match &*borrowed {
+        Object::Array(elements) => {
+            assert_eq!(elements.len(), expected.len(), "Array length mismatch");
+            for (i, elem) in elements.iter().enumerate() {
+                let elem_borrowed = elem.borrow();
+                match &*elem_borrowed {
+                    Object::UInt64(val) => assert_eq!(*val, expected[i], "Element {} mismatch", i),
+                    other => panic!("Expected UInt64 at index {} but got {:?}", i, other),
+                }
+            }
+        }
+        other => panic!("Expected Array but got {:?}", other),
+    }
+}
+
+/// Helper function to execute a program and assert the result is an i64 array
+pub fn assert_program_result_array_i64(source_code: &str, expected: Vec<i64>) {
+    let result = test_program(source_code)
+        .expect("Program execution failed");
+    let borrowed = result.borrow();
+    match &*borrowed {
+        Object::Array(elements) => {
+            assert_eq!(elements.len(), expected.len(), "Array length mismatch");
+            for (i, elem) in elements.iter().enumerate() {
+                let elem_borrowed = elem.borrow();
+                match &*elem_borrowed {
+                    Object::Int64(val) => assert_eq!(*val, expected[i], "Element {} mismatch", i),
+                    other => panic!("Expected Int64 at index {} but got {:?}", i, other),
+                }
+            }
+        }
+        other => panic!("Expected Array but got {:?}", other),
+    }
+}
+
 /// Helper function to execute a program and expect it to fail
 pub fn assert_program_fails(source_code: &str) {
     let result = test_program(source_code);

@@ -1240,6 +1240,10 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
                             let start_type = self.visit_expr(start_expr)?;
                             self.type_inference.type_hint = original_hint;
+
+                            if start_type == TypeDecl::UInt64 {
+                                self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
+                            }
                             
                             // Allow UInt64, Int64, or transform Number
                             match start_type {
@@ -1392,7 +1396,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                                 // Valid index types
                             }
                             TypeDecl::Number => {
-                                // Transform Number index to Int64 (could be negative)
                                 self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
                             }
                             _ => {
@@ -1407,13 +1410,28 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     if !element_types.is_empty() {
                         let expected_element_type = &element_types[0];
                         let resolved_value_type = if value_type == TypeDecl::Number {
-                            self.transform_numeric_expr(value, expected_element_type)?;
-                            expected_element_type.clone()
+                            // If expected element type is also Number, use UInt64 as default
+                            let target_type = if *expected_element_type == TypeDecl::Number {
+                                &TypeDecl::UInt64
+                            } else {
+                                expected_element_type
+                            };
+                            self.transform_numeric_expr(value, target_type)?;
+                            target_type.clone()
                         } else {
                             value_type.clone()
                         };
                         
-                        if *expected_element_type != resolved_value_type {
+                        // Allow Number type to be compatible with any numeric type
+                        let types_compatible = if *expected_element_type == TypeDecl::Number {
+                            matches!(resolved_value_type, TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Number)
+                        } else if resolved_value_type == TypeDecl::Number {
+                            matches!(*expected_element_type, TypeDecl::UInt64 | TypeDecl::Int64)
+                        } else {
+                            *expected_element_type == resolved_value_type
+                        };
+                        
+                        if !types_compatible {
                             return Err(TypeCheckError::generic_error(&format!(
                                 "Array element type mismatch: expected {:?}, found {:?}", 
                                 expected_element_type, resolved_value_type
@@ -2523,6 +2541,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // Handle Number types when no type hint was provided
+        if original_hint.is_none() {
+            for (i, element) in elements.iter().enumerate() {
+                if element_types[i] == TypeDecl::Number {
+                    // Transform Number to default UInt64 when no hint is available
+                    self.transform_numeric_expr(element, &TypeDecl::UInt64)?;
+                    element_types[i] = TypeDecl::UInt64;
+                }
+            }
+        }
+
         // Restore the original type hint
         self.type_inference.type_hint = original_hint;
 
@@ -2767,24 +2796,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             (None, _) => expr_ty.clone(),
             _ => expr_ty.clone(),
         }
-    }
-
-    // Transform UInt64 expression to Int64 in the expression pool
-    fn transform_uint64_to_int64(&mut self, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
-            if let Expr::UInt64(uint_val) = &expr {
-                // Check if the UInt64 value can fit in Int64
-                if *uint_val <= (i64::MAX as u64) {
-                    let int_val = *uint_val as i64;
-                    let new_expr = Expr::Int64(int_val);
-                    // Update the expression in the pool
-                    self.core.expr_pool.update(expr_ref, new_expr);
-                } else {
-                    return Err(TypeCheckError::conversion_error(&uint_val.to_string(), "Int64 (value too large)"));
-                }
-            }
-        }
-        Ok(())
     }
 
     // Transform Expr::Number nodes to concrete types based on resolved types
@@ -3215,7 +3226,8 @@ mod tests {
             TypeCheckErrorKind::ArrayError { message } => {
                 assert!(message.contains("must have the same type"));
                 assert!(message.contains("Bool"));
-                assert!(message.contains("Number"));
+                // Number might be converted to UInt64, so check for either
+                assert!(message.contains("Number") || message.contains("UInt64"));
             },
             _ => panic!("Expected ArrayError, got {:?}", error.kind),
         }

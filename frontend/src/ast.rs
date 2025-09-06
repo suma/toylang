@@ -4,6 +4,47 @@ use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum SliceType {
+    SingleElement,    // a[index] 
+    RangeSlice,       // a[start..end], a[start..], a[..end], a[..]
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SliceInfo {
+    pub start: Option<ExprRef>,
+    pub end: Option<ExprRef>,
+    pub has_dotdot: bool,  // Whether DotDot syntax was used
+    pub slice_type: SliceType,
+}
+
+impl SliceInfo {
+    pub fn single_element(index: ExprRef) -> Self {
+        SliceInfo {
+            start: Some(index),
+            end: None,
+            has_dotdot: false,
+            slice_type: SliceType::SingleElement,
+        }
+    }
+    
+    pub fn range_slice(start: Option<ExprRef>, end: Option<ExprRef>) -> Self {
+        SliceInfo {
+            start,
+            end,
+            has_dotdot: true,
+            slice_type: SliceType::RangeSlice,
+        }
+    }
+    
+    pub fn is_valid_for_dict(&self) -> bool {
+        match self.slice_type {
+            SliceType::SingleElement => true,  // dict[key] is OK
+            SliceType::RangeSlice => false,    // dict[start..end] is not supported
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ExprRef(pub u32);
 
@@ -38,6 +79,7 @@ pub struct ExprPool {
     pub builtin_function: Vec<Option<BuiltinFunction>>,
     pub index_val: Vec<Option<usize>>,             // For tuple access
     pub third_operand: Vec<Option<ExprRef>>,       // For index assign (value), if-elif-else (else block)
+    pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -252,6 +294,7 @@ impl ExprPool {
             builtin_function: Vec::new(),
             index_val: Vec::new(),
             third_operand: Vec::new(),
+            slice_info: Vec::new(),
         }
     }
     
@@ -276,6 +319,7 @@ impl ExprPool {
             builtin_function: Vec::with_capacity(cap),
             index_val: Vec::with_capacity(cap),
             third_operand: Vec::with_capacity(cap),
+            slice_info: Vec::with_capacity(cap),
         }
     }
 
@@ -302,6 +346,7 @@ impl ExprPool {
             self.builtin_function.resize(current_len + extend_count, None);
             self.index_val.resize(current_len + extend_count, None);
             self.third_operand.resize(current_len + extend_count, None);
+            self.slice_info.resize(current_len + extend_count, None);
         }
     }
 
@@ -419,11 +464,10 @@ impl ExprPool {
                 self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
             }
-            Expr::SliceAccess(object, start, end) => {
+            Expr::SliceAccess(object, slice_info) => {
                 self.expr_types[index] = ExprType::SliceAccess;
                 self.lhs[index] = Some(object);
-                self.rhs[index] = start;
-                self.third_operand[index] = end;
+                self.slice_info[index] = Some(slice_info);
             }
             Expr::DictLiteral(entries) => {
                 self.expr_types[index] = ExprType::DictLiteral;
@@ -556,8 +600,7 @@ impl ExprPool {
             ExprType::SliceAccess => {
                 Some(Expr::SliceAccess(
                     self.lhs[index]?,
-                    self.rhs[index],
-                    self.third_operand[index]
+                    self.slice_info[index].clone()?
                 ))
             }
             ExprType::DictLiteral => {
@@ -702,11 +745,10 @@ impl ExprPool {
                 self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
             }
-            Expr::SliceAccess(obj, start, end) => {
+            Expr::SliceAccess(obj, slice_info) => {
                 self.expr_types[index] = ExprType::SliceAccess;
                 self.lhs[index] = Some(obj);
-                self.rhs[index] = start;
-                self.third_operand[index] = end;
+                self.slice_info[index] = Some(slice_info);
             }
             Expr::DictLiteral(entries) => {
                 self.expr_types[index] = ExprType::DictLiteral;
@@ -1121,8 +1163,8 @@ impl AstBuilder {
         expr_ref
     }
     
-    pub fn slice_access_expr(&mut self, object: ExprRef, start: Option<ExprRef>, end: Option<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::SliceAccess(object, start, end));
+    pub fn slice_access_expr(&mut self, object: ExprRef, slice_info: SliceInfo, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::SliceAccess(object, slice_info));
         self.location_pool.add_expr_location(location);
         expr_ref
     }
@@ -1365,7 +1407,7 @@ pub enum Expr {
     QualifiedIdentifier(Vec<DefaultSymbol>),  // math::add
     BuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>),  // "hello".len(), str.concat("world")
     BuiltinCall(BuiltinFunction, Vec<ExprRef>),  // __builtin_heap_alloc(), __builtin_print_ln(), etc.
-    SliceAccess(ExprRef, Option<ExprRef>, Option<ExprRef>),  // arr[start..end] - slice access, arr[i] as arr[i..i+1]
+    SliceAccess(ExprRef, SliceInfo),  // arr[start..end] - slice access, arr[i] as single element access
     SliceAssign(ExprRef, Option<ExprRef>, Option<ExprRef>, ExprRef),  // arr[start..end] = value, arr[i] = value
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal

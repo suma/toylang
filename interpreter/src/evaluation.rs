@@ -679,8 +679,8 @@ impl<'a> EvaluationContext<'a> {
             Expr::SliceAssign(object, start, end, value) => {
                 self.evaluate_slice_assign(&object, &start, &end, &value)
             }
-            Expr::SliceAccess(object, start, end) => {
-                self.evaluate_slice_access(&object, &start, &end)
+            Expr::SliceAccess(object, slice_info) => {
+                self.evaluate_slice_access_with_info(&object, &slice_info)
             }
             Expr::DictLiteral(entries) => {
                 self.evaluate_dict_literal(&entries)
@@ -1569,6 +1569,115 @@ impl EvaluationContext<'_> {
         }
     }
 
+    fn evaluate_slice_access_with_info(&mut self, object: &ExprRef, slice_info: &SliceInfo) -> Result<EvaluationResult, InterpreterError> {
+        let object_val = self.evaluate(object)?;
+        let object_obj = self.extract_value(Ok(object_val))?;
+        
+        let obj_borrowed = object_obj.borrow();
+        match &*obj_borrowed {
+            Object::Array(elements) => {
+                let array_len = elements.len();
+                
+                // Evaluate start index (default to 0)
+                let start_idx = if let Some(start_expr) = &slice_info.start {
+                    let start_val = self.evaluate(start_expr)?;
+                    let start_obj = self.extract_value(Ok(start_val))?;
+                    self.resolve_array_index(&start_obj, array_len)?
+                } else {
+                    0
+                };
+                
+                // Evaluate end index (default to array length)
+                let end_idx = if let Some(end_expr) = &slice_info.end {
+                    let end_val = self.evaluate(end_expr)?;
+                    let end_obj = self.extract_value(Ok(end_val))?;
+                    // Use same logic as in original function for end index
+                    let borrowed = end_obj.borrow();
+                    match &*borrowed {
+                        Object::UInt64(idx) => {
+                            let idx = *idx as usize;
+                            if idx > array_len {
+                                return Err(InterpreterError::IndexOutOfBounds { 
+                                    index: idx as isize, 
+                                    size: array_len 
+                                });
+                            }
+                            idx
+                        }
+                        Object::Int64(idx) => {
+                            if *idx >= 0 {
+                                let idx = *idx as usize;
+                                if idx > array_len {
+                                    return Err(InterpreterError::IndexOutOfBounds { 
+                                        index: idx as isize, 
+                                        size: array_len 
+                                    });
+                                }
+                                idx
+                            } else {
+                                // Negative end index: convert to positive
+                                let abs_idx = (-*idx) as usize;
+                                if abs_idx > array_len {
+                                    return Err(InterpreterError::IndexOutOfBounds { 
+                                        index: *idx as isize, 
+                                        size: array_len 
+                                    });
+                                }
+                                array_len - abs_idx
+                            }
+                        }
+                        _ => return Err(InterpreterError::InternalError("Array index must be an integer".to_string()))
+                    }
+                } else {
+                    array_len
+                };
+                
+                // Validate indices
+                if start_idx > array_len {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: start_idx as isize, 
+                        size: array_len 
+                    });
+                }
+                if end_idx > array_len {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: end_idx as isize, 
+                        size: array_len 
+                    });
+                }
+                if start_idx > end_idx {
+                    return Err(InterpreterError::InternalError(
+                        format!("Invalid slice range: start ({}) > end ({})", start_idx, end_idx)
+                    ));
+                }
+                
+                // Use SliceInfo to distinguish single element vs range slice
+                match slice_info.slice_type {
+                    SliceType::SingleElement => {
+                        // Single element access: arr[i] returns the element directly
+                        if start_idx >= array_len {
+                            return Err(InterpreterError::IndexOutOfBounds { 
+                                index: start_idx as isize, 
+                                size: array_len 
+                            });
+                        }
+                        Ok(EvaluationResult::Value(elements[start_idx].clone()))
+                    }
+                    SliceType::RangeSlice => {
+                        // Range slice: arr[start..end] returns array
+                        let slice_elements = elements[start_idx..end_idx].to_vec();
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+                    }
+                }
+            }
+            Object::Dict(_dict) => {
+                // Dictionary access uses the original method
+                self.evaluate_slice_access(object, &slice_info.start, &slice_info.end)
+            }
+            _ => Err(InterpreterError::InternalError("Slice access is only supported on arrays and dictionaries".to_string()))
+        }
+    }
+    
     fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let object_val = self.evaluate(object)?;
         let object_obj = self.extract_value(Ok(object_val))?;

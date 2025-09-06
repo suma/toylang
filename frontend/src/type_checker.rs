@@ -311,11 +311,20 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn process_val_type(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let expr_ty = match expr {
             Some(e) => {
+                // Set type hint for proper type inference
+                let old_hint = self.setup_type_hint_for_val(type_decl);
                 let ty = self.visit_expr(e)?;
-                if ty == TypeDecl::Unit {
-                    return Err(TypeCheckError::type_mismatch(TypeDecl::Unknown, ty));
+                
+                // Apply type transformations and get final type
+                self.apply_type_transformations_for_expr(type_decl, &ty, e)?;
+                let final_ty = self.determine_final_type_for_expr(type_decl, &ty);
+                
+                // Restore previous hint
+                self.type_inference.type_hint = old_hint;
+                if final_ty == TypeDecl::Unit {
+                    return Err(TypeCheckError::type_mismatch(TypeDecl::Unknown, final_ty.clone()));
                 }
-                Some(ty)
+                Some(final_ty)
             }
             None => None,
         };
@@ -434,7 +443,25 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Check if the function body type matches the declared return type
         if let Some(ref expected_return_type) = func.return_type {
-            if &last != expected_return_type {
+            let types_match = match (&last, expected_return_type) {
+                // Special case for arrays: if actual type has size 0 (dynamic), check if element types are compatible
+                (TypeDecl::Array(actual_elements, 0), TypeDecl::Array(expected_elements, _)) => {
+                    // For dynamic arrays (slice results), check if element types are compatible
+                    if expected_elements.is_empty() {
+                        // Empty array expected - this is always compatible with dynamic slice
+                        true
+                    } else if actual_elements.len() == 1 && !expected_elements.is_empty() {
+                        // All expected elements should be the same type as the single actual element
+                        expected_elements.iter().all(|expected_elem| expected_elem == &actual_elements[0])
+                    } else {
+                        actual_elements == expected_elements
+                    }
+                }
+                // Regular type comparison
+                _ => &last == expected_return_type
+            };
+            
+            if !types_match {
                 // Create location information from function node with calculated line and column
                 let func_location = self.node_to_source_location(&func.node);
                 
@@ -478,11 +505,10 @@ impl Acceptable for Expr {
             Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
             Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
             Expr::SliceAssign(object, start, end, value) => {
-                eprintln!("DEBUG: Processing SliceAssign expression");
                 visitor.visit_slice_assign(object, start, end, value)
             },
-            Expr::SliceAccess(object, start, end) => {
-                visitor.visit_slice_access(object, start, end)
+            Expr::SliceAccess(object, slice_info) => {
+                visitor.visit_slice_access(object, slice_info)
             },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
             Expr::BuiltinCall(func, args) => visitor.visit_builtin_call(func, args),
@@ -1200,56 +1226,55 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     
     
-    fn visit_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_slice_access(&mut self, object: &ExprRef, slice_info: &SliceInfo) -> Result<TypeDecl, TypeCheckError> {
         let object_type = self.visit_expr(object)?;
         
         match object_type {
             TypeDecl::Array(ref element_types, size) => {
-                // Validate start index if provided
-                if let Some(start_expr) = start {
-                    let original_hint = self.type_inference.type_hint.clone();
-                    self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
-                    let start_type = self.visit_expr(start_expr)?;
-                    self.type_inference.type_hint = original_hint;
-                    
-                    // Allow UInt64, Int64, or transform Number
-                    match start_type {
-                        TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
-                            // Valid types
-                        }
-                        TypeDecl::Number => {
-                            // Transform Number to Int64 (could be negative)
-                            self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
-                        }
-                        _ => {
-                            return Err(TypeCheckError::array_error(&format!(
-                                "Slice start index must be an integer type, but got {:?}", start_type
-                            )));
+                // Simplified type checking for slice indices
+                match slice_info.slice_type {
+                    SliceType::SingleElement => {
+                        // For single element access, be more strict with type checking
+                        if let Some(start_expr) = &slice_info.start {
+                            let original_hint = self.type_inference.type_hint.clone();
+                            self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
+                            let start_type = self.visit_expr(start_expr)?;
+                            self.type_inference.type_hint = original_hint;
+                            
+                            // Allow UInt64, Int64, or transform Number
+                            match start_type {
+                                TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
+                                    // Valid types
+                                }
+                                TypeDecl::Number => {
+                                    // Transform Number to Int64 (could be negative)
+                                    self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
+                                }
+                                _ => {
+                                    return Err(TypeCheckError::array_error(&format!(
+                                        "Array index must be an integer type, but got {:?}", start_type
+                                    )));
+                                }
+                            }
                         }
                     }
-                }
-                
-                // Validate end index if provided  
-                if let Some(end_expr) = end {
-                    let original_hint = self.type_inference.type_hint.clone();
-                    self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
-                    let end_type = self.visit_expr(end_expr)?;
-                    self.type_inference.type_hint = original_hint;
-                    
-                    // Allow UInt64, Int64, or transform Number
-                    match end_type {
-                        TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
-                            // Valid types
+                    SliceType::RangeSlice => {
+                        // For range slices, set Int64 hint for potential negative indices
+                        let original_hint = self.type_inference.type_hint.clone();
+                        self.type_inference.type_hint = Some(TypeDecl::Int64);
+                        
+                        // Visit start expression if present
+                        if let Some(start_expr) = &slice_info.start {
+                            let _ = self.visit_expr(start_expr)?;
                         }
-                        TypeDecl::Number => {
-                            // Transform Number to Int64 (could be negative)  
-                            self.transform_numeric_expr(end_expr, &TypeDecl::Int64)?;
+                        
+                        // Visit end expression if present
+                        if let Some(end_expr) = &slice_info.end {
+                            let _ = self.visit_expr(end_expr)?;
                         }
-                        _ => {
-                            return Err(TypeCheckError::array_error(&format!(
-                                "Slice end index must be an integer type, but got {:?}", end_type
-                            )));
-                        }
+                        
+                        // Restore original hint
+                        self.type_inference.type_hint = original_hint;
                     }
                 }
                 
@@ -1257,29 +1282,25 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     return Err(TypeCheckError::array_error("Cannot slice empty array"));
                 }
                 
-                // Check if this is single element access (start provided, end is None)
-                if start.is_some() && end.is_none() {
-                    // Single element access: arr[i] returns element type
-                    Ok(element_types[0].clone())
-                } else {
-                    // Range slice: arr[start..end] returns array type
-                    // Try to determine the exact size at compile time if possible
-                    if let Some(slice_size) = self.try_calculate_slice_size(start, end, size) {
-                        // We can determine the exact size - create appropriately sized array type
-                        let slice_element_types = vec![element_types[0].clone(); slice_size];
-                        Ok(TypeDecl::Array(slice_element_types, slice_size))
-                    } else {
-                        // Can't determine the exact size at compile time, return a generic slice type
-                        // We'll use the original array type but this may cause type mismatches in some cases
-                        Ok(TypeDecl::Array(element_types.clone(), size))
+                // Use SliceInfo to distinguish single element access vs range slice
+                match slice_info.slice_type {
+                    SliceType::SingleElement => {
+                        // Single element access: arr[i] returns element type
+                        Ok(element_types[0].clone())
+                    }
+                    SliceType::RangeSlice => {
+                        // Range slice: arr[start..end] returns array type
+                        // Create array type with single element type and size 0 (dynamic)
+                        let single_element_type = element_types[0].clone();
+                        Ok(TypeDecl::Array(vec![single_element_type], 0))
                     }
                 }
             }
             TypeDecl::Dict(ref key_type, ref value_type) => {
                 // Dictionary access: dict[key] (only single element access, not slicing)
-                if start.is_some() && end.is_none() {
+                if slice_info.is_valid_for_dict() {
                     // Single element access: dict[key]
-                    if let Some(index_expr) = start {
+                    if let Some(index_expr) = &slice_info.start {
                         let index_type = self.visit_expr(index_expr)?;
                         
                         // Verify the index type matches the key type
@@ -1300,9 +1321,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
             TypeDecl::Identifier(struct_name) => {
                 // Struct access: check for __getitem__ method (only single element access)
-                if start.is_some() && end.is_none() {
+                if slice_info.is_valid_for_dict() {
                     // Single element access: struct[key]
-                    if let Some(index_expr) = start {
+                    if let Some(index_expr) = &slice_info.start {
                         let struct_name_str = self.core.string_interner.resolve(struct_name)
                             .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
                         
@@ -2746,6 +2767,24 @@ impl<'a> TypeCheckerVisitor<'a> {
             (None, _) => expr_ty.clone(),
             _ => expr_ty.clone(),
         }
+    }
+
+    // Transform UInt64 expression to Int64 in the expression pool
+    fn transform_uint64_to_int64(&mut self, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
+            if let Expr::UInt64(uint_val) = &expr {
+                // Check if the UInt64 value can fit in Int64
+                if *uint_val <= (i64::MAX as u64) {
+                    let int_val = *uint_val as i64;
+                    let new_expr = Expr::Int64(int_val);
+                    // Update the expression in the pool
+                    self.core.expr_pool.update(expr_ref, new_expr);
+                } else {
+                    return Err(TypeCheckError::conversion_error(&uint_val.to_string(), "Int64 (value too large)"));
+                }
+            }
+        }
+        Ok(())
     }
 
     // Transform Expr::Number nodes to concrete types based on resolved types

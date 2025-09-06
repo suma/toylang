@@ -14,11 +14,13 @@ fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: cra
         if parser.peek() == Some(&Kind::BracketClose) {
             // [..] form - slice entire array
             parser.next();
-            Ok(parser.ast_builder.slice_access_expr(object_expr, None, None, Some(location)))
+            let slice_info = SliceInfo::range_slice(None, None);
+            Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
         } else {
             let end = parser.parse_expr_impl()?;
             parser.expect_err(&Kind::BracketClose)?;
-            Ok(parser.ast_builder.slice_access_expr(object_expr, None, Some(end), Some(location)))
+            let slice_info = SliceInfo::range_slice(None, Some(end));
+            Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
         }
     } else {
         // Parse the first expression
@@ -31,17 +33,20 @@ fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: cra
             if parser.peek() == Some(&Kind::BracketClose) {
                 // [start..] form
                 parser.next();
-                Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), None, Some(location)))
+                let slice_info = SliceInfo::range_slice(Some(first_expr), None);
+                Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
             } else {
                 // [start..end] form
                 let end = parser.parse_expr_impl()?;
                 parser.expect_err(&Kind::BracketClose)?;
-                Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), Some(end), Some(location)))
+                let slice_info = SliceInfo::range_slice(Some(first_expr), Some(end));
+                Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
             }
         } else {
-            // Regular index access [index] - convert to single-element slice
+            // Regular index access [index] - single element access
             parser.expect_err(&Kind::BracketClose)?;
-            Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), None, Some(location)))
+            let slice_info = SliceInfo::single_element(first_expr);
+            Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
         }
     }
 }
@@ -192,10 +197,10 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
                 let location = parser.current_source_location();
                 
                 // Check if lhs is a SliceAccess expression and convert to SliceAssign
-                if let Some(Expr::SliceAccess(object, start, end)) = parser.ast_builder.expr_pool.get(&lhs) {
+                if let Some(Expr::SliceAccess(object, slice_info)) = parser.ast_builder.expr_pool.get(&lhs) {
                     let object = object;
-                    let start = start;
-                    let end = end;
+                    let start = slice_info.start;
+                    let end = slice_info.end;
                     lhs = parser.ast_builder.slice_assign_expr(object, start, end, new_rhs, Some(location));
                 } else {
                     lhs = parser.ast_builder.assign_expr(lhs, new_rhs, Some(location));

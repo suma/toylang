@@ -64,9 +64,8 @@ pub enum ExprType {
     QualifiedIdentifier = 19,
     BuiltinMethodCall = 20,
     BuiltinCall = 21,
-    IndexAccess = 22,
-    IndexAssign = 23,
-    SliceAccess = 24,
+    SliceAccess = 22,
+    SliceAssign = 23,
     DictLiteral = 25,
     TupleLiteral = 26,
     TupleAccess = 27,
@@ -413,15 +412,11 @@ impl ExprPool {
                 self.builtin_function[index] = Some(func);
                 self.expr_list[index] = Some(args);
             }
-            Expr::IndexAccess(object, index_expr) => {
-                self.expr_types[index] = ExprType::IndexAccess;
+            Expr::SliceAssign(object, start_expr, end_expr, value) => {
+                self.expr_types[index] = ExprType::SliceAssign;
                 self.lhs[index] = Some(object);
-                self.rhs[index] = Some(index_expr);
-            }
-            Expr::IndexAssign(object, index_expr, value) => {
-                self.expr_types[index] = ExprType::IndexAssign;
-                self.lhs[index] = Some(object);
-                self.rhs[index] = Some(index_expr);
+                self.rhs[index] = start_expr;
+                self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
             }
             Expr::SliceAccess(object, start, end) => {
@@ -550,16 +545,11 @@ impl ExprPool {
                     self.expr_list[index].clone()?
                 ))
             }
-            ExprType::IndexAccess => {
-                Some(Expr::IndexAccess(
+            ExprType::SliceAssign => {
+                Some(Expr::SliceAssign(
                     self.lhs[index]?,
-                    self.rhs[index]?
-                ))
-            }
-            ExprType::IndexAssign => {
-                Some(Expr::IndexAssign(
-                    self.lhs[index]?,
-                    self.rhs[index]?,
+                    self.rhs[index],
+                    self.operand[index],
                     self.third_operand[index]?
                 ))
             }
@@ -705,15 +695,11 @@ impl ExprPool {
                 self.builtin_function[index] = Some(func);
                 self.expr_list[index] = Some(args);
             }
-            Expr::IndexAccess(obj, index_expr) => {
-                self.expr_types[index] = ExprType::IndexAccess;
+            Expr::SliceAssign(obj, start_expr, end_expr, value) => {
+                self.expr_types[index] = ExprType::SliceAssign;
                 self.lhs[index] = Some(obj);
-                self.rhs[index] = Some(index_expr);
-            }
-            Expr::IndexAssign(obj, index_expr, value) => {
-                self.expr_types[index] = ExprType::IndexAssign;
-                self.lhs[index] = Some(obj);
-                self.rhs[index] = Some(index_expr);
+                self.rhs[index] = start_expr;
+                self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
             }
             Expr::SliceAccess(obj, start, end) => {
@@ -1129,14 +1115,8 @@ impl AstBuilder {
     }
     
     
-    pub fn index_access_expr(&mut self, object: ExprRef, index: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::IndexAccess(object, index));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    
-    pub fn index_assign_expr(&mut self, object: ExprRef, index: ExprRef, value: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::IndexAssign(object, index, value));
+    pub fn slice_assign_expr(&mut self, object: ExprRef, start: Option<ExprRef>, end: Option<ExprRef>, value: ExprRef, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::SliceAssign(object, start, end, value));
         self.location_pool.add_expr_location(location);
         expr_ref
     }
@@ -1385,9 +1365,8 @@ pub enum Expr {
     QualifiedIdentifier(Vec<DefaultSymbol>),  // math::add
     BuiltinMethodCall(ExprRef, BuiltinMethod, Vec<ExprRef>),  // "hello".len(), str.concat("world")
     BuiltinCall(BuiltinFunction, Vec<ExprRef>),  // __builtin_heap_alloc(), __builtin_print_ln(), etc.
-    IndexAccess(ExprRef, ExprRef),  // x[key] - generic index access
-    IndexAssign(ExprRef, ExprRef, ExprRef),  // x[key] = value - index assignment
-    SliceAccess(ExprRef, Option<ExprRef>, Option<ExprRef>),  // arr[start..end] - slice access
+    SliceAccess(ExprRef, Option<ExprRef>, Option<ExprRef>),  // arr[start..end] - slice access, arr[i] as arr[i..i+1]
+    SliceAssign(ExprRef, Option<ExprRef>, Option<ExprRef>, ExprRef),  // arr[start..end] = value, arr[i] = value
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access

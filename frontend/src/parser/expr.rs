@@ -4,6 +4,48 @@ use super::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
 
+/// Parse bracket access syntax: [index], [start..end], [..end], [start..], [..]
+fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: crate::type_checker::SourceLocation) -> ParserResult<ExprRef> {
+    // Check for slice syntax [..end], [start..], or [start..end]
+    // First check if we start with ".."
+    if parser.peek() == Some(&Kind::DotDot) {
+        parser.next();
+        // [..end] form
+        if parser.peek() == Some(&Kind::BracketClose) {
+            // [..] form - slice entire array
+            parser.next();
+            Ok(parser.ast_builder.slice_access_expr(object_expr, None, None, Some(location)))
+        } else {
+            let end = parser.parse_expr_impl()?;
+            parser.expect_err(&Kind::BracketClose)?;
+            Ok(parser.ast_builder.slice_access_expr(object_expr, None, Some(end), Some(location)))
+        }
+    } else {
+        // Parse the first expression
+        let first_expr = parser.parse_expr_impl()?;
+        
+        // Check if this is a slice or regular index
+        if parser.peek() == Some(&Kind::DotDot) {
+            parser.next();
+            // This is a slice [start..] or [start..end]
+            if parser.peek() == Some(&Kind::BracketClose) {
+                // [start..] form
+                parser.next();
+                Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), None, Some(location)))
+            } else {
+                // [start..end] form
+                let end = parser.parse_expr_impl()?;
+                parser.expect_err(&Kind::BracketClose)?;
+                Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), Some(end), Some(location)))
+            }
+        } else {
+            // Regular index access [index] - convert to single-element slice
+            parser.expect_err(&Kind::BracketClose)?;
+            Ok(parser.ast_builder.slice_access_expr(object_expr, Some(first_expr), None, Some(location)))
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct OperatorGroup<'a> {
     pub tokens: Vec<(Kind, Operator)>,
@@ -149,11 +191,12 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
                 let new_rhs = parse_logical_expr(parser)?;
                 let location = parser.current_source_location();
                 
-                // Check if lhs is an IndexAccess expression and convert to IndexAssign
-                if let Some(Expr::IndexAccess(object, index)) = parser.ast_builder.expr_pool.get(&lhs) {
+                // Check if lhs is a SliceAccess expression and convert to SliceAssign
+                if let Some(Expr::SliceAccess(object, start, end)) = parser.ast_builder.expr_pool.get(&lhs) {
                     let object = object;
-                    let index = index;
-                    lhs = parser.ast_builder.index_assign_expr(object, index, new_rhs, Some(location));
+                    let start = start;
+                    let end = end;
+                    lhs = parser.ast_builder.slice_assign_expr(object, start, end, new_rhs, Some(location));
                 } else {
                     lhs = parser.ast_builder.assign_expr(lhs, new_rhs, Some(location));
                 }
@@ -479,44 +522,7 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 let location = parser.current_source_location();
                 parser.next();
                 
-                // Check for slice syntax [..end], [start..], or [start..end]
-                // First check if we start with ".."
-                if parser.peek() == Some(&Kind::DotDot) {
-                    parser.next();
-                    // [..end] form
-                    if parser.peek() == Some(&Kind::BracketClose) {
-                        // [..] form - slice entire array
-                        parser.next();
-                        expr = parser.ast_builder.slice_access_expr(expr, None, None, Some(location));
-                    } else {
-                        let end = parser.parse_expr_impl()?;
-                        parser.expect_err(&Kind::BracketClose)?;
-                        expr = parser.ast_builder.slice_access_expr(expr, None, Some(end), Some(location));
-                    }
-                } else {
-                    // Parse the first expression
-                    let first_expr = parser.parse_expr_impl()?;
-                    
-                    // Check if this is a slice or regular index
-                    if parser.peek() == Some(&Kind::DotDot) {
-                        parser.next();
-                        // This is a slice [start..] or [start..end]
-                        if parser.peek() == Some(&Kind::BracketClose) {
-                            // [start..] form
-                            parser.next();
-                            expr = parser.ast_builder.slice_access_expr(expr, Some(first_expr), None, Some(location));
-                        } else {
-                            // [start..end] form
-                            let end = parser.parse_expr_impl()?;
-                            parser.expect_err(&Kind::BracketClose)?;
-                            expr = parser.ast_builder.slice_access_expr(expr, Some(first_expr), Some(end), Some(location));
-                        }
-                    } else {
-                        // Regular index access [index]
-                        parser.expect_err(&Kind::BracketClose)?;
-                        expr = parser.ast_builder.index_access_expr(expr, first_expr, Some(location));
-                    }
-                }
+                expr = parse_bracket_access(parser, expr, location)?;
             }
             _ => break,
         }
@@ -652,10 +658,8 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                     Some(Kind::BracketOpen) => {
                         let location = parser.current_source_location();
                         parser.next();
-                        let index = parser.parse_expr_impl()?;
-                        parser.expect_err(&Kind::BracketClose)?;
                         let object_ref = parser.ast_builder.identifier_expr(s, None);
-                        Ok(parser.ast_builder.index_access_expr(object_ref, index, Some(location)))
+                        parse_bracket_access(parser, object_ref, location)
                     }
                     Some(Kind::BraceOpen) if struct_literal_allowed => {
                         // Only parse as struct literal if allowed in current context

@@ -179,4 +179,117 @@ mod slice_tests {
         }
         ", vec![-5, 0, 5]);
     }
+
+    // Negative indexing tests
+    #[test]
+    fn test_negative_index_access() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[-1i64]  # Last element
+        }
+        ", 5);
+    }
+
+    #[test]
+    fn test_negative_index_second_last() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val a: [u64; 5] = [10, 20, 30, 40, 50]
+            a[-2i64]  # Second to last element
+        }
+        ", 40);
+    }
+
+    #[test]
+    fn test_slice_negative_start() {
+        common::assert_program_result_array_u64(r"
+        fn main() -> [u64; 2] {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[-2i64..]  # Last two elements
+        }
+        ", vec![4, 5]);
+    }
+
+    #[test]
+    fn test_slice_negative_end() {
+        common::assert_program_result_array_u64(r"
+        fn main() -> [u64; 4] {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[..-1i64]  # All except last element
+        }
+        ", vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_slice_negative_both() {
+        common::assert_program_result_array_u64(r"
+        fn main() -> [u64; 2] {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[-3i64..-1i64]  # From 3rd last to last (exclusive)
+        }
+        ", vec![3, 4]);
+    }
+
+    #[test]
+    fn test_slice_mixed_positive_negative() {
+        common::assert_program_result_array_u64(r"
+        fn main() -> [u64; 2] {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[1..-1i64]  # From 1st to last (exclusive)
+        }
+        ", vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn test_negative_index_assignment() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            var a: [u64; 3] = [1, 2, 3]
+            a[-1i64] = 99  # Set last element
+            a[-1i64]       # Get last element
+        }
+        ", 99);
+    }
+
+    #[test]
+    fn test_negative_index_inference() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[-1]  # Should infer as i64
+        }
+        ", 5);
+    }
+
+    #[test]
+    fn test_slice_negative_inference() {
+        common::assert_program_result_array_u64(r"
+        fn main() -> [u64; 2] {
+            val a: [u64; 5] = [1, 2, 3, 4, 5]
+            a[-2..]  # Should infer as i64
+        }
+        ", vec![4, 5]);
+    }
+
+    // Error cases for negative indexing
+    #[test]
+    fn test_negative_index_out_of_bounds() {
+        common::assert_program_fails(r"
+        fn main() -> u64 {
+            val a: [u64; 3] = [1, 2, 3]
+            a[-5i64]  # More negative than array length
+        }
+        ");
+    }
+
+    #[test]
+    fn test_slice_negative_out_of_bounds() {
+        common::assert_program_fails(r"
+        fn main() -> [u64; 0] {
+            val a: [u64; 3] = [1, 2, 3]
+            a[-5i64..]  # Start too negative
+        }
+        ");
+    }
 }

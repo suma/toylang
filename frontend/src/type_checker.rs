@@ -477,16 +477,11 @@ impl Acceptable for Expr {
             Expr::StructLiteral(struct_name, fields) => visitor.visit_struct_literal(struct_name, fields),
             Expr::QualifiedIdentifier(path) => visitor.visit_qualified_identifier(path),
             Expr::BuiltinMethodCall(receiver, method, args) => visitor.visit_builtin_method_call(receiver, method, args),
-            Expr::IndexAccess(object, index) => {
-                eprintln!("DEBUG: Processing IndexAccess expression");
-                visitor.visit_index_access(object, index)
-            },
-            Expr::IndexAssign(object, index, value) => {
-                eprintln!("DEBUG: Processing IndexAssign expression");
-                visitor.visit_index_assign(object, index, value)
+            Expr::SliceAssign(object, start, end, value) => {
+                eprintln!("DEBUG: Processing SliceAssign expression");
+                visitor.visit_slice_assign(object, start, end, value)
             },
             Expr::SliceAccess(object, start, end) => {
-                eprintln!("DEBUG: Processing SliceAccess expression");
                 visitor.visit_slice_access(object, start, end)
             },
             Expr::DictLiteral(entries) => visitor.visit_dict_literal(entries),
@@ -512,6 +507,7 @@ impl Acceptable for Stmt {
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
         }
     }
+    
 }
 
 impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
@@ -1170,7 +1166,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unknown)
     }
     
-    // =========================================================================
+
     // Array and Collection Type Checking
     // =========================================================================
 
@@ -1203,77 +1199,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
 
     
-    fn visit_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let object_type = self.visit_expr(object)?;
-        
-        match object_type {
-            TypeDecl::Array(ref element_types, _size) => {
-                // Array indexing - expects UInt64 index
-                let original_hint = self.type_inference.type_hint.clone();
-                self.type_inference.type_hint = Some(TypeDecl::UInt64);
-                let _index_type = self.visit_expr(index)?;
-                self.type_inference.type_hint = original_hint;
-                
-                if element_types.is_empty() {
-                    return Err(TypeCheckError::array_error("Cannot access elements of empty array"));
-                }
-                Ok(element_types[0].clone())
-            }
-            TypeDecl::Dict(ref key_type, ref value_type) => {
-                // Dict indexing - check key type matches
-                let index_type = self.visit_expr(index)?;
-                
-                // Verify the index type matches the key type
-                if index_type != **key_type {
-                    return Err(TypeCheckError::type_mismatch(
-                        *key_type.clone(), index_type
-                    ));
-                }
-                
-                Ok(*value_type.clone())
-            }
-            TypeDecl::Identifier(struct_name) => {
-                // Check for __getitem__ method on struct
-                let struct_name_str = self.core.string_interner.resolve(struct_name)
-                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-                
-                // Type check the index first to avoid borrowing conflicts
-                let index_type = self.visit_expr(index)?;
-                
-                // Look for __getitem__ method
-                if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
-                    
-                    // Check if method has correct signature: __getitem__(self, index: T) -> U
-                    if getitem_method.parameter.len() >= 2 {
-                        let index_param_type = &getitem_method.parameter[1].1;
-                        if index_type != *index_param_type {
-                            return Err(TypeCheckError::type_mismatch(
-                                index_param_type.clone(), index_type
-                            ));
-                        }
-                        
-                        // Return the method's return type
-                        if let Some(return_type) = &getitem_method.return_type {
-                            Ok(return_type.clone())
-                        } else {
-                            Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
-                        }
-                    } else {
-                        Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
-                    }
-                } else {
-                    Err(TypeCheckError::generic_error(&format!(
-                        "Cannot index into type {:?} - no __getitem__ method found", object_type
-                    )))
-                }
-            }
-            _ => {
-                Err(TypeCheckError::generic_error(&format!(
-                    "Cannot index into type {:?}", object_type
-                )))
-            }
-        }
-    }
     
     fn visit_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let object_type = self.visit_expr(object)?;
@@ -1283,168 +1208,301 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 // Validate start index if provided
                 if let Some(start_expr) = start {
                     let original_hint = self.type_inference.type_hint.clone();
-                    self.type_inference.type_hint = Some(TypeDecl::UInt64);
-                    let _start_type = self.visit_expr(start_expr)?;
+                    self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
+                    let start_type = self.visit_expr(start_expr)?;
                     self.type_inference.type_hint = original_hint;
+                    
+                    // Allow UInt64, Int64, or transform Number
+                    match start_type {
+                        TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
+                            // Valid types
+                        }
+                        TypeDecl::Number => {
+                            // Transform Number to Int64 (could be negative)
+                            self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
+                        }
+                        _ => {
+                            return Err(TypeCheckError::array_error(&format!(
+                                "Slice start index must be an integer type, but got {:?}", start_type
+                            )));
+                        }
+                    }
                 }
                 
                 // Validate end index if provided  
                 if let Some(end_expr) = end {
                     let original_hint = self.type_inference.type_hint.clone();
-                    self.type_inference.type_hint = Some(TypeDecl::UInt64);
-                    let _end_type = self.visit_expr(end_expr)?;
+                    self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
+                    let end_type = self.visit_expr(end_expr)?;
                     self.type_inference.type_hint = original_hint;
+                    
+                    // Allow UInt64, Int64, or transform Number
+                    match end_type {
+                        TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
+                            // Valid types
+                        }
+                        TypeDecl::Number => {
+                            // Transform Number to Int64 (could be negative)  
+                            self.transform_numeric_expr(end_expr, &TypeDecl::Int64)?;
+                        }
+                        _ => {
+                            return Err(TypeCheckError::array_error(&format!(
+                                "Slice end index must be an integer type, but got {:?}", end_type
+                            )));
+                        }
+                    }
                 }
                 
                 if element_types.is_empty() {
                     return Err(TypeCheckError::array_error("Cannot slice empty array"));
                 }
                 
-                // For now, we can't determine the exact size at compile time,
-                // so we'll return the same array type with original size
-                // The actual size will be validated at runtime
-                Ok(TypeDecl::Array(element_types.clone(), size))
+                // Check if this is single element access (start provided, end is None)
+                if start.is_some() && end.is_none() {
+                    // Single element access: arr[i] returns element type
+                    Ok(element_types[0].clone())
+                } else {
+                    // Range slice: arr[start..end] returns array type
+                    // Try to determine the exact size at compile time if possible
+                    if let Some(slice_size) = self.try_calculate_slice_size(start, end, size) {
+                        // We can determine the exact size - create appropriately sized array type
+                        let slice_element_types = vec![element_types[0].clone(); slice_size];
+                        Ok(TypeDecl::Array(slice_element_types, slice_size))
+                    } else {
+                        // Can't determine the exact size at compile time, return a generic slice type
+                        // We'll use the original array type but this may cause type mismatches in some cases
+                        Ok(TypeDecl::Array(element_types.clone(), size))
+                    }
+                }
+            }
+            TypeDecl::Dict(ref key_type, ref value_type) => {
+                // Dictionary access: dict[key] (only single element access, not slicing)
+                if start.is_some() && end.is_none() {
+                    // Single element access: dict[key]
+                    if let Some(index_expr) = start {
+                        let index_type = self.visit_expr(index_expr)?;
+                        
+                        // Verify the index type matches the key type
+                        if index_type != **key_type {
+                            return Err(TypeCheckError::type_mismatch(
+                                *key_type.clone(), index_type
+                            ));
+                        }
+                        
+                        Ok(*value_type.clone())
+                    } else {
+                        Err(TypeCheckError::generic_error("Dictionary access requires key index"))
+                    }
+                } else {
+                    // Range slicing is not supported for dictionaries
+                    Err(TypeCheckError::generic_error("Dictionary slicing is not supported - use single key access dict[key]"))
+                }
+            }
+            TypeDecl::Identifier(struct_name) => {
+                // Struct access: check for __getitem__ method (only single element access)
+                if start.is_some() && end.is_none() {
+                    // Single element access: struct[key]
+                    if let Some(index_expr) = start {
+                        let struct_name_str = self.core.string_interner.resolve(struct_name)
+                            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+                        
+                        // Type check the index first to avoid borrowing conflicts
+                        let index_type = self.visit_expr(index_expr)?;
+                        
+                        // Look for __getitem__ method
+                        if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
+                            // Check if method has correct signature: __getitem__(self, index: T) -> U
+                            if getitem_method.parameter.len() >= 2 {
+                                let index_param_type = &getitem_method.parameter[1].1;
+                                if index_type != *index_param_type {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        index_param_type.clone(), index_type
+                                    ));
+                                }
+                                
+                                // Return the method's return type
+                                if let Some(return_type) = &getitem_method.return_type {
+                                    Ok(return_type.clone())
+                                } else {
+                                    Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
+                                }
+                            } else {
+                                Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
+                            }
+                        } else {
+                            Err(TypeCheckError::generic_error(&format!(
+                                "Cannot index into type {:?} - no __getitem__ method found", object_type
+                            )))
+                        }
+                    } else {
+                        Err(TypeCheckError::generic_error("Struct access requires index"))
+                    }
+                } else {
+                    // Range slicing is not supported for structs
+                    Err(TypeCheckError::generic_error("Struct slicing is not supported - use single index access struct[key]"))
+                }
             }
             _ => {
                 Err(TypeCheckError::generic_error(&format!(
-                    "Cannot slice type {:?} - only arrays are supported", object_type
+                    "Cannot access type {:?} - only arrays, dictionaries, and structs with __getitem__ are supported", object_type
                 )))
             }
         }
     }
     
-    fn visit_index_assign(&mut self, object: &ExprRef, index: &ExprRef, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        // Type check the object being indexed
+    fn visit_slice_assign(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let object_type = self.visit_expr(object)?;
-        
-        // Type check the index
-        let index_type = self.visit_expr(index)?;
-        
-        // Type check the value being assigned
         let value_type = self.visit_expr(value)?;
         
-        
-        // Check type compatibility based on container type
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
-                // Array assignment - check index and value types
-                let resolved_index_type = if index_type == TypeDecl::Number {
-                    // Transform Number index to UInt64 for arrays
-                    self.transform_numeric_expr(index, &TypeDecl::UInt64)?;
-                    TypeDecl::UInt64
-                } else {
-                    index_type
-                };
-                
-                if resolved_index_type != TypeDecl::UInt64 {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Array index must be UInt64, found {:?}", resolved_index_type
-                    )));
-                }
-                
-                if !element_types.is_empty() {
-                    let expected_element_type = &element_types[0];
-                    let resolved_value_type = if value_type == TypeDecl::Number {
-                        // If element type is also Number, convert both to UInt64
-                        if *expected_element_type == TypeDecl::Number {
-                            self.transform_numeric_expr(value, &TypeDecl::UInt64)?;
-                            TypeDecl::UInt64
-                        } else {
-                            // Transform Number value to expected element type
+                // Check if this is single element assignment (start provided, end is None)
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: arr[i] = value
+                    if let Some(start_expr) = start {
+                        let original_hint = self.type_inference.type_hint.clone();
+                        self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
+                        let start_type = self.visit_expr(start_expr)?;
+                        self.type_inference.type_hint = original_hint;
+                        
+                        // Allow UInt64, Int64, or transform Number
+                        match start_type {
+                            TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
+                                // Valid index types
+                            }
+                            TypeDecl::Number => {
+                                // Transform Number index to Int64 (could be negative)
+                                self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
+                            }
+                            _ => {
+                                return Err(TypeCheckError::array_error(&format!(
+                                    "Array index must be an integer type, but got {:?}", start_type
+                                )));
+                            }
+                        }
+                    }
+                    
+                    // Check element type compatibility
+                    if !element_types.is_empty() {
+                        let expected_element_type = &element_types[0];
+                        let resolved_value_type = if value_type == TypeDecl::Number {
                             self.transform_numeric_expr(value, expected_element_type)?;
                             expected_element_type.clone()
+                        } else {
+                            value_type.clone()
+                        };
+                        
+                        if *expected_element_type != resolved_value_type {
+                            return Err(TypeCheckError::generic_error(&format!(
+                                "Array element type mismatch: expected {:?}, found {:?}", 
+                                expected_element_type, resolved_value_type
+                            )));
                         }
+                        Ok(resolved_value_type)
                     } else {
-                        value_type
-                    };
-                    
-                    let final_expected_type = if *expected_element_type == TypeDecl::Number && resolved_value_type == TypeDecl::UInt64 {
-                        // Update array element type from Number to UInt64
-                        TypeDecl::UInt64
-                    } else {
-                        expected_element_type.clone()
-                    };
-                    
-                    if final_expected_type != resolved_value_type {
-                        return Err(TypeCheckError::generic_error(&format!(
-                            "Array element type mismatch: expected {:?}, found {:?}", 
-                            final_expected_type, resolved_value_type
-                        )));
+                        Ok(value_type)
                     }
-                    Ok(resolved_value_type)
                 } else {
-                    Ok(value_type)
+                    // Range slice assignment: arr[start..end] = value (not implemented yet)
+                    Err(TypeCheckError::generic_error("Slice range assignment not yet implemented"))
                 }
             }
-            TypeDecl::Dict(ref key_type, ref val_type) => {
-                // Dict assignment - check key and value types
-                if **key_type != TypeDecl::Unknown && **key_type != index_type {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Dict key type mismatch: expected {:?}, found {:?}", 
-                        key_type, index_type
-                    )));
-                }
-                
-                if **val_type != TypeDecl::Unknown {
-                    let resolved_value_type = if value_type == TypeDecl::Number {
-                        // Transform Number value to expected dict value type
-                        self.transform_numeric_expr(value, val_type)?;
-                        (**val_type).clone()
+            TypeDecl::Dict(ref key_type, ref dict_value_type) => {
+                // Dictionary assignment: dict[key] = value (only single element assignment)
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: dict[key] = value
+                    if let Some(key_expr) = start {
+                        let key_type_result = self.visit_expr(key_expr)?;
+                        
+                        // Verify the key type matches the dictionary key type
+                        if key_type_result != **key_type {
+                            return Err(TypeCheckError::type_mismatch(
+                                *key_type.clone(), key_type_result
+                            ));
+                        }
+                        
+                        // Check value type compatibility with dictionary value type
+                        let expected_dict_value_type = &**dict_value_type;
+                        if *expected_dict_value_type != TypeDecl::Unknown {
+                            let resolved_value_type = if value_type == TypeDecl::Number {
+                                // Transform Number value to expected dict value type
+                                self.transform_numeric_expr(value, expected_dict_value_type)?;
+                                expected_dict_value_type.clone()
+                            } else {
+                                value_type.clone()
+                            };
+                            
+                            if *expected_dict_value_type != resolved_value_type {
+                                return Err(TypeCheckError::generic_error(&format!(
+                                    "Dict value type mismatch: expected {:?}, found {:?}", 
+                                    expected_dict_value_type, resolved_value_type
+                                )));
+                            }
+                            Ok(resolved_value_type)
+                        } else {
+                            Ok(value_type.clone())
+                        }
                     } else {
-                        value_type
-                    };
-                    
-                    if **val_type != resolved_value_type {
-                        return Err(TypeCheckError::generic_error(&format!(
-                            "Dict value type mismatch: expected {:?}, found {:?}. All values must have the same type.", 
-                            val_type, resolved_value_type
-                        )));
+                        Err(TypeCheckError::generic_error("Dictionary assignment requires key index"))
                     }
-                    Ok(resolved_value_type)
                 } else {
-                    Ok(value_type)
+                    // Range slice assignment not supported for dictionaries
+                    Err(TypeCheckError::generic_error("Dictionary slice assignment not supported - use single key assignment dict[key] = value"))
                 }
             }
             TypeDecl::Identifier(struct_name) => {
-                // Check for __setitem__ method on struct
-                let struct_name_str = self.core.string_interner.resolve(struct_name)
-                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-                
-                // Look for __setitem__ method
-                if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
-                    // Check if method has correct signature: __setitem__(self, index: T, value: U)
-                    if setitem_method.parameter.len() >= 3 {
-                        let index_param_type = &setitem_method.parameter[1].1;
-                        let value_param_type = &setitem_method.parameter[2].1;
+                // Struct assignment: check for __setitem__ method (only single element assignment)
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: struct[key] = value
+                    if let Some(key_expr) = start {
+                        let struct_name_str = self.core.string_interner.resolve(struct_name)
+                            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
                         
-                        // Check index type matches
-                        if index_type != *index_param_type {
-                            return Err(TypeCheckError::type_mismatch(
-                                index_param_type.clone(), index_type
-                            ));
+                        // Type check the key and value
+                        let key_type_result = self.visit_expr(key_expr)?;
+                        
+                        // Look for __setitem__ method
+                        if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
+                            // Check if method has correct signature: __setitem__(self, key: T, value: U)
+                            if setitem_method.parameter.len() >= 3 {
+                                let key_param_type = &setitem_method.parameter[1].1;
+                                let value_param_type = &setitem_method.parameter[2].1;
+                                
+                                // Check key type matches
+                                if key_type_result != *key_param_type {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        key_param_type.clone(), key_type_result
+                                    ));
+                                }
+                                
+                                // Check value type matches
+                                if value_type != *value_param_type {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        value_param_type.clone(), value_type
+                                    ));
+                                }
+                                
+                                // Assignment returns the value type
+                                Ok(value_type)
+                            } else {
+                                Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, key, value)"))
+                            }
+                        } else {
+                            Err(TypeCheckError::generic_error(&format!(
+                                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
+                            )))
                         }
-                        
-                        // Check value type matches
-                        if value_type != *value_param_type {
-                            return Err(TypeCheckError::type_mismatch(
-                                value_param_type.clone(), value_type
-                            ));
-                        }
-                        
-                        // Assignment returns the value type
-                        Ok(value_type)
                     } else {
-                        Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, index, value)"))
+                        Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }
                 } else {
-                    Err(TypeCheckError::generic_error(&format!(
-                        "Cannot assign index to type {:?} - no __setitem__ method found", object_type
-                    )))
+                    // Range slice assignment not supported for structs
+                    Err(TypeCheckError::generic_error("Struct slice assignment not supported - use single key assignment struct[key] = value"))
                 }
             }
             _ => {
                 Err(TypeCheckError::generic_error(&format!(
-                    "Cannot assign index to type {:?}", object_type
+                    "Cannot assign to type {:?} - only arrays, dictionaries, and structs with __setitem__ are supported", object_type
                 )))
             }
         }
@@ -2201,6 +2259,100 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 }
 
 impl<'a> TypeCheckerVisitor<'a> {
+    // =========================================================================
+    // Constant Expression Evaluation
+    // =========================================================================
+    
+    /// Try to evaluate a constant integer expression at compile time
+    fn try_evaluate_const_int(&self, expr: &ExprRef) -> Option<i64> {
+        if let Some(expr_data) = self.core.expr_pool.get(expr) {
+            match expr_data {
+                Expr::UInt64(value) => Some(value as i64),
+                Expr::Int64(value) => Some(value),
+                Expr::Number(value_symbol) => {
+                    // Try to parse the number string
+                    if let Some(value_str) = self.core.string_interner.resolve(value_symbol) {
+                        if let Ok(value) = value_str.parse::<u64>() {
+                            Some(value as i64)
+                        } else if let Ok(value) = value_str.parse::<i64>() {
+                            Some(value)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+                _ => None
+            }
+        } else {
+            None
+        }
+    }
+    
+    /// Calculate slice size from start and end indices, if they are compile-time constants
+    fn try_calculate_slice_size(&self, start: &Option<ExprRef>, end: &Option<ExprRef>, array_size: usize) -> Option<usize> {
+        match (start, end) {
+            // [start..end] form - both bounds specified
+            (Some(start_expr), Some(end_expr)) => {
+                let start_val = self.try_evaluate_const_int(start_expr)?;
+                let end_val = self.try_evaluate_const_int(end_expr)?;
+                
+                // Handle negative indices by converting to positive
+                let start_idx = if start_val < 0 {
+                    (array_size as i64 + start_val) as usize
+                } else {
+                    start_val as usize
+                };
+                
+                let end_idx = if end_val < 0 {
+                    (array_size as i64 + end_val) as usize
+                } else {
+                    end_val as usize
+                };
+                
+                // Validate bounds and calculate size
+                if start_idx <= end_idx && end_idx <= array_size {
+                    Some(end_idx - start_idx)
+                } else {
+                    None // Invalid bounds, will be caught at runtime
+                }
+            }
+            // [..end] form - slice from start to end
+            (None, Some(end_expr)) => {
+                let end_val = self.try_evaluate_const_int(end_expr)?;
+                let end_idx = if end_val < 0 {
+                    (array_size as i64 + end_val) as usize
+                } else {
+                    end_val as usize
+                };
+                
+                if end_idx <= array_size {
+                    Some(end_idx)
+                } else {
+                    None
+                }
+            }
+            // [start..] form - slice from start to end
+            (Some(start_expr), None) => {
+                let start_val = self.try_evaluate_const_int(start_expr)?;
+                let start_idx = if start_val < 0 {
+                    (array_size as i64 + start_val) as usize
+                } else {
+                    start_val as usize
+                };
+                
+                if start_idx <= array_size {
+                    Some(array_size - start_idx)
+                } else {
+                    None
+                }
+            }
+            // [..] form - entire array
+            (None, None) => Some(array_size)
+        }
+    }
+
     /// Resolve Self type to the actual struct type in impl block context
     pub fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
         match type_decl {

@@ -676,11 +676,8 @@ impl<'a> EvaluationContext<'a> {
             Expr::Null => {
                 Err(InterpreterError::InternalError("Null reference error".to_string()))
             }
-            Expr::IndexAccess(object, index) => {
-                self.evaluate_index_access(&object, &index)
-            }
-            Expr::IndexAssign(object, index, value) => {
-                self.evaluate_index_assign(&object, &index, &value)
+            Expr::SliceAssign(object, start, end, value) => {
+                self.evaluate_slice_assign(&object, &start, &end, &value)
             }
             Expr::SliceAccess(object, start, end) => {
                 self.evaluate_slice_access(&object, &start, &end)
@@ -1530,61 +1527,48 @@ impl EvaluationContext<'_> {
         }
     }
     
-    fn evaluate_index_access(&mut self, object: &ExprRef, index: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let object_val = self.evaluate(object)?;
-        let object_obj = self.extract_value(Ok(object_val))?;
-        let index_val = self.evaluate(index)?;
-        let index_obj = self.extract_value(Ok(index_val))?;
-        
-        let obj_borrowed = object_obj.borrow();
-        match &*obj_borrowed {
-            Object::Array(elements) => {
-                // Array indexing with UInt64
-                let index_borrowed = index_obj.borrow();
-                match &*index_borrowed {
-                    Object::UInt64(idx) => {
-                        let idx = *idx as usize;
-                        if idx >= elements.len() {
-                            return Err(InterpreterError::IndexOutOfBounds { 
-                                index: idx as isize, 
-                                size: elements.len() 
-                            });
-                        }
-                        Ok(EvaluationResult::Value(elements[idx].clone()))
+    
+    /// Convert index (positive or negative) to array index
+    fn resolve_array_index(&self, index_obj: &RcObject, array_len: usize) -> Result<usize, InterpreterError> {
+        let borrowed = index_obj.borrow();
+        match &*borrowed {
+            Object::UInt64(idx) => {
+                let idx = *idx as usize;
+                if idx >= array_len {
+                    return Err(InterpreterError::IndexOutOfBounds { 
+                        index: idx as isize, 
+                        size: array_len 
+                    });
+                }
+                Ok(idx)
+            }
+            Object::Int64(idx) => {
+                if *idx >= 0 {
+                    // Positive i64, treat as u64
+                    let idx = *idx as usize;
+                    if idx >= array_len {
+                        return Err(InterpreterError::IndexOutOfBounds { 
+                            index: idx as isize, 
+                            size: array_len 
+                        });
                     }
-                    _ => Err(InterpreterError::InternalError("Array index must be UInt64".to_string()))
+                    Ok(idx)
+                } else {
+                    // Negative index: convert to positive
+                    let abs_idx = (-*idx) as usize;
+                    if abs_idx > array_len {
+                        return Err(InterpreterError::IndexOutOfBounds { 
+                            index: *idx as isize, 
+                            size: array_len 
+                        });
+                    }
+                    Ok(array_len - abs_idx)
                 }
             }
-            Object::Dict(dict) => {
-                // Dict indexing with any Object key
-                let index_borrowed = index_obj.borrow();
-                let key_object = index_borrowed.clone();
-                let object_key = ObjectKey::new(key_object);
-                
-                dict.get(&object_key)
-                    .cloned()
-                    .map(EvaluationResult::Value)
-                    .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {:?}", object_key)))
-            }
-            Object::Struct { type_name, .. } => {
-                // Struct index overloading - look for __getitem__ method
-                let struct_name_val = *type_name;
-                drop(obj_borrowed); // Release borrow before method call
-                
-                // Resolve names first before method call
-                let struct_name_str = self.string_interner.resolve(struct_name_val)
-                    .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
-                    .to_string();
-                let getitem_method = self.string_interner.get_or_intern("__getitem__");
-                
-                // Call __getitem__(self, index)
-                let args = vec![index_obj];
-                self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
-            }
-            _ => Err(InterpreterError::InternalError(format!("Cannot index into type {:?}", obj_borrowed.get_type())))
+            _ => Err(InterpreterError::InternalError("Array index must be an integer".to_string()))
         }
     }
-    
+
     fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let object_val = self.evaluate(object)?;
         let object_obj = self.extract_value(Ok(object_val))?;
@@ -1598,11 +1582,7 @@ impl EvaluationContext<'_> {
                 let start_idx = if let Some(start_expr) = start {
                     let start_val = self.evaluate(start_expr)?;
                     let start_obj = self.extract_value(Ok(start_val))?;
-                    let start_borrowed = start_obj.borrow();
-                    match &*start_borrowed {
-                        Object::UInt64(idx) => *idx as usize,
-                        _ => return Err(InterpreterError::InternalError("Slice start index must be UInt64".to_string()))
-                    }
+                    self.resolve_array_index(&start_obj, array_len)?
                 } else {
                     0
                 };
@@ -1611,10 +1591,41 @@ impl EvaluationContext<'_> {
                 let end_idx = if let Some(end_expr) = end {
                     let end_val = self.evaluate(end_expr)?;
                     let end_obj = self.extract_value(Ok(end_val))?;
-                    let end_borrowed = end_obj.borrow();
-                    match &*end_borrowed {
-                        Object::UInt64(idx) => *idx as usize,
-                        _ => return Err(InterpreterError::InternalError("Slice end index must be UInt64".to_string()))
+                    // For end index, we need to allow array_len as valid (exclusive end)
+                    let borrowed = end_obj.borrow();
+                    match &*borrowed {
+                        Object::UInt64(idx) => {
+                            let idx = *idx as usize;
+                            if idx > array_len {
+                                return Err(InterpreterError::IndexOutOfBounds { 
+                                    index: idx as isize, 
+                                    size: array_len 
+                                });
+                            }
+                            idx
+                        }
+                        Object::Int64(idx) => {
+                            if *idx >= 0 {
+                                let idx = *idx as usize;
+                                if idx > array_len {
+                                    return Err(InterpreterError::IndexOutOfBounds { 
+                                        index: idx as isize, 
+                                        size: array_len 
+                                    });
+                                }
+                                idx
+                            } else {
+                                let abs_idx = (-*idx) as usize;
+                                if abs_idx > array_len {
+                                    return Err(InterpreterError::IndexOutOfBounds { 
+                                        index: *idx as isize, 
+                                        size: array_len 
+                                    });
+                                }
+                                array_len - abs_idx
+                            }
+                        }
+                        _ => return Err(InterpreterError::InternalError("Array index must be an integer".to_string()))
                     }
                 } else {
                     array_len
@@ -1639,77 +1650,185 @@ impl EvaluationContext<'_> {
                     ));
                 }
                 
-                // Create the slice
-                let slice_elements = elements[start_idx..end_idx].to_vec();
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+                // Check if this is single element access (start provided, end is None)
+                if start.is_some() && end.is_none() {
+                    // Single element access: arr[i] returns the element directly
+                    if start_idx >= array_len {
+                        return Err(InterpreterError::IndexOutOfBounds { 
+                            index: start_idx as isize, 
+                            size: array_len 
+                        });
+                    }
+                    Ok(EvaluationResult::Value(elements[start_idx].clone()))
+                } else {
+                    // Range slice: arr[start..end] returns array
+                    let slice_elements = elements[start_idx..end_idx].to_vec();
+                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+                }
+            }
+            Object::Dict(dict) => {
+                // Dictionary access: dict[key] (only single element access)
+                if start.is_some() && end.is_none() {
+                    // Single element access: dict[key]
+                    if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        let start_obj = self.extract_value(Ok(start_val))?;
+                        
+                        // Create ObjectKey for dictionary lookup
+                        let key_borrowed = start_obj.borrow();
+                        let key_object = key_borrowed.clone();
+                        let object_key = ObjectKey::new(key_object);
+                        
+                        dict.get(&object_key)
+                            .cloned()
+                            .map(EvaluationResult::Value)
+                            .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {:?}", object_key)))
+                    } else {
+                        Err(InterpreterError::InternalError("Dictionary access requires key index".to_string()))
+                    }
+                } else {
+                    // Range slicing not supported for dictionaries
+                    Err(InterpreterError::InternalError("Dictionary slicing not supported - use single key access dict[key]".to_string()))
+                }
+            }
+            Object::Struct { type_name, .. } => {
+                // Struct access: check for __getitem__ method (only single element access)
+                if start.is_some() && end.is_none() {
+                    // Single element access: struct[key]
+                    if let Some(start_expr) = start {
+                        let struct_name_val = *type_name;
+                        drop(obj_borrowed); // Release borrow before method call
+                        
+                        let start_val = self.evaluate(start_expr)?;
+                        let start_obj = self.extract_value(Ok(start_val))?;
+                        
+                        // Resolve names first before method call
+                        let struct_name_str = self.string_interner.resolve(struct_name_val)
+                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                            .to_string();
+                        let getitem_method = self.string_interner.get_or_intern("__getitem__");
+                        
+                        // Call __getitem__(self, index)
+                        let args = vec![start_obj];
+                        self.call_struct_method(object_obj, getitem_method, &args, &struct_name_str)
+                    } else {
+                        Err(InterpreterError::InternalError("Struct access requires index".to_string()))
+                    }
+                } else {
+                    // Range slicing not supported for structs
+                    Err(InterpreterError::InternalError("Struct slicing not supported - use single index access struct[key]".to_string()))
+                }
             }
             _ => Err(InterpreterError::InternalError(
-                format!("Cannot slice non-array type: {:?}", obj_borrowed.get_type())
+                format!("Cannot access type: {:?} - only arrays, dictionaries, and structs with __getitem__ are supported", obj_borrowed.get_type())
             ))
         }
     }
     
-    fn evaluate_index_assign(&mut self, object: &ExprRef, index: &ExprRef, value: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+    fn evaluate_slice_assign(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Get the object being indexed
         let object_val = self.evaluate(object)?;
         let object_obj = self.extract_value(Ok(object_val))?;
-        
-        // Evaluate the index
-        let index_val = self.evaluate(index)?;
-        let index_obj = self.extract_value(Ok(index_val))?;
         
         // Evaluate the value to assign
         let value_val = self.evaluate(value)?;
         let value_obj = self.extract_value(Ok(value_val))?;
         
-        let mut obj_borrowed = object_obj.borrow_mut();
-        match &mut *obj_borrowed {
+        let obj_borrowed = object_obj.borrow();
+        match &*obj_borrowed {
             Object::Array(elements) => {
-                // Array assignment with UInt64 index
-                let index_borrowed = index_obj.borrow();
-                match &*index_borrowed {
-                    Object::UInt64(idx) => {
-                        let idx = *idx as usize;
-                        if idx >= elements.len() {
-                            return Err(InterpreterError::IndexOutOfBounds { 
-                                index: idx as isize, 
-                                size: elements.len() 
-                            });
+                let array_len = elements.len();
+                drop(obj_borrowed);
+                
+                // Check if this is single element assignment (start provided, end is None)
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: arr[i] = value
+                    if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let resolved_idx = self.resolve_array_index(&start_obj, array_len)?;
+                        
+                        let mut obj_borrowed = object_obj.borrow_mut();
+                        if let Object::Array(elements) = &mut *obj_borrowed {
+                            elements[resolved_idx] = value_obj.clone();
+                            Ok(EvaluationResult::Value(value_obj))
+                        } else {
+                            Err(InterpreterError::InternalError("Expected array for slice assignment".to_string()))
                         }
-                        elements[idx] = value_obj.clone();
-                        Ok(EvaluationResult::Value(value_obj))
+                    } else {
+                        Err(InterpreterError::InternalError("Single element assignment requires start index".to_string()))
                     }
-                    _ => Err(InterpreterError::InternalError("Array index must be UInt64".to_string()))
+                } else {
+                    // Range slice assignment: arr[start..end] = value (not implemented yet)
+                    Err(InterpreterError::InternalError("Range slice assignment not yet implemented".to_string()))
                 }
             }
-            Object::Dict(dict) => {
-                // Dict assignment with any Object key
-                let index_borrowed = index_obj.borrow();
-                let key_object = index_borrowed.clone();
-                let object_key = ObjectKey::new(key_object);
-                
-                dict.insert(object_key, value_obj.clone());
-                Ok(EvaluationResult::Value(value_obj))
+            Object::Dict(_) => {
+                drop(obj_borrowed);
+                // Dictionary assignment: dict[key] = value (only single element assignment)
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: dict[key] = value
+                    if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        let start_obj = self.extract_value(Ok(start_val))?;
+                        
+                        // Create ObjectKey for dictionary assignment
+                        let key_borrowed = start_obj.borrow();
+                        let key_object = key_borrowed.clone();
+                        let object_key = ObjectKey::new(key_object);
+                        
+                        let mut obj_borrowed = object_obj.borrow_mut();
+                        if let Object::Dict(dict) = &mut *obj_borrowed {
+                            dict.insert(object_key, value_obj.clone());
+                            Ok(EvaluationResult::Value(value_obj))
+                        } else {
+                            Err(InterpreterError::InternalError("Expected dict for assignment".to_string()))
+                        }
+                    } else {
+                        Err(InterpreterError::InternalError("Dictionary assignment requires key index".to_string()))
+                    }
+                } else {
+                    // Range slice assignment not supported for dictionaries
+                    Err(InterpreterError::InternalError("Dictionary slice assignment not supported - use single key assignment dict[key] = value".to_string()))
+                }
             }
             Object::Struct { type_name, .. } => {
-                // Struct index assignment overloading - look for __setitem__ method
+                // Struct assignment: check for __setitem__ method (only single element assignment)
                 let struct_name_val = *type_name;
-                drop(obj_borrowed); // Release borrow before method call
+                drop(obj_borrowed);
                 
-                // Resolve names first before method call  
-                let struct_name_str = self.string_interner.resolve(struct_name_val)
-                    .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
-                    .to_string();
-                let setitem_method = self.string_interner.get_or_intern("__setitem__");
-                
-                // Call __setitem__(self, index, value)
-                let args = vec![index_obj, value_obj.clone()];
-                self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str)?;
-                
-                // Return the assigned value
-                Ok(EvaluationResult::Value(value_obj))
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: struct[key] = value
+                    if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        let start_obj = self.extract_value(Ok(start_val))?;
+                        
+                        // Resolve names first before method call  
+                        let struct_name_str = self.string_interner.resolve(struct_name_val)
+                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                            .to_string();
+                        let setitem_method = self.string_interner.get_or_intern("__setitem__");
+                        
+                        // Call __setitem__(self, index, value)
+                        let args = vec![start_obj, value_obj.clone()];
+                        self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str)?;
+                        
+                        // Return the assigned value
+                        Ok(EvaluationResult::Value(value_obj))
+                    } else {
+                        Err(InterpreterError::InternalError("Struct assignment requires index".to_string()))
+                    }
+                } else {
+                    // Range slice assignment not supported for structs
+                    Err(InterpreterError::InternalError("Struct slice assignment not supported - use single index assignment struct[key] = value".to_string()))
+                }
             }
-            _ => Err(InterpreterError::InternalError(format!("Cannot assign index to type {:?}", obj_borrowed.get_type())))
+            _ => {
+                drop(obj_borrowed);
+                Err(InterpreterError::InternalError(
+                    "Cannot assign to type - only arrays, dictionaries, and structs with __setitem__ are supported".to_string()
+                ))
+            }
         }
     }
 

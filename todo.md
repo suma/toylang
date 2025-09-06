@@ -453,11 +453,88 @@
 - **文字列メモリ効率化完了** - String Interner汚染回避、動的文字列の直接アクセス、不変vs可変の型レベル区別
 - **Go-style module system fully implemented** - Complete 4-phase implementation (syntax, resolution, type checking, runtime)
 - **Module namespace support** - Package declarations, import statements, qualified name resolution
-- **配列スライス機能が完全実装済み** - `arr[start..end]`, `arr[..end]`, `arr[start..]`, `arr[..]` 構文をサポート
-- 型推論対応スライス：数値リテラル（u64サフィックス有無）、境界チェック、メモリ安全な部分配列作成
-- **統一インデックスシステム完了** - 配列、辞書、構造体、スライスで一貫した `x[key]` 構文を提供
+- **配列スライス機能が完全実装済み** - Python/Rust風の直感的なスライス構文を完全サポート：
+  - **基本スライス**: `arr[start..end]` - 指定範囲の部分配列を作成
+  - **開始省略**: `arr[..end]` - 最初から指定位置まで  
+  - **終了省略**: `arr[start..]` - 指定位置から最後まで
+  - **全体コピー**: `arr[..]` - 配列全体の新しいコピー
+  - **負のインデックス**: `arr[-1]` (最後の要素), `arr[-2..]` (後ろから2つ), `arr[1..-1]` (最初と最後を除く)
+  - **型推論対応**: 数値リテラル（u64サフィックス有無）、負数の自動i64推論、境界チェック
+  - **メモリ安全**: 実行時境界検証、範囲エラー検出、安全な部分配列作成
+- **統一インデックスシステム完了** - 配列、辞書、構造体、スライスで一貫した `x[key]` 構文を提供：
+  - **配列アクセス**: `arr[index]` - 単一要素アクセス、`arr[start..end]` - スライスアクセス
+  - **辞書アクセス**: `dict[key]` - キーによる値アクセス（Object型キーサポート）
+  - **構造体アクセス**: `struct[key]` - `__getitem__`メソッド呼び出し、カスタム索引演算子
 - **プロダクションレベル達成** - 深い再帰、複雑ネスト構造を含む実用的プログラム作成が可能
 - **包括的テストスイート** - frontend 221テスト + interpreter 77テスト = 合計298テスト成功（99.3%成功率）
 - **スライス機能完全実用化** - SliceInfo統一アーキテクチャにより28個のslice_testsが全て成功（100%成功率）
 - **負のインデックス完全対応** - `a[-1]`, `a[-2..]`, `a[1..-1]` 等のPython/Rust風構文が完全動作、負数推論も自動化
 - **構造体索引システム完成** - `__getitem__`メソッドによる構造体でのインデックスアクセスが統一アーキテクチャで完全動作
+
+## スライス機能の技術仕様
+
+### 基本構文と動作例
+```rust
+val arr: [u64; 5] = [10, 20, 30, 40, 50]
+
+# 基本スライス
+val slice1 = arr[1..4]      # [20, 30, 40] - インデックス1から3まで
+val slice2 = arr[..3]       # [10, 20, 30] - 最初からインデックス2まで  
+val slice3 = arr[2..]       # [30, 40, 50] - インデックス2から最後まで
+val slice4 = arr[..]        # [10, 20, 30, 40, 50] - 全体コピー
+
+# 負のインデックス（Python/Rust風）
+val last = arr[-1]          # 50 - 最後の要素
+val second_last = arr[-2]   # 40 - 後ろから2番目
+val tail = arr[-2..]        # [40, 50] - 後ろから2つ
+val head = arr[..-1]        # [10, 20, 30, 40] - 最後を除く全て
+val middle = arr[1..-1]     # [20, 30, 40] - 最初と最後を除く
+
+# 型推論対応（サフィックス不要）
+val auto_slice = arr[1..3]  # 型推論で自動的にu64として処理
+val neg_auto = arr[-1]      # 負数は自動的にi64として推論
+```
+
+### 統一インデックスシステム
+```rust
+# 配列インデックス
+val arr = [1, 2, 3, 4, 5]
+val element = arr[2]        # 単一要素アクセス
+val slice = arr[1..4]       # スライスアクセス
+
+# 辞書インデックス  
+val dict = dict{"key1": "value1", "key2": "value2"}
+val value = dict["key1"]    # キーアクセス
+
+# 構造体カスタムインデックス
+struct Matrix2x2 {
+    data: [u64; 4]
+}
+
+impl Matrix2x2 {
+    fn __getitem__(self: Self, index: u64) -> u64 {
+        self.data[index]  # 内部配列へのアクセス
+    }
+}
+
+val matrix = Matrix2x2 { data: [1, 2, 3, 4] }
+val element = matrix[1]     # __getitem__メソッド呼び出し
+```
+
+### 型安全性と境界検証
+```rust
+# コンパイル時チェック
+val arr: [i64; 3] = [1, 2, 3]
+val slice = arr[1..2]       # 型: [i64; 1] - 正確なサイズ推論
+
+# 実行時境界チェック
+val out_of_bounds = arr[5]  # エラー: IndexOutOfBounds
+val invalid_range = arr[3..1] # エラー: start > end
+val neg_overflow = arr[-5]  # エラー: 負のインデックスが配列長を超過
+```
+
+### SliceInfo統一アーキテクチャ
+- **AST表現**: `Expr::SliceAccess(ExprRef, SliceInfo)` による統一構造
+- **SliceType区別**: `SingleElement`（単一要素）と`RangeSlice`（範囲）の明確な分離
+- **型推論統合**: 正負インデックス、範囲指定での適切な型推論とAST変換
+- **実行時最適化**: メモリ効率的なスライス作成と境界チェック

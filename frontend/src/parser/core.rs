@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::collections::HashSet;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::token::Kind;
@@ -432,13 +433,15 @@ impl<'a> Parser<'a> {
                             };
 
                             self.expect_err(&Kind::ParenOpen)?;
-                            let params = self.parse_param_def_list(vec![])?;
+                            let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
                             self.expect_err(&Kind::ParenClose)?;
                             let mut ret_ty: Option<TypeDecl> = None;
                             match self.peek() {
                                 Some(Kind::Arrow) => {
                                     self.expect_err(&Kind::Arrow)?;
-                                    ret_ty = Some(self.parse_type_declaration()?);
+                                    // Convert to HashSet for generic context
+                                    let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
+                                    ret_ty = Some(self.parse_type_declaration_with_generic_context(&generic_context)?);
                                 }
                                 _ => (),
                             }
@@ -580,13 +583,19 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
+        self.parse_param_def_with_generic_context(&[])
+    }
+    
+    pub fn parse_param_def_with_generic_context(&mut self, generic_params: &[DefaultSymbol]) -> ParserResult<Parameter> {
         let current_token = self.peek().cloned();
         match current_token {
             Some(Kind::Identifier(s)) => {
                 let name = self.string_interner.get_or_intern(s);
                 self.next();
                 self.expect_err(&Kind::Colon)?;
-                let typ = self.parse_type_declaration()?;
+                // Convert to HashSet for generic context
+                let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
+                let typ = self.parse_type_declaration_with_generic_context(&generic_context)?;
                 Ok((name, typ))
             }
             x => {
@@ -597,6 +606,10 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
+        self.parse_param_def_list_with_generic_context(args, &[])
+    }
+    
+    pub fn parse_param_def_list_with_generic_context(&mut self, mut args: Vec<Parameter>, generic_params: &[DefaultSymbol]) -> ParserResult<Vec<Parameter>> {
         // Limit maximum number of parameters to prevent infinite loops
         const MAX_PARAMS: usize = 255;
         
@@ -608,7 +621,7 @@ impl<'a> Parser<'a> {
                 return Ok(args);
             }
 
-            let def = self.parse_param_def();
+            let def = self.parse_param_def_with_generic_context(generic_params);
             if def.is_err() {
                 return Ok(args);
             }
@@ -627,10 +640,14 @@ impl<'a> Parser<'a> {
     }
 
     pub fn parse_type_declaration(&mut self) -> ParserResult<TypeDecl> {
+        self.parse_type_declaration_with_generic_context(&HashSet::new())
+    }
+    
+    pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
         match self.peek() {
             Some(Kind::BracketOpen) => {
                 self.next();
-                let element_type = self.parse_type_declaration()?;
+                let element_type = self.parse_type_declaration_with_generic_context(generic_params)?;
                 self.expect_err(&Kind::Semicolon)?;
                 
                 let size = match self.peek().cloned() {
@@ -674,7 +691,13 @@ impl<'a> Parser<'a> {
                 let s = s.to_string();
                 let ident = self.string_interner.get_or_intern(s);
                 self.next();
-                Ok(TypeDecl::Identifier(ident))
+                
+                // Check if this identifier is a generic type parameter
+                if generic_params.contains(&ident) {
+                    Ok(TypeDecl::Generic(ident))
+                } else {
+                    Ok(TypeDecl::Identifier(ident))
+                }
             }
             Some(Kind::Str) => {
                 self.next();
@@ -689,12 +712,12 @@ impl<'a> Parser<'a> {
                 self.expect_err(&Kind::BracketOpen)?;
                 
                 // Parse key type
-                let key_type = self.parse_type_declaration()?;
+                let key_type = self.parse_type_declaration_with_generic_context(generic_params)?;
                 
                 self.expect_err(&Kind::Comma)?;
                 
                 // Parse value type
-                let value_type = self.parse_type_declaration()?;
+                let value_type = self.parse_type_declaration_with_generic_context(generic_params)?;
                 
                 self.expect_err(&Kind::BracketClose)?;
                 Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
@@ -713,7 +736,7 @@ impl<'a> Parser<'a> {
                 let mut element_types = Vec::new();
                 
                 // Parse first type
-                let first_type = self.parse_type_declaration()?;
+                let first_type = self.parse_type_declaration_with_generic_context(generic_params)?;
                 element_types.push(first_type);
                 self.skip_newlines();
                 
@@ -727,7 +750,7 @@ impl<'a> Parser<'a> {
                         break;
                     }
                     
-                    let elem_type = self.parse_type_declaration()?;
+                    let elem_type = self.parse_type_declaration_with_generic_context(generic_params)?;
                     element_types.push(elem_type);
                     self.skip_newlines();
                 }

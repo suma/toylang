@@ -789,12 +789,15 @@ impl<'a> EvaluationContext<'a> {
 
                     // Evaluate arguments once and perform type checking
                     let mut evaluated_args = Vec::new();
+                    let is_generic_function = !func.generic_params.is_empty();
+                    
                     for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
                         let arg_result = self.evaluate(arg_expr)?;
                         let arg_value = self.extract_value(Ok(arg_result))?;
                         let actual_type = arg_value.borrow().get_type();
                         
-                        if !actual_type.is_equivalent(expected_type) {
+                        // Skip type checking for generic functions since type checking was already done
+                        if !is_generic_function && !actual_type.is_equivalent(expected_type) {
                             let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
                             return Err(InterpreterError::TypeError {
                                 expected: expected_type.clone(),

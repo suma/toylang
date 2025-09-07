@@ -101,7 +101,7 @@ mod visibility_tests {
         // Check that the struct was parsed with public visibility
         if let Some(stmt) = program.statement.get(&frontend::ast::StmtRef(0)) {
             match stmt {
-                frontend::ast::Stmt::StructDecl { name: _, fields: _, visibility } => {
+                frontend::ast::Stmt::StructDecl { name: _, fields: _, visibility, .. } => {
                     assert_eq!(visibility, frontend::ast::Visibility::Public);
                 }
                 _ => panic!("Expected StructDecl statement"),
@@ -127,7 +127,7 @@ mod visibility_tests {
         // Check that the struct was parsed with private visibility
         if let Some(stmt) = program.statement.get(&frontend::ast::StmtRef(0)) {
             match stmt {
-                frontend::ast::Stmt::StructDecl { name: _, fields: _, visibility } => {
+                frontend::ast::Stmt::StructDecl { name: _, fields: _, visibility, .. } => {
                     assert_eq!(visibility, frontend::ast::Visibility::Private);
                 }
                 _ => panic!("Expected StructDecl statement"),

@@ -34,4 +34,36 @@ impl TypeDecl {
             _ => false,
         }
     }
+    
+    /// Substitute generic type parameters with concrete types
+    pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
+        match self {
+            TypeDecl::Generic(param) => {
+                // If we have a substitution for this generic parameter, use it
+                substitutions.get(param).cloned().unwrap_or_else(|| self.clone())
+            },
+            TypeDecl::Array(element_types, size) => {
+                // Recursively substitute in array element types
+                let new_elements = element_types.iter()
+                    .map(|t| t.substitute_generics(substitutions))
+                    .collect();
+                TypeDecl::Array(new_elements, *size)
+            },
+            TypeDecl::Dict(key_type, value_type) => {
+                // Recursively substitute in dictionary key and value types
+                let new_key = Box::new(key_type.substitute_generics(substitutions));
+                let new_value = Box::new(value_type.substitute_generics(substitutions));
+                TypeDecl::Dict(new_key, new_value)
+            },
+            TypeDecl::Tuple(element_types) => {
+                // Recursively substitute in tuple element types
+                let new_elements = element_types.iter()
+                    .map(|t| t.substitute_generics(substitutions))
+                    .collect();
+                TypeDecl::Tuple(new_elements)
+            },
+            // For all other types, no substitution needed
+            _ => self.clone(),
+        }
+    }
 }

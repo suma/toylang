@@ -1098,6 +1098,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 return Err(err);
             }
             
+            // Handle generic function calls
+            if !fun.generic_params.is_empty() {
+                return self.visit_generic_call(fn_name, args_ref, &fun);
+            }
+            
             let status = self.function_checking.is_checked_fn.get(&fn_name);
             if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
                 // not checked yet
@@ -3846,6 +3851,164 @@ impl<'a> TypeCheckerVisitor<'a> {
         // TODO: Implement proper module context tracking
         // This should compare current_package with the function/struct's defining module
         true
+    }
+    
+    /// Handle generic function calls with type inference and instantiation recording
+    pub fn visit_generic_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef, fun: &crate::ast::Function) -> Result<TypeDecl, TypeCheckError> {
+        // Extract argument expressions from the reference
+        let args_data = if let Some(args_expr) = self.core.expr_pool.get(&args_ref) {
+            if let Expr::ExprList(args) = args_expr {
+                Some(args.clone())
+            } else {
+                None
+            }
+        } else {
+            self.pop_context();
+            return Err(TypeCheckError::generic_error("Invalid arguments reference"));
+        };
+        
+        let args = args_data.ok_or_else(|| {
+            self.pop_context();
+            TypeCheckError::generic_error("Invalid arguments expression")
+        })?;
+        
+        // Verify argument count matches parameter count
+        if args.len() != fun.parameter.len() {
+            self.pop_context();
+            let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+            return Err(TypeCheckError::generic_error(&format!(
+                "Generic function '{}' argument count mismatch: expected {}, found {}",
+                fn_name_str, fun.parameter.len(), args.len()
+            )));
+        }
+        
+        // Create substitution map for type inference
+        let mut substitutions = std::collections::HashMap::new();
+        
+        // Type check each argument and infer generic type mappings
+        for (arg_expr, (_, param_type)) in args.iter().zip(&fun.parameter) {
+            let arg_type = self.visit_expr(arg_expr)?;
+            
+            // Unify parameter type with argument type to infer generic substitutions
+            self.infer_generic_types(param_type, &arg_type, &mut substitutions)?;
+        }
+        
+        // Ensure all generic parameters have been inferred
+        for generic_param in &fun.generic_params {
+            if !substitutions.contains_key(generic_param) {
+                self.pop_context();
+                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<NOT_FOUND>");
+                let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Cannot infer generic type parameter '{}' for function '{}'",
+                    param_name, fn_name_str
+                )));
+            }
+        }
+        
+        // Generate unique name for the instantiated function
+        let instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);
+        
+        // Record the instantiation for later processing in the instantiation pass
+        let instantiation = crate::type_checker::inference::GenericInstantiation {
+            original_name: fn_name,
+            type_substitutions: substitutions.clone(),
+            instantiated_name,
+            kind: crate::type_checker::inference::InstantiationKind::Function,
+        };
+        
+        self.type_inference.record_instantiation(instantiation);
+        
+        // Substitute generic types in return type with concrete types
+        let return_type = fun.return_type.as_ref()
+            .map(|t| t.substitute_generics(&substitutions))
+            .unwrap_or(TypeDecl::Unknown);
+        
+        self.pop_context();
+        Ok(return_type)
+    }
+    
+    /// Infer generic type mappings by unifying parameter type with argument type
+    fn infer_generic_types(&self, param_type: &TypeDecl, arg_type: &TypeDecl, substitutions: &mut std::collections::HashMap<DefaultSymbol, TypeDecl>) -> Result<(), TypeCheckError> {
+        match (param_type, arg_type) {
+            (TypeDecl::Generic(param), concrete_type) => {
+                // Check for conflicting type inference
+                if let Some(existing_type) = substitutions.get(param) {
+                    if existing_type != concrete_type {
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "Conflicting type inference: {} cannot be both {:?} and {:?}",
+                            self.core.string_interner.resolve(*param).unwrap_or("<NOT_FOUND>"),
+                            existing_type,
+                            concrete_type
+                        )));
+                    }
+                } else {
+                    // Record new type substitution
+                    substitutions.insert(*param, concrete_type.clone());
+                }
+            },
+            (TypeDecl::Array(param_elements, param_size), TypeDecl::Array(arg_elements, arg_size)) => {
+                // Verify array structure matches before recursing
+                if param_size != arg_size || param_elements.len() != arg_elements.len() {
+                    return Err(TypeCheckError::generic_error("Array type mismatch in generic inference"));
+                }
+                // Recursively infer types for array elements
+                for (param_elem, arg_elem) in param_elements.iter().zip(arg_elements.iter()) {
+                    self.infer_generic_types(param_elem, arg_elem, substitutions)?;
+                }
+            },
+            (TypeDecl::Tuple(param_elements), TypeDecl::Tuple(arg_elements)) => {
+                // Verify tuple arity matches before recursing
+                if param_elements.len() != arg_elements.len() {
+                    return Err(TypeCheckError::generic_error("Tuple type mismatch in generic inference"));
+                }
+                // Recursively infer types for tuple elements
+                for (param_elem, arg_elem) in param_elements.iter().zip(arg_elements.iter()) {
+                    self.infer_generic_types(param_elem, arg_elem, substitutions)?;
+                }
+            },
+            (TypeDecl::Dict(param_key, param_value), TypeDecl::Dict(arg_key, arg_value)) => {
+                // Recursively infer types for dictionary key and value
+                self.infer_generic_types(param_key, arg_key, substitutions)?;
+                self.infer_generic_types(param_value, arg_value, substitutions)?;
+            },
+            // Non-generic types must match exactly
+            (param, arg) if param == arg => {
+                // Types match, no inference needed
+            },
+            _ => {
+                // Type mismatch - cannot unify
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Type mismatch in generic inference: expected {:?}, found {:?}",
+                    param_type, arg_type
+                )));
+            }
+        }
+        Ok(())
+    }
+    
+    /// Generate a unique name for an instantiated generic function/struct
+    fn generate_instantiated_name(&self, original_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> String {
+        let original_str = self.core.string_interner.resolve(original_name).unwrap_or("unknown");
+        let mut name_parts = vec![original_str.to_string()];
+        
+        // Sort substitutions for consistent naming across different call sites
+        let mut sorted_subs: Vec<_> = substitutions.iter().collect();
+        sorted_subs.sort_by_key(|(k, _)| *k);
+        
+        // Append type suffixes to create unique instantiated name
+        for (_, type_decl) in sorted_subs {
+            let type_suffix = match type_decl {
+                TypeDecl::Int64 => "i64",
+                TypeDecl::UInt64 => "u64", 
+                TypeDecl::Bool => "bool",
+                TypeDecl::String => "str",
+                _ => "unknown",
+            };
+            name_parts.push(type_suffix.to_string());
+        }
+        
+        name_parts.join("_")
     }
 }
 

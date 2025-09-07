@@ -5,7 +5,7 @@ use crate::token::Kind;
 use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
-use string_interner::DefaultStringInterner;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::parser::error::{ParserError, ParserErrorKind, ParserResult, MultipleParserResult};
 
 pub mod lexer {
@@ -424,6 +424,13 @@ impl<'a> Parser<'a> {
                             let fn_name = self.string_interner.get_or_intern(s);
                             self.next();
 
+                            // Parse generic parameters if present: <T>
+                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
+                                self.parse_generic_params()?
+                            } else {
+                                vec![]
+                            };
+
                             self.expect_err(&Kind::ParenOpen)?;
                             let params = self.parse_param_def_list(vec![])?;
                             self.expect_err(&Kind::ParenClose)?;
@@ -442,6 +449,7 @@ impl<'a> Parser<'a> {
                             def_func.push(Rc::new(Function{
                                 node: Node::new(fn_start_pos, fn_end_pos),
                                 name: fn_name,
+                                generic_params,
                                 parameter: params,
                                 return_type: ret_ty,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
@@ -464,13 +472,21 @@ impl<'a> Parser<'a> {
                             let s_copy = s.clone();
                             let struct_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
+                            
+                            // Parse generic parameters if present: struct Foo<T>
+                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
+                                self.parse_generic_params()?
+                            } else {
+                                vec![]
+                            };
+                            
                             self.expect_err(&Kind::BraceOpen)?;
                             let fields = super::stmt::parse_struct_fields(self, vec![])?;
                             self.expect_err(&Kind::BraceClose)?;
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
                             
-                            self.ast_builder.struct_decl_stmt(struct_symbol, fields, visibility, Some(location));
+                            self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, fields, visibility, Some(location));
                         }
                         _ => {
                             self.collect_error("expected struct name");
@@ -806,6 +822,50 @@ impl<'a> Parser<'a> {
         
         self.skip_newlines();
         Ok(ImportDecl { module_path, alias })
+    }
+
+    /// Parse generic type parameters: <T> or <T, U>
+    pub fn parse_generic_params(&mut self) -> ParserResult<Vec<DefaultSymbol>> {
+        let mut params = Vec::new();
+        
+        // Expect '<'
+        self.expect_err(&Kind::LT)?;
+        
+        loop {
+            match self.peek() {
+                Some(Kind::Identifier(s)) => {
+                    let s = s.to_string();
+                    let param_symbol = self.string_interner.get_or_intern(s);
+                    params.push(param_symbol);
+                    self.next();
+                    
+                    match self.peek() {
+                        Some(Kind::Comma) => {
+                            self.next(); // consume comma, continue to next param
+                        }
+                        Some(Kind::GT) => {
+                            break; // end of generic params
+                        }
+                        _ => {
+                            let location = self.current_source_location();
+                            return Err(ParserError::generic_error(location, "Expected ',' or '>' in generic parameters".to_string()));
+                        }
+                    }
+                }
+                Some(Kind::GT) => {
+                    break; // empty or trailing comma case
+                }
+                _ => {
+                    let location = self.current_source_location();
+                    return Err(ParserError::generic_error(location, "Expected generic type parameter identifier".to_string()));
+                }
+            }
+        }
+        
+        // Expect '>'
+        self.expect_err(&Kind::GT)?;
+        
+        Ok(params)
     }
 
     /// Parse program with multiple error collection

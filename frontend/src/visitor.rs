@@ -52,6 +52,6 @@ pub trait AstVisitor {
     fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_break(&mut self, ) -> Result<TypeDecl, TypeCheckError>;
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError>;
 }

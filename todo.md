@@ -2,6 +2,52 @@
 
 ## 完了済み ✅
 
+108. **単一型パラメータGenericsの基本実装** ✅ (2025-09-07完了)
+   - **対象**: 関数と構造体での単一型パラメータジェネリクス構文のサポート
+   - **実装した機能**:
+     - **関数ジェネリクス**: `fn identity<T>(x: T) -> T` 構文の解析
+     - **構造体ジェネリクス**: `struct Container<T> { value: T }` 構文の解析
+     - **型システム拡張**: `TypeDecl::Generic(DefaultSymbol)` で型パラメータ表現
+     - **AST構造拡張**: `Function.generic_params` と `Stmt::StructDecl.generic_params` フィールド追加
+   - **技術的実装**:
+     - **レクサー**: 既存の `<` と `>` トークンでジェネリクス構文をサポート
+     - **パーサー拡張**: 
+       - `parse_generic_params()` メソッドで `<T>` や `<T, U>` の解析
+       - 関数定義で `fn foo<T>(...)` 構文の解析
+       - 構造体定義で `struct Foo<T> {...}` 構文の解析
+     - **AST変更**:
+       - `Function` 構造体に `generic_params: Vec<DefaultSymbol>` 追加
+       - `MethodFunction` 構造体に `generic_params: Vec<DefaultSymbol>` 追加
+       - `Stmt::StructDecl` に `generic_params: Vec<DefaultSymbol>` 追加
+       - `StmtPool` に `struct_generic_params: Vec<Option<Vec<DefaultSymbol>>>` 追加
+     - **型チェッカー更新**: `visit_struct_decl()` にジェネリクスパラメータ引数追加
+     - **インタープリター対応**: AST構造変更に伴うコンパイルエラー修正
+   - **テスト結果**:
+     - **関数テスト**: `test_generic.t` - `fn identity<T>(x: T) -> T` がパース成功
+     - **構造体テスト**: `test_generic_struct.t` - `struct Container<T>` がパース成功
+     - **ビルド確認**: frontend、interpreter共にコンパイル成功
+   - **実装ファイル**:
+     - **frontend/src/ast.rs**: AST構造とStmtPoolへのジェネリクスフィールド追加
+     - **frontend/src/type_decl.rs**: `TypeDecl::Generic(DefaultSymbol)` 追加
+     - **frontend/src/parser/core.rs**: `parse_generic_params()` 実装と関数/構造体解析
+     - **frontend/src/parser/stmt.rs**: メソッドのジェネリクスパラメータ対応
+     - **frontend/src/visitor.rs**: `visit_struct_decl()` シグネチャ更新
+     - **frontend/src/type_checker.rs**: ジェネリクスパラメータ対応
+     - **interpreter/src/lib.rs**: AST構造変更への対応
+   - **技術的成果**:
+     - **構文レベル完全サポート**: 単一型パラメータのジェネリクス構文が正常に解析
+     - **将来の拡張基盤**: 複数型パラメータ `<T, U>` への拡張が容易
+     - **後方互換性**: 既存の非ジェネリクス関数・構造体に影響なし
+     - **統一的設計**: 関数とメソッド、構造体で一貫したジェネリクス表現
+   - **現在の制限事項**:
+     - 型推論とインスタンス化は未実装（構文解析のみ）
+     - 型制約（bounds）は未サポート
+     - ジェネリクス関数の実行時にはエラー発生
+   - **今後の実装予定**:
+     - 型チェッカーでのジェネリクス型推論
+     - モノモーフィゼーション（単一化）の実装
+     - インタープリターでのジェネリクス関数実行サポート
+
 107. **負数インデックス推論問題の修正** ✅ (2025-09-06完了)
    - **対象**: `a[-1]`、`a[-2..]`等の負数リテラル推論で「Cannot convert '-1' to UInt64」エラーが発生していた問題
    - **問題の根本原因**:
@@ -382,6 +428,12 @@
 
 ## 未実装 📋
 
+109. **ジェネリクス型推論とインスタンス化**
+    - 型チェッカーでのジェネリクス型推論の実装
+    - モノモーフィゼーション（単一化）の実装
+    - インタープリターでのジェネリクス関数実行サポート
+    - 型制約（bounds）のサポート
+
 95. **ヒープメモリ管理の完全実装**
     - heap_realloc でのデータ保持
     - mem_copy/mem_set の正確な実装
@@ -470,6 +522,7 @@
 - **スライス機能完全実用化** - SliceInfo統一アーキテクチャにより28個のslice_testsが全て成功（100%成功率）
 - **負のインデックス完全対応** - `a[-1]`, `a[-2..]`, `a[1..-1]` 等のPython/Rust風構文が完全動作、負数推論も自動化
 - **構造体索引システム完成** - `__getitem__`メソッドによる構造体でのインデックスアクセスが統一アーキテクチャで完全動作
+- **単一型パラメータGenerics構文サポート** - 関数 `fn foo<T>` と構造体 `struct Bar<T>` のジェネリクス構文解析が完全実装済み（型推論は未実装）
 
 ## スライス機能の技術仕様
 

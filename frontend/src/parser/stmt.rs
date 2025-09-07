@@ -282,6 +282,7 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                         methods.push(Rc::new(MethodFunction {
                             node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
+                            generic_params: vec![], // TODO: Add generic parameter parsing for methods
                             parameter: params,
                             return_type: ret_ty,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),

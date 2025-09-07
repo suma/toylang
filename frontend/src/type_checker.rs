@@ -529,7 +529,7 @@ impl Acceptable for Stmt {
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
-            Stmt::StructDecl { name, fields, visibility } => visitor.visit_struct_decl(*name, fields, visibility),
+            Stmt::StructDecl { name, generic_params, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, fields, visibility),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
         }
     }
@@ -1839,7 +1839,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // 1. Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
         for field in fields {

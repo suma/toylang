@@ -16,6 +16,7 @@ pub enum TypeDecl {
     Self_,  // Self type within impl blocks
     Ptr,  // Raw pointer type for heap memory
     Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
+    Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
 }
 
 impl TypeDecl {

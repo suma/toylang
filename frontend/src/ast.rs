@@ -192,6 +192,7 @@ pub struct StmtPool {
     
     // Declaration fields
     pub struct_name: Vec<Option<DefaultSymbol>>,             // For struct declarations
+    pub struct_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For struct generic parameters
     pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
@@ -809,6 +810,7 @@ impl StmtPool {
             end_expr: Vec::new(),
             block_expr: Vec::new(),
             struct_name: Vec::new(),
+            struct_generic_params: Vec::new(),
             struct_fields: Vec::new(),
             visibility: Vec::new(),
             impl_methods: Vec::new(),
@@ -826,6 +828,7 @@ impl StmtPool {
             end_expr: Vec::with_capacity(cap),
             block_expr: Vec::with_capacity(cap),
             struct_name: Vec::with_capacity(cap),
+            struct_generic_params: Vec::with_capacity(cap),
             struct_fields: Vec::with_capacity(cap),
             visibility: Vec::with_capacity(cap),
             impl_methods: Vec::with_capacity(cap),
@@ -845,6 +848,7 @@ impl StmtPool {
             self.end_expr.resize(current_len + extend_count, None);
             self.block_expr.resize(current_len + extend_count, None);
             self.struct_name.resize(current_len + extend_count, None);
+            self.struct_generic_params.resize(current_len + extend_count, None);
             self.struct_fields.resize(current_len + extend_count, None);
             self.visibility.resize(current_len + extend_count, None);
             self.impl_methods.resize(current_len + extend_count, None);
@@ -894,9 +898,10 @@ impl StmtPool {
                 self.condition[index] = Some(cond);
                 self.block_expr[index] = Some(block);
             }
-            Stmt::StructDecl { name, fields, visibility } => {
+            Stmt::StructDecl { name, generic_params, fields, visibility } => {
                 self.stmt_types[index] = StmtType::StructDecl;
                 self.struct_name[index] = Some(name);
+                self.struct_generic_params[index] = Some(generic_params);
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
@@ -956,6 +961,7 @@ impl StmtPool {
             StmtType::StructDecl => {
                 Some(Stmt::StructDecl {
                     name: self.struct_name[index].clone()?,
+                    generic_params: self.struct_generic_params[index].clone()?,
                     fields: self.struct_fields[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })
@@ -1272,8 +1278,8 @@ impl AstBuilder {
         stmt_ref
     }
     
-    pub fn struct_decl_stmt(&mut self, name: DefaultSymbol, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, fields, visibility });
+    pub fn struct_decl_stmt(&mut self, name: DefaultSymbol, generic_params: Vec<DefaultSymbol>, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, generic_params, fields, visibility });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
@@ -1312,6 +1318,7 @@ impl Program {
 pub struct Function {
     pub node: Node,
     pub name: DefaultSymbol,
+    pub generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T, U>
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,
@@ -1344,6 +1351,7 @@ pub struct ImplBlock {
 pub struct MethodFunction {
     pub node: Node,
     pub name: DefaultSymbol,
+    pub generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T, U>
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,
@@ -1374,6 +1382,7 @@ pub enum Stmt {
     While(ExprRef, ExprRef), // cond, block
     StructDecl {
         name: DefaultSymbol,
+        generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T>
         fields: Vec<StructField>,
         visibility: Visibility,
     },

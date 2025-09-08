@@ -22,6 +22,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
 - **Dictionary Type**: `val dict: Dict = {key1: value1, key2: value2}` with Object key support
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
+- **Generics**: Type-safe generic functions and structures with automatic type inference
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
 - **Resource Management**: Automatic destruction system with custom `__drop__` methods
 - **Comments**: Line comments with `#` symbol support
@@ -31,6 +32,7 @@ This project implements a statically-typed programming language with comprehensi
 
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
+- **Generic Type Inference**: Constraint-based unification algorithm for automatic type parameter resolution
 - **Automatic Type Conversion**: Seamless conversion between compatible numeric types  
 - **Advanced Type Checking**: Comprehensive validation with detailed error reporting
 - **Memory Pool Architecture**: Efficient AST storage with `StmtPool` and `ExprPool`
@@ -215,6 +217,59 @@ fn main() -> u64 {
 }
 ```
 
+### Generic Programming
+```rust
+# Generic functions with automatic type inference
+fn identity<T>(x: T) -> T {
+    x
+}
+
+fn swap<T, U>(pair: (T, U)) -> (U, T) {
+    (pair.1, pair.0)
+}
+
+# Generic structures with type parameter inference
+struct Container<T> {
+    value: T
+}
+
+impl<T> Container<T> {
+    # Associated function with type inference
+    fn new(value: T) -> Self {
+        Container { value: value }
+    }
+    
+    # Method with generic return type
+    fn get_value(self: Self) -> T {
+        self.value
+    }
+    
+    # Method with additional type parameters
+    fn transform<U>(self: Self, f: fn(T) -> U) -> Container<U> {
+        Container { value: f(self.value) }
+    }
+}
+
+fn main() -> u64 {
+    # Type inference: T = u64
+    val result1 = identity(42u64)      # Returns UInt64(42)
+    val result2 = identity("hello")    # Returns String("hello")
+    
+    # Multiple type inference: T = u64, U = bool  
+    val swapped = swap((42u64, true))  # Returns (true, 42u64)
+    
+    # Generic structure usage with type inference
+    val container = Container::new(123u64)  # T = u64
+    val value = container.get_value()       # Returns 123u64
+    
+    # Mixed types: Container<u64> and Container<bool>
+    val int_container = Container { value: 42u64 }
+    val bool_container = Container { value: true }
+    
+    result1
+}
+```
+
 ### Module System
 ```rust
 # math.t (in modules/math/math.t)
@@ -292,6 +347,8 @@ The implementation includes comprehensive documentation, extensive testing, and 
 ## Technical Highlights
 
 - **Zero-cost Type Checking**: Type validation occurs before execution
+- **Generic Type System**: Full support for generic functions and structures with constraint-based type inference
+- **Unification Algorithm**: Sophisticated type parameter resolution from usage context
 - **Efficient Memory Management**: Minimal allocation overhead with pool-based design and automatic destruction
 - **Extensible Architecture**: Clean separation between frontend and backend components
 - **Multiple Backends**: Both interpreter and Lua transpiler share the same frontend
@@ -299,4 +356,4 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Resource Management**: Automatic object destruction with custom `__drop__` method support
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 
-All major language features are implemented and thoroughly tested, providing a solid foundation for both learning and practical use.
+All major language features including a complete generics system are implemented and thoroughly tested, providing a solid foundation for both learning and practical use.

@@ -46,7 +46,7 @@ fn test_negative_index_literal() {
         Ok(_) => {
             // Type check should handle negative index properly
         }
-        Err(e) => {
+        Err(_e) => {
             // Currently fails with "Cannot convert '-1' to UInt64"
             // This test documents the current behavior
             //assert!(e.contains("Cannot convert") || e.contains("-1"), 

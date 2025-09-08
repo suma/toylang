@@ -5,7 +5,7 @@ fn test_basic_generics_compilation() {
 }
 
 use frontend::type_decl::TypeDecl;
-use string_interner::{DefaultStringInterner, StringInterner, symbol::DefaultSymbol};
+use string_interner::{DefaultStringInterner, StringInterner};
 
 #[test]
 fn test_type_substitution() {
@@ -34,7 +34,7 @@ fn test_generic_instantiation_recording() {
     
     let mut interner: DefaultStringInterner = StringInterner::new();
     let identity_name = interner.get_or_intern("identity");
-    let instantiated_name = "identity_i64".to_string();
+    let instantiated_name = interner.get_or_intern("identity_i64");
     let t_param = interner.get_or_intern("T");
     
     let mut inference_state = TypeInferenceState::new();

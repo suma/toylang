@@ -179,7 +179,7 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     }
 }
 
-pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
+pub fn parse_struct_fields(parser: &mut Parser, fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
     parse_struct_fields_with_generic_context(parser, fields, &[])
 }
 
@@ -258,7 +258,7 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
     }
 }
 
-pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
+pub fn parse_impl_methods(parser: &mut Parser, methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
     parse_impl_methods_with_generic_context(parser, methods, &[])
 }
 
@@ -395,7 +395,7 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
     Ok((params, has_self))
 }
 
-pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
+pub fn parse_param_def_list_impl(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
     parse_param_def_list_impl_with_generic_context(parser, args, &[])
 }
 

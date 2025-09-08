@@ -290,6 +290,132 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.type_inference.expr_types.clone()
     }
     
+    /// Helper method to resolve symbol names safely
+    fn resolve_symbol_name(&self, symbol: DefaultSymbol) -> &str {
+        self.core.string_interner.resolve(symbol).unwrap_or("<unknown>")
+    }
+    
+    /// Handle shift operations type resolution
+    fn resolve_shift_operand_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> (TypeDecl, TypeDecl) {
+        // For shift operations, right operand must be UInt64
+        let resolved_rhs = if *rhs_ty == TypeDecl::Number {
+            TypeDecl::UInt64
+        } else {
+            rhs_ty.clone()
+        };
+        
+        // Left operand can be Int64 or UInt64
+        let resolved_lhs = if *lhs_ty == TypeDecl::Number {
+            // Default to UInt64 for Number type on left side
+            if let Some(hint) = &self.type_inference.type_hint {
+                match hint {
+                    TypeDecl::Int64 => TypeDecl::Int64,
+                    TypeDecl::UInt64 => TypeDecl::UInt64,
+                    _ => TypeDecl::UInt64,
+                }
+            } else {
+                TypeDecl::UInt64
+            }
+        } else {
+            lhs_ty.clone()
+        };
+        
+        (resolved_lhs, resolved_rhs)
+    }
+    
+    /// Add location information to an error if available
+    fn error_with_location(&self, mut error: TypeCheckError, expr: &ExprRef) -> TypeCheckError {
+        if error.location.is_none() {
+            if let Some(location) = self.get_expr_location(expr) {
+                error = error.with_location(location);
+            }
+        }
+        error
+    }
+    
+    /// Handle array slice assignment (both single element and range)
+    fn handle_array_slice_assign(&mut self, element_types: &Vec<TypeDecl>, start: &Option<ExprRef>, end: &Option<ExprRef>, value_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        // Check if this is single element assignment (start provided, end is None)
+        if start.is_some() && end.is_none() {
+            // Single element assignment: arr[i] = value
+            if let Some(start_expr) = start {
+                let original_hint = self.type_inference.type_hint.clone();
+                self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
+                let start_type = self.visit_expr(start_expr)?;
+                self.type_inference.type_hint = original_hint;
+                
+                // Allow UInt64, Int64, or transform Number
+                match start_type {
+                    TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
+                        // Valid index types
+                    }
+                    TypeDecl::Number => {
+                        self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
+                    }
+                    _ => {
+                        return Err(TypeCheckError::array_error(&format!(
+                            "Array index must be an integer type, but got {:?}", start_type
+                        )));
+                    }
+                }
+            }
+            
+            // Check if the value type matches the array element type
+            if element_types.len() == 1 {
+                let element_type = &element_types[0];
+                if element_type != value_type && !self.are_types_compatible(element_type, value_type) {
+                    return Err(TypeCheckError::type_mismatch(
+                        element_type.clone(),
+                        value_type.clone()
+                    ));
+                }
+            }
+        } else {
+            // Range assignment: arr[start..end] = value or arr[start..] = value
+            // Value must be an array with compatible element types
+            match value_type {
+                TypeDecl::Array(value_elements, _) => {
+                    if element_types.len() == 1 && value_elements.len() == 1 {
+                        let element_type = &element_types[0];
+                        let value_element = &value_elements[0];
+                        if element_type != value_element && !self.are_types_compatible(element_type, value_element) {
+                            return Err(TypeCheckError::type_mismatch(
+                                element_type.clone(),
+                                value_element.clone()
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(TypeCheckError::type_mismatch(
+                        TypeDecl::Array(element_types.clone(), 0),
+                        value_type.clone()
+                    ));
+                }
+            }
+        }
+        
+        Ok(TypeDecl::Unit)
+    }
+    
+    /// Check if two types are compatible for assignment/operations
+    fn are_types_compatible(&self, expected: &TypeDecl, actual: &TypeDecl) -> bool {
+        if expected == actual {
+            return true;
+        }
+        
+        // Handle Number type compatibility
+        let types_compatible = if *expected == TypeDecl::Number {
+            matches!(actual, TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Number)
+        } else if *actual == TypeDecl::Number {
+            matches!(expected, TypeDecl::UInt64 | TypeDecl::Int64)
+        } else {
+            expected == actual
+        };
+        
+        types_compatible
+    }
+    
     /// Extract variable -> struct type mappings after type checking
     pub fn get_struct_var_mappings(&self, interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, String> {
         let mut struct_types = HashMap::new();
@@ -677,7 +803,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         match &stmt_val {
             Stmt::StructDecl { name, generic_params, .. } => {
                 eprintln!("DEBUG: visit_stmt - StructDecl '{}'", 
-                    self.core.string_interner.resolve(*name).unwrap_or("<unknown>"));
+                    self.resolve_symbol_name(*name));
                 eprintln!("  Generic params in stmt: {:?}", generic_params);
             },
             Stmt::ImplBlock { .. } => eprintln!("DEBUG: visit_stmt - ImplBlock"),
@@ -772,30 +898,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Special handling for shift operations where right operand must be UInt64
         let (resolved_lhs_ty, resolved_rhs_ty) = if matches!(op, Operator::LeftShift | Operator::RightShift) {
-            // For shift operations, right operand must be UInt64
-            let resolved_rhs = if rhs_ty == TypeDecl::Number {
-                TypeDecl::UInt64
-            } else {
-                rhs_ty.clone()
-            };
-            
-            // Left operand can be Int64 or UInt64
-            let resolved_lhs = if lhs_ty == TypeDecl::Number {
-                // Default to UInt64 for Number type on left side
-                if let Some(hint) = &self.type_inference.type_hint {
-                    match hint {
-                        TypeDecl::Int64 => TypeDecl::Int64,
-                        TypeDecl::UInt64 => TypeDecl::UInt64,
-                        _ => TypeDecl::UInt64,
-                    }
-                } else {
-                    TypeDecl::UInt64
-                }
-            } else {
-                lhs_ty.clone()
-            };
-            
-            (resolved_lhs, resolved_rhs)
+            self.resolve_shift_operand_types(&lhs_ty, &rhs_ty)
         } else {
             // For other operations, use normal resolution
             self.resolve_numeric_types(&lhs_ty, &rhs_ty)
@@ -1255,7 +1358,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let object_type = self.visit_expr(object)?;
         
         match object_type {
-            TypeDecl::Array(ref element_types, size) => {
+            TypeDecl::Array(ref element_types, _size) => {
                 // Simplified type checking for slice indices
                 match slice_info.slice_type {
                     SliceType::SingleElement => {
@@ -1406,70 +1509,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
-                // Check if this is single element assignment (start provided, end is None)
-                if start.is_some() && end.is_none() {
-                    // Single element assignment: arr[i] = value
-                    if let Some(start_expr) = start {
-                        let original_hint = self.type_inference.type_hint.clone();
-                        self.type_inference.type_hint = Some(TypeDecl::Int64); // Allow negative indices
-                        let start_type = self.visit_expr(start_expr)?;
-                        self.type_inference.type_hint = original_hint;
-                        
-                        // Allow UInt64, Int64, or transform Number
-                        match start_type {
-                            TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Unknown => {
-                                // Valid index types
-                            }
-                            TypeDecl::Number => {
-                                self.transform_numeric_expr(start_expr, &TypeDecl::Int64)?;
-                            }
-                            _ => {
-                                return Err(TypeCheckError::array_error(&format!(
-                                    "Array index must be an integer type, but got {:?}", start_type
-                                )));
-                            }
-                        }
-                    }
-                    
-                    // Check element type compatibility
-                    if !element_types.is_empty() {
-                        let expected_element_type = &element_types[0];
-                        let resolved_value_type = if value_type == TypeDecl::Number {
-                            // If expected element type is also Number, use UInt64 as default
-                            let target_type = if *expected_element_type == TypeDecl::Number {
-                                &TypeDecl::UInt64
-                            } else {
-                                expected_element_type
-                            };
-                            self.transform_numeric_expr(value, target_type)?;
-                            target_type.clone()
-                        } else {
-                            value_type.clone()
-                        };
-                        
-                        // Allow Number type to be compatible with any numeric type
-                        let types_compatible = if *expected_element_type == TypeDecl::Number {
-                            matches!(resolved_value_type, TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Number)
-                        } else if resolved_value_type == TypeDecl::Number {
-                            matches!(*expected_element_type, TypeDecl::UInt64 | TypeDecl::Int64)
-                        } else {
-                            *expected_element_type == resolved_value_type
-                        };
-                        
-                        if !types_compatible {
-                            return Err(TypeCheckError::generic_error(&format!(
-                                "Array element type mismatch: expected {:?}, found {:?}", 
-                                expected_element_type, resolved_value_type
-                            )));
-                        }
-                        Ok(resolved_value_type)
-                    } else {
-                        Ok(value_type)
-                    }
-                } else {
-                    // Range slice assignment: arr[start..end] = value (not implemented yet)
-                    Err(TypeCheckError::generic_error("Slice range assignment not yet implemented"))
-                }
+                return self.handle_array_slice_assign(element_types, start, end, &value_type);
             }
             TypeDecl::Dict(ref key_type, ref dict_value_type) => {
                 // Dictionary assignment: dict[key] = value (only single element assignment)
@@ -2447,95 +2487,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     // Constant Expression Evaluation
     // =========================================================================
     
-    /// Try to evaluate a constant integer expression at compile time
-    fn try_evaluate_const_int(&self, expr: &ExprRef) -> Option<i64> {
-        if let Some(expr_data) = self.core.expr_pool.get(expr) {
-            match expr_data {
-                Expr::UInt64(value) => Some(value as i64),
-                Expr::Int64(value) => Some(value),
-                Expr::Number(value_symbol) => {
-                    // Try to parse the number string
-                    if let Some(value_str) = self.core.string_interner.resolve(value_symbol) {
-                        if let Ok(value) = value_str.parse::<u64>() {
-                            Some(value as i64)
-                        } else if let Ok(value) = value_str.parse::<i64>() {
-                            Some(value)
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                }
-                _ => None
-            }
-        } else {
-            None
-        }
-    }
-    
-    /// Calculate slice size from start and end indices, if they are compile-time constants
-    fn try_calculate_slice_size(&self, start: &Option<ExprRef>, end: &Option<ExprRef>, array_size: usize) -> Option<usize> {
-        match (start, end) {
-            // [start..end] form - both bounds specified
-            (Some(start_expr), Some(end_expr)) => {
-                let start_val = self.try_evaluate_const_int(start_expr)?;
-                let end_val = self.try_evaluate_const_int(end_expr)?;
-                
-                // Handle negative indices by converting to positive
-                let start_idx = if start_val < 0 {
-                    (array_size as i64 + start_val) as usize
-                } else {
-                    start_val as usize
-                };
-                
-                let end_idx = if end_val < 0 {
-                    (array_size as i64 + end_val) as usize
-                } else {
-                    end_val as usize
-                };
-                
-                // Validate bounds and calculate size
-                if start_idx <= end_idx && end_idx <= array_size {
-                    Some(end_idx - start_idx)
-                } else {
-                    None // Invalid bounds, will be caught at runtime
-                }
-            }
-            // [..end] form - slice from start to end
-            (None, Some(end_expr)) => {
-                let end_val = self.try_evaluate_const_int(end_expr)?;
-                let end_idx = if end_val < 0 {
-                    (array_size as i64 + end_val) as usize
-                } else {
-                    end_val as usize
-                };
-                
-                if end_idx <= array_size {
-                    Some(end_idx)
-                } else {
-                    None
-                }
-            }
-            // [start..] form - slice from start to end
-            (Some(start_expr), None) => {
-                let start_val = self.try_evaluate_const_int(start_expr)?;
-                let start_idx = if start_val < 0 {
-                    (array_size as i64 + start_val) as usize
-                } else {
-                    start_val as usize
-                };
-                
-                if start_idx <= array_size {
-                    Some(array_size - start_idx)
-                } else {
-                    None
-                }
-            }
-            // [..] form - entire array
-            (None, None) => Some(array_size)
-        }
-    }
 
     /// Resolve Self type to the actual struct type in impl block context
     pub fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
@@ -4239,7 +4190,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         // Generate unique name for the instantiated function
-        let instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);
+        let _instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);
         
         // Temporarily skip instantiation recording to avoid borrowing issues
         // TODO: Implement proper instantiation recording system
@@ -4257,63 +4208,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
     
     /// Infer generic type mappings by unifying parameter type with argument type
-    fn infer_generic_types(&self, param_type: &TypeDecl, arg_type: &TypeDecl, substitutions: &mut std::collections::HashMap<DefaultSymbol, TypeDecl>) -> Result<(), TypeCheckError> {
-        match (param_type, arg_type) {
-            (TypeDecl::Generic(param), concrete_type) => {
-                // Check for conflicting type inference
-                if let Some(existing_type) = substitutions.get(param) {
-                    if existing_type != concrete_type {
-                        return Err(TypeCheckError::generic_error(&format!(
-                            "Conflicting type inference: {} cannot be both {:?} and {:?}",
-                            self.core.string_interner.resolve(*param).unwrap_or("<NOT_FOUND>"),
-                            existing_type,
-                            concrete_type
-                        )));
-                    }
-                } else {
-                    // Record new type substitution
-                    substitutions.insert(*param, concrete_type.clone());
-                }
-            },
-            (TypeDecl::Array(param_elements, param_size), TypeDecl::Array(arg_elements, arg_size)) => {
-                // Verify array structure matches before recursing
-                if param_size != arg_size || param_elements.len() != arg_elements.len() {
-                    return Err(TypeCheckError::generic_error("Array type mismatch in generic inference"));
-                }
-                // Recursively infer types for array elements
-                for (param_elem, arg_elem) in param_elements.iter().zip(arg_elements.iter()) {
-                    self.infer_generic_types(param_elem, arg_elem, substitutions)?;
-                }
-            },
-            (TypeDecl::Tuple(param_elements), TypeDecl::Tuple(arg_elements)) => {
-                // Verify tuple arity matches before recursing
-                if param_elements.len() != arg_elements.len() {
-                    return Err(TypeCheckError::generic_error("Tuple type mismatch in generic inference"));
-                }
-                // Recursively infer types for tuple elements
-                for (param_elem, arg_elem) in param_elements.iter().zip(arg_elements.iter()) {
-                    self.infer_generic_types(param_elem, arg_elem, substitutions)?;
-                }
-            },
-            (TypeDecl::Dict(param_key, param_value), TypeDecl::Dict(arg_key, arg_value)) => {
-                // Recursively infer types for dictionary key and value
-                self.infer_generic_types(param_key, arg_key, substitutions)?;
-                self.infer_generic_types(param_value, arg_value, substitutions)?;
-            },
-            // Non-generic types must match exactly
-            (param, arg) if param == arg => {
-                // Types match, no inference needed
-            },
-            _ => {
-                // Type mismatch - cannot unify
-                return Err(TypeCheckError::generic_error(&format!(
-                    "Type mismatch in generic inference: expected {:?}, found {:?}",
-                    param_type, arg_type
-                )));
-            }
-        }
-        Ok(())
-    }
     
     /// Generate a unique name for an instantiated generic function/struct
     fn generate_instantiated_name(&self, original_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> String {
@@ -4340,7 +4234,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
     
     /// Helper method to handle method calls on a specific type
-    fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
         
         // Check if this is a user-defined method for a struct
@@ -4364,8 +4258,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     
     /// Handle generic method calls with type inference and substitution
     fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
-                                 method_return_type: &TypeDecl, obj: &ExprRef, args: &Vec<ExprRef>, 
-                                 arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
+                                 method_return_type: &TypeDecl, _obj: &ExprRef, _args: &Vec<ExprRef>, 
+                                 _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         // Get the generic parameters for this struct
         let generic_params = self.context.get_struct_generic_params(struct_name)
             .cloned()
@@ -4398,7 +4292,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 
                                              args: &Vec<ExprRef>, method: &Rc<MethodFunction>) -> Result<TypeDecl, TypeCheckError> {
         // Get the generic parameters for this struct
-        let generic_params = self.context.get_struct_generic_params(struct_name)
+        let _generic_params = self.context.get_struct_generic_params(struct_name)
             .cloned()
             .unwrap_or_default();
         

@@ -621,7 +621,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse_param_def_list(&mut self, mut args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
+    pub fn parse_param_def_list(&mut self, args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
         self.parse_param_def_list_with_generic_context(args, &[])
     }
     

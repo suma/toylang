@@ -331,7 +331,47 @@
        - モノモーフィゼーション（単一化）の実装 → ✅ **部分完了 (中間パス戦略)**
        - インタープリターでのジェネリクス関数実行サポート → **次期実装予定**
 
-## 進行中 🚧
+## 完了済み ✅
+
+121. **Self型実装とジェネリック型チェッカー修正** ✅ (2025-09-08完了)
+   - **対象**: Self型(`TypeDecl::Self_`)の完全実装とジェネリック構造体関連エラーの修正
+   - **実装した機能**:
+     - **Self型のmethod call対応**: `self: Self`パラメータでのメソッド呼び出し時の型検証
+     - **Parameter validation実装**: `check_method_arguments`による厳密な引数型チェック
+     - **Self型のfield access**: Self型での`self.field`アクセスのサポート
+     - **Generic vs non-generic handling**: ジェネリック構造体では`substituted_return_type`、非ジェネリックでは`TypeDecl::Struct`を返却
+     - **Associated function完全サポート**: `Struct::method()`構文の型推論と実行
+   - **解決した問題**:
+     - **"self parameter type mismatch: expected Self_, found Identifier"**: Self型解決の一貫性確保
+     - **"Identifier 'T' not found"**: ジェネリック型パラメータの適切な解決
+     - **"Type mismatch: expected Generic(...), but got Struct(...)"**: 型表現の統一
+     - **Field access on Self types**: メソッド内でのSelf型フィールドアクセス
+   - **技術的実装**:
+     - **frontend/src/type_checker.rs**:
+       - `check_method_arguments`メソッドによるパラメータ検証
+       - `visit_method_call`でのSelf型処理
+       - `visit_field_access`でのSelf型サポート
+       - `resolve_self_type`の`TypeDecl::Struct`への統一
+     - **frontend/src/type_checker/generics.rs**:
+       - Self型での条件分岐: ジェネリック時は`substituted_return_type`、非ジェネリック時は`TypeDecl::Struct`
+       - Associated functionでの型推論とパラメータ処理
+     - **frontend/src/type_decl.rs**:
+       - `is_equivalent`メソッドでGeneric型とUnknown型の互換性向上
+   - **テスト結果**:
+     - ✅ **generic_option.t実行成功**: `Result: RefCell { value: Bool(false) }`
+     - ✅ **Self型メソッド呼び出し**: `s.has_value`がBool型で正常返却
+     - ✅ **Associated function**: `Option::none(0u64)`が正常に型推論・実行
+     - ✅ **Method chain**: associated function → instance method の連携動作
+   - **実装ファイル**:
+     - **frontend/src/type_checker.rs**: Self型処理の核となる実装
+     - **frontend/src/type_checker/generics.rs**: ジェネリックメソッド処理とSelf型解決
+     - **frontend/src/type_decl.rs**: 型互換性の向上
+   - **技術的成果**:
+     - **Self型システム完成**: impl内でのSelfキーワードが完全動作
+     - **ジェネリック統合**: Self型とジェネリック型システムの完全統合
+     - **型安全性強化**: メソッド呼び出し時の厳密な型検証
+     - **実用性達成**: 実際のジェネリック構造体コードが正常実行
+   - **Debug出力完全削除**: 開発用デバッグプリント文を全て削除し、クリーンな出力を実現
 
 109. **ジェネリクス型推論とインスタンス化実装** ✅ (2025-09-07完了)
    - **対象**: 型チェッカーでの完全なジェネリクス型推論とインスタンス化システムの実装

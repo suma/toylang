@@ -411,6 +411,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             matches!(actual, TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Number)
         } else if *actual == TypeDecl::Number {
             matches!(expected, TypeDecl::UInt64 | TypeDecl::Int64)
+        } else if matches!(expected, TypeDecl::Generic(_)) || matches!(actual, TypeDecl::Generic(_)) {
+            // Generic types are compatible with any type during type inference
+            // This allows generic type parameters to match concrete types
+            true
+        } else if matches!(expected, TypeDecl::Unknown) || matches!(actual, TypeDecl::Unknown) {
+            // Unknown types (like null) are compatible with any type
+            true
         } else {
             expected == actual
         };
@@ -680,10 +687,8 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         }
         
         // Process all statements in the program (this includes StructDecl and ImplBlock)
-        eprintln!("DEBUG: Program has {} statements", program.statement.len());
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
-            eprintln!("DEBUG: Processing statement {} in program", index);
             self.visit_stmt(&stmt_ref)?;
         }
         
@@ -802,17 +807,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let mut stmt_val = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break).clone();
         
         // Debug output for statement type
-        match &stmt_val {
-            Stmt::StructDecl { name, generic_params, .. } => {
-                eprintln!("DEBUG: visit_stmt - StructDecl '{}'", 
-                    self.resolve_symbol_name(*name));
-                eprintln!("  Generic params in stmt: {:?}", generic_params);
-            },
-            Stmt::ImplBlock { .. } => eprintln!("DEBUG: visit_stmt - ImplBlock"),
-            Stmt::Val { .. } => eprintln!("DEBUG: visit_stmt - Val"),
-            Stmt::Var { .. } => eprintln!("DEBUG: visit_stmt - Var"),
-            _ => eprintln!("DEBUG: visit_stmt - Other statement type"),
-        }
         
         let result = stmt_val.accept(self);
         
@@ -1203,6 +1197,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
+        } else if let Some(generic_type) = self.type_inference.lookup_generic_type(name) {
+            // Check if this is a generic type parameter
+            Ok(generic_type.clone())
+        } else if let Some(_struct_def) = self.context.get_struct_definition(name) {
+            // Check if this is a struct type
+            Ok(TypeDecl::Struct(name))
         } else {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             // Note: Location information will be added by visit_expr
@@ -1319,7 +1319,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_null_literal(&mut self) -> Result<TypeDecl, TypeCheckError> {
         // Null value type is determined by context
-        Ok(TypeDecl::Unknown)
+        // If we have a type hint, use that; otherwise return Unknown
+        if let Some(hint) = self.type_inference.get_type_hint() {
+            Ok(hint)
+        } else {
+            Ok(TypeDecl::Unknown)
+        }
     }
     
 
@@ -1623,13 +1628,17 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
         
         // Look for the associated function in the struct's impl block
+        let struct_name_str = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
+        let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<unknown>");
+        
+        
         if let Some(method) = self.context.get_struct_method(struct_name, function_name) {
             // Clone the method to avoid borrowing issues
             let method_clone = method.clone();
             // Handle generic associated function call with type inference
             self.handle_generic_associated_function_call(struct_name, function_name, args, &method_clone)
         } else {
-            let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("");
+            
             Err(TypeCheckError::generic_error(&format!(
                 "Associated function '{}' not found for struct '{:?}'", 
                 function_name_str, struct_name
@@ -1930,9 +1939,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
-        eprintln!("DEBUG: visit_struct_decl called for '{}'", 
-            self.core.string_interner.resolve(name).unwrap_or("<unknown>"));
-        eprintln!("  Generic params count: {}", generic_params.len());
         
         // Push generic parameters into scope for field type checking
         if !generic_params.is_empty() {
@@ -2014,11 +2020,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Register generic parameters if any
         if !generic_params.is_empty() {
-            eprintln!("DEBUG: Registering generic params for struct '{}':", 
-                self.core.string_interner.resolve(name).unwrap_or("<unknown>"));
-            for param in generic_params {
-                eprintln!("  - {}", self.core.string_interner.resolve(*param).unwrap_or("<unknown>"));
-            }
             self.context.set_struct_generic_params(name, generic_params.clone());
         }
         
@@ -2058,7 +2059,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 
                 match &resolved_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) => {
+                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_) => {
                         // Valid parameter types (including struct types and generic types)
                     },
                     _ => {
@@ -2074,15 +2075,17 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 }
             }
             
-            // Check return type if specified
+            // Check return type if specified - now with proper generic support
             if let Some(ref ret_type) = method.return_type {
-                // Resolve Self type to the actual struct type
+                // Try to resolve return type in generic context
                 let resolved_ret_type = self.resolve_self_type(ret_type);
                 
+                // For generic types, we need to validate they can be resolved
+                // but don't enforce strict type checking here since generics will be resolved later
                 match &resolved_ret_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) => {
-                        // Valid return types (including struct types and generic types)
+                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_) => {
+                        // Valid return types (including generic types and struct types)
                     },
                     _ => {
                         if has_generics {
@@ -2090,9 +2093,66 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         }
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
-                            &format!("return type in method '{}' for impl block '{:?}'", method_name, target_type),
+                            &format!("return type in method '{}' for impl block", method_name),
                             resolved_ret_type
                         ));
+                    }
+                }
+            }
+
+            // Type check method body
+            // Set up parameter context for method
+            self.context.push_scope();
+            for (param_name, param_type) in &method.parameter {
+                let resolved_param_type = self.resolve_self_type(param_type);
+                self.context.set_var(*param_name, resolved_param_type);
+            }
+            
+            // Type check method body
+            let body_result = self.visit_stmt(&method.code);
+            
+            // Restore parameter context
+            self.context.pop_scope();
+            
+            // Check if body type matches return type
+            if let Some(ref expected_return_type) = method.return_type {
+                let resolved_expected_type = self.resolve_self_type(expected_return_type);
+                match body_result {
+                    Ok(actual_return_type) => {
+                        // For generic methods, use more sophisticated type checking
+                        if has_generics {
+                            // Try to apply generic substitutions for better matching
+                            // Skip strict checking for generic return types - they'll be resolved during instantiation
+                            match (&resolved_expected_type, &actual_return_type) {
+                                (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => {
+                                    // Allow generic types to match - will be resolved later
+                                }
+                                _ => {
+                                    // Use normal type compatibility checking
+                                    if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
+                                        self.type_inference.pop_generic_scope();
+                                        return Err(TypeCheckError::type_mismatch(
+                                            resolved_expected_type,
+                                            actual_return_type
+                                        ));
+                                    }
+                                }
+                            }
+                        } else {
+                            // Non-generic method - use normal type compatibility checking
+                            if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
+                                return Err(TypeCheckError::type_mismatch(
+                                    resolved_expected_type,
+                                    actual_return_type
+                                ));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        if has_generics {
+                            self.type_inference.pop_generic_scope();
+                        }
+                        return Err(e);
                     }
                 }
             }
@@ -2162,6 +2222,53 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 } else {
                     let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
                     Err(TypeCheckError::not_found("struct", struct_name_str))
+                }
+            }
+            TypeDecl::Self_ => {
+                // Resolve Self type in current context
+                let resolved_type = self.resolve_self_type(&obj_type);
+                match resolved_type {
+                    TypeDecl::Self_ => {
+                        // Self could not be resolved - not in impl context
+                        let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                        Err(TypeCheckError::generic_error(&format!(
+                            "Cannot resolve Self type for field access '{}' - not in impl context", field_name
+                        )))
+                    }
+                    TypeDecl::Identifier(struct_symbol) => {
+                        if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
+                            let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                            for struct_field in struct_fields {
+                                if struct_field.name == field_name {
+                                    return Ok(struct_field.type_decl.clone());
+                                }
+                            }
+                            Err(TypeCheckError::not_found("field", field_name))
+                        } else {
+                            let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
+                            Err(TypeCheckError::not_found("struct", struct_name_str))
+                        }
+                    }
+                    TypeDecl::Struct(struct_symbol) => {
+                        if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
+                            let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                            for struct_field in struct_fields {
+                                if struct_field.name == field_name {
+                                    return Ok(struct_field.type_decl.clone());
+                                }
+                            }
+                            Err(TypeCheckError::not_found("field", field_name))
+                        } else {
+                            let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
+                            Err(TypeCheckError::not_found("struct", struct_name_str))
+                        }
+                    }
+                    _ => {
+                        let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                        Err(TypeCheckError::unsupported_operation(
+                            &format!("field access '{}' on resolved Self type", field_name), resolved_type
+                        ))
+                    }
                 }
             }
             _ => {
@@ -2272,8 +2379,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             TypeDecl::Identifier(struct_symbol) | TypeDecl::Struct(struct_symbol) => {
                 // Look up method in struct methods
                 if let Some(method) = self.context.get_struct_method(struct_symbol, *method) {
+                    // Perform parameter type checking for method arguments
+                    self.check_method_arguments(&obj_type, &method, args, &arg_types, method_name)?;
+                    
                     // Return method's return type, or Unit if not specified
-                    Ok(method.return_type.clone().unwrap_or(TypeDecl::Unit))
+                    let return_type = method.return_type.clone().unwrap_or(TypeDecl::Unit);
+                    Ok(self.resolve_self_type(&return_type))
                 } else {
                     let struct_name = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
                     Err(TypeCheckError::method_error(
@@ -2296,6 +2407,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 "Maximum recursion depth reached in struct type inference - possible circular reference"
             ));
         }
+        
         
         self.type_inference.recursion_depth += 1;
         
@@ -2495,7 +2607,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Self_ => {
                 if let Some(target_symbol) = self.context.current_impl_target {
-                    TypeDecl::Identifier(target_symbol)
+                    TypeDecl::Struct(target_symbol)
                 } else {
                     // Self used outside impl context - should be an error
                     type_decl.clone()
@@ -2503,6 +2615,62 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             _ => type_decl.clone(),
         }
+    }
+
+    /// Check method arguments against parameter types, handling Self type specially
+    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>, 
+                             _args: &Vec<ExprRef>, arg_types: &Vec<TypeDecl>, method_name: &str) -> Result<(), TypeCheckError> {
+        // Check argument count
+        if arg_types.len() + 1 != method.parameter.len() {
+            return Err(TypeCheckError::method_error(
+                method_name, 
+                obj_type.clone(),
+                &format!("expected {} arguments, found {}", method.parameter.len() - 1, arg_types.len())
+            ));
+        }
+
+        // Check the first parameter (self parameter)
+        if !method.parameter.is_empty() {
+            let (_, first_param_type) = &method.parameter[0];
+            
+            // For Self type, we need to match it with the actual struct type
+            let expected_self_type = match first_param_type {
+                TypeDecl::Self_ => obj_type.clone(), // Self should match the object type
+                _ => first_param_type.clone()
+            };
+            
+            // Check if obj_type is compatible with the first parameter type
+            if !self.are_types_compatible(&expected_self_type, obj_type) {
+                return Err(TypeCheckError::method_error(
+                    method_name,
+                    obj_type.clone(),
+                    &format!("self parameter type mismatch: expected {:?}, found {:?}", expected_self_type, obj_type)
+                ));
+            }
+        }
+
+        // Check remaining arguments (starting from index 1 since index 0 is self)
+        for (i, arg_type) in arg_types.iter().enumerate() {
+            if i + 1 < method.parameter.len() {
+                let (_, param_type) = &method.parameter[i + 1];
+                
+                // For Self type in method parameters, resolve to object type
+                let resolved_param_type = match param_type {
+                    TypeDecl::Self_ => obj_type.clone(),
+                    _ => param_type.clone()
+                };
+                
+                if !self.are_types_compatible(&resolved_param_type, arg_type) {
+                    return Err(TypeCheckError::method_error(
+                        method_name,
+                        obj_type.clone(),
+                        &format!("argument {} type mismatch: expected {:?}, found {:?}", i + 1, resolved_param_type, arg_type)
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -2676,13 +2844,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
         let is_generic = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
         
-        eprintln!("DEBUG: visit_struct_literal for '{}':", 
-            self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>"));
-        eprintln!("  Generic params: {:?}", generic_params);
-        eprintln!("  Is generic: {}", is_generic);
         
         if is_generic {
-            eprintln!("  -> Calling visit_generic_struct_literal");
             return self.visit_generic_struct_literal(struct_name, fields, &struct_definition, &generic_params.unwrap());
         }
         
@@ -2715,10 +2878,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // Check for Number type auto-conversion
                     if field_type == TypeDecl::Number && (expected_type == &TypeDecl::Int64 || expected_type == &TypeDecl::UInt64) {
                         self.transform_numeric_expr(field_expr, expected_type)?;
-                    // Allow null assignment to any type
-                    } else if field_type == TypeDecl::Unknown {
-                        // Allow unknown type (including null values) assignment to struct fields
-                    } else {
+                    // Use comprehensive type compatibility checking
+                    } else if !self.are_types_compatible(expected_type, &field_type) {
                         return Err(TypeCheckError::type_mismatch(expected_type.clone(), field_type));
                     }
                 }
@@ -2761,10 +2922,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // Type check the field expression without hint first
                 let field_type = self.visit_expr(field_expr)?;
                 
-                // Debug: print constraint being added
-                eprintln!("DEBUG: Adding constraint for field '{}':", field_name_str);
-                eprintln!("  Expected: {:?}", expected_type);
-                eprintln!("  Actual: {:?}", field_type);
                 
                 // Add constraint for generic type unification
                 self.type_inference.add_constraint(
@@ -2783,14 +2940,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Solve constraints to get type substitutions
         let substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => {
-                // Debug: print resolved substitutions
-                eprintln!("DEBUG: Resolved substitutions for struct '{}':", 
-                    self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>"));
-                for (param, typ) in &solution {
-                    eprintln!("  {} -> {:?}", 
-                        self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
-                        typ);
-                }
                 solution
             },
             Err(e) => {
@@ -2816,12 +2965,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let actual_type = field_types.get(field_name).unwrap();
                 
                 // Check type compatibility with substitution
-                if &substituted_expected != actual_type {
+                if !self.are_types_compatible(&substituted_expected, actual_type) {
                     // Check for Number type auto-conversion
                     if *actual_type == TypeDecl::Number && 
                        (substituted_expected == TypeDecl::Int64 || substituted_expected == TypeDecl::UInt64) {
                         self.transform_numeric_expr(field_expr, &substituted_expected)?;
-                    } else if *actual_type != TypeDecl::Unknown {
+                    } else {
                         self.type_inference.pop_generic_scope();
                         return Err(TypeCheckError::type_mismatch(substituted_expected, actual_type.clone()));
                     }
@@ -4149,6 +4298,6 @@ fn is_reserved_keyword(name: &str) -> bool {
         "fn" | "val" | "var" | "if" | "else" | "for" | "in" | "to" | 
         "while" | "break" | "continue" | "return" | "struct" | "impl" | 
         "package" | "import" | "pub" | "true" | "false" | "u64" | "i64" | 
-        "bool" | "str" | "self"
+        "bool" | "str" | "self" | "Self"
     )
 }

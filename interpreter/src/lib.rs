@@ -103,14 +103,7 @@ impl<'a> AstIntegrationContext<'a> {
                 let mut new_stmts = Vec::new();
                 for stmt_ref in stmts {
                     let new_stmt_ref = self.stmt_mapping.get(&stmt_ref.0)
-                        .ok_or_else(|| {
-                            eprintln!("DEBUG: Cannot find statement mapping for StmtRef({})", stmt_ref.0);
-                            eprintln!("DEBUG: Available stmt_mappings: {:?}", self.stmt_mapping.keys().collect::<Vec<_>>());
-                            eprintln!("DEBUG: Module has {} statements, main has {} statements", 
-                                self.module_program.statement.len(),
-                                self.main_program.statement.len());
-                            format!("Cannot find Block statement mapping for StmtRef({})", stmt_ref.0)
-                        })?.clone();
+                        .ok_or_else(|| format!("Cannot find Block statement mapping for StmtRef({})", stmt_ref.0))?.clone();
                     new_stmts.push(new_stmt_ref);
                 }
                 Ok(Expr::Block(new_stmts))
@@ -324,21 +317,16 @@ impl<'a> AstIntegrationContext<'a> {
     
     /// Complete AST integration process using three-phase approach to handle circular dependencies
     fn integrate(&mut self) -> Result<Vec<Rc<Function>>, String> {
-        eprintln!("AST Integration: Starting three-phase integration...");
         
         // Phase 1: Create placeholder mappings for all AST nodes
         self.create_placeholder_mappings()?;
-        eprintln!("AST Integration: Created placeholders ({} expressions, {} statements)", 
-            self.expr_mapping.len(), self.stmt_mapping.len());
         
         // Phase 2: Replace placeholders with actual remapped content
         self.update_with_remapped_content()?;
-        eprintln!("AST Integration: Updated with remapped content");
         
         // Phase 3: Copy struct declarations and functions
         self.copy_struct_declarations()?;
         let integrated_functions = self.copy_functions()?;
-        eprintln!("AST Integration: Integrated {} functions", integrated_functions.len());
         
         Ok(integrated_functions)
     }
@@ -407,18 +395,10 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::StructDecl { name, generic_params, fields, visibility } = &stmt {
                 struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
-                eprintln!("DEBUG: Found struct '{}' with {} generic params", 
-                    string_interner.resolve(*name).unwrap_or("<unknown>"),
-                    generic_params.len());
                 
                 // Store generic parameters for later registration
                 if !generic_params.is_empty() {
                     generic_struct_info.push((*name, generic_params.clone()));
-                    eprintln!("DEBUG: Struct '{}' has generic parameters:", 
-                        string_interner.resolve(*name).unwrap_or("<unknown>"));
-                    for param in generic_params {
-                        eprintln!("  - {}", string_interner.resolve(*param).unwrap_or("<unknown>"));
-                    }
                 }
             }
         }
@@ -447,8 +427,6 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     
     // Register generic parameters for generic structs
     for (struct_name, generic_params) in generic_struct_info {
-        eprintln!("DEBUG: Registering generic parameters for struct '{}'", 
-            string_interner.resolve(struct_name).unwrap_or("<unknown>"));
         tc.context.set_struct_generic_params(struct_name, generic_params);
     }
 
@@ -464,7 +442,6 @@ fn setup_type_checker_with_modules<'a>(program: &'a mut Program, string_interner
     
     // Check if program has imports that need resolution
     if !imports.is_empty() {
-        eprintln!("Setting up TypeChecker with module resolution for {} imports", imports.len());
         
         // Load and integrate each imported module
         for import in &imports {

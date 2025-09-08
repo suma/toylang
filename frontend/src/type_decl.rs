@@ -31,6 +31,10 @@ impl TypeDecl {
             // Identifier and Struct with same symbol are equivalent
             (TypeDecl::Identifier(s1), TypeDecl::Struct(s2)) |
             (TypeDecl::Struct(s1), TypeDecl::Identifier(s2)) => s1 == s2,
+            // Generic types are compatible with any type during inference
+            (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,
+            // Unknown types are compatible with any type
+            (TypeDecl::Unknown, _) | (_, TypeDecl::Unknown) => true,
             _ => false,
         }
     }

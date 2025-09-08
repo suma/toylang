@@ -157,10 +157,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 // Type check the field expression without hint first
                 let field_type = self.visit_expr(field_expr)?;
                 
-                // Debug: print constraint being added
-                eprintln!("DEBUG: Adding constraint for field '{}':", field_name_str);
-                eprintln!("  Expected: {:?}", expected_type);
-                eprintln!("  Actual: {:?}", field_type);
                 
                 // Add constraint for generic type unification
                 self.type_inference.add_constraint(
@@ -179,14 +175,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Solve constraints to get type substitutions
         let substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => {
-                // Debug: print resolved substitutions
-                eprintln!("DEBUG: Resolved substitutions for struct '{}':", 
-                    self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>"));
-                for (param, typ) in &solution {
-                    eprintln!("  {} -> {:?}", 
-                        self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
-                        typ);
-                }
                 solution
             },
             Err(e) => {
@@ -244,7 +232,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Return struct type
         let _instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
         
-        Ok(TypeDecl::Identifier(*struct_name))
+        Ok(TypeDecl::Struct(*struct_name))
     }
 
     fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
@@ -255,27 +243,32 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             .cloned()
             .unwrap_or_default();
         
-        eprintln!("DEBUG: Generic method '{}' on struct '{}':", 
-            method_name,
-            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
-        eprintln!("  Method return type: {:?}", method_return_type);
         
         // Create type substitutions based on recent generic inference
         let substitutions = self.create_type_substitutions_for_method(&generic_params, struct_name)?;
         
-        eprintln!("  Type substitutions:");
-        for (param, typ) in &substitutions {
-            eprintln!("    {} -> {:?}", 
-                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
-                typ);
-        }
         
         // Apply substitutions to the method return type
         let substituted_return_type = method_return_type.substitute_generics(&substitutions);
         
-        eprintln!("  Substituted return type: {:?}", substituted_return_type);
+        // Resolve Self type in the return type if present
+        let resolved_return_type = match &substituted_return_type {
+            TypeDecl::Self_ => {
+                // For generic structs, return the substituted type with generic parameters resolved
+                // For non-generic structs, return the simple struct type
+                if !substitutions.is_empty() {
+                    // This is a generic struct - the substituted type should already have generics resolved
+                    substituted_return_type
+                } else {
+                    // Non-generic struct - resolve Self to simple struct type
+                    TypeDecl::Struct(struct_name)
+                }
+            }
+            _ => substituted_return_type
+        };
         
-        Ok(substituted_return_type)
+        
+        Ok(resolved_return_type)
     }
 
     fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 
@@ -285,9 +278,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             .cloned()
             .unwrap_or_default();
         
-        eprintln!("DEBUG: Associated function '{}' on struct '{}':", 
-            self.core.string_interner.resolve(function_name).unwrap_or("<unknown>"),
-            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
         
         // Evaluate argument types for type inference
         let mut arg_types = Vec::new();
@@ -309,7 +299,23 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             return_type.substitute_generics(&substitutions)
         };
         
-        Ok(substituted_return_type)
+        // Resolve Self type in the return type if present
+        let resolved_return_type = match &substituted_return_type {
+            TypeDecl::Self_ => {
+                // For generic structs, return the substituted type with generic parameters resolved
+                // For non-generic structs, return the simple struct type
+                if !substitutions.is_empty() {
+                    // This is a generic struct - the substituted type should already have generics resolved
+                    substituted_return_type
+                } else {
+                    // Non-generic struct - resolve Self to simple struct type
+                    TypeDecl::Struct(struct_name)
+                }
+            }
+            _ => substituted_return_type
+        };
+        
+        Ok(resolved_return_type)
     }
 
     fn generate_instantiated_name(&self, original_name: DefaultSymbol, substitutions: &HashMap<DefaultSymbol, TypeDecl>) -> String {

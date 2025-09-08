@@ -398,14 +398,28 @@ impl<'a> AstIntegrationContext<'a> {
 
 /// Common setup for TypeCheckerVisitor with struct and impl registration
 fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
-    // First, collect and register struct definitions
+    // First, collect and register struct definitions (including generic params)
     let mut struct_definitions = Vec::new();
+    let mut generic_struct_info = Vec::new();
+    
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::StructDecl { name, generic_params, fields, visibility } = &stmt {
                 struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
-                // TODO: Handle generic_params for struct definitions
+                eprintln!("DEBUG: Found struct '{}' with {} generic params", 
+                    string_interner.resolve(*name).unwrap_or("<unknown>"),
+                    generic_params.len());
+                
+                // Store generic parameters for later registration
+                if !generic_params.is_empty() {
+                    generic_struct_info.push((*name, generic_params.clone()));
+                    eprintln!("DEBUG: Struct '{}' has generic parameters:", 
+                        string_interner.resolve(*name).unwrap_or("<unknown>"));
+                    for param in generic_params {
+                        eprintln!("  - {}", string_interner.resolve(*param).unwrap_or("<unknown>"));
+                    }
+                }
             }
         }
     }
@@ -429,6 +443,13 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     // Register struct definitions with their symbols
     for (struct_symbol, fields, visibility) in struct_symbols_and_fields {
         tc.context.register_struct(struct_symbol, fields, visibility);
+    }
+    
+    // Register generic parameters for generic structs
+    for (struct_name, generic_params) in generic_struct_info {
+        eprintln!("DEBUG: Registering generic parameters for struct '{}'", 
+            string_interner.resolve(struct_name).unwrap_or("<unknown>"));
+        tc.context.set_struct_generic_params(struct_name, generic_params);
     }
 
     tc

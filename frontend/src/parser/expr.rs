@@ -629,10 +629,19 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         parser.next();
                         let args = parse_expr_list(parser, vec![])?;
                         parser.expect_err(&Kind::ParenClose)?;
-                        // For qualified function calls, use the last part as function name
-                        let function_name = qualified_path.last().copied().unwrap_or(s);
-                        let expr = parser.ast_builder.call_expr(function_name, args, Some(location));
-                        Ok(expr)
+                        // Check if this is a struct associated function call (like Container::new)
+                        if qualified_path.len() == 2 {
+                            // For two-part paths like Container::new, treat as associated function call
+                            let struct_name = qualified_path[0];
+                            let function_name = qualified_path[1];
+                            let expr = parser.ast_builder.associated_function_call_expr(struct_name, function_name, args, Some(location));
+                            Ok(expr)
+                        } else {
+                            // For other qualified paths, use the last part as function name
+                            let function_name = qualified_path.last().copied().unwrap_or(s);
+                            let expr = parser.ast_builder.call_expr(function_name, args, Some(location));
+                            Ok(expr)
+                        }
                     }
                     _ => {
                         let location = parser.current_source_location();

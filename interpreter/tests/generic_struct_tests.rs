@@ -116,11 +116,7 @@ fn test_generic_struct_with_arrays() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
-                assert_eq!(num, 1);
-            } else {
-                panic!("Expected number result");
-            }
+            assert_eq!(val.borrow().unwrap_uint64(), 1);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -188,7 +184,7 @@ fn test_generic_struct_with_methods() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 30); // items[2] = 30
             } else {
                 panic!("Expected number result");
@@ -251,7 +247,7 @@ fn test_generic_struct_different_instantiations() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 123);
             } else {
                 panic!("Expected number result");
@@ -323,7 +319,7 @@ fn test_generic_struct_complex_nested_types() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 200);
             } else {
                 panic!("Expected number result");
@@ -360,7 +356,7 @@ fn test_generic_struct_recursive_definition() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 2);
             } else {
                 panic!("Expected number result");
@@ -399,7 +395,7 @@ fn test_generic_struct_method_chaining() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 15);
             } else {
                 panic!("Expected number result");
@@ -433,11 +429,147 @@ fn test_generic_struct_with_generics_functions() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            if let Some(num) = val.as_number() {
+            assert_eq!(val.borrow().unwrap_uint64(),
                 assert_eq!(num, 99);
             } else {
                 panic!("Expected number result");
             }
+        }
+        Err(e) => panic!("Program failed: {}", e),
+    }
+}
+
+#[test]
+fn test_generic_associated_function_basic() {
+    let source = r#"
+        struct Container<T> {
+            value: T
+        }
+
+        impl<T> Container<T> {
+            fn new(value: T) -> Self {
+                Container { value: value }
+            }
+            
+            fn get_value(self: Self) -> T {
+                self.value
+            }
+        }
+
+        fn main() -> u64 {
+            val container = Container::new(42u64)
+            val result = container.get_value()
+            result
+        }
+    "#;
+    
+    let result = test_program(source);
+    match result {
+        Ok(val) => {
+            assert_eq!(val.borrow().unwrap_uint64(), 42);
+        }
+        Err(e) => panic!("Program failed: {}", e),
+    }
+}
+
+#[test]
+fn test_generic_associated_function_with_i64() {
+    let source = r#"
+        struct Wrapper<T> {
+            data: T
+        }
+
+        impl<T> Wrapper<T> {
+            fn create(data: T) -> Self {
+                Wrapper { data: data }
+            }
+            
+            fn unwrap(self: Self) -> T {
+                self.data
+            }
+        }
+
+        fn main() -> i64 {
+            val wrapper = Wrapper::create(-100i64)
+            wrapper.unwrap()
+        }
+    "#;
+    
+    let result = test_program(source);
+    match result {
+        Ok(val) => {
+            assert_eq!(val.borrow().unwrap_int64(), -100);
+        }
+        Err(e) => panic!("Program failed: {}", e),
+    }
+}
+
+#[test]
+fn test_generic_associated_function_multiple_calls() {
+    let source = r#"
+        struct Box<T> {
+            item: T
+        }
+
+        impl<T> Box<T> {
+            fn pack(item: T) -> Self {
+                Box { item: item }
+            }
+            
+            fn unpack(self: Self) -> T {
+                self.item
+            }
+        }
+
+        fn main() -> u64 {
+            val box1 = Box::pack(10u64)
+            val box2 = Box::pack(20u64) 
+            val box3 = Box::pack(30u64)
+            
+            val sum = box1.unpack() + box2.unpack() + box3.unpack()
+            sum
+        }
+    "#;
+    
+    let result = test_program(source);
+    match result {
+        Ok(val) => {
+            assert_eq!(val.borrow().unwrap_uint64(), 60); // 10 + 20 + 30
+        }
+        Err(e) => panic!("Program failed: {}", e),
+    }
+}
+
+#[test]
+fn test_generic_associated_function_chaining() {
+    let source = r#"
+        struct Value<T> {
+            content: T
+        }
+
+        impl<T> Value<T> {
+            fn of(content: T) -> Self {
+                Value { content: content }
+            }
+            
+            fn extract(self: Self) -> T {
+                self.content
+            }
+        }
+
+        fn main() -> u64 {
+            # Test chaining: create -> extract -> create -> extract
+            val first = Value::of(123u64)
+            val extracted = first.extract()
+            val second = Value::of(extracted)
+            second.extract()
+        }
+    "#;
+    
+    let result = test_program(source);
+    match result {
+        Ok(val) => {
+            assert_eq!(val.borrow().unwrap_uint64(), 123);
         }
         Err(e) => panic!("Program failed: {}", e),
     }

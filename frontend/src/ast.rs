@@ -108,6 +108,7 @@ pub enum ExprType {
     BuiltinCall = 21,
     SliceAccess = 22,
     SliceAssign = 23,
+    AssociatedFunctionCall = 24,
     DictLiteral = 25,
     TupleLiteral = 26,
     TupleAccess = 27,
@@ -465,6 +466,11 @@ impl ExprPool {
                 self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
             }
+            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+                self.expr_types[index] = ExprType::AssociatedFunctionCall;
+                self.symbol_list[index] = Some(vec![struct_name, function_name]);
+                self.expr_list[index] = Some(args);
+            }
             Expr::SliceAccess(object, slice_info) => {
                 self.expr_types[index] = ExprType::SliceAccess;
                 self.lhs[index] = Some(object);
@@ -597,6 +603,18 @@ impl ExprPool {
                     self.operand[index],
                     self.third_operand[index]?
                 ))
+            }
+            ExprType::AssociatedFunctionCall => {
+                let symbols = self.symbol_list[index].clone()?;
+                if symbols.len() >= 2 {
+                    Some(Expr::AssociatedFunctionCall(
+                        symbols[0],
+                        symbols[1],
+                        self.expr_list[index].clone()?
+                    ))
+                } else {
+                    None
+                }
             }
             ExprType::SliceAccess => {
                 Some(Expr::SliceAccess(
@@ -745,6 +763,11 @@ impl ExprPool {
                 self.rhs[index] = start_expr;
                 self.operand[index] = end_expr;
                 self.third_operand[index] = Some(value);
+            }
+            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+                self.expr_types[index] = ExprType::AssociatedFunctionCall;
+                self.symbol_list[index] = Some(vec![struct_name, function_name]);
+                self.expr_list[index] = Some(args);
             }
             Expr::SliceAccess(obj, slice_info) => {
                 self.expr_types[index] = ExprType::SliceAccess;
@@ -1169,6 +1192,12 @@ impl AstBuilder {
         expr_ref
     }
     
+    pub fn associated_function_call_expr(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::AssociatedFunctionCall(struct_name, function_name, args));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    
     pub fn slice_access_expr(&mut self, object: ExprRef, slice_info: SliceInfo, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::SliceAccess(object, slice_info));
         self.location_pool.add_expr_location(location);
@@ -1418,6 +1447,7 @@ pub enum Expr {
     BuiltinCall(BuiltinFunction, Vec<ExprRef>),  // __builtin_heap_alloc(), __builtin_print_ln(), etc.
     SliceAccess(ExprRef, SliceInfo),  // arr[start..end] - slice access, arr[i] as single element access
     SliceAssign(ExprRef, Option<ExprRef>, Option<ExprRef>, ExprRef),  // arr[start..end] = value, arr[i] = value
+    AssociatedFunctionCall(DefaultSymbol, DefaultSymbol, Vec<ExprRef>),  // Container::new(args) - struct_name, function_name, args
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access

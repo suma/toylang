@@ -568,11 +568,43 @@
      - 複数型パラメータでの型置換
      - ネスト構造でのメソッド型解決
 
+118. **関連関数（静的メソッド）の型推論完全実装** ✅ (2025-01-08完了)
+   - **対象**: ジェネリック構造体の関連関数 `Container::new(42u64)` 構文での関数解決
+   - **実装した機能**:
+     - **ASTサポート**: `AssociatedFunctionCall` ノード追加とvisitorパターン統合
+     - **パーサー拡張**: `::` 構文の正確な解析と関連関数認識
+     - **型チェッカー統合**: `visit_associated_function_call` による型推論とジェネリック置換
+     - **Self型処理**: `Self` 戻り値型の適切な構造体型への置換
+     - **実行時サポート**: インタープリターでの関連関数実行機能
+   - **技術的実装**:
+     - **frontend/src/ast.rs**: `AssociatedFunctionCall(DefaultSymbol, DefaultSymbol, Vec<ExprRef>)` 追加
+     - **frontend/src/parser/expr.rs**: 2部構成qualified path (`Container::new`) の関連関数解析
+     - **frontend/src/visitor.rs**: `visit_associated_function_call` インターフェース追加
+     - **frontend/src/type_checker.rs**: 
+       - `handle_generic_associated_function_call` による型推論とパラメータ置換
+       - 引数型から型パラメータ推論（`T` → `UInt64`）
+       - `Self` 型の適切な構造体型置換
+     - **interpreter/src/evaluation.rs**: 
+       - `evaluate_associated_function_call` による実行時評価
+       - `call_associated_function` / `call_associated_method` による関数呼び出し処理
+   - **型推論システム**:
+     - 引数型からのジェネリック型パラメータ自動推論
+     - `match (TypeDecl::Generic(generic_param), concrete_type)` による型置換
+     - 型情報永続化とメソッド呼び出しとの連携
+   - **汎用性の確保**:
+     - `new` 以外の任意の関連関数名対応
+     - 複数パラメータでの型推論
+     - インスタンスメソッドとの完全な統合
+   - **テストカバレッジ**:
+     - **基本テスト**: `Container::new(42u64)` → `container.get_value()`
+     - **型推論テスト**: i64/u64での動作、複数パラメータ、チェーン呼び出し
+     - **統合テスト**: 関連関数 → インスタンスメソッドの完全フロー
+     - **エラーハンドリング**: 不正な関数名、型不整合の適切な検出
+   - **実行結果**: `Container::new(42u64).get_value()` → `RefCell { value: UInt64(42) }`
+   - **デバッグ出力**: 型置換 `T -> UInt64` の完全な追跡可能
+   - **今後の拡張**: 複数型パラメータ、ネスト構造への対応基盤
+
 116. **ジェネリック構造体の残り高度機能実装** 🚧 (優先度: 高)
-   - **関連関数（静的メソッド）の型推論**
-     - `Container::new(42u64)` 構文での関数解決
-     - 静的メソッド呼び出しでの型パラメータ推論
-     - `::` 構文の完全サポート
    - **複数型パラメータの完全サポート**
      - `struct Pair<T, U> { first: T, second: U }` での全パラメータ推論
      - 複数制約の同時解決アルゴリズム

@@ -507,6 +507,9 @@ impl Acceptable for Expr {
             Expr::SliceAssign(object, start, end, value) => {
                 visitor.visit_slice_assign(object, start, end, value)
             },
+            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+                visitor.visit_associated_function_call(*struct_name, *function_name, args)
+            },
             Expr::SliceAccess(object, slice_info) => {
                 visitor.visit_slice_access(object, slice_info)
             },
@@ -549,8 +552,10 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
         }
         
         // Process all statements in the program (this includes StructDecl and ImplBlock)
+        eprintln!("DEBUG: Program has {} statements", program.statement.len());
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);
+            eprintln!("DEBUG: Processing statement {} in program", index);
             self.visit_stmt(&stmt_ref)?;
         }
         
@@ -666,7 +671,22 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        let result = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break).clone().accept(self);
+        let mut stmt_val = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break).clone();
+        
+        // Debug output for statement type
+        match &stmt_val {
+            Stmt::StructDecl { name, generic_params, .. } => {
+                eprintln!("DEBUG: visit_stmt - StructDecl '{}'", 
+                    self.core.string_interner.resolve(*name).unwrap_or("<unknown>"));
+                eprintln!("  Generic params in stmt: {:?}", generic_params);
+            },
+            Stmt::ImplBlock { .. } => eprintln!("DEBUG: visit_stmt - ImplBlock"),
+            Stmt::Val { .. } => eprintln!("DEBUG: visit_stmt - Val"),
+            Stmt::Var { .. } => eprintln!("DEBUG: visit_stmt - Var"),
+            _ => eprintln!("DEBUG: visit_stmt - Other statement type"),
+        }
+        
+        let result = stmt_val.accept(self);
         
         // If an error occurred, try to add location information if not already present
         match result {
@@ -1552,6 +1572,29 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
     }
     
+    fn visit_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Handle Container::function_name(args) type calls for any associated function
+        
+        // Check if this is a known struct
+        if !self.context.is_generic_struct(struct_name) {
+            return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+        }
+        
+        // Look for the associated function in the struct's impl block
+        if let Some(method) = self.context.get_struct_method(struct_name, function_name) {
+            // Clone the method to avoid borrowing issues
+            let method_clone = method.clone();
+            // Handle generic associated function call with type inference
+            self.handle_generic_associated_function_call(struct_name, function_name, args, &method_clone)
+        } else {
+            let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("");
+            Err(TypeCheckError::generic_error(&format!(
+                "Associated function '{}' not found for struct '{:?}'", 
+                function_name_str, struct_name
+            )))
+        }
+    }
+    
     fn visit_dict_literal(&mut self, entries: &Vec<(ExprRef, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
         if entries.is_empty() {
             // Empty dict - type will be inferred from usage or type hint
@@ -1845,6 +1888,10 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        eprintln!("DEBUG: visit_struct_decl called for '{}'", 
+            self.core.string_interner.resolve(name).unwrap_or("<unknown>"));
+        eprintln!("  Generic params count: {}", generic_params.len());
+        
         // Push generic parameters into scope for field type checking
         if !generic_params.is_empty() {
             let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = 
@@ -1925,6 +1972,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         
         // Register generic parameters if any
         if !generic_params.is_empty() {
+            eprintln!("DEBUG: Registering generic params for struct '{}':", 
+                self.core.string_interner.resolve(name).unwrap_or("<unknown>"));
+            for param in generic_params {
+                eprintln!("  - {}", self.core.string_interner.resolve(*param).unwrap_or("<unknown>"));
+            }
             self.context.set_struct_generic_params(name, generic_params.clone());
         }
         
@@ -1944,6 +1996,17 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let old_impl_target = self.context.current_impl_target;
         self.context.current_impl_target = Some(struct_symbol);
 
+        // Check if this is a generic struct and set up generic scope
+        let generic_params = self.context.get_struct_generic_params(struct_symbol).cloned();
+        let has_generics = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
+        
+        if has_generics {
+            // Push generic parameters into scope for method type checking
+            let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = 
+                generic_params.as_ref().unwrap().iter().map(|param| (*param, TypeDecl::Generic(*param))).collect();
+            self.type_inference.push_generic_scope(generic_substitutions);
+        }
+
         // Impl block type checking - validate methods
         for method in methods {
             // Check method parameter types
@@ -1953,10 +2016,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 
                 match &resolved_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Identifier(_) => {
-                        // Valid parameter types (including struct types)
+                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) => {
+                        // Valid parameter types (including struct types and generic types)
                     },
                     _ => {
+                        if has_generics {
+                            self.type_inference.pop_generic_scope();
+                        }
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
                             &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
@@ -1973,10 +2039,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 
                 match &resolved_ret_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Unit | TypeDecl::Identifier(_) => {
-                        // Valid return types (including struct types)
+                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) => {
+                        // Valid return types (including struct types and generic types)
                     },
                     _ => {
+                        if has_generics {
+                            self.type_inference.pop_generic_scope();
+                        }
                         let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
                         return Err(TypeCheckError::unsupported_operation(
                             &format!("return type in method '{}' for impl block '{:?}'", method_name, target_type),
@@ -1988,6 +2057,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
             // Register method in context
             self.context.register_struct_method(struct_symbol, method.name, method.clone());
+        }
+        
+        // Pop generic scope if it was pushed
+        if has_generics {
+            self.type_inference.pop_generic_scope();
         }
         
         // Restore previous impl target context
@@ -2083,9 +2157,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         match &obj_type {
             TypeDecl::Struct(struct_name) => {
                 let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name) {
-                    // User-defined method found - use it (priority over builtin)
-                    return Ok(method_return_type.clone());
+                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
+                    // Check if this is a generic struct and apply type substitutions
+                    if let Some(generic_params) = self.context.get_struct_generic_params(*struct_name) {
+                        if !generic_params.is_empty() {
+                            // This is a generic struct method - need to infer and substitute types
+                            return self.handle_generic_method_call(*struct_name, method_name, &method_return_type, obj, args, &arg_types);
+                        }
+                    }
+                    // Non-generic method - return type as is
+                    return Ok(method_return_type);
                 }
             }
             TypeDecl::Generic(generic_param) => {
@@ -2642,7 +2723,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
         let is_generic = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
         
+        eprintln!("DEBUG: visit_struct_literal for '{}':", 
+            self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>"));
+        eprintln!("  Generic params: {:?}", generic_params);
+        eprintln!("  Is generic: {}", is_generic);
+        
         if is_generic {
+            eprintln!("  -> Calling visit_generic_struct_literal");
             return self.visit_generic_struct_literal(struct_name, fields, &struct_definition, &generic_params.unwrap());
         }
         
@@ -2700,6 +2787,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Validate provided fields against struct definition
         self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
         
+        // Push generic parameters onto the scope for proper resolution
+        let mut generic_scope = std::collections::HashMap::new();
+        for param in generic_params {
+            generic_scope.insert(*param, TypeDecl::Generic(*param));
+        }
+        self.type_inference.push_generic_scope(generic_scope);
+        
         // Collect field types and create constraints for type parameter inference
         let mut field_types = std::collections::HashMap::new();
         
@@ -2713,6 +2807,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             if let Some(expected_type) = expected_field_type {
                 // Type check the field expression without hint first
                 let field_type = self.visit_expr(field_expr)?;
+                
+                // Debug: print constraint being added
+                eprintln!("DEBUG: Adding constraint for field '{}':", field_name_str);
+                eprintln!("  Expected: {:?}", expected_type);
+                eprintln!("  Actual: {:?}", field_type);
                 
                 // Add constraint for generic type unification
                 self.type_inference.add_constraint(
@@ -2730,8 +2829,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Solve constraints to get type substitutions
         let substitutions = match self.type_inference.solve_constraints() {
-            Ok(solution) => solution,
+            Ok(solution) => {
+                // Debug: print resolved substitutions
+                eprintln!("DEBUG: Resolved substitutions for struct '{}':", 
+                    self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>"));
+                for (param, typ) in &solution {
+                    eprintln!("  {} -> {:?}", 
+                        self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
+                        typ);
+                }
+                solution
+            },
             Err(e) => {
+                self.type_inference.pop_generic_scope();
                 let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for generic struct '{}': {}",
@@ -2740,9 +2850,36 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         };
         
+        // Now verify field types with the resolved substitutions
+        for (field_name, field_expr) in fields {
+            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let expected_field_type = struct_definition.fields.iter()
+                .find(|def| def.name == field_name_str)
+                .map(|def| &def.type_decl);
+            
+            if let Some(expected_type) = expected_field_type {
+                // Apply substitutions to the expected type
+                let substituted_expected = expected_type.substitute_generics(&substitutions);
+                let actual_type = field_types.get(field_name).unwrap();
+                
+                // Check type compatibility with substitution
+                if &substituted_expected != actual_type {
+                    // Check for Number type auto-conversion
+                    if *actual_type == TypeDecl::Number && 
+                       (substituted_expected == TypeDecl::Int64 || substituted_expected == TypeDecl::UInt64) {
+                        self.transform_numeric_expr(field_expr, &substituted_expected)?;
+                    } else if *actual_type != TypeDecl::Unknown {
+                        self.type_inference.pop_generic_scope();
+                        return Err(TypeCheckError::type_mismatch(substituted_expected, actual_type.clone()));
+                    }
+                }
+            }
+        }
+        
         // Ensure all generic parameters have been inferred
         for generic_param in generic_params {
             if !substitutions.contains_key(generic_param) {
+                self.type_inference.pop_generic_scope();
                 let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<unknown>");
                 return Err(TypeCheckError::generic_error(&format!(
                     "Cannot infer generic type parameter '{}' for struct '{}'",
@@ -2752,8 +2889,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         
+        // Record the type substitutions for later use in method calls
+        // This allows method calls on this struct instance to use the inferred types
+        self.record_struct_instance_types(*struct_name, &substitutions);
+        
+        // Pop the generic scope
+        self.type_inference.pop_generic_scope();
+        
         // Generate instantiated struct name and record instantiation
-        let instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
+        let _instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
         
         // Create and record the instantiation for potential code generation (postponed)
         // Note: We store the string for now and will convert to Symbol later to avoid borrowing issues
@@ -4202,8 +4346,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check if this is a user-defined method for a struct
         if let TypeDecl::Struct(struct_name) = obj_type {
             let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-            if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name) {
-                return Ok(method_return_type.clone());
+            if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
+                return Ok(method_return_type);
             }
         }
         
@@ -4216,6 +4360,180 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
+    }
+    
+    /// Handle generic method calls with type inference and substitution
+    fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
+                                 method_return_type: &TypeDecl, obj: &ExprRef, args: &Vec<ExprRef>, 
+                                 arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
+        // Get the generic parameters for this struct
+        let generic_params = self.context.get_struct_generic_params(struct_name)
+            .cloned()
+            .unwrap_or_default();
+        
+        eprintln!("DEBUG: Generic method '{}' on struct '{}':", 
+            method_name,
+            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
+        eprintln!("  Method return type: {:?}", method_return_type);
+        
+        // Create type substitutions based on recent generic inference
+        let substitutions = self.create_type_substitutions_for_method(&generic_params, struct_name)?;
+        
+        eprintln!("  Type substitutions:");
+        for (param, typ) in &substitutions {
+            eprintln!("    {} -> {:?}", 
+                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
+                typ);
+        }
+        
+        // Apply substitutions to the method return type
+        let substituted_return_type = method_return_type.substitute_generics(&substitutions);
+        
+        eprintln!("  Substituted return type: {:?}", substituted_return_type);
+        
+        Ok(substituted_return_type)
+    }
+    
+    /// Handle generic associated function calls (like Container::new) with type inference
+    fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 
+                                             args: &Vec<ExprRef>, method: &Rc<MethodFunction>) -> Result<TypeDecl, TypeCheckError> {
+        // Get the generic parameters for this struct
+        let generic_params = self.context.get_struct_generic_params(struct_name)
+            .cloned()
+            .unwrap_or_default();
+        
+        eprintln!("DEBUG: Associated function '{}' on struct '{}':", 
+            self.core.string_interner.resolve(function_name).unwrap_or("<unknown>"),
+            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
+        
+        // Evaluate argument types for type inference
+        let mut arg_types = Vec::new();
+        for arg in args {
+            let arg_type = self.visit_expr(arg)?;
+            arg_types.push(arg_type);
+        }
+        
+        // Perform type inference based on arguments
+        let mut substitutions = std::collections::HashMap::new();
+        
+        // Compare method parameter types with argument types for inference
+        for (i, param) in method.parameter.iter().enumerate() {
+            if i < arg_types.len() {
+                // Try to infer generic types from argument to parameter mapping
+                // param is (DefaultSymbol, TypeDecl)
+                let param_type = &param.1;
+                match (param_type, &arg_types[i]) {
+                    (TypeDecl::Generic(generic_param), concrete_type) => {
+                        // Direct mapping: T -> concrete_type
+                        substitutions.insert(*generic_param, concrete_type.clone());
+                    },
+                    _ => {
+                        // For more complex cases, could implement recursive matching
+                        // For now, focus on simple cases
+                    }
+                }
+            }
+        }
+        
+        eprintln!("  Inferred type substitutions: {:?}", substitutions);
+        
+        // Get the return type and apply substitutions
+        let return_type = method.return_type.as_ref()
+            .unwrap_or(&TypeDecl::Unit); // Default to Unit if no return type specified
+        
+        // Handle Self type specially - it should become the concrete struct type
+        let substituted_return_type = match return_type {
+            TypeDecl::Self_ => {
+                // Self should become the concrete struct type with substitutions applied
+                TypeDecl::Struct(struct_name)
+            },
+            _ => return_type.substitute_generics(&substitutions)
+        };
+        
+        eprintln!("  Original return type: {:?}", return_type);
+        eprintln!("  Substituted return type: {:?}", substituted_return_type);
+        
+        // Record the instantiation for future use
+        if !substitutions.is_empty() {
+            self.record_struct_instance_types(struct_name, &substitutions);
+        }
+        
+        Ok(substituted_return_type)
+    }
+    
+    /// Create type substitutions for method calls based on struct's generic parameters
+    fn create_type_substitutions_for_method(&self, generic_params: &[DefaultSymbol], 
+                                           struct_name: DefaultSymbol) -> Result<std::collections::HashMap<DefaultSymbol, TypeDecl>, TypeCheckError> {
+        let mut substitutions = std::collections::HashMap::new();
+        
+        eprintln!("  Generic parameters to resolve: {:?}", generic_params);
+        eprintln!("  Generic substitutions stack depth: {}", self.type_inference.generic_substitutions_stack.len());
+        
+        // Check if we have recent generic substitutions from struct literal creation
+        // This leverages the constraint-based type inference that was done during struct literal processing
+        if let Some(current_scope) = self.type_inference.generic_substitutions_stack.last() {
+            eprintln!("  Current scope has {} substitutions", current_scope.len());
+            for (param, typ) in current_scope {
+                eprintln!("    Scope entry: {} -> {:?}", 
+                    self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
+                if generic_params.contains(param) {
+                    substitutions.insert(*param, typ.clone());
+                    eprintln!("    ✓ Found matching substitution: {} -> {:?}", 
+                        self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
+                }
+            }
+        } else {
+            eprintln!("  No current scope available");
+        }
+        
+        // If we don't have substitutions from current scope, try to get them from the struct's
+        // most recent instantiation context
+        if substitutions.is_empty() {
+            // As a fallback, check if there are any pending instantiations for this struct
+            for instantiation in &self.type_inference.pending_instantiations {
+                if instantiation.original_name == struct_name {
+                    // Found an instantiation - extract its type parameters
+                    for (param, typ) in &instantiation.type_substitutions {
+                        if generic_params.contains(param) {
+                            substitutions.insert(*param, typ.clone());
+                            eprintln!("    Found substitution from instantiation: {} -> {:?}", 
+                                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
+                        }
+                    }
+                }
+            }
+        }
+        
+        Ok(substitutions)
+    }
+    
+    /// Record type substitutions for a struct instance to be used in method calls
+    fn record_struct_instance_types(&mut self, struct_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) {
+        eprintln!("  Recording struct instance types for '{}':", 
+            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
+        for (param, typ) in substitutions {
+            eprintln!("    {} -> {:?}", 
+                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
+        }
+        
+        // Store the substitutions in a way that method calls can access them
+        // For now, we'll add them to the pending instantiations as a record
+        if !substitutions.is_empty() {
+            let instantiated_name_str = self.generate_instantiated_struct_name(struct_name, substitutions);
+            // Use the original struct name as instantiated name for simplicity - in a full implementation
+            // we'd generate unique names for each instantiation
+            
+            let instantiation = crate::type_checker::inference::GenericInstantiation {
+                original_name: struct_name,
+                instantiated_name: struct_name, // Simplified - use original name
+                type_substitutions: substitutions.clone(),
+                kind: crate::type_checker::inference::InstantiationKind::Struct,
+            };
+            
+            // Add this instantiation to our records
+            self.type_inference.pending_instantiations.push(instantiation);
+            eprintln!("    ✓ Recorded instantiation: {}", instantiated_name_str);
+        }
     }
 }
 

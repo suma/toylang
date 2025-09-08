@@ -310,6 +310,39 @@ impl<'a> EvaluationContext<'a> {
         result
     }
 
+    /// Call an associated method (without self parameter)
+    fn call_associated_method(&mut self, method: Rc<MethodFunction>, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
+        // Create new scope for method execution
+        self.environment.enter_block();
+        
+        // Set up method parameters - skip self parameter for associated functions
+        let mut param_index = 0;
+        let skip_self = method.has_self_param;
+        
+        // Bind method parameters
+        for (param_symbol, _param_type) in &method.parameter {
+            if skip_self && param_index == 0 {
+                // Skip self parameter for associated functions
+                param_index += 1;
+                continue;
+            }
+            
+            let arg_index = if skip_self { param_index - 1 } else { param_index };
+            if arg_index < args.len() {
+                self.environment.set_val(*param_symbol, args[arg_index].clone());
+            }
+            param_index += 1;
+        }
+        
+        // Execute method body
+        let result = self.evaluate_method(&method);
+        
+        // Clean up scope
+        self.environment.exit_block();
+        
+        result
+    }
+
     fn evaluate_method(&mut self, method: &MethodFunction) -> Result<EvaluationResult, InterpreterError> {
         // Get the method body from the statement pool
         let stmt = self.stmt_pool.get(&method.code)
@@ -691,6 +724,9 @@ impl<'a> EvaluationContext<'a> {
             Expr::TupleAccess(tuple, index) => {
                 self.evaluate_tuple_access(&tuple, index)
             }
+            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+                self.evaluate_associated_function_call(&struct_name, &function_name, &args)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }
@@ -1037,6 +1073,30 @@ impl<'a> EvaluationContext<'a> {
         };
         
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
+    }
+
+    /// Evaluates associated function calls (like Container::new)
+    fn evaluate_associated_function_call(&mut self, struct_name: &DefaultSymbol, function_name: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        // Convert struct_name and function_name to strings for lookup and clone them to avoid borrow issues
+        let struct_name_str = self.string_interner.resolve(*struct_name)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Struct name {:?} not found in string interner", struct_name)))?
+            .to_string();
+        
+        let function_name_str = self.string_interner.resolve(*function_name)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Function name {:?} not found in string interner", function_name)))?
+            .to_string();
+        
+        // Evaluate arguments first
+        let mut arg_values = Vec::new();
+        for arg_expr in args {
+            let arg_value = self.evaluate(arg_expr)?;
+            let arg_obj = self.extract_value(Ok(arg_value))?;
+            arg_values.push(arg_obj);
+        }
+        
+        // Call the associated function as if it's a static method
+        // This is similar to call_struct_method but without self
+        self.call_associated_function(*struct_name, *function_name, &arg_values, &struct_name_str, &function_name_str)
     }
 
     pub fn evaluate_block(&mut self, statements: &[StmtRef] ) -> Result<EvaluationResult, InterpreterError> {
@@ -2186,6 +2246,36 @@ impl EvaluationContext<'_> {
             format!("Method '{}' not found for struct '{}'", 
                     self.string_interner.resolve(method_name).unwrap_or("<unknown>"),
                     struct_name)
+        ))
+    }
+
+    /// Call an associated function (static method) by name
+    pub fn call_associated_function(
+        &mut self, 
+        struct_name: DefaultSymbol,
+        function_name: DefaultSymbol, 
+        args: &[RcObject], 
+        struct_name_str: &str,
+        function_name_str: &str
+    ) -> Result<EvaluationResult, InterpreterError> {
+        // Look for the associated function in the function map first (as a regular function)
+        if let Some(func) = self.function.get(&function_name).cloned() {
+            // This is a regular function, call it directly without self
+            let result = self.evaluate_function_with_values(func, args)?;
+            return Ok(EvaluationResult::Value(result));
+        }
+        
+        // Look for associated function in struct methods (but call without self)
+        if let Some(struct_methods) = self.method_registry.get(&struct_name) {
+            if let Some(method) = struct_methods.get(&function_name) {
+                // For associated functions, we don't pass self, just the arguments
+                return self.call_associated_method(method.clone(), args.to_vec());
+            }
+        }
+        
+        Err(InterpreterError::FunctionNotFound(
+            format!("Associated function '{}' not found for struct '{}'", 
+                    function_name_str, struct_name_str)
         ))
     }
 

@@ -202,9 +202,11 @@ impl TypeCheckContext {
         self.struct_methods.get(&struct_symbol)?.get(&method_symbol)
     }
 
-    pub fn get_method_return_type(&self, _struct_name: &str, _method_name: &str) -> Option<&TypeDecl> {
-        // For now, this is a placeholder - we'd need to implement method resolution
-        // based on struct_name and method_name
-        None
+    pub fn get_method_return_type(&self, struct_name: &str, method_name: &str, string_interner: &DefaultStringInterner) -> Option<TypeDecl> {
+        // Find the method function for this struct and method name
+        let method_function = self.get_method_function_by_name(struct_name, method_name, string_interner)?;
+        
+        // Return the return type if it exists
+        method_function.return_type.clone()
     }
 }

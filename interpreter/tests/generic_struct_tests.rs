@@ -184,11 +184,8 @@ fn test_generic_struct_with_methods() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 30); // items[2] = 30
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 30); // items[2] = 30
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -247,11 +244,8 @@ fn test_generic_struct_different_instantiations() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 123);
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 123);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -319,11 +313,8 @@ fn test_generic_struct_complex_nested_types() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 200);
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 200);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -356,11 +347,8 @@ fn test_generic_struct_recursive_definition() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 2);
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 2);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -395,11 +383,8 @@ fn test_generic_struct_method_chaining() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 15);
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 15);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -429,11 +414,8 @@ fn test_generic_struct_with_generics_functions() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                assert_eq!(num, 99);
-            } else {
-                panic!("Expected number result");
-            }
+            let num = val.borrow().unwrap_uint64();
+            assert_eq!(num, 99);
         }
         Err(e) => panic!("Program failed: {}", e),
     }

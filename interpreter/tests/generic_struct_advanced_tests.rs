@@ -116,10 +116,8 @@ fn test_generic_option_type_pattern() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 1004); // 5 + 999
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 1004); // 5 + 999
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -191,10 +189,8 @@ fn test_generic_result_type_pattern() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 101); // 100 + 1
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 101); // 100 + 1
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -268,10 +264,8 @@ fn test_generic_vector_simulation() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 32); // 10 + 20 + 2
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 32); // 10 + 20 + 2
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -329,10 +323,8 @@ fn test_generic_binary_tree_node() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 25); // 5 + (10 + 3 + 7)
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 25); // 5 + (10 + 3 + 7)
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -395,10 +387,8 @@ fn test_generic_state_machine() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 202); // 200 + 2 transitions
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 202); // 200 + 2 transitions
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -462,10 +452,8 @@ fn test_generic_cache_pattern() {
     match result {
         Ok(val) => {
             let borrowed = val.borrow();
-                assert_eq!(num, 124); // 1 + 123
-            } else {
-                panic!("Expected number result");
-            }
+            let num = borrowed.unwrap_uint64();
+            assert_eq!(num, 124); // 1 + 123
         }
         Err(e) => panic!("Program failed: {}", e),
     }

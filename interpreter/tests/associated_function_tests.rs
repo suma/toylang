@@ -62,8 +62,7 @@ fn test_associated_function_multiple_parameters() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                40); // 15 + 25
+            assert_eq!(val.borrow().unwrap_uint64(), 40); // 15 + 25
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -96,8 +95,7 @@ fn test_associated_function_complex_return_type() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                42);
+            assert_eq!(val.borrow().unwrap_uint64(), 42);
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -141,8 +139,7 @@ fn test_associated_function_type_inference_accuracy() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                123); // int_result is -456 < 0, so returns uint_result (123)
+            assert_eq!(val.borrow().unwrap_uint64(), 123); // int_result is -456 < 0, so returns uint_result (123)
         }
         Err(e) => panic!("Program failed: {}", e),
     }
@@ -180,8 +177,7 @@ fn test_associated_function_mixed_with_regular_methods() {
     let result = test_program(source);
     match result {
         Ok(val) => {
-            assert_eq!(val.borrow().unwrap_uint64(),
-                60); // 10 + 20 + 30
+            assert_eq!(val.borrow().unwrap_uint64(), 60); // 10 + 20 + 30
         }
         Err(e) => panic!("Program failed: {}", e),
     }

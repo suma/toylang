@@ -8,10 +8,10 @@ use crate::type_decl::TypeDecl;
 pub struct GenericInstantiation {
     /// The original generic function or struct name
     pub original_name: DefaultSymbol,
+    /// Generated name for the instantiated function/struct (e.g., "identity_i64", "List_i64")
+    pub instantiated_name: DefaultSymbol,
     /// Type substitutions for this instantiation
     pub type_substitutions: HashMap<DefaultSymbol, TypeDecl>,
-    /// Generated name for the instantiated function/struct (e.g., "identity_i64", "List_i64")
-    pub instantiated_name: String,
     /// Type of instantiation (function or struct)
     pub kind: InstantiationKind,
 }

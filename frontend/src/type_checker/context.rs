@@ -23,6 +23,7 @@ pub struct TypeCheckContext {
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
+    pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
 }
 
@@ -33,6 +34,7 @@ impl TypeCheckContext {
             functions: HashMap::with_capacity(32),
             struct_definitions: HashMap::with_capacity(16),
             struct_methods: HashMap::with_capacity(16),
+            struct_generic_params: HashMap::with_capacity(16),
             current_impl_target: None,
         }
     }
@@ -110,6 +112,20 @@ impl TypeCheckContext {
     
     pub fn is_struct_public(&self, name: DefaultSymbol) -> bool {
         matches!(self.get_struct_visibility(name), Some(Visibility::Public))
+    }
+    
+    pub fn set_struct_generic_params(&mut self, struct_name: DefaultSymbol, generic_params: Vec<DefaultSymbol>) {
+        self.struct_generic_params.insert(struct_name, generic_params);
+    }
+    
+    pub fn get_struct_generic_params(&self, struct_name: DefaultSymbol) -> Option<&Vec<DefaultSymbol>> {
+        self.struct_generic_params.get(&struct_name)
+    }
+    
+    pub fn is_generic_struct(&self, struct_name: DefaultSymbol) -> bool {
+        self.struct_generic_params.get(&struct_name)
+            .map(|params| !params.is_empty())
+            .unwrap_or(false)
     }
     
     pub fn get_method_visibility(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Visibility> {

@@ -6,6 +6,28 @@ use super::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
 
+/// Skip tokens until matching '>' is found (for generic argument parsing)
+fn skip_until_matching_gt(parser: &mut Parser) {
+    let mut depth = 1;
+    parser.next(); // Skip the initial '<'
+    
+    while let Some(token) = parser.peek() {
+        match token {
+            Kind::LT => depth += 1,
+            Kind::GT => {
+                depth -= 1;
+                if depth == 0 {
+                    parser.next(); // Consume the matching '>'
+                    break;
+                }
+            }
+            Kind::EOF => break,
+            _ => {}
+        }
+        parser.next();
+    }
+}
+
 impl<'a> Parser<'a> {
     pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
         parse_stmt(self)
@@ -158,6 +180,10 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
 }
 
 pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {
+    parse_struct_fields_with_generic_context(parser, fields, &[])
+}
+
+pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields: Vec<StructField>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<Vec<StructField>> {
     // Limit maximum number of fields to prevent infinite loops
     const MAX_FIELDS: usize = 1000;
     
@@ -193,7 +219,10 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
         };
 
         parser.expect_err(&Kind::Colon)?;
-        let field_type = match parser.parse_type_declaration() {
+        
+        // Use generic context-aware type parsing
+        let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> = generic_params.iter().cloned().collect();
+        let field_type = match parser.parse_type_declaration_with_generic_context(&generic_context) {
             Ok(ty) => ty,
             Err(e) => {
                 parser.collect_error(&format!("expected type after ':' in struct field: {}", e));
@@ -230,6 +259,10 @@ pub fn parse_struct_fields(parser: &mut Parser, mut fields: Vec<StructField>) ->
 }
 
 pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
+    parse_impl_methods_with_generic_context(parser, methods, &[])
+}
+
+pub fn parse_impl_methods_with_generic_context(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<Vec<Rc<MethodFunction>>> {
     // Limit maximum number of methods to prevent infinite loops
     const MAX_METHODS: usize = 500;
     
@@ -263,15 +296,27 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                         parser.next();
                         let method_name = parser.string_interner.get_or_intern(s);
                         
+                        // Parse optional method generic parameters: fn name<T>
+                        let method_generic_params: Vec<string_interner::DefaultSymbol> = if parser.peek() == Some(&Kind::LT) {
+                            // For now, methods inherit generic parameters from impl block
+                            // In full implementation, methods can have their own generics too
+                            skip_until_matching_gt(parser);
+                            vec![]
+                        } else {
+                            vec![]
+                        };
+                        
                         parser.expect_err(&Kind::ParenOpen)?;
-                        let (params, has_self) = parse_method_param_list(parser, vec![])?;
+                        let (params, has_self) = parse_method_param_list_with_generic_context(parser, vec![], generic_params)?;
                         parser.expect_err(&Kind::ParenClose)?;
                         
                         let mut ret_ty: Option<TypeDecl> = None;
                         match parser.peek() {
                             Some(Kind::Arrow) => {
                                 parser.expect_err(&Kind::Arrow)?;
-                                ret_ty = Some(parser.parse_type_declaration()?);
+                                // Use generic context-aware type parsing
+                                let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> = generic_params.iter().cloned().collect();
+                                ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
                             }
                             _ => (),
                         }
@@ -279,10 +324,14 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
                         let block = super::expr::parse_block(parser)?;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                         
+                        // Combine impl-level and method-level generic parameters
+                        let mut combined_generic_params = generic_params.to_vec();
+                        combined_generic_params.extend(method_generic_params);
+                        
                         methods.push(Rc::new(MethodFunction {
                             node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
-                            generic_params: vec![], // TODO: Add generic parameter parsing for methods
+                            generic_params: combined_generic_params,
                             parameter: params,
                             return_type: ret_ty,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
@@ -308,6 +357,10 @@ pub fn parse_impl_methods(parser: &mut Parser, mut methods: Vec<Rc<MethodFunctio
 }
 
 pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
+    parse_method_param_list_with_generic_context(parser, args, &[])
+}
+
+pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: Vec<Parameter>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<(Vec<Parameter>, bool)> {
     let mut has_self = false;
     
     match parser.peek() {
@@ -325,7 +378,7 @@ pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Par
                 match parser.peek() {
                     Some(Kind::Comma) => {
                         parser.next();
-                        let (rest_params, _) = parse_param_def_list_impl(parser, args)?;
+                        let (rest_params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;
                         return Ok((rest_params, has_self));
                     }
                     Some(Kind::ParenClose) => return Ok((args, has_self)),
@@ -338,11 +391,15 @@ pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> Par
         }
     }
 
-    let (params, _) = parse_param_def_list_impl(parser, args)?;
+    let (params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;
     Ok((params, has_self))
 }
 
 pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
+    parse_param_def_list_impl_with_generic_context(parser, args, &[])
+}
+
+pub fn parse_param_def_list_impl_with_generic_context(parser: &mut Parser, mut args: Vec<Parameter>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<(Vec<Parameter>, bool)> {
     // Limit maximum number of parameters to prevent infinite loops
     const MAX_PARAMS: usize = 255;
     
@@ -354,7 +411,7 @@ pub fn parse_param_def_list_impl(parser: &mut Parser, mut args: Vec<Parameter>) 
             return Ok((args, false));
         }
 
-        let def = parser.parse_param_def();
+        let def = parser.parse_param_def_with_generic_context(generic_params);
         if def.is_err() {
             return Ok((args, false));
         }

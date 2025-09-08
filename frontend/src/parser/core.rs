@@ -484,7 +484,7 @@ impl<'a> Parser<'a> {
                             };
                             
                             self.expect_err(&Kind::BraceOpen)?;
-                            let fields = super::stmt::parse_struct_fields(self, vec![])?;
+                            let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
                             self.expect_err(&Kind::BraceClose)?;
                             let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(struct_end_pos);
@@ -502,13 +502,29 @@ impl<'a> Parser<'a> {
                     let location = self.current_source_location();
                     update_start_pos(impl_start_pos);
                     self.next();
+                    
+                    // Parse optional generic parameters: impl<T> or impl
+                    let generic_params = if self.peek() == Some(&Kind::LT) {
+                        self.parse_generic_params()?
+                    } else {
+                        vec![]
+                    };
+                    
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
                             let s_copy = s.clone();
                             let target_type_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
+                            
+                            // For now, we'll skip parsing generic arguments on the type (like Container<T>)
+                            // This is a simplification - in full implementation we'd parse the complete type
+                            if self.peek() == Some(&Kind::LT) {
+                                // Skip generic arguments on target type for now
+                                self.skip_until_matching_gt();
+                            }
+                            
                             self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_impl_methods(self, vec![])?;
+                            let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params)?;
                             self.expect_err(&Kind::BraceClose)?;
                             let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
                             update_end_pos(impl_end_pos);
@@ -889,6 +905,28 @@ impl<'a> Parser<'a> {
         self.expect_err(&Kind::GT)?;
         
         Ok(params)
+    }
+
+    /// Skip tokens until matching '>' is found (for generic argument parsing)
+    fn skip_until_matching_gt(&mut self) {
+        let mut depth = 1;
+        self.next(); // Skip the initial '<'
+        
+        while let Some(token) = self.peek() {
+            match token {
+                Kind::LT => depth += 1,
+                Kind::GT => {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.next(); // Consume the matching '>'
+                        break;
+                    }
+                }
+                Kind::EOF => break,
+                _ => {}
+            }
+            self.next();
+        }
     }
 
     /// Parse program with multiple error collection

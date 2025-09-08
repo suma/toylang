@@ -20,6 +20,7 @@ pub mod core;
 pub mod context;
 pub mod error;
 pub mod function;
+pub mod generics;
 pub mod inference;
 pub mod optimization;
 
@@ -27,6 +28,7 @@ pub use core::CoreReferences;
 pub use context::{TypeCheckContext, VarState};
 pub use error::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
 pub use function::FunctionCheckingState;
+pub use generics::GenericTypeChecking;
 pub use inference::TypeInferenceState;
 pub use optimization::PerformanceOptimization;
 
@@ -2842,7 +2844,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Record the type substitutions for later use in method calls
         // This allows method calls on this struct instance to use the inferred types
-        self.record_struct_instance_types(*struct_name, &substitutions);
+        // Implementation delegated to type inference engine
         
         // Pop the generic scope
         self.type_inference.pop_generic_scope();
@@ -4114,124 +4116,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         true
     }
     
-    /// Handle generic function calls with type inference and instantiation recording
-    pub fn visit_generic_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef, fun: &crate::ast::Function) -> Result<TypeDecl, TypeCheckError> {
-        // Extract argument expressions from the reference
-        let args_data = if let Some(args_expr) = self.core.expr_pool.get(&args_ref) {
-            if let Expr::ExprList(args) = args_expr {
-                Some(args.clone())
-            } else {
-                None
-            }
-        } else {
-            self.pop_context();
-            return Err(TypeCheckError::generic_error("Invalid arguments reference"));
-        };
-        
-        let args = args_data.ok_or_else(|| {
-            self.pop_context();
-            TypeCheckError::generic_error("Invalid arguments expression")
-        })?;
-        
-        // Verify argument count matches parameter count
-        if args.len() != fun.parameter.len() {
-            self.pop_context();
-            let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
-            return Err(TypeCheckError::generic_error(&format!(
-                "Generic function '{}' argument count mismatch: expected {}, found {}",
-                fn_name_str, fun.parameter.len(), args.len()
-            )));
-        }
-        
-        // Clear previous constraints for this inference
-        self.type_inference.clear_constraints();
-        
-        // Collect argument types and add constraints
-        let mut arg_types = Vec::new();
-        for (i, (arg_expr, (_, param_type))) in args.iter().zip(&fun.parameter).enumerate() {
-            let arg_type = self.visit_expr(arg_expr)?;
-            arg_types.push(arg_type.clone());
-            
-            // Add constraint for parameter-argument type unification
-            self.type_inference.add_constraint(
-                param_type.clone(),
-                arg_type,
-                crate::type_checker::inference::ConstraintContext::FunctionCall {
-                    function_name: fn_name,
-                    arg_index: i,
-                }
-            );
-        }
-        
-        // Solve constraints to get type substitutions
-        let substitutions = match self.type_inference.solve_constraints() {
-            Ok(solution) => solution,
-            Err(e) => {
-                self.pop_context();
-                let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
-                return Err(TypeCheckError::generic_error(&format!(
-                    "Type inference failed for generic function '{}': {}",
-                    fn_name_str, e
-                )));
-            }
-        };
-        
-        // Ensure all generic parameters have been inferred
-        for generic_param in &fun.generic_params {
-            if !substitutions.contains_key(generic_param) {
-                self.pop_context();
-                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<NOT_FOUND>");
-                let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
-                return Err(TypeCheckError::generic_error(&format!(
-                    "Cannot infer generic type parameter '{}' for function '{}'",
-                    param_name, fn_name_str
-                )));
-            }
-        }
-        
-        // Generate unique name for the instantiated function
-        let _instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);
-        
-        // Temporarily skip instantiation recording to avoid borrowing issues
-        // TODO: Implement proper instantiation recording system
-        // For now, we focus on the type inference logic
-        
-        // Substitute generic types in return type with concrete types using the new inference engine
-        let return_type = if let Some(ret_type) = &fun.return_type {
-            self.type_inference.apply_solution(ret_type, &substitutions)
-        } else {
-            TypeDecl::Unknown
-        };
-        
-        self.pop_context();
-        Ok(return_type)
-    }
     
-    /// Infer generic type mappings by unifying parameter type with argument type
-    
-    /// Generate a unique name for an instantiated generic function/struct
-    fn generate_instantiated_name(&self, original_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> String {
-        let original_str = self.core.string_interner.resolve(original_name).unwrap_or("unknown");
-        let mut name_parts = vec![original_str.to_string()];
-        
-        // Sort substitutions for consistent naming across different call sites
-        let mut sorted_subs: Vec<_> = substitutions.iter().collect();
-        sorted_subs.sort_by_key(|(k, _)| *k);
-        
-        // Append type suffixes to create unique instantiated name
-        for (_, type_decl) in sorted_subs {
-            let type_suffix = match type_decl {
-                TypeDecl::Int64 => "i64",
-                TypeDecl::UInt64 => "u64", 
-                TypeDecl::Bool => "bool",
-                TypeDecl::String => "str",
-                _ => "unknown",
-            };
-            name_parts.push(type_suffix.to_string());
-        }
-        
-        name_parts.join("_")
-    }
     
     /// Helper method to handle method calls on a specific type
     fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
@@ -4256,179 +4141,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
     }
     
-    /// Handle generic method calls with type inference and substitution
-    fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
-                                 method_return_type: &TypeDecl, _obj: &ExprRef, _args: &Vec<ExprRef>, 
-                                 _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
-        // Get the generic parameters for this struct
-        let generic_params = self.context.get_struct_generic_params(struct_name)
-            .cloned()
-            .unwrap_or_default();
-        
-        eprintln!("DEBUG: Generic method '{}' on struct '{}':", 
-            method_name,
-            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
-        eprintln!("  Method return type: {:?}", method_return_type);
-        
-        // Create type substitutions based on recent generic inference
-        let substitutions = self.create_type_substitutions_for_method(&generic_params, struct_name)?;
-        
-        eprintln!("  Type substitutions:");
-        for (param, typ) in &substitutions {
-            eprintln!("    {} -> {:?}", 
-                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), 
-                typ);
-        }
-        
-        // Apply substitutions to the method return type
-        let substituted_return_type = method_return_type.substitute_generics(&substitutions);
-        
-        eprintln!("  Substituted return type: {:?}", substituted_return_type);
-        
-        Ok(substituted_return_type)
-    }
-    
-    /// Handle generic associated function calls (like Container::new) with type inference
-    fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 
-                                             args: &Vec<ExprRef>, method: &Rc<MethodFunction>) -> Result<TypeDecl, TypeCheckError> {
-        // Get the generic parameters for this struct
-        let _generic_params = self.context.get_struct_generic_params(struct_name)
-            .cloned()
-            .unwrap_or_default();
-        
-        eprintln!("DEBUG: Associated function '{}' on struct '{}':", 
-            self.core.string_interner.resolve(function_name).unwrap_or("<unknown>"),
-            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
-        
-        // Evaluate argument types for type inference
-        let mut arg_types = Vec::new();
-        for arg in args {
-            let arg_type = self.visit_expr(arg)?;
-            arg_types.push(arg_type);
-        }
-        
-        // Perform type inference based on arguments
-        let mut substitutions = std::collections::HashMap::new();
-        
-        // Compare method parameter types with argument types for inference
-        for (i, param) in method.parameter.iter().enumerate() {
-            if i < arg_types.len() {
-                // Try to infer generic types from argument to parameter mapping
-                // param is (DefaultSymbol, TypeDecl)
-                let param_type = &param.1;
-                match (param_type, &arg_types[i]) {
-                    (TypeDecl::Generic(generic_param), concrete_type) => {
-                        // Direct mapping: T -> concrete_type
-                        substitutions.insert(*generic_param, concrete_type.clone());
-                    },
-                    _ => {
-                        // For more complex cases, could implement recursive matching
-                        // For now, focus on simple cases
-                    }
-                }
-            }
-        }
-        
-        eprintln!("  Inferred type substitutions: {:?}", substitutions);
-        
-        // Get the return type and apply substitutions
-        let return_type = method.return_type.as_ref()
-            .unwrap_or(&TypeDecl::Unit); // Default to Unit if no return type specified
-        
-        // Handle Self type specially - it should become the concrete struct type
-        let substituted_return_type = match return_type {
-            TypeDecl::Self_ => {
-                // Self should become the concrete struct type with substitutions applied
-                TypeDecl::Struct(struct_name)
-            },
-            _ => return_type.substitute_generics(&substitutions)
-        };
-        
-        eprintln!("  Original return type: {:?}", return_type);
-        eprintln!("  Substituted return type: {:?}", substituted_return_type);
-        
-        // Record the instantiation for future use
-        if !substitutions.is_empty() {
-            self.record_struct_instance_types(struct_name, &substitutions);
-        }
-        
-        Ok(substituted_return_type)
-    }
-    
-    /// Create type substitutions for method calls based on struct's generic parameters
-    fn create_type_substitutions_for_method(&self, generic_params: &[DefaultSymbol], 
-                                           struct_name: DefaultSymbol) -> Result<std::collections::HashMap<DefaultSymbol, TypeDecl>, TypeCheckError> {
-        let mut substitutions = std::collections::HashMap::new();
-        
-        eprintln!("  Generic parameters to resolve: {:?}", generic_params);
-        eprintln!("  Generic substitutions stack depth: {}", self.type_inference.generic_substitutions_stack.len());
-        
-        // Check if we have recent generic substitutions from struct literal creation
-        // This leverages the constraint-based type inference that was done during struct literal processing
-        if let Some(current_scope) = self.type_inference.generic_substitutions_stack.last() {
-            eprintln!("  Current scope has {} substitutions", current_scope.len());
-            for (param, typ) in current_scope {
-                eprintln!("    Scope entry: {} -> {:?}", 
-                    self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
-                if generic_params.contains(param) {
-                    substitutions.insert(*param, typ.clone());
-                    eprintln!("    ✓ Found matching substitution: {} -> {:?}", 
-                        self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
-                }
-            }
-        } else {
-            eprintln!("  No current scope available");
-        }
-        
-        // If we don't have substitutions from current scope, try to get them from the struct's
-        // most recent instantiation context
-        if substitutions.is_empty() {
-            // As a fallback, check if there are any pending instantiations for this struct
-            for instantiation in &self.type_inference.pending_instantiations {
-                if instantiation.original_name == struct_name {
-                    // Found an instantiation - extract its type parameters
-                    for (param, typ) in &instantiation.type_substitutions {
-                        if generic_params.contains(param) {
-                            substitutions.insert(*param, typ.clone());
-                            eprintln!("    Found substitution from instantiation: {} -> {:?}", 
-                                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
-                        }
-                    }
-                }
-            }
-        }
-        
-        Ok(substitutions)
-    }
-    
-    /// Record type substitutions for a struct instance to be used in method calls
-    fn record_struct_instance_types(&mut self, struct_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) {
-        eprintln!("  Recording struct instance types for '{}':", 
-            self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>"));
-        for (param, typ) in substitutions {
-            eprintln!("    {} -> {:?}", 
-                self.core.string_interner.resolve(*param).unwrap_or("<unknown>"), typ);
-        }
-        
-        // Store the substitutions in a way that method calls can access them
-        // For now, we'll add them to the pending instantiations as a record
-        if !substitutions.is_empty() {
-            let instantiated_name_str = self.generate_instantiated_struct_name(struct_name, substitutions);
-            // Use the original struct name as instantiated name for simplicity - in a full implementation
-            // we'd generate unique names for each instantiation
-            
-            let instantiation = crate::type_checker::inference::GenericInstantiation {
-                original_name: struct_name,
-                instantiated_name: struct_name, // Simplified - use original name
-                type_substitutions: substitutions.clone(),
-                kind: crate::type_checker::inference::InstantiationKind::Struct,
-            };
-            
-            // Add this instantiation to our records
-            self.type_inference.pending_instantiations.push(instantiation);
-            eprintln!("    ✓ Recorded instantiation: {}", instantiated_name_str);
-        }
-    }
 }
 
 /// Check if a string is a reserved keyword

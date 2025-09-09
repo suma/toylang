@@ -333,6 +333,69 @@
 
 ## 完了済み ✅
 
+122. **type_checker.rs大規模リファクタリング（第2段階：type_conversion.rs分離）** ✅ (2025-09-09完了)
+   - **対象**: type_checker.rsから型変換・型推論関連機能を独立モジュールに分離
+   - **実装した機能**:
+     - **type_conversion.rs新規作成**: 型変換処理専用モジュール（~400行）
+     - **Number型推論システム**: `TypeDecl::Number`から具体型への自動変換
+     - **型ヒント管理**: `setup_type_hint_for_val`による型注釈からのヒント設定
+     - **変数-式マッピング**: `update_variable_expr_mapping`による型推論用変数追跡
+     - **numeric literal transformation**: `transform_numeric_expr`によるAST変換
+   - **分離したメソッド群**:
+     - **型ヒント管理**:
+       - `setup_type_hint_for_val()` - 型注釈から推論ヒント設定
+       - `determine_final_type_for_expr()` - 最終型決定ロジック
+     - **変数マッピング管理**:
+       - `update_variable_expr_mapping()` - 変数と式の関連付け
+       - `update_variable_expr_mapping_internal()` - 内部実装
+     - **型変換システム**:
+       - `apply_type_transformations_for_expr()` - 式レベル型変換適用
+       - `transform_numeric_expr()` - Number→具体型のAST変換
+       - `apply_expr_transformations()` - 累積変換の一括適用
+     - **Number型処理**:
+       - `finalize_number_types()` - 残存Number型の最終変換
+       - `resolve_numeric_types()` - 二項演算での型解決
+       - `propagate_type_to_number_expr()` - 型情報の伝播
+     - **コンテキスト管理**:
+       - `record_number_usage_context()` - Number使用コンテキストの記録
+       - `has_number_in_expr()` / `is_number_for_variable()` - Number式判定
+   - **技術的実装**:
+     - **frontend/src/type_checker/type_conversion.rs**: 型変換専用モジュール作成
+     - **TypeInferenceManager trait実装**: トレイト経由での機能提供
+     - **モジュール宣言**: `mod type_conversion;` 追加
+     - **元メソッド削除**: type_checker.rsから433行の型変換コード移動
+   - **コンパイルエラー解決**:
+     - **trait実装エラー**: TypeInferenceManagerトレイトの未実装メソッド対応
+     - **借用エラー**: メソッド呼び出し時の適切な委譲実装
+     - **構文エラー**: 重複する閉じ括弧の修正
+   - **テスト結果**:
+     - ✅ **frontendビルド**: 警告のみでコンパイル成功
+     - ✅ **全テスト通過**: 129/129テスト成功（100%成功率）
+     - ✅ **機能保持**: リファクタリング前後で全機能が同一動作
+   - **ファイルサイズ変化**:
+     - **type_checker.rs**: 3,302行 → 2,869行（433行 / 13%削減）
+     - **type_conversion.rs**: 新規400行モジュール作成
+     - **純削減**: ネット33行減少（重複削除効果）
+   - **実装ファイル**:
+     - **frontend/src/type_checker/type_conversion.rs**: 型変換専用モジュール
+     - **frontend/src/type_checker.rs**: モジュール統合とトレイト委譲実装
+   - **技術的成果**:
+     - **モジュール化完成**: 型変換機能が独立した保守可能なモジュールに分離
+     - **責任分離**: 型推論（inference）と型変換（conversion）の明確な機能分離
+     - **トレイト統合**: TypeInferenceManagerを通じた統一インターフェース
+     - **テスト安定性**: 大規模リファクタリングでも100%テスト通過を維持
+     - **保守性向上**: 4000+行の巨大ファイルから機能別モジュール構造への転換
+   - **累積リファクタリング成果**:
+     - **expression.rs**: 702行分離（完了）
+     - **statement.rs**: 130行分離（完了）
+     - **struct_literal.rs**: 185行分離（完了）
+     - **collections.rs**: 290行分離（完了）
+     - **tests.rs**: テストケース分離（完了）
+     - **builtin.rs**: 95行分離（完了）
+     - **utility.rs**: 200行分離（完了）
+     - **type_conversion.rs**: 400行分離（完了）
+   - **総削減量**: 4,305行 → 2,869行（1,436行 / 33%削減）
+
 121. **Self型実装とジェネリック型チェッカー修正** ✅ (2025-09-08完了)
    - **対象**: Self型(`TypeDecl::Self_`)の完全実装とジェネリック構造体関連エラーの修正
    - **実装した機能**:

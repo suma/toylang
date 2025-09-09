@@ -674,45 +674,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Type check field access
-    pub fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
-        let obj_type = self.visit_expr(obj)?;
-        
-        match &obj_type {
-            TypeDecl::Struct(struct_name) => {
-                if let Some(struct_def) = self.context.get_struct_definition(*struct_name) {
-                    for field_def in &struct_def.fields {
-                        let field_name_str = self.core.string_interner.resolve(*field).unwrap_or("");
-                        if field_def.name == field_name_str {
-                            return Ok(field_def.type_decl.clone());
-                        }
-                    }
-                    let field_str = self.core.string_interner.resolve(*field).unwrap_or("<NOT_FOUND>");
-                    let struct_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<NOT_FOUND>");
-                    Err(TypeCheckError::not_found(
-                        "Field",
-                        &format!("{} in struct '{}'", field_str, struct_str)
-                    ))
-                } else {
-                    let struct_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<NOT_FOUND>");
-                    Err(TypeCheckError::not_found("Struct definition", struct_str))
-                }
-            }
-            TypeDecl::Generic(_generic_param) => {
-                // Generic types don't have fields
-                let field_str = self.core.string_interner.resolve(*field).unwrap_or("<NOT_FOUND>");
-                Err(TypeCheckError::generic_error(&format!("Cannot access field '{}' on generic type parameter", field_str)))
-            }
-            _ => {
-                let field_str = self.core.string_interner.resolve(*field).unwrap_or("<NOT_FOUND>");
-                Err(TypeCheckError::type_mismatch_operation(
-                    &format!("field access '{}'", field_str),
-                    obj_type,
-                    TypeDecl::Struct(*field)
-                ))
-            }
-        }
-    }
 
     /// Type check method calls
     pub fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {

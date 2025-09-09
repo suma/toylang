@@ -37,6 +37,7 @@ pub use traits::*;
 
 mod literal_checker;
 mod expression;
+mod statement;
 
 // Struct definitions moved to separate modules
 

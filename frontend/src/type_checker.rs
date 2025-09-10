@@ -6,6 +6,9 @@ use crate::type_decl::*;
 use crate::visitor::{AstVisitor, ProgramVisitor};
 use crate::module_resolver::ModuleResolver;
 
+// Import MethodProcessing trait from method module
+use method::MethodProcessing;
+
 // Builtin function signature definition
 #[derive(Debug, Clone)]
 pub struct BuiltinFunctionSignature {
@@ -42,6 +45,7 @@ mod struct_literal;
 mod collections;
 mod builtin;
 mod utility;
+mod method;
 mod type_conversion;
 mod tests;
 
@@ -1779,109 +1783,23 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
         // Impl block type checking - validate methods
         for method in methods {
-            // Check method parameter types
-            for (_, param_type) in &method.parameter {
-                // Resolve Self type to the actual struct type
-                let resolved_type = self.resolve_self_type(param_type);
-                
-                match &resolved_type {
-                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
-                        // Valid parameter types (including struct types and generic types)
-                    },
-                    _ => {
-                        if has_generics {
-                            self.type_inference.pop_generic_scope();
-                        }
-                        let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
-                        return Err(TypeCheckError::unsupported_operation(
-                            &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
-                            resolved_type
-                        ));
-                    }
-                }
-            }
-            
-            // Check return type if specified - now with proper generic support
-            if let Some(ref ret_type) = method.return_type {
-                // Try to resolve return type in generic context
-                let resolved_ret_type = self.resolve_self_type(ret_type);
-                
-                // For generic types, we need to validate they can be resolved
-                // but don't enforce strict type checking here since generics will be resolved later
-                match &resolved_ret_type {
-                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
-                        // Valid return types (including generic types and struct types)
-                    },
-                    _ => {
-                        if has_generics {
-                            self.type_inference.pop_generic_scope();
-                        }
-                        let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
-                        return Err(TypeCheckError::unsupported_operation(
-                            &format!("return type in method '{}' for impl block", method_name),
-                            resolved_ret_type
-                        ));
-                    }
-                }
+            // Use method.rs module for validation
+            if let Err(err) = self.process_impl_method_validation(struct_symbol, method, has_generics) {
+                return Err(err);
             }
 
-            // Type check method body
-            // Set up parameter context for method
-            self.context.push_scope();
-            for (param_name, param_type) in &method.parameter {
-                let resolved_param_type = self.resolve_self_type(param_type);
-                self.context.set_var(*param_name, resolved_param_type);
-            }
+            // Type check method body using method.rs module
+            self.setup_method_parameter_context(method);
             
             // Type check method body
             let body_result = self.visit_stmt(&method.code);
             
             // Restore parameter context
-            self.context.pop_scope();
+            self.restore_method_parameter_context();
             
-            // Check if body type matches return type
-            if let Some(ref expected_return_type) = method.return_type {
-                let resolved_expected_type = self.resolve_self_type(expected_return_type);
-                match body_result {
-                    Ok(actual_return_type) => {
-                        // For generic methods, use more sophisticated type checking
-                        if has_generics {
-                            // Try to apply generic substitutions for better matching
-                            // Skip strict checking for generic return types - they'll be resolved during instantiation
-                            match (&resolved_expected_type, &actual_return_type) {
-                                (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => {
-                                    // Allow generic types to match - will be resolved later
-                                }
-                                _ => {
-                                    // Use normal type compatibility checking
-                                    if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
-                                        self.type_inference.pop_generic_scope();
-                                        return Err(TypeCheckError::type_mismatch(
-                                            resolved_expected_type,
-                                            actual_return_type
-                                        ));
-                                    }
-                                }
-                            }
-                        } else {
-                            // Non-generic method - use normal type compatibility checking
-                            if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
-                                return Err(TypeCheckError::type_mismatch(
-                                    resolved_expected_type,
-                                    actual_return_type
-                                ));
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if has_generics {
-                            self.type_inference.pop_generic_scope();
-                        }
-                        return Err(e);
-                    }
-                }
+            // Validate method return type compatibility using method.rs module
+            if let Err(err) = self.validate_method_return_type(method, body_result, has_generics) {
+                return Err(err);
             }
 
             // Register method in context
@@ -2042,20 +1960,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
     }
 
+
     fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        // Simplified implementation for now
-        let _ = receiver; // unused parameter
-        let _ = args; // unused parameter
-        match method {
-            BuiltinMethod::StrLen => Ok(TypeDecl::UInt64),
-            BuiltinMethod::IsNull => Ok(TypeDecl::Bool),
-            _ => Ok(TypeDecl::Unknown),
-        }
+        // Use method.rs module for builtin method processing
+        <Self as method::MethodProcessing>::visit_builtin_method_call(self, receiver, method, args)
     }
 
     fn visit_builtin_call(&mut self, func: &BuiltinFunction, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Find matching function signature from pre-built table
-        let _ = args; // unused parameter
         let signature = self.builtin_function_signatures.iter().find(|sig| sig.func == *func).cloned();
         
         if let Some(sig) = signature {
@@ -2073,76 +1985,6 @@ impl<'a> TypeCheckerVisitor<'a> {
     // =========================================================================
     
 
-    /// Resolve Self type to the actual struct type in impl block context
-    pub fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl {
-        match type_decl {
-            TypeDecl::Self_ => {
-                if let Some(target_symbol) = self.context.current_impl_target {
-                    TypeDecl::Struct(target_symbol, vec![])
-                } else {
-                    // Self used outside impl context - should be an error
-                    type_decl.clone()
-                }
-            }
-            _ => type_decl.clone(),
-        }
-    }
-
-    /// Check method arguments against parameter types, handling Self type specially
-    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>, 
-                             _args: &Vec<ExprRef>, arg_types: &Vec<TypeDecl>, method_name: &str) -> Result<(), TypeCheckError> {
-        // Check argument count
-        if arg_types.len() + 1 != method.parameter.len() {
-            return Err(TypeCheckError::method_error(
-                method_name, 
-                obj_type.clone(),
-                &format!("expected {} arguments, found {}", method.parameter.len() - 1, arg_types.len())
-            ));
-        }
-
-        // Check the first parameter (self parameter)
-        if !method.parameter.is_empty() {
-            let (_, first_param_type) = &method.parameter[0];
-            
-            // For Self type, we need to match it with the actual struct type
-            let expected_self_type = match first_param_type {
-                TypeDecl::Self_ => obj_type.clone(), // Self should match the object type
-                _ => first_param_type.clone()
-            };
-            
-            // Check if obj_type is compatible with the first parameter type
-            if !self.are_types_compatible(&expected_self_type, obj_type) {
-                return Err(TypeCheckError::method_error(
-                    method_name,
-                    obj_type.clone(),
-                    &format!("self parameter type mismatch: expected {:?}, found {:?}", expected_self_type, obj_type)
-                ));
-            }
-        }
-
-        // Check remaining arguments (starting from index 1 since index 0 is self)
-        for (i, arg_type) in arg_types.iter().enumerate() {
-            if i + 1 < method.parameter.len() {
-                let (_, param_type) = &method.parameter[i + 1];
-                
-                // For Self type in method parameters, resolve to object type
-                let resolved_param_type = match param_type {
-                    TypeDecl::Self_ => obj_type.clone(),
-                    _ => param_type.clone()
-                };
-                
-                if !self.are_types_compatible(&resolved_param_type, arg_type) {
-                    return Err(TypeCheckError::method_error(
-                        method_name,
-                        obj_type.clone(),
-                        &format!("argument {} type mismatch: expected {:?}, found {:?}", i + 1, resolved_param_type, arg_type)
-                    ));
-                }
-            }
-        }
-
-        Ok(())
-    }
 
     fn visit_array_literal_impl(&mut self, elements: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Save the original type hint to restore later

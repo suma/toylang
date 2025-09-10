@@ -32,30 +32,6 @@ pub fn assert_program_result_i64(source_code: &str, expected: i64) {
     assert_eq!(result.borrow().unwrap_int64(), expected);
 }
 
-/// Helper function to execute a program and assert the result is a bool value
-pub fn assert_program_result_bool(source_code: &str, expected: bool) {
-    let result = test_program(source_code)
-        .expect("Program execution failed");
-    assert_eq!(result.borrow().unwrap_bool(), expected);
-}
-
-/// Helper function to execute a program and assert the result is a string value
-pub fn assert_program_result_string(source_code: &str, expected: &str) {
-    let result = test_program(source_code)
-        .expect("Program execution failed");
-    let borrowed = result.borrow();
-    match &*borrowed {
-        Object::String(s) => assert_eq!(s, expected),
-        Object::ConstString(_s) => {
-            // For const strings, we need to get the actual string value
-            // This is expected for string literals
-            // Note: In a real implementation, we'd need the string interner
-            // For now, we'll just check it's a ConstString
-        }
-        other => panic!("Expected String but got {:?}", other),
-    }
-}
-
 /// Helper function to execute a program and assert the result is a u64 array
 pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
     let result = test_program(source_code)
@@ -125,3 +101,4 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
     };
     assert_eq!(actual_type, expected_type, "Expected {} but got {}", expected_type, actual_type);
 }
+

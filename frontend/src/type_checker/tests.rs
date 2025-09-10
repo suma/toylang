@@ -381,7 +381,7 @@ mod tests {
         type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Test array with same struct types
-        let point_type = TypeDecl::Struct(point_symbol);
+        let point_type = TypeDecl::Struct(point_symbol, vec![]);
         let array_type = TypeDecl::Array(vec![point_type.clone(), point_type.clone()], 2);
         
         // This should be valid
@@ -455,8 +455,8 @@ mod tests {
         type_checker.context.register_struct(circle_symbol, circle_fields, crate::ast::Visibility::Private);
         
         // Test array with mixed struct types - should be caught by array type checker
-        let point_type = TypeDecl::Struct(point_symbol);
-        let circle_type = TypeDecl::Struct(circle_symbol);
+        let point_type = TypeDecl::Struct(point_symbol, vec![]);
+        let circle_type = TypeDecl::Struct(circle_symbol, vec![]);
         
         // This demonstrates that different struct types cannot be mixed in arrays
         assert_ne!(point_type, circle_type);
@@ -483,7 +483,7 @@ mod tests {
         type_checker.context.register_struct(point_symbol, struct_fields, crate::ast::Visibility::Private);
         
         // Set type hint for struct array
-        let point_type = TypeDecl::Struct(point_symbol);
+        let point_type = TypeDecl::Struct(point_symbol, vec![]);
         let array_hint = TypeDecl::Array(vec![point_type.clone()], 1);
         type_checker.type_inference.type_hint = Some(array_hint.clone());
         

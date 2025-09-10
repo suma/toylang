@@ -8,6 +8,7 @@ use crate::module_resolver::ModuleResolver;
 
 // Import MethodProcessing trait from method module
 use method::MethodProcessing;
+use error_handling::ErrorHandling;
 
 // Builtin function signature definition
 #[derive(Debug, Clone)]
@@ -46,6 +47,7 @@ mod collections;
 mod builtin;
 mod utility;
 mod method;
+mod error_handling;
 mod type_conversion;
 mod tests;
 

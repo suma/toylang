@@ -17,7 +17,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.type_inference.type_hint = Some(decl.clone());
                     }
                 },
-                TypeDecl::Struct(_) => {
+                TypeDecl::Struct(_, _) => {
                     // For struct types, set the struct type as hint for struct literal processing
                     self.type_inference.type_hint = Some(decl.clone());
                 },

@@ -229,10 +229,21 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Pop the generic scope
         self.type_inference.pop_generic_scope();
         
-        // Return struct type
+        // Return struct type with resolved type parameters
         let _instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
         
-        Ok(TypeDecl::Struct(*struct_name))
+        // Preserve the order of generic parameters as defined in the struct
+        let mut type_params = Vec::new();
+        for generic_param in generic_params {
+            if let Some(concrete_type) = substitutions.get(generic_param) {
+                type_params.push(concrete_type.clone());
+            } else {
+                // Fallback to Generic type if substitution is missing
+                type_params.push(TypeDecl::Generic(*generic_param));
+            }
+        }
+        
+        Ok(TypeDecl::Struct(*struct_name, type_params))
     }
 
     fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
@@ -261,7 +272,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     substituted_return_type
                 } else {
                     // Non-generic struct - resolve Self to simple struct type
-                    TypeDecl::Struct(struct_name)
+                    TypeDecl::Struct(struct_name, vec![])
                 }
             }
             _ => substituted_return_type
@@ -274,47 +285,99 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
     fn handle_generic_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, 
                                              args: &Vec<ExprRef>, method: &Rc<MethodFunction>) -> Result<TypeDecl, TypeCheckError> {
         // Get the generic parameters for this struct
-        let _generic_params = self.context.get_struct_generic_params(struct_name)
+        let generic_params = self.context.get_struct_generic_params(struct_name)
             .cloned()
             .unwrap_or_default();
         
-        
-        // Evaluate argument types for type inference
-        let mut arg_types = Vec::new();
-        for arg in args {
-            let arg_type = self.visit_expr(arg)?;
-            arg_types.push(arg_type);
+        // Verify argument count matches parameter count
+        if args.len() != method.parameter.len() {
+            let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+            return Err(TypeCheckError::generic_error(&format!(
+                "Associated function '{}' argument count mismatch: expected {}, found {}",
+                fn_name_str, method.parameter.len(), args.len()
+            )));
         }
         
-        // Get the method's return type
-        let return_type = method.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
+        // Clear previous constraints for this inference
+        self.type_inference.clear_constraints();
         
-        // Create basic substitutions (more advanced inference logic can be implemented later)
-        let substitutions = HashMap::new();
+        // Push generic parameters onto the scope for proper resolution
+        let mut generic_scope = HashMap::new();
+        for param in &generic_params {
+            generic_scope.insert(*param, TypeDecl::Generic(*param));
+        }
+        self.type_inference.push_generic_scope(generic_scope);
         
-        // Apply substitutions to return type
-        let substituted_return_type = if substitutions.is_empty() {
-            return_type.clone()
-        } else {
-            return_type.substitute_generics(&substitutions)
+        // Collect argument types and add constraints for type inference
+        let mut arg_types = Vec::new();
+        for (i, (arg_expr, (_, param_type))) in args.iter().zip(&method.parameter).enumerate() {
+            let arg_type = self.visit_expr(arg_expr)?;
+            arg_types.push(arg_type.clone());
+            
+            // Add constraint for parameter-argument type unification
+            self.type_inference.add_constraint(
+                param_type.clone(),
+                arg_type,
+                crate::type_checker::inference::ConstraintContext::FunctionCall {
+                    function_name,
+                    arg_index: i,
+                }
+            );
+        }
+        
+        // Solve constraints to get type substitutions
+        let substitutions = match self.type_inference.solve_constraints() {
+            Ok(solution) => solution,
+            Err(e) => {
+                self.type_inference.pop_generic_scope();
+                let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Type inference failed for associated function '{}': {}",
+                    fn_name_str, e
+                )));
+            }
         };
+        
+        // Ensure all generic parameters have been inferred
+        for generic_param in &generic_params {
+            if !substitutions.contains_key(generic_param) {
+                self.type_inference.pop_generic_scope();
+                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<NOT_FOUND>");
+                let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Cannot infer generic type parameter '{}' for associated function '{}'",
+                    param_name, fn_name_str
+                )));
+            }
+        }
+        
+        // Get the method's return type and apply substitutions
+        let return_type = method.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
+        let substituted_return_type = self.type_inference.apply_solution(return_type, &substitutions);
         
         // Resolve Self type in the return type if present
         let resolved_return_type = match &substituted_return_type {
             TypeDecl::Self_ => {
-                // For generic structs, return the substituted type with generic parameters resolved
-                // For non-generic structs, return the simple struct type
-                if !substitutions.is_empty() {
-                    // This is a generic struct - the substituted type should already have generics resolved
-                    substituted_return_type
-                } else {
-                    // Non-generic struct - resolve Self to simple struct type
-                    TypeDecl::Struct(struct_name)
+                // For generic structs, create the concrete struct type with resolved type parameters
+                // Preserve the order of generic parameters as defined in the struct
+                let mut type_params = Vec::new();
+                for generic_param in &generic_params {
+                    if let Some(concrete_type) = substitutions.get(generic_param) {
+                        type_params.push(concrete_type.clone());
+                    } else {
+                        // Fallback to Generic type if substitution is missing
+                        type_params.push(TypeDecl::Generic(*generic_param));
+                    }
                 }
+                TypeDecl::Struct(struct_name, type_params)
             }
             _ => substituted_return_type
         };
         
+        // Record struct instance types for method calls (if needed)
+        // This functionality can be implemented later for persistent type storage
+        
+        self.type_inference.pop_generic_scope();
         Ok(resolved_return_type)
     }
 

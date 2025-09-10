@@ -104,7 +104,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let obj_type = self.visit_expr(obj)?;
         
         match &obj_type {
-            TypeDecl::Struct(struct_name) => {
+            TypeDecl::Struct(struct_name, _) => {
                 if let Some(struct_def) = self.context.get_struct_definition(*struct_name) {
                     for field_def in &struct_def.fields {
                         let field_name_str = self.core.string_interner.resolve(*field).unwrap_or("");
@@ -133,7 +133,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Err(TypeCheckError::type_mismatch_operation(
                     &format!("field access '{}'", field_str),
                     obj_type,
-                    TypeDecl::Struct(*field)
+                    TypeDecl::Struct(*field, vec![])
                 ))
             }
         }
@@ -181,6 +181,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         
-        Ok(TypeDecl::Struct(struct_name))
+        Ok(TypeDecl::Struct(struct_name, vec![]))
     }
 }

@@ -24,6 +24,7 @@ pub struct TypeCheckContext {
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
+    pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
 }
 
@@ -35,6 +36,7 @@ impl TypeCheckContext {
             struct_definitions: HashMap::with_capacity(16),
             struct_methods: HashMap::with_capacity(16),
             struct_generic_params: HashMap::with_capacity(16),
+            var_type_mappings: vec![HashMap::with_capacity(16)],
             current_impl_target: None,
         }
     }
@@ -83,10 +85,12 @@ impl TypeCheckContext {
 
     pub fn push_scope(&mut self) {
         self.vars.push(HashMap::with_capacity(8));
+        self.var_type_mappings.push(HashMap::with_capacity(8));
     }
 
     pub fn pop_scope(&mut self) {
         self.vars.pop();
+        self.var_type_mappings.pop();
     }
 
     // Struct definition methods
@@ -208,5 +212,28 @@ impl TypeCheckContext {
         
         // Return the return type if it exists
         method_function.return_type.clone()
+    }
+    
+    // Type parameter mapping management
+    pub fn set_var_type_mapping(&mut self, var_name: DefaultSymbol, type_param_mappings: HashMap<DefaultSymbol, TypeDecl>) {
+        let last = self.var_type_mappings.last_mut().expect("Type mapping stack should not be empty");
+        last.insert(var_name, type_param_mappings);
+    }
+    
+    pub fn get_var_type_mapping(&self, var_name: DefaultSymbol) -> Option<&HashMap<DefaultSymbol, TypeDecl>> {
+        for mappings in self.var_type_mappings.iter().rev() {
+            if let Some(mapping) = mappings.get(&var_name) {
+                return Some(mapping);
+            }
+        }
+        None
+    }
+    
+    pub fn resolve_generic_type(&self, var_name: DefaultSymbol, generic_param: DefaultSymbol) -> Option<TypeDecl> {
+        if let Some(mappings) = self.get_var_type_mapping(var_name) {
+            mappings.get(&generic_param).cloned()
+        } else {
+            None
+        }
     }
 }

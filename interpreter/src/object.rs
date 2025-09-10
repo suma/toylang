@@ -303,7 +303,7 @@ impl Object {
                 }
             }
             Object::Struct { type_name, .. } => {
-                TypeDecl::Struct(*type_name)
+                TypeDecl::Struct(*type_name, vec![])
             }
             Object::Dict(map) => {
                 // Determine key and value types from the first entry in the dict
@@ -533,7 +533,7 @@ impl Object {
                 Ok(())
             }
             (Object::Struct { type_name, .. }, Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Struct(*type_name));
+                *self = Object::Null(TypeDecl::Struct(*type_name, vec![]));
                 Ok(())
             }
             (Object::Pointer(_), Object::Null(_)) => {
@@ -587,8 +587,8 @@ impl Object {
                     Ok(())
                 } else {
                     Err(ObjectError::TypeMismatch { 
-                        expected: TypeDecl::Struct(*self_type), 
-                        found: TypeDecl::Struct(*other_type)
+                        expected: TypeDecl::Struct(*self_type, vec![]), 
+                        found: TypeDecl::Struct(*other_type, vec![])
                     })
                 }
             }

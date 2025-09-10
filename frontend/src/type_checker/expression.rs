@@ -1,4 +1,5 @@
 use string_interner::DefaultSymbol;
+use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::visitor::AstVisitor;
@@ -443,6 +444,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
             // Return the stored type, which may be Number for type inference
+            let name_str = self.core.string_interner.resolve(name).unwrap_or("<unknown>");
+            eprintln!("DEBUG visit_identifier: Variable '{}' has type: {:?}", name_str, val_type);
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
@@ -451,7 +454,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(generic_type.clone())
         } else if let Some(_struct_def) = self.context.get_struct_definition(name) {
             // Check if this is a struct type
-            Ok(TypeDecl::Struct(name))
+            Ok(TypeDecl::Struct(name, vec![]))
         } else {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             // Note: Location information will be added by visit_expr
@@ -461,6 +464,9 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check function calls
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<unknown>");
+        
+        
         self.push_context();
         
         if let Some(fun) = self.context.get_fn(fn_name) {
@@ -675,9 +681,27 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
 
-    /// Type check method calls
-    pub fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check method calls - implementation used by type_checker.rs
+    pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
+        
+        
         let obj_type = self.visit_expr(obj)?;
+        
+        
+        // Check if obj is a variable and get its name for type mapping lookup
+        let var_name = if let Some(obj_expr) = self.core.expr_pool.get(obj) {
+            match obj_expr {
+                Expr::Identifier(name) => Some(name.clone()),
+                _ => None
+            }
+        } else {
+            None
+        };
+        
+        // The obj_type should already contain the concrete type parameters
+        // No need to look up mappings, just use the type as-is
+        let resolved_obj_type = obj_type.clone();
         
         // Type check arguments
         let mut arg_types = Vec::new();
@@ -687,7 +711,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Check for builtin methods
         let method_str = self.core.string_interner.resolve(*method).unwrap_or("<NOT_FOUND>");
-        let builtin_method = self.builtin_methods.get(&(obj_type.clone(), method_str.to_string())).cloned();
+        let builtin_method = self.builtin_methods.get(&(resolved_obj_type.clone(), method_str.to_string())).cloned();
         if let Some(builtin_method) = builtin_method {
             // visit_builtin_method_call expects ExprRef, not TypeDecl
             return self.visit_builtin_method_call(obj, &builtin_method, args);
@@ -698,6 +722,88 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Method support will be added in a future refactoring
         
         // Check other type methods
-        self.visit_method_call_on_type(&obj_type, method, args, &arg_types)
+        let result = self.visit_method_call_on_type(&resolved_obj_type, method, args, &arg_types);
+        
+        // Debug: If result is Generic, show what happened
+        if let Ok(TypeDecl::Generic(sym)) = &result {
+            let sym_str = self.core.string_interner.resolve(*sym).unwrap_or("<unknown>");
+            return Err(TypeCheckError::generic_error(&format!(
+                "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
+                method_name, sym_str, resolved_obj_type
+            )));
+        }
+        
+        result
+    }
+
+    /// Helper method to handle method calls on a specific type
+    pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
+        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
+        
+        
+        
+        // Check if this is a user-defined method for a struct
+        if let TypeDecl::Struct(struct_name, type_params) = obj_type {
+            let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+            
+            // Check if this is a generic struct with type parameters
+            
+            if !type_params.is_empty() {
+                // Handle generic struct method call
+                let method_func_opt = self.context.get_struct_method(*struct_name, *method);
+                
+                
+                if let Some(method_func) = method_func_opt {
+                    // Create substitution map from generic parameters to concrete types
+                    let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
+                    
+                    
+                    let generic_params = generic_params.unwrap_or_default();
+                    let mut substitutions = HashMap::new();
+                    for (i, generic_param) in generic_params.iter().enumerate() {
+                        if let Some(concrete_type) = type_params.get(i) {
+                            substitutions.insert(*generic_param, concrete_type.clone());
+                        }
+                    }
+                    
+                    
+                    // Apply substitutions to method return type
+                    let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
+                    
+                    let resolved_return_type = match method_return_type {
+                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, type_params.clone()),
+                        TypeDecl::Generic(param) => {
+                            let result = substitutions.get(param).cloned().unwrap_or_else(|| TypeDecl::Generic(*param));
+                            result
+                        },
+                        other => other.substitute_generics(&substitutions)
+                    };
+                    
+                    
+                    return Ok(resolved_return_type);
+                } else {
+                    // Method not found, but let's see what we have
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Method '{}' not found for struct '{}' with type params {:?}",
+                        method_name, struct_name_str, type_params
+                    )));
+                }
+            } else {
+                // Handle non-generic struct method call
+                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
+                    return Ok(method_return_type);
+                }
+            }
+        }
+        
+        // Check builtin methods
+        if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
+            // For builtin methods, we need to create a temporary expression ref for the object
+            // This is a bit of a hack but necessary for the current API
+            let dummy_obj_ref = ExprRef(0); // Use dummy ref for now
+            return self.visit_builtin_method_call(&dummy_obj_ref, &builtin_method, args);
+        }
+        
+        Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
     }
 }

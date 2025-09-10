@@ -311,11 +311,27 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // Create location information from function node with calculated line and column
                 let func_location = self.node_to_source_location(&func.node);
                 
+                // Add detailed information about the type mismatch
+                let func_name_str = self.core.string_interner.resolve(func.name).unwrap_or("<unknown>");
+                
+                // Debug: If this is Generic type, show more details
+                let additional_info = if let TypeDecl::Generic(sym) = &last {
+                    let sym_str = self.core.string_interner.resolve(*sym).unwrap_or("<unknown>");
+                    format!(" [Generic symbol: '{}']", sym_str)
+                } else {
+                    String::new()
+                };
+                
+                let detailed_context = format!(
+                    "function return type (function: {}, expected: {:?}, got: {:?}{})",
+                    func_name_str, expected_return_type, last, additional_info
+                );
+                
                 return Err(TypeCheckError::type_mismatch(
                     expected_return_type.clone(),
                     last.clone()
                 ).with_location(func_location)
-                .with_context("function return type"));
+                .with_context(&detailed_context));
             }
         }
         
@@ -913,7 +929,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             Ok(generic_type.clone())
         } else if let Some(_struct_def) = self.context.get_struct_definition(name) {
             // Check if this is a struct type
-            Ok(TypeDecl::Struct(name))
+            Ok(TypeDecl::Struct(name, vec![]))
         } else {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             // Note: Location information will be added by visit_expr
@@ -1770,7 +1786,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 
                 match &resolved_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_) => {
+                    TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
                         // Valid parameter types (including struct types and generic types)
                     },
                     _ => {
@@ -1795,7 +1811,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 // but don't enforce strict type checking here since generics will be resolved later
                 match &resolved_ret_type {
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_) => {
+                    TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
                         // Valid return types (including generic types and struct types)
                     },
                     _ => {
@@ -1920,7 +1936,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     Err(TypeCheckError::not_found("struct", struct_name_str))
                 }
             }
-            TypeDecl::Struct(struct_symbol) => {
+            TypeDecl::Struct(struct_symbol, _) => {
                 // Handle symbol-based struct type  
                 if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
                     let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
@@ -1960,7 +1976,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             Err(TypeCheckError::not_found("struct", struct_name_str))
                         }
                     }
-                    TypeDecl::Struct(struct_symbol) => {
+                    TypeDecl::Struct(struct_symbol, _) => {
                         if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
                             let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
                             for struct_field in struct_fields {
@@ -1992,123 +2008,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        // Check recursion depth to prevent stack overflow
-        if self.type_inference.recursion_depth >= self.type_inference.max_recursion_depth {
-            return Err(TypeCheckError::generic_error(
-                "Maximum recursion depth reached in method call type inference - possible circular reference"
-            ));
-        }
-        
-        self.type_inference.recursion_depth += 1;
-        let obj_type_result = self.visit_expr(obj);
-        self.type_inference.recursion_depth -= 1;
-        
-        let obj_type = obj_type_result?;
-        
-        // Type check all arguments
-        let mut arg_types = Vec::new();
-        for arg in args {
-            arg_types.push(self.visit_expr(arg)?);
-        }
-        
-        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
-        
-        // First, check if this is a user-defined method for a struct (including generic structs)
-        match &obj_type {
-            TypeDecl::Struct(struct_name) => {
-                let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
-                    // Check if this is a generic struct and apply type substitutions
-                    if let Some(generic_params) = self.context.get_struct_generic_params(*struct_name) {
-                        if !generic_params.is_empty() {
-                            // This is a generic struct method - need to infer and substitute types
-                            return self.handle_generic_method_call(*struct_name, method_name, &method_return_type, obj, args, &arg_types);
-                        }
-                    }
-                    // Non-generic method - return type as is
-                    return Ok(method_return_type);
-                }
-            }
-            TypeDecl::Generic(generic_param) => {
-                // Handle generic types - they may have methods once instantiated
-                // For now, check if any type constraints would help resolve this
-                if let Some(concrete_type) = self.type_inference.lookup_generic_type(*generic_param) {
-                    // Recursively call with concrete type
-                    return self.visit_method_call_on_type(&concrete_type, method, args, &arg_types);
-                }
-                
-                // Add constraint for method call resolution
-                self.type_inference.add_constraint(
-                    obj_type.clone(),
-                    TypeDecl::Unknown, // Will be resolved later
-                    crate::type_checker::inference::ConstraintContext::Generic
-                );
-                
-                // Return unknown for now - will be resolved in later passes
-                return Ok(TypeDecl::Unknown);
-            }
-            _ => {}
-        }
-        
-        // Second, check if this could be a builtin method
-        // Special case for is_null - available for all types
-        if method_name == "is_null" {
-            if !args.is_empty() {
-                return Err(TypeCheckError::method_error(
-                    "is_null", obj_type, &format!("takes no arguments, but {} provided", args.len())
-                ));
-            }
-            return Ok(TypeDecl::Bool);
-        }
-        
-        // Check builtin method registry
-        if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
-            // Delegate to builtin method handler
-            return self.visit_builtin_method_call(obj, &builtin_method, args);
-        }
-        
-        // Handle built-in methods for basic types
-        match obj_type {
-            TypeDecl::String => {
-                match method_name {
-                    "len" => {
-                        // String.len() method - no arguments required, returns u64
-                        if !args.is_empty() {
-                            return Err(TypeCheckError::method_error(
-                                "len", TypeDecl::String, &format!("takes no arguments, but {} provided", args.len())
-                            ));
-                        }
-                        Ok(TypeDecl::UInt64)
-                    }
-                    _ => {
-                        Err(TypeCheckError::method_error(
-                            method_name, TypeDecl::String, "method not found"
-                        ))
-                    }
-                }
-            }
-            TypeDecl::Identifier(struct_symbol) | TypeDecl::Struct(struct_symbol) => {
-                // Look up method in struct methods
-                if let Some(method) = self.context.get_struct_method(struct_symbol, *method) {
-                    // Perform parameter type checking for method arguments
-                    self.check_method_arguments(&obj_type, &method, args, &arg_types, method_name)?;
-                    
-                    // Return method's return type, or Unit if not specified
-                    let return_type = method.return_type.clone().unwrap_or(TypeDecl::Unit);
-                    Ok(self.resolve_self_type(&return_type))
-                } else {
-                    let struct_name = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
-                    Err(TypeCheckError::method_error(
-                        method_name, obj_type.clone(), &format!("method not found on struct '{}'", struct_name)
-                    ))
-                }
-            }
-            _ => {
-                Err(TypeCheckError::method_error(
-                    method_name, obj_type, "method call on non-struct type"
-                ))
-            }
-        }
+        // Delegate to the implementation in expression.rs
+        self.visit_method_call_impl(obj, method, args)
     }
 
     fn visit_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
@@ -2177,7 +2078,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Self_ => {
                 if let Some(target_symbol) = self.context.current_impl_target {
-                    TypeDecl::Struct(target_symbol)
+                    TypeDecl::Struct(target_symbol, vec![])
                 } else {
                     // Self used outside impl context - should be an error
                     type_decl.clone()
@@ -2579,7 +2480,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // TODO: Implement proper instantiation recording with symbol management
         
         // Return the concrete struct type
-        Ok(TypeDecl::Struct(*struct_name))
+        Ok(TypeDecl::Struct(*struct_name, vec![]))
     }
     
     /// Generate a unique name for instantiated generic struct
@@ -2831,32 +2732,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         // This should compare current_package with the function/struct's defining module
         true
     }
-    
-    
-    
-    /// Helper method to handle method calls on a specific type
-    fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
-        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
-        
-        // Check if this is a user-defined method for a struct
-        if let TypeDecl::Struct(struct_name) = obj_type {
-            let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-            if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
-                return Ok(method_return_type);
-            }
-        }
-        
-        // Check builtin methods
-        if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
-            // For builtin methods, we need to create a temporary expression ref for the object
-            // This is a bit of a hack but necessary for the current API
-            let dummy_obj_ref = ExprRef(0); // Use dummy ref for now
-            return self.visit_builtin_method_call(&dummy_obj_ref, &builtin_method, args);
-        }
-        
-        Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
-    }
-    
 }
 
 /// Check if a string is a reserved keyword

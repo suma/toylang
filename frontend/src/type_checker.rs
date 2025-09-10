@@ -8,7 +8,6 @@ use crate::module_resolver::ModuleResolver;
 
 // Import MethodProcessing trait from method module
 use method::MethodProcessing;
-use error_handling::ErrorHandling;
 
 // Builtin function signature definition
 #[derive(Debug, Clone)]
@@ -128,7 +127,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
     
     fn create_builtin_function_signatures() -> Vec<BuiltinFunctionSignature> {
-        Self::create_builtin_function_signatures_impl()
+        vec![] // Empty for now - builtin functions are handled separately
     }
     
     /// Create a TypeCheckerVisitor with module resolver for import handling

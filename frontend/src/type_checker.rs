@@ -1629,33 +1629,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
 
     fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.push_context();
-        let range_obj = self.core.expr_pool.get(&range).ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
-        let range_ty = range_obj.clone().accept(self)?;
-        let ty = Some(range_ty);
-        self.process_val_type(init, &ty, &Some(*range))?;
-        let body_obj = self.core.expr_pool.get(&body).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
-        let res = body_obj.clone().accept(self);
-        self.pop_context();
-        res
+        // Delegate to statement module implementation
+        self.visit_for_impl(init, _cond, range, body)
     }
 
     fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        // Evaluate condition type first
-        let cond_obj = self.core.expr_pool.get(&cond).ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
-        let cond_type = cond_obj.clone().accept(self)?;
-        
-        // Verify condition is boolean
-        if cond_type != TypeDecl::Bool {
-            return Err(TypeCheckError::type_mismatch(TypeDecl::Bool, cond_type));
-        }
-        
-        // Create new scope for while body
-        self.push_context();
-        let body_obj = self.core.expr_pool.get(&body).ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
-        let res = body_obj.clone().accept(self);
-        self.pop_context();
-        res
+        // Delegate to statement module implementation
+        self.visit_while_impl(cond, body)
     }
 
     fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {

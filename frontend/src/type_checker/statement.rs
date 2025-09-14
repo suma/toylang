@@ -120,8 +120,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Type check for loops
-    pub fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check for loops - internal implementation
+    pub fn visit_for_impl(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
         
         let range_obj = self.core.expr_pool.get(&range)
@@ -139,8 +139,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         res
     }
 
-    /// Type check while loops
-    pub fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check while loops - internal implementation
+    pub fn visit_while_impl(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first
         let cond_obj = self.core.expr_pool.get(&cond)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;

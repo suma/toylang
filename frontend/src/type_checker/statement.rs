@@ -32,16 +32,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         expr_obj.clone().accept(self)
     }
 
-    /// Type check variable declarations (var)
-    pub fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check variable declarations (var) - internal implementation
+    pub fn visit_var_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let type_decl = type_decl.clone();
         let expr = expr.clone();
         self.process_val_type(name, &type_decl, &expr)?;
         Ok(TypeDecl::Unit)
     }
 
-    /// Type check value declarations (val)
-    pub fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check value declarations (val) - internal implementation
+    pub fn visit_val_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_ref = expr.clone();
         let type_decl = type_decl.clone();
         

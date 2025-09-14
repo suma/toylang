@@ -90,7 +90,7 @@ mod type_inference_advanced_tests {
         "#;
         
         let result = parse_and_check(source);
-        assert!(result.is_err());
+        assert!(result.is_err(), "Bool to u64 conversion should fail");
         if let Err(e) = result {
             assert!(e.contains("Type") || e.contains("convert"));
         }

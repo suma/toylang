@@ -1604,35 +1604,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        let type_decl = type_decl.clone();
-        let expr = expr.clone();
-        self.process_val_type(name, &type_decl, &expr)?;
-        Ok(TypeDecl::Unit)
+        // Delegate to statement module implementation
+        self.visit_var_impl(name, type_decl, expr)
     }
 
     fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let expr_ref = expr.clone();
-        let type_decl = type_decl.clone();
-        
-        // Set type hint and evaluate expression
-        let old_hint = self.setup_type_hint_for_val(&type_decl);
-        let expr_ty = self.visit_expr(&expr_ref)?;
-        
-        // Manage variable-expression mapping
-        self.update_variable_expr_mapping_internal(name, &expr_ref, &expr_ty);
-        
-        // Apply type transformations
-        self.apply_type_transformations_for_expr(&type_decl, &expr_ty, &expr_ref)?;
-        
-        // Determine final type and store variable
-        let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
-        
-        self.context.set_var(name, final_type);
-        
-        // Restore previous type hint
-        self.type_inference.type_hint = old_hint;
-        
-        Ok(TypeDecl::Unit)
+        // Delegate to statement module implementation
+        self.visit_val_impl(name, type_decl, expr)
     }
 
     fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {

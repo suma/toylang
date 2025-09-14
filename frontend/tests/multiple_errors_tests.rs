@@ -5,7 +5,7 @@ mod multiple_errors_tests {
     
     #[test]
     fn test_multiple_parser_errors() {
-        // 複数の構文エラーを含むコード
+        // Code containing multiple syntax errors
         let input = r#"
 fn invalid_function(missing_type) {
     return 5u64
@@ -23,11 +23,11 @@ struct MissingBrace {
         let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program_multiple_errors();
         
-        // エラーが複数収集されることを確認
+        // Verify that multiple errors are collected
         assert!(result.has_errors());
         assert!(!result.errors.is_empty());
         
-        // エラーメッセージを確認
+        // Check error messages
         for error in &result.errors {
             println!("Parser error: {}", error);
         }
@@ -35,7 +35,7 @@ struct MissingBrace {
     
     #[test]
     fn test_multiple_type_check_errors() {
-        // パースは成功するが型チェックで複数エラーが発生するコード
+        // Code that parses successfully but generates multiple type check errors
         let input = r#"
 fn test_type_errors() -> u64 {
     val x: u64 = "string_value"
@@ -54,7 +54,7 @@ fn another_function() -> bool {
         let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program();
         
-        // パースは成功することを確認
+        // Verify that parsing succeeds
         match &parse_result {
             Ok(_) => {},
             Err(e) => {
@@ -65,7 +65,7 @@ fn another_function() -> bool {
         let program = parse_result.unwrap();
         let string_interner = parser.get_string_interner();
         
-        // 型チェックで複数エラーを収集
+        // Collect multiple errors during type checking
         let mut expr_pool = program.expression.clone();
         let mut type_checker = TypeCheckerVisitor::new(
             &program.statement,
@@ -76,7 +76,7 @@ fn another_function() -> bool {
         
         let result = type_checker.check_program_multiple_errors(&program);
         
-        // 複数の型エラーが収集されることを確認
+        // Verify that multiple type errors are collected
         println!("Number of type errors found: {}", result.errors.len());
         if result.has_errors() {
             for error in &result.errors {
@@ -90,7 +90,7 @@ fn another_function() -> bool {
     
     #[test]
     fn test_successful_parsing_and_type_checking() {
-        // エラーのない正常なコード
+        // Normal code without errors
         let input = r#"
 fn simple_function() -> u64 {
     val x: u64 = 10u64
@@ -102,14 +102,14 @@ fn simple_function() -> u64 {
         let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program_multiple_errors();
         
-        // パースにエラーがないことを確認
+        // Verify no parsing errors
         assert!(!parse_result.has_errors());
         assert!(parse_result.result.is_some());
         
         let program = parse_result.result.unwrap();
         let string_interner = parser.get_string_interner();
         
-        // 型チェックでもエラーがないことを確認
+        // Verify no type checking errors either
         let mut expr_pool = program.expression.clone();
         let mut type_checker = TypeCheckerVisitor::new(
             &program.statement,
@@ -133,7 +133,7 @@ fn simple_function() -> u64 {
     
     #[test] 
     fn test_mixed_parser_and_type_errors() {
-        // パースエラーと型エラーが両方存在するケース
+        // Case where both parser and type errors exist
         let input = r#"
 fn parser_error_function(missing_type) -> u64 {
     val x: u64 = "type_error"
@@ -144,10 +144,10 @@ fn parser_error_function(missing_type) -> u64 {
         let mut parser = ParserWithInterner::new(input);
         let parse_result = parser.parse_program_multiple_errors();
         
-        // パースエラーが存在することを確認
+        // Verify parser errors exist
         assert!(parse_result.has_errors());
         
-        // パースが部分的に成功した場合は型チェックも実行
+        // If parsing partially succeeds, also run type checking
         if let Some(program) = parse_result.result {
             let string_interner = parser.get_string_interner();
             let mut expr_pool = program.expression.clone();
@@ -160,7 +160,7 @@ fn parser_error_function(missing_type) -> u64 {
             
             let type_result = type_checker.check_program_multiple_errors(&program);
             
-            // 型エラーも存在することを確認
+            // Verify that type errors also exist
             if type_result.has_errors() {
                 println!("Both parser and type errors detected:");
                 for error in &parse_result.errors {

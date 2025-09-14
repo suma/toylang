@@ -445,7 +445,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(val_type) = self.context.get_var(name) {
             // Return the stored type, which may be Number for type inference
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<unknown>");
-            eprintln!("DEBUG visit_identifier: Variable '{}' has type: {:?}", name_str, val_type);
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))

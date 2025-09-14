@@ -55,6 +55,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Apply type transformations
         self.apply_type_transformations_for_expr(&type_decl, &expr_ty, &expr_ref)?;
         
+        // Check type compatibility if explicit type is declared
+        if let Some(declared_type) = &type_decl {
+            if !self.are_types_compatible(declared_type, &expr_ty) {
+                let declared_name = self.type_name_for_error(declared_type);
+                let expr_name = self.type_name_for_error(&expr_ty);
+                return Err(TypeCheckError::type_mismatch(
+                    declared_type.clone(), 
+                    expr_ty.clone()
+                ).with_context(&format!("Cannot convert '{}' to '{}'", expr_name, declared_name)));
+            }
+        }
+        
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
         

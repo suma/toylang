@@ -80,6 +80,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Clone package and imports to avoid borrowing conflicts
         let package_decl = program.package_decl.clone();
         let imports = program.imports.clone();
+        // Clone functions to avoid borrowing conflicts
+        let functions = program.function.clone();
         
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
@@ -103,6 +105,26 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         for import_decl in &imports {
             let _ = visitor.visit_import(&import_decl);
+        }
+        
+        // Register all functions from the program into the type checker context
+        for func in &functions {
+            visitor.add_function(func.clone());
+        }
+        
+        // Register all structs from the program's statements into the type checker context
+        let stmt_len = visitor.core.stmt_pool.len();
+        for i in 0..stmt_len {
+            let stmt_ref = StmtRef(i as u32);
+            if let Some(stmt) = visitor.core.stmt_pool.get(&stmt_ref) {
+                if let Stmt::StructDecl { name, generic_params: _, fields, visibility } = stmt {
+                    visitor.context.register_struct(
+                        name,
+                        fields.clone(),
+                        visibility
+                    );
+                }
+            }
         }
         
         visitor
@@ -2004,13 +2026,28 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Type check all elements with proper type hint for each element
         let mut element_types = Vec::new();
+        
         for element in elements {
             // Set the element type hint for each element individually
             if let Some(ref hint) = element_type_hint {
                 self.type_inference.type_hint = Some(hint.clone());
             }
             
-            let element_type = self.visit_expr(element)?;
+            // For variable references, temporarily clear the type hint to get the actual stored type
+            let element_type = if let Some(expr) = self.core.expr_pool.get(element) {
+                if let Expr::Identifier(_var_name) = expr {
+                    // Clear type hint for variable references to get their actual type
+                    let saved_hint = self.type_inference.type_hint.take();
+                    let result = self.visit_expr(element)?;
+                    self.type_inference.type_hint = saved_hint;
+                    result
+                } else {
+                    self.visit_expr(element)?
+                }
+            } else {
+                self.visit_expr(element)?
+            };
+            
             element_types.push(element_type);
             
             // Restore original hint after processing each element

@@ -101,23 +101,27 @@ impl<'a> TypeCheckerVisitor<'a> {
             return true;
         }
         
-        // Handle Number type compatibility
-        let types_compatible = if *expected == TypeDecl::Number {
-            matches!(actual, TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Number)
-        } else if *actual == TypeDecl::Number {
-            matches!(expected, TypeDecl::UInt64 | TypeDecl::Int64)
-        } else if matches!(expected, TypeDecl::Generic(_)) || matches!(actual, TypeDecl::Generic(_)) {
+        // Handle explicit type conversions that are allowed
+        match (expected, actual) {
+            // Number type can be converted to numeric types
+            (TypeDecl::UInt64, TypeDecl::Number) | (TypeDecl::Int64, TypeDecl::Number) => true,
+            (TypeDecl::Number, TypeDecl::UInt64) | (TypeDecl::Number, TypeDecl::Int64) => true,
+            (TypeDecl::Number, TypeDecl::Number) => true,
+            
             // Generic types are compatible with any type during type inference
-            // This allows generic type parameters to match concrete types
-            true
-        } else if matches!(expected, TypeDecl::Unknown) || matches!(actual, TypeDecl::Unknown) {
-            // Unknown types (like null) are compatible with any type
-            true
-        } else {
-            expected == actual
-        };
-        
-        types_compatible
+            (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,
+            
+            // Unknown types are only compatible in limited contexts
+            (TypeDecl::Unknown, _) => true,  // Unknown can accept any value
+            (_, TypeDecl::Unknown) => false, // But we can't convert any type to Unknown
+            
+            // Numeric conversions between compatible types
+            (TypeDecl::UInt64, TypeDecl::Int64) => true,  // Allow signed/unsigned conversion
+            (TypeDecl::Int64, TypeDecl::UInt64) => true,  // Allow signed/unsigned conversion
+            
+            // No other implicit conversions allowed (including bool -> numeric)
+            _ => false,
+        }
     }
     
     /// Handle array slice assignment (both single element and range)
@@ -178,6 +182,37 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {
         // Return a clone of the comprehensive expr_types mapping
         self.type_inference.expr_types.clone()
+    }
+    
+    /// Get human-readable type name for error messages
+    pub fn type_name_for_error(&self, type_decl: &TypeDecl) -> String {
+        match type_decl {
+            TypeDecl::Bool => "bool".to_string(),
+            TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Int64 => "i64".to_string(),
+            TypeDecl::String => "string".to_string(),
+            TypeDecl::Number => "number".to_string(),
+            TypeDecl::Unit => "unit".to_string(),
+            TypeDecl::Unknown => "unknown".to_string(),
+            TypeDecl::Array(element_types, size) => {
+                if element_types.len() == 1 {
+                    format!("[{}; {}]", self.type_name_for_error(&element_types[0]), size)
+                } else {
+                    format!("[{:?}; {}]", element_types, size)
+                }
+            },
+            TypeDecl::Struct(name, _) => {
+                self.core.string_interner.resolve(*name)
+                    .unwrap_or("struct")
+                    .to_string()
+            },
+            TypeDecl::Dict(key_type, value_type) => {
+                format!("dict<{}, {}>", 
+                    self.type_name_for_error(key_type), 
+                    self.type_name_for_error(value_type))
+            },
+            _ => format!("{:?}", type_decl).to_lowercase(),
+        }
     }
     
     /// Get struct variable mappings for debugging/analysis

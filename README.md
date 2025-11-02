@@ -16,7 +16,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Functions** with explicit return types: `fn fibonacci(n: u64) -> u64`
 - **Variables**: Immutable (`val`) and mutable (`var`) declarations
 - **Control Flow**: `if/else/elif`, `for` loops with `break/continue`, `while` loops
-- **Types**: `u64`, `i64`, `str`, `bool`, `Dict` with automatic conversion support
+- **Types**: `u64`, `i64`, `str`, `bool`, `Dict`
 
 ### Advanced Features
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
@@ -33,9 +33,9 @@ This project implements a statically-typed programming language with comprehensi
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
 - **Generic Type Inference**: Constraint-based unification algorithm for automatic type parameter resolution
-- **Automatic Type Conversion**: Seamless conversion between compatible numeric types  
 - **Advanced Type Checking**: Comprehensive validation with detailed error reporting
 - **Memory Pool Architecture**: Efficient AST storage with `StmtPool` and `ExprPool`
+- **Strict Type Safety**: No implicit type conversions; all type changes must be explicit
 
 ## Architecture
 

@@ -21,10 +21,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check if this is a generic struct and set up generic scope
         let generic_params = self.context.get_struct_generic_params(struct_symbol).cloned();
         let has_generics = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
-        
+
+        // Store generic parameters in context for Self type resolution
+        let old_impl_generic_params = self.context.current_impl_generic_params.clone();
         if has_generics {
+            self.context.current_impl_generic_params = generic_params.clone();
             // Push generic parameters into scope for method type checking
-            let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = 
+            let generic_substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> =
                 generic_params.as_ref().unwrap().iter().map(|param| (*param, TypeDecl::Generic(*param))).collect();
             self.type_inference.push_generic_scope(generic_substitutions);
         }
@@ -38,7 +41,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             // Type check method body using method.rs module
             self.setup_method_parameter_context(method);
-            
+
             // Type check method body
             let body_result = self.visit_stmt(&method.code);
             
@@ -58,9 +61,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         if has_generics {
             self.type_inference.pop_generic_scope();
         }
-        
+
         // Restore previous impl target context
         self.context.current_impl_target = old_impl_target;
+        self.context.current_impl_generic_params = old_impl_generic_params;
         
         // Impl block declaration returns Unit
         Ok(TypeDecl::Unit)

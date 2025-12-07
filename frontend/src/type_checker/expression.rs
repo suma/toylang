@@ -138,7 +138,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     error
                 })?
         };
-        
+
         // Context propagation: if we have a type hint, propagate it to Number expressions
         if let Some(hint) = self.type_inference.type_hint.clone() {
             if lhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
@@ -183,6 +183,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (&resolved_lhs_ty, &resolved_rhs_ty) {
+                    // Allow arithmetic operations on generic types if they are the same parameter
+                    if left_param == right_param {
+                        resolved_lhs_ty.clone()
+                    } else {
+                        let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                        if let Some(location) = self.get_expr_location(&lhs) {
+                            error = error.with_location(location);
+                        }
+                        return Err(error);
+                    }
                 } else {
                     let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
                     if let Some(location) = self.get_expr_location(&lhs) {
@@ -453,7 +464,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(generic_type.clone())
         } else if let Some(_struct_def) = self.context.get_struct_definition(name) {
             // Check if this is a struct type
-            Ok(TypeDecl::Struct(name, vec![]))
+            // If the struct has generic parameters, include them
+            let type_params = if let Some(generic_params) = self.context.get_struct_generic_params(name) {
+                generic_params.iter().map(|param| {
+                    // Try to resolve from current generic scope, otherwise use Generic type
+                    self.type_inference.lookup_generic_type(*param)
+                        .unwrap_or_else(|| TypeDecl::Generic(*param))
+                }).collect()
+            } else {
+                vec![]
+            };
+            Ok(TypeDecl::Struct(name, type_params))
         } else {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
             // Note: Location information will be added by visit_expr

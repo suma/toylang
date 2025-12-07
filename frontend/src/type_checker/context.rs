@@ -26,6 +26,7 @@ pub struct TypeCheckContext {
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
     pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
+    pub current_impl_generic_params: Option<Vec<DefaultSymbol>>,  // For generic parameters in current impl block
 }
 
 impl TypeCheckContext {
@@ -38,6 +39,7 @@ impl TypeCheckContext {
             struct_generic_params: HashMap::with_capacity(16),
             var_type_mappings: vec![HashMap::with_capacity(16)],
             current_impl_target: None,
+            current_impl_generic_params: None,
         }
     }
 

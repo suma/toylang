@@ -386,19 +386,32 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Helper method to resolve numeric types with automatic conversion
     pub fn resolve_numeric_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> Result<(TypeDecl, TypeDecl), TypeCheckError> {
-        match (lhs_ty, rhs_ty) {
+        // First, try to resolve generic types to concrete types
+        let resolved_lhs = if let TypeDecl::Generic(param) = lhs_ty {
+            self.type_inference.lookup_generic_type(*param).unwrap_or_else(|| lhs_ty.clone())
+        } else {
+            lhs_ty.clone()
+        };
+
+        let resolved_rhs = if let TypeDecl::Generic(param) = rhs_ty {
+            self.type_inference.lookup_generic_type(*param).unwrap_or_else(|| rhs_ty.clone())
+        } else {
+            rhs_ty.clone()
+        };
+
+        match (&resolved_lhs, &resolved_rhs) {
             // Both types are already concrete - no conversion needed
             (TypeDecl::UInt64, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Int64, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Bool, TypeDecl::Bool) => Ok((TypeDecl::Bool, TypeDecl::Bool)),
             (TypeDecl::String, TypeDecl::String) => Ok((TypeDecl::String, TypeDecl::String)),
-            
+
             // Number type automatic conversion
             (TypeDecl::Number, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::UInt64, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Number, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Int64, TypeDecl::Number) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
-            
+
             // Two Number types - check if we have a context hint, otherwise default to UInt64
             (TypeDecl::Number, TypeDecl::Number) => {
                 if let Some(hint) = &self.type_inference.type_hint {
@@ -411,18 +424,27 @@ impl<'a> TypeCheckerVisitor<'a> {
                     Ok((TypeDecl::UInt64, TypeDecl::UInt64))
                 }
             },
-            
+
             // Cross-type operations (UInt64 vs Int64) - generally not allowed for safety
             (TypeDecl::UInt64, TypeDecl::Int64) | (TypeDecl::Int64, TypeDecl::UInt64) => {
-                Err(TypeCheckError::type_mismatch_operation("mixed signed/unsigned", lhs_ty.clone(), rhs_ty.clone()))
+                Err(TypeCheckError::type_mismatch_operation("mixed signed/unsigned", resolved_lhs.clone(), resolved_rhs.clone()))
             },
-            
+
+            // Generic types - if both are the same generic parameter, allow the operation
+            (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) => {
+                if left_param == right_param {
+                    Ok((resolved_lhs.clone(), resolved_rhs.clone()))
+                } else {
+                    Err(TypeCheckError::type_mismatch(resolved_lhs.clone(), resolved_rhs.clone()))
+                }
+            },
+
             // Other type mismatches
             _ => {
-                if lhs_ty == rhs_ty {
-                    Ok((lhs_ty.clone(), rhs_ty.clone()))
+                if resolved_lhs == resolved_rhs {
+                    Ok((resolved_lhs.clone(), resolved_rhs.clone()))
                 } else {
-                    Err(TypeCheckError::type_mismatch(lhs_ty.clone(), rhs_ty.clone()))
+                    Err(TypeCheckError::type_mismatch(resolved_lhs.clone(), resolved_rhs.clone()))
                 }
             }
         }

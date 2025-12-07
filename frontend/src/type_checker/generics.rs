@@ -127,25 +127,46 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         Ok(return_type)
     }
 
-    fn visit_generic_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>, 
-                                   struct_definition: &StructDefinition, 
+    fn visit_generic_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>,
+                                   struct_definition: &StructDefinition,
                                    generic_params: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
         // Clear previous constraints for this inference
         self.type_inference.clear_constraints();
-        
+
         // Validate provided fields against struct definition
         self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
         
+        // Check if generic parameters are already in scope (e.g., within a generic method body)
+        // If all parameters can be found in outer scope, use them directly without constraint solving
+        let mut all_in_scope = true;
+        let mut outer_scope_types = Vec::new();
+
+        for param in generic_params {
+            if let Some(outer_type) = self.type_inference.lookup_generic_type(*param) {
+                outer_scope_types.push(outer_type.clone());
+            } else {
+                all_in_scope = false;
+                break;
+            }
+        }
+
+        // If we're already in a generic scope (e.g., method body), directly use those types
+        if all_in_scope && !outer_scope_types.is_empty() {
+            // Type parameters are already resolved in outer scope, just return struct with those types
+            return Ok(TypeDecl::Struct(*struct_name, outer_scope_types));
+        }
+
         // Push generic parameters onto the scope for proper resolution
         let mut generic_scope = HashMap::new();
         for param in generic_params {
             generic_scope.insert(*param, TypeDecl::Generic(*param));
         }
         self.type_inference.push_generic_scope(generic_scope);
-        
+        let should_push_scope = true;  // We pushed a scope, so we need to pop it later
+
         // Collect field types and create constraints for type parameter inference
         let mut field_types = HashMap::new();
-        
+
         for (field_name, field_expr) in fields {
             // Find expected field type from struct definition
             let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
@@ -178,7 +199,9 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 solution
             },
             Err(e) => {
-                self.type_inference.pop_generic_scope();
+                if should_push_scope {
+                    self.type_inference.pop_generic_scope();
+                }
                 let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for generic struct '{}': {}",
@@ -201,7 +224,9 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 // Check type compatibility with substitution
                 let field_type = self.visit_expr(field_expr)?;
                 if !self.types_are_compatible(&field_type, &substituted_expected) {
-                    self.type_inference.pop_generic_scope();
+                    if should_push_scope {
+                        self.type_inference.pop_generic_scope();
+                    }
                     return Err(TypeCheckError::type_mismatch(
                         substituted_expected,
                         field_type
@@ -209,25 +234,32 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 }
             }
         }
-        
-        // Ensure all generic parameters have been inferred
+
+        // Ensure all generic parameters have been inferred or can be found in outer scope
         for generic_param in generic_params {
             if !substitutions.contains_key(generic_param) {
-                self.type_inference.pop_generic_scope();
-                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<unknown>");
-                let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-                return Err(TypeCheckError::generic_error(&format!(
-                    "Cannot infer generic type parameter '{}' for struct '{}'",
-                    param_name, struct_name_str
-                )));
+                // Check if it's available in outer scope
+                if self.type_inference.lookup_generic_type(*generic_param).is_none() {
+                    if should_push_scope {
+                        self.type_inference.pop_generic_scope();
+                    }
+                    let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<unknown>");
+                    let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Cannot infer generic type parameter '{}' for struct '{}'",
+                        param_name, struct_name_str
+                    )));
+                }
             }
         }
-        
-        // Record the type substitutions for later use in method calls  
+
+        // Record the type substitutions for later use in method calls
         // Implementation delegated to type inference engine
-        
-        // Pop the generic scope
-        self.type_inference.pop_generic_scope();
+
+        // Pop the generic scope if we pushed it
+        if should_push_scope {
+            self.type_inference.pop_generic_scope();
+        }
         
         // Return struct type with resolved type parameters
         let _instantiated_name_str = self.generate_instantiated_struct_name(*struct_name, &substitutions);
@@ -238,11 +270,16 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             if let Some(concrete_type) = substitutions.get(generic_param) {
                 type_params.push(concrete_type.clone());
             } else {
-                // Fallback to Generic type if substitution is missing
-                type_params.push(TypeDecl::Generic(*generic_param));
+                // Check if there's an existing generic substitution in the outer scope
+                if let Some(outer_subst) = self.type_inference.lookup_generic_type(*generic_param) {
+                    type_params.push(outer_subst.clone());
+                } else {
+                    // Fallback to Generic type if substitution is missing
+                    type_params.push(TypeDecl::Generic(*generic_param));
+                }
             }
         }
-        
+
         Ok(TypeDecl::Struct(*struct_name, type_params))
     }
 
@@ -267,9 +304,14 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             TypeDecl::Self_ => {
                 // For generic structs, return the substituted type with generic parameters resolved
                 // For non-generic structs, return the simple struct type
-                if !substitutions.is_empty() {
-                    // This is a generic struct - the substituted type should already have generics resolved
-                    substituted_return_type
+                if !generic_params.is_empty() {
+                    // This is a generic struct - build type params
+                    let type_params: Vec<TypeDecl> = generic_params.iter().map(|param| {
+                        substitutions.get(param).cloned()
+                            .or_else(|| self.type_inference.lookup_generic_type(*param))
+                            .unwrap_or_else(|| TypeDecl::Generic(*param))
+                    }).collect();
+                    TypeDecl::Struct(struct_name, type_params)
                 } else {
                     // Non-generic struct - resolve Self to simple struct type
                     TypeDecl::Struct(struct_name, vec![])

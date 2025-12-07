@@ -706,6 +706,17 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (&resolved_lhs_ty, &resolved_rhs_ty) {
+                    // Allow arithmetic operations on generic types if they are the same parameter
+                    if left_param == right_param {
+                        resolved_lhs_ty.clone()
+                    } else {
+                        let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
+                        if let Some(location) = self.get_expr_location(&lhs) {
+                            error = error.with_location(location);
+                        }
+                        return Err(error);
+                    }
                 } else {
                     let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
                     if let Some(location) = self.get_expr_location(&lhs) {
@@ -2010,12 +2021,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         let struct_definition = self.context.get_struct_definition(*struct_name)
             .ok_or_else(|| TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)))?
             .clone();
-        
+
         // 2. Check if this is a generic struct and handle type inference
         let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
         let is_generic = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
-        
-        
+
         if is_generic {
             return self.visit_generic_struct_literal(struct_name, fields, &struct_definition, &generic_params.unwrap());
         }
@@ -2059,7 +2069,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             field_types.insert(*field_name, field_type);
         }
         
-        Ok(TypeDecl::Identifier(*struct_name))
+        Ok(TypeDecl::Struct(*struct_name, vec![]))
     }
     
     /// Handle generic struct literal type inference
@@ -2071,7 +2081,24 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Validate provided fields against struct definition
         self.context.validate_struct_fields(*struct_name, fields, &self.core)?;
-        
+
+        // Check if generic parameters are already in outer scope (e.g., within a generic method body)
+        let mut all_in_scope = true;
+        let mut outer_scope_types = Vec::new();
+        for param in generic_params {
+            if let Some(outer_type) = self.type_inference.lookup_generic_type(*param) {
+                outer_scope_types.push(outer_type.clone());
+            } else {
+                all_in_scope = false;
+                break;
+            }
+        }
+
+        // If all parameters are in outer scope, use them directly
+        if all_in_scope && !outer_scope_types.is_empty() {
+            return Ok(TypeDecl::Struct(*struct_name, outer_scope_types));
+        }
+
         // Push generic parameters onto the scope for proper resolution
         let mut generic_scope = std::collections::HashMap::new();
         for param in generic_params {

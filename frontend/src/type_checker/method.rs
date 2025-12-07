@@ -36,7 +36,13 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Self_ => {
                 if let Some(target_symbol) = self.context.current_impl_target {
-                    TypeDecl::Struct(target_symbol, vec![])
+                    // Include generic parameters if available
+                    let type_params = if let Some(ref generic_params) = self.context.current_impl_generic_params {
+                        generic_params.iter().map(|param| TypeDecl::Generic(*param)).collect()
+                    } else {
+                        vec![]
+                    };
+                    TypeDecl::Struct(target_symbol, type_params)
                 } else {
                     // Self used outside impl context - should be an error
                     type_decl.clone()

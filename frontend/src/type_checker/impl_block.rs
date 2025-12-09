@@ -44,10 +44,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             // Type check method body
             let body_result = self.visit_stmt(&method.code);
-            
+
             // Restore parameter context
             self.restore_method_parameter_context();
-            
+
             // Validate method return type compatibility using method.rs module
             if let Err(err) = self.validate_method_return_type(method, body_result, has_generics) {
                 return Err(err);

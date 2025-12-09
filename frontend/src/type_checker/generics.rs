@@ -131,7 +131,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                                    struct_definition: &StructDefinition,
                                    generic_params: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
         let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-        eprintln!("DEBUG visit_generic_struct_literal: ENTER struct '{}'", struct_name_str);
 
         // Clear previous constraints for this inference
         self.type_inference.clear_constraints();
@@ -153,11 +152,8 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
         }
 
-        eprintln!("DEBUG visit_generic_struct_literal: struct '{}', all_in_scope: {}, outer_scope_types: {:?}", struct_name_str, all_in_scope, outer_scope_types);
-
         // If we're already in a generic scope (e.g., method body), directly use those types
         if all_in_scope && !outer_scope_types.is_empty() {
-            eprintln!("DEBUG visit_generic_struct_literal: struct '{}', using outer scope types, EARLY RETURN", struct_name_str);
             // Type parameters are already resolved in outer scope, just return struct with those types
             return Ok(TypeDecl::Struct(*struct_name, outer_scope_types));
         }
@@ -201,17 +197,14 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         // Solve constraints to get type substitutions
         let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-        eprintln!("DEBUG visit_generic_struct_literal: struct '{}', solving constraints", struct_name_str);
         let substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => {
-                eprintln!("DEBUG visit_generic_struct_literal: struct '{}', solved substitutions: {:?}", struct_name_str, solution);
                 solution
             },
             Err(e) => {
                 if should_push_scope {
                     self.type_inference.pop_generic_scope();
                 }
-                eprintln!("DEBUG visit_generic_struct_literal: struct '{}', constraint solving failed: {}", struct_name_str, e);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for generic struct '{}': {}",
                     struct_name_str, e
@@ -289,7 +282,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
         }
 
-        eprintln!("DEBUG visit_generic_struct_literal: struct '{}', final type_params: {:?}", struct_name_str, type_params);
         Ok(TypeDecl::Struct(*struct_name, type_params))
     }
 
@@ -362,12 +354,10 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         // Collect argument types and add constraints for type inference
         let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
-        eprintln!("DEBUG handle_generic_associated_function_call: function '{}'", fn_name_str);
 
         let mut arg_types = Vec::new();
         for (i, (arg_expr, (_, param_type))) in args.iter().zip(&method.parameter).enumerate() {
             let arg_type = self.visit_expr(arg_expr)?;
-            eprintln!("DEBUG handle_generic_associated_function_call: arg[{}] type: {:?}, param type: {:?}", i, arg_type, param_type);
             arg_types.push(arg_type.clone());
 
             // Add constraint for parameter-argument type unification
@@ -384,12 +374,10 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Solve constraints to get type substitutions
         let substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => {
-                eprintln!("DEBUG handle_generic_associated_function_call: solved substitutions: {:?}", solution);
                 solution
             }
             Err(e) => {
                 self.type_inference.pop_generic_scope();
-                eprintln!("DEBUG handle_generic_associated_function_call: constraint solving failed: {}", e);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for associated function '{}': {}",
                     fn_name_str, e
@@ -420,7 +408,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         let substituted_return_type = self.type_inference.apply_solution(return_type, &substitutions);
 
         // Resolve Self type in the return type if present
-        eprintln!("DEBUG handle_generic_associated_function_call: return_type: {:?}, substituted: {:?}", return_type, substituted_return_type);
         let resolved_return_type = match &substituted_return_type {
             TypeDecl::Self_ => {
                 // For generic structs, create the concrete struct type with resolved type parameters
@@ -434,7 +421,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                         type_params.push(TypeDecl::Generic(*generic_param));
                     }
                 }
-                eprintln!("DEBUG handle_generic_associated_function_call: resolved Self to Struct with type_params: {:?}", type_params);
                 TypeDecl::Struct(struct_name, type_params)
             }
             TypeDecl::Struct(name, type_params) => {
@@ -446,8 +432,6 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
             _ => substituted_return_type
         };
-
-        eprintln!("DEBUG handle_generic_associated_function_call: final resolved_return_type: {:?}", resolved_return_type);
 
         // Record struct instance types for method calls (if needed)
         // This functionality can be implemented later for persistent type storage

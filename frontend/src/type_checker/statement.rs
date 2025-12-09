@@ -92,12 +92,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         self.context.set_var(name, final_type.clone());
-        
-        // Debug: Log what type was actually stored
-        if var_name_str == "point" {
-            eprintln!("DEBUG visit_val: Stored variable 'point' with type: {:?}", final_type);
-        }
-        
+
         // Restore previous type hint
         self.type_inference.type_hint = old_hint;
         

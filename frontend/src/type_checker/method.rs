@@ -48,6 +48,20 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     type_decl.clone()
                 }
             }
+            TypeDecl::Identifier(name) => {
+                // Convert Identifier to Struct with generic parameters if it's a generic struct
+                if let Some(generic_params) = self.context.get_struct_generic_params(*name) {
+                    let type_params = generic_params.iter().map(|param| {
+                        // Try to resolve from current generic scope, otherwise use Generic type
+                        self.type_inference.lookup_generic_type(*param)
+                            .unwrap_or_else(|| TypeDecl::Generic(*param))
+                    }).collect();
+                    TypeDecl::Struct(*name, type_params)
+                } else {
+                    // Not a generic struct, keep as Identifier
+                    type_decl.clone()
+                }
+            }
             _ => type_decl.clone(),
         }
     }

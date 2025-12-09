@@ -379,7 +379,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 )));
             }
         };
-        
+
         // Ensure all generic parameters have been inferred
         for generic_param in &generic_params {
             if !substitutions.contains_key(generic_param) {
@@ -392,11 +392,11 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 )));
             }
         }
-        
+
         // Get the method's return type and apply substitutions
         let return_type = method.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
         let substituted_return_type = self.type_inference.apply_solution(return_type, &substitutions);
-        
+
         // Resolve Self type in the return type if present
         let resolved_return_type = match &substituted_return_type {
             TypeDecl::Self_ => {
@@ -415,10 +415,10 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
             _ => substituted_return_type
         };
-        
+
         // Record struct instance types for method calls (if needed)
         // This functionality can be implemented later for persistent type storage
-        
+
         self.type_inference.pop_generic_scope();
         Ok(resolved_return_type)
     }

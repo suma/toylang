@@ -100,25 +100,42 @@ impl<'a> TypeCheckerVisitor<'a> {
         if expected == actual {
             return true;
         }
-        
+
+        // Use is_equivalent for more sophisticated type matching
+        if expected.is_equivalent(actual) {
+            return true;
+        }
+
         // Handle explicit type conversions that are allowed
         match (expected, actual) {
             // Number type can be converted to numeric types
             (TypeDecl::UInt64, TypeDecl::Number) | (TypeDecl::Int64, TypeDecl::Number) => true,
             (TypeDecl::Number, TypeDecl::UInt64) | (TypeDecl::Number, TypeDecl::Int64) => true,
             (TypeDecl::Number, TypeDecl::Number) => true,
-            
+
             // Generic types are compatible with any type during type inference
             (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,
-            
+
             // Unknown types are only compatible in limited contexts
             (TypeDecl::Unknown, _) => true,  // Unknown can accept any value
             (_, TypeDecl::Unknown) => false, // But we can't convert any type to Unknown
-            
+
             // Numeric conversions between compatible types
             (TypeDecl::UInt64, TypeDecl::Int64) => true,  // Allow signed/unsigned conversion
             (TypeDecl::Int64, TypeDecl::UInt64) => true,  // Allow signed/unsigned conversion
-            
+
+            // Struct types - check using is_equivalent for better matching
+            (TypeDecl::Struct(_, _), TypeDecl::Struct(_, _)) => {
+                // Already checked via is_equivalent above
+                false
+            }
+
+            // Identifier can match Struct with same name
+            (TypeDecl::Identifier(s1), TypeDecl::Struct(s2, _)) |
+            (TypeDecl::Struct(s1, _), TypeDecl::Identifier(s2)) => {
+                s1 == s2
+            }
+
             // No other implicit conversions allowed (including bool -> numeric)
             _ => false,
         }

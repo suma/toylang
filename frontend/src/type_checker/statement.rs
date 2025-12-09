@@ -69,26 +69,24 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
-        
+
         // Debug: Print variable type information
         let var_name_str = self.core.string_interner.resolve(name).unwrap_or("<unknown>");
-        
+
         // Extract type parameter mappings for generic struct instances
         if let TypeDecl::Struct(struct_name, type_params) = &final_type {
             if !type_params.is_empty() {
                 // Get the generic parameter names for this struct
                 if let Some(generic_param_names) = self.context.get_struct_generic_params(*struct_name) {
                     let mut type_mappings = HashMap::new();
-                    
+
                     // Create mappings from parameter names to concrete types
                     for (param_name, concrete_type) in generic_param_names.iter().zip(type_params.iter()) {
                         type_mappings.insert(*param_name, concrete_type.clone());
                     }
-                    
+
                     // Store the type parameter mappings for this variable
                     self.context.set_var_type_mapping(name, type_mappings);
-                    
-                    eprintln!("DEBUG: Storing type mappings for variable '{}': {:?}", var_name_str, type_params);
                 }
             }
         }

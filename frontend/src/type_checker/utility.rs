@@ -235,7 +235,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Get struct variable mappings for debugging/analysis
     pub fn get_struct_var_mappings(&self, interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, String> {
         let mut mappings = HashMap::new();
-        
+
         // Iterate through all struct definitions
         for (struct_symbol, struct_def) in &self.context.struct_definitions {
             if let Some(struct_name) = interner.resolve(*struct_symbol) {
@@ -246,7 +246,80 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
         }
-        
+
         mappings
+    }
+
+    /// Create type parameter mapping from generic parameters to concrete types
+    ///
+    /// Given a struct like `Container<T>` and concrete type parameters `[UInt64]`,
+    /// creates a mapping `{T -> UInt64}`.
+    pub fn create_type_param_mapping(
+        &self,
+        struct_symbol: DefaultSymbol,
+        type_params: &Vec<TypeDecl>
+    ) -> HashMap<DefaultSymbol, TypeDecl> {
+        let mut mapping = HashMap::new();
+
+        // Get the generic parameter names for this struct
+        if let Some(generic_param_names) = self.context.get_struct_generic_params(struct_symbol) {
+            // Create mappings from parameter names to concrete types
+            for (param_name, concrete_type) in generic_param_names.iter().zip(type_params.iter()) {
+                mapping.insert(*param_name, concrete_type.clone());
+            }
+        }
+
+        mapping
+    }
+
+    /// Substitute generic type parameters with concrete types
+    ///
+    /// Given a type like `Generic(T)` and a mapping `{T -> UInt64}`,
+    /// returns `UInt64`. Handles nested types recursively.
+    pub fn substitute_type_params(
+        &self,
+        type_decl: &TypeDecl,
+        mapping: &HashMap<DefaultSymbol, TypeDecl>
+    ) -> TypeDecl {
+        match type_decl {
+            // Generic type parameter - substitute with concrete type
+            TypeDecl::Generic(param_name) => {
+                mapping.get(param_name).cloned().unwrap_or_else(|| type_decl.clone())
+            }
+
+            // Struct with type parameters - recursively substitute
+            TypeDecl::Struct(name, type_params) => {
+                let substituted_params: Vec<TypeDecl> = type_params.iter()
+                    .map(|param| self.substitute_type_params(param, mapping))
+                    .collect();
+                TypeDecl::Struct(*name, substituted_params)
+            }
+
+            // Array with generic element type
+            TypeDecl::Array(element_types, size) => {
+                let substituted_elements: Vec<TypeDecl> = element_types.iter()
+                    .map(|elem| self.substitute_type_params(elem, mapping))
+                    .collect();
+                TypeDecl::Array(substituted_elements, *size)
+            }
+
+            // Dict with generic key/value types
+            TypeDecl::Dict(key_type, value_type) => {
+                let substituted_key = self.substitute_type_params(key_type, mapping);
+                let substituted_value = self.substitute_type_params(value_type, mapping);
+                TypeDecl::Dict(Box::new(substituted_key), Box::new(substituted_value))
+            }
+
+            // Tuple with generic element types
+            TypeDecl::Tuple(element_types) => {
+                let substituted_elements: Vec<TypeDecl> = element_types.iter()
+                    .map(|elem| self.substitute_type_params(elem, mapping))
+                    .collect();
+                TypeDecl::Tuple(substituted_elements)
+            }
+
+            // Other types remain unchanged
+            _ => type_decl.clone()
+        }
     }
 }

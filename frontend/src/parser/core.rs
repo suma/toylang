@@ -707,11 +707,43 @@ impl<'a> Parser<'a> {
                 let s = s.to_string();
                 let ident = self.string_interner.get_or_intern(s);
                 self.next();
-                
+
                 // Check if this identifier is a generic type parameter
                 if generic_params.contains(&ident) {
-                    Ok(TypeDecl::Generic(ident))
+                    return Ok(TypeDecl::Generic(ident));
+                }
+
+                // Check if this is a generic struct with type arguments: Container<T>
+                if matches!(self.peek(), Some(Kind::LT)) {
+                    self.expect_err(&Kind::LT)?;
+
+                    let mut type_args = Vec::new();
+                    loop {
+                        // Parse each type argument recursively
+                        let type_arg = self.parse_type_declaration_with_generic_context(generic_params)?;
+                        type_args.push(type_arg);
+
+                        match self.peek() {
+                            Some(Kind::Comma) => {
+                                self.next(); // consume comma, continue to next type arg
+                            }
+                            Some(Kind::GT) => {
+                                break; // end of type arguments
+                            }
+                            _ => {
+                                let location = self.current_source_location();
+                                return Err(ParserError::generic_error(
+                                    location,
+                                    "Expected ',' or '>' in generic type arguments".to_string()
+                                ));
+                            }
+                        }
+                    }
+
+                    self.expect_err(&Kind::GT)?;
+                    Ok(TypeDecl::Struct(ident, type_args))
                 } else {
+                    // No type arguments, just an identifier
                     Ok(TypeDecl::Identifier(ident))
                 }
             }

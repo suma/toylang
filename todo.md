@@ -2,6 +2,151 @@
 
 ## 完了済み ✅
 
+110. **パーサーでのジェネリック型引数サポートと関連関数戻り値型の完全な型置換** ✅ (2025-12-10完了)
+   - **対象**: 型宣言（戻り値型など）でジェネリック型引数（`Container<T>`）をパースできるようにする
+   - **問題の根本原因**:
+     - パーサーが `Container<T>` を `Identifier(Container)` としてパースし、`<T>` 部分を無視していた
+     - 関連関数の戻り値型が `Struct(Container, [Generic(T)])` の場合、内部のジェネリック型が置換されていなかった
+   - **実装した解決策**:
+     - **パーサー修正**: `parse_type_declaration_with_generic_context()` で型引数をパース
+     - **型チェッカー修正**: `handle_generic_associated_function_call()` で `Struct` 型の型引数を再帰的に置換
+   - **修正コード詳細**:
+     ```rust
+     // frontend/src/parser/core.rs (line 706-748)
+     Some(Kind::Identifier(s)) => {
+         let ident = self.string_interner.get_or_intern(s);
+         self.next();
+
+         if generic_params.contains(&ident) {
+             return Ok(TypeDecl::Generic(ident));
+         }
+
+         // ジェネリック型引数のパース: Container<T>
+         if matches!(self.peek(), Some(Kind::LT)) {
+             self.expect_err(&Kind::LT)?;
+             let mut type_args = Vec::new();
+             loop {
+                 // 再帰的に型引数をパース
+                 let type_arg = self.parse_type_declaration_with_generic_context(generic_params)?;
+                 type_args.push(type_arg);
+
+                 match self.peek() {
+                     Some(Kind::Comma) => { self.next(); }
+                     Some(Kind::GT) => { break; }
+                     _ => return Err(...)
+                 }
+             }
+             self.expect_err(&Kind::GT)?;
+             Ok(TypeDecl::Struct(ident, type_args))
+         } else {
+             Ok(TypeDecl::Identifier(ident))
+         }
+     }
+
+     // frontend/src/type_checker/generics.rs (line 440-446)
+     TypeDecl::Struct(name, type_params) => {
+         // Struct型引数内のジェネリックパラメータを再帰的に置換
+         let substituted_params: Vec<TypeDecl> = type_params.iter()
+             .map(|param| self.substitute_type_params(param, &substitutions))
+             .collect();
+         TypeDecl::Struct(*name, substituted_params)
+     }
+     ```
+   - **パース結果の例**:
+     - `Container<T>` → `TypeDecl::Struct(Container, [Generic(T)])`
+     - `Container<u64>` → `TypeDecl::Struct(Container, [UInt64])`
+     - `fn wrap(T) -> Container<T>` が正しくパースされる
+   - **型置換の例**:
+     - `Container<Generic(T)>` + `{T: u64}` → `Container<u64>`
+     - 関連関数 `Container::wrap(42u64)` が `Container<u64>` を正しく返す
+   - **テスト結果**:
+     - **全5テスト中4テスト成功（80%成功率）**:
+       - ✅ `test_associated_function_with_different_name`
+       - ✅ `test_associated_function_multiple_parameters`
+       - ✅ `test_associated_function_mixed_with_regular_methods`
+       - ✅ `test_associated_function_type_inference_accuracy`
+       - ❌ `test_associated_function_complex_return_type`（`>>`問題）
+   - **実装ファイル**:
+     - **frontend/src/parser/core.rs**: `parse_type_declaration_with_generic_context()` に型引数パース追加
+     - **frontend/src/type_checker/generics.rs**: `handle_generic_associated_function_call()` に再帰的置換追加
+   - **技術的成果**:
+     - **単一レベルのジェネリック型引数**: `Container<T>`, `Container<u64>` が完全に動作
+     - **関連関数の型推論**: `Container::wrap(value)` が正しい型を返す
+     - **戻り値型の完全な型置換**: `fn foo() -> Container<T>` が正しく動作
+   - **既知の制限事項**:
+     - **ネストしたジェネリック型とRightShift問題**:
+       - `Container<Container<T>>` の `>>` が `RightShift` トークンとしてlexerで解析される
+       - パーサーが "Expected ',' or '>' in generic type arguments" エラーを出す
+       - この問題により `test_associated_function_complex_return_type` が失敗
+       - **回避策**: ネストしたジェネリック型では `> >` のようにスペースを入れる必要がある（未実装）
+       - **根本的解決**: lexerまたはパーサーで `RightShift` を文脈に応じて2つの `GT` として扱う必要がある
+   - **影響範囲**:
+     - 型宣言でのジェネリック型引数が実用レベルで動作
+     - 関連関数の型推論が完全に機能
+     - 単一レベルのジェネリック型は完全サポート
+
+109. **ジェネリック構造体のフィールドアクセス型パラメータ置換** ✅ (2025-12-09完了)
+   - **対象**: `Container<u64>` の `value` フィールドが `Generic(T)` ではなく `u64` を返すようにする
+   - **問題の根本原因**:
+     - フィールドアクセス時に構造体の型パラメータ（`Container<u64>` の `[u64]`）が考慮されていなかった
+     - 構造体定義のフィールド型（`value: T`）をそのまま返していた
+     - 構造体リテラルの型推論が空の型パラメータ `[]` を返していた
+   - **実装した解決策**:
+     - **型パラメータマッピング機能**: `create_type_param_mapping()` で `{T -> u64}` のマッピングを作成
+     - **型置換機能**: `substitute_type_params()` でジェネリック型を具体的な型で再帰的に置換
+     - **フィールドアクセス修正**: `visit_field_access()` で型パラメータ置換を適用（3箇所）
+     - **構造体リテラル型推論修正**: `visit_generic_struct_literal()` が型パラメータを正しく返すように修正
+     - **Self型の再帰的解決**: `resolve_self_type()` でネストした `Struct` 型を再帰的に解決
+   - **修正コード詳細**:
+     ```rust
+     // utility.rs
+     pub fn create_type_param_mapping(&self, struct_symbol: DefaultSymbol,
+                                      type_params: &Vec<TypeDecl>) -> HashMap<DefaultSymbol, TypeDecl>
+     pub fn substitute_type_params(&self, type_decl: &TypeDecl,
+                                   mapping: &HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl
+
+     // type_checker.rs - visit_field_access
+     let mapping = self.create_type_param_mapping(struct_symbol, &type_params);
+     let substituted_type = self.substitute_type_params(&struct_field.type_decl, &mapping);
+     return Ok(substituted_type);
+
+     // type_checker.rs - visit_generic_struct_literal (line 2074)
+     // 修正前: Ok(TypeDecl::Struct(*struct_name, vec![]))
+     // 修正後: 型パラメータを制約解決から取得して返す
+     let mut type_params = Vec::new();
+     for generic_param in generic_params {
+         if let Some(concrete_type) = substitutions.get(generic_param) {
+             type_params.push(concrete_type.clone());
+         }
+     }
+     Ok(TypeDecl::Struct(*struct_name, type_params))
+     ```
+   - **テスト結果の改善**:
+     - **修正前**: `test_associated_function_multiple_parameters` が "Type mismatch in arithmetic operation" で失敗
+     - **修正後**: **5つ中4つのテストが成功**
+       - ✅ `test_associated_function_basic`
+       - ✅ `test_associated_function_multiple_parameters` (元の問題)
+       - ✅ `test_associated_function_type_inference_accuracy`
+       - ✅ `test_associated_function_with_self_return`
+       - ❌ `test_associated_function_complex_return_type` (ネストしたジェネリック型の制限)
+   - **実装ファイル**:
+     - **frontend/src/type_checker/utility.rs**: 型パラメータマッピングと置換のユーティリティ関数追加
+     - **frontend/src/type_checker.rs**: `visit_field_access()` で型置換適用、`visit_generic_struct_literal()` 修正
+     - **frontend/src/type_checker/method.rs**: `resolve_self_type()` で再帰的解決追加
+     - **frontend/src/type_checker/generics.rs**: メソッド内での型推論改善
+   - **技術的成果**:
+     - **フィールドアクセスの完全動作**: `Container<u64>` の `value` が正しく `u64` を返す
+     - **構造体リテラル型推論**: `Container { value: 42u64 }` が正しく `Container<u64>` と推論
+     - **ネストしたフィールドアクセス**: `nested.value.value` が動作（非メソッドコンテキスト）
+     - **ジェネリックメソッドでの算術演算**: `self.first + self.second` が `Generic(T) + Generic(T)` として動作
+   - **既知の制限事項**:
+     - **ネストしたジェネリック戻り値型**: `Container<Container<T>>` のような型がパーサーで `Identifier` としてパースされる
+     - この制限により `test_associated_function_complex_return_type` が失敗（パーサーレベルの改善が必要）
+   - **影響範囲**:
+     - ジェネリック構造体のフィールドアクセスが実用レベルで動作
+     - Associated function の型推論が大幅に改善
+     - 80%のassociated functionテストが成功（4/5）
+
 108. **単一型パラメータGenericsの基本実装** ✅ (2025-09-07完了)
    - **対象**: 関数と構造体での単一型パラメータジェネリクス構文のサポート
    - **実装した機能**:

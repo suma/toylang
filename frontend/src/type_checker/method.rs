@@ -62,6 +62,13 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     type_decl.clone()
                 }
             }
+            // Recursively resolve nested Struct types
+            TypeDecl::Struct(name, type_params) => {
+                let resolved_params: Vec<TypeDecl> = type_params.iter()
+                    .map(|param| self.resolve_self_type(param))
+                    .collect();
+                TypeDecl::Struct(*name, resolved_params)
+            }
             _ => type_decl.clone(),
         }
     }

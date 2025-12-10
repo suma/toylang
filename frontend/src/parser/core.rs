@@ -730,6 +730,17 @@ impl<'a> Parser<'a> {
                             Some(Kind::GT) => {
                                 break; // end of type arguments
                             }
+                            Some(Kind::RightShift) => {
+                                // C++11 style: treat >> as two > tokens for nested generics
+                                // e.g., Container<Container<T>> instead of requiring Container<Container<T> >
+                                self.next(); // consume >>
+                                // Insert TWO GT tokens: one for this level, one for outer level
+                                // Note: VecDeque::insert shifts existing elements, so inserting twice at the same position
+                                // results in LIFO order - the last inserted token is consumed first
+                                self.token_provider.insert_token(Kind::GT); // for outer level (consumed second)
+                                self.token_provider.insert_token(Kind::GT); // for this level (consumed first)
+                                break; // treat first > as closing this type argument list
+                            }
                             _ => {
                                 let location = self.current_source_location();
                                 return Err(ParserError::generic_error(

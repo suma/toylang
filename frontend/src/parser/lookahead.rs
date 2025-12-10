@@ -65,6 +65,12 @@ impl LookaheadBuffer {
         self.buffer.push_back(token);
     }
 
+    /// Insert a token at the current position (for token splitting like >> to > >)
+    /// The inserted token will be the next token to be consumed
+    pub fn insert_at_current(&mut self, token: Token) {
+        self.buffer.insert(self.position, token);
+    }
+
     /// Check if we have enough tokens available for the given relative position
     pub fn has_token_at(&self, relative_pos: usize) -> bool {
         self.position + relative_pos < self.buffer.len()

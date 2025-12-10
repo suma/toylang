@@ -2,6 +2,61 @@
 
 ## 完了済み ✅
 
+111. **C++11スタイルのネストされたジェネリック型パース対応（`>>`トークン分割）** ✅ (2025-12-10完了)
+   - **対象**: `Container<Container<T>>` のようなネストされたジェネリック型で `>>` を2つの `>` として扱う
+   - **問題の根本原因**:
+     - レクサーが `>>` を `RightShift` トークンとして先に受理
+     - パーサーがジェネリック型引数のパース中に `>` を期待するが `RightShift` が来てエラー
+     - `test_associated_function_complex_return_type` が失敗
+   - **実装した解決策（C++11アプローチ）**:
+     - **LookaheadBufferに`insert_at_current`メソッド追加**: 現在位置にトークンを挿入する機能
+     - **TokenProviderに`insert_token`メソッド追加**: トークン分割のヘルパーメソッド
+     - **パーサーで`RightShift`を2つの`GT`に分割**: ジェネリック型引数パース中に検出して処理
+   - **修正コード詳細**:
+     ```rust
+     // frontend/src/parser/lookahead.rs (line 68-72)
+     pub fn insert_at_current(&mut self, token: Token) {
+         self.buffer.insert(self.position, token);
+     }
+
+     // frontend/src/parser/token_source.rs (line 188-198)
+     pub fn insert_token(&mut self, kind: Kind) {
+         let position = self.buffer.peek_position_at(0)
+             .map(|r| r.clone())
+             .unwrap_or(0..0);
+         let token = Token { kind, position };
+         self.buffer.insert_at_current(token);
+     }
+
+     // frontend/src/parser/core.rs (line 733-743)
+     Some(Kind::RightShift) => {
+         // C++11 style: treat >> as two > tokens for nested generics
+         self.next(); // consume >>
+         // Insert TWO GT tokens: one for this level, one for outer level
+         // VecDeque::insert shifts elements, so LIFO order
+         self.token_provider.insert_token(Kind::GT); // for outer level (consumed second)
+         self.token_provider.insert_token(Kind::GT); // for this level (consumed first)
+         break;
+     }
+     ```
+   - **テスト結果の改善**:
+     - **修正前**: `test_associated_function_complex_return_type` が "Expected ',' or '>' in generic type arguments" で失敗
+     - **修正後**: **associated_function_tests全5テスト成功（100%成功率）**
+     - **OOP tests**: oop_features_integration_tests全19テスト成功（100%成功率）
+   - **実装ファイル**:
+     - **frontend/src/parser/lookahead.rs**: `insert_at_current()` メソッド追加
+     - **frontend/src/parser/token_source.rs**: `insert_token()` メソッド追加
+     - **frontend/src/parser/core.rs**: `parse_type_declaration_with_generic_context()` に`RightShift`処理追加
+   - **技術的成果**:
+     - **C++11スタイル構文サポート**: `Container<Container<T>>` をスペースなしで記述可能
+     - **任意深度のネスト対応**: `A<B<C<D<T>>>>` のような深いネストも正常にパース
+     - **後方互換性**: 既存の単一レベルジェネリック型に影響なし
+     - **統一的設計**: レクサーを変更せず、パーサーレベルでのトークン分割により実現
+   - **影響範囲**:
+     - ネストされたジェネリック型が完全サポート
+     - 関連関数のcomplex return typeテストが成功
+     - ジェネリック型システムが実用レベルで完成
+
 110. **パーサーでのジェネリック型引数サポートと関連関数戻り値型の完全な型置換** ✅ (2025-12-10完了)
    - **対象**: 型宣言（戻り値型など）でジェネリック型引数（`Container<T>`）をパースできるようにする
    - **問題の根本原因**:
@@ -60,12 +115,12 @@
      - `Container<Generic(T)>` + `{T: u64}` → `Container<u64>`
      - 関連関数 `Container::wrap(42u64)` が `Container<u64>` を正しく返す
    - **テスト結果**:
-     - **全5テスト中4テスト成功（80%成功率）**:
+     - **全5テスト中4テスト成功（80%成功率）**（タスク111でネストされたジェネリック型対応により100%に改善）:
        - ✅ `test_associated_function_with_different_name`
        - ✅ `test_associated_function_multiple_parameters`
        - ✅ `test_associated_function_mixed_with_regular_methods`
        - ✅ `test_associated_function_type_inference_accuracy`
-       - ❌ `test_associated_function_complex_return_type`（`>>`問題）
+       - ⚠️ `test_associated_function_complex_return_type`（`>>`問題 → タスク111で解決）
    - **実装ファイル**:
      - **frontend/src/parser/core.rs**: `parse_type_declaration_with_generic_context()` に型引数パース追加
      - **frontend/src/type_checker/generics.rs**: `handle_generic_associated_function_call()` に再帰的置換追加
@@ -73,17 +128,10 @@
      - **単一レベルのジェネリック型引数**: `Container<T>`, `Container<u64>` が完全に動作
      - **関連関数の型推論**: `Container::wrap(value)` が正しい型を返す
      - **戻り値型の完全な型置換**: `fn foo() -> Container<T>` が正しく動作
-   - **既知の制限事項**:
-     - **ネストしたジェネリック型とRightShift問題**:
-       - `Container<Container<T>>` の `>>` が `RightShift` トークンとしてlexerで解析される
-       - パーサーが "Expected ',' or '>' in generic type arguments" エラーを出す
-       - この問題により `test_associated_function_complex_return_type` が失敗
-       - **回避策**: ネストしたジェネリック型では `> >` のようにスペースを入れる必要がある（未実装）
-       - **根本的解決**: lexerまたはパーサーで `RightShift` を文脈に応じて2つの `GT` として扱う必要がある
    - **影響範囲**:
      - 型宣言でのジェネリック型引数が実用レベルで動作
      - 関連関数の型推論が完全に機能
-     - 単一レベルのジェネリック型は完全サポート
+     - 単一レベルのジェネリック型は完全サポート（ネストはタスク111で対応）
 
 109. **ジェネリック構造体のフィールドアクセス型パラメータ置換** ✅ (2025-12-09完了)
    - **対象**: `Container<u64>` の `value` フィールドが `Generic(T)` ではなく `u64` を返すようにする

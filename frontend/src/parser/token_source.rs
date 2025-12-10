@@ -184,6 +184,18 @@ impl<T: TokenSource> TokenProvider<T> {
     pub fn reset(&mut self) {
         self.buffer.reset();
     }
+
+    /// Insert a token at the current position (for token splitting like >> to > >)
+    /// Used in contexts where a compound token needs to be split into multiple tokens
+    pub fn insert_token(&mut self, kind: Kind) {
+        // Use the position of the current token, or default to 0..0 if none available
+        let position = self.buffer.peek_position_at(0)
+            .map(|r| r.clone())
+            .unwrap_or(0..0);
+
+        let token = Token { kind, position };
+        self.buffer.insert_at_current(token);
+    }
 }
 
 /// Lexer wrapper that implements TokenSource

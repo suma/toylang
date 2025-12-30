@@ -124,6 +124,25 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::UInt64, TypeDecl::Int64) => true,  // Allow signed/unsigned conversion
             (TypeDecl::Int64, TypeDecl::UInt64) => true,  // Allow signed/unsigned conversion
 
+            // Dynamic array [T] (size 0) is compatible with fixed-size array [T; N]
+            (TypeDecl::Array(expected_elems, 0), TypeDecl::Array(actual_elems, _)) => {
+                // Dynamic array can accept any size array with compatible element type
+                if expected_elems.len() == 1 && !actual_elems.is_empty() {
+                    actual_elems.iter().all(|elem| self.are_types_compatible(&expected_elems[0], elem))
+                } else {
+                    false
+                }
+            }
+            // Fixed-size array [T; N] is compatible with dynamic array [T] (size 0)
+            (TypeDecl::Array(expected_elems, _), TypeDecl::Array(actual_elems, 0)) => {
+                // Fixed array can accept dynamic array result with compatible element type
+                if actual_elems.len() == 1 && !expected_elems.is_empty() {
+                    expected_elems.iter().all(|elem| self.are_types_compatible(elem, &actual_elems[0]))
+                } else {
+                    false
+                }
+            }
+
             // Struct types - check using is_equivalent for better matching
             (TypeDecl::Struct(_, _), TypeDecl::Struct(_, _)) => {
                 // Already checked via is_equivalent above

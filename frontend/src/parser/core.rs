@@ -664,28 +664,36 @@ impl<'a> Parser<'a> {
             Some(Kind::BracketOpen) => {
                 self.next();
                 let element_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-                self.expect_err(&Kind::Semicolon)?;
-                
-                let size = match self.peek().cloned() {
-                    Some(Kind::UInt64(n)) => {
-                        self.next();
-                        n as usize
-                    }
-                    Some(Kind::Integer(s)) => {
-                        self.next();
-                        s.parse::<usize>().map_err(|_| {
+
+                // Check for semicolon - if present, parse size; if not, it's a dynamic array [T]
+                if self.peek() == Some(&Kind::Semicolon) {
+                    self.next(); // consume semicolon
+
+                    let size = match self.peek().cloned() {
+                        Some(Kind::UInt64(n)) => {
+                            self.next();
+                            n as usize
+                        }
+                        Some(Kind::Integer(s)) => {
+                            self.next();
+                            s.parse::<usize>().map_err(|_| {
+                                let location = self.current_source_location();
+                                ParserError::generic_error(location, format!("Invalid array size: {}", s))
+                            })?
+                        }
+                        _ => {
                             let location = self.current_source_location();
-                            ParserError::generic_error(location, format!("Invalid array size: {}", s))
-                        })?
-                    }
-                    _ => {
-                        let location = self.current_source_location();
-                        return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))
-                    }
-                };
-                
-                self.expect_err(&Kind::BracketClose)?;
-                Ok(TypeDecl::Array(vec![element_type; size], size))
+                            return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))
+                        }
+                    };
+
+                    self.expect_err(&Kind::BracketClose)?;
+                    Ok(TypeDecl::Array(vec![element_type; size], size))
+                } else {
+                    // Dynamic array type [T] with no size specified
+                    self.expect_err(&Kind::BracketClose)?;
+                    Ok(TypeDecl::Array(vec![element_type], 0))
+                }
             }
             Some(Kind::Bool) => {
                 self.next();

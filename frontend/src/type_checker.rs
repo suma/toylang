@@ -1046,8 +1046,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         // Range slice: arr[start..end] returns array type
                         let single_element_type = element_types[0].clone();
 
-                        // Try to calculate slice size if both start and end are constant literals
-                        let slice_size = self.calculate_slice_size(slice_info);
+                        // Try to calculate slice size using array size for open-ended slices
+                        let array_size = _size;
+                        let slice_size = self.calculate_slice_size(slice_info, array_size);
 
                         // Create element_types with the correct number of elements
                         let result_element_types = vec![single_element_type; slice_size];
@@ -2325,15 +2326,37 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Calculate slice size from constant literals if possible
-    /// Returns the size if both start and end are constant, otherwise returns 0 (dynamic)
-    fn calculate_slice_size(&self, slice_info: &SliceInfo) -> usize {
+    /// For open-ended slices, uses array_size: start defaults to 0, end defaults to array_size
+    /// Handles negative indices: -N means array_size - N
+    /// Returns 0 (dynamic) if slice bounds cannot be determined at compile time
+    fn calculate_slice_size(&self, slice_info: &SliceInfo, array_size: usize) -> usize {
+        let arr_size = array_size as i64;
+
         // Try to extract constant values from start and end expressions
-        let start_val = slice_info.start.as_ref().and_then(|expr| self.extract_constant_value(expr));
-        let end_val = slice_info.end.as_ref().and_then(|expr| self.extract_constant_value(expr));
+        // For open-ended slices: start defaults to 0, end defaults to array_size
+        let start_val = match &slice_info.start {
+            Some(expr) => self.extract_constant_value(expr),
+            None => Some(0), // a[..end] starts at 0
+        };
+        let end_val = match &slice_info.end {
+            Some(expr) => self.extract_constant_value(expr),
+            None => Some(arr_size), // a[start..] ends at array_size
+        };
 
         match (start_val, end_val) {
-            (Some(start), Some(end)) if end >= start => (end - start) as usize,
-            _ => 0, // Dynamic size if not both constants
+            (Some(start), Some(end)) => {
+                // Convert negative indices to positive: -N means array_size - N
+                let actual_start = if start < 0 { arr_size + start } else { start };
+                let actual_end = if end < 0 { arr_size + end } else { end };
+
+                // Validate bounds and calculate size
+                if actual_start >= 0 && actual_end >= actual_start && actual_end <= arr_size {
+                    (actual_end - actual_start) as usize
+                } else {
+                    0 // Invalid bounds
+                }
+            }
+            _ => 0, // Dynamic size if bounds cannot be determined
         }
     }
 

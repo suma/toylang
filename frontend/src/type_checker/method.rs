@@ -180,9 +180,10 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             // For generic types, we need to validate they can be resolved
             // but don't enforce strict type checking here since generics will be resolved later
             match &resolved_ret_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
-                    // Valid return types (including generic types and struct types)
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String |
+                TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
+                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
+                    // Valid return types (including generic types, struct types, and collection types)
                 },
                 _ => {
                     if has_generics {

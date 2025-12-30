@@ -407,6 +407,7 @@ impl Acceptable for Expr {
             Expr::BuiltinCall(func, args) => visitor.visit_builtin_call(func, args),
             Expr::TupleLiteral(elements) => visitor.visit_tuple_literal(elements),
             Expr::TupleAccess(tuple, index) => visitor.visit_tuple_access(tuple, *index),
+            Expr::Cast(expr, target_type) => visitor.visit_cast(expr, target_type),
         }
     }
 }
@@ -1119,8 +1120,48 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         Err(TypeCheckError::generic_error("Struct access requires index"))
                     }
                 } else {
-                    // Range slicing is not supported for structs
-                    Err(TypeCheckError::generic_error("Struct slicing is not supported - use single index access struct[key]"))
+                    // Range slicing: check for __getslice__ method
+                    self.check_struct_getslice_method(struct_name, slice_info, &object_type)
+                }
+            }
+            TypeDecl::Struct(struct_name, ref _type_params) => {
+                // Struct type access: check for __getitem__ or __getslice__ method
+                let struct_name_str = self.core.string_interner.resolve(struct_name)
+                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+
+                if slice_info.is_valid_for_dict() {
+                    // Single element access: struct[key] - use __getitem__
+                    if let Some(index_expr) = &slice_info.start {
+                        let index_type = self.visit_expr(index_expr)?;
+
+                        if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
+                            if getitem_method.parameter.len() >= 2 {
+                                let index_param_type = &getitem_method.parameter[1].1;
+                                if index_type != *index_param_type && !self.are_types_compatible(index_param_type, &index_type) {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        index_param_type.clone(), index_type
+                                    ));
+                                }
+
+                                if let Some(return_type) = &getitem_method.return_type {
+                                    Ok(return_type.clone())
+                                } else {
+                                    Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
+                                }
+                            } else {
+                                Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
+                            }
+                        } else {
+                            Err(TypeCheckError::generic_error(&format!(
+                                "Cannot index into type {:?} - no __getitem__ method found", object_type
+                            )))
+                        }
+                    } else {
+                        Err(TypeCheckError::generic_error("Struct access requires index"))
+                    }
+                } else {
+                    // Range slicing: check for __getslice__ method
+                    self.check_struct_getslice_method(struct_name, slice_info, &object_type)
                 }
             }
             _ => {
@@ -1130,7 +1171,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
         }
     }
-    
+
     fn visit_slice_assign(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let object_type = self.visit_expr(object)?;
         let value_type = self.visit_expr(value)?;
@@ -1228,8 +1269,52 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         Err(TypeCheckError::generic_error("Struct assignment requires key index"))
                     }
                 } else {
-                    // Range slice assignment not supported for structs
-                    Err(TypeCheckError::generic_error("Struct slice assignment not supported - use single key assignment struct[key] = value"))
+                    // Range slice assignment: check for __setslice__ method
+                    self.check_struct_setslice_method(struct_name, start, end, &value_type, &object_type)
+                }
+            }
+            TypeDecl::Struct(struct_name, ref _type_params) => {
+                // Struct type assignment: check for __setitem__ or __setslice__ method
+                let struct_name_str = self.core.string_interner.resolve(struct_name)
+                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+
+                if start.is_some() && end.is_none() {
+                    // Single element assignment: struct[key] = value - use __setitem__
+                    if let Some(key_expr) = start {
+                        let key_type_result = self.visit_expr(key_expr)?;
+
+                        if let Some(setitem_method) = self.context.get_method_function_by_name(struct_name_str, "__setitem__", self.core.string_interner) {
+                            if setitem_method.parameter.len() >= 3 {
+                                let key_param_type = &setitem_method.parameter[1].1;
+                                let value_param_type = &setitem_method.parameter[2].1;
+
+                                if key_type_result != *key_param_type && !self.are_types_compatible(key_param_type, &key_type_result) {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        key_param_type.clone(), key_type_result
+                                    ));
+                                }
+
+                                if value_type != *value_param_type && !self.are_types_compatible(value_param_type, &value_type) {
+                                    return Err(TypeCheckError::type_mismatch(
+                                        value_param_type.clone(), value_type
+                                    ));
+                                }
+
+                                Ok(value_type)
+                            } else {
+                                Err(TypeCheckError::generic_error("__setitem__ method must have at least 3 parameters (self, key, value)"))
+                            }
+                        } else {
+                            Err(TypeCheckError::generic_error(&format!(
+                                "Cannot assign to struct type {:?} - no __setitem__ method found", object_type
+                            )))
+                        }
+                    } else {
+                        Err(TypeCheckError::generic_error("Struct assignment requires key index"))
+                    }
+                } else {
+                    // Range slice assignment: check for __setslice__ method
+                    self.check_struct_setslice_method(struct_name, start, end, &value_type, &object_type)
                 }
             }
             _ => {
@@ -1239,7 +1324,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
         }
     }
-    
+
     fn visit_associated_function_call(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Handle Container::function_name(args) type calls for any associated function
         
@@ -1460,7 +1545,35 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
         }
     }
-    
+
+    fn visit_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        // Type check the expression being cast
+        let expr_type = self.visit_expr(expr)?;
+
+        // Check if the cast is valid
+        // Allow casts between numeric types (i64 <-> u64)
+        match (&expr_type, target_type) {
+            // Allow i64 <-> u64 casts
+            (TypeDecl::Int64, TypeDecl::UInt64) |
+            (TypeDecl::UInt64, TypeDecl::Int64) |
+            (TypeDecl::Int64, TypeDecl::Int64) |
+            (TypeDecl::UInt64, TypeDecl::UInt64) => Ok(target_type.clone()),
+
+            // Allow Number to specific numeric types
+            (TypeDecl::Number, TypeDecl::Int64) |
+            (TypeDecl::Number, TypeDecl::UInt64) => Ok(target_type.clone()),
+
+            // Identity cast for other types
+            (from, to) if from == to => Ok(target_type.clone()),
+
+            // Invalid cast
+            _ => Err(TypeCheckError::generic_error(&format!(
+                "Cannot cast {:?} to {:?}",
+                expr_type, target_type
+            )))
+        }
+    }
+
     // =========================================================================
     // Statement Type Checking
     // =========================================================================
@@ -2372,6 +2485,56 @@ impl<'a> TypeCheckerVisitor<'a> {
                 num_str.parse::<i64>().ok()
             }
             _ => None,
+        }
+    }
+
+    /// Helper method to check __getslice__ on a struct
+    fn check_struct_getslice_method(&mut self, struct_name: DefaultSymbol, slice_info: &SliceInfo, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        let struct_name_str = self.core.string_interner.resolve(struct_name)
+            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+
+        // Type check start and end expressions if present
+        if let Some(start_expr) = &slice_info.start {
+            let _ = self.visit_expr(start_expr)?;
+        }
+        if let Some(end_expr) = &slice_info.end {
+            let _ = self.visit_expr(end_expr)?;
+        }
+
+        if let Some(getslice_method) = self.context.get_method_function_by_name(struct_name_str, "__getslice__", self.core.string_interner) {
+            // __getslice__ should have signature: __getslice__(self, start: i64, end: i64) -> T
+            if let Some(return_type) = &getslice_method.return_type {
+                Ok(return_type.clone())
+            } else {
+                Err(TypeCheckError::generic_error("__getslice__ method must have return type"))
+            }
+        } else {
+            Err(TypeCheckError::generic_error(&format!(
+                "Cannot slice type {:?} - no __getslice__ method found", object_type
+            )))
+        }
+    }
+
+    /// Helper method to check __setslice__ on a struct
+    fn check_struct_setslice_method(&mut self, struct_name: DefaultSymbol, start: &Option<ExprRef>, end: &Option<ExprRef>, value_type: &TypeDecl, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        let struct_name_str = self.core.string_interner.resolve(struct_name)
+            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
+
+        // Type check start and end expressions if present
+        if let Some(start_expr) = start {
+            let _ = self.visit_expr(start_expr)?;
+        }
+        if let Some(end_expr) = end {
+            let _ = self.visit_expr(end_expr)?;
+        }
+
+        if let Some(_setslice_method) = self.context.get_method_function_by_name(struct_name_str, "__setslice__", self.core.string_interner) {
+            // __setslice__ should have signature: __setslice__(self, start: i64, end: i64, value: T)
+            Ok(value_type.clone())
+        } else {
+            Err(TypeCheckError::generic_error(&format!(
+                "Cannot slice-assign to type {:?} - no __setslice__ method found", object_type
+            )))
         }
     }
 

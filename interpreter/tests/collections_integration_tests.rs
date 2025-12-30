@@ -1136,8 +1136,10 @@ mod struct_slice_tests {
             let program = r#"
     struct MyList {
         data: [u64]
+    }
 
-        fn __getitem__(self, index: i64) -> u64 {
+    impl MyList {
+        fn __getitem__(self: Self, index: i64) -> u64 {
             val idx = if index < 0i64 {
                 val len = self.data.len() as i64
                 (len + index) as u64
@@ -1147,7 +1149,7 @@ mod struct_slice_tests {
             self.data[idx]
         }
 
-        fn __setitem__(self, index: i64, value: u64) {
+        fn __setitem__(self: Self, index: i64, value: u64) {
             val idx = if index < 0i64 {
                 val len = self.data.len() as i64
                 (len + index) as u64
@@ -1178,8 +1180,10 @@ mod struct_slice_tests {
             let program = r#"
     struct MyList {
         data: [u64]
+    }
 
-        fn __getslice__(self, start: i64, end: i64) -> [u64] {
+    impl MyList {
+        fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
             # Handle special cases and negative indices
             val len = self.data.len() as i64
 
@@ -1226,8 +1230,10 @@ mod struct_slice_tests {
             let program = r#"
     struct MyList {
         data: [u64]
+    }
 
-        fn __getslice__(self, start: i64, end: i64) -> [u64] {
+    impl MyList {
+        fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
             val len = self.data.len() as i64
 
             val actual_start = if start < 0i64 {
@@ -1274,8 +1280,10 @@ mod struct_slice_tests {
             let program = r#"
     struct MyList {
         data: [u64]
+    }
 
-        fn __getslice__(self, start: i64, end: i64) -> [u64] {
+    impl MyList {
+        fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
             val actual_start = if start < 0i64 { 0u64 } else { start as u64 }
             val actual_end = if end == 9223372036854775807i64 {
                 self.data.len()
@@ -1285,7 +1293,7 @@ mod struct_slice_tests {
             self.data[actual_start..actual_end]
         }
 
-        fn __setslice__(self, start: i64, end: i64, values: [u64]) {
+        fn __setslice__(self: Self, start: i64, end: i64, values: [u64]) {
             val actual_start = if start < 0i64 { 0u64 } else { start as u64 }
             val actual_end = if end == 9223372036854775807i64 {
                 self.data.len()
@@ -1314,7 +1322,7 @@ mod struct_slice_tests {
             self.data = new_data
         }
 
-        fn get_data(self) -> [u64] {
+        fn get_data(self: Self) -> [u64] {
             self.data
         }
     }
@@ -1348,8 +1356,10 @@ mod struct_slice_tests {
             let program = r#"
     struct MyList {
         data: [u64]
+    }
 
-        fn __getitem__(self, index: i64) -> u64 {
+    impl MyList {
+        fn __getitem__(self: Self, index: i64) -> u64 {
             self.data[index as u64]
         }
     }

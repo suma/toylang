@@ -815,7 +815,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
         }
-        
+
+        // Check array methods
+        if let TypeDecl::Array(_, _) = obj_type {
+            if method_name == "len" {
+                // Array len() returns u64
+                return Ok(TypeDecl::UInt64);
+            }
+        }
+
         // Check builtin methods
         if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
             // For builtin methods, we need to create a temporary expression ref for the object

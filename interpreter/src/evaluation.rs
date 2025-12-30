@@ -727,6 +727,9 @@ impl<'a> EvaluationContext<'a> {
             Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
                 self.evaluate_associated_function_call(&struct_name, &function_name, &args)
             }
+            Expr::Cast(expr, target_type) => {
+                self.evaluate_cast(&expr, &target_type)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }
@@ -1012,6 +1015,27 @@ impl<'a> EvaluationContext<'a> {
                     _ => {
                         Err(InterpreterError::InternalError(format!(
                             "Method '{method_name}' not found for String type"
+                        )))
+                    }
+                }
+            }
+            Object::Array(elements) => {
+                // Handle built-in Array methods
+                match method_name {
+                    "len" => {
+                        // Array.len() method - no arguments required, returns u64
+                        if !args.is_empty() {
+                            return Err(InterpreterError::InternalError(format!(
+                                "Array.len() method takes no arguments, but {} provided",
+                                args.len()
+                            )));
+                        }
+                        let len = elements.len() as u64;
+                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
+                    }
+                    _ => {
+                        Err(InterpreterError::InternalError(format!(
+                            "Method '{method_name}' not found for Array type"
                         )))
                     }
                 }
@@ -1589,8 +1613,34 @@ impl EvaluationContext<'_> {
             }
         }
     }
-    
-    
+
+    /// Evaluate type cast expression (e.g., `x as i64`)
+    fn evaluate_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<EvaluationResult, InterpreterError> {
+        let value = self.evaluate(expr);
+        let value_obj = self.extract_value(value)?;
+
+        let borrowed = value_obj.borrow();
+        let result = match (&*borrowed, target_type) {
+            // i64 -> u64
+            (Object::Int64(v), TypeDecl::UInt64) => Object::UInt64(*v as u64),
+            // u64 -> i64
+            (Object::UInt64(v), TypeDecl::Int64) => Object::Int64(*v as i64),
+            // Identity casts
+            (Object::Int64(v), TypeDecl::Int64) => Object::Int64(*v),
+            (Object::UInt64(v), TypeDecl::UInt64) => Object::UInt64(*v),
+            // Other cases that should not happen after type checking
+            _ => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Invalid cast from {:?} to {:?}",
+                    borrowed, target_type
+                )));
+            }
+        };
+
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
+    }
+
+
     /// Convert index (positive or negative) to array index
     fn resolve_array_index(&self, index_obj: &RcObject, array_len: usize) -> Result<usize, InterpreterError> {
         let borrowed = index_obj.borrow();

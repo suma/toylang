@@ -80,6 +80,7 @@ pub struct ExprPool {
     pub index_val: Vec<Option<usize>>,             // For tuple access
     pub third_operand: Vec<Option<ExprRef>>,       // For index assign (value), if-elif-else (else block)
     pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
+    pub target_type: Vec<Option<TypeDecl>>,        // For cast expressions
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -112,6 +113,7 @@ pub enum ExprType {
     DictLiteral = 25,
     TupleLiteral = 26,
     TupleAccess = 27,
+    Cast = 28,
 }
 
 /// Location information storage for AST nodes
@@ -297,9 +299,10 @@ impl ExprPool {
             index_val: Vec::new(),
             third_operand: Vec::new(),
             slice_info: Vec::new(),
+            target_type: Vec::new(),
         }
     }
-    
+
     pub fn with_capacity(cap: usize) -> ExprPool {
         ExprPool {
             expr_types: Vec::with_capacity(cap),
@@ -322,6 +325,7 @@ impl ExprPool {
             index_val: Vec::with_capacity(cap),
             third_operand: Vec::with_capacity(cap),
             slice_info: Vec::with_capacity(cap),
+            target_type: Vec::with_capacity(cap),
         }
     }
 
@@ -349,6 +353,7 @@ impl ExprPool {
             self.index_val.resize(current_len + extend_count, None);
             self.third_operand.resize(current_len + extend_count, None);
             self.slice_info.resize(current_len + extend_count, None);
+            self.target_type.resize(current_len + extend_count, None);
         }
     }
 
@@ -489,8 +494,13 @@ impl ExprPool {
                 self.lhs[index] = Some(tuple);
                 self.index_val[index] = Some(index_val);
             }
+            Expr::Cast(expr, type_decl) => {
+                self.expr_types[index] = ExprType::Cast;
+                self.lhs[index] = Some(expr);
+                self.target_type[index] = Some(type_decl);
+            }
         }
-        
+
         ExprRef(index as u32)
     }
 
@@ -632,6 +642,12 @@ impl ExprPool {
                 Some(Expr::TupleAccess(
                     self.lhs[index]?,
                     self.index_val[index]?
+                ))
+            }
+            ExprType::Cast => {
+                Some(Expr::Cast(
+                    self.lhs[index]?,
+                    self.target_type[index].clone()?
                 ))
             }
         }
@@ -786,6 +802,11 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::TupleAccess;
                 self.lhs[index] = Some(obj);
                 self.index_val[index] = Some(idx);
+            }
+            Expr::Cast(expr, type_decl) => {
+                self.expr_types[index] = ExprType::Cast;
+                self.lhs[index] = Some(expr);
+                self.target_type[index] = Some(type_decl);
             }
             Expr::Null => {
                 self.expr_types[index] = ExprType::Null;
@@ -1221,7 +1242,13 @@ impl AstBuilder {
         self.location_pool.add_expr_location(location);
         expr_ref
     }
-    
+
+    pub fn cast_expr(&mut self, expr: ExprRef, target_type: TypeDecl, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Cast(expr, target_type));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);
@@ -1451,6 +1478,7 @@ pub enum Expr {
     DictLiteral(Vec<(ExprRef, ExprRef)>),  // {key1: value1, key2: value2}
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access
+    Cast(ExprRef, TypeDecl),  // expr as type - type cast expression
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

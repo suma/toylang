@@ -526,13 +526,21 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 // Generic index access or slice - works on any expression
                 let location = parser.current_source_location();
                 parser.next();
-                
+
                 expr = parse_bracket_access(parser, expr, location)?;
+            }
+            Some(Kind::As) => {
+                // Type cast expression: expr as type
+                let location = parser.current_source_location();
+                parser.next(); // consume 'as'
+
+                let target_type = parser.parse_type_declaration()?;
+                expr = parser.ast_builder.cast_expr(expr, target_type, Some(location));
             }
             _ => break,
         }
     }
-    
+
     Ok(expr)
 }
 

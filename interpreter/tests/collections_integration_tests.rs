@@ -576,7 +576,7 @@ mod simple_slice_tests {
 
     impl Container {
         fn __getslice__(self: Self, start: i64, end: i64) -> u64 {
-            self.value + start + end
+            self.value + (start as u64) + (end as u64)
         }
     }
 
@@ -1135,7 +1135,7 @@ mod struct_slice_tests {
         fn test_struct_setitem_with_i64_index() {
             let program = r#"
     struct MyList {
-        var data: [u64]
+        data: [u64]
 
         fn __getitem__(self, index: i64) -> u64 {
             val idx = if index < 0i64 {
@@ -1177,7 +1177,7 @@ mod struct_slice_tests {
         fn test_struct_getslice_with_i64_indices() {
             let program = r#"
     struct MyList {
-        var data: [u64]
+        data: [u64]
 
         fn __getslice__(self, start: i64, end: i64) -> [u64] {
             # Handle special cases and negative indices
@@ -1225,7 +1225,7 @@ mod struct_slice_tests {
         fn test_struct_getslice_open_ended() {
             let program = r#"
     struct MyList {
-        var data: [u64]
+        data: [u64]
 
         fn __getslice__(self, start: i64, end: i64) -> [u64] {
             val len = self.data.len() as i64
@@ -1273,7 +1273,7 @@ mod struct_slice_tests {
         fn test_struct_setslice_with_i64_indices() {
             let program = r#"
     struct MyList {
-        var data: [u64]
+        data: [u64]
 
         fn __getslice__(self, start: i64, end: i64) -> [u64] {
             val actual_start = if start < 0i64 { 0u64 } else { start as u64 }
@@ -1347,7 +1347,7 @@ mod struct_slice_tests {
         fn test_struct_index_conversion_from_u64() {
             let program = r#"
     struct MyList {
-        var data: [u64]
+        data: [u64]
 
         fn __getitem__(self, index: i64) -> u64 {
             self.data[index as u64]

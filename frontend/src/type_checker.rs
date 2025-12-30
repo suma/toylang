@@ -1044,9 +1044,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     }
                     SliceType::RangeSlice => {
                         // Range slice: arr[start..end] returns array type
-                        // Create array type with single element type and size 0 (dynamic)
                         let single_element_type = element_types[0].clone();
-                        Ok(TypeDecl::Array(vec![single_element_type], 0))
+
+                        // Try to calculate slice size if both start and end are constant literals
+                        let slice_size = self.calculate_slice_size(slice_info);
+
+                        // Create element_types with the correct number of elements
+                        let result_element_types = vec![single_element_type; slice_size];
+                        Ok(TypeDecl::Array(result_element_types, slice_size))
                     }
                 }
             }
@@ -2317,6 +2322,34 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         Ok(())
+    }
+
+    /// Calculate slice size from constant literals if possible
+    /// Returns the size if both start and end are constant, otherwise returns 0 (dynamic)
+    fn calculate_slice_size(&self, slice_info: &SliceInfo) -> usize {
+        // Try to extract constant values from start and end expressions
+        let start_val = slice_info.start.as_ref().and_then(|expr| self.extract_constant_value(expr));
+        let end_val = slice_info.end.as_ref().and_then(|expr| self.extract_constant_value(expr));
+
+        match (start_val, end_val) {
+            (Some(start), Some(end)) if end >= start => (end - start) as usize,
+            _ => 0, // Dynamic size if not both constants
+        }
+    }
+
+    /// Extract constant integer value from an expression
+    fn extract_constant_value(&self, expr_ref: &ExprRef) -> Option<i64> {
+        let expr = self.core.expr_pool.get(expr_ref)?;
+        match expr {
+            Expr::UInt64(val) => Some(val as i64),
+            Expr::Int64(val) => Some(val),
+            Expr::Number(symbol) => {
+                // Resolve symbol to string and parse as integer
+                let num_str = self.core.string_interner.resolve(symbol)?;
+                num_str.parse::<i64>().ok()
+            }
+            _ => None,
+        }
     }
 
     /// Check if current access is within the same module

@@ -1813,8 +1813,31 @@ impl EvaluationContext<'_> {
                         }
                     }
                     SliceType::RangeSlice => {
-                        // Range slicing not supported for structs
-                        Err(InterpreterError::InternalError("Struct slicing not supported - use single index access struct[key]".to_string()))
+                        // Range slicing: struct[start..end] calls __getslice__(self, start, end)
+                        let struct_name_val = *type_name;
+                        drop(obj_borrowed);
+
+                        let start_obj = if let Some(start_expr) = &slice_info.start {
+                            let start_val = self.evaluate(start_expr)?;
+                            self.extract_value(Ok(start_val))?
+                        } else {
+                            Rc::new(RefCell::new(Object::Int64(0)))
+                        };
+
+                        let end_obj = if let Some(end_expr) = &slice_info.end {
+                            let end_val = self.evaluate(end_expr)?;
+                            self.extract_value(Ok(end_val))?
+                        } else {
+                            Rc::new(RefCell::new(Object::Int64(-1)))
+                        };
+
+                        let struct_name_str = self.string_interner.resolve(struct_name_val)
+                            .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                            .to_string();
+                        let getslice_method = self.string_interner.get_or_intern("__getslice__");
+
+                        let args = vec![start_obj, end_obj];
+                        self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str)
                     }
                 }
             }
@@ -1823,7 +1846,7 @@ impl EvaluationContext<'_> {
             ))
         }
     }
-    
+
     fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let object_val = self.evaluate(object)?;
         let object_obj = self.extract_value(Ok(object_val))?;
@@ -1970,8 +1993,31 @@ impl EvaluationContext<'_> {
                         Err(InterpreterError::InternalError("Struct access requires index".to_string()))
                     }
                 } else {
-                    // Range slicing not supported for structs
-                    Err(InterpreterError::InternalError("Struct slicing not supported - use single index access struct[key]".to_string()))
+                    // Range slicing: struct[start..end] calls __getslice__(self, start, end)
+                    let struct_name_val = *type_name;
+                    drop(obj_borrowed);
+
+                    let start_obj = if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        self.extract_value(Ok(start_val))?
+                    } else {
+                        Rc::new(RefCell::new(Object::Int64(0)))
+                    };
+
+                    let end_obj = if let Some(end_expr) = end {
+                        let end_val = self.evaluate(end_expr)?;
+                        self.extract_value(Ok(end_val))?
+                    } else {
+                        Rc::new(RefCell::new(Object::Int64(-1)))
+                    };
+
+                    let struct_name_str = self.string_interner.resolve(struct_name_val)
+                        .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                        .to_string();
+                    let getslice_method = self.string_interner.get_or_intern("__getslice__");
+
+                    let args = vec![start_obj, end_obj];
+                    self.call_struct_method(object_obj, getslice_method, &args, &struct_name_str)
                 }
             }
             _ => Err(InterpreterError::InternalError(
@@ -1979,7 +2025,7 @@ impl EvaluationContext<'_> {
             ))
         }
     }
-    
+
     fn evaluate_slice_assign(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Get the object being indexed
         let object_val = self.evaluate(object)?;
@@ -2074,8 +2120,31 @@ impl EvaluationContext<'_> {
                         Err(InterpreterError::InternalError("Struct assignment requires index".to_string()))
                     }
                 } else {
-                    // Range slice assignment not supported for structs
-                    Err(InterpreterError::InternalError("Struct slice assignment not supported - use single index assignment struct[key] = value".to_string()))
+                    // Range slice assignment: struct[start..end] = value calls __setslice__(self, start, end, value)
+                    let start_obj = if let Some(start_expr) = start {
+                        let start_val = self.evaluate(start_expr)?;
+                        self.extract_value(Ok(start_val))?
+                    } else {
+                        Rc::new(RefCell::new(Object::Int64(0)))
+                    };
+
+                    let end_obj = if let Some(end_expr) = end {
+                        let end_val = self.evaluate(end_expr)?;
+                        self.extract_value(Ok(end_val))?
+                    } else {
+                        Rc::new(RefCell::new(Object::Int64(-1)))
+                    };
+
+                    let struct_name_str = self.string_interner.resolve(struct_name_val)
+                        .ok_or_else(|| InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
+                        .to_string();
+                    let setslice_method = self.string_interner.get_or_intern("__setslice__");
+
+                    // Call __setslice__(self, start, end, value)
+                    let args = vec![start_obj, end_obj, value_obj.clone()];
+                    self.call_struct_method(object_obj, setslice_method, &args, &struct_name_str)?;
+
+                    Ok(EvaluationResult::Value(value_obj))
                 }
             }
             _ => {

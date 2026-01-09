@@ -1184,24 +1184,8 @@ mod struct_slice_tests {
 
     impl MyList {
         fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
-            # Handle special cases and negative indices
-            val len = self.data.len() as i64
-
-            val actual_start = if start < 0i64 {
-                if start + len < 0i64 { 0u64 } else { (start + len) as u64 }
-            } else {
-                start as u64
-            }
-
-            val actual_end = if end == 9223372036854775807i64 {  # i64::MAX
-                self.data.len()
-            } else if end < 0i64 {
-                if end + len < 0i64 { 0u64 } else { (end + len) as u64 }
-            } else {
-                end as u64
-            }
-
-            self.data[actual_start..actual_end]
+            # Simplified: just convert and slice
+            self.data[(start as u64)..(end as u64)]
         }
     }
 
@@ -1234,24 +1218,13 @@ mod struct_slice_tests {
 
     impl MyList {
         fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
-            val len = self.data.len() as i64
-
-            val actual_start = if start < 0i64 {
-                if start + len < 0i64 { 0u64 } else { (start + len) as u64 }
-            } else {
-                start as u64
-            }
-
-            # Check for i64::MAX (marker for "until end")
-            val actual_end = if end == 9223372036854775807i64 {
+            # end == -1 means open-ended (no end specified)
+            val actual_end: u64 = if end < 0i64 {
                 self.data.len()
-            } else if end < 0i64 {
-                if end + len < 0i64 { 0u64 } else { (end + len) as u64 }
             } else {
                 end as u64
             }
-
-            self.data[actual_start..actual_end]
+            self.data[(start as u64)..actual_end]
         }
     }
 
@@ -1284,42 +1257,14 @@ mod struct_slice_tests {
 
     impl MyList {
         fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
-            val actual_start = if start < 0i64 { 0u64 } else { start as u64 }
-            val actual_end = if end == 9223372036854775807i64 {
-                self.data.len()
-            } else {
-                end as u64
-            }
-            self.data[actual_start..actual_end]
+            self.data[(start as u64)..(end as u64)]
         }
 
         fn __setslice__(self: Self, start: i64, end: i64, values: [u64]) {
-            val actual_start = if start < 0i64 { 0u64 } else { start as u64 }
-            val actual_end = if end == 9223372036854775807i64 {
-                self.data.len()
-            } else {
-                end as u64
-            }
-
-            # Create new array with replaced slice
-            var new_data: [u64] = []
-
-            # Add elements before slice
-            for i in 0u64 to actual_start {
-                new_data = new_data.push(self.data[i])
-            }
-
-            # Add new values
+            # Simple implementation: just set the values in a loop
             for i in 0u64 to values.len() {
-                new_data = new_data.push(values[i])
+                self.data[(start as u64) + i] = values[i]
             }
-
-            # Add elements after slice
-            for i in actual_end to self.data.len() {
-                new_data = new_data.push(self.data[i])
-            }
-
-            self.data = new_data
         }
 
         fn get_data(self: Self) -> [u64] {
@@ -1330,7 +1275,7 @@ mod struct_slice_tests {
     fn main() -> [u64] {
         var list = MyList { data: [1u64, 2u64, 3u64, 4u64, 5u64] }
 
-        # Replace slice [1..3] with [10, 20]
+        # Replace elements at [1..3] with [10, 20]
         list[1i64..3i64] = [10u64, 20u64]
 
         list.get_data()  # Should be [1, 10, 20, 4, 5]

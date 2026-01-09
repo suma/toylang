@@ -1047,9 +1047,20 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         // Range slice: arr[start..end] returns array type
                         let single_element_type = element_types[0].clone();
 
+                        // For dynamic arrays (size 0), return a dynamic array type
+                        if _size == 0 {
+                            // Dynamic array: return [T] (dynamic array of same element type)
+                            return Ok(TypeDecl::Array(vec![single_element_type], 0));
+                        }
+
                         // Try to calculate slice size using array size for open-ended slices
                         let array_size = _size;
                         let slice_size = self.calculate_slice_size(slice_info, array_size);
+
+                        // If slice_size is 0, return dynamic array type
+                        if slice_size == 0 {
+                            return Ok(TypeDecl::Array(vec![single_element_type], 0));
+                        }
 
                         // Create element_types with the correct number of elements
                         let result_element_types = vec![single_element_type; slice_size];

@@ -155,9 +155,10 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             let resolved_type = self.resolve_self_type(param_type);
             
             match &resolved_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String | 
-                TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) => {
-                    // Valid parameter types (including struct types and generic types)
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String |
+                TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
+                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
+                    // Valid parameter types (including struct types, generic types, and collection types)
                 },
                 _ => {
                     if has_generics {

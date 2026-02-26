@@ -276,27 +276,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.optimization.type_cache.clear();
         
         // Pre-scan for explicit type declarations and establish global type context
-        let mut global_numeric_type: Option<TypeDecl> = None;
-        for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(&s) {
-                match stmt {
-                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
-                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
-                            global_numeric_type = Some(type_decl.clone());
-                            break; // Use the first explicit numeric type found
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        // Set global type hint if found
         let original_hint = self.type_inference.type_hint.clone();
-        if let Some(ref global_type) = global_numeric_type {
-            self.type_inference.type_hint = Some(global_type.clone());
+        if let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
+            self.type_inference.type_hint = Some(numeric_type);
         }
-        
+
         // Process each statement
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.

@@ -270,25 +270,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         });
 
         // Pre-scan for explicit type declarations and establish global type context
-        let mut global_numeric_type: Option<TypeDecl> = None;
-        for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(&s) {
-                match stmt {
-                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
-                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
-                            global_numeric_type = Some(type_decl.clone());
-                            break; // Use the first explicit numeric type found
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        // Set global type hint if found
         let original_hint = self.type_inference.type_hint.clone();
-        if let Some(ref global_type) = global_numeric_type {
-            self.type_inference.type_hint = Some(global_type.clone());
+        if let Some(numeric_type) = self.scan_numeric_type_hint(&statements) {
+            self.type_inference.type_hint = Some(numeric_type);
         } else if let Some(ref return_type) = func.return_type {
             // Use function return type as type hint for Number literals
             self.type_inference.type_hint = Some(return_type.clone());
@@ -648,27 +632,11 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.optimization.type_cache.clear();
         
         // Pre-scan for explicit type declarations and establish global type context
-        let mut global_numeric_type: Option<TypeDecl> = None;
-        for s in statements.iter() {
-            if let Some(stmt) = self.core.stmt_pool.get(&s) {
-                match stmt {
-                    Stmt::Val(_, Some(type_decl), _) | Stmt::Var(_, Some(type_decl), _) => {
-                        if matches!(type_decl, TypeDecl::Int64 | TypeDecl::UInt64) {
-                            global_numeric_type = Some(type_decl.clone());
-                            break; // Use the first explicit numeric type found
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        // Set global type hint if found
         let original_hint = self.type_inference.type_hint.clone();
-        if let Some(ref global_type) = global_numeric_type {
-            self.type_inference.type_hint = Some(global_type.clone());
+        if let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
+            self.type_inference.type_hint = Some(numeric_type);
         }
-        
+
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
@@ -1396,10 +1364,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
         let value_type = self.visit_expr(first_value)?;
         
-        // Debug: print inferred types for troubleshooting
-        // eprintln!("DEBUG dict_literal: key_type={:?}, value_type={:?}, expected_key={:?}, expected_value={:?}", 
-        //           key_type, value_type, expected_key_type, expected_value_type);
-        
         // Restore original hint
         self.type_inference.type_hint = original_hint.clone();
         
@@ -1689,24 +1653,20 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
             TypeDecl::Struct(struct_symbol, type_params) => {
                 // Handle symbol-based struct type with type parameter substitution
-                let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
                 let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
-                eprintln!("DEBUG field_access: struct '{}', field '{}', type_params: {:?}", struct_name_str, field_name, type_params);
 
                 if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
                     for struct_field in struct_fields {
                         if struct_field.name == field_name {
-                            eprintln!("DEBUG field_access: Found field '{}' with type: {:?}", field_name, struct_field.type_decl);
                             // Create type parameter mapping and substitute generic types
                             let mapping = self.create_type_param_mapping(struct_symbol, &type_params);
-                            eprintln!("DEBUG field_access: Created mapping: {:?}", mapping);
                             let substituted_type = self.substitute_type_params(&struct_field.type_decl, &mapping);
-                            eprintln!("DEBUG field_access: Substituted type: {:?}", substituted_type);
                             return Ok(substituted_type);
                         }
                     }
                     Err(TypeCheckError::not_found("field", field_name))
                 } else {
+                    let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
                     Err(TypeCheckError::not_found("struct", struct_name_str))
                 }
             }
@@ -2016,11 +1976,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
         let is_generic = generic_params.is_some() && !generic_params.as_ref().unwrap().is_empty();
 
-        let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
-        eprintln!("DEBUG visit_struct_literal_impl: struct '{}', generic_params: {:?}, is_generic: {}", struct_name_str, generic_params, is_generic);
-
         if is_generic {
-            eprintln!("DEBUG visit_struct_literal_impl: Calling visit_generic_struct_literal for '{}'", struct_name_str);
             return self.visit_generic_struct_literal(struct_name, fields, &struct_definition, &generic_params.unwrap());
         }
         

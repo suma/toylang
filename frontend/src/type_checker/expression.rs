@@ -612,79 +612,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         result
     }
 
-    /// Type check slice access
-    pub fn visit_slice_access(&mut self, object: &ExprRef, slice_info: &SliceInfo) -> Result<TypeDecl, TypeCheckError> {
-        // Check object type
-        let obj_type = self.visit_expr(object)?;
-        
-        // Must be array or string type
-        match &obj_type {
-            TypeDecl::Array(element_types, _size) => {
-                // Get the element type (assuming homogeneous array)
-                let element_type = element_types.first().map(|t| Box::new(t.clone())).unwrap_or(Box::new(TypeDecl::Unknown));
-                // Check index types
-                if let Some(ref start) = slice_info.start {
-                    let start_type = self.visit_expr(start)?;
-                    if start_type != TypeDecl::Int64 && start_type != TypeDecl::UInt64 {
-                        return Err(TypeCheckError::type_mismatch_operation(
-                            "slice start index", 
-                            start_type, 
-                            TypeDecl::Int64
-                        ));
-                    }
-                }
-                
-                if let Some(ref end) = slice_info.end {
-                    let end_type = self.visit_expr(end)?;
-                    if end_type != TypeDecl::Int64 && end_type != TypeDecl::UInt64 {
-                        return Err(TypeCheckError::type_mismatch_operation(
-                            "slice end index",
-                            end_type,
-                            TypeDecl::Int64
-                        ));
-                    }
-                }
-                
-                // Slice result is same array type with unknown size for now
-                Ok(TypeDecl::Array(vec![*element_type.clone()], 0))
-            }
-            TypeDecl::String => {
-                // String slicing works similarly
-                if let Some(ref start) = slice_info.start {
-                    let start_type = self.visit_expr(start)?;
-                    if start_type != TypeDecl::Int64 && start_type != TypeDecl::UInt64 {
-                        return Err(TypeCheckError::type_mismatch_operation(
-                            "slice start index",
-                            start_type,
-                            TypeDecl::Int64
-                        ));
-                    }
-                }
-                
-                if let Some(ref end) = slice_info.end {
-                    let end_type = self.visit_expr(end)?;
-                    if end_type != TypeDecl::Int64 && end_type != TypeDecl::UInt64 {
-                        return Err(TypeCheckError::type_mismatch_operation(
-                            "slice end index",
-                            end_type,
-                            TypeDecl::Int64
-                        ));
-                    }
-                }
-                
-                Ok(TypeDecl::String)
-            }
-            _ => {
-                Err(TypeCheckError::type_mismatch_operation(
-                    "slice access",
-                    obj_type,
-                    TypeDecl::Array(vec![TypeDecl::Unknown], 0)
-                ))
-            }
-        }
-    }
-
-
     /// Type check method calls - implementation used by type_checker.rs
     pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
@@ -817,5 +744,30 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
+    }
+
+    /// Type check associated function calls - implementation
+    pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Handle Container::function_name(args) type calls for any associated function
+
+        // Check if this is a known struct
+        if !self.context.is_generic_struct(struct_name) {
+            return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+        }
+
+        // Look for the associated function in the struct's impl block
+        let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<unknown>");
+
+        if let Some(method) = self.context.get_struct_method(struct_name, function_name) {
+            // Clone the method to avoid borrowing issues
+            let method_clone = method.clone();
+            // Handle generic associated function call with type inference
+            self.handle_generic_associated_function_call(struct_name, function_name, args, &method_clone)
+        } else {
+            Err(TypeCheckError::generic_error(&format!(
+                "Associated function '{}' not found for struct '{:?}'",
+                function_name_str, struct_name
+            )))
+        }
     }
 }

@@ -21,11 +21,11 @@ fn test_generic_linked_list_simulation() {
                 ListNode { data: value, has_next: true, next_data: next_val }
             }
             
-            fn get_data(self) -> T {
+            fn get_data(self: Self) -> T {
                 self.data
             }
             
-            fn get_next_data(self) -> T {
+            fn get_next_data(self: Self) -> T {
                 if self.has_next {
                     self.next_data
                 } else {
@@ -60,23 +60,23 @@ fn test_generic_option_type_pattern() {
         }
         
         impl<T> Option<T> {
-            fn some(val: T) -> Option<T> {
-                Option { has_value: true, value: val }
+            fn some(v: T) -> Option<T> {
+                Option { has_value: true, value: v }
             }
             
             fn none(default: T) -> Option<T> {
                 Option { has_value: false, value: default }
             }
             
-            fn is_some(self) -> bool {
+            fn is_some(self: Self) -> bool {
                 self.has_value
             }
             
-            fn is_none(self) -> bool {
+            fn is_none(self: Self) -> bool {
                 !self.has_value
             }
             
-            fn unwrap(self) -> T {
+            fn unwrap(self: Self) -> T {
                 if self.has_value {
                     self.value
                 } else {
@@ -84,7 +84,7 @@ fn test_generic_option_type_pattern() {
                 }
             }
             
-            fn unwrap_or(self, default: T) -> T {
+            fn unwrap_or(self: Self, default: T) -> T {
                 if self.has_value {
                     self.value
                 } else {
@@ -141,15 +141,15 @@ fn test_generic_result_type_pattern() {
                 Result { is_success: false, success_value: default_ok, error_value: error }
             }
             
-            fn is_ok(self) -> bool {
+            fn is_ok(self: Self) -> bool {
                 self.is_success
             }
             
-            fn is_err(self) -> bool {
+            fn is_err(self: Self) -> bool {
                 !self.is_success
             }
             
-            fn unwrap(self) -> T {
+            fn unwrap(self: Self) -> T {
                 if self.is_success {
                     self.success_value
                 } else {
@@ -157,7 +157,7 @@ fn test_generic_result_type_pattern() {
                 }
             }
             
-            fn unwrap_err(self) -> E {
+            fn unwrap_err(self: Self) -> E {
                 if !self.is_success {
                     self.error_value
                 } else {
@@ -204,58 +204,60 @@ fn test_generic_vector_simulation() {
             length: u64,
             capacity: u64
         }
-        
+
         impl<T> Vec<T> {
             fn new(default: T) -> Vec<T> {
-                Vec { 
-                    data: [default, default, default, default, default], 
-                    length: 0u64, 
-                    capacity: 5u64 
+                Vec {
+                    data: [default, default, default, default, default],
+                    length: 0u64,
+                    capacity: 5u64
                 }
             }
-            
-            fn push(self, item: T) -> Vec<T> {
+
+            fn push(self: Self, item: T) -> Vec<T> {
                 if self.length < self.capacity {
                     # Simulate pushing by creating new vec with updated data
                     if self.length == 0u64 {
-                        Vec { 
-                            data: [item, self.data[1u64], self.data[2u64], self.data[3u64], self.data[4u64]], 
-                            length: 1u64, 
-                            capacity: self.capacity 
-                        }
-                    } else if self.length == 1u64 {
-                        Vec { 
-                            data: [self.data[0u64], item, self.data[2u64], self.data[3u64], self.data[4u64]], 
-                            length: 2u64, 
-                            capacity: self.capacity 
+                        Vec {
+                            data: [item, self.data[1u64], self.data[2u64], self.data[3u64], self.data[4u64]],
+                            length: 1u64,
+                            capacity: self.capacity
                         }
                     } else {
-                        # For simplicity, just return self for higher indices
-                        self
+                        if self.length == 1u64 {
+                            Vec {
+                                data: [self.data[0u64], item, self.data[2u64], self.data[3u64], self.data[4u64]],
+                                length: 2u64,
+                                capacity: self.capacity
+                            }
+                        } else {
+                            # For simplicity, just return self for higher indices
+                            self
+                        }
                     }
                 } else {
                     self
                 }
             }
-            
-            fn get(self, index: u64) -> T {
+
+            fn get(self: Self, index: u64) -> T {
                 if index < self.length {
                     self.data[index]
                 } else {
                     self.data[0u64]  # Default fallback
                 }
             }
-            
-            fn len(self) -> u64 {
+
+            fn len(self: Self) -> u64 {
                 self.length
             }
         }
-        
+
         fn main() -> u64 {
             val vec = Vec::new(0u64)
             val vec1 = vec.push(10u64)
             val vec2 = vec1.push(20u64)
-            
+
             vec2.get(0u64) + vec2.get(1u64) + vec2.len()
         }
     "#;
@@ -283,19 +285,19 @@ fn test_generic_binary_tree_node() {
         }
         
         impl<T> TreeNode<T> {
-            fn leaf(val: T) -> TreeNode<T> {
-                TreeNode { 
-                    value: val, 
-                    has_left: false, 
-                    has_right: false, 
-                    left_value: val, 
-                    right_value: val 
+            fn leaf(v: T) -> TreeNode<T> {
+                TreeNode {
+                    value: v,
+                    has_left: false,
+                    has_right: false,
+                    left_value: v,
+                    right_value: v
                 }
             }
-            
-            fn with_children(val: T, left: T, right: T) -> TreeNode<T> {
-                TreeNode { 
-                    value: val, 
+
+            fn with_children(v: T, left: T, right: T) -> TreeNode<T> {
+                TreeNode {
+                    value: v, 
                     has_left: true, 
                     has_right: true, 
                     left_value: left, 
@@ -303,7 +305,7 @@ fn test_generic_binary_tree_node() {
                 }
             }
             
-            fn sum_all(self) -> T {
+            fn sum_all(self: Self) -> T {
                 val total = self.value
                 val total = if self.has_left { total + self.left_value } else { total }
                 val total = if self.has_right { total + self.right_value } else { total }
@@ -348,7 +350,7 @@ fn test_generic_state_machine() {
                 }
             }
             
-            fn transition(self, new_state: S) -> StateMachine<S, T> {
+            fn transition(self: Self, new_state: S) -> StateMachine<S, T> {
                 StateMachine { 
                     current_state: new_state, 
                     data: self.data, 
@@ -356,7 +358,7 @@ fn test_generic_state_machine() {
                 }
             }
             
-            fn update_data(self, new_data: T) -> StateMachine<S, T> {
+            fn update_data(self: Self, new_data: T) -> StateMachine<S, T> {
                 StateMachine { 
                     current_state: self.current_state, 
                     data: new_data, 
@@ -364,11 +366,11 @@ fn test_generic_state_machine() {
                 }
             }
             
-            fn get_data(self) -> T {
+            fn get_data(self: Self) -> T {
                 self.data
             }
             
-            fn get_transitions(self) -> u64 {
+            fn get_transitions(self: Self) -> u64 {
                 self.transition_count
             }
         }
@@ -423,7 +425,7 @@ fn test_generic_cache_pattern() {
                 }
             }
             
-            fn get(self) -> V {
+            fn get(self: Self) -> V {
                 if self.is_valid {
                     # In a real implementation, we'd update access_count immutably
                     self.value
@@ -432,7 +434,7 @@ fn test_generic_cache_pattern() {
                 }
             }
             
-            fn is_cached(self) -> bool {
+            fn is_cached(self: Self) -> bool {
                 self.is_valid
             }
         }

@@ -8,7 +8,6 @@ This project implements a statically-typed programming language with comprehensi
 
 - **Frontend Library**: Shared parser, AST, and type checker with automatic lexer generation
 - **Interpreter**: Tree-walking interpreter with comprehensive test suite and performance optimizations
-- **Lua Backend**: Transpiler that converts the language to executable Lua code
 
 ## Language Features
 
@@ -54,14 +53,6 @@ This project implements a statically-typed programming language with comprehensi
 - **Method Registry**: Support for both struct methods and built-in type methods
 - **Resource Management**: Automatic object destruction with custom destructor support
 
-### Lua Backend (`lua_backend/`)
-- **AST to Lua Transpilation**: Direct conversion from AST to executable Lua code
-- **Variable Prefixing**: `val` variables become `V_` prefix, `var` variables become `v_` prefix
-- **Structure Support**: Struct definitions converted to Lua constructor functions
-- **Method Translation**: Impl blocks become `StructType_method` style functions
-- **Control Flow Mapping**: For loops, while loops, if/else expressions with proper Lua syntax
-- **Array Translation**: 0-based arrays converted to 1-based Lua tables
-
 ## Getting Started
 
 ### Prerequisites
@@ -82,9 +73,6 @@ cd interpreter && cargo build --features debug-logging
 
 # Build release version (production-optimized, no logging overhead)
 cd interpreter && cargo build --release
-
-# Build Lua backend
-cd lua_backend && cargo build
 ```
 
 ### Running Programs
@@ -98,12 +86,6 @@ cargo run example/fibonacci_array.t    # Array-based fibonacci
 cargo run example/string_len_test.t    # String operations
 cargo run example/array_test.t         # Array manipulation
 cargo run example/test_qualified_identifier.t  # Module system with qualified identifiers
-
-# Generate Lua code from source file
-cd lua_backend && cargo run ../interpreter/example/fib.t > fib.lua
-
-# Execute generated Lua code
-lua fib.lua
 ```
 
 ### Testing
@@ -123,9 +105,6 @@ cd interpreter && cargo test destruction_tests custom_destructor_tests
 
 # Run tests with logging enabled (useful for debugging)
 cd interpreter && cargo test --features test-logging
-
-# Run Lua backend tests
-cd lua_backend && cargo test
 ```
 
 ## Language Syntax
@@ -289,30 +268,6 @@ fn main() -> u64 {
 }
 ```
 
-### Lua Code Generation Example
-
-```lua
--- Original source code:
--- fn fib(n: u64) -> u64 {
---     if n <= 1u64 { n } else { fib(n - 1u64) + fib(n - 2u64) }
--- }
-
--- Generated Lua code:
-function fib(n)
-  return (function()
-    if n <= 1 then
-      return n
-    else
-      return (fib((n - 1)) + fib((n - 2)))
-    end
-  end)()
-end
-
--- Variable prefixing:
--- val pi = 3.14     --> local V_PI = 3.14
--- var counter = 0   --> local v_counter = 0
-```
-
 ## Development Features
 
 ### Comprehensive Testing
@@ -340,8 +295,6 @@ This is a fully functional programming language implementation suitable for:
 - Experimenting with type system design
 - Understanding interpreter implementation techniques
 - Exploring modern language features in a controlled environment
-- Cross-platform code execution via Lua transpilation
-
 The implementation includes comprehensive documentation, extensive testing, and performance optimizations, making it a robust foundation for further language development.
 
 ## Technical Highlights
@@ -351,7 +304,6 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Unification Algorithm**: Sophisticated type parameter resolution from usage context
 - **Efficient Memory Management**: Minimal allocation overhead with pool-based design and automatic destruction
 - **Extensible Architecture**: Clean separation between frontend and backend components
-- **Multiple Backends**: Both interpreter and Lua transpiler share the same frontend
 - **Production-quality Testing**: Comprehensive test suite with full pass rate
 - **Resource Management**: Automatic object destruction with custom `__drop__` method support
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds

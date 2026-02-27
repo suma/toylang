@@ -386,7 +386,6 @@ toylang/
 │   ├── tests/
 │   └── Cargo.toml
 ├── compiler_core/     # Shared core library
-├── lua_backend/       # Lua backend
 ├── Cargo.toml         # Workspace configuration
 ├── TEST_PLAN.md       # This test plan design document
 └── todo.md            # Task management

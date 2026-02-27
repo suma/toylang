@@ -2,7 +2,7 @@
 
 ## 概要
 
-インタープリター、LLVM IRネイティブコード生成、およびLuaバイトコード生成の複数バックエンドに対応できる組み込み関数システムの設計文書です。
+インタープリターおよびLLVM IRネイティブコード生成の複数バックエンドに対応できる組み込み関数システムの設計文書です。
 既存のコンパイラアーキテクチャを活用し、段階的に実装可能な3層抽象化アプローチを採用します。
 
 ## アーキテクチャ全体図
@@ -189,92 +189,7 @@ impl ExecutionBackend for InterpreterBackend {
 }
 ```
 
-#### 2.3 Luaバイトコードバックエンド
-
-```rust
-// lua_backend/src/backend.rs
-use mlua::{Lua, Function as LuaFunction, Value as LuaValue};
-
-pub struct LuaBytecodeBackend {
-    lua: Lua,
-    runtime_functions: std::collections::HashMap<BuiltinFunction, LuaFunction<'static>>,
-}
-
-impl ExecutionBackend for LuaBytecodeBackend {
-    type Value = LuaValue<'static>;
-    type Error = LuaBytecodeError;
-    
-    fn execute_builtin(
-        &mut self, 
-        func: BuiltinFunction, 
-        args: &[Self::Value]
-    ) -> Result<Self::Value, Self::Error> {
-        match func {
-            BuiltinFunction::StrLen => {
-                let lua_func = self.lua.globals().get::<_, LuaFunction>("string")?
-                    .get::<_, LuaFunction>("len")?;
-                Ok(lua_func.call::<_, LuaValue>(args[0].clone())?)
-            }
-            BuiltinFunction::StrConcat => {
-                // Luaの文字列連結演算子 ".." を使用
-                let s1 = args[0].as_str().ok_or("Expected string")?;
-                let s2 = args[1].as_str().ok_or("Expected string")?;
-                Ok(LuaValue::String(self.lua.create_string(&format!("{}{}", s1, s2))?))
-            }
-            BuiltinFunction::AbsI64 => {
-                let lua_func = self.lua.globals().get::<_, LuaFunction>("math")?
-                    .get::<_, LuaFunction>("abs")?;
-                Ok(lua_func.call::<_, LuaValue>(args[0].clone())?)
-            }
-            BuiltinFunction::MinI64 | BuiltinFunction::MinU64 => {
-                let lua_func = self.lua.globals().get::<_, LuaFunction>("math")?
-                    .get::<_, LuaFunction>("min")?;
-                Ok(lua_func.call::<_, LuaValue>((args[0].clone(), args[1].clone()))?)
-            }
-            BuiltinFunction::MaxI64 | BuiltinFunction::MaxU64 => {
-                let lua_func = self.lua.globals().get::<_, LuaFunction>("math")?
-                    .get::<_, LuaFunction>("max")?;
-                Ok(lua_func.call::<_, LuaValue>((args[0].clone(), args[1].clone()))?)
-            }
-            // 配列操作（Luaテーブルとして実装）
-            BuiltinFunction::ArrayLen => {
-                if let LuaValue::Table(table) = &args[0] {
-                    Ok(LuaValue::Integer(table.len()? as i64))
-                } else {
-                    Err(LuaBytecodeError::TypeError("Expected table".to_string()))
-                }
-            }
-            BuiltinFunction::ArrayGet => {
-                if let LuaValue::Table(table) = &args[0] {
-                    let index = args[1].as_i64().ok_or("Expected integer index")? + 1; // Lua is 1-based
-                    Ok(table.get::<_, LuaValue>(index)?)
-                } else {
-                    Err(LuaBytecodeError::TypeError("Expected table".to_string()))
-                }
-            }
-            // ...
-        }
-    }
-    
-    fn compile_to_bytecode(&mut self, program: &Program) -> Result<Vec<u8>, Self::Error> {
-        // AST をLuaコードに変換
-        let lua_code = self.generate_lua_code(program)?;
-        
-        // Luaコードをバイトコードにコンパイル
-        let chunk = self.lua.load(&lua_code);
-        let bytecode = chunk.into_function()?.dump(false);
-        
-        Ok(bytecode)
-    }
-    
-    fn execute_bytecode(&mut self, bytecode: &[u8]) -> Result<Self::Value, Self::Error> {
-        let chunk = self.lua.load(bytecode);
-        Ok(chunk.call::<_, LuaValue>(())?)
-    }
-}
-```
-
-#### 2.4 LLVM IRバックエンド（将来実装）
+#### 2.3 LLVM IRバックエンド（将来実装）
 
 ```rust
 // native/src/backend.rs (将来実装)
@@ -475,29 +390,7 @@ pub fn set(arr: [T], index: u64, value: T) -> [T] {
 3. 自動importとnamespace解決
 4. ドキュメントとテストケース作成
 
-### Phase 5: Luaバイトコードバックエンド (Week 7-8)
-
-**Priority:** 🟡 Medium
-
-**Tasks:**
-1. mlua crateの依存関係追加
-2. LuaBytecodeBackend基本構造実装
-3. 基本的な組み込み関数のLuaバイトコード生成
-4. Luaランタイムライブラリとの統合
-
-**Deliverables:**
-- 動作するLuaバイトコードジェネレーター
-- 組み込み関数のLua実装
-- バイトコード実行システム
-
-**実装手順:**
-1. `Cargo.toml`にmlua依存関係追加
-2. `lua_backend/src/backend.rs`でLuaBytecodeBackend実装
-3. AST→Luaコード変換とバイトコードコンパイル
-4. 基本的な組み込み関数（StrLen, AbsI64等）のLua統合
-5. バイトコード実行とテストケース作成
-
-### Phase 6: LLVM IR準備 (Future)
+### Phase 5: LLVM IR準備 (Future)
 
 **Priority:** 🟢 Low (将来実装)
 
@@ -522,7 +415,6 @@ pub fn set(arr: [T], index: u64, value: T) -> [T] {
 ```rust
 // インタープリター: Rc<RefCell<Object>>
 // LLVM IR: LLVM値（スタック/ヒープ管理）
-// Luaバイトコード: LuaValue (Luaのガベージコレクター管理)
 // 抽象化により全バックエンドに対応
 ```
 
@@ -535,7 +427,6 @@ pub enum BuiltinError {
     TypeMismatch { expected: TypeDecl, actual: TypeDecl },
     RuntimeError(String),
     LLVMError(String),      // 将来用
-    LuaBytecodeError(String), // Luaバイトコード用
 }
 ```
 
@@ -544,7 +435,6 @@ pub enum BuiltinError {
 ```rust
 // インタープリター: 関数ポインタテーブル
 // LLVM IR: インライン展開 + 最適化
-// Luaバイトコード: LuaJIT による実行時最適化
 ```
 
 ## 設計原則
@@ -553,7 +443,7 @@ pub enum BuiltinError {
 2. **段階的実装**: Phase 1から順次実装、既存コードへの影響最小化
 3. **型安全性**: 組み込み関数も完全な型チェック対象
 4. **拡張性**: 新しい組み込み関数の追加が容易
-5. **バックエンド中立性**: インタープリター/LLVM/Luaバイトコードで同じAPI
+5. **バックエンド中立性**: インタープリター/LLVMで同じAPI
 6. **パフォーマンス選択**: 用途に応じて最適なバックエンドを選択可能
 
 ## 推奨実装開始点
@@ -563,7 +453,7 @@ pub enum BuiltinError {
 **理由:**
 1. 既存コードベースへの影響が最小
 2. 段階的な検証が可能
-3. 将来のLLVM/Luaバイトコード統合への基盤作り
+3. 将来のLLVM統合への基盤作り
 4. すぐに実用的な組み込み関数が使用可能
 
 **最初に実装すべき組み込み関数:**
@@ -583,10 +473,6 @@ pub enum BuiltinError {
 ├── interpreter/src/
 │   ├── backend.rs                # InterpreterBackend実装  
 │   └── evaluation.rs             # 組み込み関数評価
-├── lua_backend/src/              # Luaバイトコードバックエンド
-│   ├── backend.rs                # LuaBytecodeBackend実装
-│   ├── codegen.rs                # AST→Luaコード変換
-│   └── runtime.rs                # Luaランタイム統合
 ├── native/src/                   # 将来のLLVMバックエンド
 │   └── backend.rs
 └── builtin/                      # 組み込みモジュール

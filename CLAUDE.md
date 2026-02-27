@@ -1,5 +1,5 @@
 # CLAUDE.md
-以下日本語のみで書いてください。
+以下日本語のみで書いてください。ただし、コード内のコメントとgitコミットメッセージは英語で記述してください。
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
@@ -93,6 +93,14 @@ fn main() -> u64 {
   - Without suffix: defaults to `u64`, or automatically determined by type inference
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
 - Control flow: `if/else`, `for i in start to end`, `break`, `continue`
+- **`else if` 構文は未サポート**: `if expr {} else if expr {}` は使用不可。代わりに `elif` キーワードを使用すること
+  ```rust
+  # NG: else if は使えない
+  if x > 10 { ... } else if x > 5 { ... } else { ... }
+
+  # OK: elif キーワードを使用
+  if x > 10 { ... } elif x > 5 { ... } else { ... }
+  ```
 - All programs must have a `main()` function
 - **No semicolons required**: Statements are separated by newlines, not semicolons
 - **Comments**:

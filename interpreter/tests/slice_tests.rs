@@ -234,7 +234,7 @@ mod slice_tests {
     #[test]
     fn test_slice_mixed_positive_negative() {
         common::assert_program_result_array_u64(r"
-        fn main() -> [u64; 2] {
+        fn main() -> [u64; 3] {
             val a: [u64; 5] = [1, 2, 3, 4, 5]
             a[1..-1i64]  # From 1st to last (exclusive)
         }

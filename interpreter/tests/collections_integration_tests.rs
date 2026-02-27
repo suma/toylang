@@ -1218,11 +1218,11 @@ mod struct_slice_tests {
 
     impl MyList {
         fn __getslice__(self: Self, start: i64, end: i64) -> [u64] {
-            # end == -1 means open-ended (no end specified)
             val actual_end: u64 = if end < 0i64 {
                 self.data.len()
             } else {
-                end as u64
+                val e = end as u64
+                if e > self.data.len() { self.data.len() } else { e }
             }
             self.data[(start as u64)..actual_end]
         }

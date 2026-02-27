@@ -147,7 +147,62 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
     
     fn create_builtin_function_signatures() -> Vec<BuiltinFunctionSignature> {
-        vec![] // Empty for now - builtin functions are handled separately
+        vec![
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapAlloc,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::UInt64],
+                return_type: TypeDecl::Ptr,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapFree,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Ptr],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::HeapRealloc,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Ptr,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrRead,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::UInt64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrWrite,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::PtrIsNull,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Ptr],
+                return_type: TypeDecl::Bool,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemCopy,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemMove,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::Ptr, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::MemSet,
+                arg_count: 3,
+                arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
+                return_type: TypeDecl::Unit,
+            },
+        ]
     }
     
     /// Create a TypeCheckerVisitor with module resolver for import handling

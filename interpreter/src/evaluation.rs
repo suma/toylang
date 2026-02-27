@@ -1828,7 +1828,7 @@ impl EvaluationContext<'_> {
                             let end_val = self.evaluate(end_expr)?;
                             self.extract_value(Ok(end_val))?
                         } else {
-                            Rc::new(RefCell::new(Object::Int64(-1)))
+                            Rc::new(RefCell::new(Object::Int64(i64::MAX)))
                         };
 
                         let struct_name_str = self.string_interner.resolve(struct_name_val)
@@ -2132,7 +2132,7 @@ impl EvaluationContext<'_> {
                         let end_val = self.evaluate(end_expr)?;
                         self.extract_value(Ok(end_val))?
                     } else {
-                        Rc::new(RefCell::new(Object::Int64(-1)))
+                        Rc::new(RefCell::new(Object::Int64(i64::MAX)))
                     };
 
                     let struct_name_str = self.string_interner.resolve(struct_name_val)

@@ -36,14 +36,14 @@ struct Container {
 }
 
 impl Container {
-    fn __getslice__(self: Self, start: i64, end: i64) -> u64 {
+    fn __getslice__(self: Self, start: u64, end: u64) -> u64 {
         self.value + start + end
     }
 }
 
 fn main() -> u64 {
     val container = Container { value: 10u64 }
-    container[2i64..5i64]  # Should call __getslice__ with start=2, end=5
+    container[2u64..5u64]  # Should call __getslice__ with start=2, end=5
 }
 "#;
         let result = test_program(program).unwrap();

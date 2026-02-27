@@ -508,7 +508,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
             
             if let Some(args) = args_data {
-                let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| ty.clone()).collect();
+                let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| {
+                    // Normalize Identifier to Struct for known struct types
+                    if let TypeDecl::Identifier(name) = ty {
+                        if self.context.struct_definitions.contains_key(name) {
+                            return TypeDecl::Struct(*name, vec![]);
+                        }
+                    }
+                    ty.clone()
+                }).collect();
                 
                 // Check argument count
                 if args.len() != param_types.len() {

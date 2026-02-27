@@ -302,9 +302,28 @@ impl TypeInferenceState {
                 ])
             }
             
+            // Struct type unification
+            (TypeDecl::Struct(left_name, left_params), TypeDecl::Struct(right_name, right_params)) => {
+                if left_name != right_name {
+                    return Err(format!("Cannot unify struct {:?} with struct {:?}", left_name, right_name));
+                }
+                if left_params.len() != right_params.len() {
+                    return Err(format!("Struct type parameter count mismatch: {} vs {}", left_params.len(), right_params.len()));
+                }
+                let mut new_constraints = Vec::new();
+                for (l_param, r_param) in left_params.iter().zip(right_params.iter()) {
+                    new_constraints.push(TypeConstraint {
+                        left: l_param.clone(),
+                        right: r_param.clone(),
+                        context: ConstraintContext::Generic,
+                    });
+                }
+                Ok(new_constraints)
+            }
+
             // Identical types unify trivially
             (left_type, right_type) if left_type == right_type => Ok(Vec::new()),
-            
+
             // Number type inference
             (TypeDecl::Number, concrete_type) | (concrete_type, TypeDecl::Number) => {
                 // Number can unify with any numeric type
@@ -343,6 +362,13 @@ impl TypeInferenceState {
                 let substituted_key = self.apply_solution(key_type, solution);
                 let substituted_value = self.apply_solution(value_type, solution);
                 TypeDecl::Dict(Box::new(substituted_key), Box::new(substituted_value))
+            }
+            TypeDecl::Struct(name, type_params) => {
+                let substituted_params: Vec<_> = type_params
+                    .iter()
+                    .map(|param| self.apply_solution(param, solution))
+                    .collect();
+                TypeDecl::Struct(*name, substituted_params)
             }
             _ => type_decl.clone(),
         }

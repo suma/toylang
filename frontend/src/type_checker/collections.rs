@@ -603,6 +603,16 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !expected_element_types.is_empty() {
                 let expected_element_type = &expected_element_types[0];
 
+                // Nesting level mismatch detection: if the hint expects array elements
+                // but actual elements are scalars, the hint is for an outer array, so skip
+                let hint_expects_array = matches!(expected_element_type, TypeDecl::Array(_, _));
+                let actual_has_non_array = !element_types.is_empty()
+                    && !matches!(&element_types[0], TypeDecl::Array(_, _));
+
+                if hint_expects_array && actual_has_non_array {
+                    // Skip: hint is for an outer array, not applicable to this inner array
+                } else {
+
                 // Handle type inference for each element
                 for (i, element) in elements.iter().enumerate() {
                     match &element_types[i] {
@@ -692,6 +702,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 }
+
+                } // end of nesting level guard
             }
         }
 

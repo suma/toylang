@@ -523,6 +523,12 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 }
             }
             Some(Kind::BracketOpen) => {
+                // If there's a newline before '[' in the original source,
+                // treat it as a new expression (array literal), not bracket access.
+                // This disambiguates `val x = [1, 2]\n[a, b]` from `arr[0]`.
+                if parser.has_newline_before_current_token() {
+                    break;
+                }
                 // Generic index access or slice - works on any expression
                 let location = parser.current_source_location();
                 parser.next();

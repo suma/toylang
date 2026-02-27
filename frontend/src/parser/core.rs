@@ -837,7 +837,32 @@ impl<'a> Parser<'a> {
             self.next();
         }
     }
-    
+
+    /// Check if there is a newline in the original source text before the current token.
+    /// This is useful for disambiguating postfix operators (like `[`) from new expressions
+    /// when format normalization removes newline tokens.
+    pub fn has_newline_before_current_token(&mut self) -> bool {
+        if let Some(position) = self.current_position() {
+            let current_offset = position.start;
+            if current_offset > 0 {
+                // Scan backwards from current token to find the previous non-whitespace character
+                let bytes = self.input.as_bytes();
+                let mut i = current_offset;
+                while i > 0 {
+                    i -= 1;
+                    let ch = bytes[i];
+                    if ch == b'\n' {
+                        return true;
+                    }
+                    if !ch.is_ascii_whitespace() {
+                        return false;
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Parse package declaration: package math.basic
     pub fn parse_package_decl(&mut self) -> ParserResult<PackageDecl> {
         self.expect_err(&Kind::Package)?;

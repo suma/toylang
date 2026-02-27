@@ -87,19 +87,20 @@ fn test_generic_struct_with_nested_functions() {
         struct Wrapper<T> {
             data: T
         }
-        
+
+        fn inner() -> u64 {
+            42u64
+        }
+
         fn outer() -> u64 {
-            fn inner() -> u64 {
-                42u64
-            }
             inner()
         }
-        
+
         fn main() -> u64 {
             outer()
         }
     "#;
-    
+
     let result = test_program(source);
     match result {
         Ok(val) => assert_eq!(val.borrow().unwrap_uint64(), 42),

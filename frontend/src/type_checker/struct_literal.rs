@@ -49,6 +49,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                         return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
                     }
                 },
+                TypeDecl::Struct(struct_name, _type_args) => {
+                    // Generic struct field types like Inner<U> are valid if the struct is defined
+                    if !self.context.struct_definitions.contains_key(struct_name) {
+                        if !generic_params.is_empty() {
+                            self.type_inference.pop_generic_scope();
+                        }
+                        return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+                    }
+                },
                 TypeDecl::Array(element_types, _) => {
                     // Validate array element types
                     for element_type in element_types {

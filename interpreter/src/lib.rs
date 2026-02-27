@@ -594,6 +594,27 @@ pub fn check_typing(
         None
     };
 
+    // Validate struct field types
+    {
+        let stmt_count = tc.core.stmt_pool.len();
+        for i in 0..stmt_count {
+            let stmt_ref = StmtRef(i as u32);
+            let is_struct_decl = tc.core.stmt_pool.get(&stmt_ref)
+                .map(|s| matches!(s, frontend::ast::Stmt::StructDecl { .. }))
+                .unwrap_or(false);
+            if is_struct_decl {
+                if let Err(err) = tc.visit_stmt(&stmt_ref) {
+                    let formatted_error = if let Some(ref fmt) = formatter {
+                        fmt.format_type_check_error(&err)
+                    } else {
+                        format!("Struct validation error: {err}")
+                    };
+                    errors.push(formatted_error);
+                }
+            }
+        }
+    }
+
     // Process impl blocks and collect errors
     errors.extend(process_impl_blocks_extracted(&mut tc, &impl_blocks, &formatter));
 

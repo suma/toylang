@@ -942,15 +942,23 @@ impl<'a> Parser<'a> {
     /// Parse generic type parameters: <T> or <T, U>
     pub fn parse_generic_params(&mut self) -> ParserResult<Vec<DefaultSymbol>> {
         let mut params = Vec::new();
-        
+        let mut seen = std::collections::HashSet::new();
+
         // Expect '<'
         self.expect_err(&Kind::LT)?;
-        
+
         loop {
             match self.peek() {
                 Some(Kind::Identifier(s)) => {
                     let s = s.to_string();
-                    let param_symbol = self.string_interner.get_or_intern(s);
+                    let param_symbol = self.string_interner.get_or_intern(&s);
+
+                    // Check for duplicate type parameters
+                    if !seen.insert(param_symbol) {
+                        let location = self.current_source_location();
+                        return Err(ParserError::generic_error(location, format!("Duplicate generic type parameter '{}'", s)));
+                    }
+
                     params.push(param_symbol);
                     self.next();
                     
@@ -979,7 +987,13 @@ impl<'a> Parser<'a> {
         
         // Expect '>'
         self.expect_err(&Kind::GT)?;
-        
+
+        // Reject empty generic parameter lists: struct Foo<> is invalid
+        if params.is_empty() {
+            let location = self.current_source_location();
+            return Err(ParserError::generic_error(location, "Empty generic parameter list is not allowed".to_string()));
+        }
+
         Ok(params)
     }
 

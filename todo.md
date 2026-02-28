@@ -2,546 +2,62 @@
 
 ## 完了済み ✅
 
-115. **CLAUDE.mdにlexer定義のキーワード・演算子を追記** ✅ (2026-02-28完了)
-   - lexer.lを分析し、未記載だったトークンをLanguage Syntaxセクションに追加
-   - 追加内容: 型（`str`, `ptr`, `usize`, `dict`, `null`, `Self`）、hex literals、`while`/`return`、OOPキーワード（`class`, `struct`, `impl`）、モジュールシステム（`package`, `import`, `as`）、可視性（`pub`, `extern`）、演算子（`..`, `::`, ビット演算、論理演算）
-
-114. **テストスイートの大規模改善と統合** ✅ (2026-02-28完了)
-   - **テストファイル統合**: frontend 26→16ファイル、interpreter 41→11ファイルに統合
-   - **型チェッカーテスト追加**: 5つの新テストファイルに99件のテストを追加
-   - **既存テスト失敗の修正**: 型チェッカーとスライス処理の事前存在していた失敗を解決
-   - **ジェネリック型統合テスト修正**: 13件の失敗していたgeneric_type_integration_testsを修正
-   - **ネスト関数テスト書き換え**: トップレベル関数を使用するよう修正
-   - **テスト総数**: frontend 486テスト + interpreter 301テスト = 合計787テスト（全て成功、ignored除く）
-
-113. **ジェネリック構造体高度テストの7件の失敗を修正** ✅ (2026-02-27完了)
-   - **対象**: `generic_struct_advanced_tests.rs` で7件のテストが失敗していた問題
-   - **問題の根本原因（3つ）**:
-     1. **bare `self` 非対応**: パーサーが `self` 単体をメソッドパラメータとして認識しない（`&self` または `self: Self` のみ対応）→ 20箇所を `self: Self` に修正
-     2. **`val` キーワード競合**: `val` は不変変数宣言のキーワードのため、パラメータ名として使うとパースが無言で失敗 → パラメータ名を `v` にリネーム
-     3. **`else if` パーサーバグ**: メソッド本体内で `else if` を使うとパーサーバグが発生 → ネストした `if/else` に書き換え
-   - **実装ファイル**: `interpreter/tests/generic_struct_advanced_tests.rs`
-   - **技術的成果**: 7件のテストが全て成功に回復
-   - **発見されたパーサーの既知制限**:
-     - bare `self` 構文の未サポート
-     - `else if` のメソッド本体内での不具合
-
-112. **ネスト配列型推論と改行対応パースの修正** ✅ (2026-02-27完了)
-   - **対象**: `test_nested_array_type_inference` が失敗していた問題
-   - **問題の根本原因（2つ）**:
-     1. **パーサー**: フォーマット正規化で改行が除去されるため、新しい行の `[` が前の式へのブラケットアクセスとしてパースされていた → `has_newline_before_current_token()` を追加し、改行前の `[` でpostfixパースを中断
-     2. **型チェッカー**: 関数戻り値型ヒント `[[u64;2];3]` が内部の配列リテラル `[1u64, 2u64]` にまで漏洩し、型不一致エラーが発生 → ネストレベルガードを追加し、ヒントが配列要素を期待するが実際の要素がスカラーの場合にヒント比較をスキップ
-   - **実装ファイル**:
-     - `frontend/src/parser/core.rs`: `has_newline_before_current_token()` 追加
-     - `frontend/src/parser/expr.rs`: 改行前 `[` でのpostfixパース中断
-     - `frontend/src/type_checker/collections.rs`: ネストレベルガード追加
-   - **技術的成果**: ネスト配列 `[[u64;2];3]` の型推論が正常動作
-
-111. **C++11スタイルのネストされたジェネリック型パース対応（`>>`トークン分割）** ✅ (2025-12-10完了)
-   - **対象**: `Container<Container<T>>` のようなネストされたジェネリック型で `>>` を2つの `>` として扱う
-   - **問題の根本原因**:
-     - レクサーが `>>` を `RightShift` トークンとして先に受理
-     - パーサーがジェネリック型引数のパース中に `>` を期待するが `RightShift` が来てエラー
-     - `test_associated_function_complex_return_type` が失敗
-   - **実装した解決策（C++11アプローチ）**:
-     - **LookaheadBufferに`insert_at_current`メソッド追加**: 現在位置にトークンを挿入する機能
-     - **TokenProviderに`insert_token`メソッド追加**: トークン分割のヘルパーメソッド
-     - **パーサーで`RightShift`を2つの`GT`に分割**: ジェネリック型引数パース中に検出して処理
-   - **修正コード詳細**:
-     ```rust
-     // frontend/src/parser/lookahead.rs (line 68-72)
-     pub fn insert_at_current(&mut self, token: Token) {
-         self.buffer.insert(self.position, token);
-     }
-
-     // frontend/src/parser/token_source.rs (line 188-198)
-     pub fn insert_token(&mut self, kind: Kind) {
-         let position = self.buffer.peek_position_at(0)
-             .map(|r| r.clone())
-             .unwrap_or(0..0);
-         let token = Token { kind, position };
-         self.buffer.insert_at_current(token);
-     }
-
-     // frontend/src/parser/core.rs (line 733-743)
-     Some(Kind::RightShift) => {
-         // C++11 style: treat >> as two > tokens for nested generics
-         self.next(); // consume >>
-         // Insert TWO GT tokens: one for this level, one for outer level
-         // VecDeque::insert shifts elements, so LIFO order
-         self.token_provider.insert_token(Kind::GT); // for outer level (consumed second)
-         self.token_provider.insert_token(Kind::GT); // for this level (consumed first)
-         break;
-     }
-     ```
-   - **テスト結果の改善**:
-     - **修正前**: `test_associated_function_complex_return_type` が "Expected ',' or '>' in generic type arguments" で失敗
-     - **修正後**: **associated_function_tests全5テスト成功（100%成功率）**
-     - **OOP tests**: oop_features_integration_tests全19テスト成功（100%成功率）
-   - **実装ファイル**:
-     - **frontend/src/parser/lookahead.rs**: `insert_at_current()` メソッド追加
-     - **frontend/src/parser/token_source.rs**: `insert_token()` メソッド追加
-     - **frontend/src/parser/core.rs**: `parse_type_declaration_with_generic_context()` に`RightShift`処理追加
-   - **技術的成果**:
-     - **C++11スタイル構文サポート**: `Container<Container<T>>` をスペースなしで記述可能
-     - **任意深度のネスト対応**: `A<B<C<D<T>>>>` のような深いネストも正常にパース
-     - **後方互換性**: 既存の単一レベルジェネリック型に影響なし
-     - **統一的設計**: レクサーを変更せず、パーサーレベルでのトークン分割により実現
-   - **影響範囲**:
-     - ネストされたジェネリック型が完全サポート
-     - 関連関数のcomplex return typeテストが成功
-     - ジェネリック型システムが実用レベルで完成
-
-110. **パーサーでのジェネリック型引数サポートと関連関数戻り値型の完全な型置換** ✅ (2025-12-10完了)
-   - **対象**: 型宣言（戻り値型など）でジェネリック型引数（`Container<T>`）をパースできるようにする
-   - **問題の根本原因**:
-     - パーサーが `Container<T>` を `Identifier(Container)` としてパースし、`<T>` 部分を無視していた
-     - 関連関数の戻り値型が `Struct(Container, [Generic(T)])` の場合、内部のジェネリック型が置換されていなかった
-   - **実装した解決策**:
-     - **パーサー修正**: `parse_type_declaration_with_generic_context()` で型引数をパース
-     - **型チェッカー修正**: `handle_generic_associated_function_call()` で `Struct` 型の型引数を再帰的に置換
-   - **修正コード詳細**:
-     ```rust
-     // frontend/src/parser/core.rs (line 706-748)
-     Some(Kind::Identifier(s)) => {
-         let ident = self.string_interner.get_or_intern(s);
-         self.next();
-
-         if generic_params.contains(&ident) {
-             return Ok(TypeDecl::Generic(ident));
-         }
-
-         // ジェネリック型引数のパース: Container<T>
-         if matches!(self.peek(), Some(Kind::LT)) {
-             self.expect_err(&Kind::LT)?;
-             let mut type_args = Vec::new();
-             loop {
-                 // 再帰的に型引数をパース
-                 let type_arg = self.parse_type_declaration_with_generic_context(generic_params)?;
-                 type_args.push(type_arg);
-
-                 match self.peek() {
-                     Some(Kind::Comma) => { self.next(); }
-                     Some(Kind::GT) => { break; }
-                     _ => return Err(...)
-                 }
-             }
-             self.expect_err(&Kind::GT)?;
-             Ok(TypeDecl::Struct(ident, type_args))
-         } else {
-             Ok(TypeDecl::Identifier(ident))
-         }
-     }
-
-     // frontend/src/type_checker/generics.rs (line 440-446)
-     TypeDecl::Struct(name, type_params) => {
-         // Struct型引数内のジェネリックパラメータを再帰的に置換
-         let substituted_params: Vec<TypeDecl> = type_params.iter()
-             .map(|param| self.substitute_type_params(param, &substitutions))
-             .collect();
-         TypeDecl::Struct(*name, substituted_params)
-     }
-     ```
-   - **パース結果の例**:
-     - `Container<T>` → `TypeDecl::Struct(Container, [Generic(T)])`
-     - `Container<u64>` → `TypeDecl::Struct(Container, [UInt64])`
-     - `fn wrap(T) -> Container<T>` が正しくパースされる
-   - **型置換の例**:
-     - `Container<Generic(T)>` + `{T: u64}` → `Container<u64>`
-     - 関連関数 `Container::wrap(42u64)` が `Container<u64>` を正しく返す
-   - **テスト結果**:
-     - **全5テスト中4テスト成功（80%成功率）**（タスク111でネストされたジェネリック型対応により100%に改善）:
-       - ✅ `test_associated_function_with_different_name`
-       - ✅ `test_associated_function_multiple_parameters`
-       - ✅ `test_associated_function_mixed_with_regular_methods`
-       - ✅ `test_associated_function_type_inference_accuracy`
-       - ⚠️ `test_associated_function_complex_return_type`（`>>`問題 → タスク111で解決）
-   - **実装ファイル**:
-     - **frontend/src/parser/core.rs**: `parse_type_declaration_with_generic_context()` に型引数パース追加
-     - **frontend/src/type_checker/generics.rs**: `handle_generic_associated_function_call()` に再帰的置換追加
-   - **技術的成果**:
-     - **単一レベルのジェネリック型引数**: `Container<T>`, `Container<u64>` が完全に動作
-     - **関連関数の型推論**: `Container::wrap(value)` が正しい型を返す
-     - **戻り値型の完全な型置換**: `fn foo() -> Container<T>` が正しく動作
-   - **影響範囲**:
-     - 型宣言でのジェネリック型引数が実用レベルで動作
-     - 関連関数の型推論が完全に機能
-     - 単一レベルのジェネリック型は完全サポート（ネストはタスク111で対応）
-
-109. **ジェネリック構造体のフィールドアクセス型パラメータ置換** ✅ (2025-12-09完了)
-   - **対象**: `Container<u64>` の `value` フィールドが `Generic(T)` ではなく `u64` を返すようにする
-   - **問題の根本原因**:
-     - フィールドアクセス時に構造体の型パラメータ（`Container<u64>` の `[u64]`）が考慮されていなかった
-     - 構造体定義のフィールド型（`value: T`）をそのまま返していた
-     - 構造体リテラルの型推論が空の型パラメータ `[]` を返していた
-   - **実装した解決策**:
-     - **型パラメータマッピング機能**: `create_type_param_mapping()` で `{T -> u64}` のマッピングを作成
-     - **型置換機能**: `substitute_type_params()` でジェネリック型を具体的な型で再帰的に置換
-     - **フィールドアクセス修正**: `visit_field_access()` で型パラメータ置換を適用（3箇所）
-     - **構造体リテラル型推論修正**: `visit_generic_struct_literal()` が型パラメータを正しく返すように修正
-     - **Self型の再帰的解決**: `resolve_self_type()` でネストした `Struct` 型を再帰的に解決
-   - **修正コード詳細**:
-     ```rust
-     // utility.rs
-     pub fn create_type_param_mapping(&self, struct_symbol: DefaultSymbol,
-                                      type_params: &Vec<TypeDecl>) -> HashMap<DefaultSymbol, TypeDecl>
-     pub fn substitute_type_params(&self, type_decl: &TypeDecl,
-                                   mapping: &HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl
-
-     // type_checker.rs - visit_field_access
-     let mapping = self.create_type_param_mapping(struct_symbol, &type_params);
-     let substituted_type = self.substitute_type_params(&struct_field.type_decl, &mapping);
-     return Ok(substituted_type);
-
-     // type_checker.rs - visit_generic_struct_literal (line 2074)
-     // 修正前: Ok(TypeDecl::Struct(*struct_name, vec![]))
-     // 修正後: 型パラメータを制約解決から取得して返す
-     let mut type_params = Vec::new();
-     for generic_param in generic_params {
-         if let Some(concrete_type) = substitutions.get(generic_param) {
-             type_params.push(concrete_type.clone());
-         }
-     }
-     Ok(TypeDecl::Struct(*struct_name, type_params))
-     ```
-   - **テスト結果の改善**:
-     - **修正前**: `test_associated_function_multiple_parameters` が "Type mismatch in arithmetic operation" で失敗
-     - **修正後**: **5つ中4つのテストが成功**
-       - ✅ `test_associated_function_basic`
-       - ✅ `test_associated_function_multiple_parameters` (元の問題)
-       - ✅ `test_associated_function_type_inference_accuracy`
-       - ✅ `test_associated_function_with_self_return`
-       - ❌ `test_associated_function_complex_return_type` (ネストしたジェネリック型の制限)
-   - **実装ファイル**:
-     - **frontend/src/type_checker/utility.rs**: 型パラメータマッピングと置換のユーティリティ関数追加
-     - **frontend/src/type_checker.rs**: `visit_field_access()` で型置換適用、`visit_generic_struct_literal()` 修正
-     - **frontend/src/type_checker/method.rs**: `resolve_self_type()` で再帰的解決追加
-     - **frontend/src/type_checker/generics.rs**: メソッド内での型推論改善
-   - **技術的成果**:
-     - **フィールドアクセスの完全動作**: `Container<u64>` の `value` が正しく `u64` を返す
-     - **構造体リテラル型推論**: `Container { value: 42u64 }` が正しく `Container<u64>` と推論
-     - **ネストしたフィールドアクセス**: `nested.value.value` が動作（非メソッドコンテキスト）
-     - **ジェネリックメソッドでの算術演算**: `self.first + self.second` が `Generic(T) + Generic(T)` として動作
-   - **既知の制限事項**:
-     - **ネストしたジェネリック戻り値型**: `Container<Container<T>>` のような型がパーサーで `Identifier` としてパースされる
-     - この制限により `test_associated_function_complex_return_type` が失敗（パーサーレベルの改善が必要）
-   - **影響範囲**:
-     - ジェネリック構造体のフィールドアクセスが実用レベルで動作
-     - Associated function の型推論が大幅に改善
-     - 80%のassociated functionテストが成功（4/5）
-
-108. **単一型パラメータGenericsの基本実装** ✅ (2025-09-07完了)
-   - **対象**: 関数と構造体での単一型パラメータジェネリクス構文のサポート
-   - **実装した機能**:
-     - **関数ジェネリクス**: `fn identity<T>(x: T) -> T` 構文の解析
-     - **構造体ジェネリクス**: `struct Container<T> { value: T }` 構文の解析
-     - **型システム拡張**: `TypeDecl::Generic(DefaultSymbol)` で型パラメータ表現
-     - **AST構造拡張**: `Function.generic_params` と `Stmt::StructDecl.generic_params` フィールド追加
-   - **技術的実装**:
-     - **レクサー**: 既存の `<` と `>` トークンでジェネリクス構文をサポート
-     - **パーサー拡張**: 
-       - `parse_generic_params()` メソッドで `<T>` や `<T, U>` の解析
-       - 関数定義で `fn foo<T>(...)` 構文の解析
-       - 構造体定義で `struct Foo<T> {...}` 構文の解析
-     - **AST変更**:
-       - `Function` 構造体に `generic_params: Vec<DefaultSymbol>` 追加
-       - `MethodFunction` 構造体に `generic_params: Vec<DefaultSymbol>` 追加
-       - `Stmt::StructDecl` に `generic_params: Vec<DefaultSymbol>` 追加
-       - `StmtPool` に `struct_generic_params: Vec<Option<Vec<DefaultSymbol>>>` 追加
-     - **型チェッカー更新**: `visit_struct_decl()` にジェネリクスパラメータ引数追加
-     - **インタープリター対応**: AST構造変更に伴うコンパイルエラー修正
-   - **テスト結果**:
-     - **関数テスト**: `test_generic.t` - `fn identity<T>(x: T) -> T` がパース成功
-     - **構造体テスト**: `test_generic_struct.t` - `struct Container<T>` がパース成功
-     - **ビルド確認**: frontend、interpreter共にコンパイル成功
-   - **実装ファイル**:
-     - **frontend/src/ast.rs**: AST構造とStmtPoolへのジェネリクスフィールド追加
-     - **frontend/src/type_decl.rs**: `TypeDecl::Generic(DefaultSymbol)` 追加
-     - **frontend/src/parser/core.rs**: `parse_generic_params()` 実装と関数/構造体解析
-     - **frontend/src/parser/stmt.rs**: メソッドのジェネリクスパラメータ対応
-     - **frontend/src/visitor.rs**: `visit_struct_decl()` シグネチャ更新
-     - **frontend/src/type_checker.rs**: ジェネリクスパラメータ対応
-     - **interpreter/src/lib.rs**: AST構造変更への対応
-   - **技術的成果**:
-     - **構文レベル完全サポート**: 単一型パラメータのジェネリクス構文が正常に解析
-     - **将来の拡張基盤**: 複数型パラメータ `<T, U>` への拡張が容易
-     - **後方互換性**: 既存の非ジェネリクス関数・構造体に影響なし
-     - **統一的設計**: 関数とメソッド、構造体で一貫したジェネリクス表現
-   - **現在の制限事項**:
-     - 型推論とインスタンス化は未実装（構文解析のみ）
-     - 型制約（bounds）は未サポート
-     - ジェネリクス関数の実行時にはエラー発生
-   - **今後の実装予定**:
-     - 型チェッカーでのジェネリクス型推論
-     - モノモーフィゼーション（単一化）の実装
-     - インタープリターでのジェネリクス関数実行サポート
-
-107. **負数インデックス推論問題の修正** ✅ (2025-09-06完了)
-   - **対象**: `a[-1]`、`a[-2..]`等の負数リテラル推論で「Cannot convert '-1' to UInt64」エラーが発生していた問題
-   - **問題の根本原因**:
-     - `finalize_number_types`メソッドで型ヒント未提供時にデフォルトでUInt64を選択
-     - 負数リテラルでも強制的にUInt64への変換を試み、パースエラーが発生
-     - slice_testsの `test_negative_index_inference`、`test_slice_negative_inference` が失敗
-   - **実装した解決策**:
-     - **負数自動判定ロジック**: 数値リテラルの文字列表現を確認し、`-`で始まる場合は自動的にInt64を選択
-     - **型推論優先度変更**: 型ヒント > 負数判定 > デフォルトUInt64 の順序で型決定
-     - **String Interner連携**: `self.core.string_interner.resolve(value)` で数値文字列を取得し判定
-   - **修正コード詳細**:
-     ```rust
-     let mut target_type = if let Some(hint) = self.type_inference.type_hint.clone() {
-         hint
-     } else {
-         // Check if the number is negative by looking at the actual value
-         if let Expr::Number(value) = expr {
-             let num_str = self.core.string_interner.resolve(value).unwrap_or("");
-             if num_str.starts_with('-') {
-                 TypeDecl::Int64  // Negative numbers default to Int64
-             } else {
-                 TypeDecl::UInt64  // Positive numbers default to UInt64
-             }
-         } else {
-             TypeDecl::UInt64  // Fallback
-         }
-     };
-     ```
-   - **テスト結果の改善**:
-     - **修正前**: slice_testsで2テスト失敗（`test_negative_index_inference`、`test_slice_negative_inference`）
-     - **修正後**: **28テスト全て成功（100%成功率）**
-     - **動作確認**: `a[-1]` → i64として正常に推論され、最後の要素にアクセス
-   - **実装ファイル**:
-     - **frontend/src/type_checker.rs**: `finalize_number_types`メソッド内の型決定ロジック修正
-   - **技術的成果**:
-     - **型推論精度向上**: 負数リテラルの自動Int64推論により直感的な動作を実現
-     - **後方互換性**: 既存の正数リテラル処理に影響なし
-     - **エラー除去**: 型変換エラーの根本的解決
-     - **使い勝手改善**: `a[-1i64]` の明示的型指定が不要、`a[-1]` で自動推論
-
+115. CLAUDE.mdにlexer定義のキーワード・演算子を追記 (2026-02-28)
+114. テストスイート大規模改善・統合: frontend 26→16, interpreter 41→11ファイル、99テスト追加、合計787テスト (2026-02-28)
+113. ジェネリック構造体高度テスト7件の失敗修正: bare `self`、`val`キーワード競合、`else if`バグ回避 (2026-02-27)
+112. ネスト配列型推論と改行対応パース修正: `[[u64;2];3]`の型推論正常動作 (2026-02-27)
+111. C++11スタイル`>>`トークン分割: `Container<Container<T>>`のネストジェネリック型パース対応 (2025-12-10)
+110. パーサーでのジェネリック型引数サポート: `Container<T>`パースと関連関数戻り値型の完全な型置換 (2025-12-10)
+109. ジェネリック構造体フィールドアクセス型パラメータ置換: `Container<u64>.value`が正しく`u64`を返す (2025-12-09)
+108. 単一型パラメータGenericsの基本実装: 関数・構造体でのジェネリクス構文パース (2025-09-07)
+107. 負数インデックス推論修正: `a[-1]`が自動的にi64として推論 (2025-09-06)
 
 ## 未実装 📋
 
-95. **ヒープメモリ管理の完全実装**
-    - heap_realloc でのデータ保持
-    - mem_copy/mem_set の正確な実装
-
+95. **ヒープメモリ管理の完全実装** - heap_realloc、mem_copy/mem_set
 96. **パターンマッチングと列挙型（Enum）**
-
-30. **組み込み関数システム** 🔧
-    - 関数呼び出し時の組み込み関数検索
-    - 型変換・数学関数の実装
-
-65. **frontendの改善課題** 📋
-   - **ドキュメント不足**: 公開APIのdocコメントがほぼない
-   - **テストカバレッジ不足**: プロパティベーステストやエッジケースのテストが不在
-   - **パフォーマンス設定の固定化**: メモリプールや再帰深度が固定値
-   - **コード重複**: AstBuilderのビルダーメソッドが冗長（マクロで統一可能）
-   - **型システムの拡張性**: ジェネリクスやトレイトへの対応準備が不足
-
-26. **ドキュメント整備** 📚
-    - 言語仕様やAPIドキュメントの整備
-
-28. **動的配列（List型）** 📋
-    - 可変長配列の実装
-    - push, pop, get等の基本操作
-    - 固定配列からの移行パス
-
-29. **Option型によるNull安全性** 🛡️
-    - Option<T>型の実装
-    - パターンマッチングの基礎
+30. **組み込み関数システム** - 型変換・数学関数
+65. **frontendの改善課題** - docコメント、プロパティベーステスト、コード重複削減
+26. **ドキュメント整備** - 言語仕様やAPIドキュメント
+28. **動的配列（List型）** - push, pop, get等の基本操作
+29. **Option型によるNull安全性** - Option<T>型とパターンマッチング基礎
 
 ## 検討中の機能
 
-* FFIあるいは他の方法による拡張ライブラリ実装方法の提供
-* 動的配列
+* FFI/拡張ライブラリ
 * 文字列操作
 * ラムダ式・クロージャ
-* Option型（Null安全性）
-* 将来的なモジュール拡張（バージョニング、リモートパッケージ）
-* 言語組み込みのテスト機能、フレームワーク
-* 言語内からASTの取得、操作
+* モジュール拡張（バージョニング、リモートパッケージ）
+* 言語組み込みテスト機能
+* 言語内からのAST取得・操作
 
-## メモ
+## 実装済み機能サマリー
 
-- 算術演算と比較演算は既にEnum化により統一済み
-- 基本的な言語機能（if/else、for、while）は完全実装済み
-- AST変換による型安全性が大幅に向上（frontendで型変換完了）
-- 自動型変換機能により、型指定なしリテラルの使い勝手が向上
-- **コンテキストベース型推論が完全実装済み** - 関数内の明示的型宣言が他の変数の型推論に影響
-- 複雑な複数操作での一貫した型推論：`(a - b) + (c - d)`で全要素が統一型
-- **固定配列機能が完全実装済み** - 14個の単体テスト + 3個のプロパティベーステストで品質保証
-- 配列の基本構文サポート：`val a: [i64; 5] = [1i64, 2i64, 3i64, 4i64, 5i64]`、`a[0u64] = 10i64`
-- **行コメント機能が完全実装済み** - `#` 記号による行コメントとインラインコメント対応
-- linter互換性のためコメント内容をTokenに保存、パーサーで自動スキップ
-- **配列要素の型推論機能が完全実装済み** - `val a: [i64; 3] = [1, 2, 3]` 形式の自動型推論対応
-- 型ヒント伝播システムとAST変換処理により、配列リテラル内の数値型が適切に推論・変換
-- **配列インデックスの型推論機能が完全実装済み** - `a[0]`、`a[i]`、`a[base + 1]` 形式の自動型推論対応
-- 配列操作の使いやすさが大幅に向上、明示的型指定と自動推論の両方をサポート
-- **構造体機能が完全実装済み** - 構造体宣言、implブロック、フィールドアクセス、メソッド呼び出し対応
-- ドット記法による直感的な構造体操作：`obj.field`、`obj.method(args)`、`Point { x: 10, y: 20 }`
-- **str.len()メソッドが完全実装済み** - `"string".len()` 形式でu64型の文字列長を取得可能
-- str型の組み込みメソッドシステムを確立、構造体メソッドと統一的に処理
-- **索引アクセス構文が完全実装済み** - `x[key]` 読み取り、`x[key] = value` 代入の統一構文
-- **辞書（Dict）型システムが完全実装済み** - `dict{key: value}` リテラル、`dict[K, V]` 型注釈をサポート
-- **Dict型Objectキーサポートが完全実装済み** - Bool, Int64, UInt64, String を辞書キーとして使用可能
-- **汎用HashMap<ObjectKey, RcObject>アーキテクチャ** - 型安全なObjectキー辞書操作をランタイムレベルで完全サポート
-- **構造体索引演算子オーバーロードが完全実装済み** - `__getitem__`/`__setitem__` メソッドによるカスタム索引操作
-- **Self キーワードが完全実装済み** - impl ブロック内で構造体名を `Self` で参照可能
-- **統合索引システム** - 配列、辞書、カスタム構造体で統一されたインデックスアクセス `x[key]` 構文
-- **二重文字列型システムが完全実装済み** - `ConstString`（リテラル用）と`String`（動的生成用）の最適化された文字列システム
-- **文字列メモリ効率化完了** - String Interner汚染回避、動的文字列の直接アクセス、不変vs可変の型レベル区別
-- **Go-style module system fully implemented** - Complete 4-phase implementation (syntax, resolution, type checking, runtime)
-- **Module namespace support** - Package declarations, import statements, qualified name resolution
-- **配列スライス機能が完全実装済み** - Python/Rust風の直感的なスライス構文を完全サポート：
-  - **基本スライス**: `arr[start..end]` - 指定範囲の部分配列を作成
-  - **開始省略**: `arr[..end]` - 最初から指定位置まで  
-  - **終了省略**: `arr[start..]` - 指定位置から最後まで
-  - **全体コピー**: `arr[..]` - 配列全体の新しいコピー
-  - **負のインデックス**: `arr[-1]` (最後の要素), `arr[-2..]` (後ろから2つ), `arr[1..-1]` (最初と最後を除く)
-  - **型推論対応**: 数値リテラル（u64サフィックス有無）、負数の自動i64推論、境界チェック
-  - **メモリ安全**: 実行時境界検証、範囲エラー検出、安全な部分配列作成
-- **統一インデックスシステム完了** - 配列、辞書、構造体、スライスで一貫した `x[key]` 構文を提供：
-  - **配列アクセス**: `arr[index]` - 単一要素アクセス、`arr[start..end]` - スライスアクセス
-  - **辞書アクセス**: `dict[key]` - キーによる値アクセス（Object型キーサポート）
-  - **構造体アクセス**: `struct[key]` - `__getitem__`メソッド呼び出し、カスタム索引演算子
-- **プロダクションレベル達成** - 深い再帰、複雑ネスト構造を含む実用的プログラム作成が可能
-- **包括的テストスイート** - frontend 486テスト + interpreter 301テスト = 合計787テスト成功（100%成功率、ignored除く）
-- **スライス機能完全実用化** - SliceInfo統一アーキテクチャにより28個のslice_testsが全て成功（100%成功率）
-- **負のインデックス完全対応** - `a[-1]`, `a[-2..]`, `a[1..-1]` 等のPython/Rust風構文が完全動作、負数推論も自動化
-- **構造体索引システム完成** - `__getitem__`メソッドによる構造体でのインデックスアクセスが統一アーキテクチャで完全動作
-- **ジェネリック関数システム完全実装済み** - `fn identity<T>(x: T) -> T` 構文の完全サポート（パース → 型推論 → 実行）
-- **ジェネリック型推論エンジン** - unificationアルゴリズムによる引数型からの自動型パラメータ推論が完全動作
-- **エンドツーエンドジェネリック実行** - 複数の型での同一ジェネリック関数実行、型安全保証付きで実用レベル到達
-- **ジェネリック構造体基盤完成** - `struct Container<T> { value: T }` パース・型チェック・constraint-based推論が完全実装
-- **ジェネリック構造体リテラル完全動作** - `Container { value: 42u64 }` → `T = u64` の自動型推論が実用レベルで動作
-- **複数型同時利用対応** - `Container<u64>`, `Container<bool>` 等の異なる型での並行利用が完全サポート
-- **パーサーとインタープリター統合完了** - AST構築からインタープリター実行まで一貫したジェネリック処理
-- **包括的テストスイート** - 50+テストケースによるジェネリック構造体の完全カバレッジ（基本・エッジケース・統合・将来機能）
-- **constraint-based型推論完成** - 統一アルゴリズムによるジェネリック構造体の型パラメータ自動推論が実用化
+### コア言語機能
+- 基本言語機能: if/else/elif、for、while、break/continue、return
+- 変数: val（不変）/var（可変）、コンテキストベース型推論
+- 固定配列: 型推論対応、インデックス型推論、境界チェック
+- 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
+- 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
+- 構造体: 宣言、implブロック、フィールドアクセス、メソッド、`__getitem__`/`__setitem__`
+- 文字列: ConstString/String二重システム、`str.len()`
+- コメント: `#`（行）、`/* */`（ブロック）
 
-## ジェネリック関数システム技術仕様
+### 型システム
+- 自動型変換・型推論（数値リテラルのサフィックス省略可）
+- ジェネリック関数: `fn identity<T>(x: T) -> T`（パース→型推論→実行）
+- ジェネリック構造体: `struct Container<T>`、constraint-based型推論
+- ネストジェネリック: `Container<Container<T>>`（C++11スタイル`>>`分割）
+- Self キーワード: implブロック内での構造体参照
 
-### 基本構文と動作例
-```rust
-# 単一型パラメータジェネリック関数
-fn identity<T>(x: T) -> T {
-    x
-}
+### モジュール・その他
+- Go-styleモジュールシステム: package/import/qualified name resolution
+- 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
-# 複数パラメータジェネリック関数
-fn test_multiple<T>(a: T, b: T) -> T {
-    a
-}
+### テスト状況
+- frontend 486テスト + interpreter 301テスト = 合計787テスト（100%成功率）
 
-fn main() -> u64 {
-    # 自動型推論による実行
-    val result1 = identity(42u64)      # T = u64として推論
-    val result2 = identity(100i64)     # T = i64として推論
-    val result3 = test_multiple(5u64, 10u64) # 複数引数での推論
-    result1  # UInt64(42) を返却
-}
-```
-
-### 型推論システム（Unificationアルゴリズム）
-```rust
-# 基本的な型統一
-identity(42u64)     # Generic(T) vs UInt64 → T = UInt64
-identity("hello")   # Generic(T) vs String → T = String
-
-# 構造型での再帰的推論
-fn first<T>(arr: [T; 3]) -> T { arr[0] }
-first([1u64, 2u64, 3u64])  # Array<Generic(T)> vs Array<UInt64> → T = UInt64
-
-# 複合型での同時推論
-fn pair<T, U>(a: T, b: U) -> (T, U) { (a, b) }
-pair(1u64, true)    # T = UInt64, U = Bool
-```
-
-### エラー検出と型安全性
-```rust
-# 型競合エラーの検出
-fn conflict<T>(a: T, b: T) -> T { a }
-conflict(1u64, true)  # エラー: T cannot be both UInt64 and Bool
-
-# 推論失敗の検出
-fn unused<T>() -> u64 { 42u64 }
-unused()  # エラー: Cannot infer generic type parameter 'T'
-```
-
-### 技術的実装アーキテクチャ
-- **パーサー**: `parse_type_declaration_with_generic_context()` によるコンテキスト対応型解析
-- **型チェッカー**: `visit_generic_call()` + `infer_generic_types()` による完全型推論
-- **型置換**: `substitute_generics()` による再帰的型パラメータ置換
-- **実行時**: ジェネリック関数での型検証スキップによる効率的実行
-- **中間表現**: `GenericInstantiation` による将来のコード生成パス対応
-
-## スライス機能の技術仕様
-
-### 基本構文と動作例
-```rust
-val arr: [u64; 5] = [10, 20, 30, 40, 50]
-
-# 基本スライス
-val slice1 = arr[1..4]      # [20, 30, 40] - インデックス1から3まで
-val slice2 = arr[..3]       # [10, 20, 30] - 最初からインデックス2まで  
-val slice3 = arr[2..]       # [30, 40, 50] - インデックス2から最後まで
-val slice4 = arr[..]        # [10, 20, 30, 40, 50] - 全体コピー
-
-# 負のインデックス（Python/Rust風）
-val last = arr[-1]          # 50 - 最後の要素
-val second_last = arr[-2]   # 40 - 後ろから2番目
-val tail = arr[-2..]        # [40, 50] - 後ろから2つ
-val head = arr[..-1]        # [10, 20, 30, 40] - 最後を除く全て
-val middle = arr[1..-1]     # [20, 30, 40] - 最初と最後を除く
-
-# 型推論対応（サフィックス不要）
-val auto_slice = arr[1..3]  # 型推論で自動的にu64として処理
-val neg_auto = arr[-1]      # 負数は自動的にi64として推論
-```
-
-### 統一インデックスシステム
-```rust
-# 配列インデックス
-val arr = [1, 2, 3, 4, 5]
-val element = arr[2]        # 単一要素アクセス
-val slice = arr[1..4]       # スライスアクセス
-
-# 辞書インデックス  
-val dict = dict{"key1": "value1", "key2": "value2"}
-val value = dict["key1"]    # キーアクセス
-
-# 構造体カスタムインデックス
-struct Matrix2x2 {
-    data: [u64; 4]
-}
-
-impl Matrix2x2 {
-    fn __getitem__(self: Self, index: u64) -> u64 {
-        self.data[index]  # 内部配列へのアクセス
-    }
-}
-
-val matrix = Matrix2x2 { data: [1, 2, 3, 4] }
-val element = matrix[1]     # __getitem__メソッド呼び出し
-```
-
-### 型安全性と境界検証
-```rust
-# コンパイル時チェック
-val arr: [i64; 3] = [1, 2, 3]
-val slice = arr[1..2]       # 型: [i64; 1] - 正確なサイズ推論
-
-# 実行時境界チェック
-val out_of_bounds = arr[5]  # エラー: IndexOutOfBounds
-val invalid_range = arr[3..1] # エラー: start > end
-val neg_overflow = arr[-5]  # エラー: 負のインデックスが配列長を超過
-```
-
-### SliceInfo統一アーキテクチャ
-- **AST表現**: `Expr::SliceAccess(ExprRef, SliceInfo)` による統一構造
-- **SliceType区別**: `SingleElement`（単一要素）と`RangeSlice`（範囲）の明確な分離
-- **型推論統合**: 正負インデックス、範囲指定での適切な型推論とAST変換
-- **実行時最適化**: メモリ効率的なスライス作成と境界チェック
-- **ネスト配列型推論が完全動作** - `[[u64;2];3]` のような多次元配列の型推論が改行対応パースとネストレベルガードにより正常動作
-- **パーサーの既知制限事項**:
-  - bare `self` 構文非対応（`&self` または `self: Self` が必要）
-  - `else if` がメソッド本体内で不具合を起こす場合がある（ネスト `if/else` で回避可能）
-  - `val` はキーワードのためパラメータ名に使用不可
+### パーサーの既知制限事項
+- bare `self` 構文非対応（`self: Self` が必要）
+- `else if` 未サポート（`elif`を使用）
+- `val` はキーワードのためパラメータ名に使用不可

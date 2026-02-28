@@ -87,12 +87,13 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `i64`, `bool`
-- **Numeric literals**: 
+- Types: `u64`, `i64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
+- **Numeric literals**:
   - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit)
+  - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）
   - Without suffix: defaults to `u64`, or automatically determined by type inference
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
-- Control flow: `if/else`, `for i in start to end`, `break`, `continue`
+- Control flow: `if/else`, `for i in start to end`, `while`, `break`, `continue`, `return`
 - **`else if` 構文は未サポート**: `if expr {} else if expr {}` は使用不可。代わりに `elif` キーワードを使用すること
   ```rust
   # NG: else if は使えない
@@ -109,6 +110,14 @@ fn main() -> u64 {
   - Both comment types can be used inline or as standalone statements
   - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
+- **OOP・モジュール関連キーワード**: `class`, `struct`, `impl`, `Self`
+- **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
+- **モジュールシステム**: `package`, `import`, `as`
+- **演算子**:
+  - 範囲: `..`（例: `0..10`）
+  - スコープ解決: `::`
+  - ビット演算: `&`, `|`, `^`, `~`, `<<`, `>>`
+  - 論理演算: `&&`, `||`, `!`
 
 ## Architecture Notes
 

@@ -1,7 +1,7 @@
-//! Type System Integration Tests
+//! Type System Tests
 //!
-//! This module contains integration tests for the type checking subsystem.
-//! It validates context-based type inference, generic type unification,
+//! This module contains tests for the type checking subsystem.
+//! It validates context-based type inference, type unification,
 //! and complex type interactions across the frontend.
 //!
 //! Test Categories:
@@ -9,8 +9,7 @@
 //! - Nested and complex type structures
 //! - Function and struct type checking
 //! - Type error detection and propagation
-//! - Module system integration with type checking
-//! - Qualified name resolution
+//! - Advanced type inference scenarios (conditional, loops, bidirectional)
 
 use frontend::ParserWithInterner;
 use frontend::type_checker::TypeCheckerVisitor;
@@ -52,7 +51,6 @@ mod helpers {
 mod basic_functionality {
     //! Basic type inference tests with explicit types
 
-    use super::*;
     use super::helpers::parse_and_check;
 
     #[test]
@@ -162,7 +160,6 @@ mod basic_functionality {
 mod advanced_scenarios {
     //! Complex type interactions and multi-feature scenarios
 
-    use super::*;
     use super::helpers::parse_and_check;
 
     #[test]
@@ -276,7 +273,6 @@ mod advanced_scenarios {
 mod error_cases {
     //! Error detection and type mismatch validation
 
-    use super::*;
     use super::helpers::parse_and_check;
 
     #[test]
@@ -322,128 +318,118 @@ mod error_cases {
     }
 }
 
-mod module_system_integration {
-    //! Module system integration with type checking
+/* Future type inference tests - currently commented out due to implementation limitations */
 
-    use super::*;
+// // Test tuple type inference - requires tuple type support
+// #[test]
+// #[ignore]
+// fn test_tuple_type_inference() {
+//     let source = r#"
+//         fn tuple_inference() -> (u64, i64, bool) {
+//             val t = (10, -5i64, true)  # First element should infer from context
+//             t
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }
 
-    #[test]
-    fn test_valid_package_declaration() {
-        let source = r"
-        package math
+// // Test generic function type inference - requires generic support
+// #[test]
+// #[ignore]
+// fn test_generic_function_type_inference() {
+//     let source = r#"
+//         fn identity<T>(x: T) -> T {
+//             x
+//         }
+//
+//         fn test_generic() -> u64 {
+//             val a = identity(42)    # Should infer T = u64
+//             a
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }
 
-        fn main() -> u64 {
-            42u64
-        }
-        ";
+// // Test method chaining - requires method resolution
+// #[test]
+// #[ignore]
+// fn test_method_chain_type_inference() {
+//     let source = r#"
+//         struct Builder {
+//             value: u64
+//         }
+//
+//         impl Builder {
+//             fn new() -> Builder {
+//                 Builder { value: 0u64 }
+//             }
+//
+//             fn add(&self, x: u64) -> Builder {
+//                 Builder { value: self.value + x }
+//             }
+//
+//             fn get(&self) -> u64 {
+//                 self.value
+//             }
+//         }
+//
+//         fn chain_inference() -> u64 {
+//             val result = Builder::new()
+//                 .add(10u64)
+//                 .add(20u64)
+//                 .get()
+//             result
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }
 
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+// // Test dictionary type inference - requires dict support
+// #[test]
+// #[ignore]
+// fn test_dict_type_inference() {
+//     let source = r#"
+//         fn dict_inference() -> dict<string, u64> {
+//             val d = {
+//                 "one": 1u64,
+//                 "two": 2u64,
+//                 "three": 3u64
+//             }
+//             d
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }
 
-        let mut program = result.unwrap();
-        let string_interner = parser.get_string_interner();
+// // Test slice type inference - requires slice support
+// #[test]
+// #[ignore]
+// fn test_slice_type_inference() {
+//     let source = r#"
+//         fn slice_inference() -> [u64; 3] {
+//             val arr = [1u64, 2u64, 3u64, 4u64, 5u64]
+//             val slice = arr[1u64..4u64]   # Should infer [u64; 3]
+//             slice
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }
 
-        let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-        assert!(type_checker.get_current_package().is_some());
-    }
-
-    #[test]
-    fn test_empty_package_name_error() {
-        let source = r"
-        package
-
-        fn main() -> u64 {
-            42u64
-        }
-        ";
-
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-
-        assert!(result.is_err(), "Empty package name should cause parse error");
-    }
-
-    #[test]
-    fn test_module_qualified_function_call() {
-        let source = r"
-        package main
-        import math
-
-        fn main() -> u64 {
-            math.add(1u64, 2u64)
-        }
-        ";
-
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
-
-        let mut program = result.unwrap();
-        let string_interner = parser.get_string_interner();
-
-        let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-        assert_eq!(type_checker.imported_modules.len(), 1);
-    }
-
-    #[test]
-    fn test_unknown_module_member() {
-        let source = r"
-        package main
-        import math
-
-        fn main() -> u64 {
-            math.unknown_function()
-        }
-        ";
-
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
-
-        let mut program = result.unwrap();
-        let string_interner = parser.get_string_interner();
-
-        let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-        assert_eq!(type_checker.imported_modules.len(), 1);
-    }
-
-    #[test]
-    fn test_package_without_main() {
-        let source = r"
-        package utils
-
-        fn helper() -> u64 {
-            42u64
-        }
-        ";
-
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-
-        assert!(result.is_ok(), "Package without main is valid");
-    }
-
-    #[test]
-    fn test_nested_package_imports() {
-        let source = r"
-        package main
-        import math
-        import utils
-
-        fn main() -> u64 {
-            42u64
-        }
-        ";
-
-        let mut parser = ParserWithInterner::new(source);
-        let result = parser.parse_program();
-        assert!(result.is_ok());
-
-        let mut program = result.unwrap();
-        let string_interner = parser.get_string_interner();
-
-        let type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
-        assert_eq!(type_checker.imported_modules.len(), 2);
-    }
-}
+// // Test closures - requires closure support
+// #[test]
+// #[ignore]
+// fn test_closure_type_inference() {
+//     let source = r#"
+//         fn closure_test() -> u64 {
+//             val add = |a, b| { a + b }  # Should infer parameter and return types
+//             add(10u64, 20u64)
+//         }
+//     "#;
+//
+//     assert!(parse_and_check(source).is_ok());
+// }

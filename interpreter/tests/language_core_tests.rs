@@ -1,4 +1,4 @@
-//! Language Core Integration Tests
+//! Language Core Tests
 //!
 //! This module contains integration tests for core language features.
 //! It validates basic program execution, variable declarations, control flow,
@@ -11,6 +11,8 @@
 //! - Loop control (break, continue)
 //! - Function calls and return types
 //! - Basic arithmetic and comparisons
+//! - Heap memory operations (val with builtins)
+//! - Error handling (immutable variable reassignment)
 
 mod common;
 
@@ -20,7 +22,6 @@ use string_interner::DefaultStringInterner;
 use interpreter::evaluation::{EvaluationContext, EvaluationResult};
 
 mod helpers {
-    use super::*;
     use compiler_core::CompilerSession;
 
     /// Execute a test program and return the result
@@ -101,7 +102,6 @@ mod basic_execution {
 mod variables {
     //! Variable declaration and type inference tests
 
-    use super::*;
     use super::helpers::execute_test_program;
 
     #[test]
@@ -313,12 +313,67 @@ mod variables {
         let result = execute_test_program(source).expect("Program should execute successfully");
         assert!(result.contains("UInt64(100)"), "Expected UInt64(100), got: {}", result);
     }
+
+    #[test]
+    fn test_val_mixed_with_var() {
+        let source = r#"
+            fn main() -> u64 {
+                val x = 10u64
+                var y = 20u64
+                val z = x + y
+                y = 30u64
+                val result = z + y
+                result
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(60)"), "Expected UInt64(60), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_function_parameters_vs_locals() {
+        let source = r#"
+            fn test_func(param: u64) -> u64 {
+                val local = param * 2u64
+                local
+            }
+
+            fn main() -> u64 {
+                val input = 15u64
+                test_func(input)
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(30)"), "Expected UInt64(30), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_error_handling_immutable() {
+        // This test verifies that val variables cannot be reassigned
+        let source = r#"
+            fn main() -> u64 {
+                val x = 10u64
+                x = 20u64  # This should cause a compile error
+                x
+            }
+        "#;
+
+        // This should fail at type checking stage
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "Assignment to val variable should fail");
+
+        let error = result.unwrap_err();
+        assert!(error.contains("error") || error.contains("Error"),
+                "Error message should contain 'error': {}", error);
+    }
 }
 
 mod control_flow {
     //! Control flow (if/else, for, while) tests
 
-    use super::*;
+    use super::common;
 
     #[test]
     fn test_simple_for_loop() {
@@ -429,12 +484,104 @@ mod control_flow {
         }
         ", 200);
     }
+
+    #[test]
+    fn test_simple_if_then_else_true() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            if true {
+                1u64
+            } else {
+                2u64
+            }
+        }
+        ", 1);
+    }
+
+    #[test]
+    fn test_simple_if_then_else_false() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            if false {
+                1u64
+            } else {
+                2u64
+            }
+        }
+        ", 2);
+    }
+
+    #[test]
+    fn test_while_loop_with_break() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            while true {
+                if i >= 3u64 {
+                    break
+                }
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+        ", 3);
+    }
+
+    #[test]
+    fn test_while_loop_with_continue() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            while i < 5u64 {
+                i = i + 1u64
+                if i == 3u64 {
+                    continue
+                }
+                sum = sum + i
+            }
+            sum
+        }
+        ", 12);
+    }
+
+    #[test]
+    fn test_val_conditional_chains() {
+        use super::helpers::execute_test_program;
+
+        let source = r#"
+            fn main() -> u64 {
+                val a = true
+                val b = false
+                val c = true
+
+                if a {
+                    if b {
+                        1u64
+                    } else {
+                        if c {
+                            2u64
+                        } else {
+                            3u64
+                        }
+                    }
+                } else {
+                    4u64
+                }
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(2)"), "Expected UInt64(2), got: {}", result);
+    }
 }
 
 mod function_calls {
     //! Function definition and call tests
 
-    use super::*;
+    use super::common;
 
     #[test]
     fn test_simple_function_call() {
@@ -498,6 +645,136 @@ mod function_calls {
             calculate(3u64, 4u64)
         }
         ", 19);
+    }
+}
+
+mod heap_operations {
+    //! Heap memory operation tests with val/var variables
+
+    use super::helpers::execute_test_program;
+
+    #[test]
+    fn test_val_heap_integration() {
+        let source = r#"
+            fn main() -> u64 {
+                val heap_ptr = __builtin_heap_alloc(8u64)
+                val is_null = __builtin_ptr_is_null(heap_ptr)
+                if is_null {
+                    0u64
+                } else {
+                    __builtin_ptr_write(heap_ptr, 0u64, 100u64)
+                    val value = __builtin_ptr_read(heap_ptr, 0u64)
+                    __builtin_heap_free(heap_ptr)
+                    value
+                }
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(100)"), "Expected UInt64(100), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_heap_complex_operations() {
+        let source = r#"
+            fn main() -> u64 {
+                val src = __builtin_heap_alloc(16u64)
+                val dst = __builtin_heap_alloc(16u64)
+
+                __builtin_ptr_write(src, 0u64, 123u64)
+                __builtin_ptr_write(src, 8u64, 456u64)
+
+                __builtin_mem_copy(src, dst, 16u64)
+
+                val result1 = __builtin_ptr_read(dst, 0u64)
+                val result2 = __builtin_ptr_read(dst, 8u64)
+
+                __builtin_heap_free(src)
+                __builtin_heap_free(dst)
+
+                result1 + result2
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(579)"), "Expected UInt64(579), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_heap_realloc() {
+        let source = r#"
+            fn main() -> u64 {
+                val heap_ptr1 = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(heap_ptr1, 0u64, 200u64)
+
+                val heap_ptr2 = __builtin_heap_realloc(heap_ptr1, 16u64)
+                val value = __builtin_ptr_read(heap_ptr2, 0u64)
+
+                __builtin_heap_free(heap_ptr2)
+                value
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(200)"), "Expected UInt64(200), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_heap_memory_operations() {
+        let source = r#"
+            fn main() -> u64 {
+                val heap_ptr = __builtin_heap_alloc(16u64)
+
+                # Set memory to a specific value
+                val fill_value = 255u64
+                __builtin_mem_set(heap_ptr, fill_value, 8u64)
+
+                # Read back as u64 (should be all 0xFF bytes)
+                val result = __builtin_ptr_read(heap_ptr, 0u64)
+
+                __builtin_heap_free(heap_ptr)
+
+                # 0xFFFFFFFFFFFFFFFF = 18446744073709551615
+                if result == 18446744073709551615u64 {
+                    1u64
+                } else {
+                    0u64
+                }
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(1)"), "Expected UInt64(1), got: {}", result);
+    }
+
+    #[test]
+    fn test_val_complex_heap_scenario() {
+        let source = r#"
+            fn allocate_and_fill(size: u64, value: u64) -> u64 {
+                val heap_ptr = __builtin_heap_alloc(size)
+                val is_null = __builtin_ptr_is_null(heap_ptr)
+
+                if is_null {
+                    0u64
+                } else {
+                    __builtin_ptr_write(heap_ptr, 0u64, value)
+                    val stored = __builtin_ptr_read(heap_ptr, 0u64)
+                    __builtin_heap_free(heap_ptr)
+                    stored
+                }
+            }
+
+            fn main() -> u64 {
+                val test1 = allocate_and_fill(8u64, 111u64)
+                val test2 = allocate_and_fill(8u64, 222u64)
+                val test3 = allocate_and_fill(8u64, 333u64)
+
+                test1 + test2 + test3
+            }
+        "#;
+
+        let result = execute_test_program(source).expect("Program should execute successfully");
+        assert!(result.contains("UInt64(666)"), "Expected UInt64(666), got: {}", result);
     }
 }
 

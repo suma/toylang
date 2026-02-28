@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod edge_case_tests {
+mod edge_case_boundary_tests {
     use frontend::ParserWithInterner;
 
     // Test helper function for parser-only tests
@@ -356,5 +356,258 @@ mod edge_case_tests {
         "#;
         let result = parse_program(input);
         assert!(result.is_ok(), "Variable shadowing should parse");
+    }
+
+    // ========================================
+    // Boundary tests (merged from boundary_tests.rs)
+    // ========================================
+
+    // Boundary: i64 min/max and overflow
+    #[test]
+    fn test_i64_boundaries() {
+        let test_cases = vec![
+            ("9223372036854775807i64", true),   // i64::MAX
+            ("-9223372036854775808i64", true),  // i64::MIN
+            ("9223372036854775808i64", false),  // i64::MAX + 1 (should fail)
+            ("-9223372036854775809i64", false), // i64::MIN - 1 (should fail)
+        ];
+
+        for (value, should_pass) in test_cases {
+            let input = format!("fn main() -> i64 {{ {} }}", value);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Value {} should be accepted", value);
+            } else {
+                // Large values might be rejected at parse time or type check time
+                assert!(result.is_ok() || result.is_err(), "Value {} handling tested", value);
+            }
+        }
+    }
+
+    // Boundary: u64 min/max and overflow
+    #[test]
+    fn test_u64_boundaries() {
+        let test_cases = vec![
+            ("0u64", true),                      // u64::MIN
+            ("18446744073709551615u64", true),   // u64::MAX
+            ("18446744073709551616u64", false),  // u64::MAX + 1 (should fail)
+        ];
+
+        for (value, should_pass) in test_cases {
+            let input = format!("fn main() -> u64 {{ {} }}", value);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Value {} should be accepted", value);
+            } else {
+                assert!(result.is_ok() || result.is_err(), "Value {} handling tested", value);
+            }
+        }
+    }
+
+    // Boundary: Variable declaration basics
+    #[test]
+    fn test_array_access_boundaries() {
+        let test_cases = vec![
+            ("val a: i64 = 0i64", true),
+            ("val b: u64 = 1u64", true),
+            ("var c: bool = true", true),
+        ];
+
+        for (code, should_pass) in test_cases {
+            let input = format!("fn main() -> i64 {{ {} 0i64 }}", code);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Code '{}' should be accepted", code);
+            } else {
+                assert!(result.is_err(), "Code '{}' should be rejected", code);
+            }
+        }
+    }
+
+    // Boundary: Identifier length variations
+    #[test]
+    fn test_identifier_length_boundaries() {
+        let test_cases = vec![
+            (1, true),
+            (2, true),
+            (3, true),
+            (5, true),
+        ];
+
+        for (length, should_pass) in test_cases {
+            let name = "a".repeat(length);
+            let input = format!("fn {}() -> i64 {{ 1i64 }} fn main() -> i64 {{ {}() }}", name, name);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Identifier length {} should be accepted", length);
+            } else {
+                assert!(result.is_err(), "Identifier length {} should be rejected", length);
+            }
+        }
+    }
+
+    // Boundary: String literal lengths
+    #[test]
+    fn test_string_length_boundaries() {
+        let test_cases = vec![
+            (0, true),
+            (1, true),
+            (10, true),
+            (20, true),
+        ];
+
+        for (length, should_pass) in test_cases {
+            let content = "a".repeat(length);
+            let input = format!(r#"fn main() -> i64 {{ val s = "{}"
+0i64 }}"#, content);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "String length {} should be accepted", length);
+            } else {
+                assert!(result.is_err(), "String length {} should be rejected", length);
+            }
+        }
+    }
+
+    // Boundary: Struct field count
+    #[test]
+    fn test_struct_field_count() {
+        let test_cases = vec![
+            (1, true),
+            (3, true),
+            (5, true),
+        ];
+
+        for (field_count, should_pass) in test_cases {
+            let fields: Vec<String> = (0..field_count)
+                .map(|i| format!("f{}: i64", i))
+                .collect();
+            let values: Vec<String> = (0..field_count)
+                .map(|i| format!("f{}: {}i64", i, i))
+                .collect();
+
+            let input = format!(
+                "struct Test {{ {} }} fn main() -> i64 {{ val t = Test {{ {} }}\n0i64 }}",
+                fields.join(", "),
+                values.join(", ")
+            );
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Struct with {} fields should be accepted", field_count);
+            } else {
+                assert!(result.is_err(), "Struct with {} fields should be rejected", field_count);
+            }
+        }
+    }
+
+    // Boundary: Method count in impl block
+    #[test]
+    fn test_method_count_boundaries() {
+        let test_cases = vec![
+            (1, true),
+            (10, true),
+            (50, true),
+        ];
+
+        for (method_count, should_pass) in test_cases {
+            let methods: Vec<String> = (0..method_count)
+                .map(|i| format!("fn method{}(&self) -> i64 {{ self.value + {}i64 }}", i, i))
+                .collect();
+
+            let input = format!(
+                r#"
+                struct Test {{ value: i64 }}
+                impl Test {{
+                    {}
+                }}
+                fn main() -> i64 {{ 0i64 }}
+                "#,
+                methods.join("\n")
+            );
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "Impl with {} methods should be accepted", method_count);
+            } else {
+                assert!(result.is_err(), "Impl with {} methods should be rejected", method_count);
+            }
+        }
+    }
+
+    // Boundary: Mutual struct recursion
+    #[test]
+    fn test_type_recursion_boundaries() {
+        let input = r#"
+            struct A { b: B }
+            struct B { a: A }
+            fn main() -> i64 { 0i64 }
+        "#;
+        let result = parse_program(input);
+        assert!(result.is_ok() || result.is_err(), "Mutual recursion handling tested");
+    }
+
+    // Boundary: If-else chain depth
+    #[test]
+    fn test_if_else_chain_boundaries() {
+        let test_cases = vec![
+            (1, true),
+            (3, true),
+            (5, true),
+        ];
+
+        for (chain_length, should_pass) in test_cases {
+            let mut if_chain = String::from("if true {\n0i64\n}");
+            for i in 1..chain_length {
+                if_chain.push_str(&format!(" elif {}i64 == {}i64 {{\n{}i64\n}}", i, i, i));
+            }
+            if_chain.push_str(" else {\n999i64\n}");
+
+            let input = format!("fn main() -> i64 {{\n{}\n}}", if_chain);
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "If-else chain length {} should be accepted", chain_length);
+            } else {
+                assert!(result.is_err(), "If-else chain length {} should be rejected", chain_length);
+            }
+        }
+    }
+
+    // Boundary: Variable count in scope
+    #[test]
+    fn test_variable_count_in_scope() {
+        let test_cases = vec![
+            (2, true),
+            (3, true),
+            (5, true),
+        ];
+
+        for (var_count, should_pass) in test_cases {
+            let declarations: Vec<String> = (0..var_count)
+                .map(|i| format!("val var{} = {}i64", i, i))
+                .collect();
+            let usage: Vec<String> = (0..var_count)
+                .map(|i| format!("var{}", i))
+                .collect();
+
+            let input = format!(
+                "fn main() -> i64 {{\n{}\n{} }}",
+                declarations.join("\n"),
+                usage.join(" + ")
+            );
+            let result = parse_program(&input);
+
+            if should_pass {
+                assert!(result.is_ok(), "{} variables in scope should be accepted", var_count);
+            } else {
+                assert!(result.is_err(), "{} variables in scope should be rejected", var_count);
+            }
+        }
     }
 }

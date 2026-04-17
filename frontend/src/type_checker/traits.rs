@@ -1,8 +1,14 @@
 use crate::ast::*;
 use crate::type_decl::TypeDecl;
+use crate::visitor::AstVisitor;
 use super::{TypeCheckError, TypeCheckContext, TypeInferenceState, CoreReferences};
 use string_interner::DefaultSymbol;
 use std::rc::Rc;
+
+/// Visitor dispatch trait: walks an AST node against an `AstVisitor`.
+pub trait Acceptable {
+    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError>;
+}
 
 /// Trait for type checking literal values
 pub trait LiteralTypeChecker {

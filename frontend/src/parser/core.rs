@@ -1,13 +1,10 @@
-use std::rc::Rc;
-use std::collections::HashSet;
 use crate::ast::*;
-use crate::type_decl::*;
 use crate::token::Kind;
 use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
-use string_interner::{DefaultStringInterner, DefaultSymbol};
-use crate::parser::error::{ParserError, ParserErrorKind, ParserResult, MultipleParserResult};
+use string_interner::DefaultStringInterner;
+use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
 
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
@@ -30,7 +27,7 @@ impl ParserWithInterner {
             errors: Vec::with_capacity(16),
         }
     }
-    
+
     fn ensure_parser(&mut self) {
         if self.parser.is_none() {
             // Create parser with 'static lifetime hack - safe because we own the input string
@@ -42,12 +39,12 @@ impl ParserWithInterner {
             self.parser = Some(parser);
         }
     }
-    
+
     fn get_parser(&mut self) -> &mut Parser<'static> {
         self.ensure_parser();
         self.parser.as_mut().unwrap()
     }
-    
+
     /// Helper method to execute parser method and copy errors
     fn call_parser_with_error_copy<T, F>(&mut self, f: F) -> T
     where
@@ -58,50 +55,50 @@ impl ParserWithInterner {
         self.errors = self.get_parser().errors.clone();
         result
     }
-    
+
     pub fn parse_program(&mut self) -> ParserResult<Program> {
         self.call_parser_with_error_copy(|parser| parser.parse_program())
     }
-    
+
     pub fn get_string_interner(&mut self) -> &mut DefaultStringInterner {
         &mut self.string_interner
     }
-    
+
     pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
         self.call_parser_with_error_copy(|parser| parser.parse_param_def())
     }
-    
+
     pub fn parse_param_def_list(&mut self, args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
         self.call_parser_with_error_copy(|parser| parser.parse_param_def_list(args))
     }
-    
+
     pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
         self.call_parser_with_error_copy(|parser| parser.parse_program_multiple_errors())
     }
-    
+
     // Forward methods to internal parser
     pub fn peek(&mut self) -> Option<&Kind> {
         self.get_parser().peek()
     }
-    
+
     pub fn peek_n(&mut self, pos: usize) -> Option<&Kind> {
         self.get_parser().peek_n(pos)
     }
-    
+
     pub fn next(&mut self) -> Option<Kind> {
         let token = self.get_parser().peek().cloned();
         self.get_parser().next();
         token
     }
-    
+
     pub fn parse_stmt(&mut self) -> ParserResult<StmtRef> {
         self.call_parser_with_error_copy(|parser| parser.parse_stmt())
     }
-    
+
     pub fn parse_expr_impl(&mut self) -> ParserResult<ExprRef> {
         self.call_parser_with_error_copy(|parser| parser.parse_expr_impl())
     }
-    
+
     pub fn get_expr_pool(&self) -> &ExprPool {
         match &self.parser {
             Some(parser) => parser.get_expr_pool(),
@@ -110,13 +107,13 @@ impl ParserWithInterner {
                 thread_local! {
                     static EMPTY_EXPR_POOL: ExprPool = ExprPool::new();
                 }
-                EMPTY_EXPR_POOL.with(|pool| unsafe { 
-                    std::mem::transmute::<&ExprPool, &'static ExprPool>(pool) 
+                EMPTY_EXPR_POOL.with(|pool| unsafe {
+                    std::mem::transmute::<&ExprPool, &'static ExprPool>(pool)
                 })
             }
         }
     }
-    
+
     pub fn get_stmt_pool(&self) -> &StmtPool {
         match &self.parser {
             Some(parser) => parser.get_stmt_pool(),
@@ -125,8 +122,8 @@ impl ParserWithInterner {
                 thread_local! {
                     static EMPTY_STMT_POOL: StmtPool = StmtPool::new();
                 }
-                EMPTY_STMT_POOL.with(|pool| unsafe { 
-                    std::mem::transmute::<&StmtPool, &'static StmtPool>(pool) 
+                EMPTY_STMT_POOL.with(|pool| unsafe {
+                    std::mem::transmute::<&StmtPool, &'static StmtPool>(pool)
                 })
             }
         }
@@ -174,9 +171,9 @@ impl<'a> Parser<'a> {
             errors: Vec::with_capacity(4),
             input,
             recursion_depth: 0,
-            max_recursion_depth: 500, // Significantly increased for complex nested structures
+            max_recursion_depth: 500,
             normalization_context: TokenNormalizationContext::new(),
-            context_stack: vec![ParseContext::Expression], // Start with expression context
+            context_stack: vec![ParseContext::Expression],
         }
     }
 
@@ -254,7 +251,7 @@ impl<'a> Parser<'a> {
     fn offset_to_line_col(&self, offset: usize) -> (u32, u32) {
         let mut line = 1u32;
         let mut column = 1u32;
-        
+
         for (i, ch) in self.input.char_indices() {
             if i >= offset {
                 break;
@@ -266,7 +263,7 @@ impl<'a> Parser<'a> {
                 column += 1;
             }
         }
-        
+
         (line, column)
     }
 
@@ -278,15 +275,21 @@ impl<'a> Parser<'a> {
         self.token_provider.line_count()
     }
 
+    /// Push a synthetic token to the front of the token stream.
+    /// Used for rewriting `>>` into two `>` tokens in nested generic contexts.
+    pub(super) fn insert_token(&mut self, token: Kind) {
+        self.token_provider.insert_token(token);
+    }
+
     pub fn expect(&mut self, accept: &Kind) -> ParserResult<()> {
         let tk = self.peek();
         if tk.is_some() && *tk.unwrap() == *accept {
             self.next();
             Ok(())
         } else {
-            let current = self.peek().map(|k| k.clone()).unwrap_or(Kind::EOF);
+            let current = self.peek().cloned().unwrap_or(Kind::EOF);
             let location = self.current_source_location();
-            Err(ParserError::generic_error(location, 
+            Err(ParserError::generic_error(location,
                 format!("Expected {:?} but found {:?}", accept, current)))
         }
     }
@@ -310,7 +313,7 @@ impl<'a> Parser<'a> {
         self.errors.push(ParserError::unexpected_token(location, error_msg.to_string()));
     }
 
-    /// Check condition and collect error if failed, continue parsing  
+    /// Check condition and collect error if failed, continue parsing
     pub fn expect_or_collect(&mut self, condition: bool, error_msg: &str) -> bool {
         if !condition {
             self.collect_error(error_msg);
@@ -324,13 +327,13 @@ impl<'a> Parser<'a> {
     pub fn check_and_increment_recursion(&mut self) -> ParserResult<()> {
         // Use significantly more aggressive depth management for format-independent parsing
         let complexity_score = self.normalization_context.complexity_score();
-        
+
         // For format-normalized parsing, be much more permissive
         let base_depth = if self.token_provider.normalize_formatting { 800 } else { self.max_recursion_depth };
         let adjusted_max_depth = base_depth + (complexity_score / 2) as u32;
-        
+
         if self.recursion_depth >= adjusted_max_depth {
-            self.collect_error(&format!("Maximum recursion depth reached in parser (depth: {}, complexity: {}, adjusted_max: {})", 
+            self.collect_error(&format!("Maximum recursion depth reached in parser (depth: {}, complexity: {}, adjusted_max: {})",
                                       self.recursion_depth, complexity_score, adjusted_max_depth));
             let location = self.current_source_location();
             return Err(ParserError::recursion_limit_exceeded(location));
@@ -377,461 +380,6 @@ impl<'a> Parser<'a> {
         &mut self.string_interner
     }
 
-
-    pub fn parse_program(&mut self) -> ParserResult<Program> {
-        let mut start_pos: Option<usize> = None;
-        let mut end_pos: Option<usize> = None;
-        let mut update_start_pos = |start: usize| {
-            if start_pos.is_none() || start_pos.unwrap() < start {
-                start_pos = Some(start);
-            }
-        };
-        let mut update_end_pos = |end: usize| {
-            end_pos = Some(end);
-        };
-        let mut def_func = vec![];
-        
-        // Parse package declaration (optional, at beginning of file)
-        let package_decl = if matches!(self.peek(), Some(Kind::Package)) {
-            Some(self.parse_package_decl()?)
-        } else {
-            None
-        };
-        
-        // Parse import declarations (multiple allowed)
-        let mut imports = Vec::new();
-        while matches!(self.peek(), Some(Kind::Import)) {
-            imports.push(self.parse_import_decl()?);
-        }
-
-        loop {
-            // Check for visibility modifier first
-            let visibility = if matches!(self.peek(), Some(Kind::Public)) {
-                self.next(); // consume 'pub'
-                Visibility::Public
-            } else {
-                Visibility::Private
-            };
-            
-            match self.peek() {
-                Some(Kind::Function) => {
-                    let fn_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(fn_start_pos);
-                    self.next();
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s = s.to_string();
-                            let fn_name = self.string_interner.get_or_intern(s);
-                            self.next();
-
-                            // Parse generic parameters if present: <T>
-                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
-                                self.parse_generic_params()?
-                            } else {
-                                vec![]
-                            };
-
-                            self.expect_err(&Kind::ParenOpen)?;
-                            let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
-                            self.expect_err(&Kind::ParenClose)?;
-                            let mut ret_ty: Option<TypeDecl> = None;
-                            match self.peek() {
-                                Some(Kind::Arrow) => {
-                                    self.expect_err(&Kind::Arrow)?;
-                                    // Convert to HashSet for generic context
-                                    let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
-                                    ret_ty = Some(self.parse_type_declaration_with_generic_context(&generic_context)?);
-                                }
-                                _ => (),
-                            }
-                            let block = super::expr::parse_block(self)?;
-                            let fn_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
-                            update_end_pos(fn_end_pos);
-                            
-                            def_func.push(Rc::new(Function{
-                                node: Node::new(fn_start_pos, fn_end_pos),
-                                name: fn_name,
-                                generic_params,
-                                parameter: params,
-                                return_type: ret_ty,
-                                code: self.ast_builder.expression_stmt(block, Some(location)),
-                                visibility,
-                            }));
-                        }
-                        _ => {
-                            self.collect_error("expected function name");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::Struct) => {
-                    let struct_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(struct_start_pos);
-                    self.next();
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let struct_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-                            
-                            // Parse generic parameters if present: struct Foo<T>
-                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
-                                self.parse_generic_params()?
-                            } else {
-                                vec![]
-                            };
-                            
-                            self.expect_err(&Kind::BraceOpen)?;
-                            let fields = super::stmt::parse_struct_fields_with_generic_context(self, vec![], &generic_params)?;
-                            self.expect_err(&Kind::BraceClose)?;
-                            let struct_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
-                            update_end_pos(struct_end_pos);
-                            
-                            self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, fields, visibility, Some(location));
-                        }
-                        _ => {
-                            self.collect_error("expected struct name");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::Impl) => {
-                    let impl_start_pos = self.peek_position_n(0).unwrap().start;
-                    let location = self.current_source_location();
-                    update_start_pos(impl_start_pos);
-                    self.next();
-                    
-                    // Parse optional generic parameters: impl<T> or impl
-                    let generic_params = if self.peek() == Some(&Kind::LT) {
-                        self.parse_generic_params()?
-                    } else {
-                        vec![]
-                    };
-                    
-                    match self.peek() {
-                        Some(Kind::Identifier(s)) => {
-                            let s_copy = s.clone();
-                            let target_type_symbol = self.string_interner.get_or_intern(&s_copy);
-                            self.next();
-                            
-                            // For now, we'll skip parsing generic arguments on the type (like Container<T>)
-                            // This is a simplification - in full implementation we'd parse the complete type
-                            if self.peek() == Some(&Kind::LT) {
-                                // Skip generic arguments on target type for now
-                                self.skip_until_matching_gt();
-                            }
-                            
-                            self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params)?;
-                            self.expect_err(&Kind::BraceClose)?;
-                            let impl_end_pos = self.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
-                            update_end_pos(impl_end_pos);
-                            
-                            self.ast_builder.impl_block_stmt(target_type_symbol, methods, Some(location));
-                        }
-                        _ => {
-                            self.collect_error("expected type name for impl block");
-                            self.next(); // Skip invalid token and continue
-                        }
-                    }
-                }
-                Some(Kind::NewLine) => {
-                    self.next()
-                }
-                None | Some(Kind::EOF) => {
-                    // Check if 'pub' was used without any declaration
-                    if matches!(visibility, Visibility::Public) {
-                        self.collect_error("'pub' keyword must be followed by a function or struct declaration");
-                    }
-                    break;
-                }
-                x => {
-                    let x_cloned = x.cloned();
-                    // Check if 'pub' was used with unsupported elements
-                    if matches!(visibility, Visibility::Public) {
-                        match &x_cloned {
-                            Some(Kind::Impl) => {
-                                self.collect_error("'pub' is not yet supported for impl blocks");
-                            }
-                            _ => {
-                                self.collect_error("'pub' can only be used with function and struct declarations");
-                            }
-                        }
-                    }
-                    self.collect_error(&format!("unexpected token: {:?}", x_cloned));
-                    self.next(); // Skip invalid token and continue
-                }
-            }
-        }
-
-        // Check if there were critical errors during parsing (like keyword usage)
-        for error in &self.errors {
-            // Check both direct GenericError and nested errors in UnexpectedToken
-            match &error.kind {
-                ParserErrorKind::GenericError { message } => {
-                    if message.contains("reserved keyword") {
-                        return Err(error.clone());
-                    }
-                }
-                ParserErrorKind::UnexpectedToken { expected } => {
-                    if expected.contains("reserved keyword") {
-                        return Err(error.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let mut ast_builder = AstBuilder::new();
-        std::mem::swap(&mut ast_builder, &mut self.ast_builder);
-        let (expr, stmt, location_pool) = ast_builder.extract_pools();
-        Ok(Program{
-            node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
-            package_decl,
-            imports,
-            function: def_func,
-            statement: stmt,
-            expression: expr,
-            location_pool,
-        })
-    }
-
-    pub fn parse_param_def(&mut self) -> ParserResult<Parameter> {
-        self.parse_param_def_with_generic_context(&[])
-    }
-    
-    pub fn parse_param_def_with_generic_context(&mut self, generic_params: &[DefaultSymbol]) -> ParserResult<Parameter> {
-        let current_token = self.peek().cloned();
-        match current_token {
-            Some(Kind::Identifier(s)) => {
-                let name = self.string_interner.get_or_intern(s);
-                self.next();
-                self.expect_err(&Kind::Colon)?;
-                // Convert to HashSet for generic context
-                let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
-                let typ = self.parse_type_declaration_with_generic_context(&generic_context)?;
-                Ok((name, typ))
-            }
-            x => {
-                let location = self.current_source_location();
-                Err(ParserError::generic_error(location, format!("expect type parameter of function but: {:?}", x)))
-            },
-        }
-    }
-
-    pub fn parse_param_def_list(&mut self, args: Vec<Parameter>) -> ParserResult<Vec<Parameter>> {
-        self.parse_param_def_list_with_generic_context(args, &[])
-    }
-    
-    pub fn parse_param_def_list_with_generic_context(&mut self, mut args: Vec<Parameter>, generic_params: &[DefaultSymbol]) -> ParserResult<Vec<Parameter>> {
-        // Limit maximum number of parameters to prevent infinite loops
-        const MAX_PARAMS: usize = 255;
-        
-        loop {
-            if self.peek() == Some(&Kind::ParenClose) || args.len() >= MAX_PARAMS {
-                if args.len() >= MAX_PARAMS {
-                    self.collect_error(&format!("too many parameters (max: {})", MAX_PARAMS));
-                }
-                return Ok(args);
-            }
-
-            let def = self.parse_param_def_with_generic_context(generic_params);
-            if def.is_err() {
-                return Ok(args);
-            }
-            args.push(def?);
-
-            match self.peek() {
-                Some(Kind::Comma) => {
-                    self.next();
-                    // Continue loop to parse next parameter
-                }
-                _ => {
-                    return Ok(args);
-                }
-            }
-        }
-    }
-
-    pub fn parse_type_declaration(&mut self) -> ParserResult<TypeDecl> {
-        self.parse_type_declaration_with_generic_context(&HashSet::new())
-    }
-    
-    pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
-        match self.peek() {
-            Some(Kind::BracketOpen) => {
-                self.next();
-                let element_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-
-                // Check for semicolon - if present, parse size; if not, it's a dynamic array [T]
-                if self.peek() == Some(&Kind::Semicolon) {
-                    self.next(); // consume semicolon
-
-                    let size = match self.peek().cloned() {
-                        Some(Kind::UInt64(n)) => {
-                            self.next();
-                            n as usize
-                        }
-                        Some(Kind::Integer(s)) => {
-                            self.next();
-                            s.parse::<usize>().map_err(|_| {
-                                let location = self.current_source_location();
-                                ParserError::generic_error(location, format!("Invalid array size: {}", s))
-                            })?
-                        }
-                        _ => {
-                            let location = self.current_source_location();
-                            return Err(ParserError::generic_error(location, "Expected array size or underscore".to_string()))
-                        }
-                    };
-
-                    self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type; size], size))
-                } else {
-                    // Dynamic array type [T] with no size specified
-                    self.expect_err(&Kind::BracketClose)?;
-                    Ok(TypeDecl::Array(vec![element_type], 0))
-                }
-            }
-            Some(Kind::Bool) => {
-                self.next();
-                Ok(TypeDecl::Bool)
-            }
-            Some(Kind::U64) => {
-                self.next();
-                Ok(TypeDecl::UInt64)
-            }
-            Some(Kind::I64) => {
-                self.next();
-                Ok(TypeDecl::Int64)
-            }
-            Some(Kind::Ptr) => {
-                self.next();
-                Ok(TypeDecl::Ptr)
-            }
-            Some(Kind::Identifier(s)) => {
-                let s = s.to_string();
-                let ident = self.string_interner.get_or_intern(s);
-                self.next();
-
-                // Check if this identifier is a generic type parameter
-                if generic_params.contains(&ident) {
-                    return Ok(TypeDecl::Generic(ident));
-                }
-
-                // Check if this is a generic struct with type arguments: Container<T>
-                if matches!(self.peek(), Some(Kind::LT)) {
-                    self.expect_err(&Kind::LT)?;
-
-                    let mut type_args = Vec::new();
-                    loop {
-                        // Parse each type argument recursively
-                        let type_arg = self.parse_type_declaration_with_generic_context(generic_params)?;
-                        type_args.push(type_arg);
-
-                        match self.peek() {
-                            Some(Kind::Comma) => {
-                                self.next(); // consume comma, continue to next type arg
-                            }
-                            Some(Kind::GT) => {
-                                break; // end of type arguments
-                            }
-                            Some(Kind::RightShift) => {
-                                // C++11 style: treat >> as two > tokens for nested generics
-                                // e.g., Container<Container<T>> instead of requiring Container<Container<T> >
-                                self.next(); // consume >>
-                                // Insert TWO GT tokens: one for this level, one for outer level
-                                // Note: VecDeque::insert shifts existing elements, so inserting twice at the same position
-                                // results in LIFO order - the last inserted token is consumed first
-                                self.token_provider.insert_token(Kind::GT); // for outer level (consumed second)
-                                self.token_provider.insert_token(Kind::GT); // for this level (consumed first)
-                                break; // treat first > as closing this type argument list
-                            }
-                            _ => {
-                                let location = self.current_source_location();
-                                return Err(ParserError::generic_error(
-                                    location,
-                                    "Expected ',' or '>' in generic type arguments".to_string()
-                                ));
-                            }
-                        }
-                    }
-
-                    self.expect_err(&Kind::GT)?;
-                    Ok(TypeDecl::Struct(ident, type_args))
-                } else {
-                    // No type arguments, just an identifier
-                    Ok(TypeDecl::Identifier(ident))
-                }
-            }
-            Some(Kind::Str) => {
-                self.next();
-                Ok(TypeDecl::String)
-            }
-            Some(Kind::Self_) => {
-                self.next();
-                Ok(TypeDecl::Self_)
-            }
-            Some(Kind::Dict) => {
-                self.next();
-                self.expect_err(&Kind::BracketOpen)?;
-                
-                // Parse key type
-                let key_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-                
-                self.expect_err(&Kind::Comma)?;
-                
-                // Parse value type
-                let value_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-                
-                self.expect_err(&Kind::BracketClose)?;
-                Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
-            }
-            Some(Kind::ParenOpen) => {
-                // Parse tuple type: (type1, type2, ...)
-                self.next();
-                self.skip_newlines();
-                
-                // Handle empty tuple: ()
-                if self.peek() == Some(&Kind::ParenClose) {
-                    self.next();
-                    return Ok(TypeDecl::Tuple(vec![]));
-                }
-                
-                let mut element_types = Vec::new();
-                
-                // Parse first type
-                let first_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-                element_types.push(first_type);
-                self.skip_newlines();
-                
-                // Parse remaining types
-                while self.peek() == Some(&Kind::Comma) {
-                    self.next(); // consume comma
-                    self.skip_newlines();
-                    
-                    // Allow trailing comma
-                    if self.peek() == Some(&Kind::ParenClose) {
-                        break;
-                    }
-                    
-                    let elem_type = self.parse_type_declaration_with_generic_context(generic_params)?;
-                    element_types.push(elem_type);
-                    self.skip_newlines();
-                }
-                
-                self.expect_err(&Kind::ParenClose)?;
-                Ok(TypeDecl::Tuple(element_types))
-            }
-            Some(_) | None => {
-                let location = self.current_source_location();
-                Err(ParserError::generic_error(location, format!("parse_type_declaration: unexpected token {:?}", self.peek())))
-            }
-        }
-    }
-
     pub fn skip_newlines(&mut self) {
         while let Some(Kind::NewLine) = self.peek() {
             self.next();
@@ -861,179 +409,5 @@ impl<'a> Parser<'a> {
             }
         }
         false
-    }
-
-    /// Parse package declaration: package math.basic
-    pub fn parse_package_decl(&mut self) -> ParserResult<PackageDecl> {
-        self.expect_err(&Kind::Package)?;
-        
-        let mut name_parts = Vec::new();
-        
-        // Parse first identifier
-        if let Some(Kind::Identifier(s)) = self.peek().cloned() {
-            let symbol = self.string_interner.get_or_intern(s);
-            name_parts.push(symbol);
-            self.next();
-        } else {
-            return Err(ParserError::generic_error(self.current_source_location(), "expected package name".to_string()));
-        }
-        
-        // Parse additional parts separated by dots
-        while matches!(self.peek(), Some(Kind::Dot)) {
-            self.next(); // consume dot
-            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
-                let symbol = self.string_interner.get_or_intern(s);
-                name_parts.push(symbol);
-                self.next();
-            } else {
-                return Err(ParserError::generic_error(self.current_source_location(), "expected identifier after '.'".to_string()));
-            }
-        }
-        
-        self.skip_newlines();
-        Ok(PackageDecl { name: name_parts })
-    }
-    
-    /// Parse import declaration: import math.basic [as alias]
-    pub fn parse_import_decl(&mut self) -> ParserResult<ImportDecl> {
-        self.expect_err(&Kind::Import)?;
-        
-        let mut module_path = Vec::new();
-        
-        // Parse first identifier
-        if let Some(Kind::Identifier(s)) = self.peek().cloned() {
-            let symbol = self.string_interner.get_or_intern(s);
-            module_path.push(symbol);
-            self.next();
-        } else {
-            return Err(ParserError::generic_error(self.current_source_location(), "expected module name".to_string()));
-        }
-        
-        // Parse additional parts separated by dots
-        while matches!(self.peek(), Some(Kind::Dot)) {
-            self.next(); // consume dot
-            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
-                let symbol = self.string_interner.get_or_intern(s);
-                module_path.push(symbol);
-                self.next();
-            } else {
-                return Err(ParserError::generic_error(self.current_source_location(), "expected identifier after '.'".to_string()));
-            }
-        }
-        
-        // Parse optional alias: as alias_name
-        let alias = if matches!(self.peek(), Some(Kind::As)) {
-            self.next(); // consume 'as'
-            if let Some(Kind::Identifier(s)) = self.peek().cloned() {
-                let alias_symbol = self.string_interner.get_or_intern(s);
-                self.next();
-                Some(alias_symbol)
-            } else {
-                return Err(ParserError::generic_error(self.current_source_location(), "expected alias name after 'as'".to_string()));
-            }
-        } else {
-            None
-        };
-        
-        self.skip_newlines();
-        Ok(ImportDecl { module_path, alias })
-    }
-
-    /// Parse generic type parameters: <T> or <T, U>
-    pub fn parse_generic_params(&mut self) -> ParserResult<Vec<DefaultSymbol>> {
-        let mut params = Vec::new();
-        let mut seen = std::collections::HashSet::new();
-
-        // Expect '<'
-        self.expect_err(&Kind::LT)?;
-
-        loop {
-            match self.peek() {
-                Some(Kind::Identifier(s)) => {
-                    let s = s.to_string();
-                    let param_symbol = self.string_interner.get_or_intern(&s);
-
-                    // Check for duplicate type parameters
-                    if !seen.insert(param_symbol) {
-                        let location = self.current_source_location();
-                        return Err(ParserError::generic_error(location, format!("Duplicate generic type parameter '{}'", s)));
-                    }
-
-                    params.push(param_symbol);
-                    self.next();
-                    
-                    match self.peek() {
-                        Some(Kind::Comma) => {
-                            self.next(); // consume comma, continue to next param
-                        }
-                        Some(Kind::GT) => {
-                            break; // end of generic params
-                        }
-                        _ => {
-                            let location = self.current_source_location();
-                            return Err(ParserError::generic_error(location, "Expected ',' or '>' in generic parameters".to_string()));
-                        }
-                    }
-                }
-                Some(Kind::GT) => {
-                    break; // empty or trailing comma case
-                }
-                _ => {
-                    let location = self.current_source_location();
-                    return Err(ParserError::generic_error(location, "Expected generic type parameter identifier".to_string()));
-                }
-            }
-        }
-        
-        // Expect '>'
-        self.expect_err(&Kind::GT)?;
-
-        // Reject empty generic parameter lists: struct Foo<> is invalid
-        if params.is_empty() {
-            let location = self.current_source_location();
-            return Err(ParserError::generic_error(location, "Empty generic parameter list is not allowed".to_string()));
-        }
-
-        Ok(params)
-    }
-
-    /// Skip tokens until matching '>' is found (for generic argument parsing)
-    fn skip_until_matching_gt(&mut self) {
-        let mut depth = 1;
-        self.next(); // Skip the initial '<'
-        
-        while let Some(token) = self.peek() {
-            match token {
-                Kind::LT => depth += 1,
-                Kind::GT => {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.next(); // Consume the matching '>'
-                        break;
-                    }
-                }
-                Kind::EOF => break,
-                _ => {}
-            }
-            self.next();
-        }
-    }
-
-    /// Parse program with multiple error collection
-    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
-        self.errors.clear();
-        
-        match self.parse_program() {
-            Ok(program) => {
-                if self.errors.is_empty() {
-                    MultipleParserResult::success(program)
-                } else {
-                    MultipleParserResult::with_errors(program, self.errors.clone())
-                }
-            }
-            Err(_) => {
-                MultipleParserResult::failure(self.errors.clone())
-            }
-        }
     }
 }

@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use std::collections::HashMap;
     use crate::type_decl::TypeDecl;
     use string_interner::DefaultStringInterner;
 

@@ -60,7 +60,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         // Verify argument count matches parameter count
         if args.len() != fun.parameter.len() {
             self.pop_context();
-            let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+            let fn_name_str = self.resolve_symbol_name(fn_name);
             return Err(TypeCheckError::generic_error(&format!(
                 "Generic function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, fun.parameter.len(), args.len()
@@ -92,7 +92,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             Ok(solution) => solution,
             Err(e) => {
                 self.pop_context();
-                let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                let fn_name_str = self.resolve_symbol_name(fn_name);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for generic function '{}': {}",
                     fn_name_str, e
@@ -104,8 +104,8 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         for generic_param in &fun.generic_params {
             if !substitutions.contains_key(generic_param) {
                 self.pop_context();
-                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<NOT_FOUND>");
-                let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                let param_name = self.resolve_symbol_name(*generic_param);
+                let fn_name_str = self.resolve_symbol_name(fn_name);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Cannot infer generic type parameter '{}' for function '{}'",
                     param_name, fn_name_str
@@ -130,7 +130,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
     fn visit_generic_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>,
                                    struct_definition: &StructDefinition,
                                    generic_params: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+        let struct_name_str = self.resolve_symbol_name(*struct_name);
 
         // Clear previous constraints for this inference
         self.type_inference.clear_constraints();
@@ -171,7 +171,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
 
         for (field_name, field_expr) in fields {
             // Find expected field type from struct definition
-            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
@@ -196,7 +196,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         }
         
         // Solve constraints to get type substitutions
-        let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+        let struct_name_str = self.resolve_symbol_name(*struct_name);
         let substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => {
                 solution
@@ -214,7 +214,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         // Now verify field types with the resolved substitutions
         for (field_name, field_expr) in fields {
-            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
@@ -245,8 +245,8 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     if should_push_scope {
                         self.type_inference.pop_generic_scope();
                     }
-                    let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<unknown>");
-                    let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+                    let param_name = self.resolve_symbol_name(*generic_param);
+                    let struct_name_str = self.resolve_symbol_name(*struct_name);
                     return Err(TypeCheckError::generic_error(&format!(
                         "Cannot infer generic type parameter '{}' for struct '{}'",
                         param_name, struct_name_str
@@ -335,7 +335,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         // Verify argument count matches parameter count
         if args.len() != method.parameter.len() {
-            let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+            let fn_name_str = self.resolve_symbol_name(function_name);
             return Err(TypeCheckError::generic_error(&format!(
                 "Associated function '{}' argument count mismatch: expected {}, found {}",
                 fn_name_str, method.parameter.len(), args.len()
@@ -353,7 +353,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         self.type_inference.push_generic_scope(generic_scope);
         
         // Collect argument types and add constraints for type inference
-        let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+        let fn_name_str = self.resolve_symbol_name(function_name);
 
         let mut arg_types = Vec::new();
         for (i, (arg_expr, (_, param_type))) in args.iter().zip(&method.parameter).enumerate() {
@@ -393,8 +393,8 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 // Check if it's available in outer scope (e.g., we're inside a generic method)
                 if self.type_inference.lookup_generic_type(*generic_param).is_none() {
                     self.type_inference.pop_generic_scope();
-                    let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<NOT_FOUND>");
-                    let fn_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<NOT_FOUND>");
+                    let param_name = self.resolve_symbol_name(*generic_param);
+                    let fn_name_str = self.resolve_symbol_name(function_name);
                     return Err(TypeCheckError::generic_error(&format!(
                         "Cannot infer generic type parameter '{}' for associated function '{}'",
                         param_name, fn_name_str
@@ -464,7 +464,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
     }
 
     fn generate_instantiated_struct_name(&self, struct_name: DefaultSymbol, substitutions: &HashMap<DefaultSymbol, TypeDecl>) -> String {
-        let base_name = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
+        let base_name = self.resolve_symbol_name(struct_name);
         
         // Sort substitutions for consistent naming
         let mut sorted_subs: Vec<_> = substitutions.iter().collect();
@@ -472,7 +472,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         
         let mut name = base_name.to_string();
         for (param, typ) in sorted_subs {
-            let param_name = self.core.string_interner.resolve(*param).unwrap_or("<unknown>");
+            let param_name = self.resolve_symbol_name(*param);
             name.push_str(&format!("_{}_", param_name));
             name.push_str(&self.type_to_string(typ));
         }
@@ -496,8 +496,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Int64 => "i64".to_string(),
             TypeDecl::Bool => "bool".to_string(),
             TypeDecl::String => "str".to_string(),
-            TypeDecl::Identifier(sym) => self.core.string_interner.resolve(*sym).unwrap_or("<unknown>").to_string(),
-            TypeDecl::Generic(sym) => self.core.string_interner.resolve(*sym).unwrap_or("<unknown>").to_string(),
+            TypeDecl::Identifier(sym) => self.resolve_symbol_name(*sym).to_string(),
+            TypeDecl::Generic(sym) => self.resolve_symbol_name(*sym).to_string(),
             _ => "unknown".to_string(),
         }
     }

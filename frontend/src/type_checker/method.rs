@@ -164,7 +164,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     if has_generics {
                         self.type_inference.pop_generic_scope();
                     }
-                    let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                    let method_name = self.resolve_symbol_name(method.name);
                     return Err(TypeCheckError::unsupported_operation(
                         &format!("parameter type in method '{}' for impl block '{:?}'", method_name, target_type),
                         resolved_type
@@ -190,7 +190,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     if has_generics {
                         self.type_inference.pop_generic_scope();
                     }
-                    let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                    let method_name = self.resolve_symbol_name(method.name);
                     return Err(TypeCheckError::unsupported_operation(
                         &format!("return type in method '{}' for impl block", method_name),
                         resolved_ret_type
@@ -236,7 +236,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                     if has_generics {
                                         self.type_inference.pop_generic_scope();
                                     }
-                                    let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                                    let method_name = self.resolve_symbol_name(method.name);
                                     return Err(TypeCheckError::generic_error(&format!(
                                         "method '{}' return type mismatch: expected {:?}, found {:?}",
                                         method_name, resolved_expected_type, actual_return_type
@@ -247,7 +247,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     } else {
                         // For non-generic methods, use strict type checking
                         if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
-                            let method_name = self.core.string_interner.resolve(method.name).unwrap_or("<unknown>");
+                            let method_name = self.resolve_symbol_name(method.name);
                             return Err(TypeCheckError::generic_error(&format!(
                                 "method '{}' return type mismatch: expected {:?}, found {:?}",
                                 method_name, resolved_expected_type, actual_return_type

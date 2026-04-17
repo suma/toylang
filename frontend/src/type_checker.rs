@@ -376,11 +376,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                 let func_location = self.node_to_source_location(&func.node);
                 
                 // Add detailed information about the type mismatch
-                let func_name_str = self.core.string_interner.resolve(func.name).unwrap_or("<unknown>");
+                let func_name_str = self.resolve_symbol_name(func.name);
                 
                 // Debug: If this is Generic type, show more details
                 let additional_info = if let TypeDecl::Generic(sym) = &last {
-                    let sym_str = self.core.string_interner.resolve(*sym).unwrap_or("<unknown>");
+                    let sym_str = self.resolve_symbol_name(*sym);
                     format!(" [Generic symbol: '{}']", sym_str)
                 } else {
                     String::new()
@@ -947,7 +947,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Helper to convert module path symbols to readable names
     fn resolve_module_path_names(&self, module_path: &[DefaultSymbol]) -> Vec<String> {
         module_path.iter()
-            .map(|&symbol| self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string())
+            .map(|&symbol| self.resolve_symbol_name(symbol).to_string())
             .collect()
     }
     

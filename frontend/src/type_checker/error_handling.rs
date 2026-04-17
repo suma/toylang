@@ -67,15 +67,15 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
     
     /// Create an undefined variable error with context
     fn create_undefined_variable_error(&self, var_name: DefaultSymbol, context: &str) -> TypeCheckError {
-        let var_name_str = self.core.string_interner.resolve(var_name).unwrap_or("<unknown>");
-        TypeCheckError::not_found("variable", var_name_str)
+        let var_name_str = self.resolve_symbol_name(var_name);
+        TypeCheckError::not_found("variable", &var_name_str)
             .with_context(context)
     }
     
     /// Create a method-related error with detailed information
     fn create_method_error(&self, method_name: DefaultSymbol, obj_type: &TypeDecl, reason: &str, context: Option<&str>) -> TypeCheckError {
-        let method_name_str = self.core.string_interner.resolve(method_name).unwrap_or("<unknown>");
-        let mut error = TypeCheckError::method_error(method_name_str, obj_type.clone(), reason);
+        let method_name_str = self.resolve_symbol_name(method_name);
+        let mut error = TypeCheckError::method_error(&method_name_str, obj_type.clone(), reason);
         
         if let Some(ctx) = context {
             error = error.with_context(ctx);
@@ -139,10 +139,10 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
     
     /// Create field access errors with struct and field information
     fn create_field_access_error(&self, struct_name: DefaultSymbol, field_name: DefaultSymbol, reason: &str) -> TypeCheckError {
-        let struct_name_str = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
-        let field_name_str = self.core.string_interner.resolve(field_name).unwrap_or("<unknown>");
+        let struct_name_str = self.resolve_symbol_name(struct_name);
+        let field_name_str = self.resolve_symbol_name(field_name);
         
-        TypeCheckError::not_found("field", field_name_str)
+        TypeCheckError::not_found("field", &field_name_str)
             .with_context(&format!("in struct '{}': {}", struct_name_str, reason))
     }
     
@@ -156,7 +156,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
     
     /// Create function call errors with parameter information
     fn create_function_call_error(&self, function_name: DefaultSymbol, expected_params: usize, actual_params: usize, context: &str) -> TypeCheckError {
-        let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<unknown>");
+        let function_name_str = self.resolve_symbol_name(function_name);
         let message = format!(
             "function '{}' expects {} parameters, but {} were provided",
             function_name_str, expected_params, actual_params
@@ -202,7 +202,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                        self.format_type_for_error(value_type))
             },
             TypeDecl::Struct(name, type_params) => {
-                let name_str = self.core.string_interner.resolve(*name).unwrap_or("<unknown>");
+                let name_str = self.resolve_symbol_name(*name);
                 if type_params.is_empty() {
                     name_str.to_string()
                 } else {
@@ -213,12 +213,12 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                 }
             },
             TypeDecl::Generic(param) => {
-                let param_str = self.core.string_interner.resolve(*param).unwrap_or("<unknown>");
+                let param_str = self.resolve_symbol_name(*param);
                 format!("Generic({})", param_str)
             },
             TypeDecl::Self_ => "Self".to_string(),
             TypeDecl::Identifier(name) => {
-                let name_str = self.core.string_interner.resolve(*name).unwrap_or("<unknown>");
+                let name_str = self.resolve_symbol_name(*name);
                 format!("Identifier({})", name_str)
             },
             TypeDecl::Unknown => "Unknown".to_string(),

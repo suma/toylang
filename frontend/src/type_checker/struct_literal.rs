@@ -134,20 +134,20 @@ impl<'a> TypeCheckerVisitor<'a> {
         match obj_type {
             TypeDecl::Identifier(struct_name) => {
                 if let Some(struct_fields) = self.context.get_struct_fields(struct_name) {
-                    let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                    let field_name = self.resolve_symbol_name(*field);
                     for struct_field in struct_fields {
                         if struct_field.name == field_name {
                             return Ok(struct_field.type_decl.clone());
                         }
                     }
-                    Err(TypeCheckError::not_found("field", field_name))
+                    Err(TypeCheckError::not_found("field", &field_name))
                 } else {
-                    let struct_name_str = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
-                    Err(TypeCheckError::not_found("struct", struct_name_str))
+                    let struct_name_str = self.resolve_symbol_name(struct_name);
+                    Err(TypeCheckError::not_found("struct", &struct_name_str))
                 }
             }
             TypeDecl::Struct(struct_symbol, type_params) => {
-                let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                let field_name = self.resolve_symbol_name(*field);
 
                 if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
                     for struct_field in struct_fields {
@@ -157,38 +157,38 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Ok(substituted_type);
                         }
                     }
-                    Err(TypeCheckError::not_found("field", field_name))
+                    Err(TypeCheckError::not_found("field", &field_name))
                 } else {
-                    let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
-                    Err(TypeCheckError::not_found("struct", struct_name_str))
+                    let struct_name_str = self.resolve_symbol_name(struct_symbol);
+                    Err(TypeCheckError::not_found("struct", &struct_name_str))
                 }
             }
             TypeDecl::Self_ => {
                 let resolved_type = self.resolve_self_type(&obj_type);
                 match resolved_type {
                     TypeDecl::Self_ => {
-                        let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                        let field_name = self.resolve_symbol_name(*field);
                         Err(TypeCheckError::generic_error(&format!(
                             "Cannot resolve Self type for field access '{}' - not in impl context", field_name
                         )))
                     }
                     TypeDecl::Identifier(struct_symbol) => {
                         if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
-                            let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                            let field_name = self.resolve_symbol_name(*field);
                             for struct_field in struct_fields {
                                 if struct_field.name == field_name {
                                     return Ok(struct_field.type_decl.clone());
                                 }
                             }
-                            Err(TypeCheckError::not_found("field", field_name))
+                            Err(TypeCheckError::not_found("field", &field_name))
                         } else {
-                            let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
-                            Err(TypeCheckError::not_found("struct", struct_name_str))
+                            let struct_name_str = self.resolve_symbol_name(struct_symbol);
+                            Err(TypeCheckError::not_found("struct", &struct_name_str))
                         }
                     }
                     TypeDecl::Struct(struct_symbol, type_params) => {
                         if let Some(struct_fields) = self.context.get_struct_fields(struct_symbol) {
-                            let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                            let field_name = self.resolve_symbol_name(*field);
                             for struct_field in struct_fields {
                                 if struct_field.name == field_name {
                                     let mapping = self.create_type_param_mapping(struct_symbol, &type_params);
@@ -196,14 +196,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                                     return Ok(substituted_type);
                                 }
                             }
-                            Err(TypeCheckError::not_found("field", field_name))
+                            Err(TypeCheckError::not_found("field", &field_name))
                         } else {
-                            let struct_name_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("<unknown>");
-                            Err(TypeCheckError::not_found("struct", struct_name_str))
+                            let struct_name_str = self.resolve_symbol_name(struct_symbol);
+                            Err(TypeCheckError::not_found("struct", &struct_name_str))
                         }
                     }
                     _ => {
-                        let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                        let field_name = self.resolve_symbol_name(*field);
                         Err(TypeCheckError::unsupported_operation(
                             &format!("field access '{}' on resolved Self type", field_name), resolved_type
                         ))
@@ -211,7 +211,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             _ => {
-                let field_name = self.core.string_interner.resolve(*field).unwrap_or("<unknown>");
+                let field_name = self.resolve_symbol_name(*field);
                 Err(TypeCheckError::unsupported_operation(
                     &format!("field access '{}'", field_name), obj_type
                 ))
@@ -255,7 +255,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let mut field_types = std::collections::HashMap::new();
         for (field_name, field_expr) in fields {
-            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
@@ -301,7 +301,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut field_types = std::collections::HashMap::new();
 
         for (field_name, field_expr) in fields {
-            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
@@ -326,7 +326,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(solution) => solution,
             Err(e) => {
                 self.type_inference.pop_generic_scope();
-                let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+                let struct_name_str = self.resolve_symbol_name(*struct_name);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Type inference failed for generic struct '{}': {}",
                     struct_name_str, e
@@ -335,7 +335,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
 
         for (field_name, field_expr) in fields {
-            let field_name_str = self.core.string_interner.resolve(*field_name).unwrap_or("<unknown>");
+            let field_name_str = self.resolve_symbol_name(*field_name);
             let expected_field_type = struct_definition.fields.iter()
                 .find(|def| def.name == field_name_str)
                 .map(|def| &def.type_decl);
@@ -359,11 +359,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         for generic_param in generic_params {
             if !substitutions.contains_key(generic_param) {
                 self.type_inference.pop_generic_scope();
-                let param_name = self.core.string_interner.resolve(*generic_param).unwrap_or("<unknown>");
+                let param_name = self.resolve_symbol_name(*generic_param);
                 return Err(TypeCheckError::generic_error(&format!(
                     "Cannot infer generic type parameter '{}' for struct '{}'",
                     param_name,
-                    self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>")
+                    self.resolve_symbol_name(*struct_name)
                 )));
             }
         }
@@ -390,14 +390,14 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Generate a unique name for instantiated generic struct
     pub fn generate_instantiated_struct_name(&self, struct_name: DefaultSymbol, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> String {
-        let base_name = self.core.string_interner.resolve(struct_name).unwrap_or("<unknown>");
+        let base_name = self.resolve_symbol_name(struct_name);
 
         let mut sorted_subs: Vec<_> = substitutions.iter().collect();
         sorted_subs.sort_by_key(|(k, _)| *k);
 
         let mut name_parts = vec![base_name.to_string()];
         for (param, concrete_type) in sorted_subs {
-            let param_name = self.core.string_interner.resolve(*param).unwrap_or("<unknown>");
+            let param_name = self.resolve_symbol_name(*param);
             let type_name = match concrete_type {
                 TypeDecl::UInt64 => "u64",
                 TypeDecl::Int64 => "i64",
@@ -434,6 +434,38 @@ impl<'a> TypeCheckerVisitor<'a> {
                 "Cannot slice type {:?} - no __getslice__ method found", object_type
             )))
         }
+    }
+
+    /// Helper method to check `__getitem__` on a struct (single-element access: `struct[key]`).
+    /// Unifies the previously duplicated logic that handled `TypeDecl::Identifier` and
+    /// `TypeDecl::Struct` variants separately.
+    pub fn check_struct_getitem_access(&mut self, struct_name: DefaultSymbol, slice_info: &SliceInfo, object_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
+        let index_expr = slice_info.start.as_ref()
+            .ok_or_else(|| TypeCheckError::generic_error("Struct access requires index"))?;
+
+        let struct_name_str = self.core.string_interner.resolve(struct_name)
+            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?
+            .to_string();
+
+        let index_type = self.visit_expr(index_expr)?;
+
+        let getitem_method = self.context
+            .get_method_function_by_name(&struct_name_str, "__getitem__", self.core.string_interner)
+            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+                "Cannot index into type {:?} - no __getitem__ method found", object_type
+            )))?;
+
+        if getitem_method.parameter.len() < 2 {
+            return Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"));
+        }
+        let index_param_type = &getitem_method.parameter[1].1;
+        if index_type != *index_param_type && !self.are_types_compatible(index_param_type, &index_type) {
+            return Err(TypeCheckError::type_mismatch(index_param_type.clone(), index_type));
+        }
+
+        getitem_method.return_type
+            .clone()
+            .ok_or_else(|| TypeCheckError::generic_error("__getitem__ method must have return type"))
     }
 
     /// Helper method to check __setslice__ on a struct

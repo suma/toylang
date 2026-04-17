@@ -52,9 +52,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.core.location_pool.get_stmt_location(stmt_ref).cloned()
     }
     
-    /// Helper method to resolve symbol names safely
-    pub fn resolve_symbol_name(&self, symbol: DefaultSymbol) -> &str {
-        self.core.string_interner.resolve(symbol).unwrap_or("<unknown>")
+    /// Helper method to resolve symbol names safely.
+    /// Returns an owned String to avoid holding an immutable borrow of `self` across
+    /// subsequent mutable operations (common in error-reporting code paths).
+    pub fn resolve_symbol_name(&self, symbol: DefaultSymbol) -> String {
+        self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string()
     }
     
     /// Handle shift operations type resolution

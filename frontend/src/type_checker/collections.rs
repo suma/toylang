@@ -123,86 +123,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             TypeDecl::Identifier(struct_name) => {
-                // Struct access: check for __getitem__ method (only single element access)
                 if slice_info.is_valid_for_dict() {
-                    // Single element access: struct[key]
-                    if let Some(index_expr) = &slice_info.start {
-                        let struct_name_str = self.core.string_interner.resolve(struct_name)
-                            .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-
-                        // Type check the index first to avoid borrowing conflicts
-                        let index_type = self.visit_expr(index_expr)?;
-
-                        // Look for __getitem__ method
-                        if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
-                            // Check if method has correct signature: __getitem__(self, index: T) -> U
-                            if getitem_method.parameter.len() >= 2 {
-                                let index_param_type = &getitem_method.parameter[1].1;
-                                if index_type != *index_param_type {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        index_param_type.clone(), index_type
-                                    ));
-                                }
-
-                                // Return the method's return type
-                                if let Some(return_type) = &getitem_method.return_type {
-                                    Ok(return_type.clone())
-                                } else {
-                                    Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
-                                }
-                            } else {
-                                Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
-                            }
-                        } else {
-                            Err(TypeCheckError::generic_error(&format!(
-                                "Cannot index into type {:?} - no __getitem__ method found", object_type
-                            )))
-                        }
-                    } else {
-                        Err(TypeCheckError::generic_error("Struct access requires index"))
-                    }
+                    self.check_struct_getitem_access(struct_name, slice_info, &object_type)
                 } else {
-                    // Range slicing: check for __getslice__ method
                     self.check_struct_getslice_method(struct_name, slice_info, &object_type)
                 }
             }
             TypeDecl::Struct(struct_name, ref _type_params) => {
-                // Struct type access: check for __getitem__ or __getslice__ method
-                let struct_name_str = self.core.string_interner.resolve(struct_name)
-                    .ok_or_else(|| TypeCheckError::generic_error("Unknown struct name"))?;
-
                 if slice_info.is_valid_for_dict() {
-                    // Single element access: struct[key] - use __getitem__
-                    if let Some(index_expr) = &slice_info.start {
-                        let index_type = self.visit_expr(index_expr)?;
-
-                        if let Some(getitem_method) = self.context.get_method_function_by_name(struct_name_str, "__getitem__", self.core.string_interner) {
-                            if getitem_method.parameter.len() >= 2 {
-                                let index_param_type = &getitem_method.parameter[1].1;
-                                if index_type != *index_param_type && !self.are_types_compatible(index_param_type, &index_type) {
-                                    return Err(TypeCheckError::type_mismatch(
-                                        index_param_type.clone(), index_type
-                                    ));
-                                }
-
-                                if let Some(return_type) = &getitem_method.return_type {
-                                    Ok(return_type.clone())
-                                } else {
-                                    Err(TypeCheckError::generic_error("__getitem__ method must have return type"))
-                                }
-                            } else {
-                                Err(TypeCheckError::generic_error("__getitem__ method must have at least 2 parameters (self, index)"))
-                            }
-                        } else {
-                            Err(TypeCheckError::generic_error(&format!(
-                                "Cannot index into type {:?} - no __getitem__ method found", object_type
-                            )))
-                        }
-                    } else {
-                        Err(TypeCheckError::generic_error("Struct access requires index"))
-                    }
+                    self.check_struct_getitem_access(struct_name, slice_info, &object_type)
                 } else {
-                    // Range slicing: check for __getslice__ method
                     self.check_struct_getslice_method(struct_name, slice_info, &object_type)
                 }
             }

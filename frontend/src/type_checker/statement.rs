@@ -71,7 +71,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
 
         // Debug: Print variable type information
-        let var_name_str = self.core.string_interner.resolve(name).unwrap_or("<unknown>");
+        let var_name_str = self.resolve_symbol_name(name);
 
         // Extract type parameter mappings for generic struct instances
         if let TypeDecl::Struct(struct_name, type_params) = &final_type {

@@ -83,22 +83,20 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else if resolved_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit);
-                    if let Some(location) = self.get_expr_location(&operand) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit),
+                        &operand,
+                    ));
                 }
             }
             UnaryOp::LogicalNot => {
                 if resolved_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("logical NOT", resolved_ty.clone(), TypeDecl::Unit);
-                    if let Some(location) = self.get_expr_location(&operand) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("logical NOT", resolved_ty.clone(), TypeDecl::Unit),
+                        &operand,
+                    ));
                 }
             }
         };
@@ -129,14 +127,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.resolve_shift_operand_types(&lhs_ty, &rhs_ty)
         } else {
             self.resolve_numeric_types(&lhs_ty, &rhs_ty)
-                .map_err(|mut error| {
-                    if error.location.is_none() {
-                        if let Some(location) = self.get_expr_location(&lhs) {
-                            error = error.with_location(location);
-                        }
-                    }
-                    error
-                })?
+                .map_err(|error| self.error_with_location(error, &lhs))?
         };
 
         // Context propagation: if we have a type hint, propagate it to Number expressions
@@ -188,43 +179,39 @@ impl<'a> TypeCheckerVisitor<'a> {
                     if left_param == right_param {
                         resolved_lhs_ty.clone()
                     } else {
-                        let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
-                        if let Some(location) = self.get_expr_location(&lhs) {
-                            error = error.with_location(location);
-                        }
-                        return Err(error);
+                        return Err(self.error_with_location(
+                            TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                            &lhs,
+                        ));
                     }
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                        &lhs,
+                    ));
                 }
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
-                if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) && 
+                if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) &&
                    (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
                     TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                        &lhs,
+                    ));
                 }
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
                 if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                        &lhs,
+                    ));
                 }
             }
             Operator::BitwiseAnd | Operator::BitwiseOr | Operator::BitwiseXor => {
@@ -233,21 +220,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone());
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                        &lhs,
+                    ));
                 }
             }
             Operator::LeftShift | Operator::RightShift => {
                 // For shift operations, right operand must be UInt64
                 if resolved_rhs_ty != TypeDecl::UInt64 {
-                    let mut error = TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, resolved_rhs_ty.clone());
-                    if let Some(location) = self.get_expr_location(&rhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, resolved_rhs_ty.clone()),
+                        &rhs,
+                    ));
                 }
                 // Left operand can be either UInt64 or Int64
                 if resolved_lhs_ty == TypeDecl::UInt64 {
@@ -255,11 +240,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else if resolved_lhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
                 } else {
-                    let mut error = TypeCheckError::type_mismatch_operation("shift", resolved_lhs_ty.clone(), TypeDecl::UInt64);
-                    if let Some(location) = self.get_expr_location(&lhs) {
-                        error = error.with_location(location);
-                    }
-                    return Err(error);
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("shift", resolved_lhs_ty.clone(), TypeDecl::UInt64),
+                        &lhs,
+                    ));
                 }
             }
         };
@@ -439,7 +423,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
             // Return the stored type, which may be Number for type inference
-            let name_str = self.core.string_interner.resolve(name).unwrap_or("<unknown>");
+            let name_str = self.resolve_symbol_name(name);
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
@@ -460,15 +444,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
             Ok(TypeDecl::Struct(name, type_params))
         } else {
-            let name_str = self.core.string_interner.resolve(name).unwrap_or("<NOT_FOUND>");
+            let name_str = self.resolve_symbol_name(name);
             // Note: Location information will be added by visit_expr
-            return Err(TypeCheckError::not_found("Identifier", name_str));
+            return Err(TypeCheckError::not_found("Identifier", &name_str));
         }
     }
 
     /// Type check function calls
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<unknown>");
+        let fn_name_str = self.resolve_symbol_name(fn_name);
         
         
         self.push_context();
@@ -521,7 +505,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // Check argument count
                 if args.len() != param_types.len() {
                     self.pop_context();
-                    let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                    let fn_name_str = self.resolve_symbol_name(fn_name);
                     return Err(TypeCheckError::generic_error(&format!(
                         "Function '{}' argument count mismatch: expected {}, found {}",
                         fn_name_str, param_types.len(), args.len()
@@ -540,7 +524,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // Restore hint before returning error
                         self.type_inference.type_hint = original_hint;
                         self.pop_context();
-                        let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
+                        let fn_name_str = self.resolve_symbol_name(fn_name);
                         return Err(TypeCheckError::generic_error(&format!(
                             "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
                             expected_type, arg_type, fn_name_str, arg_index + 1
@@ -555,8 +539,8 @@ impl<'a> TypeCheckerVisitor<'a> {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
         } else {
             self.pop_context();
-            let fn_name_str = self.core.string_interner.resolve(fn_name).unwrap_or("<NOT_FOUND>");
-            Err(TypeCheckError::not_found("Function", fn_name_str))
+            let fn_name_str = self.resolve_symbol_name(fn_name);
+            Err(TypeCheckError::not_found("Function", &fn_name_str))
         }
     }
 
@@ -622,7 +606,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check method calls - implementation used by type_checker.rs
     pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
+        let method_name = self.resolve_symbol_name(*method);
         
         
         let obj_type = self.visit_expr(obj)?;
@@ -649,7 +633,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         
         // Check for builtin methods
-        let method_str = self.core.string_interner.resolve(*method).unwrap_or("<NOT_FOUND>");
+        let method_str = self.resolve_symbol_name(*method);
         let builtin_method = self.builtin_methods.get(&(resolved_obj_type.clone(), method_str.to_string())).cloned();
         if let Some(builtin_method) = builtin_method {
             // visit_builtin_method_call expects ExprRef, not TypeDecl
@@ -665,7 +649,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Debug: If result is Generic, show what happened
         if let Ok(TypeDecl::Generic(sym)) = &result {
-            let sym_str = self.core.string_interner.resolve(*sym).unwrap_or("<unknown>");
+            let sym_str = self.resolve_symbol_name(*sym);
             return Err(TypeCheckError::generic_error(&format!(
                 "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
                 method_name, sym_str, resolved_obj_type
@@ -677,13 +661,13 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Helper method to handle method calls on a specific type
     pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
-        let method_name = self.core.string_interner.resolve(*method).unwrap_or("<unknown>");
+        let method_name = self.resolve_symbol_name(*method);
         
         
         
         // Check if this is a user-defined method for a struct
         if let TypeDecl::Struct(struct_name, type_params) = obj_type {
-            let struct_name_str = self.core.string_interner.resolve(*struct_name).unwrap_or("<unknown>");
+            let struct_name_str = self.resolve_symbol_name(*struct_name);
             
             // Check if this is a generic struct with type parameters
             
@@ -729,7 +713,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             } else {
                 // Handle non-generic struct method call
-                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, method_name, &self.core.string_interner) {
+                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, &method_name, &self.core.string_interner) {
                     return Ok(method_return_type);
                 }
             }
@@ -751,7 +735,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.visit_builtin_method_call(&dummy_obj_ref, &builtin_method, args);
         }
         
-        Err(TypeCheckError::method_error(method_name, obj_type.clone(), "method not found"))
+        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))
     }
 
     /// Type check associated function calls - implementation
@@ -764,7 +748,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Look for the associated function in the struct's impl block
-        let function_name_str = self.core.string_interner.resolve(function_name).unwrap_or("<unknown>");
+        let function_name_str = self.resolve_symbol_name(function_name);
 
         if let Some(method) = self.context.get_struct_method(struct_name, function_name) {
             // Clone the method to avoid borrowing issues

@@ -151,6 +151,9 @@ fn main() -> u64 {
 ## ビルトイン関数
 - ビルトイン関数の実装方針は `BUILTIN_ARCHITECTURE.md` に記述されています
 
+## Allocator システム
+- `with allocator = ...` を含む allocator 機能の設計と段階的実装計画は `ALLOCATOR_PLAN.md` に記述されています。Phase 1a（構文・型・ランタイムスコープ）は完了済み、Phase 1b 以降で `Allocator` trait や heap ルーティングを追加予定
+
 ## テスト計画
 
 toylang コンパイラ開発の包括的なテスト戦略と計画は `TEST_PLAN.md` に記述されています。このドキュメントでは以下の内容を扱っています：

@@ -439,6 +439,21 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             },
 
+            // Allocator handle vs generic parameter bounded by Allocator — pass through so
+            // the caller's comparison/op logic can validate (e.g. `current_allocator() == a`
+            // inside a `<A: Allocator>` function body).
+            (TypeDecl::Allocator, TypeDecl::Generic(sym))
+            | (TypeDecl::Generic(sym), TypeDecl::Allocator) => {
+                if matches!(
+                    self.context.current_fn_generic_bounds.get(sym),
+                    Some(TypeDecl::Allocator)
+                ) {
+                    Ok((resolved_lhs.clone(), resolved_rhs.clone()))
+                } else {
+                    Err(TypeCheckError::type_mismatch(resolved_lhs.clone(), resolved_rhs.clone()))
+                }
+            },
+
             // Other type mismatches
             _ => {
                 if resolved_lhs == resolved_rhs {

@@ -628,6 +628,64 @@ fn test_generic_without_bound_rejected_in_with() {
 }
 
 #[test]
+fn test_auto_ambient_default_for_bounded_generic_parameter() {
+    // Calling `use_alloc()` without any argument should auto-fill the trailing
+    // `<A: Allocator>` parameter with the current allocator.
+    let source = r#"
+        fn use_alloc<A: Allocator>(a: A) -> u64 {
+            with allocator = a {
+                19u64
+            }
+        }
+
+        fn main() -> u64 {
+            use_alloc()
+        }
+    "#;
+    let result = test_program(source).expect("omitted Allocator param should default to ambient");
+    assert_eq!(result.borrow().unwrap_uint64(), 19u64);
+}
+
+#[test]
+fn test_auto_ambient_default_follows_with_scope() {
+    // Auto-injected allocator must track the `with`-scope at the call site,
+    // not the outer default.
+    let source = r#"
+        fn pick<A: Allocator>(a: A) -> bool {
+            with allocator = a {
+                __builtin_current_allocator() == a
+            }
+        }
+
+        fn main() -> bool {
+            val arena = __builtin_arena_allocator()
+            with allocator = arena {
+                pick()
+            }
+        }
+    "#;
+    let result = test_program(source).expect("defaulted arg should be the arena, not the global");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_auto_ambient_does_not_default_non_allocator_parameters() {
+    // Missing a non-Allocator arg must still be an arity error (the defaulting
+    // rule is scoped strictly to Allocator-typed trailing parameters).
+    let source = r#"
+        fn takes_u64(x: u64) -> u64 {
+            x
+        }
+
+        fn main() -> u64 {
+            takes_u64()
+        }
+    "#;
+    let result = test_program(source);
+    assert!(result.is_err(), "u64 parameter should not be auto-defaulted");
+}
+
+#[test]
 fn test_ambient_keyword_evaluates_to_current_allocator() {
     // `ambient` is sugar for __builtin_current_allocator(); the value must match.
     let source = r#"

@@ -197,9 +197,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
-                } else if resolved_lhs_ty == TypeDecl::Allocator && resolved_rhs_ty == TypeDecl::Allocator
-                          && matches!(op, Operator::EQ | Operator::NE) {
+                } else if matches!(op, Operator::EQ | Operator::NE)
+                          && self.is_allocator_compatible(&resolved_lhs_ty)
+                          && self.is_allocator_compatible(&resolved_rhs_ty) {
                     // Allocator handles support only identity (== / !=), not ordering.
+                    // A generic parameter bounded by Allocator counts as allocator-compatible
+                    // so expressions like `current_allocator() == a` type-check inside a
+                    // `<A: Allocator>` function body.
                     TypeDecl::Bool
                 } else {
                     return Err(self.error_with_location(
@@ -454,6 +458,59 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
+    /// Whether `ty` can participate in an Allocator equality comparison — either
+    /// the concrete Allocator type or a generic parameter bounded by Allocator.
+    fn is_allocator_compatible(&self, ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Allocator => true,
+            TypeDecl::Generic(sym) => matches!(
+                self.context.current_fn_generic_bounds.get(sym),
+                Some(TypeDecl::Allocator)
+            ),
+            _ => false,
+        }
+    }
+
+    /// If the call to `fun` omits trailing Allocator-typed parameters, extend the
+    /// argument `ExprList` with synthetic `__builtin_current_allocator()` calls so
+    /// downstream type checking and interpretation see the defaults. A parameter
+    /// is considered defaultable when its declared type is `TypeDecl::Allocator`
+    /// or a generic parameter bounded by `Allocator`. Only trailing positions are
+    /// filled; once a non-defaultable parameter is reached the rest is left alone
+    /// so the existing arity-mismatch error path still triggers.
+    fn inject_ambient_defaults(&mut self, args_ref: &ExprRef, fun: &Function) {
+        let args = match self.core.expr_pool.get(args_ref) {
+            Some(Expr::ExprList(args)) => args,
+            _ => return,
+        };
+        if args.len() >= fun.parameter.len() {
+            return;
+        }
+        let mut extended = args.clone();
+        for (_, param_ty) in fun.parameter.iter().skip(extended.len()) {
+            let is_defaultable = match param_ty {
+                TypeDecl::Allocator => true,
+                TypeDecl::Generic(sym) => matches!(
+                    fun.generic_bounds.get(sym),
+                    Some(TypeDecl::Allocator)
+                ),
+                _ => false,
+            };
+            if !is_defaultable {
+                break;
+            }
+            let ambient_call = Expr::BuiltinCall(
+                crate::ast::BuiltinFunction::CurrentAllocator,
+                vec![],
+            );
+            let expr_ref = self.core.expr_pool.add(ambient_call);
+            extended.push(expr_ref);
+        }
+        if extended.len() > args.len() {
+            self.core.expr_pool.update(args_ref, Expr::ExprList(extended));
+        }
+    }
+
     /// Type check function calls
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let fn_name_str = self.resolve_symbol_name(fn_name);
@@ -467,7 +524,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.pop_context();
                 return Err(err);
             }
-            
+
+            // Auto-inject `ambient` for omitted trailing Allocator-typed parameters.
+            // A parameter is defaultable when its type is `TypeDecl::Allocator` or a
+            // generic parameter bounded by `Allocator`. Injection happens before the
+            // generic-call dispatch so both paths see the extended argument list.
+            self.inject_ambient_defaults(args_ref, &fun);
+
             // Handle generic function calls
             if !fun.generic_params.is_empty() {
                 return self.visit_generic_call(fn_name, args_ref, &fun);

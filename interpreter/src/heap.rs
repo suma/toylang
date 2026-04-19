@@ -1,4 +1,49 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::fmt;
+use std::rc::Rc;
+
+/// Runtime allocator abstraction.
+///
+/// Implementations plug into the ambient allocator stack so `with allocator = ...`
+/// blocks redirect `__builtin_heap_alloc` and friends to a scoped allocator.
+/// Methods take `&self` and rely on interior mutability so multiple stack
+/// entries (and `Object::Allocator` values) can share the same underlying
+/// state via `Rc`.
+pub trait Allocator: fmt::Debug {
+    fn alloc(&self, size: usize) -> usize;
+    fn free(&self, addr: usize) -> bool;
+    fn realloc(&self, addr: usize, new_size: usize) -> usize;
+}
+
+/// Default allocator backed by the process-wide `HeapManager`. Every
+/// `EvaluationContext` creates one `GlobalAllocator` at initialization and
+/// keeps it at the bottom of the allocator stack so code outside any
+/// `with` block still has a valid target for heap operations.
+#[derive(Debug, Clone)]
+pub struct GlobalAllocator {
+    inner: Rc<RefCell<HeapManager>>,
+}
+
+impl GlobalAllocator {
+    pub fn new(inner: Rc<RefCell<HeapManager>>) -> Self {
+        Self { inner }
+    }
+}
+
+impl Allocator for GlobalAllocator {
+    fn alloc(&self, size: usize) -> usize {
+        self.inner.borrow_mut().alloc(size)
+    }
+
+    fn free(&self, addr: usize) -> bool {
+        self.inner.borrow_mut().free(addr)
+    }
+
+    fn realloc(&self, addr: usize, new_size: usize) -> usize {
+        self.inner.borrow_mut().realloc(addr, new_size)
+    }
+}
 
 /// Simple heap memory manager for pointer operations
 #[derive(Debug)]

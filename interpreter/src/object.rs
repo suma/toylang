@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
+use crate::heap::Allocator;
 
 #[derive(Debug, PartialEq)]
 pub enum ObjectError {
@@ -33,9 +34,10 @@ pub enum Object {
     Pointer(usize),  // Raw pointer as memory address (0 = null pointer)
     Null(TypeDecl), // Null reference with type information
     Unit,
-    Allocator(u64), // Opaque allocator handle (Phase 1a: integer ID). The actual
-                    // Allocator trait vtable arrives in Phase 1b; the handle lets
-                    // the type checker treat allocator values as a distinct type.
+    Allocator(Rc<dyn Allocator>), // Opaque allocator handle. Identity is defined by
+                                  // Rc pointer equality so two Object::Allocator
+                                  // values refer to the same underlying allocator
+                                  // iff they were cloned from the same Rc.
 }
 
 pub type RcObject = Rc<RefCell<Object>>;
@@ -157,7 +159,9 @@ impl Ord for ObjectKey {
             (_, Object::Pointer(_)) => Ordering::Greater,
             (Object::Null(_), _) => Ordering::Less,
             (_, Object::Null(_)) => Ordering::Greater,
-            (Object::Allocator(a), Object::Allocator(b)) => a.cmp(b),
+            (Object::Allocator(a), Object::Allocator(b)) => {
+                (Rc::as_ptr(a) as *const () as usize).cmp(&(Rc::as_ptr(b) as *const () as usize))
+            }
             (Object::Allocator(_), _) => Ordering::Less,
             (_, Object::Allocator(_)) => Ordering::Greater,
         }
@@ -197,7 +201,7 @@ impl PartialEq for Object {
             (Object::Pointer(a), Object::Pointer(b)) => a == b,
             (Object::Null(_), Object::Null(_)) => true,
             (Object::Unit, Object::Unit) => true,
-            (Object::Allocator(a), Object::Allocator(b)) => a == b,
+            (Object::Allocator(a), Object::Allocator(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -277,9 +281,10 @@ impl Hash for Object {
             Object::Unit => {
                 11u8.hash(state);
             }
-            Object::Allocator(id) => {
+            Object::Allocator(rc) => {
                 12u8.hash(state);
-                id.hash(state);
+                // Hash by Rc pointer identity to match `PartialEq::eq`'s ptr_eq.
+                (Rc::as_ptr(rc) as *const () as usize).hash(state);
             }
         }
     }

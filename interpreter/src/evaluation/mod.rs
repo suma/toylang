@@ -6,7 +6,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::environment::Environment;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
-use crate::heap::HeapManager;
+use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
 mod operators;
 mod expression;
@@ -34,16 +34,24 @@ pub struct EvaluationContext<'a> {
     pub(super) null_object: RcObject, // Pre-created null object for reuse
     pub(super) recursion_depth: u32,
     pub(super) max_recursion_depth: u32,
-    pub(super) heap_manager: HeapManager, // Heap memory manager for pointer operations
+    // Shared heap state. The GlobalAllocator holds an Rc to this same cell so
+    // pointer-based builtins (ptr_read/write, mem_copy, ...) can access memory
+    // regardless of which allocator is active on the stack.
+    pub(super) heap_manager: Rc<RefCell<HeapManager>>,
+    // Process-wide default allocator. Always present at the bottom of
+    // `allocator_stack` and returned by `__builtin_default_allocator()`.
+    pub(super) global_allocator: Rc<dyn Allocator>,
     // Lexically-scoped allocator binding stack. `with allocator = expr { ... }`
-    // pushes on entry and pops on exit so nested scopes restore the outer binding.
-    // Phase 1a: the pushed value is an opaque RcObject observed via __builtin_current_allocator().
-    // Routing heap_alloc through the stack top arrives in Phase 1b.
-    pub(super) allocator_stack: Vec<RcObject>,
+    // pushes on entry and pops on exit. `allocator_stack.last()` is always
+    // non-None because the global allocator sits at the bottom.
+    pub(super) allocator_stack: Vec<Rc<dyn Allocator>>,
 }
 
 impl<'a> EvaluationContext<'a> {
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
+        let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
+        let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
+        let allocator_stack: Vec<Rc<dyn Allocator>> = vec![global_allocator.clone()];
         Self {
             stmt_pool,
             expr_pool,
@@ -54,8 +62,9 @@ impl<'a> EvaluationContext<'a> {
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
-            heap_manager: HeapManager::new(),
-            allocator_stack: Vec::new(),
+            heap_manager,
+            global_allocator,
+            allocator_stack,
         }
     }
 

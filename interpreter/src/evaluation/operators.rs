@@ -127,9 +127,10 @@ impl EvaluationContext<'_> {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(op.apply_i64(*l, *r)),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(op.apply_u64(*l, *r)),
             (Object::Allocator(l), Object::Allocator(r)) => {
+                let same = Rc::ptr_eq(l, r);
                 match op {
-                    ComparisonOp::Eq => Object::Bool(l == r),
-                    ComparisonOp::Ne => Object::Bool(l != r),
+                    ComparisonOp::Eq => Object::Bool(same),
+                    ComparisonOp::Ne => Object::Bool(!same),
                     _ => return Err(InterpreterError::TypeError{
                         expected: lhs_ty,
                         found: rhs_ty,

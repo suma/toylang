@@ -209,7 +209,14 @@ impl EvaluationContext<'_> {
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("heap_alloc expects u64 size".to_string()))?;
 
-                let addr = self.heap_manager.alloc(size as usize);
+                // Route allocation through the innermost `with`-bound allocator.
+                // `allocator_stack.last()` is guaranteed to be Some because the
+                // global allocator sits at the bottom of the stack.
+                let allocator = self.allocator_stack
+                    .last()
+                    .expect("allocator_stack must always contain the global allocator")
+                    .clone();
+                let addr = allocator.alloc(size as usize);
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(addr)))))
             }
 
@@ -227,7 +234,11 @@ impl EvaluationContext<'_> {
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("heap_free expects pointer".to_string()))?;
 
-                self.heap_manager.free(addr);
+                let allocator = self.allocator_stack
+                    .last()
+                    .expect("allocator_stack must always contain the global allocator")
+                    .clone();
+                allocator.free(addr);
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
             }
 
@@ -250,7 +261,11 @@ impl EvaluationContext<'_> {
                 let new_size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("heap_realloc expects u64 size as second argument".to_string()))?;
 
-                let new_addr = self.heap_manager.realloc(old_addr, new_size as usize);
+                let allocator = self.allocator_stack
+                    .last()
+                    .expect("allocator_stack must always contain the global allocator")
+                    .clone();
+                let new_addr = allocator.realloc(old_addr, new_size as usize);
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(new_addr)))))
             }
 
@@ -274,7 +289,7 @@ impl EvaluationContext<'_> {
                 let offset = offset_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
 
-                match self.heap_manager.read_u64(addr, offset as usize) {
+                match self.heap_manager.borrow().read_u64(addr, offset as usize) {
                     Some(value) => Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(value))))),
                     None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
                 }
@@ -304,7 +319,7 @@ impl EvaluationContext<'_> {
                 let value = value_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("ptr_write expects u64 value as third argument".to_string()))?;
 
-                if self.heap_manager.write_u64(addr, offset as usize, value) {
+                if self.heap_manager.borrow_mut().write_u64(addr, offset as usize, value) {
                     Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()))
@@ -352,7 +367,7 @@ impl EvaluationContext<'_> {
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_copy expects u64 size as third argument".to_string()))?;
 
-                if self.heap_manager.copy_memory(src_addr, dest_addr, size as usize) {
+                if self.heap_manager.borrow_mut().copy_memory(src_addr, dest_addr, size as usize) {
                     Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_copy".to_string()))
@@ -383,7 +398,7 @@ impl EvaluationContext<'_> {
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_move expects u64 size as third argument".to_string()))?;
 
-                if self.heap_manager.move_memory(src_addr, dest_addr, size as usize) {
+                if self.heap_manager.borrow_mut().move_memory(src_addr, dest_addr, size as usize) {
                     Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_move".to_string()))
@@ -414,7 +429,7 @@ impl EvaluationContext<'_> {
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_set expects u64 size as third argument".to_string()))?;
 
-                if self.heap_manager.set_memory(addr, value as u8, size as usize) {
+                if self.heap_manager.borrow_mut().set_memory(addr, value as u8, size as usize) {
                     Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))
@@ -429,13 +444,13 @@ impl EvaluationContext<'_> {
                         found: args.len(),
                     });
                 }
-                // Return the top of the allocator stack. When no `with` scope is active,
-                // fall back to the default allocator handle (ID 0) so the return type
-                // remains Allocator as declared in the signature.
-                let top = self.allocator_stack.last().cloned().unwrap_or_else(|| {
-                    Rc::new(RefCell::new(Object::Allocator(0)))
-                });
-                Ok(EvaluationResult::Value(top))
+                // `allocator_stack.last()` is guaranteed non-None because the global
+                // allocator is always at the bottom.
+                let top = self.allocator_stack
+                    .last()
+                    .expect("allocator_stack must always contain the global allocator")
+                    .clone();
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Allocator(top)))))
             }
 
             BuiltinFunction::DefaultAllocator => {
@@ -446,9 +461,9 @@ impl EvaluationContext<'_> {
                         found: args.len(),
                     });
                 }
-                // The global/default allocator is identified by handle 0. Phase 1b will
-                // replace this ID-based scheme with a real Allocator trait object.
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Allocator(0)))))
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
+                    Object::Allocator(self.global_allocator.clone()),
+                ))))
             }
         }
     }

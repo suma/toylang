@@ -97,14 +97,21 @@ impl EvaluationContext<'_> {
                 self.evaluate_cast(&expr, &target_type)
             }
             Expr::With(allocator, body) => {
-                // Evaluate the allocator expression, then push it onto the scope stack
-                // for the duration of the body. The pop must happen on every exit path
-                // (value, return, break, continue, error) so nested `with` blocks always
-                // restore the outer binding. The body is a Block AST node, so fetch its
-                // statements and run them through evaluate_block (same as if/else bodies).
+                // Evaluate the allocator expression. The type checker already ensures
+                // the value is of type Allocator; extract the underlying Rc<dyn Allocator>
+                // and push it onto the scope stack for the duration of the body. The
+                // pop must happen on every exit path (value, return, break, continue,
+                // error) so nested `with` blocks always restore the outer binding.
                 let allocator_val = self.evaluate(&allocator);
                 let allocator_val = self.extract_value(allocator_val)?;
-                self.allocator_stack.push(allocator_val);
+                let allocator_rc = match &*allocator_val.borrow() {
+                    Object::Allocator(rc) => rc.clone(),
+                    other => return Err(InterpreterError::InternalError(format!(
+                        "with: allocator expression did not produce an Allocator value: {:?}",
+                        other
+                    ))),
+                };
+                self.allocator_stack.push(allocator_rc);
                 let body_expr = self.expr_pool.get(&body)
                     .ok_or_else(|| InterpreterError::InternalError("Invalid with-body reference".to_string()))?;
                 let result = if let Expr::Block(statements) = body_expr {

@@ -104,16 +104,39 @@ alloc site ごとに `AllocatorBinding` を持たせる：
 - `heap_alloc` / `heap_free` は依然として直接 `HeapManager` を使用
 - allocator 引数を取る関数宣言（`fn f<A: Allocator>`）はまだパース可能だが効果なし
 
-### Phase 1b（次の作業）
+### Phase 1b（完了: 2026-04-19）
 
-- [ ] `Allocator` trait を `heap.rs` に定義（alloc/free/realloc）
-- [ ] `GlobalAllocator` 実装（既存 `HeapManager` をラップ、`Rc<RefCell<HeapManager>>` で共有）
-- [ ] `ArenaAllocator` 実装（領域単位で解放）
-- [ ] `FixedBufferAllocator` 実装（固定バッファ）
-- [ ] `Object::Allocator` を `Rc<dyn Allocator>` ベースに置換
-- [ ] `__builtin_default_allocator()` がグローバル allocator の trait object を返す
-- [ ] `EvaluationContext.allocator_stack: Vec<Rc<dyn Allocator>>`（初期値に global）
-- [ ] `heap_alloc` / `heap_free` / `heap_realloc` が `allocator_stack.last()` 経由で動作
+**実装済み:**
+
+- `Allocator` trait を `interpreter/src/heap.rs` に定義（`alloc` / `free` / `realloc`、`fmt::Debug` 境界）
+- `GlobalAllocator` 実装（`Rc<RefCell<HeapManager>>` をラップ、`&self` メソッドで interior mutability）
+- `Object::Allocator(Rc<dyn Allocator>)` に置換
+  - `PartialEq` / `Hash` / `Ord::cmp` は `Rc` のポインタ identity を使用
+- `__builtin_default_allocator()` が `EvaluationContext.global_allocator` の `Rc::clone` を返す
+- `EvaluationContext`:
+  - `heap_manager: Rc<RefCell<HeapManager>>`（共有）
+  - `global_allocator: Rc<dyn Allocator>` を保持
+  - `allocator_stack: Vec<Rc<dyn Allocator>>` の bottom に global allocator を常に配置
+- `heap_alloc` / `heap_free` / `heap_realloc` が `allocator_stack.last()` 経由で動作
+- `ptr_read` / `ptr_write` / `mem_copy` / `mem_move` / `mem_set` は `heap_manager.borrow*()` で直接アクセス（allocator 非依存のアドレスベース API のため）
+- `Expr::With` は評価結果から `Rc<dyn Allocator>` を抽出して push、終了時に pop
+- `Allocator` 値の等価比較は `Rc::ptr_eq` ベース（同一インスタンスなら true）
+- 新規テスト: global allocator がスタック底部に常駐することを検証
+
+**Phase 1b の未実装（Phase 1c に先送り）:**
+
+- `ArenaAllocator`（領域単位で解放）
+- `FixedBufferAllocator`（固定バッファ）
+- これらを言語側から生成するビルトイン（例: `arena_allocator()`）
+
+Phase 1b 時点では全ての allocator が `GlobalAllocator` に帰着するため、`with` の効果は「スコープ追跡のみ」観測可能。実際に別々のヒープに振り分けるのは Phase 1c 以降。
+
+### Phase 1c: カスタム allocator 実装
+
+- [ ] `ArenaAllocator` 実装（領域単位で解放、drop で全解放）
+- [ ] `FixedBufferAllocator` 実装（固定バッファ、溢れたら fail）
+- [ ] `__builtin_arena_allocator()` / `__builtin_fixed_buffer_allocator(size)` 等のビルトイン追加
+- [ ] スコープ内で `with allocator = arena_allocator() { ... }` が実際に別領域に振り分けることを検証するテスト
 
 ### Phase 2: 型システム拡張
 
@@ -210,5 +233,6 @@ EvaluationContext {
 
 | 日付 | Phase | 内容 |
 |---|---|---|
+| 2026-04-19 | Phase 1b 完了 | `Allocator` trait、`GlobalAllocator`、`Object::Allocator(Rc<dyn Allocator>)`、`heap_alloc` 等のスタック経由ルーティング |
 | 2026-04-19 | Phase 1a 完了 | `with` 構文、`TypeDecl::Allocator`、`Object::Allocator`、`current_allocator` / `default_allocator` ビルトイン |
 | 2026-04-19 | 計画策定 | ハイブリッド設計の採用、Phase 1〜5 ロードマップ確定 |

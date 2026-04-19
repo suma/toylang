@@ -424,6 +424,19 @@ fn test_with_allocator_nested_scopes_restore_outer() {
 }
 
 #[test]
+fn test_current_allocator_defaults_to_global() {
+    // Outside any `with` block, current_allocator() must equal default_allocator()
+    // because the global allocator always sits at the bottom of the stack (Phase 1b).
+    let source = r#"
+        fn main() -> bool {
+            __builtin_current_allocator() == __builtin_default_allocator()
+        }
+    "#;
+    let result = test_program(source).expect("current should equal default at top level");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
 fn test_with_allocator_rejects_non_allocator_expression() {
     // Type checker must reject RHS values that are not of type Allocator.
     let source = r#"

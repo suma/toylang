@@ -1,8 +1,7 @@
 use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
-    TypeCheckerVisitor, TypeCheckError,
-    Acceptable
+    TypeCheckerVisitor, TypeCheckError
 };
 
 /// Collections type checking implementation (arrays, dictionaries, tuples, slices)

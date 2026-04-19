@@ -1,3 +1,8 @@
+// Doc comments attached to `proptest!` macro invocations don't survive macro
+// expansion, which triggers `unused_doc_comments`. Silence the category at the
+// file level; descriptive comments above each proptest still read fine.
+#![allow(unused_doc_comments, dead_code, unused_comparisons)]
+
 //! Property-Based Integration Tests
 //!
 //! This module contains property-based testing using proptest for mathematical property

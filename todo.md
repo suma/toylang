@@ -2,6 +2,11 @@
 
 ## 完了済み ✅
 
+126. 非ジェネリック struct の associated function 対応: `List::new()` 形式が generic struct なしで動作、メソッドチェーンの return type 正規化 (2026-04-19)
+125. struct field 代入 `obj.field = x` サポート: interpreter の handle_assignment に FieldAccess LHS 追加、Counter.inc() 等の imperative スタイルが書けるように (2026-04-19)
+124. Allocator システム実装（Phase 1a/1b/1c/2a/2b + Phase 3 部分）: `with allocator = expr { ... }` 構文、`TypeDecl::Allocator`、`Object::Allocator(Rc<dyn Allocator>)`、`Allocator` trait + Global/Arena/FixedBuffer、`<A: Allocator>` bound（関数・struct・impl）、bound 連鎖、`ambient` 糖衣、自動 ambient 挿入、ユーザ空間 List<u64> 対応。設計・進捗は `ALLOCATOR_PLAN.md`、使用例は `interpreter/example/allocator_*.t` (2026-04-19)
+123. ヒープメモリ管理の完全実装: heap_alloc/free/realloc、ptr_read/write/is_null、mem_copy/move/set を allocator stack 経由でルーティング (2026-04-19)
+122. 動的配列（List 型）ユーザ空間対応: `struct List { data: ptr, len: u64, cap: u64 }` + impl + heap builtin で push/get/imperative な growth を記述可能 (2026-04-19)
 120. interpreter/evaluation.rs (2632行) を evaluation/ モジュール7ファイルに分割: operators/expression/statement/call/slice/builtin/mod に責務分離 (2026-04-19)
 119. parser/core.rs (1038行) を core/types/declarations/program_parser に4分割: パース責務ごとに独立 (2026-04-17)
 118. type_checker.rs (1000行) を visitor/visitor_impl/module_access に3分割: Acceptable/ProgramVisitor/AstVisitor実装を切り離し (2026-04-17)
@@ -19,14 +24,12 @@
 
 ## 未実装 📋
 
-121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（設計・進捗: `ALLOCATOR_PLAN.md` 参照。Phase 1a/1b/1c/2a/2b 完了。次は Phase 3（コレクション型 + IR）または複数 bound/trait 定義）
-95. **ヒープメモリ管理の完全実装** - heap_realloc、mem_copy/mem_set
-96. **パターンマッチングと列挙型（Enum）**
-30. **組み込み関数システム** - 型変換・数学関数
-65. **frontendの改善課題** - docコメント、プロパティベーステスト、コード重複削減
-26. **ドキュメント整備** - 言語仕様やAPIドキュメント
-28. **動的配列（List型）** - push, pop, get等の基本操作
-29. **Option型によるNull安全性** - Option<T>型とパターンマッチング基礎
+96. **パターンマッチングと列挙型（Enum）** — `enum Color { Red, Green, Blue }` + `match` 式。Option 型の土台
+29. **Option型によるNull安全性** — Enum 導入後、`Option<T> = Some(T) | None`
+30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
+65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
+26. **ドキュメント整備** — 言語仕様 / API ドキュメント
+121. **Allocator システム残作業** — ジェネリック `List<T>` 一般化、IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
 
 ## 検討中の機能
 
@@ -45,9 +48,10 @@
 - 固定配列: 型推論対応、インデックス型推論、境界チェック
 - 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
-- 構造体: 宣言、implブロック、フィールドアクセス、メソッド、`__getitem__`/`__setitem__`
-- 文字列: ConstString/String二重システム、`str.len()`
+- 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`
+- 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
+- Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Arena / FixedBuffer allocator
 
 ### 型システム
 - 自動型変換・型推論（数値リテラルのサフィックス省略可）
@@ -55,13 +59,14 @@
 - ジェネリック構造体: `struct Container<T>`、constraint-based型推論
 - ネストジェネリック: `Container<Container<T>>`（C++11スタイル`>>`分割）
 - Self キーワード: implブロック内での構造体参照
+- Trait bound: `<A: Allocator>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
 
 ### モジュール・その他
 - Go-styleモジュールシステム: package/import/qualified name resolution
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- frontend 486テスト + interpreter 301テスト = 合計787テスト（100%成功率）
+- 合計 833 テスト（100% 成功率、2026-04-19 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

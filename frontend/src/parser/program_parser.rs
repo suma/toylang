@@ -4,7 +4,7 @@ use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
-use crate::parser::error::{ParserError, ParserErrorKind, ParserResult, MultipleParserResult};
+use crate::parser::error::{ParserErrorKind, ParserResult, MultipleParserResult};
 use super::core::Parser;
 
 impl<'a> Parser<'a> {

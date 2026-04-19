@@ -147,16 +147,12 @@ macro_rules! token {
 0[xX][0-9a-fA-F]+   {
                         let text = self.yytext();
                         let hex_str = &text[2..]; // Skip "0x" or "0X"
-                        // Try to parse as u64 first for untyped hex literals
+                        // Validate that the hex string parses; either way we hand
+                        // the raw text to the parser/type checker as `Integer` so
+                        // it can apply an explicit suffix or context-driven type.
                         match u64::from_str_radix(hex_str, 16) {
-                            Ok(value) => {
-                                // For untyped hex, we'll treat it as an integer string
-                                // and let the parser/type checker handle it
-                                return Ok(token!(self, Kind::Integer(self.yytext())))
-                            },
-                            Err(_) => {
-                                return Ok(token!(self, Kind::Integer(self.yytext())))
-                            }
+                            Ok(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 

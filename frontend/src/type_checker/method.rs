@@ -9,8 +9,11 @@ pub trait MethodProcessing {
     /// Resolve Self type to the actual struct type in impl block context
     fn resolve_self_type(&self, type_decl: &TypeDecl) -> TypeDecl;
     
-    /// Check method arguments against parameter types, handling Self type specially
-    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>, 
+    /// Check method arguments against parameter types, handling Self type specially.
+    /// Currently unused — kept for future callers once method-call type checking
+    /// goes through the trait directly.
+    #[allow(dead_code)]
+    fn check_method_arguments(&self, obj_type: &TypeDecl, method: &Rc<MethodFunction>,
                              _args: &Vec<ExprRef>, arg_types: &Vec<TypeDecl>, method_name: &str) -> Result<(), TypeCheckError>;
     
     /// Process builtin method calls

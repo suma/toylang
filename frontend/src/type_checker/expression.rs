@@ -431,7 +431,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
             // Return the stored type, which may be Number for type inference
-            let name_str = self.resolve_symbol_name(name);
+            let _name_str = self.resolve_symbol_name(name);
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
@@ -513,7 +513,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check function calls
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let fn_name_str = self.resolve_symbol_name(fn_name);
+        let _fn_name_str = self.resolve_symbol_name(fn_name);
         
         
         self.push_context();
@@ -693,7 +693,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         
         // Check if obj is a variable and get its name for type mapping lookup
-        let var_name = if let Some(obj_expr) = self.core.expr_pool.get(obj) {
+        let _var_name = if let Some(obj_expr) = self.core.expr_pool.get(obj) {
             match obj_expr {
                 Expr::Identifier(name) => Some(name.clone()),
                 _ => None

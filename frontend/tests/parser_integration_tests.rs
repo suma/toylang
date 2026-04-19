@@ -1,3 +1,7 @@
+// Helper functions defined in this integration test binary may go unused by
+// specific test invocations; allow dead code at the crate level.
+#![allow(dead_code, unused_comparisons)]
+
 //! Parser Integration Tests
 //!
 //! This module contains integration tests for the parser subsystem.
@@ -16,10 +20,6 @@
 
 use frontend::ParserWithInterner;
 use frontend::type_checker::TypeCheckerVisitor;
-use frontend::ast::*;
-use frontend::type_decl::TypeDecl;
-use std::fs::File;
-use std::io::Read;
 
 mod helpers {
     use super::*;

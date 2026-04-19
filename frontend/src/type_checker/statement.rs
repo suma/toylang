@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    Acceptable, TypeInferenceManager
+    Acceptable,
 };
 
 /// Statement type checking implementation
@@ -71,7 +71,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
 
         // Debug: Print variable type information
-        let var_name_str = self.resolve_symbol_name(name);
+        let _var_name_str = self.resolve_symbol_name(name);
 
         // Extract type parameter mappings for generic struct instances
         if let TypeDecl::Struct(struct_name, type_params) = &final_type {

@@ -1,3 +1,8 @@
+// Shared test helpers. Each integration-test binary imports a subset of
+// these, so Rust flags the rest as dead per crate; tag the whole module
+// to silence the noise.
+#![allow(dead_code)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use interpreter::object::Object;

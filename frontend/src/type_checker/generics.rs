@@ -1,7 +1,6 @@
 use crate::ast::{ExprRef, Function, MethodFunction};
 use crate::type_checker::{TypeCheckError, TypeDecl, TypeCheckerVisitor};
 use crate::type_checker::context::StructDefinition;
-use crate::visitor::AstVisitor;
 use string_interner::DefaultSymbol;
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -159,7 +158,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
     fn visit_generic_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &Vec<(DefaultSymbol, ExprRef)>,
                                    struct_definition: &StructDefinition,
                                    generic_params: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        let struct_name_str = self.resolve_symbol_name(*struct_name);
+        let _struct_name_str = self.resolve_symbol_name(*struct_name);
 
         // Clear previous constraints for this inference
         self.type_inference.clear_constraints();
@@ -314,7 +313,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         Ok(TypeDecl::Struct(*struct_name, type_params))
     }
 
-    fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, method_name: &str, 
+    fn handle_generic_method_call(&mut self, struct_name: DefaultSymbol, _method_name: &str, 
                                  method_return_type: &TypeDecl, _obj: &ExprRef, _args: &Vec<ExprRef>, 
                                  _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         // Get the generic parameters for this struct

@@ -3,7 +3,11 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError, SourceLocation};
 
-/// Enhanced error handling and diagnostic capabilities for type checker
+/// Enhanced error handling and diagnostic capabilities for type checker.
+/// Kept as a forward-looking extension surface — the full trait is not wired
+/// into TypeCheckerVisitor yet, but individual helpers are used through
+/// direct impl methods.
+#[allow(dead_code)]
 pub trait ErrorHandling {
     /// Create a detailed type mismatch error with context information
     fn create_detailed_type_mismatch_error(&self, expected: TypeDecl, actual: TypeDecl, operation: &str, location: Option<SourceLocation>) -> TypeCheckError;

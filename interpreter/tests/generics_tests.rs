@@ -1,6 +1,5 @@
 mod common;
 
-use common::test_program;
 
 // =====================================================================
 // Generics Tests - Consolidated from 8 generic_struct_*.rs files
@@ -1809,7 +1808,7 @@ mod errors {
             }
         "#;
 
-        let result = test_program(source);
+        let _result = test_program(source);
         // This may or may not fail depending on type inference -
         // if both fields are u64, it should work
         // Let's modify to ensure failure:
@@ -1870,7 +1869,7 @@ mod errors {
             }
         "#;
 
-        let result = test_program(source);
+        let _result = test_program(source);
         // This might fail during parsing or type checking due to infinite recursion
         // The exact behavior depends on implementation
     }

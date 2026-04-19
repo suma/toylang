@@ -764,4 +764,96 @@ fn main() -> u64 {
         let result = test_program(program).unwrap();
         assert_eq!(&*result.borrow(), &Object::UInt64(17)); // 10 + 2 + 5
     }
+
+    // =========================================================================
+    // Field assignment (`obj.field = value`)
+    // =========================================================================
+
+    #[test]
+    fn test_field_assign_updates_value() {
+        // Assigning into a struct field through a var must persist so later
+        // reads see the new value.
+        let program = r#"
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+fn main() -> u64 {
+    var p = Point { x: 1u64, y: 2u64 }
+    p.x = 10u64
+    p.y = 20u64
+    p.x + p.y
+}
+"#;
+        let result = test_program(program).expect("field assignment should succeed");
+        assert_eq!(result.borrow().unwrap_uint64(), 30u64);
+    }
+
+    #[test]
+    fn test_field_assign_visible_through_method() {
+        // Because Object::Struct is shared via Rc<RefCell<_>>, mutating a
+        // field inside a method must be observable on the caller's binding.
+        let program = r#"
+struct Counter {
+    count: u64,
+}
+
+impl Counter {
+    fn inc(self: Self) -> u64 {
+        self.count = self.count + 1u64
+        self.count
+    }
+}
+
+fn main() -> u64 {
+    var c = Counter { count: 0u64 }
+    c.inc()
+    c.inc()
+    c.inc()
+    c.count
+}
+"#;
+        let result = test_program(program).expect("method-driven field mutation should persist");
+        assert_eq!(result.borrow().unwrap_uint64(), 3u64);
+    }
+
+    #[test]
+    fn test_field_assign_rejects_wrong_type() {
+        // RHS type must match the declared field type.
+        let program = r#"
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+fn main() -> u64 {
+    var p = Point { x: 1u64, y: 2u64 }
+    p.x = true
+    p.x
+}
+"#;
+        let result = test_program(program);
+        assert!(result.is_err(), "assigning bool to u64 field should fail type check");
+    }
+
+    #[test]
+    fn test_field_assign_unknown_field_errors() {
+        // Writing to a field that doesn't exist must error (runtime or
+        // type-check; either is fine as long as the program doesn't succeed
+        // silently).
+        let program = r#"
+struct Point {
+    x: u64,
+}
+
+fn main() -> u64 {
+    var p = Point { x: 1u64 }
+    p.z = 99u64
+    p.x
+}
+"#;
+        let result = test_program(program);
+        assert!(result.is_err(), "assigning to a missing field must fail");
+    }
 }

@@ -259,11 +259,12 @@ impl EvaluationContext<'_> {
         }
     }
 
-    /// Handles assignment expressions (both variable and array element assignment)
+    /// Handles assignment expressions (variable, field, and array element assignment)
     fn handle_assignment(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         if let Some(lhs_expr) = self.expr_pool.get(&lhs) {
             match lhs_expr {
                 Expr::Identifier(name) => self.handle_variable_assignment(name, rhs),
+                Expr::FieldAccess(obj, field) => self.handle_field_assignment(&obj, field, rhs),
                 _ => {
                     Err(InterpreterError::InternalError("bad assignment due to lhs is not identifier or array access".to_string()))
                 }
@@ -271,6 +272,53 @@ impl EvaluationContext<'_> {
         } else {
             Err(InterpreterError::InternalError("bad assignment due to invalid lhs reference".to_string()))
         }
+    }
+
+    /// Handles field assignment: `obj.field = rhs`
+    fn handle_field_assignment(&mut self, obj: &ExprRef, field: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Evaluate the receiver first so we hold an Rc to the underlying struct.
+        // Mutating through the Rc updates every alias (which is the whole point —
+        // `self.field = x` inside a method has to be observable on the caller's copy).
+        let obj_val = self.evaluate(obj);
+        let obj_val = self.extract_value(obj_val)?;
+
+        // Evaluate the right-hand side, mirroring handle_variable_assignment's
+        // Null-shortcut so `obj.field = null` keeps working.
+        let rhs_expr = self.expr_pool.get(&rhs)
+            .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
+        let new_value = match rhs_expr {
+            Expr::Null => self.null_object.clone(),
+            _ => {
+                let v = self.evaluate(rhs);
+                self.extract_value(v)?
+            }
+        };
+
+        let field_name = self.string_interner.resolve(field)
+            .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?
+            .to_string();
+
+        {
+            let mut obj_borrowed = obj_val.borrow_mut();
+            match &mut *obj_borrowed {
+                Object::Struct { fields, .. } => {
+                    if !fields.contains_key(&field_name) {
+                        return Err(InterpreterError::InternalError(format!(
+                            "Cannot assign to unknown field '{}'", field_name
+                        )));
+                    }
+                    fields.insert(field_name, new_value.clone());
+                }
+                other => {
+                    return Err(InterpreterError::InternalError(format!(
+                        "Cannot assign field on non-struct object: {:?}", other
+                    )));
+                }
+            }
+        }
+
+        let cloned_value = new_value.borrow().clone();
+        Ok(EvaluationResult::Value(Rc::new(RefCell::new(cloned_value))))
     }
 
     /// Handles variable assignment

@@ -138,7 +138,8 @@ fn main() -> u64 {
   - unit variant は `Color::Red`、tuple variant は `Shape::Circle(5i64)` で生成
   - 各 arm は式。全 arm が同じ型でなければならない
   - パターン: `Enum::Variant` / `Enum::Variant(x, _, y)`（`_` は discard） / `_`（全 catch）
-  - 網羅性チェック・ジェネリック enum・ネストパターンは未対応（Phase 2c 以降）
+  - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
+  - ジェネリック enum・ネストパターン・unreachable arm 警告は未対応（Phase 3 以降）
 
 ## Architecture Notes
 

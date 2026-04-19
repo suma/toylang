@@ -1097,6 +1097,80 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_non_exhaustive_match_rejected() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+
+            fn main() -> i64 {
+                val c: Color = Color::Red
+                match c {
+                    Color::Red => 1i64,
+                    Color::Green => 2i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected non-exhaustive match error");
+        let err = result.unwrap_err();
+        assert!(err.contains("Blue"), "error should mention missing variant Blue: {}", err);
+    }
+
+    #[test]
+    fn test_exhaustive_match_without_wildcard_accepted() {
+        let source = r#"
+            enum Bit { Zero, One }
+
+            fn main() -> i64 {
+                val b: Bit = Bit::One
+                match b {
+                    Bit::Zero => 0i64,
+                    Bit::One => 1i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(1)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_wildcard_makes_match_exhaustive() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+
+            fn main() -> i64 {
+                val c: Color = Color::Blue
+                match c {
+                    Color::Red => 1i64,
+                    _ => 99i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(99)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_non_exhaustive_tuple_variant_match_rejected() {
+        let source = r#"
+            enum Shape {
+                Circle(i64),
+                Point,
+            }
+
+            fn main() -> i64 {
+                val s: Shape = Shape::Point
+                match s {
+                    Shape::Circle(r) => r,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected non-exhaustive match error");
+        let err = result.unwrap_err();
+        assert!(err.contains("Point"), "error should mention missing Point: {}", err);
+    }
+
+    #[test]
     fn test_duplicate_variant_rejected() {
         let source = r#"
             enum Color {

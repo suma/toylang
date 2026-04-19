@@ -381,12 +381,18 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
         // Validate each pattern and collect arm body types. Tuple-variant
         // bindings introduce fresh variables scoped to the arm body, so we
-        // push a new variable scope around each body visit.
+        // push a new variable scope around each body visit. While walking
+        // the arms we also track coverage so the loop below can enforce
+        // exhaustiveness.
         let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
+        let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut has_wildcard = false;
         for (pat, body) in arms {
             let mut pushed_scope = false;
             match pat {
-                Pattern::Wildcard => {}
+                Pattern::Wildcard => {
+                    has_wildcard = true;
+                }
                 Pattern::EnumVariant(pat_enum, pat_variant, bindings) => {
                     if *pat_enum != enum_name {
                         let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
@@ -425,6 +431,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             }
                         }
                     }
+                    covered_variants.insert(*pat_variant);
                 }
             }
             let body_ty = self.visit_expr(body)?;
@@ -432,6 +439,28 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 self.context.vars.pop();
             }
             arm_types.push(body_ty);
+        }
+
+        // Exhaustiveness: without a wildcard arm, every variant of the enum
+        // must appear at least once as an arm pattern. This catches the
+        // `Option`-style mistake where a new variant is added to the enum
+        // but an existing match is never updated.
+        if !has_wildcard {
+            let missing: Vec<DefaultSymbol> = variants.iter()
+                .filter(|v| !covered_variants.contains(&v.name))
+                .map(|v| v.name)
+                .collect();
+            if !missing.is_empty() {
+                let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                let missing_strs: Vec<String> = missing.iter()
+                    .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
+                    .collect();
+                return Err(TypeCheckError::new(format!(
+                    "non-exhaustive match on enum '{}': missing variant(s) {} — add an arm for each or a wildcard `_`",
+                    enum_str,
+                    missing_strs.join(", ")
+                )));
+            }
         }
 
         // All arms must share a common type.

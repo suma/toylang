@@ -27,6 +27,9 @@ pub struct TypeCheckContext {
     pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
     pub current_impl_generic_params: Option<Vec<DefaultSymbol>>,  // For generic parameters in current impl block
+    // Bounds for the generic parameters of the function currently being
+    // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
+    pub current_fn_generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
 }
 
 impl TypeCheckContext {
@@ -40,6 +43,7 @@ impl TypeCheckContext {
             var_type_mappings: vec![HashMap::with_capacity(16)],
             current_impl_target: None,
             current_impl_generic_params: None,
+            current_fn_generic_bounds: HashMap::new(),
         }
     }
 

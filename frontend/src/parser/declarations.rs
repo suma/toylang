@@ -1,6 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use string_interner::DefaultSymbol;
 use crate::ast::{Parameter, PackageDecl, ImportDecl};
+use crate::type_decl::TypeDecl;
 use crate::token::Kind;
 use crate::parser::error::{ParserError, ParserResult};
 use super::core::Parser;
@@ -137,9 +138,12 @@ impl<'a> Parser<'a> {
         Ok(ImportDecl { module_path, alias })
     }
 
-    /// Parse generic type parameters: <T> or <T, U>
-    pub fn parse_generic_params(&mut self) -> ParserResult<Vec<DefaultSymbol>> {
+    /// Parse generic type parameters: `<T>`, `<T, U>`, or with bounds `<T: Bound, U>`.
+    /// Returns the parameter names (in declaration order) and a map of optional bounds.
+    /// A parameter without a bound simply has no entry in the map.
+    pub fn parse_generic_params(&mut self) -> ParserResult<(Vec<DefaultSymbol>, HashMap<DefaultSymbol, TypeDecl>)> {
         let mut params = Vec::new();
+        let mut bounds: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
         let mut seen = HashSet::new();
 
         // Expect '<'
@@ -159,6 +163,15 @@ impl<'a> Parser<'a> {
 
                     params.push(param_symbol);
                     self.next();
+
+                    // Optional bound: `: <Type>`. Currently only the concrete type
+                    // after the colon is parsed; trait-like sum bounds (`A + B`)
+                    // are out of scope until we have real traits.
+                    if self.peek() == Some(&Kind::Colon) {
+                        self.next(); // consume ':'
+                        let bound_ty = self.parse_type_declaration()?;
+                        bounds.insert(param_symbol, bound_ty);
+                    }
 
                     match self.peek() {
                         Some(Kind::Comma) => {
@@ -192,6 +205,6 @@ impl<'a> Parser<'a> {
             return Err(ParserError::generic_error(location, "Empty generic parameter list is not allowed".to_string()));
         }
 
-        Ok(params)
+        Ok((params, bounds))
     }
 }

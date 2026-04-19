@@ -63,13 +63,20 @@ impl<'a> Parser<'a> {
                 Ok(TypeDecl::Ptr)
             }
             Some(Kind::Identifier(s)) => {
-                let s = s.to_string();
-                let ident = self.string_interner.get_or_intern(s);
+                let s_owned = s.to_string();
+                let ident = self.string_interner.get_or_intern(s_owned.clone());
                 self.next();
 
                 // Check if this identifier is a generic type parameter
                 if generic_params.contains(&ident) {
                     return Ok(TypeDecl::Generic(ident));
+                }
+
+                // `Allocator` is a built-in opaque type for the allocator handle.
+                // Treat the bare identifier as the built-in type so bounds like
+                // `<A: Allocator>` work without introducing a full keyword.
+                if s_owned == "Allocator" {
+                    return Ok(TypeDecl::Allocator);
                 }
 
                 // Check if this is a generic struct with type arguments: Container<T>

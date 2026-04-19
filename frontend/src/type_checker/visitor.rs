@@ -300,6 +300,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
 
         self.push_context();
+        // Install this function's generic-param bounds (e.g. `<A: Allocator>`)
+        // so that the body can look up bounds on `TypeDecl::Generic(A)` during
+        // context-sensitive checks like `with allocator = ...`. Bounds are
+        // cleared at function exit below.
+        let prev_bounds = std::mem::replace(
+            &mut self.context.current_fn_generic_bounds,
+            func.generic_bounds.clone(),
+        );
         // Define variable of argument for this `func`
         func.parameter.iter().for_each(|(name, type_decl)| {
             self.context.set_var(*name, type_decl.clone());
@@ -318,12 +326,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             let stmt_obj = self.core.stmt_pool.get(stmt).ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
             let res = stmt_obj.clone().accept(self);
             if res.is_err() {
+                // Restore bounds so a following type-check doesn't inherit them.
+                self.context.current_fn_generic_bounds = prev_bounds;
                 return res;
             } else {
                 last = res?;
             }
         }
         self.pop_context();
+        self.context.current_fn_generic_bounds = prev_bounds;
         self.function_checking.call_depth -= 1;
 
         // Restore original type hint

@@ -55,11 +55,11 @@ impl<'a> Parser<'a> {
                             let fn_name = self.string_interner.get_or_intern(s);
                             self.next();
 
-                            // Parse generic parameters if present: <T>
-                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
+                            // Parse generic parameters if present: <T> or <A: Allocator>
+                            let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
                                 self.parse_generic_params()?
                             } else {
-                                vec![]
+                                (vec![], std::collections::HashMap::new())
                             };
 
                             self.expect_err(&Kind::ParenOpen)?;
@@ -80,6 +80,7 @@ impl<'a> Parser<'a> {
                                 node: Node::new(fn_start_pos, fn_end_pos),
                                 name: fn_name,
                                 generic_params,
+                                generic_bounds,
                                 parameter: params,
                                 return_type: ret_ty,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
@@ -104,10 +105,11 @@ impl<'a> Parser<'a> {
                             self.next();
 
                             // Parse generic parameters if present: struct Foo<T>
-                            let generic_params = if matches!(self.peek(), Some(Kind::LT)) {
+                            // Bounds on struct params are ignored for now (Phase 2a scopes to functions).
+                            let (generic_params, _generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
                                 self.parse_generic_params()?
                             } else {
-                                vec![]
+                                (vec![], std::collections::HashMap::new())
                             };
 
                             self.expect_err(&Kind::BraceOpen)?;
@@ -131,10 +133,11 @@ impl<'a> Parser<'a> {
                     self.next();
 
                     // Parse optional generic parameters: impl<T> or impl
-                    let generic_params = if self.peek() == Some(&Kind::LT) {
+                    // Bounds on impl params are ignored for now (Phase 2a scopes to functions).
+                    let (generic_params, _generic_bounds) = if self.peek() == Some(&Kind::LT) {
                         self.parse_generic_params()?
                     } else {
-                        vec![]
+                        (vec![], std::collections::HashMap::new())
                     };
 
                     match self.peek() {

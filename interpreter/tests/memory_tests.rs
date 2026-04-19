@@ -537,6 +537,50 @@ fn test_fixed_buffer_free_restores_quota() {
 }
 
 #[test]
+fn test_generic_allocator_bound_accepts_param_in_with() {
+    // A function parameter constrained by `<A: Allocator>` carries the
+    // `Allocator` role into `with allocator = ...`. The type checker must
+    // accept the generic parameter thanks to its declared bound.
+    let source = r#"
+        fn use_alloc<A: Allocator>(a: A) -> u64 {
+            with allocator = a {
+                42u64
+            }
+        }
+
+        fn main() -> u64 {
+            use_alloc(__builtin_default_allocator())
+        }
+    "#;
+    let result = test_program(source).expect("bounded generic should be usable in `with`");
+    assert_eq!(result.borrow().unwrap_uint64(), 42u64);
+}
+
+#[test]
+fn test_generic_without_bound_rejected_in_with() {
+    // A bare `<A>` generic has no bound, so passing it to `with allocator = ...`
+    // must fail type checking even though at runtime a value is available.
+    let source = r#"
+        fn use_alloc<A>(a: A) -> u64 {
+            with allocator = a {
+                1u64
+            }
+        }
+
+        fn main() -> u64 {
+            use_alloc(__builtin_default_allocator())
+        }
+    "#;
+    let result = test_program(source);
+    assert!(result.is_err(), "unbounded generic should not satisfy `with`");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("Allocator"),
+        "error should mention Allocator bound, got: {msg}"
+    );
+}
+
+#[test]
 fn test_with_allocator_rejects_non_allocator_expression() {
     // Type checker must reject RHS values that are not of type Allocator.
     let source = r#"

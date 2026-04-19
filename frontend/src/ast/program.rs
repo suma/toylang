@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
 use crate::type_decl::TypeDecl;
@@ -31,6 +32,10 @@ pub struct Function {
     pub node: Node,
     pub name: DefaultSymbol,
     pub generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T, U>
+    // Optional bounds for each generic parameter, e.g. `<A: Allocator>`. Present only
+    // when the programmer wrote a `: Type` after the parameter name. Lookup by symbol;
+    // missing entries mean the parameter is unbounded.
+    pub generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,

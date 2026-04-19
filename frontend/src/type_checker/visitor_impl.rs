@@ -263,10 +263,19 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // The RHS of `with allocator = ...` must evaluate to an Allocator handle.
-        // Enforcing this at semantic analysis time keeps the language-level contract
-        // (this scope swaps the ambient allocator) independent of runtime representation.
+        // A bare `TypeDecl::Allocator` is the obvious case, but a generic parameter
+        // bounded by `Allocator` (e.g. `fn f<A: Allocator>(a: A) { with allocator = a {...} }`)
+        // must also be accepted so the body can use the allocator it was handed.
         let allocator_ty = self.visit_expr(allocator)?;
-        if allocator_ty != TypeDecl::Allocator {
+        let is_allocator = match &allocator_ty {
+            TypeDecl::Allocator => true,
+            TypeDecl::Generic(sym) => matches!(
+                self.context.current_fn_generic_bounds.get(sym),
+                Some(TypeDecl::Allocator)
+            ),
+            _ => false,
+        };
+        if !is_allocator {
             return Err(TypeCheckError::new(format!(
                 "`with allocator = ...` requires an Allocator value, but got {:?}",
                 allocator_ty

@@ -628,6 +628,32 @@ fn test_generic_without_bound_rejected_in_with() {
 }
 
 #[test]
+fn test_impl_allocator_bound_lets_method_use_field_in_with() {
+    // `impl<A: Allocator>` bounds must reach method bodies so `with allocator = self.alloc`
+    // type-checks without the method having to re-declare the bound.
+    let source = r#"
+        struct Holder<A: Allocator> {
+            alloc: A
+        }
+
+        impl<A: Allocator> Holder<A> {
+            fn run(self: Self) -> u64 {
+                with allocator = self.alloc {
+                    99u64
+                }
+            }
+        }
+
+        fn main() -> u64 {
+            val h = Holder { alloc: __builtin_default_allocator() }
+            h.run()
+        }
+    "#;
+    let result = test_program(source).expect("impl-level Allocator bound should propagate into methods");
+    assert_eq!(result.borrow().unwrap_uint64(), 99u64);
+}
+
+#[test]
 fn test_struct_allocator_bound_accepts_allocator_value() {
     // A struct with `<A: Allocator>` accepts an Allocator value in its A-typed field.
     let source = r#"

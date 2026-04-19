@@ -42,10 +42,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             // Type check method body using method.rs module
             self.setup_method_parameter_context(method);
 
+            // Install the method's declared bounds (inherited from its impl block)
+            // so the body can see `<A: Allocator>` style constraints, mirroring the
+            // Function path in type_check.
+            let prev_bounds = std::mem::replace(
+                &mut self.context.current_fn_generic_bounds,
+                method.generic_bounds.clone(),
+            );
+
             // Type check method body
             let body_result = self.visit_stmt(&method.code);
 
-            // Restore parameter context
+            // Restore generic bounds and parameter context
+            self.context.current_fn_generic_bounds = prev_bounds;
             self.restore_method_parameter_context();
 
             // Validate method return type compatibility using method.rs module

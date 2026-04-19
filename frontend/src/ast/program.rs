@@ -69,6 +69,9 @@ pub struct MethodFunction {
     pub node: Node,
     pub name: DefaultSymbol,
     pub generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T, U>
+    // Bounds inherited from the enclosing `impl<A: Allocator>` block plus any
+    // method-level bounds. Missing entries mean the parameter is unbounded.
+    pub generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
     pub code: StmtRef,

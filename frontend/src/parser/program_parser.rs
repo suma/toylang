@@ -131,9 +131,8 @@ impl<'a> Parser<'a> {
                     update_start_pos(impl_start_pos);
                     self.next();
 
-                    // Parse optional generic parameters: impl<T> or impl
-                    // Bounds on impl params are ignored for now (Phase 2a scopes to functions).
-                    let (generic_params, _generic_bounds) = if self.peek() == Some(&Kind::LT) {
+                    // Parse optional generic parameters: impl<T> or impl<A: Allocator>
+                    let (generic_params, generic_bounds) = if self.peek() == Some(&Kind::LT) {
                         self.parse_generic_params()?
                     } else {
                         (vec![], std::collections::HashMap::new())
@@ -152,7 +151,7 @@ impl<'a> Parser<'a> {
                             }
 
                             self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params)?;
+                            let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
                             self.expect_err(&Kind::BraceClose)?;
                             let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(impl_end_pos);

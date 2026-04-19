@@ -277,6 +277,7 @@ impl<'a> AstIntegrationContext<'a> {
             node: method.node.clone(),
             name: new_name,
             generic_params: method.generic_params.clone(), // Copy generic parameters
+            generic_bounds: method.generic_bounds.clone(), // Copy inherited impl bounds
             parameter: new_parameters,
             return_type: method.return_type.clone(),
             code: new_code,

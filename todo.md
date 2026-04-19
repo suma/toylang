@@ -19,7 +19,7 @@
 
 ## 未実装 📋
 
-121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（設計・進捗: `ALLOCATOR_PLAN.md` 参照。Phase 1a/1b/1c/2a 完了、2b 部分完了。残り: struct/impl での bound、Phase 3 コレクション型）
+121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（設計・進捗: `ALLOCATOR_PLAN.md` 参照。Phase 1a/1b/1c/2a/2b 完了。次は Phase 3（コレクション型 + IR）または複数 bound/trait 定義）
 95. **ヒープメモリ管理の完全実装** - heap_realloc、mem_copy/mem_set
 96. **パターンマッチングと列挙型（Enum）**
 30. **組み込み関数システム** - 型変換・数学関数

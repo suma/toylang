@@ -259,10 +259,15 @@ pub fn parse_struct_fields_with_generic_context(parser: &mut Parser, mut fields:
 }
 
 pub fn parse_impl_methods(parser: &mut Parser, methods: Vec<Rc<MethodFunction>>) -> ParserResult<Vec<Rc<MethodFunction>>> {
-    parse_impl_methods_with_generic_context(parser, methods, &[])
+    parse_impl_methods_with_generic_context(parser, methods, &[], &std::collections::HashMap::new())
 }
 
-pub fn parse_impl_methods_with_generic_context(parser: &mut Parser, mut methods: Vec<Rc<MethodFunction>>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<Vec<Rc<MethodFunction>>> {
+pub fn parse_impl_methods_with_generic_context(
+    parser: &mut Parser,
+    mut methods: Vec<Rc<MethodFunction>>,
+    generic_params: &[string_interner::DefaultSymbol],
+    generic_bounds: &std::collections::HashMap<string_interner::DefaultSymbol, TypeDecl>,
+) -> ParserResult<Vec<Rc<MethodFunction>>> {
     // Limit maximum number of methods to prevent infinite loops
     const MAX_METHODS: usize = 500;
     
@@ -332,6 +337,9 @@ pub fn parse_impl_methods_with_generic_context(parser: &mut Parser, mut methods:
                             node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
                             generic_params: combined_generic_params,
+                            // Methods inherit the impl-level bounds. Method-level
+                            // bounds will merge here once they are supported.
+                            generic_bounds: generic_bounds.clone(),
                             parameter: params,
                             return_type: ret_ty,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),

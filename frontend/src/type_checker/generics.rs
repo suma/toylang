@@ -112,6 +112,35 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                 )));
             }
         }
+
+        // Enforce any declared bounds on generic parameters, e.g. `<A: Allocator>`.
+        // If the caller supplies a bounded generic of its own (`fn g<B: Allocator>(b: B) { f(b) }`),
+        // treat that as satisfying the bound — the bound chain is transparent.
+        for generic_param in &fun.generic_params {
+            if let Some(bound) = fun.generic_bounds.get(generic_param) {
+                let inferred = match substitutions.get(generic_param) {
+                    Some(ty) => ty,
+                    None => continue,
+                };
+                let satisfies = match inferred {
+                    ty if ty == bound => true,
+                    TypeDecl::Generic(sym) => matches!(
+                        self.context.current_fn_generic_bounds.get(sym),
+                        Some(caller_bound) if caller_bound == bound
+                    ),
+                    _ => false,
+                };
+                if !satisfies {
+                    self.pop_context();
+                    let param_name = self.resolve_symbol_name(*generic_param);
+                    let fn_name_str = self.resolve_symbol_name(fn_name);
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Function '{}' generic parameter '{}' bound violation: expected {:?}, got {:?}",
+                        fn_name_str, param_name, bound, inferred
+                    )));
+                }
+            }
+        }
         
         // Generate unique name for the instantiated function
         let _instantiated_name = self.generate_instantiated_name(fn_name, &substitutions);

@@ -557,6 +557,53 @@ fn test_generic_allocator_bound_accepts_param_in_with() {
 }
 
 #[test]
+fn test_generic_allocator_bound_rejects_non_allocator_argument() {
+    // Phase 2b: passing a non-Allocator value to a `<A: Allocator>` parameter
+    // must fail at type-check time.
+    let source = r#"
+        fn use_alloc<A: Allocator>(a: A) -> u64 {
+            with allocator = a {
+                1u64
+            }
+        }
+
+        fn main() -> u64 {
+            use_alloc(42u64)
+        }
+    "#;
+    let result = test_program(source);
+    assert!(result.is_err(), "passing u64 to `<A: Allocator>` should fail type checking");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("bound violation") || msg.contains("Allocator"),
+        "error should mention the allocator bound violation, got: {msg}"
+    );
+}
+
+#[test]
+fn test_generic_allocator_bound_chains_through_wrapper() {
+    // A caller that itself has `<B: Allocator>` can forward its parameter to
+    // another bounded-generic function without a bound violation.
+    let source = r#"
+        fn inner<A: Allocator>(a: A) -> u64 {
+            with allocator = a {
+                7u64
+            }
+        }
+
+        fn outer<B: Allocator>(b: B) -> u64 {
+            inner(b)
+        }
+
+        fn main() -> u64 {
+            outer(__builtin_default_allocator())
+        }
+    "#;
+    let result = test_program(source).expect("bounded generic chain should satisfy the inner bound");
+    assert_eq!(result.borrow().unwrap_uint64(), 7u64);
+}
+
+#[test]
 fn test_generic_without_bound_rejected_in_with() {
     // A bare `<A>` generic has no bound, so passing it to `with allocator = ...`
     // must fail type checking even though at runtime a value is available.

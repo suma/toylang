@@ -444,7 +444,14 @@ fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> 
             .find(|(kind, _)| next_token == Some(kind));
 
         match matched_op {
-            Some((_, op)) => {
+            Some((kind, op)) => {
+                // `-` is both binary subtraction and unary negation. When it
+                // appears at the start of a new source line, treat it as the
+                // start of a new expression so `val x = 7\n-y` parses as two
+                // statements, not `7 - y`.
+                if matches!(kind, Kind::ISub) && parser.has_newline_before_current_token() {
+                    return Ok(lhs);
+                }
                 let location = parser.current_source_location();
                 parser.next();
                 let rhs = (group.next_precedence)(parser)?;

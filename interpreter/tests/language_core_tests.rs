@@ -98,11 +98,9 @@ mod basic_execution {
         ", 32);
     }
 
-    // Note on statement-level ambiguity: the parser strips newlines (format
-    // normalization), so a bare `-x` directly following another statement is
-    // swallowed as binary subtraction. These tests wrap the negation inside a
-    // `val` binding to make the intent unambiguous — the same form real user
-    // code tends to use anyway.
+    // Statement-level disambiguation: when `-` appears at the start of a new
+    // source line, the parser treats it as unary negation of a new expression
+    // rather than binary subtraction continuing the previous statement.
 
     #[test]
     fn test_unary_minus_on_variable() {
@@ -162,6 +160,32 @@ mod basic_execution {
             y
         }
         ", -5);
+    }
+
+    #[test]
+    fn test_unary_minus_at_statement_start() {
+        // `-x` on its own line must not be absorbed as `7i64 - x`.
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            var x: i64 = 7i64
+            x = 0i64 - x
+            -x
+        }
+        ", 7);
+    }
+
+    #[test]
+    fn test_unary_minus_after_binding_line() {
+        // Regression: without the newline-aware fix, `val a = 10\n-b` parses
+        // as `val a = 10 - b`, masking the following `-b` expression statement.
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            val a: i64 = 10i64
+            val b: i64 = 3i64
+            val c: i64 = a
+            -c + b
+        }
+        ", -7);
     }
 
     #[test]

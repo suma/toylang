@@ -152,7 +152,42 @@ fn main() -> u64 {
 - ビルトイン関数の実装方針は `BUILTIN_ARCHITECTURE.md` に記述されています
 
 ## Allocator システム
-- `with allocator = ...` を含む allocator 機能の設計と段階的実装計画は `ALLOCATOR_PLAN.md` に記述されています。Phase 1a（構文・型・ランタイムスコープ）は完了済み、Phase 1b 以降で `Allocator` trait や heap ルーティングを追加予定
+
+`with allocator = ...` による lexical scope で allocator を切り替えられる。heap 系 builtin は常に現在の allocator を経由する。詳細な設計と進捗は `ALLOCATOR_PLAN.md` を参照。
+
+### 主要な構文・ビルトイン
+
+| 要素 | 説明 |
+|---|---|
+| `with allocator = <expr> { body }` | スコープ内で allocator を差し替え |
+| `ambient` | 現在の allocator（式として使える糖衣） |
+| `__builtin_current_allocator()` | 現在の allocator（スタック top） |
+| `__builtin_default_allocator()` | プロセス全体の global allocator |
+| `__builtin_arena_allocator()` | 新規 arena（drop で一括解放） |
+| `__builtin_fixed_buffer_allocator(capacity: u64)` | バイト数 quota 付き（超過で null） |
+| `fn f<A: Allocator>(a: A)` | allocator をジェネリックに受け取る関数 |
+
+### 典型的な使い方
+
+- 基本: `interpreter/example/allocator_basic.t`
+- bound 付き汎用関数 + `ambient` + 自動挿入: `interpreter/example/allocator_bounded.t`
+- ユーザ空間の動的リスト（struct + impl + heap builtin）: `interpreter/example/allocator_list.t`
+
+### 意味論のポイント
+
+- `with` は lexical scope。ネストは push/pop、body の exit path（値・return・break・error）すべてで必ず pop される
+- `Allocator` 値は `Rc::ptr_eq` で同値性を判定。`==` / `!=` のみサポート（順序比較は不可）
+- `<A: Allocator>` の**末尾**パラメータが省略された呼び出しは、型チェック時に `ambient`（= `__builtin_current_allocator()`）が自動挿入される
+- bound は関数・struct・impl の各レベルで伝播。呼び出し側 generic の bound が一致すれば連鎖通過
+- arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す
+- `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin が自動で現在の allocator を通るため、`with allocator = arena { ... }` で囲むだけで arena 経由になる
+
+### 進捗（2026-04-19 現在）
+
+- Phase 1a/1b/1c: 構文・ランタイム・`Allocator` trait・`GlobalAllocator`・`ArenaAllocator`・`FixedBufferAllocator` 完了
+- Phase 2a/2b: `<A: Allocator>` bound（関数・struct・impl）、呼び出し時 bound 検証、bound 連鎖 完了
+- Phase 3 部分: `ambient` 糖衣、自動 ambient 挿入、ユーザ空間 `List<u64>` 完了
+- 未完: ジェネリック `List<T>` 一般化、IR レベルの `AllocatorBinding`、native codegen（Phase 4 以降）
 
 ## テスト計画
 

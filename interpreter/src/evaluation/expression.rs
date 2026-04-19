@@ -96,6 +96,12 @@ impl EvaluationContext<'_> {
             Expr::Cast(expr, target_type) => {
                 self.evaluate_cast(&expr, &target_type)
             }
+            Expr::With(_allocator, body) => {
+                // Phase 1 frontend landing: evaluate allocator but do not yet use it.
+                // Ambient allocator stack push/pop arrives with the Allocator trait wiring.
+                let _ = self.evaluate(&_allocator)?;
+                self.evaluate(&body)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }

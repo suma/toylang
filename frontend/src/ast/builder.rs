@@ -234,6 +234,12 @@ impl AstBuilder {
         expr_ref
     }
 
+    pub fn with_expr(&mut self, allocator: ExprRef, body: ExprRef, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::With(allocator, body));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);

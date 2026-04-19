@@ -246,6 +246,32 @@ pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
     Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block, Some(location)))
 }
 
+// Parse `with allocator = expr { body }` — scoped allocator binding.
+// The identifier after `with` must currently be the literal "allocator";
+// the grammar is designed to accept other context names in the future.
+pub fn parse_with(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let location = parser.current_source_location();
+    match parser.peek() {
+        Some(Kind::Identifier(name)) if name.as_str() == "allocator" => {
+            parser.next();
+        }
+        other => {
+            let other_cloned = other.cloned();
+            return Err(ParserError::generic_error(
+                location,
+                format!("expected `allocator` after `with`, found {:?}", other_cloned),
+            ));
+        }
+    }
+    parser.expect_err(&Kind::Equal)?;
+    parser.push_context(crate::parser::core::ParseContext::Condition);
+    let allocator_expr = parse_logical_expr(parser)?;
+    parser.pop_context();
+    let body = parse_block(parser)?;
+    let location = parser.current_source_location();
+    Ok(parser.ast_builder.with_expr(allocator_expr, body, Some(location)))
+}
+
 pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.expect_err(&Kind::BraceOpen)?;
     match parser.peek() {
@@ -609,7 +635,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::ParenOpen) => {
             parse_tuple_or_grouped_expr(parser)
         }
-        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_) => {
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With) => {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
         }
@@ -760,6 +786,10 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         Some(Kind::If) => {
                             parser.next();
                             parse_if(parser)
+                        }
+                        Some(Kind::With) => {
+                            parser.next();
+                            parse_with(parser)
                         }
                         Some(Kind::Dict) => {
                             parser.next();

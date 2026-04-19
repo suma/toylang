@@ -45,6 +45,7 @@ mod lexer_tests{
             (" fn ", Kind::Function),
             (" val ", Kind::Val),
             (" var ", Kind::Var),
+            (" with ", Kind::With),
             (" bool ", Kind::Bool),
         ];
         
@@ -927,8 +928,52 @@ mod parser_tests {
         let input = "fn main() -> i64 {\nval var_name = 1i64\n0i64\n}";
         let mut parser = ParserWithInterner::new(input);
         let result = parser.parse_program();
-        
+
         // This should pass because underscores in the middle are allowed
         assert!(result.is_ok(), "Variable with underscore in middle 'var_name' should be accepted");
+    }
+
+    #[test]
+    fn parser_with_allocator_basic() {
+        let input = "fn main() -> u64 {\nwith allocator = 0u64 {\n1u64\n}\n}";
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "`with allocator = expr {{ ... }}` should parse: {:?}", result);
+
+        let program = result.unwrap();
+        let pool = &program.expression;
+        let has_with = (0..pool.len())
+            .filter_map(|i| pool.get(&ExprRef(i as u32)))
+            .any(|e| matches!(e, Expr::With(_, _)));
+        assert!(has_with, "Expr::With node should be present in the expression pool");
+    }
+
+    #[test]
+    fn parser_with_allocator_missing_keyword_errors() {
+        // Missing the `allocator` contextual keyword after `with`.
+        // The parser uses error recovery, so parse_program may succeed overall,
+        // but no Expr::With node should be produced for this malformed input.
+        let input = "fn main() -> u64 {\nwith = 0u64 {\n1u64\n}\n}";
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+
+        match result {
+            Err(_) => { /* expected: fatal error */ }
+            Ok(program) => {
+                let pool = &program.expression;
+                let has_with = (0..pool.len())
+                    .filter_map(|i| pool.get(&ExprRef(i as u32)))
+                    .any(|e| matches!(e, Expr::With(_, _)));
+                assert!(!has_with, "malformed `with = ...` must not produce Expr::With");
+            }
+        }
+    }
+
+    #[test]
+    fn parser_with_allocator_identifier_expr() {
+        let input = "fn main() -> u64 {\nval a = 0u64\nwith allocator = a {\n1u64\n}\n}";
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "`with allocator = <identifier>` should parse: {:?}", result);
     }
 }

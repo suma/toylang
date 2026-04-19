@@ -97,6 +97,7 @@ pub enum Expr {
     TupleLiteral(Vec<ExprRef>),  // (expr1, expr2, ...) - tuple literal
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access
     Cast(ExprRef, TypeDecl),  // expr as type - type cast expression
+    With(ExprRef, ExprRef),  // with allocator = allocator_expr { body } - scoped allocator binding
 }
 
 impl Expr {

@@ -46,6 +46,7 @@ impl Acceptable for Expr {
             Expr::TupleLiteral(elements) => visitor.visit_tuple_literal(elements),
             Expr::TupleAccess(tuple, index) => visitor.visit_tuple_access(tuple, *index),
             Expr::Cast(expr, target_type) => visitor.visit_cast(expr, target_type),
+            Expr::With(allocator, body) => visitor.visit_with(allocator, body),
         }
     }
 }
@@ -258,6 +259,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         self.visit_cast_impl(expr, target_type)
+    }
+
+    fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // Phase 1 minimum: type-check the allocator expression, then evaluate the body's type.
+        // Allocator semantics (stack push/pop, binding resolution) land in a later phase.
+        self.visit_expr(allocator)?;
+        self.visit_expr(body)
     }
 
     // =========================================================================

@@ -58,6 +58,7 @@ pub enum ExprType {
     TupleLiteral = 26,
     TupleAccess = 27,
     Cast = 28,
+    With = 29,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -338,6 +339,11 @@ impl ExprPool {
                 self.lhs[index] = Some(expr);
                 self.target_type[index] = Some(type_decl);
             }
+            Expr::With(allocator, body) => {
+                self.expr_types[index] = ExprType::With;
+                self.lhs[index] = Some(allocator);
+                self.rhs[index] = Some(body);
+            }
         }
 
         ExprRef(index as u32)
@@ -487,6 +493,12 @@ impl ExprPool {
                 Some(Expr::Cast(
                     self.lhs[index]?,
                     self.target_type[index].clone()?,
+                ))
+            }
+            ExprType::With => {
+                Some(Expr::With(
+                    self.lhs[index]?,
+                    self.rhs[index]?,
                 ))
             }
         }
@@ -646,6 +658,11 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::Cast;
                 self.lhs[index] = Some(expr);
                 self.target_type[index] = Some(type_decl);
+            }
+            Expr::With(allocator, body) => {
+                self.expr_types[index] = ExprType::With;
+                self.lhs[index] = Some(allocator);
+                self.rhs[index] = Some(body);
             }
             Expr::Null => {
                 self.expr_types[index] = ExprType::Null;

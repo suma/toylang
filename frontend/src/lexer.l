@@ -33,6 +33,7 @@ macro_rules! token {
 "as"        return Ok(token!(self, Kind::As));
 "val"       return Ok(token!(self, Kind::Val));
 "var"       return Ok(token!(self, Kind::Var));
+"with"      return Ok(token!(self, Kind::With));
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));

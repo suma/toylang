@@ -628,6 +628,45 @@ fn test_generic_without_bound_rejected_in_with() {
 }
 
 #[test]
+fn test_struct_allocator_bound_accepts_allocator_value() {
+    // A struct with `<A: Allocator>` accepts an Allocator value in its A-typed field.
+    let source = r#"
+        struct Holder<A: Allocator> {
+            alloc: A
+        }
+
+        fn main() -> u64 {
+            val h = Holder { alloc: __builtin_default_allocator() }
+            1u64
+        }
+    "#;
+    let result = test_program(source).expect("allocator-bounded struct should accept Allocator");
+    assert_eq!(result.borrow().unwrap_uint64(), 1u64);
+}
+
+#[test]
+fn test_struct_allocator_bound_rejects_non_allocator_value() {
+    // Instantiating with a non-Allocator value must fail type checking.
+    let source = r#"
+        struct Holder<A: Allocator> {
+            alloc: A
+        }
+
+        fn main() -> u64 {
+            val h = Holder { alloc: 42u64 }
+            1u64
+        }
+    "#;
+    let result = test_program(source);
+    assert!(result.is_err(), "non-Allocator value should fail struct bound check");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("bound violation") || msg.contains("Allocator"),
+        "error should mention the allocator bound violation, got: {msg}"
+    );
+}
+
+#[test]
 fn test_with_allocator_rejects_non_allocator_expression() {
     // Type checker must reject RHS values that are not of type Allocator.
     let source = r#"

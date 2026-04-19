@@ -200,10 +200,11 @@ impl<'a> AstIntegrationContext<'a> {
                 Ok(Stmt::While(new_condition, new_body))
             }
             // StructDecl and ImplBlock statements - preserve as string-based (no symbol remapping needed)
-            Stmt::StructDecl { name, generic_params, fields, visibility } => {
+            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
                 Ok(Stmt::StructDecl {
                     name: name.clone(),
                     generic_params: generic_params.clone(), // Copy generic parameters
+                    generic_bounds: generic_bounds.clone(), // Copy generic parameter bounds
                     fields: fields.clone(),
                     visibility: visibility.clone()
                 })
@@ -289,11 +290,12 @@ impl<'a> AstIntegrationContext<'a> {
         for i in 0..self.module_program.statement.len() {
             let stmt_ref = StmtRef(i as u32);
             if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
-                if let Stmt::StructDecl { name, generic_params, fields, visibility } = stmt {
+                if let Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } = stmt {
                     // StructDecl uses String names, no symbol remapping needed
                     let new_struct_stmt = Stmt::StructDecl {
                         name: name.clone(),
                         generic_params: generic_params.clone(),
+                        generic_bounds: generic_bounds.clone(),
                         fields: fields.clone(),
                         visibility: visibility.clone()
                     };
@@ -394,7 +396,7 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::StructDecl { name, generic_params, fields, visibility } = &stmt {
+            if let frontend::ast::Stmt::StructDecl { name, generic_params, generic_bounds: _, fields, visibility } = &stmt {
                 struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
                 
                 // Store generic parameters for later registration

@@ -62,7 +62,7 @@ impl Acceptable for Stmt {
             Stmt::While(cond, body) => visitor.visit_while(cond, body),
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
-            Stmt::StructDecl { name, generic_params, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, fields, visibility),
+            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
         }
     }
@@ -328,8 +328,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Struct Type Checking
     // =========================================================================
 
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_struct_decl_impl(name, generic_params, fields, visibility)
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_struct_decl_impl(name, generic_params, generic_bounds, fields, visibility)
     }
 
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {

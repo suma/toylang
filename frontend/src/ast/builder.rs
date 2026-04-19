@@ -325,8 +325,22 @@ impl AstBuilder {
         stmt_ref
     }
 
-    pub fn struct_decl_stmt(&mut self, name: DefaultSymbol, generic_params: Vec<DefaultSymbol>, fields: Vec<StructField>, visibility: Visibility, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl { name, generic_params, fields, visibility });
+    pub fn struct_decl_stmt(
+        &mut self,
+        name: DefaultSymbol,
+        generic_params: Vec<DefaultSymbol>,
+        generic_bounds: std::collections::HashMap<DefaultSymbol, crate::type_decl::TypeDecl>,
+        fields: Vec<StructField>,
+        visibility: Visibility,
+        location: Option<SourceLocation>,
+    ) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::StructDecl {
+            name,
+            generic_params,
+            generic_bounds,
+            fields,
+            visibility,
+        });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }

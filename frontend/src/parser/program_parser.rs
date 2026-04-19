@@ -104,9 +104,8 @@ impl<'a> Parser<'a> {
                             let struct_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
 
-                            // Parse generic parameters if present: struct Foo<T>
-                            // Bounds on struct params are ignored for now (Phase 2a scopes to functions).
-                            let (generic_params, _generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
+                            // Parse generic parameters if present: struct Foo<T> or struct Foo<A: Allocator>
+                            let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
                                 self.parse_generic_params()?
                             } else {
                                 (vec![], std::collections::HashMap::new())
@@ -118,7 +117,7 @@ impl<'a> Parser<'a> {
                             let struct_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(struct_end_pos);
 
-                            self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, fields, visibility, Some(location));
+                            self.ast_builder.struct_decl_stmt(struct_symbol, generic_params, generic_bounds, fields, visibility, Some(location));
                         }
                         _ => {
                             self.collect_error("expected struct name");

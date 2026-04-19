@@ -72,7 +72,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for i in 0..stmt_len {
             let stmt_ref = StmtRef(i as u32);
             if let Some(stmt) = visitor.core.stmt_pool.get(&stmt_ref) {
-                if let Stmt::StructDecl { name, generic_params: _, fields, visibility } = stmt {
+                if let Stmt::StructDecl { name, generic_params: _, generic_bounds: _, fields, visibility } = stmt {
                     visitor.context.register_struct(
                         name,
                         fields.clone(),

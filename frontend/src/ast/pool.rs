@@ -712,6 +712,7 @@ pub struct StmtPool {
     // Declaration fields
     pub struct_name: Vec<Option<DefaultSymbol>>,             // For struct declarations
     pub struct_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For struct generic parameters
+    pub struct_generic_bounds: Vec<Option<std::collections::HashMap<DefaultSymbol, TypeDecl>>>, // For struct generic parameter bounds
     pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
@@ -736,6 +737,7 @@ impl StmtPool {
             block_expr: Vec::new(),
             struct_name: Vec::new(),
             struct_generic_params: Vec::new(),
+            struct_generic_bounds: Vec::new(),
             struct_fields: Vec::new(),
             visibility: Vec::new(),
             impl_methods: Vec::new(),
@@ -754,6 +756,7 @@ impl StmtPool {
             block_expr: Vec::with_capacity(cap),
             struct_name: Vec::with_capacity(cap),
             struct_generic_params: Vec::with_capacity(cap),
+            struct_generic_bounds: Vec::with_capacity(cap),
             struct_fields: Vec::with_capacity(cap),
             visibility: Vec::with_capacity(cap),
             impl_methods: Vec::with_capacity(cap),
@@ -774,6 +777,7 @@ impl StmtPool {
             self.block_expr.resize(current_len + extend_count, None);
             self.struct_name.resize(current_len + extend_count, None);
             self.struct_generic_params.resize(current_len + extend_count, None);
+            self.struct_generic_bounds.resize(current_len + extend_count, None);
             self.struct_fields.resize(current_len + extend_count, None);
             self.visibility.resize(current_len + extend_count, None);
             self.impl_methods.resize(current_len + extend_count, None);
@@ -823,10 +827,11 @@ impl StmtPool {
                 self.condition[index] = Some(cond);
                 self.block_expr[index] = Some(block);
             }
-            Stmt::StructDecl { name, generic_params, fields, visibility } => {
+            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
                 self.stmt_types[index] = StmtType::StructDecl;
                 self.struct_name[index] = Some(name);
                 self.struct_generic_params[index] = Some(generic_params);
+                self.struct_generic_bounds[index] = Some(generic_bounds);
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
@@ -887,6 +892,7 @@ impl StmtPool {
                 Some(Stmt::StructDecl {
                     name: self.struct_name[index]?,
                     generic_params: self.struct_generic_params[index].clone()?,
+                    generic_bounds: self.struct_generic_bounds[index].clone()?,
                     fields: self.struct_fields[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })

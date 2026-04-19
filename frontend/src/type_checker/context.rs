@@ -24,6 +24,7 @@ pub struct TypeCheckContext {
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
+    pub struct_generic_bounds: HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>, // Bounds per struct generic param
     pub var_type_mappings: Vec<HashMap<DefaultSymbol, HashMap<DefaultSymbol, TypeDecl>>>, // Store type parameter mappings for variables
     pub current_impl_target: Option<DefaultSymbol>,  // For Self type resolution
     pub current_impl_generic_params: Option<Vec<DefaultSymbol>>,  // For generic parameters in current impl block
@@ -40,6 +41,7 @@ impl TypeCheckContext {
             struct_definitions: HashMap::with_capacity(16),
             struct_methods: HashMap::with_capacity(16),
             struct_generic_params: HashMap::with_capacity(16),
+            struct_generic_bounds: HashMap::with_capacity(16),
             var_type_mappings: vec![HashMap::with_capacity(16)],
             current_impl_target: None,
             current_impl_generic_params: None,
@@ -126,6 +128,14 @@ impl TypeCheckContext {
     
     pub fn set_struct_generic_params(&mut self, struct_name: DefaultSymbol, generic_params: Vec<DefaultSymbol>) {
         self.struct_generic_params.insert(struct_name, generic_params);
+    }
+
+    pub fn set_struct_generic_bounds(&mut self, struct_name: DefaultSymbol, bounds: HashMap<DefaultSymbol, TypeDecl>) {
+        self.struct_generic_bounds.insert(struct_name, bounds);
+    }
+
+    pub fn get_struct_generic_bounds(&self, struct_name: DefaultSymbol) -> Option<&HashMap<DefaultSymbol, TypeDecl>> {
+        self.struct_generic_bounds.get(&struct_name)
     }
     
     pub fn get_struct_generic_params(&self, struct_name: DefaultSymbol) -> Option<&Vec<DefaultSymbol>> {

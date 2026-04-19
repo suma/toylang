@@ -9,7 +9,7 @@ use crate::type_checker::method::MethodProcessing;
 /// Struct declaration type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
     /// Type check struct declarations
-    pub fn visit_struct_decl_impl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    pub fn visit_struct_decl_impl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         
         // Push generic parameters into scope for field type checking
         if !generic_params.is_empty() {
@@ -101,6 +101,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Register generic parameters if any
         if !generic_params.is_empty() {
             self.context.set_struct_generic_params(name, generic_params.clone());
+        }
+        // Store declared bounds for later validation at struct-literal sites.
+        if !generic_bounds.is_empty() {
+            self.context.set_struct_generic_bounds(name, generic_bounds.clone());
         }
         
         // Pop generic scope after processing
@@ -365,6 +369,37 @@ impl<'a> TypeCheckerVisitor<'a> {
                     param_name,
                     self.resolve_symbol_name(*struct_name)
                 )));
+            }
+        }
+
+        // Enforce struct-level bounds (e.g. `struct Foo<A: Allocator>`). A concrete
+        // substitution must match the bound; a generic parameter from the current
+        // function satisfies the bound when its own declared bound matches.
+        if let Some(struct_bounds) = self.context.get_struct_generic_bounds(*struct_name).cloned() {
+            for generic_param in generic_params {
+                if let Some(bound) = struct_bounds.get(generic_param) {
+                    let inferred = match substitutions.get(generic_param) {
+                        Some(ty) => ty,
+                        None => continue,
+                    };
+                    let satisfies = match inferred {
+                        ty if ty == bound => true,
+                        TypeDecl::Generic(sym) => matches!(
+                            self.context.current_fn_generic_bounds.get(sym),
+                            Some(caller_bound) if caller_bound == bound
+                        ),
+                        _ => false,
+                    };
+                    if !satisfies {
+                        self.type_inference.pop_generic_scope();
+                        let param_name = self.resolve_symbol_name(*generic_param);
+                        let struct_name_str = self.resolve_symbol_name(*struct_name);
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "Struct '{}' generic parameter '{}' bound violation: expected {:?}, got {:?}",
+                            struct_name_str, param_name, bound, inferred
+                        )));
+                    }
+                }
             }
         }
 

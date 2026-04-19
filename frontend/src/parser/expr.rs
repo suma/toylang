@@ -635,7 +635,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::ParenOpen) => {
             parse_tuple_or_grouped_expr(parser)
         }
-        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With) => {
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient) => {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
         }
@@ -790,6 +790,18 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         Some(Kind::With) => {
                             parser.next();
                             parse_with(parser)
+                        }
+                        Some(Kind::Ambient) => {
+                            // `ambient` is sugar for `__builtin_current_allocator()`.
+                            // It reads naturally at allocator argument positions and
+                            // inside `with allocator = ambient { ... }`.
+                            let location = parser.current_source_location();
+                            parser.next();
+                            Ok(parser.ast_builder.builtin_call_expr(
+                                crate::ast::BuiltinFunction::CurrentAllocator,
+                                vec![],
+                                Some(location),
+                            ))
                         }
                         Some(Kind::Dict) => {
                             parser.next();

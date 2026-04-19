@@ -628,6 +628,53 @@ fn test_generic_without_bound_rejected_in_with() {
 }
 
 #[test]
+fn test_ambient_keyword_evaluates_to_current_allocator() {
+    // `ambient` is sugar for __builtin_current_allocator(); the value must match.
+    let source = r#"
+        fn main() -> bool {
+            ambient == __builtin_current_allocator()
+        }
+    "#;
+    let result = test_program(source).expect("ambient should evaluate to current allocator");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_ambient_keyword_inside_with_block_sees_pushed_allocator() {
+    // Inside `with allocator = arena { ... }` the `ambient` sugar must return
+    // the pushed arena, not the global default.
+    let source = r#"
+        fn main() -> bool {
+            val arena = __builtin_arena_allocator()
+            with allocator = arena {
+                ambient == arena
+            }
+        }
+    "#;
+    let result = test_program(source).expect("ambient should track the innermost with binding");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_ambient_as_argument_to_bounded_generic_function() {
+    // Calling a `<A: Allocator>` function with `ambient` as argument threads the
+    // current allocator through without the builtin prefix.
+    let source = r#"
+        fn use_alloc<A: Allocator>(a: A) -> u64 {
+            with allocator = a {
+                11u64
+            }
+        }
+
+        fn main() -> u64 {
+            use_alloc(ambient)
+        }
+    "#;
+    let result = test_program(source).expect("ambient argument should satisfy Allocator bound");
+    assert_eq!(result.borrow().unwrap_uint64(), 11u64);
+}
+
+#[test]
 fn test_impl_allocator_bound_lets_method_use_field_in_with() {
     // `impl<A: Allocator>` bounds must reach method bodies so `with allocator = self.alloc`
     // type-checks without the method having to re-declare the bound.

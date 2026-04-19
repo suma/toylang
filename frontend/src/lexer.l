@@ -34,6 +34,7 @@ macro_rules! token {
 "val"       return Ok(token!(self, Kind::Val));
 "var"       return Ok(token!(self, Kind::Var));
 "with"      return Ok(token!(self, Kind::With));
+"ambient"   return Ok(token!(self, Kind::Ambient));
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));

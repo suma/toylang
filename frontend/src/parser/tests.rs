@@ -46,6 +46,7 @@ mod lexer_tests{
             (" val ", Kind::Val),
             (" var ", Kind::Var),
             (" with ", Kind::With),
+            (" ambient ", Kind::Ambient),
             (" bool ", Kind::Bool),
         ];
         

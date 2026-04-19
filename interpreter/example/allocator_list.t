@@ -9,7 +9,8 @@
 #
 # `push` mutates the struct in place via field assignment — `self.len`,
 # `self.cap`, and `self.data` are all updated so the caller sees the
-# growth without having to rebind.
+# growth without having to rebind. `List::new()` is an associated
+# function (no `self`) and returns a fresh empty list.
 #
 # Run: cargo run example/allocator_list.t
 # Expected result: UInt64(60)
@@ -21,6 +22,10 @@ struct List {
 }
 
 impl List {
+    fn new() -> Self {
+        List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
+    }
+
     fn push(self: Self, value: u64) -> u64 {
         if self.cap == 0u64 {
             self.cap = 8u64
@@ -39,14 +44,10 @@ impl List {
     }
 }
 
-fn make_list() -> List {
-    List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
-}
-
 fn main() -> u64 {
     val arena = __builtin_arena_allocator()
     with allocator = arena {
-        var list = make_list()
+        var list = List::new()
         list.push(10u64)
         list.push(20u64)
         list.push(30u64)

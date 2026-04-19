@@ -833,24 +833,71 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Handle Container::function_name(args) type calls for any associated function
 
-        // Check if this is a known struct
-        if !self.context.is_generic_struct(struct_name) {
+        // Verify the struct exists — generic and non-generic both count.
+        if !self.context.struct_definitions.contains_key(&struct_name) {
             return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
         }
 
-        // Look for the associated function in the struct's impl block
         let function_name_str = self.resolve_symbol_name(function_name);
 
-        if let Some(method) = self.context.get_struct_method(struct_name, function_name) {
-            // Clone the method to avoid borrowing issues
-            let method_clone = method.clone();
-            // Handle generic associated function call with type inference
-            self.handle_generic_associated_function_call(struct_name, function_name, args, &method_clone)
-        } else {
-            Err(TypeCheckError::generic_error(&format!(
+        let method = self.context.get_struct_method(struct_name, function_name)
+            .cloned()
+            .ok_or_else(|| TypeCheckError::generic_error(&format!(
                 "Associated function '{}' not found for struct '{:?}'",
                 function_name_str, struct_name
-            )))
+            )))?;
+
+        if self.context.is_generic_struct(struct_name) {
+            // Generic struct: delegate to the constraint-based inference path.
+            return self.handle_generic_associated_function_call(struct_name, function_name, args, &method);
         }
+
+        // Non-generic struct: type-check arguments directly against the method
+        // parameter list (skipping any leading `self` since `Struct::fn(...)` is
+        // called without an instance).
+        let params: Vec<_> = if method.has_self_param {
+            method.parameter.iter().skip(1).cloned().collect()
+        } else {
+            method.parameter.iter().cloned().collect()
+        };
+
+        if args.len() != params.len() {
+            return Err(TypeCheckError::generic_error(&format!(
+                "Associated function '{}::{}' expects {} arguments, found {}",
+                self.resolve_symbol_name(struct_name),
+                function_name_str,
+                params.len(),
+                args.len()
+            )));
+        }
+
+        for (arg_expr, (_, expected_ty)) in args.iter().zip(params.iter()) {
+            let actual_ty = self.visit_expr(arg_expr)?;
+            if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                return Err(TypeCheckError::type_mismatch(
+                    expected_ty.clone(),
+                    actual_ty,
+                ).with_context(&format!(
+                    "argument of associated function '{}::{}'",
+                    self.resolve_symbol_name(struct_name),
+                    function_name_str
+                )));
+            }
+        }
+
+        // Normalize the method's return type so downstream dispatch sees the
+        // struct form. `Self` and bare `Identifier(struct_name)` both become
+        // `Struct(struct_name, [])`.
+        let return_ty = method.return_type.clone().unwrap_or(TypeDecl::Unit);
+        let return_ty = match return_ty {
+            TypeDecl::Self_ => TypeDecl::Struct(struct_name, vec![]),
+            TypeDecl::Identifier(name)
+                if self.context.struct_definitions.contains_key(&name) =>
+            {
+                TypeDecl::Struct(name, vec![])
+            }
+            other => other,
+        };
+        Ok(return_ty)
     }
 }

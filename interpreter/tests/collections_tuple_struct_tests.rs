@@ -837,6 +837,93 @@ fn main() -> u64 {
         assert!(result.is_err(), "assigning bool to u64 field should fail type check");
     }
 
+    // =========================================================================
+    // Associated functions on non-generic structs (`Struct::new()` style)
+    // =========================================================================
+
+    #[test]
+    fn test_non_generic_associated_function_basic() {
+        let program = r#"
+struct Point {
+    x: u64,
+    y: u64,
+}
+
+impl Point {
+    fn origin() -> Self {
+        Point { x: 0u64, y: 0u64 }
+    }
+
+    fn with_x(x: u64) -> Self {
+        Point { x: x, y: 0u64 }
+    }
+}
+
+fn main() -> u64 {
+    val a = Point::origin()
+    val b = Point::with_x(42u64)
+    a.x + a.y + b.x + b.y
+}
+"#;
+        let result = test_program(program).expect("non-generic ::new style call should type-check");
+        assert_eq!(result.borrow().unwrap_uint64(), 42u64);
+    }
+
+    #[test]
+    fn test_non_generic_associated_function_return_type_flows_into_methods() {
+        // The returned struct value must be usable with subsequent method
+        // calls (i.e. the return type normalizes to Struct(Point, []) so
+        // method dispatch resolves).
+        let program = r#"
+struct Counter {
+    count: u64,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Counter { count: 0u64 }
+    }
+
+    fn inc(self: Self) -> u64 {
+        self.count = self.count + 1u64
+        self.count
+    }
+}
+
+fn main() -> u64 {
+    var c = Counter::new()
+    c.inc()
+    c.inc()
+    c.inc()
+    c.count
+}
+"#;
+        let result = test_program(program).expect("associated function + method chain should work");
+        assert_eq!(result.borrow().unwrap_uint64(), 3u64);
+    }
+
+    #[test]
+    fn test_non_generic_associated_function_arg_type_mismatch() {
+        let program = r#"
+struct Holder {
+    value: u64,
+}
+
+impl Holder {
+    fn of(v: u64) -> Self {
+        Holder { value: v }
+    }
+}
+
+fn main() -> u64 {
+    val h = Holder::of(true)
+    h.value
+}
+"#;
+        let result = test_program(program);
+        assert!(result.is_err(), "passing bool to u64 associated-function param should fail");
+    }
+
     #[test]
     fn test_field_assign_unknown_field_errors() {
         // Writing to a field that doesn't exist must error (runtime or

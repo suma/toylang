@@ -126,6 +126,17 @@ impl EvaluationContext<'_> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(op.apply_i64(*l, *r)),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(op.apply_u64(*l, *r)),
+            (Object::Allocator(l), Object::Allocator(r)) => {
+                match op {
+                    ComparisonOp::Eq => Object::Bool(l == r),
+                    ComparisonOp::Ne => Object::Bool(l != r),
+                    _ => return Err(InterpreterError::TypeError{
+                        expected: lhs_ty,
+                        found: rhs_ty,
+                        message: format!("{}: Allocator comparison only supports == and !=", op.name()),
+                    }),
+                }
+            }
             (Object::ConstString(l), Object::ConstString(r)) => {
                 match op {
                     ComparisonOp::Eq | ComparisonOp::Ne => Object::Bool(op.apply_string(*l, *r)),

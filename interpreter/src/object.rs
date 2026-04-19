@@ -33,6 +33,9 @@ pub enum Object {
     Pointer(usize),  // Raw pointer as memory address (0 = null pointer)
     Null(TypeDecl), // Null reference with type information
     Unit,
+    Allocator(u64), // Opaque allocator handle (Phase 1a: integer ID). The actual
+                    // Allocator trait vtable arrives in Phase 1b; the handle lets
+                    // the type checker treat allocator values as a distinct type.
 }
 
 pub type RcObject = Rc<RefCell<Object>>;
@@ -154,6 +157,9 @@ impl Ord for ObjectKey {
             (_, Object::Pointer(_)) => Ordering::Greater,
             (Object::Null(_), _) => Ordering::Less,
             (_, Object::Null(_)) => Ordering::Greater,
+            (Object::Allocator(a), Object::Allocator(b)) => a.cmp(b),
+            (Object::Allocator(_), _) => Ordering::Less,
+            (_, Object::Allocator(_)) => Ordering::Greater,
         }
     }
 }
@@ -191,6 +197,7 @@ impl PartialEq for Object {
             (Object::Pointer(a), Object::Pointer(b)) => a == b,
             (Object::Null(_), Object::Null(_)) => true,
             (Object::Unit, Object::Unit) => true,
+            (Object::Allocator(a), Object::Allocator(b)) => a == b,
             _ => false,
         }
     }
@@ -270,6 +277,10 @@ impl Hash for Object {
             Object::Unit => {
                 11u8.hash(state);
             }
+            Object::Allocator(id) => {
+                12u8.hash(state);
+                id.hash(state);
+            }
         }
     }
 }
@@ -326,6 +337,7 @@ impl Object {
                 TypeDecl::Tuple(element_types)
             }
             Object::Pointer(_) => TypeDecl::Ptr,
+            Object::Allocator(_) => TypeDecl::Allocator,
         }
     }
 

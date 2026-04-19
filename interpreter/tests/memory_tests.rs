@@ -365,3 +365,79 @@ fn test_function_wrong_argument_type_bool() {
     let error = result.unwrap_err();
     assert!(error.contains("type mismatch") || error.contains("argument"));
 }
+
+// ============================================================================
+// `with allocator = expr { ... }` scope binding tests (Phase 1a)
+// ============================================================================
+
+#[test]
+fn test_with_allocator_returns_body_value() {
+    // The body's last expression is the value of the `with` block.
+    let source = r#"
+        fn main() -> u64 {
+            with allocator = __builtin_default_allocator() {
+                42u64
+            }
+        }
+    "#;
+    let result = test_program(source).expect("with block should return body value");
+    assert_eq!(result.borrow().unwrap_uint64(), 42u64);
+}
+
+#[test]
+fn test_current_allocator_matches_default() {
+    // Inside a `with` block bound to the default allocator, current_allocator()
+    // should equal default_allocator(). We compare using a boolean expression
+    // so the program type is bool (not Allocator).
+    let source = r#"
+        fn main() -> bool {
+            val d = __builtin_default_allocator()
+            with allocator = d {
+                __builtin_current_allocator() == d
+            }
+        }
+    "#;
+    let result = test_program(source).expect("current_allocator should match pushed default");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_with_allocator_nested_scopes_restore_outer() {
+    // Nested `with` blocks must restore the outer allocator on exit.
+    // Use boolean observations rather than arithmetic so the values stay opaque.
+    let source = r#"
+        fn main() -> bool {
+            val d = __builtin_default_allocator()
+            with allocator = d {
+                val outer = __builtin_current_allocator()
+                with allocator = d {
+                    val inner = __builtin_current_allocator()
+                    inner == outer
+                }
+                val after = __builtin_current_allocator()
+                after == outer
+            }
+        }
+    "#;
+    let result = test_program(source).expect("nested with should restore outer binding");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_with_allocator_rejects_non_allocator_expression() {
+    // Type checker must reject RHS values that are not of type Allocator.
+    let source = r#"
+        fn main() -> u64 {
+            with allocator = 5u64 {
+                1u64
+            }
+        }
+    "#;
+    let result = test_program(source);
+    assert!(result.is_err(), "`with allocator = <u64>` should fail type checking");
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("Allocator"),
+        "error should mention Allocator type requirement, got: {msg}"
+    );
+}

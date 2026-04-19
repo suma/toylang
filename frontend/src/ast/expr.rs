@@ -122,6 +122,10 @@ pub enum BuiltinFunction {
     MemCopy,      // __builtin_mem_copy(src: ptr, dest: ptr, size: u64) -> unit
     MemMove,      // __builtin_mem_move(src: ptr, dest: ptr, size: u64) -> unit
     MemSet,       // __builtin_mem_set(pointer: ptr, value: u8, size: u64) -> unit
+
+    // Allocator context
+    CurrentAllocator, // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
+    DefaultAllocator, // __builtin_default_allocator() -> Allocator referring to the global/default allocator
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +144,10 @@ pub struct BuiltinFunctionSymbols {
     pub mem_copy: DefaultSymbol,
     pub mem_move: DefaultSymbol,
     pub mem_set: DefaultSymbol,
+
+    // Allocator context
+    pub current_allocator: DefaultSymbol,
+    pub default_allocator: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -154,6 +162,8 @@ impl BuiltinFunctionSymbols {
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
             mem_move: interner.get_or_intern("__builtin_mem_move"),
             mem_set: interner.get_or_intern("__builtin_mem_set"),
+            current_allocator: interner.get_or_intern("__builtin_current_allocator"),
+            default_allocator: interner.get_or_intern("__builtin_default_allocator"),
         }
     }
 
@@ -167,6 +177,8 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }
         else if symbol == self.mem_move { Some(BuiltinFunction::MemMove) }
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }
+        else if symbol == self.current_allocator { Some(BuiltinFunction::CurrentAllocator) }
+        else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
         else { None }
     }
 }

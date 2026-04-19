@@ -17,6 +17,7 @@ pub enum TypeDecl {
     Ptr,  // Raw pointer type for heap memory
     Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
     Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
+    Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
 }
 
 impl TypeDecl {

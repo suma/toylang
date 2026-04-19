@@ -420,6 +420,36 @@ impl EvaluationContext<'_> {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))
                 }
             }
+
+            BuiltinFunction::CurrentAllocator => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "current_allocator() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                // Return the top of the allocator stack. When no `with` scope is active,
+                // fall back to the default allocator handle (ID 0) so the return type
+                // remains Allocator as declared in the signature.
+                let top = self.allocator_stack.last().cloned().unwrap_or_else(|| {
+                    Rc::new(RefCell::new(Object::Allocator(0)))
+                });
+                Ok(EvaluationResult::Value(top))
+            }
+
+            BuiltinFunction::DefaultAllocator => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "default_allocator() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                // The global/default allocator is identified by handle 0. Phase 1b will
+                // replace this ID-based scheme with a real Allocator trait object.
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Allocator(0)))))
+            }
         }
     }
 }

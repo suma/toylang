@@ -96,11 +96,27 @@ impl EvaluationContext<'_> {
             Expr::Cast(expr, target_type) => {
                 self.evaluate_cast(&expr, &target_type)
             }
-            Expr::With(_allocator, body) => {
-                // Phase 1 frontend landing: evaluate allocator but do not yet use it.
-                // Ambient allocator stack push/pop arrives with the Allocator trait wiring.
-                let _ = self.evaluate(&_allocator)?;
-                self.evaluate(&body)
+            Expr::With(allocator, body) => {
+                // Evaluate the allocator expression, then push it onto the scope stack
+                // for the duration of the body. The pop must happen on every exit path
+                // (value, return, break, continue, error) so nested `with` blocks always
+                // restore the outer binding. The body is a Block AST node, so fetch its
+                // statements and run them through evaluate_block (same as if/else bodies).
+                let allocator_val = self.evaluate(&allocator);
+                let allocator_val = self.extract_value(allocator_val)?;
+                self.allocator_stack.push(allocator_val);
+                let body_expr = self.expr_pool.get(&body)
+                    .ok_or_else(|| InterpreterError::InternalError("Invalid with-body reference".to_string()))?;
+                let result = if let Expr::Block(statements) = body_expr {
+                    self.environment.enter_block();
+                    let res = self.evaluate_block(&statements);
+                    self.environment.exit_block();
+                    res
+                } else {
+                    Err(InterpreterError::InternalError("with body is not a block".to_string()))
+                };
+                self.allocator_stack.pop();
+                result
             }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }

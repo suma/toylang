@@ -224,6 +224,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
             TypeDecl::Unknown => "Unknown".to_string(),
             TypeDecl::Number => "Number".to_string(),
             TypeDecl::Ptr => "Ptr".to_string(),
+            TypeDecl::Allocator => "Allocator".to_string(),
         }
     }
     

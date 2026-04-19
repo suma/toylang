@@ -197,6 +197,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
+                } else if resolved_lhs_ty == TypeDecl::Allocator && resolved_rhs_ty == TypeDecl::Allocator
+                          && matches!(op, Operator::EQ | Operator::NE) {
+                    // Allocator handles support only identity (== / !=), not ordering.
+                    TypeDecl::Bool
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),

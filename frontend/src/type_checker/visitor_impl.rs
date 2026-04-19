@@ -262,9 +262,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        // Phase 1 minimum: type-check the allocator expression, then evaluate the body's type.
-        // Allocator semantics (stack push/pop, binding resolution) land in a later phase.
-        self.visit_expr(allocator)?;
+        // The RHS of `with allocator = ...` must evaluate to an Allocator handle.
+        // Enforcing this at semantic analysis time keeps the language-level contract
+        // (this scope swaps the ambient allocator) independent of runtime representation.
+        let allocator_ty = self.visit_expr(allocator)?;
+        if allocator_ty != TypeDecl::Allocator {
+            return Err(TypeCheckError::new(format!(
+                "`with allocator = ...` requires an Allocator value, but got {:?}",
+                allocator_ty
+            )));
+        }
         self.visit_expr(body)
     }
 

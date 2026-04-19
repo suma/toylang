@@ -35,6 +35,11 @@ pub struct EvaluationContext<'a> {
     pub(super) recursion_depth: u32,
     pub(super) max_recursion_depth: u32,
     pub(super) heap_manager: HeapManager, // Heap memory manager for pointer operations
+    // Lexically-scoped allocator binding stack. `with allocator = expr { ... }`
+    // pushes on entry and pops on exit so nested scopes restore the outer binding.
+    // Phase 1a: the pushed value is an opaque RcObject observed via __builtin_current_allocator().
+    // Routing heap_alloc through the stack top arrives in Phase 1b.
+    pub(super) allocator_stack: Vec<RcObject>,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -50,6 +55,7 @@ impl<'a> EvaluationContext<'a> {
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
             heap_manager: HeapManager::new(),
+            allocator_stack: Vec::new(),
         }
     }
 

@@ -159,6 +159,21 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Ptr, TypeDecl::UInt64, TypeDecl::UInt64],
                 return_type: TypeDecl::Unit,
             },
+            // Allocator handle builtins. The Allocator value itself is opaque at the
+            // language level; `with allocator = expr { ... }` requires the RHS to be
+            // of type Allocator and type checking enforces this.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::CurrentAllocator,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::Allocator,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::DefaultAllocator,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::Allocator,
+            },
         ]
     }
 

@@ -447,6 +447,65 @@ impl Object {
         }
     }
 
+    /// Human-readable rendering for `__builtin_print` / `__builtin_println`.
+    /// Primitives use their natural syntax, strings are printed unquoted (so
+    /// `println("hi")` produces `hi`), and composite types fall back to a
+    /// readable summary without quoting every element.
+    pub fn to_display_string(
+        &self,
+        string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>,
+    ) -> String {
+        match self {
+            Object::Unit => "()".to_string(),
+            Object::Bool(b) => b.to_string(),
+            Object::Int64(v) => v.to_string(),
+            Object::UInt64(v) => v.to_string(),
+            Object::ConstString(sym) => {
+                string_interner.resolve(*sym).unwrap_or("").to_string()
+            }
+            Object::String(s) => s.clone(),
+            Object::Null(_) => "null".to_string(),
+            Object::Pointer(addr) => format!("ptr(0x{:x})", addr),
+            Object::Allocator(rc) => format!("allocator(@{:p})", Rc::as_ptr(rc)),
+            Object::Array(elements) => {
+                let parts: Vec<String> = elements.iter()
+                    .map(|e| e.borrow().to_display_string(string_interner))
+                    .collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Object::Tuple(elements) => {
+                let parts: Vec<String> = elements.iter()
+                    .map(|e| e.borrow().to_display_string(string_interner))
+                    .collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            Object::Dict(map) => {
+                let mut parts: Vec<String> = map.iter()
+                    .map(|(k, v)| format!(
+                        "{}: {}",
+                        k.as_object().to_display_string(string_interner),
+                        v.borrow().to_display_string(string_interner),
+                    ))
+                    .collect();
+                // Stable ordering so output is deterministic for tests.
+                parts.sort();
+                format!("{{{}}}", parts.join(", "))
+            }
+            Object::Struct { type_name, fields } => {
+                let type_name_str = string_interner.resolve(*type_name).unwrap_or("<struct>");
+                let mut parts: Vec<String> = fields.iter()
+                    .map(|(k, v)| format!("{}: {}", k, v.borrow().to_display_string(string_interner)))
+                    .collect();
+                parts.sort();
+                format!("{} {{ {} }}", type_name_str, parts.join(", "))
+            }
+        }
+    }
+
     /// Convert ConstString to mutable String if needed
     pub fn promote_to_mutable_string(self, string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>) -> Object {
         match self {
@@ -789,5 +848,75 @@ impl ExplicitDestructor for RcObject {
             }
             Err(e) => Err(e)
         }
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+    use string_interner::DefaultStringInterner;
+
+    fn make_rc(obj: Object) -> RcObject {
+        Rc::new(RefCell::new(obj))
+    }
+
+    #[test]
+    fn display_primitives() {
+        let interner = DefaultStringInterner::new();
+        assert_eq!(Object::UInt64(42).to_display_string(&interner), "42");
+        assert_eq!(Object::Int64(-7).to_display_string(&interner), "-7");
+        assert_eq!(Object::Bool(true).to_display_string(&interner), "true");
+        assert_eq!(Object::Bool(false).to_display_string(&interner), "false");
+        assert_eq!(Object::Unit.to_display_string(&interner), "()");
+        assert_eq!(Object::Null(TypeDecl::Unknown).to_display_string(&interner), "null");
+        assert_eq!(Object::Pointer(0).to_display_string(&interner), "ptr(0x0)");
+    }
+
+    #[test]
+    fn display_strings() {
+        let mut interner = DefaultStringInterner::new();
+        let sym = interner.get_or_intern("hello");
+        // Strings render unquoted so println("hi") produces `hi` not `"hi"`.
+        assert_eq!(Object::ConstString(sym).to_display_string(&interner), "hello");
+        assert_eq!(Object::String("world".to_string()).to_display_string(&interner), "world");
+    }
+
+    #[test]
+    fn display_array() {
+        let interner = DefaultStringInterner::new();
+        let elements = vec![
+            make_rc(Object::UInt64(1)),
+            make_rc(Object::UInt64(2)),
+            make_rc(Object::UInt64(3)),
+        ];
+        let array = Object::Array(Box::new(elements));
+        assert_eq!(array.to_display_string(&interner), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn display_tuple() {
+        let interner = DefaultStringInterner::new();
+        let two = Object::Tuple(Box::new(vec![
+            make_rc(Object::UInt64(1)),
+            make_rc(Object::Bool(true)),
+        ]));
+        assert_eq!(two.to_display_string(&interner), "(1, true)");
+
+        // Single-element tuples include a trailing comma so they're
+        // distinguishable from parenthesized expressions.
+        let one = Object::Tuple(Box::new(vec![make_rc(Object::UInt64(5))]));
+        assert_eq!(one.to_display_string(&interner), "(5,)");
+    }
+
+    #[test]
+    fn display_struct_is_deterministic() {
+        let mut interner = DefaultStringInterner::new();
+        let type_name = interner.get_or_intern("Point");
+        let mut fields = HashMap::new();
+        fields.insert("x".to_string(), make_rc(Object::UInt64(3)));
+        fields.insert("y".to_string(), make_rc(Object::UInt64(4)));
+        let pt = Object::Struct { type_name, fields: Box::new(fields) };
+        // Fields are sorted by name for deterministic output.
+        assert_eq!(pt.to_display_string(&interner), "Point { x: 3, y: 4 }");
     }
 }

@@ -131,6 +131,11 @@ pub enum BuiltinFunction {
     DefaultAllocator,      // __builtin_default_allocator() -> Allocator referring to the global/default allocator
     ArenaAllocator,        // __builtin_arena_allocator() -> Allocator backed by an arena (bulk-free on drop)
     FixedBufferAllocator,  // __builtin_fixed_buffer_allocator(capacity: u64) -> Allocator that fails when quota is exceeded
+
+    // Output (exposed without the `__builtin_` prefix since they are
+    // everyday user-facing operations, not low-level intrinsics).
+    Print,   // print(value) -> unit (no trailing newline)
+    Println, // println(value) -> unit (trailing newline)
 }
 
 #[derive(Debug, Clone)]
@@ -155,6 +160,10 @@ pub struct BuiltinFunctionSymbols {
     pub default_allocator: DefaultSymbol,
     pub arena_allocator: DefaultSymbol,
     pub fixed_buffer_allocator: DefaultSymbol,
+
+    // Output
+    pub print: DefaultSymbol,
+    pub println: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -173,6 +182,11 @@ impl BuiltinFunctionSymbols {
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
             arena_allocator: interner.get_or_intern("__builtin_arena_allocator"),
             fixed_buffer_allocator: interner.get_or_intern("__builtin_fixed_buffer_allocator"),
+            // I/O builtins are user-facing, so they keep the plain names
+            // `print` and `println` instead of the `__builtin_` prefix used
+            // for low-level memory primitives.
+            print: interner.get_or_intern("print"),
+            println: interner.get_or_intern("println"),
         }
     }
 
@@ -190,6 +204,8 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
         else if symbol == self.arena_allocator { Some(BuiltinFunction::ArenaAllocator) }
         else if symbol == self.fixed_buffer_allocator { Some(BuiltinFunction::FixedBufferAllocator) }
+        else if symbol == self.print { Some(BuiltinFunction::Print) }
+        else if symbol == self.println { Some(BuiltinFunction::Println) }
         else { None }
     }
 }

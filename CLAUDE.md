@@ -151,6 +151,14 @@ fn main() -> u64 {
 ## ビルトイン関数
 - ビルトイン関数の実装方針は `BUILTIN_ARCHITECTURE.md` に記述されています
 
+## 入出力ビルトイン
+
+- `print(value)` — stdout に値を出力（改行なし）
+- `println(value)` — stdout に値を出力 + 改行
+- 任意の型を受け取り、`Object::to_display_string` で整形。文字列は引用符なし、構造体 / dict はフィールド名順にソートして決定的な出力
+- ユーザ向けの日常的な I/O なので、`heap_alloc` 等の低レベル builtin と違って `__builtin_` prefix は付けない
+- 使用例: `interpreter/example/print_demo.t`
+
 ## Allocator システム
 
 `with allocator = ...` による lexical scope で allocator を切り替えられる。heap 系 builtin は常に現在の allocator を経由する。詳細な設計と進捗は `ALLOCATOR_PLAN.md` を参照。

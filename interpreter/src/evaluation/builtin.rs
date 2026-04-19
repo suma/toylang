@@ -484,6 +484,28 @@ impl EvaluationContext<'_> {
                 ))))
             }
 
+            BuiltinFunction::Print | BuiltinFunction::Println => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: format!(
+                            "{} takes 1 argument",
+                            if matches!(func, BuiltinFunction::Print) { "print" } else { "println" }
+                        ),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let value = self.evaluate(&args[0])?;
+                let value = self.extract_value(Ok(value))?;
+                let rendered = value.borrow().to_display_string(&self.string_interner);
+                if matches!(func, BuiltinFunction::Println) {
+                    println!("{}", rendered);
+                } else {
+                    print!("{}", rendered);
+                }
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+            }
+
             BuiltinFunction::FixedBufferAllocator => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

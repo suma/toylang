@@ -186,6 +186,21 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::UInt64],
                 return_type: TypeDecl::Allocator,
             },
+            // `print` / `println` accept any value. arg_types is informational
+            // only (visit_builtin_call does not enforce it), so `Unknown` is
+            // used as a documentation placeholder.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Print,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::Unit,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Println,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::Unit,
+            },
         ]
     }
 

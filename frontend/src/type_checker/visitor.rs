@@ -362,8 +362,25 @@ impl<'a> TypeCheckerVisitor<'a> {
                         actual_elements == expected_elements
                     }
                 }
-                // Regular type comparison
-                _ => &last == expected_return_type,
+                // Regular type comparison. `Identifier(name)` and
+                // `Struct(name, [])` both describe a non-generic struct, so
+                // treat them as equal. Generic structs still require explicit
+                // type parameters on the declared return type (which keeps the
+                // existing "missing generic type parameter" diagnostic firing).
+                _ => {
+                    if &last == expected_return_type {
+                        true
+                    } else {
+                        match (&last, expected_return_type) {
+                            (TypeDecl::Struct(a, params_a), TypeDecl::Identifier(b))
+                            | (TypeDecl::Identifier(b), TypeDecl::Struct(a, params_a)) => {
+                                a == b && params_a.is_empty()
+                                    && !self.context.is_generic_struct(*a)
+                            }
+                            _ => false,
+                        }
+                    }
+                }
             };
 
             if !types_match {

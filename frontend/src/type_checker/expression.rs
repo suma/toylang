@@ -603,7 +603,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             
             self.pop_context();
-            Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))
+            // Normalize `Identifier(name)` return types to `Struct(name, [])` for
+            // known structs so downstream method dispatch (which matches on
+            // Struct) works on values produced by `fn make_list() -> List { ... }`.
+            let ret = fun.return_type.clone().unwrap_or(TypeDecl::Unknown);
+            let ret = if let TypeDecl::Identifier(name) = &ret {
+                if self.context.struct_definitions.contains_key(name) {
+                    TypeDecl::Struct(*name, vec![])
+                } else {
+                    ret
+                }
+            } else {
+                ret
+            };
+            Ok(ret)
         } else {
             self.pop_context();
             let fn_name_str = self.resolve_symbol_name(fn_name);
@@ -781,7 +794,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             } else {
                 // Handle non-generic struct method call
                 if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, &method_name, &self.core.string_interner) {
-                    return Ok(method_return_type);
+                    // Resolve `Self` and bare `Identifier(name)` to the concrete
+                    // struct type so chained method calls find the next method.
+                    let resolved = match method_return_type {
+                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, vec![]),
+                        TypeDecl::Identifier(name)
+                            if self.context.struct_definitions.contains_key(&name) =>
+                        {
+                            TypeDecl::Struct(name, vec![])
+                        }
+                        other => other,
+                    };
+                    return Ok(resolved);
                 }
             }
         }

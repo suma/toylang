@@ -627,6 +627,98 @@ fn test_generic_without_bound_rejected_in_with() {
     );
 }
 
+// ============================================================================
+// User-defined List<u64> built on top of the allocator-aware heap builtins.
+// Phase 3 deliberately avoids adding a language-level List type — instead,
+// these tests show that struct + impl + heap_alloc/realloc/ptr_read/ptr_write
+// is sufficient to write a working dynamic list that automatically routes
+// its allocations through the ambient allocator.
+// ============================================================================
+
+// Note: the language currently routes `Struct::method(...)` through the
+// generic-associated-function path, so instead of `List::new()` this demo
+// uses a free `make_list()` helper. Once non-generic associated functions
+// are supported the helper can become `List::new()`.
+const USER_LIST_SOURCE: &str = r#"
+    struct List {
+        data: ptr,
+        len: u64,
+        cap: u64,
+    }
+
+    impl List {
+        fn push(self: Self, value: u64) -> Self {
+            var new_cap: u64 = self.cap
+            if self.cap == 0u64 {
+                new_cap = 8u64
+            } elif self.len >= self.cap {
+                new_cap = self.cap * 2u64
+            }
+            var new_data: ptr = self.data
+            if new_cap != self.cap {
+                new_data = __builtin_heap_realloc(self.data, new_cap * 8u64)
+            }
+            __builtin_ptr_write(new_data, self.len * 8u64, value)
+            List { data: new_data, len: self.len + 1u64, cap: new_cap }
+        }
+
+        fn get(self: Self, index: u64) -> u64 {
+            __builtin_ptr_read(self.data, index * 8u64)
+        }
+    }
+
+    fn make_list() -> List {
+        List { data: __builtin_heap_alloc(0u64), len: 0u64, cap: 0u64 }
+    }
+"#;
+
+#[test]
+fn test_user_defined_list_push_get() {
+    // Build a list through several pushes (triggering the grow branch once),
+    // then read elements back.
+    let source = format!(
+        r#"
+        {list_source}
+
+        fn main() -> u64 {{
+            val l0 = make_list()
+            val l1 = l0.push(10u64)
+            val l2 = l1.push(20u64)
+            val l3 = l2.push(30u64)
+            l3.get(0u64) + l3.get(1u64) + l3.get(2u64)
+        }}
+    "#,
+        list_source = USER_LIST_SOURCE
+    );
+    let result = test_program(&source).expect("user-defined List push/get should work");
+    assert_eq!(result.borrow().unwrap_uint64(), 60u64);
+}
+
+#[test]
+fn test_user_defined_list_allocator_aware_inside_with_arena() {
+    // The same List implementation automatically uses the arena allocator when
+    // wrapped in `with allocator = arena { ... }`. The test verifies the final
+    // value, which implicitly exercises that heap_alloc/realloc succeed against
+    // a non-default allocator.
+    let source = format!(
+        r#"
+        {list_source}
+
+        fn main() -> u64 {{
+            val arena = __builtin_arena_allocator()
+            with allocator = arena {{
+                val list = make_list().push(1u64).push(2u64).push(3u64).push(4u64)
+                list.get(3u64)
+            }}
+        }}
+    "#,
+        list_source = USER_LIST_SOURCE
+    );
+    let result = test_program(&source)
+        .expect("user-defined List should transparently use the arena allocator");
+    assert_eq!(result.borrow().unwrap_uint64(), 4u64);
+}
+
 #[test]
 fn test_auto_ambient_default_for_bounded_generic_parameter() {
     // Calling `use_alloc()` without any argument should auto-fill the trailing

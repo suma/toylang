@@ -34,8 +34,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         // 2. Validate field types
         for field in fields {
             match &field.type_decl {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String => {
-                    // Basic types are valid
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String
+                | TypeDecl::Ptr | TypeDecl::Allocator => {
+                    // Basic/opaque types are valid field types. `ptr` is needed so
+                    // user code can hold heap-allocated buffers; `Allocator` is
+                    // needed for generic allocator-aware structs.
                 },
                 TypeDecl::Generic(_) => {
                     // Generic types are valid if they're in scope

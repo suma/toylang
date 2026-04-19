@@ -21,8 +21,10 @@ This project implements a statically-typed programming language with comprehensi
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
 - **Dictionary Type**: `val dict: Dict = {key1: value1, key2: value2}` with Object key support
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
+- **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }` with `match` expressions that support tuple variants, binding patterns, and wildcards
 - **Generics**: Type-safe generic functions and structures with automatic type inference
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
+- **Unary Operators**: `-x` for signed integer negation, `!` / `~` for logical and bitwise not
 - **Resource Management**: Automatic destruction system with custom `__drop__` methods
 - **Comments**: Line comments with `#` symbol support
 - **No Semicolons**: Statements are separated by newlines, not semicolons
@@ -159,6 +161,64 @@ impl Point {
         self.x * self.x + self.y * self.y
     }
 }
+```
+
+### Enums and Pattern Matching
+```rust
+# Unit variants, tuple variants with typed payloads, and a mix are allowed
+enum Shape {
+    Circle(i64),
+    Rect(i64, i64),
+    Point,
+}
+
+fn area(s: Shape) -> i64 {
+    match s {
+        # Tuple-variant patterns bind each slot to a name;
+        # use `_` to discard a payload position you don't need.
+        Shape::Circle(r) => r * r * 3i64,
+        Shape::Rect(w, h) => w * h,
+        # Unit variants use the bare path
+        Shape::Point => 0i64,
+    }
+}
+
+fn describe(s: Shape) -> i64 {
+    match s {
+        Shape::Point => 0i64,
+        # `_` as an arm catches any remaining variant
+        _ => -1i64,
+    }
+}
+
+fn main() -> i64 {
+    area(Shape::Circle(5i64)) + area(Shape::Rect(3i64, 4i64)) + area(Shape::Point)
+}
+```
+
+Every `match` arm must produce the same result type. Patterns supported today:
+`Enum::Variant`, `Enum::Variant(x, _, y)` (with binding / discard slots), and
+`_` catch-all. Exhaustiveness checking, generic enums, and nested structural
+patterns are on the roadmap.
+
+### Unary Operators
+```rust
+fn negate_example() -> i64 {
+    val x: i64 = 7i64
+    val y: i64 = -x          # signed-integer negation
+    val z: bool = !(y == x)  # logical not
+    val w: i64 = ~y          # bitwise not
+    y
+}
+```
+
+The parser also treats `-` at the start of a new source line as a fresh
+unary expression, so the following parses as two statements rather than
+`val a = 10 - b`:
+
+```rust
+val a: i64 = 10i64
+-a
 ```
 
 ### Resource Management with Custom Destructors

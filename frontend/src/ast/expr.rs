@@ -124,9 +124,10 @@ pub enum BuiltinFunction {
     MemSet,       // __builtin_mem_set(pointer: ptr, value: u8, size: u64) -> unit
 
     // Allocator context
-    CurrentAllocator, // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
-    DefaultAllocator, // __builtin_default_allocator() -> Allocator referring to the global/default allocator
-    ArenaAllocator,   // __builtin_arena_allocator() -> Allocator backed by an arena (bulk-free on drop)
+    CurrentAllocator,      // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
+    DefaultAllocator,      // __builtin_default_allocator() -> Allocator referring to the global/default allocator
+    ArenaAllocator,        // __builtin_arena_allocator() -> Allocator backed by an arena (bulk-free on drop)
+    FixedBufferAllocator,  // __builtin_fixed_buffer_allocator(capacity: u64) -> Allocator that fails when quota is exceeded
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +151,7 @@ pub struct BuiltinFunctionSymbols {
     pub current_allocator: DefaultSymbol,
     pub default_allocator: DefaultSymbol,
     pub arena_allocator: DefaultSymbol,
+    pub fixed_buffer_allocator: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -167,6 +169,7 @@ impl BuiltinFunctionSymbols {
             current_allocator: interner.get_or_intern("__builtin_current_allocator"),
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
             arena_allocator: interner.get_or_intern("__builtin_arena_allocator"),
+            fixed_buffer_allocator: interner.get_or_intern("__builtin_fixed_buffer_allocator"),
         }
     }
 
@@ -183,6 +186,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.current_allocator { Some(BuiltinFunction::CurrentAllocator) }
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
         else if symbol == self.arena_allocator { Some(BuiltinFunction::ArenaAllocator) }
+        else if symbol == self.fixed_buffer_allocator { Some(BuiltinFunction::FixedBufferAllocator) }
         else { None }
     }
 }

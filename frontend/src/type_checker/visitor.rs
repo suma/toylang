@@ -180,6 +180,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![],
                 return_type: TypeDecl::Allocator,
             },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::FixedBufferAllocator,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::UInt64],
+                return_type: TypeDecl::Allocator,
+            },
         ]
     }
 

@@ -117,6 +117,123 @@ impl Drop for ArenaAllocator {
     }
 }
 
+/// Fixed-size budget allocator: imposes a byte-count quota on top of the
+/// shared `HeapManager`. Allocations that would push the running total past
+/// `capacity` fail by returning the null pointer (0). `free` returns the
+/// quota. The allocator does not carve out a physically separate buffer —
+/// memory still comes from the shared heap so pointer builtins stay
+/// uniform — but it enforces a failure mode that the global allocator
+/// never produces, which is the main point for testing scope routing.
+#[derive(Debug)]
+pub struct FixedBufferAllocator {
+    heap: Rc<RefCell<HeapManager>>,
+    capacity: usize,
+    used: RefCell<usize>,
+    tracked: RefCell<Vec<(usize, usize)>>, // (addr, size) for free bookkeeping
+}
+
+impl FixedBufferAllocator {
+    pub fn new(heap: Rc<RefCell<HeapManager>>, capacity: usize) -> Self {
+        Self {
+            heap,
+            capacity,
+            used: RefCell::new(0),
+            tracked: RefCell::new(Vec::new()),
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn used(&self) -> usize {
+        *self.used.borrow()
+    }
+}
+
+impl Allocator for FixedBufferAllocator {
+    fn alloc(&self, size: usize) -> usize {
+        if size == 0 {
+            return 0;
+        }
+        if *self.used.borrow() + size > self.capacity {
+            return 0;
+        }
+        let addr = self.heap.borrow_mut().alloc(size);
+        if addr != 0 {
+            *self.used.borrow_mut() += size;
+            self.tracked.borrow_mut().push((addr, size));
+        }
+        addr
+    }
+
+    fn free(&self, addr: usize) -> bool {
+        if addr == 0 {
+            return true;
+        }
+        let size_opt = {
+            let mut tracked = self.tracked.borrow_mut();
+            tracked.iter().position(|&(a, _)| a == addr)
+                .map(|pos| tracked.swap_remove(pos).1)
+        };
+        match size_opt {
+            Some(size) => {
+                let mut used = self.used.borrow_mut();
+                *used = used.saturating_sub(size);
+                drop(used);
+                self.heap.borrow_mut().free(addr)
+            }
+            None => false,
+        }
+    }
+
+    fn realloc(&self, addr: usize, new_size: usize) -> usize {
+        if addr == 0 {
+            return self.alloc(new_size);
+        }
+        if new_size == 0 {
+            self.free(addr);
+            return 0;
+        }
+        let old_size = {
+            let tracked = self.tracked.borrow();
+            match tracked.iter().find(|&&(a, _)| a == addr) {
+                Some(&(_, s)) => s,
+                None => return 0, // unknown address for this allocator
+            }
+        };
+        // Check the quota against the net change.
+        let used = *self.used.borrow();
+        if used + new_size < old_size {
+            return 0;
+        }
+        let projected = used - old_size + new_size;
+        if projected > self.capacity {
+            return 0;
+        }
+        let new_addr = self.heap.borrow_mut().realloc(addr, new_size);
+        if new_addr == 0 {
+            return 0;
+        }
+        let mut tracked = self.tracked.borrow_mut();
+        if let Some(pos) = tracked.iter().position(|&(a, _)| a == addr) {
+            tracked.swap_remove(pos);
+        }
+        tracked.push((new_addr, new_size));
+        *self.used.borrow_mut() = projected;
+        new_addr
+    }
+}
+
+impl Drop for FixedBufferAllocator {
+    fn drop(&mut self) {
+        let mut heap = self.heap.borrow_mut();
+        for (addr, _) in self.tracked.borrow().iter() {
+            heap.free(*addr);
+        }
+    }
+}
+
 /// Simple heap memory manager for pointer operations
 #[derive(Debug)]
 pub struct HeapManager {
@@ -443,6 +560,57 @@ mod tests {
             a = arena.alloc(16);
             assert!(heap.borrow().is_valid_address(a));
             // arena goes out of scope here and Drop runs.
+        }
+        assert!(!heap.borrow().is_valid_address(a));
+    }
+
+    #[test]
+    fn test_fixed_buffer_alloc_within_capacity() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let alloc = FixedBufferAllocator::new(heap.clone(), 32);
+
+        let a = alloc.alloc(16);
+        let b = alloc.alloc(16);
+        assert_ne!(a, 0);
+        assert_ne!(b, 0);
+        assert_eq!(alloc.used(), 32);
+    }
+
+    #[test]
+    fn test_fixed_buffer_alloc_rejected_when_full() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let alloc = FixedBufferAllocator::new(heap.clone(), 16);
+
+        let a = alloc.alloc(16);
+        assert_ne!(a, 0);
+        let b = alloc.alloc(1); // would push total past 16
+        assert_eq!(b, 0);
+        assert_eq!(alloc.used(), 16);
+    }
+
+    #[test]
+    fn test_fixed_buffer_free_restores_quota() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let alloc = FixedBufferAllocator::new(heap.clone(), 16);
+
+        let a = alloc.alloc(16);
+        assert_ne!(a, 0);
+        assert!(alloc.free(a));
+        assert_eq!(alloc.used(), 0);
+
+        // Capacity should be available again.
+        let b = alloc.alloc(16);
+        assert_ne!(b, 0);
+    }
+
+    #[test]
+    fn test_fixed_buffer_drop_releases_tracked_allocations() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let a;
+        {
+            let alloc = FixedBufferAllocator::new(heap.clone(), 32);
+            a = alloc.alloc(16);
+            assert!(heap.borrow().is_valid_address(a));
         }
         assert!(!heap.borrow().is_valid_address(a));
     }

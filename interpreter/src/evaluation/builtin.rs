@@ -483,6 +483,28 @@ impl EvaluationContext<'_> {
                     Object::Allocator(arena),
                 ))))
             }
+
+            BuiltinFunction::FixedBufferAllocator => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "fixed_buffer_allocator(capacity) takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let capacity_result = self.evaluate(&args[0])?;
+                let capacity_obj = self.extract_value(Ok(capacity_result))?;
+                let capacity = capacity_obj.borrow().try_unwrap_uint64()
+                    .map_err(|_| InterpreterError::InternalError(
+                        "fixed_buffer_allocator expects u64 capacity".to_string()
+                    ))?;
+                let allocator: Rc<dyn crate::heap::Allocator> = Rc::new(
+                    crate::heap::FixedBufferAllocator::new(self.heap_manager.clone(), capacity as usize),
+                );
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
+                    Object::Allocator(allocator),
+                ))))
+            }
         }
     }
 }

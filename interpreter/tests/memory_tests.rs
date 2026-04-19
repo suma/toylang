@@ -487,6 +487,56 @@ fn test_arena_alloc_read_write_cycle() {
 }
 
 #[test]
+fn test_fixed_buffer_alloc_succeeds_within_capacity() {
+    // Allocate 8 bytes from a 16-byte quota — should succeed and return non-null.
+    let source = r#"
+        fn main() -> bool {
+            val fb = __builtin_fixed_buffer_allocator(16u64)
+            with allocator = fb {
+                val p = __builtin_heap_alloc(8u64)
+                __builtin_ptr_is_null(p) == false
+            }
+        }
+    "#;
+    let result = test_program(source).expect("alloc within quota should succeed");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_fixed_buffer_alloc_null_when_exceeding_capacity() {
+    // Allocate 32 bytes from an 8-byte quota — should fail and return null.
+    let source = r#"
+        fn main() -> bool {
+            val fb = __builtin_fixed_buffer_allocator(8u64)
+            with allocator = fb {
+                val p = __builtin_heap_alloc(32u64)
+                __builtin_ptr_is_null(p)
+            }
+        }
+    "#;
+    let result = test_program(source).expect("alloc exceeding quota should return null");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_fixed_buffer_free_restores_quota() {
+    // After freeing, the quota frees up and a follow-up alloc of the same size succeeds.
+    let source = r#"
+        fn main() -> bool {
+            val fb = __builtin_fixed_buffer_allocator(16u64)
+            with allocator = fb {
+                val p = __builtin_heap_alloc(16u64)
+                __builtin_heap_free(p)
+                val q = __builtin_heap_alloc(16u64)
+                __builtin_ptr_is_null(q) == false
+            }
+        }
+    "#;
+    let result = test_program(source).expect("freed quota should be reusable");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
 fn test_with_allocator_rejects_non_allocator_expression() {
     // Type checker must reject RHS values that are not of type Allocator.
     let source = r#"

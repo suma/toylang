@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+128. Enum + match（Phase 2）: タプル variant `Shape::Circle(i64)`, `Rect(i64, i64)` のコンストラクタ、バインディングパターン `Circle(r)` と `_` discard、型チェックの payload 型検証 (2026-04-19)
 127. Enum + match（Phase 1）: `enum Name { A, B, C }` unit variant、`Color::Red` バリアント参照、`match scrutinee { pat => body, _ => body }` による分岐。型チェックは全 arm の型一致と variant 存在を検証 (2026-04-19)
 126. 非ジェネリック struct の associated function 対応: `List::new()` 形式が generic struct なしで動作、メソッドチェーンの return type 正規化 (2026-04-19)
 125. struct field 代入 `obj.field = x` サポート: interpreter の handle_assignment に FieldAccess LHS 追加、Counter.inc() 等の imperative スタイルが書けるように (2026-04-19)
@@ -25,7 +26,7 @@
 
 ## 未実装 📋
 
-96. **Enum/match 拡張** — Phase 1（unit variant + wildcard）は完了。タプル variant `Some(T)`、変数束縛 `Some(x) => x`、網羅性チェック、ジェネリック `enum Option<T>` は未実装
+96. **Enum/match 拡張** — Phase 1/2（unit + tuple variant、バインディングパターン）完了。網羅性チェック（Phase 2c）、ジェネリック `enum Option<T>`（Phase 3）、ネストパターンは未実装
 29. **Option型によるNull安全性** — Enum 導入後、`Option<T> = Some(T) | None`
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
@@ -53,7 +54,7 @@
 - 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
 - Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Arena / FixedBuffer allocator
-- Enum + match（Phase 1）: unit variant のみ、`Enum::Variant` バリアント参照、`match` arm は unit パターン + ワイルドカード `_`
+- Enum + match（Phase 1/2）: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、`match` arm は unit・tuple パターン（バインディング/`_` discard）+ ワイルドカード `_`
 
 ### 型システム
 - 自動型変換・型推論（数値リテラルのサフィックス省略可）
@@ -68,7 +69,7 @@
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 851 テスト（100% 成功率、2026-04-19 時点）
+- 合計 857 テスト（100% 成功率、2026-04-19 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

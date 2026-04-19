@@ -850,6 +850,34 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Handle Container::function_name(args) type calls for any associated function
 
+        // Enum tuple-variant construction: `Enum::Variant(args)` syntactically
+        // matches `Struct::assoc(args)`. Intercept when the left side is a
+        // registered enum and the right side names one of its variants.
+        if let Some(variants) = self.context.enum_definitions.get(&struct_name).cloned() {
+            if let Some(variant_def) = variants.iter().find(|v| v.name == function_name) {
+                if args.len() != variant_def.payload_types.len() {
+                    let enum_str = self.resolve_symbol_name(struct_name);
+                    let v_str = self.resolve_symbol_name(function_name);
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "variant '{}::{}' expects {} argument(s), found {}",
+                        enum_str, v_str, variant_def.payload_types.len(), args.len()
+                    )));
+                }
+                for (arg_expr, expected_ty) in args.iter().zip(variant_def.payload_types.iter()) {
+                    let actual_ty = self.visit_expr(arg_expr)?;
+                    if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                        let enum_str = self.resolve_symbol_name(struct_name);
+                        let v_str = self.resolve_symbol_name(function_name);
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "variant '{}::{}' payload type mismatch: expected {:?}, found {:?}",
+                            enum_str, v_str, expected_ty, actual_ty
+                        )));
+                    }
+                }
+                return Ok(TypeDecl::Enum(struct_name));
+            }
+        }
+
         // Verify the struct exists — generic and non-generic both count.
         if !self.context.struct_definitions.contains_key(&struct_name) {
             return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));

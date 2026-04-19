@@ -787,11 +787,15 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     
     register_methods(&mut eval, method_registry);
 
-    // Register enum declarations so runtime lookup of `Enum::Variant` paths works.
+    // Register enum declarations so runtime lookup of `Enum::Variant` paths
+    // works. We only need the variant name and payload arity at runtime.
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(frontend::ast::Stmt::EnumDecl { name, variants, .. }) = program.statement.get(&stmt_ref) {
-            eval.register_enum(name, variants);
+            let variant_info: Vec<(DefaultSymbol, usize)> = variants.iter()
+                .map(|v| (v.name, v.payload_types.len()))
+                .collect();
+            eval.register_enum(name, variant_info);
         }
     }
 

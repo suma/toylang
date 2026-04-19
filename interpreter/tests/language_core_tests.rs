@@ -995,6 +995,108 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_tuple_variant_construction_and_match() {
+        let source = r#"
+            enum Shape {
+                Circle(i64),
+                Rect(i64, i64),
+                Point,
+            }
+
+            fn area(s: Shape) -> i64 {
+                match s {
+                    Shape::Circle(r) => r * r * 3i64,
+                    Shape::Rect(w, h) => w * h,
+                    Shape::Point => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                area(Shape::Circle(5i64)) + area(Shape::Rect(3i64, 4i64)) + area(Shape::Point)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(87)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_tuple_variant_wildcard_slot_ignores_value() {
+        let source = r#"
+            enum Pair { Both(i64, i64) }
+
+            fn take_second(p: Pair) -> i64 {
+                match p {
+                    Pair::Both(_, y) => y,
+                }
+            }
+
+            fn main() -> i64 {
+                take_second(Pair::Both(1i64, 42i64))
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(42)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_payload_arity_mismatch_rejected() {
+        let source = r#"
+            enum E { V(i64, i64) }
+
+            fn main() -> i64 {
+                val e: E = E::V(1i64, 2i64)
+                match e {
+                    E::V(x) => x,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected pattern-arity mismatch error");
+    }
+
+    #[test]
+    fn test_payload_type_mismatch_at_construction_rejected() {
+        let source = r#"
+            enum E { V(i64) }
+
+            fn main() -> i64 {
+                val e: E = E::V(1u64)
+                0i64
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected payload type mismatch error");
+    }
+
+    #[test]
+    fn test_unit_variant_called_with_args_rejected() {
+        let source = r#"
+            enum E { X }
+
+            fn main() -> i64 {
+                val e: E = E::X(1i64)
+                0i64
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected arity mismatch on unit variant");
+    }
+
+    #[test]
+    fn test_tuple_variant_unit_reference_rejected() {
+        let source = r#"
+            enum E { V(i64) }
+
+            fn main() -> i64 {
+                val e: E = E::V
+                0i64
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected error: tuple variant referenced without arguments");
+    }
+
+    #[test]
     fn test_duplicate_variant_rejected() {
         let source = r#"
             enum Color {

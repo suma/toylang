@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
-use crate::ast::{Function, StructField, MethodFunction, Visibility};
+use crate::ast::{Function, StructField, MethodFunction, Visibility, EnumVariantDef};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
 use crate::type_checker::core::CoreReferences;
@@ -31,9 +31,9 @@ pub struct TypeCheckContext {
     // Bounds for the generic parameters of the function currently being
     // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
     pub current_fn_generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
-    // Registered enum types: name -> ordered list of variant symbols (Phase 1 is
-    // unit-only, so the variants carry no payload).
-    pub enum_definitions: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    // Registered enum types: name -> ordered variant definitions. Each variant
+    // has an optional tuple payload (empty for unit variants).
+    pub enum_definitions: HashMap<DefaultSymbol, Vec<EnumVariantDef>>,
 }
 
 impl TypeCheckContext {

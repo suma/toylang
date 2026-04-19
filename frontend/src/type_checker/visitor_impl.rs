@@ -338,7 +338,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_impl_block_impl(target_type, methods)
     }
 
-    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<DefaultSymbol>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // Reject duplicate enum names and duplicate variant names inside one enum.
         if self.context.enum_definitions.contains_key(&name) {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
@@ -346,9 +346,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
         let mut seen = std::collections::HashSet::new();
         for v in variants {
-            if !seen.insert(*v) {
+            if !seen.insert(v.name) {
                 let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-                let v_str = self.core.string_interner.resolve(*v).unwrap_or("?").to_string();
+                let v_str = self.core.string_interner.resolve(v.name).unwrap_or("?").to_string();
                 return Err(TypeCheckError::new(format!(
                     "duplicate variant '{}' in enum '{}'", v_str, enum_str
                 )));
@@ -379,12 +379,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             .cloned()
             .ok_or_else(|| TypeCheckError::new("match on unknown enum".to_string()))?;
 
-        // Validate each pattern and collect arm body types.
+        // Validate each pattern and collect arm body types. Tuple-variant
+        // bindings introduce fresh variables scoped to the arm body, so we
+        // push a new variable scope around each body visit.
         let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
         for (pat, body) in arms {
+            let mut pushed_scope = false;
             match pat {
                 Pattern::Wildcard => {}
-                Pattern::EnumVariant(pat_enum, pat_variant) => {
+                Pattern::EnumVariant(pat_enum, pat_variant, bindings) => {
                     if *pat_enum != enum_name {
                         let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
@@ -392,16 +395,43 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             "match pattern refers to enum '{}', but scrutinee is '{}'", got, expected
                         )));
                     }
-                    if !variants.contains(pat_variant) {
+                    let variant_def = variants.iter().find(|v| v.name == *pat_variant);
+                    let variant_def = match variant_def {
+                        Some(v) => v,
+                        None => {
+                            let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                            let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
+                            return Err(TypeCheckError::new(format!(
+                                "'{}' is not a variant of enum '{}'", v_str, enum_str
+                            )));
+                        }
+                    };
+                    if bindings.len() != variant_def.payload_types.len() {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
                         return Err(TypeCheckError::new(format!(
-                            "'{}' is not a variant of enum '{}'", v_str, enum_str
+                            "variant '{}::{}' has {} payload field(s) but pattern bound {}",
+                            enum_str, v_str, variant_def.payload_types.len(), bindings.len()
                         )));
+                    }
+                    if !bindings.is_empty() {
+                        // Introduce each Name binding with the corresponding
+                        // payload type for the arm body's scope.
+                        self.context.vars.push(std::collections::HashMap::new());
+                        pushed_scope = true;
+                        for (binding, payload_ty) in bindings.iter().zip(variant_def.payload_types.iter()) {
+                            if let crate::ast::PatternBinding::Name(sym) = binding {
+                                self.context.set_var(*sym, payload_ty.clone());
+                            }
+                        }
                     }
                 }
             }
-            arm_types.push(self.visit_expr(body)?);
+            let body_ty = self.visit_expr(body)?;
+            if pushed_scope {
+                self.context.vars.pop();
+            }
+            arm_types.push(body_ty);
         }
 
         // All arms must share a common type.
@@ -430,12 +460,22 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_qualified_identifier(&mut self, path: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        // Enum variant reference: `EnumName::VariantName`.
+        // Enum variant reference: `EnumName::VariantName`. Only unit variants
+        // can be referenced this way; tuple variants must be constructed via
+        // `Enum::Variant(args)` (handled in visit_associated_function_call).
         if path.len() == 2 {
             let enum_name = path[0];
             let variant_name = path[1];
             if let Some(variants) = self.context.enum_definitions.get(&enum_name) {
-                if variants.contains(&variant_name) {
+                if let Some(v) = variants.iter().find(|v| v.name == variant_name) {
+                    if !v.payload_types.is_empty() {
+                        let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                        let v_str = self.core.string_interner.resolve(variant_name).unwrap_or("?").to_string();
+                        return Err(TypeCheckError::new(format!(
+                            "variant '{}::{}' takes {} argument(s); call it as `{}::{}( ... )`",
+                            enum_str, v_str, v.payload_types.len(), enum_str, v_str
+                        )));
+                    }
                     return Ok(TypeDecl::Enum(enum_name));
                 }
                 let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();

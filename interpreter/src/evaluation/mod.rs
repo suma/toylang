@@ -45,10 +45,10 @@ pub struct EvaluationContext<'a> {
     // pushes on entry and pops on exit. `allocator_stack.last()` is always
     // non-None because the global allocator sits at the bottom.
     pub(super) allocator_stack: Vec<Rc<dyn Allocator>>,
-    // Registered enum types: enum_name -> ordered variant names. Populated at
-    // setup time so qualified paths like `Color::Red` resolve to EnumVariant
-    // values and `match` can validate patterns at runtime.
-    pub(super) enum_definitions: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    // Registered enum types: enum_name -> ordered variant definitions. Each
+    // variant records the payload arity so the interpreter can pull the
+    // right number of argument values when building an EnumVariant object.
+    pub(super) enum_definitions: HashMap<DefaultSymbol, Vec<(DefaultSymbol, usize)>>,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -73,7 +73,7 @@ impl<'a> EvaluationContext<'a> {
         }
     }
 
-    pub fn register_enum(&mut self, name: DefaultSymbol, variants: Vec<DefaultSymbol>) {
+    pub fn register_enum(&mut self, name: DefaultSymbol, variants: Vec<(DefaultSymbol, usize)>) {
         self.enum_definitions.insert(name, variants);
     }
 

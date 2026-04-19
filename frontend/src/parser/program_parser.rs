@@ -137,7 +137,7 @@ impl<'a> Parser<'a> {
                             self.next();
                             self.expect_err(&Kind::BraceOpen)?;
                             self.skip_newlines();
-                            let mut variants: Vec<DefaultSymbol> = Vec::new();
+                            let mut variants: Vec<crate::ast::EnumVariantDef> = Vec::new();
                             loop {
                                 self.skip_newlines();
                                 match self.peek() {
@@ -145,8 +145,31 @@ impl<'a> Parser<'a> {
                                     Some(Kind::Identifier(name)) => {
                                         let variant_name = name.clone();
                                         let variant_sym = self.string_interner.get_or_intern(&variant_name);
-                                        variants.push(variant_sym);
                                         self.next();
+                                        // Optional tuple payload: `Name(Type, Type, ...)`.
+                                        let mut payload_types: Vec<TypeDecl> = Vec::new();
+                                        if matches!(self.peek(), Some(Kind::ParenOpen)) {
+                                            self.next(); // consume '('
+                                            loop {
+                                                self.skip_newlines();
+                                                if matches!(self.peek(), Some(Kind::ParenClose)) {
+                                                    break;
+                                                }
+                                                let ty = self.parse_type_declaration()?;
+                                                payload_types.push(ty);
+                                                self.skip_newlines();
+                                                if matches!(self.peek(), Some(Kind::Comma)) {
+                                                    self.next();
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                            self.expect_err(&Kind::ParenClose)?;
+                                        }
+                                        variants.push(crate::ast::EnumVariantDef {
+                                            name: variant_sym,
+                                            payload_types,
+                                        });
                                         self.skip_newlines();
                                         if matches!(self.peek(), Some(Kind::Comma)) {
                                             self.next();

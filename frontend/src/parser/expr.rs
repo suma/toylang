@@ -315,7 +315,7 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             return Ok(crate::ast::Pattern::Wildcard);
         }
     }
-    // Enum variant path `Name::Variant`.
+    // Enum variant path `Name::Variant` or `Name::Variant(a, _, b)`.
     let first = match parser.peek() {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
@@ -349,7 +349,48 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             ));
         }
     };
-    Ok(crate::ast::Pattern::EnumVariant(first, second))
+    // Optional tuple-variant bindings: `(a, _, b)`. Each slot is either a
+    // name to bind or `_` for discard.
+    let mut bindings: Vec<crate::ast::PatternBinding> = Vec::new();
+    if matches!(parser.peek(), Some(Kind::ParenOpen)) {
+        parser.next(); // consume '('
+        loop {
+            parser.skip_newlines();
+            if matches!(parser.peek(), Some(Kind::ParenClose)) {
+                break;
+            }
+            let binding = match parser.peek() {
+                Some(Kind::Identifier(s)) => {
+                    let s_owned = s.to_string();
+                    if s_owned == "_" {
+                        parser.next();
+                        crate::ast::PatternBinding::Wildcard
+                    } else {
+                        let sym = parser.string_interner.get_or_intern(s_owned);
+                        parser.next();
+                        crate::ast::PatternBinding::Name(sym)
+                    }
+                }
+                other => {
+                    let other_str = format!("{:?}", other);
+                    let location = parser.current_source_location();
+                    return Err(ParserError::generic_error(
+                        location,
+                        format!("expected identifier or `_` in variant pattern, got {}", other_str),
+                    ));
+                }
+            };
+            bindings.push(binding);
+            parser.skip_newlines();
+            if matches!(parser.peek(), Some(Kind::Comma)) {
+                parser.next();
+            } else {
+                break;
+            }
+        }
+        parser.expect_err(&Kind::ParenClose)?;
+    }
+    Ok(crate::ast::Pattern::EnumVariant(first, second, bindings))
 }
 
 pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {

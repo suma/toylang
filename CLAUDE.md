@@ -119,22 +119,26 @@ fn main() -> u64 {
   - match arm の区切り: `=>`
   - ビット演算: `&`, `|`, `^`, `~`, `<<`, `>>`
   - 論理演算: `&&`, `||`, `!`
-- **Enum と match**（Phase 1、unit variant のみ）:
+- **Enum と match**（Phase 1/2、unit と tuple variant）:
   ```rust
-  enum Color { Red, Green, Blue }
+  enum Shape {
+      Circle(i64),
+      Rect(i64, i64),
+      Point,
+  }
 
-  fn main() -> i64 {
-      val c: Color = Color::Green
-      match c {
-          Color::Red => 1i64,
-          Color::Green => 2i64,
-          _ => 0i64,
+  fn area(s: Shape) -> i64 {
+      match s {
+          Shape::Circle(r) => r * r * 3i64,
+          Shape::Rect(w, h) => w * h,
+          Shape::Point => 0i64,
       }
   }
   ```
+  - unit variant は `Color::Red`、tuple variant は `Shape::Circle(5i64)` で生成
   - 各 arm は式。全 arm が同じ型でなければならない
-  - パターンは `Enum::Variant` の unit パターンと `_`（ワイルドカード）のみ
-  - タプル variant・変数束縛・網羅性チェック・ジェネリック enum は未対応（将来フェーズ）
+  - パターン: `Enum::Variant` / `Enum::Variant(x, _, y)`（`_` は discard） / `_`（全 catch）
+  - 網羅性チェック・ジェネリック enum・ネストパターンは未対応（Phase 2c 以降）
 
 ## Architecture Notes
 

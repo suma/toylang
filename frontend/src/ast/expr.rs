@@ -69,17 +69,35 @@ pub enum Stmt {
     },
     EnumDecl {
         name: DefaultSymbol,
-        variants: Vec<DefaultSymbol>,
+        variants: Vec<EnumVariantDef>,
         visibility: Visibility,
     },
 }
 
-/// Patterns for `match` arms. Phase 1 supports only unit-variant patterns and
-/// wildcards; tuple / struct / binding patterns land in later phases.
+/// Phase 2 enum variant: a name plus an optional tuple-style payload. An empty
+/// `payload_types` vector is a unit variant.
+#[derive(Debug, PartialEq, Clone)]
+pub struct EnumVariantDef {
+    pub name: DefaultSymbol,
+    pub payload_types: Vec<TypeDecl>,
+}
+
+/// A single sub-pattern inside a tuple-variant pattern. Each slot either binds
+/// the value to a name or discards it with `_`. Nested structural matches land
+/// in a later phase.
+#[derive(Debug, PartialEq, Clone)]
+pub enum PatternBinding {
+    Name(DefaultSymbol),
+    Wildcard,
+}
+
+/// Patterns for `match` arms.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
-    EnumVariant(DefaultSymbol, DefaultSymbol), // Color::Red
-    Wildcard,                                  // _
+    /// `Enum::Variant` for unit variants, or `Enum::Variant(a, _, b)` for
+    /// tuple variants. The bindings vector is empty for unit variants.
+    EnumVariant(DefaultSymbol, DefaultSymbol, Vec<PatternBinding>),
+    Wildcard, // _
 }
 
 #[derive(Debug, PartialEq, Clone)]

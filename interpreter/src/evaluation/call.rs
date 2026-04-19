@@ -370,6 +370,26 @@ impl EvaluationContext<'_> {
 
     /// Evaluates associated function calls (like Container::new)
     pub(super) fn evaluate_associated_function_call(&mut self, struct_name: &DefaultSymbol, function_name: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+        // Enum tuple-variant construction: `Enum::Variant(args)` shares parse
+        // structure with associated function calls. Intercept it here before
+        // falling through to struct method dispatch.
+        if let Some(variants) = self.enum_definitions.get(struct_name).cloned() {
+            if variants.iter().any(|(name, _)| name == function_name) {
+                let mut arg_values = Vec::new();
+                for arg_expr in args {
+                    let arg_value = self.evaluate(arg_expr)?;
+                    let arg_obj = self.extract_value(Ok(arg_value))?;
+                    arg_values.push(arg_obj);
+                }
+                let obj = Object::EnumVariant {
+                    enum_name: *struct_name,
+                    variant_name: *function_name,
+                    values: arg_values,
+                };
+                return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+            }
+        }
+
         // Convert struct_name and function_name to strings for lookup and clone them to avoid borrow issues
         let struct_name_str = self.string_interner.resolve(*struct_name)
             .ok_or_else(|| InterpreterError::InternalError(format!("Struct name {:?} not found in string interner", struct_name)))?

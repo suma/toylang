@@ -4,7 +4,7 @@ use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 use super::{
-    Expr, Stmt, Operator, UnaryOp, SliceInfo, Pattern,
+    Expr, Stmt, Operator, UnaryOp, SliceInfo, Pattern, EnumVariantDef,
     BuiltinMethod, BuiltinFunction,
     StructField, Visibility, MethodFunction,
 };
@@ -739,7 +739,7 @@ pub struct StmtPool {
     pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
-    pub enum_variants: Vec<Option<Vec<DefaultSymbol>>>,       // For enum declarations
+    pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
 }
 
 impl Default for StmtPool {

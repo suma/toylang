@@ -323,13 +323,20 @@ impl EvaluationContext<'_> {
             return Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()));
         }
 
-        // Enum variant reference: `Enum::Variant` resolves to an EnumVariant
-        // object once the enum is registered at program load time.
+        // Enum variant reference: `Enum::Variant` resolves to a unit
+        // EnumVariant. Tuple variants use `Enum::Variant(args)` and flow
+        // through evaluate_associated_function_call instead.
         if path.len() == 2 {
             if let Some(variants) = self.enum_definitions.get(&path[0]) {
-                if variants.contains(&path[1]) {
-                    let obj = Object::EnumVariant { enum_name: path[0], variant_name: path[1] };
-                    return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+                if let Some((_, arity)) = variants.iter().find(|(n, _)| *n == path[1]) {
+                    if *arity == 0 {
+                        let obj = Object::EnumVariant {
+                            enum_name: path[0],
+                            variant_name: path[1],
+                            values: Vec::new(),
+                        };
+                        return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+                    }
                 }
             }
         }
@@ -355,8 +362,10 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
         let scrutinee_val = self.extract_value(scrutinee_val)?;
-        let (enum_name, variant_name) = match &*scrutinee_val.borrow() {
-            Object::EnumVariant { enum_name, variant_name } => (*enum_name, *variant_name),
+        let (enum_name, variant_name, values): (DefaultSymbol, DefaultSymbol, Vec<RcObject>) = match &*scrutinee_val.borrow() {
+            Object::EnumVariant { enum_name, variant_name, values } => {
+                (*enum_name, *variant_name, values.iter().cloned().collect())
+            }
             other => {
                 return Err(InterpreterError::InternalError(format!(
                     "match scrutinee must be an enum variant, got {:?}", other
@@ -364,14 +373,29 @@ impl EvaluationContext<'_> {
             }
         };
         for (pattern, body) in arms {
-            let matched = match pattern {
-                Pattern::Wildcard => true,
-                Pattern::EnumVariant(p_enum, p_variant) => {
-                    *p_enum == enum_name && *p_variant == variant_name
+            match pattern {
+                Pattern::Wildcard => {
+                    return self.evaluate(body);
                 }
-            };
-            if matched {
-                return self.evaluate(body);
+                Pattern::EnumVariant(p_enum, p_variant, bindings) => {
+                    if *p_enum != enum_name || *p_variant != variant_name {
+                        continue;
+                    }
+                    if !bindings.is_empty() {
+                        // Push a scope and bind each Name slot to the payload
+                        // value at that index; Wildcard slots bind nothing.
+                        self.environment.enter_block();
+                        for (binding, payload) in bindings.iter().zip(values.iter()) {
+                            if let PatternBinding::Name(sym) = binding {
+                                self.environment.set_val(*sym, payload.clone());
+                            }
+                        }
+                        let result = self.evaluate(body);
+                        self.environment.exit_block();
+                        return result;
+                    }
+                    return self.evaluate(body);
+                }
             }
         }
         // Type checker is expected to catch non-exhaustive matches on known

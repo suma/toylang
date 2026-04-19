@@ -229,6 +229,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
             TypeDecl::Number => "Number".to_string(),
             TypeDecl::Ptr => "Ptr".to_string(),
             TypeDecl::Allocator => "Allocator".to_string(),
+            TypeDecl::Enum(name) => self.resolve_symbol_name(*name).to_string(),
         }
     }
     

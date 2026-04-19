@@ -35,6 +35,8 @@ macro_rules! token {
 "var"       return Ok(token!(self, Kind::Var));
 "with"      return Ok(token!(self, Kind::With));
 "ambient"   return Ok(token!(self, Kind::Ambient));
+"enum"      return Ok(token!(self, Kind::Enum));
+"match"     return Ok(token!(self, Kind::Match));
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));
@@ -51,6 +53,7 @@ macro_rules! token {
 
 "::"        return Ok(token!(self, Kind::DoubleColon));
 "->"        return Ok(token!(self, Kind::Arrow));
+"=>"        return Ok(token!(self, Kind::FatArrow));
 "=="        return Ok(token!(self, Kind::DoubleEqual));
 "!="        return Ok(token!(self, Kind::NotEqual));
 "<="        return Ok(token!(self, Kind::LE));

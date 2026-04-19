@@ -96,6 +96,9 @@ impl EvaluationContext<'_> {
             Expr::Cast(expr, target_type) => {
                 self.evaluate_cast(&expr, &target_type)
             }
+            Expr::Match(scrutinee, arms) => {
+                self.evaluate_match(&scrutinee, &arms)
+            }
             Expr::With(allocator, body) => {
                 // Evaluate the allocator expression. The type checker already ensures
                 // the value is of type Allocator; extract the underlying Rc<dyn Allocator>
@@ -320,6 +323,17 @@ impl EvaluationContext<'_> {
             return Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()));
         }
 
+        // Enum variant reference: `Enum::Variant` resolves to an EnumVariant
+        // object once the enum is registered at program load time.
+        if path.len() == 2 {
+            if let Some(variants) = self.enum_definitions.get(&path[0]) {
+                if variants.contains(&path[1]) {
+                    let obj = Object::EnumVariant { enum_name: path[0], variant_name: path[1] };
+                    return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+                }
+            }
+        }
+
         // For now, treat qualified identifiers as simple variable lookups using the last component
         // In the future, this can be enhanced for proper module resolution
         if let Some(last_symbol) = path.last() {
@@ -332,5 +346,38 @@ impl EvaluationContext<'_> {
         } else {
             Err(InterpreterError::InternalError("Empty qualified identifier path".to_string()))
         }
+    }
+
+    pub(super) fn evaluate_match(
+        &mut self,
+        scrutinee: &ExprRef,
+        arms: &Vec<(Pattern, ExprRef)>,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let scrutinee_val = self.evaluate(scrutinee);
+        let scrutinee_val = self.extract_value(scrutinee_val)?;
+        let (enum_name, variant_name) = match &*scrutinee_val.borrow() {
+            Object::EnumVariant { enum_name, variant_name } => (*enum_name, *variant_name),
+            other => {
+                return Err(InterpreterError::InternalError(format!(
+                    "match scrutinee must be an enum variant, got {:?}", other
+                )));
+            }
+        };
+        for (pattern, body) in arms {
+            let matched = match pattern {
+                Pattern::Wildcard => true,
+                Pattern::EnumVariant(p_enum, p_variant) => {
+                    *p_enum == enum_name && *p_variant == variant_name
+                }
+            };
+            if matched {
+                return self.evaluate(body);
+            }
+        }
+        // Type checker is expected to catch non-exhaustive matches on known
+        // enums; this runtime check is a defensive fallback.
+        Err(InterpreterError::InternalError(
+            "no matching arm in match expression".to_string(),
+        ))
     }
 }

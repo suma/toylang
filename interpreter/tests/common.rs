@@ -104,6 +104,7 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
         Object::Pointer(_) => "Pointer",
         Object::Null(_) => "Null",
         Object::Allocator(_) => "Allocator",
+        Object::EnumVariant { .. } => "EnumVariant",
     };
     assert_eq!(actual_type, expected_type, "Expected {} but got {}", expected_type, actual_type);
 }

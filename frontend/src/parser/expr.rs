@@ -272,6 +272,86 @@ pub fn parse_with(parser: &mut Parser) -> ParserResult<ExprRef> {
     Ok(parser.ast_builder.with_expr(allocator_expr, body, Some(location)))
 }
 
+pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let start_location = parser.current_source_location();
+    // Struct literals are forbidden in the scrutinee position — same rule as
+    // `if` / `while` conditions — so `match foo { ... }` parses unambiguously.
+    parser.push_context(crate::parser::core::ParseContext::Condition);
+    let scrutinee = parse_logical_expr(parser)?;
+    parser.pop_context();
+
+    parser.expect_err(&Kind::BraceOpen)?;
+    parser.skip_newlines();
+    let mut arms: Vec<(crate::ast::Pattern, ExprRef)> = Vec::new();
+    loop {
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::BraceClose)) {
+            break;
+        }
+        let pattern = parse_match_pattern(parser)?;
+        parser.expect_err(&Kind::FatArrow)?;
+        let body = parse_logical_expr(parser)?;
+        arms.push((pattern, body));
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::Comma)) {
+            parser.next();
+            parser.skip_newlines();
+        }
+    }
+    parser.expect_err(&Kind::BraceClose)?;
+
+    let expr_ref = parser.ast_builder.add_expr_with_location(
+        crate::ast::Expr::Match(scrutinee, arms),
+        Some(start_location),
+    );
+    Ok(expr_ref)
+}
+
+fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+    // Wildcard: an underscore identifier.
+    if let Some(Kind::Identifier(s)) = parser.peek() {
+        if s == "_" {
+            parser.next();
+            return Ok(crate::ast::Pattern::Wildcard);
+        }
+    }
+    // Enum variant path `Name::Variant`.
+    let first = match parser.peek() {
+        Some(Kind::Identifier(s)) => {
+            let s = s.to_string();
+            let sym = parser.string_interner.get_or_intern(s);
+            parser.next();
+            sym
+        }
+        other => {
+            let other_str = format!("{:?}", other);
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                format!("expected pattern, got {}", other_str),
+            ));
+        }
+    };
+    parser.expect_err(&Kind::DoubleColon)?;
+    let second = match parser.peek() {
+        Some(Kind::Identifier(s)) => {
+            let s = s.to_string();
+            let sym = parser.string_interner.get_or_intern(s);
+            parser.next();
+            sym
+        }
+        other => {
+            let other_str = format!("{:?}", other);
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                format!("expected variant name after `::`, got {}", other_str),
+            ));
+        }
+    };
+    Ok(crate::ast::Pattern::EnumVariant(first, second))
+}
+
 pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.expect_err(&Kind::BraceOpen)?;
     match parser.peek() {
@@ -652,7 +732,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::ParenOpen) => {
             parse_tuple_or_grouped_expr(parser)
         }
-        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient) => {
+        Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match) => {
             let location = parser.current_source_location();
             return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
         }
@@ -823,6 +903,10 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                         Some(Kind::Dict) => {
                             parser.next();
                             parse_dict_literal(parser)
+                        }
+                        Some(Kind::Match) => {
+                            parser.next();
+                            parse_match(parser)
                         }
                         _ => {
                             let x_cloned = x.cloned();

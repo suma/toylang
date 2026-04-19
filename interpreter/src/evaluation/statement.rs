@@ -88,6 +88,10 @@ impl EvaluationContext<'_> {
                     // Impl blocks are handled at compile time
                     last = None;
                 }
+                Stmt::EnumDecl { .. } => {
+                    // Enum declarations are handled at compile time; nothing to do at runtime.
+                    last = None;
+                }
                 Stmt::While(cond, body) => {
                     last = Some(self.handle_while_loop(&cond, &body)?);
                 }

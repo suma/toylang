@@ -881,3 +881,133 @@ mod heap_operations {
     }
 }
 
+mod enum_and_match {
+    //! Phase 1 enum support: unit variants, variant construction via
+    //! `Enum::Variant`, and match with unit patterns + wildcard.
+
+    use super::helpers::execute_test_program;
+
+    #[test]
+    fn test_match_all_variants() {
+        let source = r#"
+            enum Color {
+                Red,
+                Green,
+                Blue,
+            }
+
+            fn main() -> i64 {
+                val c: Color = Color::Green
+                match c {
+                    Color::Red => 1i64,
+                    Color::Green => 2i64,
+                    Color::Blue => 3i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(2)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_match_wildcard_fallback() {
+        let source = r#"
+            enum Status {
+                Ok,
+                NotFound,
+                Error,
+            }
+
+            fn describe(s: Status) -> i64 {
+                match s {
+                    Status::Ok => 0i64,
+                    _ => -1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                describe(Status::Ok) + describe(Status::NotFound) + describe(Status::Error)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(-2)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_enum_variant_as_function_argument() {
+        let source = r#"
+            enum Day {
+                Mon,
+                Tue,
+                Wed,
+            }
+
+            fn is_midweek(d: Day) -> bool {
+                match d {
+                    Day::Wed => true,
+                    _ => false,
+                }
+            }
+
+            fn main() -> bool {
+                is_midweek(Day::Wed)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Bool(true)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_match_unknown_variant_fails_type_check() {
+        let source = r#"
+            enum Color {
+                Red,
+            }
+
+            fn main() -> i64 {
+                val c: Color = Color::Red
+                match c {
+                    Color::Blue => 1i64,
+                    _ => 0i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected type error for unknown variant");
+    }
+
+    #[test]
+    fn test_match_wrong_enum_in_pattern_fails() {
+        let source = r#"
+            enum A { X }
+            enum B { Y }
+
+            fn main() -> i64 {
+                val a: A = A::X
+                match a {
+                    B::Y => 1i64,
+                    _ => 0i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected type error for cross-enum pattern");
+    }
+
+    #[test]
+    fn test_duplicate_variant_rejected() {
+        let source = r#"
+            enum Color {
+                Red,
+                Red,
+            }
+
+            fn main() -> i64 {
+                0i64
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected duplicate variant rejection");
+    }
+}
+

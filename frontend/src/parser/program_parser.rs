@@ -125,6 +125,58 @@ impl<'a> Parser<'a> {
                         }
                     }
                 }
+                Some(Kind::Enum) => {
+                    let enum_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
+                    update_start_pos(enum_start_pos);
+                    self.next(); // consume 'enum'
+                    match self.peek() {
+                        Some(Kind::Identifier(s)) => {
+                            let s_copy = s.clone();
+                            let enum_symbol = self.string_interner.get_or_intern(&s_copy);
+                            self.next();
+                            self.expect_err(&Kind::BraceOpen)?;
+                            self.skip_newlines();
+                            let mut variants: Vec<DefaultSymbol> = Vec::new();
+                            loop {
+                                self.skip_newlines();
+                                match self.peek() {
+                                    Some(Kind::BraceClose) => break,
+                                    Some(Kind::Identifier(name)) => {
+                                        let variant_name = name.clone();
+                                        let variant_sym = self.string_interner.get_or_intern(&variant_name);
+                                        variants.push(variant_sym);
+                                        self.next();
+                                        self.skip_newlines();
+                                        if matches!(self.peek(), Some(Kind::Comma)) {
+                                            self.next();
+                                            self.skip_newlines();
+                                        }
+                                    }
+                                    other => {
+                                        let other_str = format!("{:?}", other);
+                                        self.collect_error(&format!(
+                                            "expected variant name in enum body, got {}", other_str
+                                        ));
+                                        break;
+                                    }
+                                }
+                            }
+                            self.expect_err(&Kind::BraceClose)?;
+                            let enum_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                            update_end_pos(enum_end_pos);
+                            self.ast_builder.add_stmt_with_location(Stmt::EnumDecl {
+                                name: enum_symbol,
+                                variants,
+                                visibility: visibility.clone(),
+                            }, Some(location));
+                        }
+                        _ => {
+                            self.collect_error("expected enum name");
+                            self.next();
+                        }
+                    }
+                }
                 Some(Kind::Impl) => {
                     let impl_start_pos = self.peek_position_n(0).unwrap().start;
                     let location = self.current_source_location();

@@ -67,6 +67,19 @@ pub enum Stmt {
         target_type: DefaultSymbol,
         methods: Vec<Rc<MethodFunction>>,
     },
+    EnumDecl {
+        name: DefaultSymbol,
+        variants: Vec<DefaultSymbol>,
+        visibility: Visibility,
+    },
+}
+
+/// Patterns for `match` arms. Phase 1 supports only unit-variant patterns and
+/// wildcards; tuple / struct / binding patterns land in later phases.
+#[derive(Debug, PartialEq, Clone)]
+pub enum Pattern {
+    EnumVariant(DefaultSymbol, DefaultSymbol), // Color::Red
+    Wildcard,                                  // _
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -101,6 +114,7 @@ pub enum Expr {
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access
     Cast(ExprRef, TypeDecl),  // expr as type - type cast expression
     With(ExprRef, ExprRef),  // with allocator = allocator_expr { body } - scoped allocator binding
+    Match(ExprRef, Vec<(Pattern, ExprRef)>),  // match scrutinee { pat => body, ... }
 }
 
 impl Expr {

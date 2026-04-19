@@ -18,6 +18,7 @@ pub enum TypeDecl {
     Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
     Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
     Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
+    Enum(DefaultSymbol),  // User-defined enum type (unit variants only in Phase 1)
 }
 
 impl TypeDecl {
@@ -32,6 +33,11 @@ impl TypeDecl {
             // Identifier and Struct with same symbol are equivalent (ignore type parameters for compatibility)
             (TypeDecl::Identifier(s1), TypeDecl::Struct(s2, _)) |
             (TypeDecl::Struct(s1, _), TypeDecl::Identifier(s2)) => s1 == s2,
+            // Identifier and Enum with same symbol are equivalent (the parser
+            // emits `Identifier` for user-named types since it cannot tell
+            // enums from structs until the type checker has seen all decls).
+            (TypeDecl::Identifier(s1), TypeDecl::Enum(s2)) |
+            (TypeDecl::Enum(s1), TypeDecl::Identifier(s2)) => s1 == s2,
             // Two structs are equivalent if they have the same name and compatible type parameters
             (TypeDecl::Struct(s1, params1), TypeDecl::Struct(s2, params2)) => {
                 s1 == s2 && params1.len() == params2.len() &&

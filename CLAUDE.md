@@ -110,14 +110,31 @@ fn main() -> u64 {
   - Both comment types can be used inline or as standalone statements
   - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
-- **OOP・モジュール関連キーワード**: `class`, `struct`, `impl`, `Self`
+- **OOP・モジュール関連キーワード**: `class`, `struct`, `impl`, `Self`, `enum`, `match`
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`
 - **演算子**:
   - 範囲: `..`（例: `0..10`）
   - スコープ解決: `::`
+  - match arm の区切り: `=>`
   - ビット演算: `&`, `|`, `^`, `~`, `<<`, `>>`
   - 論理演算: `&&`, `||`, `!`
+- **Enum と match**（Phase 1、unit variant のみ）:
+  ```rust
+  enum Color { Red, Green, Blue }
+
+  fn main() -> i64 {
+      val c: Color = Color::Green
+      match c {
+          Color::Red => 1i64,
+          Color::Green => 2i64,
+          _ => 0i64,
+      }
+  }
+  ```
+  - 各 arm は式。全 arm が同じ型でなければならない
+  - パターンは `Enum::Variant` の unit パターンと `_`（ワイルドカード）のみ
+  - タプル variant・変数束縛・網羅性チェック・ジェネリック enum は未対応（将来フェーズ）
 
 ## Architecture Notes
 

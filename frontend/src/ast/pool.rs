@@ -4,7 +4,7 @@ use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 use super::{
-    Expr, Stmt, Operator, UnaryOp, SliceInfo,
+    Expr, Stmt, Operator, UnaryOp, SliceInfo, Pattern,
     BuiltinMethod, BuiltinFunction,
     StructField, Visibility, MethodFunction,
 };
@@ -59,6 +59,7 @@ pub enum ExprType {
     TupleAccess = 27,
     Cast = 28,
     With = 29,
+    Match = 30,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,6 +74,7 @@ pub enum StmtType {
     While = 7,
     StructDecl = 8,
     ImplBlock = 9,
+    EnumDecl = 10,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -108,6 +110,7 @@ pub struct ExprPool {
     pub third_operand: Vec<Option<ExprRef>>,       // For index assign (value), if-elif-else (else block)
     pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
     pub target_type: Vec<Option<TypeDecl>>,        // For cast expressions
+    pub match_arms: Vec<Option<Vec<(Pattern, ExprRef)>>>,  // For match expressions
 }
 
 impl Default for ExprPool {
@@ -140,6 +143,7 @@ impl ExprPool {
             third_operand: Vec::new(),
             slice_info: Vec::new(),
             target_type: Vec::new(),
+            match_arms: Vec::new(),
         }
     }
 
@@ -166,6 +170,7 @@ impl ExprPool {
             third_operand: Vec::with_capacity(cap),
             slice_info: Vec::with_capacity(cap),
             target_type: Vec::with_capacity(cap),
+            match_arms: Vec::with_capacity(cap),
         }
     }
 
@@ -194,6 +199,7 @@ impl ExprPool {
             self.third_operand.resize(current_len + extend_count, None);
             self.slice_info.resize(current_len + extend_count, None);
             self.target_type.resize(current_len + extend_count, None);
+            self.match_arms.resize(current_len + extend_count, None);
         }
     }
 
@@ -343,6 +349,11 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::With;
                 self.lhs[index] = Some(allocator);
                 self.rhs[index] = Some(body);
+            }
+            Expr::Match(scrutinee, arms) => {
+                self.expr_types[index] = ExprType::Match;
+                self.lhs[index] = Some(scrutinee);
+                self.match_arms[index] = Some(arms);
             }
         }
 
@@ -501,6 +512,12 @@ impl ExprPool {
                     self.rhs[index]?,
                 ))
             }
+            ExprType::Match => {
+                Some(Expr::Match(
+                    self.lhs[index]?,
+                    self.match_arms[index].clone()?,
+                ))
+            }
         }
     }
 
@@ -537,6 +554,7 @@ impl ExprPool {
         self.builtin_function[index] = None;
         self.index_val[index] = None;
         self.third_operand[index] = None;
+        self.match_arms[index] = None;
 
         // Set the new expression data
         match expr {
@@ -680,6 +698,11 @@ impl ExprPool {
                 self.lhs[index] = Some(obj);
                 self.symbol_val[index] = Some(field);
             }
+            Expr::Match(scrutinee, arms) => {
+                self.expr_types[index] = ExprType::Match;
+                self.lhs[index] = Some(scrutinee);
+                self.match_arms[index] = Some(arms);
+            }
         }
     }
 
@@ -716,6 +739,7 @@ pub struct StmtPool {
     pub struct_fields: Vec<Option<Vec<StructField>>>,        // For struct field lists
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
+    pub enum_variants: Vec<Option<Vec<DefaultSymbol>>>,       // For enum declarations
 }
 
 impl Default for StmtPool {
@@ -741,6 +765,7 @@ impl StmtPool {
             struct_fields: Vec::new(),
             visibility: Vec::new(),
             impl_methods: Vec::new(),
+            enum_variants: Vec::new(),
         }
     }
 
@@ -760,6 +785,7 @@ impl StmtPool {
             struct_fields: Vec::with_capacity(cap),
             visibility: Vec::with_capacity(cap),
             impl_methods: Vec::with_capacity(cap),
+            enum_variants: Vec::with_capacity(cap),
         }
     }
 
@@ -781,6 +807,7 @@ impl StmtPool {
             self.struct_fields.resize(current_len + extend_count, None);
             self.visibility.resize(current_len + extend_count, None);
             self.impl_methods.resize(current_len + extend_count, None);
+            self.enum_variants.resize(current_len + extend_count, None);
         }
     }
 
@@ -839,6 +866,12 @@ impl StmtPool {
                 self.stmt_types[index] = StmtType::ImplBlock;
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
+            }
+            Stmt::EnumDecl { name, variants, visibility } => {
+                self.stmt_types[index] = StmtType::EnumDecl;
+                self.struct_name[index] = Some(name);
+                self.enum_variants[index] = Some(variants);
+                self.visibility[index] = Some(visibility);
             }
         }
 
@@ -901,6 +934,13 @@ impl StmtPool {
                 Some(Stmt::ImplBlock {
                     target_type: self.struct_name[index]?,
                     methods: self.impl_methods[index].clone()?,
+                })
+            }
+            StmtType::EnumDecl => {
+                Some(Stmt::EnumDecl {
+                    name: self.struct_name[index]?,
+                    variants: self.enum_variants[index].clone()?,
+                    visibility: self.visibility[index].clone()?,
                 })
             }
         }

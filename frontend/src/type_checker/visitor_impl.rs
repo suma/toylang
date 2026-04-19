@@ -47,6 +47,7 @@ impl Acceptable for Expr {
             Expr::TupleAccess(tuple, index) => visitor.visit_tuple_access(tuple, *index),
             Expr::Cast(expr, target_type) => visitor.visit_cast(expr, target_type),
             Expr::With(allocator, body) => visitor.visit_with(allocator, body),
+            Expr::Match(scrutinee, arms) => visitor.visit_match(scrutinee, arms),
         }
     }
 }
@@ -64,6 +65,7 @@ impl Acceptable for Stmt {
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
+            Stmt::EnumDecl { name, variants, visibility } => visitor.visit_enum_decl(*name, variants, visibility),
         }
     }
 }
@@ -336,6 +338,85 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_impl_block_impl(target_type, methods)
     }
 
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<DefaultSymbol>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        // Reject duplicate enum names and duplicate variant names inside one enum.
+        if self.context.enum_definitions.contains_key(&name) {
+            let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+            return Err(TypeCheckError::new(format!("enum '{}' is already defined", name_str)));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for v in variants {
+            if !seen.insert(*v) {
+                let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+                let v_str = self.core.string_interner.resolve(*v).unwrap_or("?").to_string();
+                return Err(TypeCheckError::new(format!(
+                    "duplicate variant '{}' in enum '{}'", v_str, enum_str
+                )));
+            }
+        }
+        self.context.enum_definitions.insert(name, variants.clone());
+        Ok(TypeDecl::Unit)
+    }
+
+    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<(Pattern, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+        if arms.is_empty() {
+            return Err(TypeCheckError::new("match expression must have at least one arm".to_string()));
+        }
+        let scrutinee_ty = self.visit_expr(scrutinee)?;
+        // Accept either a resolved Enum type or a bare Identifier naming a
+        // registered enum (parser emits `TypeDecl::Identifier` for user-named
+        // types and does not yet specialize to `Enum`).
+        let enum_name = match &scrutinee_ty {
+            TypeDecl::Enum(name) => *name,
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
+            _ => {
+                return Err(TypeCheckError::new(format!(
+                    "match scrutinee must be an enum, got {:?}", scrutinee_ty
+                )));
+            }
+        };
+        let variants = self.context.enum_definitions.get(&enum_name)
+            .cloned()
+            .ok_or_else(|| TypeCheckError::new("match on unknown enum".to_string()))?;
+
+        // Validate each pattern and collect arm body types.
+        let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
+        for (pat, body) in arms {
+            match pat {
+                Pattern::Wildcard => {}
+                Pattern::EnumVariant(pat_enum, pat_variant) => {
+                    if *pat_enum != enum_name {
+                        let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                        let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
+                        return Err(TypeCheckError::new(format!(
+                            "match pattern refers to enum '{}', but scrutinee is '{}'", got, expected
+                        )));
+                    }
+                    if !variants.contains(pat_variant) {
+                        let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                        let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
+                        return Err(TypeCheckError::new(format!(
+                            "'{}' is not a variant of enum '{}'", v_str, enum_str
+                        )));
+                    }
+                }
+            }
+            arm_types.push(self.visit_expr(body)?);
+        }
+
+        // All arms must share a common type.
+        let first = arm_types[0].clone();
+        for (i, t) in arm_types.iter().enumerate().skip(1) {
+            if !first.is_equivalent(t) {
+                return Err(TypeCheckError::new(format!(
+                    "match arms have incompatible types: arm 0 is {:?}, arm {} is {:?}",
+                    first, i, t
+                )));
+            }
+        }
+        Ok(first)
+    }
+
     fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         self.visit_field_access_impl(obj, field)
     }
@@ -349,6 +430,21 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_qualified_identifier(&mut self, path: &Vec<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        // Enum variant reference: `EnumName::VariantName`.
+        if path.len() == 2 {
+            let enum_name = path[0];
+            let variant_name = path[1];
+            if let Some(variants) = self.context.enum_definitions.get(&enum_name) {
+                if variants.contains(&variant_name) {
+                    return Ok(TypeDecl::Enum(enum_name));
+                }
+                let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                let v_str = self.core.string_interner.resolve(variant_name).unwrap_or("?").to_string();
+                return Err(TypeCheckError::new(format!(
+                    "'{}' is not a variant of enum '{}'", v_str, enum_str
+                )));
+            }
+        }
         // For now, treat qualified identifiers like regular identifiers using the last component
         if let Some(last_symbol) = path.last() {
             self.visit_identifier(*last_symbol)

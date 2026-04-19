@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo};
+use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, Pattern};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 use std::rc::Rc;
@@ -45,6 +45,7 @@ pub trait AstVisitor {
     fn visit_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<TypeDecl, TypeCheckError>;
     fn visit_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError>;
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<(Pattern, ExprRef)>) -> Result<TypeDecl, TypeCheckError>;
 
     // Stmt variants
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
@@ -57,4 +58,5 @@ pub trait AstVisitor {
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<DefaultSymbol>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
 }

@@ -221,6 +221,13 @@ impl<'a> AstIntegrationContext<'a> {
                     methods: new_methods
                 })
             }
+            Stmt::EnumDecl { name, variants, visibility } => {
+                Ok(Stmt::EnumDecl {
+                    name: *name,
+                    variants: variants.clone(),
+                    visibility: visibility.clone(),
+                })
+            }
         }
     }
     
@@ -428,7 +435,7 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     for (struct_symbol, fields, visibility) in struct_symbols_and_fields {
         tc.context.register_struct(struct_symbol, fields, visibility);
     }
-    
+
     // Register generic parameters for generic structs
     for (struct_name, generic_params) in generic_struct_info {
         tc.context.set_struct_generic_params(struct_name, generic_params);
@@ -598,20 +605,26 @@ pub fn check_typing(
         None
     };
 
-    // Validate struct field types
+    // Validate struct field types and register enum declarations. Running
+    // visit_stmt on an EnumDecl populates `context.enum_definitions`, which
+    // later passes (impl blocks, function bodies) consult when resolving
+    // `Enum::Variant` paths and validating `match` scrutinees/patterns.
     {
         let stmt_count = tc.core.stmt_pool.len();
         for i in 0..stmt_count {
             let stmt_ref = StmtRef(i as u32);
-            let is_struct_decl = tc.core.stmt_pool.get(&stmt_ref)
-                .map(|s| matches!(s, frontend::ast::Stmt::StructDecl { .. }))
+            let should_visit = tc.core.stmt_pool.get(&stmt_ref)
+                .map(|s| matches!(
+                    s,
+                    frontend::ast::Stmt::StructDecl { .. } | frontend::ast::Stmt::EnumDecl { .. }
+                ))
                 .unwrap_or(false);
-            if is_struct_decl {
+            if should_visit {
                 if let Err(err) = tc.visit_stmt(&stmt_ref) {
                     let formatted_error = if let Some(ref fmt) = formatter {
                         fmt.format_type_check_error(&err)
                     } else {
-                        format!("Struct validation error: {err}")
+                        format!("Declaration validation error: {err}")
                     };
                     errors.push(formatted_error);
                 }
@@ -773,7 +786,15 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     initialize_module_environment(&mut eval, program);
     
     register_methods(&mut eval, method_registry);
-    
+
+    // Register enum declarations so runtime lookup of `Enum::Variant` paths works.
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(frontend::ast::Stmt::EnumDecl { name, variants, .. }) = program.statement.get(&stmt_ref) {
+            eval.register_enum(name, variants);
+        }
+    }
+
     let no_args = vec![];
     match eval.evaluate_function(main_function, &no_args) {
         Ok(result) => Ok(result),

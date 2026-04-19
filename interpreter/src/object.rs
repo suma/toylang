@@ -38,6 +38,10 @@ pub enum Object {
                                   // Rc pointer equality so two Object::Allocator
                                   // values refer to the same underlying allocator
                                   // iff they were cloned from the same Rc.
+    EnumVariant {
+        enum_name: DefaultSymbol,
+        variant_name: DefaultSymbol,
+    },
 }
 
 pub type RcObject = Rc<RefCell<Object>>;
@@ -164,6 +168,12 @@ impl Ord for ObjectKey {
             }
             (Object::Allocator(_), _) => Ordering::Less,
             (_, Object::Allocator(_)) => Ordering::Greater,
+            (Object::EnumVariant { enum_name: e1, variant_name: v1 },
+             Object::EnumVariant { enum_name: e2, variant_name: v2 }) => {
+                e1.cmp(e2).then_with(|| v1.cmp(v2))
+            }
+            (Object::EnumVariant { .. }, _) => Ordering::Less,
+            (_, Object::EnumVariant { .. }) => Ordering::Greater,
         }
     }
 }
@@ -202,6 +212,8 @@ impl PartialEq for Object {
             (Object::Null(_), Object::Null(_)) => true,
             (Object::Unit, Object::Unit) => true,
             (Object::Allocator(a), Object::Allocator(b)) => Rc::ptr_eq(a, b),
+            (Object::EnumVariant { enum_name: e1, variant_name: v1 },
+             Object::EnumVariant { enum_name: e2, variant_name: v2 }) => e1 == e2 && v1 == v2,
             _ => false,
         }
     }
@@ -286,6 +298,11 @@ impl Hash for Object {
                 // Hash by Rc pointer identity to match `PartialEq::eq`'s ptr_eq.
                 (Rc::as_ptr(rc) as *const () as usize).hash(state);
             }
+            Object::EnumVariant { enum_name, variant_name } => {
+                13u8.hash(state);
+                enum_name.hash(state);
+                variant_name.hash(state);
+            }
         }
     }
 }
@@ -343,6 +360,7 @@ impl Object {
             }
             Object::Pointer(_) => TypeDecl::Ptr,
             Object::Allocator(_) => TypeDecl::Allocator,
+            Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name),
         }
     }
 
@@ -502,6 +520,11 @@ impl Object {
                     .collect();
                 parts.sort();
                 format!("{} {{ {} }}", type_name_str, parts.join(", "))
+            }
+            Object::EnumVariant { enum_name, variant_name } => {
+                let enum_str = string_interner.resolve(*enum_name).unwrap_or("<enum>");
+                let variant_str = string_interner.resolve(*variant_name).unwrap_or("<variant>");
+                format!("{}::{}", enum_str, variant_str)
             }
         }
     }

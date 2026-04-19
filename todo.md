@@ -19,6 +19,7 @@
 
 ## 未実装 📋
 
+121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（詳細は下記）
 95. **ヒープメモリ管理の完全実装** - heap_realloc、mem_copy/mem_set
 96. **パターンマッチングと列挙型（Enum）**
 30. **組み込み関数システム** - 型変換・数学関数
@@ -26,6 +27,108 @@
 26. **ドキュメント整備** - 言語仕様やAPIドキュメント
 28. **動的配列（List型）** - push, pop, get等の基本操作
 29. **Option型によるNull安全性** - Option<T>型とパターンマッチング基礎
+
+## Allocator システム 実装計画（TODO 121）
+
+### 設計の概要
+
+Zig 型の明示的 allocator をベースにしつつ、デフォルトは ambient な `current_allocator`、hot path では型パラメータ化で単相化する**ハイブリッド方式**。interpreter と将来の native code generator の両方で矛盾なく動作する設計。
+
+#### コア方針
+
+- **IR レベルで allocator を一級の値として表現**し、静的／動的の判断はバックエンドに委ねる
+- alloc site ごとに「どの allocator を使うか」の参照を IR に残す（静的定数／型パラメータ／ambient／ローカル変数のいずれか）
+- interpreter は素直に実行、compiler は specialize か vtable かを選択
+
+#### 言語表層
+
+```
+# ambient（デフォルト）
+val x = List<u64>::new()
+
+# スコープで上書き
+with allocator = arena { ... }
+
+# hot path は型パラメータで単相化
+fn hot<A: Allocator>(data: List<u64, A>) -> u64 { ... }
+```
+
+#### Allocator trait
+
+```rust
+trait Allocator {
+    fn alloc(&self, size: usize, align: usize) -> ptr
+    fn free(&self, p: ptr)
+    fn realloc(&self, p: ptr, new_size: usize) -> ptr
+}
+```
+
+3 つの使用形態：
+1. `&dyn Allocator` — vtable 経由、動的（interpreter のデフォルト）
+2. `A: Allocator` (generic) — 型パラメータ、単相化
+3. ambient — `current_allocator()` を参照（糖衣として 1 に展開）
+
+### Phase 別ロードマップ
+
+#### Phase 1: Interpreter 基盤（最優先）
+
+- [ ] `Allocator` trait を frontend に定義
+- [ ] 標準 allocator 実装：`GlobalAllocator`、`ArenaAllocator`、`FixedBufferAllocator`
+- [ ] `EvaluationContext` に `allocator_stack: Vec<Rc<dyn Allocator>>` を追加
+- [ ] `with allocator = expr { ... }` の構文・パーサ・AST ノード
+- [ ] `with` の enter/exit で push/pop、lexical scope を保証
+- [ ] 既存の `heap_alloc`/`heap_free`/`heap_realloc` を allocator_stack 経由に書き換え
+- [ ] `current_allocator()` ビルトイン関数
+- [ ] interpreter テスト（単体・統合）
+
+#### Phase 2: 型システム拡張
+
+- [ ] `fn f<A: Allocator>(...)` のパース・型チェック（既存ジェネリクス機構を流用）
+- [ ] `List<T, A>`、`Box<T, A>` 等のコレクションに allocator 型パラメータを追加
+- [ ] `dyn Allocator` vs `impl Allocator` の区別を型システムに組み込み
+- [ ] allocator 型パラメータのデフォルト値（省略時は ambient）
+- [ ] 型チェックテスト
+
+#### Phase 3: IR 整備（interpreter/compiler 共用）
+
+- [ ] 下位 IR を設計。alloc site ごとに `AllocatorBinding` を付与
+  - `AllocatorBinding::Static(allocator_id)` — コンパイル時定数
+  - `AllocatorBinding::Generic(type_param)` — 型パラメータ
+  - `AllocatorBinding::Ambient` — 実行時スタック
+  - `AllocatorBinding::Local(var_id)` — ローカル変数
+- [ ] 型チェック後に AST → IR への lowering パスを追加
+- [ ] `with` ブロックの allocator 式が compile-time 定数かを判定し、内部の `Ambient` を `Static` に置換するパス
+- [ ] interpreter を IR 経由で動かす経路の整備（optional、直接 AST から読んでも可）
+
+#### Phase 4: Native codegen MVP
+
+- [ ] バックエンド選定（Cranelift / LLVM / 独自）
+- [ ] 呼び出し規約：案A（allocator を隠しパラメータ化、全関数に `&dyn Allocator` を暗黙追加）
+- [ ] `with` は関数呼び出し時の引数差し替えにコンパイル
+- [ ] `alloc` は vtable 呼び出し
+- [ ] 最小限の動作する静的バイナリ生成
+- [ ] 生成バイナリの実行テスト
+
+#### Phase 5: 最適化パス
+
+- [ ] 定数伝搬パス：`with allocator = CONST { ... }` 内の vtable 呼び出しを具体呼び出しに devirtualize
+- [ ] 単相化パス：`#[specialize_allocator]` 属性または compile-time 定数 allocator が使われている関数を allocator 型ごとに複製
+- [ ] インライン化による alloc 呼び出しの完全消去（arena 等）
+- [ ] ベンチマーク：hot path で vtable オーバーヘッドがゼロに近いことを確認
+
+### 設計上の注意点
+
+- **alloc/free の allocator 不一致**：ポインタにヘッダで allocator ID を埋める、または arena 系のみサポートして個別 `free` を型エラーにする
+- **クロージャのキャプチャ**：呼び出し時の ambient を使う（Odin/Jai 方式）。キャプチャ時固定が必要なら `with` で明示
+- **interpreter/compiler の挙動差**：観測可能な動作は同一とする（allocator の副作用が見える場合の呼び出し順序含む）
+- **関数境界での ambient 漏れ**：`with` は lexical のみ。呼ばれた先に自動伝搬し、戻る時点で元に戻る
+
+### 参考とする既存言語
+
+- **Zig** — 明示的 allocator、comptime で単相化可能
+- **Odin / Jai** — `context.allocator` による ambient 方式
+- **Rust** — `Box<T, A: Allocator>` による型パラメータ単相化
+- **C++ std::pmr** — vtable ベースの実行時 allocator
 
 ## 検討中の機能
 

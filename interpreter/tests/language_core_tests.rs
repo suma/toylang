@@ -97,6 +97,85 @@ mod basic_execution {
         }
         ", 32);
     }
+
+    // Note on statement-level ambiguity: the parser strips newlines (format
+    // normalization), so a bare `-x` directly following another statement is
+    // swallowed as binary subtraction. These tests wrap the negation inside a
+    // `val` binding to make the intent unambiguous — the same form real user
+    // code tends to use anyway.
+
+    #[test]
+    fn test_unary_minus_on_variable() {
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            val x: i64 = 7i64
+            val y: i64 = -x
+            y
+        }
+        ", -7);
+    }
+
+    #[test]
+    fn test_unary_minus_on_expression() {
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            val a: i64 = 10i64
+            val b: i64 = 3i64
+            val y: i64 = -(a - b)
+            y
+        }
+        ", -7);
+    }
+
+    #[test]
+    fn test_unary_minus_double_negation_identity() {
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            val x: i64 = 42i64
+            val y: i64 = -(-x)
+            y
+        }
+        ", 42);
+    }
+
+    #[test]
+    fn test_unary_minus_on_function_call() {
+        common::assert_program_result_i64(r"
+        fn seven() -> i64 {
+            7i64
+        }
+
+        fn main() -> i64 {
+            val y: i64 = -seven()
+            y
+        }
+        ", -7);
+    }
+
+    #[test]
+    fn test_unary_minus_on_untyped_number_coerces_to_i64() {
+        // A bare `-5` has operand type Number; the negate operator resolves
+        // it to Int64 so the program returns a signed value.
+        common::assert_program_result_i64(r"
+        fn main() -> i64 {
+            val y: i64 = -5
+            y
+        }
+        ", -5);
+    }
+
+    #[test]
+    fn test_unary_minus_on_u64_is_type_error() {
+        let source = r"
+        fn main() -> u64 {
+            val x: u64 = 7u64
+            val y: u64 = -x
+            y
+        }
+        ";
+        let result = common::test_program(source);
+        assert!(result.is_err(), "negating a u64 should fail type checking");
+    }
 }
 
 mod variables {

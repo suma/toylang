@@ -491,6 +491,16 @@ pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
             let operand = parse_unary(parser)?;
             Ok(parser.ast_builder.unary_expr(UnaryOp::LogicalNot, operand, Some(location)))
         }
+        // `-` at expression start is unary negation. Binary subtraction uses the
+        // same token but appears after an operand, which is handled by
+        // parse_add / parse_binary — those call parse_unary only when a new
+        // primary is expected, so there is no ambiguity here.
+        Some(Kind::ISub) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let operand = parse_unary(parser)?;
+            Ok(parser.ast_builder.unary_expr(UnaryOp::Negate, operand, Some(location)))
+        }
         _ => parse_postfix(parser)
     }
 }

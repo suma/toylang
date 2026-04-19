@@ -60,12 +60,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             operand_obj.clone().accept(self)?
         };
         
-        // Resolve type with automatic conversion for Number type
+        // Resolve type with automatic conversion for Number type. Negation
+        // implies a signed result, so coerce an unspecified Number to Int64
+        // the same way an explicit `-3i64` literal would land.
         let resolved_ty = if operand_ty == TypeDecl::Number {
-            if op == UnaryOp::BitwiseNot {
-                TypeDecl::UInt64
-            } else {
-                TypeDecl::Bool
+            match op {
+                UnaryOp::BitwiseNot => TypeDecl::UInt64,
+                UnaryOp::Negate => TypeDecl::Int64,
+                UnaryOp::LogicalNot => TypeDecl::Bool,
             }
         } else {
             operand_ty.clone()
@@ -95,6 +97,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("logical NOT", resolved_ty.clone(), TypeDecl::Unit),
+                        &operand,
+                    ));
+                }
+            }
+            UnaryOp::Negate => {
+                // Only signed integers may be negated. Rejecting u64 avoids the
+                // silent-wraparound surprise `-(1u64) == 2^64 - 1`; users who
+                // really want the two's-complement representation can cast first.
+                if resolved_ty == TypeDecl::Int64 {
+                    TypeDecl::Int64
+                } else {
+                    return Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("unary minus", resolved_ty.clone(), TypeDecl::Int64),
                         &operand,
                     ));
                 }

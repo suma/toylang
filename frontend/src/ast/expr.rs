@@ -230,6 +230,7 @@ pub enum BuiltinMethod {
 pub enum UnaryOp {
     BitwiseNot,  // ~
     LogicalNot,  // !
+    Negate,      // -expr (sign flip for signed integer types)
 }
 
 #[derive(Debug, Clone, PartialEq)]

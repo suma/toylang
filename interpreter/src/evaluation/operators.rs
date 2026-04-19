@@ -247,6 +247,18 @@ impl EvaluationContext<'_> {
                     message: format!("Logical NOT requires boolean type, got {:?}", operand_obj)
                 }),
             },
+            // `wrapping_neg` mirrors the type checker: it only accepts Int64,
+            // and the wrapping form avoids panics on `-i64::MIN` (which
+            // overflows in two's complement). Callers that want saturating or
+            // panicking behaviour can wrap their own check.
+            UnaryOp::Negate => match &*operand_obj {
+                Object::Int64(v) => Object::Int64(v.wrapping_neg()),
+                _ => return Err(InterpreterError::TypeError{
+                    expected: TypeDecl::Int64,
+                    found: operand_obj.get_type(),
+                    message: format!("Unary minus requires i64, got {:?}", operand_obj)
+                }),
+            },
         };
 
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))

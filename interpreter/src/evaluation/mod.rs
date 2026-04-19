@@ -1,0 +1,99 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use frontend::ast::*;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
+use crate::environment::Environment;
+use crate::object::{Object, RcObject};
+use crate::error::InterpreterError;
+use crate::heap::HeapManager;
+
+mod operators;
+mod expression;
+mod statement;
+mod call;
+mod slice;
+mod builtin;
+
+#[derive(Debug)]
+pub enum EvaluationResult {
+    None,
+    Value(Rc<RefCell<Object>>),
+    Return(Option<Rc<RefCell<Object>>>),
+    Break,  // We assume break and continue are used with a label
+    Continue,
+}
+
+pub struct EvaluationContext<'a> {
+    pub(super) stmt_pool: &'a StmtPool,
+    pub(super) expr_pool: &'a ExprPool,
+    pub string_interner: &'a mut DefaultStringInterner,
+    pub(super) function: HashMap<DefaultSymbol, Rc<Function>>,
+    pub environment: Environment,
+    pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
+    pub(super) null_object: RcObject, // Pre-created null object for reuse
+    pub(super) recursion_depth: u32,
+    pub(super) max_recursion_depth: u32,
+    pub(super) heap_manager: HeapManager, // Heap memory manager for pointer operations
+}
+
+impl<'a> EvaluationContext<'a> {
+    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
+        Self {
+            stmt_pool,
+            expr_pool,
+            string_interner,
+            function,
+            environment: Environment::new(),
+            method_registry: HashMap::new(),
+            null_object: Rc::new(RefCell::new(Object::null_unknown())),
+            recursion_depth: 0,
+            max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
+            heap_manager: HeapManager::new(),
+        }
+    }
+
+    pub fn register_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
+        self.method_registry
+            .entry(struct_name)
+            .or_default()
+            .insert(method_name, method);
+    }
+
+    pub fn get_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<Rc<MethodFunction>> {
+        self.method_registry
+            .get(&struct_name)?
+            .get(&method_name)
+            .cloned()
+    }
+
+    pub(super) fn extract_value(&mut self, result: Result<EvaluationResult, InterpreterError>) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+        match result {
+            Ok(EvaluationResult::Value(v)) => Ok(v),
+            Ok(EvaluationResult::Return(v)) => Err(InterpreterError::PropagateFlow(EvaluationResult::Return(v))),
+            Ok(EvaluationResult::Break) => Err(InterpreterError::PropagateFlow(EvaluationResult::Break)),
+            Ok(EvaluationResult::Continue) => Err(InterpreterError::PropagateFlow(EvaluationResult::Continue)),
+            Ok(EvaluationResult::None) => Err(InterpreterError::InternalError("unexpected None".to_string())),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
+    match e {
+        Expr::True => Ok(Object::Bool(true)),
+        Expr::False => Ok(Object::Bool(false)),
+        Expr::Int64(v) => Ok(Object::Int64(*v)),
+        Expr::UInt64(v) => Ok(Object::UInt64(*v)),
+        Expr::String(v) => Ok(Object::ConstString(*v)),
+        Expr::Number(_v) => {
+            // Type-unspecified numbers should be resolved during type checking
+            Err(InterpreterError::InternalError(format!(
+                "Expr::Number should be transformed to concrete type during type checking: {e:?}"
+            )))
+        },
+        _ => Err(InterpreterError::InternalError(format!(
+            "Expression type not handled in convert_object: {e:?}"
+        ))),
+    }
+}

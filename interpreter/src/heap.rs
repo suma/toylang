@@ -45,6 +45,78 @@ impl Allocator for GlobalAllocator {
     }
 }
 
+/// Arena allocator: carves allocations from the shared `HeapManager` but
+/// treats individual `free` calls as no-ops. All outstanding allocations
+/// are released in bulk when the arena is dropped (no more `Rc` references)
+/// or explicitly via `reset`. Useful for request-scoped memory that lives
+/// and dies with a `with` block.
+///
+/// Memory is not physically separated from the global heap — addresses are
+/// drawn from the same `HeapManager` so pointer-based builtins keep working
+/// uniformly. What arena provides is lifetime bundling plus a different
+/// `free` policy.
+#[derive(Debug)]
+pub struct ArenaAllocator {
+    heap: Rc<RefCell<HeapManager>>,
+    tracked: RefCell<Vec<usize>>,
+}
+
+impl ArenaAllocator {
+    pub fn new(heap: Rc<RefCell<HeapManager>>) -> Self {
+        Self {
+            heap,
+            tracked: RefCell::new(Vec::new()),
+        }
+    }
+
+    /// Release every allocation made through this arena without waiting for
+    /// the `Rc` to drop. The arena stays valid for further use after reset.
+    pub fn reset(&self) {
+        let mut heap = self.heap.borrow_mut();
+        for addr in self.tracked.borrow().iter() {
+            heap.free(*addr);
+        }
+        self.tracked.borrow_mut().clear();
+    }
+}
+
+impl Allocator for ArenaAllocator {
+    fn alloc(&self, size: usize) -> usize {
+        let addr = self.heap.borrow_mut().alloc(size);
+        if addr != 0 {
+            self.tracked.borrow_mut().push(addr);
+        }
+        addr
+    }
+
+    fn free(&self, _addr: usize) -> bool {
+        // Arenas intentionally ignore individual frees; everything is
+        // released at once when the arena is dropped or reset.
+        true
+    }
+
+    fn realloc(&self, addr: usize, new_size: usize) -> usize {
+        let new_addr = self.heap.borrow_mut().realloc(addr, new_size);
+        let mut tracked = self.tracked.borrow_mut();
+        if let Some(pos) = tracked.iter().position(|&a| a == addr) {
+            tracked.swap_remove(pos);
+        }
+        if new_addr != 0 {
+            tracked.push(new_addr);
+        }
+        new_addr
+    }
+}
+
+impl Drop for ArenaAllocator {
+    fn drop(&mut self) {
+        let mut heap = self.heap.borrow_mut();
+        for addr in self.tracked.borrow().iter() {
+            heap.free(*addr);
+        }
+    }
+}
+
 /// Simple heap memory manager for pointer operations
 #[derive(Debug)]
 pub struct HeapManager {
@@ -321,5 +393,57 @@ mod tests {
         assert!(heap.set_memory(dest_addr, 0xff, 16));
         assert_eq!(heap.read_u64(dest_addr, 0), Some(0xffffffffffffffff));
         assert_eq!(heap.read_u64(dest_addr, 8), Some(0xffffffffffffffff));
+    }
+
+    #[test]
+    fn test_global_allocator_delegates_to_heap_manager() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let allocator = GlobalAllocator::new(heap.clone());
+
+        let addr = allocator.alloc(32);
+        assert_ne!(addr, 0);
+        assert!(heap.borrow().is_valid_address(addr));
+
+        assert!(allocator.free(addr));
+        assert!(!heap.borrow().is_valid_address(addr));
+    }
+
+    #[test]
+    fn test_arena_free_is_noop_but_reset_releases_all() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let arena = ArenaAllocator::new(heap.clone());
+
+        let a = arena.alloc(16);
+        let b = arena.alloc(16);
+        assert_ne!(a, 0);
+        assert_ne!(b, 0);
+        assert!(heap.borrow().is_valid_address(a));
+        assert!(heap.borrow().is_valid_address(b));
+
+        // Individual free is a no-op for arena allocators.
+        assert!(arena.free(a));
+        assert!(heap.borrow().is_valid_address(a));
+
+        arena.reset();
+        assert!(!heap.borrow().is_valid_address(a));
+        assert!(!heap.borrow().is_valid_address(b));
+
+        // Arena still usable after reset.
+        let c = arena.alloc(8);
+        assert_ne!(c, 0);
+        assert!(heap.borrow().is_valid_address(c));
+    }
+
+    #[test]
+    fn test_arena_drop_releases_tracked_allocations() {
+        let heap = Rc::new(RefCell::new(HeapManager::new()));
+        let a;
+        {
+            let arena = ArenaAllocator::new(heap.clone());
+            a = arena.alloc(16);
+            assert!(heap.borrow().is_valid_address(a));
+            // arena goes out of scope here and Drop runs.
+        }
+        assert!(!heap.borrow().is_valid_address(a));
     }
 }

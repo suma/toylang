@@ -126,6 +126,7 @@ pub enum BuiltinFunction {
     // Allocator context
     CurrentAllocator, // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
     DefaultAllocator, // __builtin_default_allocator() -> Allocator referring to the global/default allocator
+    ArenaAllocator,   // __builtin_arena_allocator() -> Allocator backed by an arena (bulk-free on drop)
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +149,7 @@ pub struct BuiltinFunctionSymbols {
     // Allocator context
     pub current_allocator: DefaultSymbol,
     pub default_allocator: DefaultSymbol,
+    pub arena_allocator: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -164,6 +166,7 @@ impl BuiltinFunctionSymbols {
             mem_set: interner.get_or_intern("__builtin_mem_set"),
             current_allocator: interner.get_or_intern("__builtin_current_allocator"),
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
+            arena_allocator: interner.get_or_intern("__builtin_arena_allocator"),
         }
     }
 
@@ -179,6 +182,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }
         else if symbol == self.current_allocator { Some(BuiltinFunction::CurrentAllocator) }
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
+        else if symbol == self.arena_allocator { Some(BuiltinFunction::ArenaAllocator) }
         else { None }
     }
 }

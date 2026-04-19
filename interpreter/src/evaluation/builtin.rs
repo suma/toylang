@@ -465,6 +465,24 @@ impl EvaluationContext<'_> {
                     Object::Allocator(self.global_allocator.clone()),
                 ))))
             }
+
+            BuiltinFunction::ArenaAllocator => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "arena_allocator() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                // Fresh arena sharing the same underlying HeapManager. Bulk free
+                // happens when the last Rc to this arena is dropped.
+                let arena: Rc<dyn crate::heap::Allocator> = Rc::new(
+                    crate::heap::ArenaAllocator::new(self.heap_manager.clone()),
+                );
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
+                    Object::Allocator(arena),
+                ))))
+            }
         }
     }
 }

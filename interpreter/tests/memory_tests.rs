@@ -437,6 +437,56 @@ fn test_current_allocator_defaults_to_global() {
 }
 
 #[test]
+fn test_arena_allocator_is_distinct_from_default() {
+    // Each arena_allocator() call returns a fresh allocator handle, so the
+    // result must not compare equal to default_allocator().
+    let source = r#"
+        fn main() -> bool {
+            val a = __builtin_arena_allocator()
+            val d = __builtin_default_allocator()
+            a == d
+        }
+    "#;
+    let result = test_program(source).expect("arena vs default comparison should succeed");
+    assert_eq!(result.borrow().unwrap_bool(), false);
+}
+
+#[test]
+fn test_with_arena_allocator_routes_current_allocator() {
+    // Inside `with allocator = arena { ... }` the current allocator must
+    // match the pushed arena, not the ambient default.
+    let source = r#"
+        fn main() -> bool {
+            val arena = __builtin_arena_allocator()
+            with allocator = arena {
+                __builtin_current_allocator() == arena
+            }
+        }
+    "#;
+    let result = test_program(source).expect("current inside arena with should match arena");
+    assert_eq!(result.borrow().unwrap_bool(), true);
+}
+
+#[test]
+fn test_arena_alloc_read_write_cycle() {
+    // heap_alloc dispatched through an arena still returns a usable pointer
+    // that ptr_write / ptr_read can operate on, since arenas share the
+    // underlying HeapManager address space.
+    let source = r#"
+        fn main() -> u64 {
+            val arena = __builtin_arena_allocator()
+            with allocator = arena {
+                val p = __builtin_heap_alloc(8u64)
+                __builtin_ptr_write(p, 0u64, 12345u64)
+                __builtin_ptr_read(p, 0u64)
+            }
+        }
+    "#;
+    let result = test_program(source).expect("arena-backed alloc/read/write cycle");
+    assert_eq!(result.borrow().unwrap_uint64(), 12345u64);
+}
+
+#[test]
 fn test_with_allocator_rejects_non_allocator_expression() {
     // Type checker must reject RHS values that are not of type Allocator.
     let source = r#"

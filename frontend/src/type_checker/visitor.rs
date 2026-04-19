@@ -174,6 +174,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![],
                 return_type: TypeDecl::Allocator,
             },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::ArenaAllocator,
+                arg_count: 0,
+                arg_types: vec![],
+                return_type: TypeDecl::Allocator,
+            },
         ]
     }
 

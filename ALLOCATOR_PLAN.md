@@ -131,12 +131,27 @@ alloc site ごとに `AllocatorBinding` を持たせる：
 
 Phase 1b 時点では全ての allocator が `GlobalAllocator` に帰着するため、`with` の効果は「スコープ追跡のみ」観測可能。実際に別々のヒープに振り分けるのは Phase 1c 以降。
 
-### Phase 1c: カスタム allocator 実装
+### Phase 1c: カスタム allocator 実装（部分完了: 2026-04-19）
 
-- [ ] `ArenaAllocator` 実装（領域単位で解放、drop で全解放）
-- [ ] `FixedBufferAllocator` 実装（固定バッファ、溢れたら fail）
-- [ ] `__builtin_arena_allocator()` / `__builtin_fixed_buffer_allocator(size)` 等のビルトイン追加
-- [ ] スコープ内で `with allocator = arena_allocator() { ... }` が実際に別領域に振り分けることを検証するテスト
+**実装済み:**
+
+- `ArenaAllocator` 実装（`heap.rs`）
+  - `Rc<RefCell<HeapManager>>` を共有（別アドレス空間ではなく、同じ物理メモリを使う）
+  - tracked addresses を `RefCell<Vec<usize>>` で保持
+  - `free(&self, _)` は no-op（アリーナは個別解放しない）
+  - `reset()` で tracked を一括解放、アリーナは再利用可能
+  - `Drop` で最後の `Rc` が落ちたら tracked を一括解放
+- `__builtin_arena_allocator() -> Allocator` ビルトイン追加（frontend のシグネチャ登録含む）
+- 新規テスト 6 件:
+  - unit (heap.rs): `GlobalAllocator` の委譲、arena の free no-op+reset、arena の Drop 時の解放
+  - integration (memory_tests.rs): arena と default の非同値、`with arena` 中の `current_allocator` 一致、arena 経由での alloc → write → read サイクル
+
+**未実装（Phase 1c の積み残し）:**
+
+- `FixedBufferAllocator` 実装（固定バッファ、溢れたら 0 を返す等の失敗ポリシーを別途決める必要あり）
+- `__builtin_fixed_buffer_allocator(size)` 等のビルトイン
+
+現状、arena の「物理的に別領域に振り分ける」方式は実装していない（同じ `HeapManager` を共有）。これは `ptr_read` / `ptr_write` 等のアドレスベース builtin を一貫して動かすためで、arena の意義は「ライフタイムの束ね」と「個別 free の無視」にある。
 
 ### Phase 2: 型システム拡張
 
@@ -233,6 +248,7 @@ EvaluationContext {
 
 | 日付 | Phase | 内容 |
 |---|---|---|
+| 2026-04-19 | Phase 1c 部分完了 | `ArenaAllocator`、`__builtin_arena_allocator()`、arena 統合テスト・ユニットテスト |
 | 2026-04-19 | Phase 1b 完了 | `Allocator` trait、`GlobalAllocator`、`Object::Allocator(Rc<dyn Allocator>)`、`heap_alloc` 等のスタック経由ルーティング |
 | 2026-04-19 | Phase 1a 完了 | `with` 構文、`TypeDecl::Allocator`、`Object::Allocator`、`current_allocator` / `default_allocator` ビルトイン |
 | 2026-04-19 | 計画策定 | ハイブリッド設計の採用、Phase 1〜5 ロードマップ確定 |

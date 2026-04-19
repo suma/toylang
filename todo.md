@@ -19,7 +19,7 @@
 
 ## 未実装 📋
 
-121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（設計・進捗: `ALLOCATOR_PLAN.md` 参照。Phase 1a/1b 完了、次は Phase 1c: `ArenaAllocator` 等のカスタム allocator）
+121. **Allocator システムの導入** - ambient current_allocator + コンパイル時特殊化（設計・進捗: `ALLOCATOR_PLAN.md` 参照。Phase 1a/1b 完了、Phase 1c は `ArenaAllocator` 実装済み・`FixedBufferAllocator` が積み残し）
 95. **ヒープメモリ管理の完全実装** - heap_realloc、mem_copy/mem_set
 96. **パターンマッチングと列挙型（Enum）**
 30. **組み込み関数システム** - 型変換・数学関数

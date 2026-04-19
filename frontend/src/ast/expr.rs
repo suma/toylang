@@ -133,6 +133,7 @@ pub enum Expr {
     Cast(ExprRef, TypeDecl),  // expr as type - type cast expression
     With(ExprRef, ExprRef),  // with allocator = allocator_expr { body } - scoped allocator binding
     Match(ExprRef, Vec<(Pattern, ExprRef)>),  // match scrutinee { pat => body, ... }
+    Range(ExprRef, ExprRef),  // start..end — half-open integer range literal
 }
 
 impl Expr {

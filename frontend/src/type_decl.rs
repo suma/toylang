@@ -19,6 +19,7 @@ pub enum TypeDecl {
     Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
     Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
     Enum(DefaultSymbol),  // User-defined enum type (unit variants only in Phase 1)
+    Range(Box<TypeDecl>),  // Half-open integer range: start..end
 }
 
 impl TypeDecl {

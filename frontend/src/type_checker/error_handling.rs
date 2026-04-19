@@ -230,6 +230,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
             TypeDecl::Ptr => "Ptr".to_string(),
             TypeDecl::Allocator => "Allocator".to_string(),
             TypeDecl::Enum(name) => self.resolve_symbol_name(*name).to_string(),
+            TypeDecl::Range(inner) => format!("Range<{}>", self.format_type_for_error(inner)),
         }
     }
     

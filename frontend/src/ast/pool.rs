@@ -60,6 +60,7 @@ pub enum ExprType {
     Cast = 28,
     With = 29,
     Match = 30,
+    Range = 31,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -355,6 +356,11 @@ impl ExprPool {
                 self.lhs[index] = Some(scrutinee);
                 self.match_arms[index] = Some(arms);
             }
+            Expr::Range(start, end) => {
+                self.expr_types[index] = ExprType::Range;
+                self.lhs[index] = Some(start);
+                self.rhs[index] = Some(end);
+            }
         }
 
         ExprRef(index as u32)
@@ -516,6 +522,12 @@ impl ExprPool {
                 Some(Expr::Match(
                     self.lhs[index]?,
                     self.match_arms[index].clone()?,
+                ))
+            }
+            ExprType::Range => {
+                Some(Expr::Range(
+                    self.lhs[index]?,
+                    self.rhs[index]?,
                 ))
             }
         }
@@ -702,6 +714,11 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::Match;
                 self.lhs[index] = Some(scrutinee);
                 self.match_arms[index] = Some(arms);
+            }
+            Expr::Range(start, end) => {
+                self.expr_types[index] = ExprType::Range;
+                self.lhs[index] = Some(start);
+                self.rhs[index] = Some(end);
             }
         }
     }

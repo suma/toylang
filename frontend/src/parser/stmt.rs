@@ -76,9 +76,23 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
                     let ident = parser.string_interner.get_or_intern(s);
                     parser.next();
                     parser.expect_err(&Kind::In)?;
-                    let start = super::expr::parse_relational(parser)?;
-                    parser.expect_err(&Kind::To)?;
-                    let end = super::expr::parse_relational(parser)?;
+                    let start = super::expr::parse_logical_expr(parser)?;
+                    // Accept both the legacy `to` keyword and the `..` range
+                    // operator as the loop separator.
+                    match parser.peek() {
+                        Some(Kind::To) | Some(Kind::DotDot) => {
+                            parser.next();
+                        }
+                        other => {
+                            let other_str = format!("{:?}", other);
+                            let location = parser.current_source_location();
+                            return Err(ParserError::generic_error(
+                                location,
+                                format!("expected `to` or `..` in for header, got {}", other_str),
+                            ));
+                        }
+                    }
+                    let end = super::expr::parse_logical_expr(parser)?;
                     let block = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
                     Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
@@ -159,7 +173,7 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     let rhs = match parser.peek() {
         Some(Kind::Equal) => {
             parser.next();
-            let expr = super::expr::parse_logical_expr(parser);
+            let expr = super::expr::parse_range_expr(parser);
             if expr.is_err() {
                 return Err(expr.err().unwrap());
             }

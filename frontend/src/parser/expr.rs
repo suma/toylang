@@ -17,14 +17,16 @@ fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: cra
             let slice_info = SliceInfo::range_slice(None, None);
             Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
         } else {
-            let end = parser.parse_expr_impl()?;
+            let end = parse_logical_expr(parser)?;
             parser.expect_err(&Kind::BracketClose)?;
             let slice_info = SliceInfo::range_slice(None, Some(end));
             Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
         }
     } else {
-        // Parse the first expression
-        let first_expr = parser.parse_expr_impl()?;
+        // Parse the first expression. Use parse_logical_expr (one level below
+        // range) so a top-level `..` stays under our explicit handling below
+        // instead of being swallowed by parse_range_expr.
+        let first_expr = parse_logical_expr(parser)?;
         
         // Check if this is a slice or regular index
         if parser.peek() == Some(&Kind::DotDot) {
@@ -37,7 +39,7 @@ fn parse_bracket_access(parser: &mut Parser, object_expr: ExprRef, location: cra
                 Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
             } else {
                 // [start..end] form
-                let end = parser.parse_expr_impl()?;
+                let end = parse_logical_expr(parser)?;
                 parser.expect_err(&Kind::BracketClose)?;
                 let slice_info = SliceInfo::range_slice(Some(first_expr), Some(end));
                 Ok(parser.ast_builder.slice_access_expr(object_expr, slice_info, Some(location)))
@@ -87,7 +89,7 @@ impl<'a> Parser<'a> {
             _ => {}
         }
         
-        let lhs = parse_logical_expr(self);
+        let lhs = parse_range_expr(self);
         if lhs.is_ok() {
             return match self.peek() {
                 Some(Kind::Equal) => {
@@ -467,6 +469,28 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Pa
                 }
             }
         }
+    }
+}
+
+/// Parse a range literal `start..end`. Range binds weaker than any arithmetic
+/// or logical operator, so `a + 1 .. b + 1` groups as `(a + 1) .. (b + 1)`.
+/// Ranges do not chain: `a..b..c` is a parse error.
+pub fn parse_range_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let start = parse_logical_expr(parser)?;
+    if parser.peek() == Some(&Kind::DotDot) {
+        let location = parser.current_source_location();
+        parser.next();
+        let end = parse_logical_expr(parser)?;
+        if parser.peek() == Some(&Kind::DotDot) {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                "range operator `..` is not associative; parenthesize to combine ranges".to_string(),
+            ));
+        }
+        Ok(parser.ast_builder.add_expr_with_location(Expr::Range(start, end), Some(location)))
+    } else {
+        Ok(start)
     }
 }
 

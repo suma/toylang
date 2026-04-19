@@ -48,6 +48,7 @@ impl Acceptable for Expr {
             Expr::Cast(expr, target_type) => visitor.visit_cast(expr, target_type),
             Expr::With(allocator, body) => visitor.visit_with(allocator, body),
             Expr::Match(scrutinee, arms) => visitor.visit_match(scrutinee, arms),
+            Expr::Range(start, end) => visitor.visit_range(start, end),
         }
     }
 }
@@ -261,6 +262,32 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         self.visit_cast_impl(expr, target_type)
+    }
+
+    fn visit_range(&mut self, start: &ExprRef, end: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        // `start..end` requires both sides to be the same integer type. We
+        // share the start's type as a hint while visiting end so untyped
+        // numeric literals (`0..n`) pick up the matching concrete type.
+        let saved_hint = self.type_inference.type_hint.clone();
+        let start_ty = self.visit_expr(start)?;
+        self.type_inference.type_hint = Some(start_ty.clone());
+        let end_ty = self.visit_expr(end)?;
+        self.type_inference.type_hint = saved_hint;
+
+        let element_ty = match (&start_ty, &end_ty) {
+            (TypeDecl::Int64, TypeDecl::Int64) => TypeDecl::Int64,
+            (TypeDecl::UInt64, TypeDecl::UInt64) => TypeDecl::UInt64,
+            (TypeDecl::Number, TypeDecl::Number) => TypeDecl::UInt64,
+            (TypeDecl::Number, other) | (other, TypeDecl::Number)
+                if matches!(other, TypeDecl::Int64 | TypeDecl::UInt64) => other.clone(),
+            _ => {
+                return Err(TypeCheckError::new(format!(
+                    "range endpoints must be matching integer types, got {:?}..{:?}",
+                    start_ty, end_ty
+                )));
+            }
+        };
+        Ok(TypeDecl::Range(Box::new(element_ty)))
     }
 
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {

@@ -99,6 +99,14 @@ impl EvaluationContext<'_> {
             Expr::Match(scrutinee, arms) => {
                 self.evaluate_match(&scrutinee, &arms)
             }
+            Expr::Range(start, end) => {
+                let start_val = self.evaluate(&start);
+                let start_val = self.extract_value(start_val)?;
+                let end_val = self.evaluate(&end);
+                let end_val = self.extract_value(end_val)?;
+                let obj = Object::Range { start: start_val, end: end_val };
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
+            }
             Expr::With(allocator, body) => {
                 // Evaluate the allocator expression. The type checker already ensures
                 // the value is of type Allocator; extract the underlying Rc<dyn Allocator>

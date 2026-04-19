@@ -44,6 +44,11 @@ pub enum Object {
         // Tuple-variant payload values. Empty for unit variants.
         values: Vec<RcObject>,
     },
+    // Half-open integer range produced by `start..end`.
+    Range {
+        start: RcObject,
+        end: RcObject,
+    },
 }
 
 pub type RcObject = Rc<RefCell<Object>>;
@@ -176,6 +181,12 @@ impl Ord for ObjectKey {
             }
             (Object::EnumVariant { .. }, _) => Ordering::Less,
             (_, Object::EnumVariant { .. }) => Ordering::Greater,
+            (Object::Range { start: s1, end: e1 }, Object::Range { start: s2, end: e2 }) => {
+                ObjectKey::from_rc(s1).cmp(&ObjectKey::from_rc(s2))
+                    .then_with(|| ObjectKey::from_rc(e1).cmp(&ObjectKey::from_rc(e2)))
+            }
+            (Object::Range { .. }, _) => Ordering::Less,
+            (_, Object::Range { .. }) => Ordering::Greater,
         }
     }
 }
@@ -218,6 +229,9 @@ impl PartialEq for Object {
              Object::EnumVariant { enum_name: e2, variant_name: v2, values: vs2 }) => {
                 e1 == e2 && v1 == v2 && vs1.len() == vs2.len()
                     && vs1.iter().zip(vs2.iter()).all(|(a, b)| a.borrow().eq(&*b.borrow()))
+            }
+            (Object::Range { start: s1, end: e1 }, Object::Range { start: s2, end: e2 }) => {
+                s1.borrow().eq(&*s2.borrow()) && e1.borrow().eq(&*e2.borrow())
             }
             _ => false,
         }
@@ -312,6 +326,11 @@ impl Hash for Object {
                     v.borrow().hash(state);
                 }
             }
+            Object::Range { start, end } => {
+                14u8.hash(state);
+                start.borrow().hash(state);
+                end.borrow().hash(state);
+            }
         }
     }
 }
@@ -370,6 +389,7 @@ impl Object {
             Object::Pointer(_) => TypeDecl::Ptr,
             Object::Allocator(_) => TypeDecl::Allocator,
             Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name),
+            Object::Range { start, .. } => TypeDecl::Range(Box::new(start.borrow().get_type())),
         }
     }
 
@@ -529,6 +549,13 @@ impl Object {
                     .collect();
                 parts.sort();
                 format!("{} {{ {} }}", type_name_str, parts.join(", "))
+            }
+            Object::Range { start, end } => {
+                return format!(
+                    "{}..{}",
+                    start.borrow().to_display_string(string_interner),
+                    end.borrow().to_display_string(string_interner),
+                );
             }
             Object::EnumVariant { enum_name, variant_name, values } => {
                 let enum_str = string_interner.resolve(*enum_name).unwrap_or("<enum>");

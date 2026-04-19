@@ -477,6 +477,7 @@ mod control_flow {
     //! Control flow (if/else, for, while) tests
 
     use super::common;
+    use super::helpers::execute_test_program;
 
     #[test]
     fn test_simple_for_loop() {
@@ -678,6 +679,75 @@ mod control_flow {
 
         let result = execute_test_program(source).expect("Program should execute successfully");
         assert!(result.contains("UInt64(2)"), "Expected UInt64(2), got: {}", result);
+    }
+
+    #[test]
+    fn test_range_in_for_loop() {
+        let source = r#"
+            fn main() -> u64 {
+                var sum: u64 = 0u64
+                for i in 0u64..5u64 {
+                    sum = sum + i
+                }
+                sum
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(10)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_range_and_to_produce_same_iteration() {
+        let source = r#"
+            fn sum_with_to() -> u64 {
+                var s: u64 = 0u64
+                for i in 0u64 to 5u64 {
+                    s = s + i
+                }
+                s
+            }
+
+            fn sum_with_range() -> u64 {
+                var s: u64 = 0u64
+                for i in 0u64..5u64 {
+                    s = s + i
+                }
+                s
+            }
+
+            fn main() -> u64 {
+                sum_with_to() + sum_with_range()
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(20)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_range_literal_as_value() {
+        // Range can be stored in a val and printed deterministically as
+        // `start..end`. Iteration over a bound range is not supported yet.
+        let source = r#"
+            fn main() -> u64 {
+                val r = 3u64..7u64
+                println(r)
+                0u64
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(0)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_range_endpoint_type_mismatch_rejected() {
+        let source = r#"
+            fn main() -> u64 {
+                val r = 0u64..10i64
+                0u64
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected type error for mixed-signed range");
     }
 }
 

@@ -18,7 +18,7 @@ pub enum TypeDecl {
     Tuple(Vec<TypeDecl>),  // Tuple type - ordered collection of heterogeneous types
     Generic(DefaultSymbol),  // Generic type parameter (e.g., T, U, V)
     Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
-    Enum(DefaultSymbol),  // User-defined enum type (unit variants only in Phase 1)
+    Enum(DefaultSymbol, Vec<TypeDecl>),  // User-defined enum type with optional type parameters
     Range(Box<TypeDecl>),  // Half-open integer range: start..end
 }
 
@@ -37,8 +37,36 @@ impl TypeDecl {
             // Identifier and Enum with same symbol are equivalent (the parser
             // emits `Identifier` for user-named types since it cannot tell
             // enums from structs until the type checker has seen all decls).
-            (TypeDecl::Identifier(s1), TypeDecl::Enum(s2)) |
-            (TypeDecl::Enum(s1), TypeDecl::Identifier(s2)) => s1 == s2,
+            (TypeDecl::Identifier(s1), TypeDecl::Enum(s2, _)) |
+            (TypeDecl::Enum(s1, _), TypeDecl::Identifier(s2)) => s1 == s2,
+            (TypeDecl::Enum(s1, p1), TypeDecl::Enum(s2, p2)) => {
+                // Names must match. When either side carries no type params,
+                // accept the pair (runtime values don't track type args, so
+                // is_equivalent is also used to compare a typed declaration
+                // against a bare runtime Enum type).
+                if s1 != s2 {
+                    return false;
+                }
+                if p1.is_empty() || p2.is_empty() {
+                    return true;
+                }
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2.iter()).all(|(a, b)| a.is_equivalent(b))
+            }
+            // The parser emits `Struct(name, params)` for any `Name<...>`
+            // annotation because it cannot yet tell enums from structs.
+            // Unify with the enum form when the names match.
+            (TypeDecl::Struct(s1, p1), TypeDecl::Enum(s2, p2)) |
+            (TypeDecl::Enum(s1, p1), TypeDecl::Struct(s2, p2)) => {
+                if s1 != s2 {
+                    return false;
+                }
+                if p1.is_empty() || p2.is_empty() {
+                    return true;
+                }
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2.iter()).all(|(a, b)| a.is_equivalent(b))
+            }
             // Two structs are equivalent if they have the same name and compatible type parameters
             (TypeDecl::Struct(s1, params1), TypeDecl::Struct(s2, params2)) => {
                 s1 == s2 && params1.len() == params2.len() &&

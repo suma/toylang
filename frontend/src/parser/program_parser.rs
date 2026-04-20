@@ -135,6 +135,16 @@ impl<'a> Parser<'a> {
                             let s_copy = s.clone();
                             let enum_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
+                            // Optional generic parameters: `enum Name<T, U>`.
+                            // Bounds aren't meaningful for enums yet; we drop
+                            // the bounds map returned by parse_generic_params.
+                            let generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
+                                let (params, _bounds) = self.parse_generic_params()?;
+                                params
+                            } else {
+                                Vec::new()
+                            };
+                            let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
                             self.expect_err(&Kind::BraceOpen)?;
                             self.skip_newlines();
                             let mut variants: Vec<crate::ast::EnumVariantDef> = Vec::new();
@@ -155,7 +165,7 @@ impl<'a> Parser<'a> {
                                                 if matches!(self.peek(), Some(Kind::ParenClose)) {
                                                     break;
                                                 }
-                                                let ty = self.parse_type_declaration()?;
+                                                let ty = self.parse_type_declaration_with_generic_context(&generic_context)?;
                                                 payload_types.push(ty);
                                                 self.skip_newlines();
                                                 if matches!(self.peek(), Some(Kind::Comma)) {
@@ -190,6 +200,7 @@ impl<'a> Parser<'a> {
                             update_end_pos(enum_end_pos);
                             self.ast_builder.add_stmt_with_location(Stmt::EnumDecl {
                                 name: enum_symbol,
+                                generic_params,
                                 variants,
                                 visibility: visibility.clone(),
                             }, Some(location));

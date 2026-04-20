@@ -221,9 +221,10 @@ impl<'a> AstIntegrationContext<'a> {
                     methods: new_methods
                 })
             }
-            Stmt::EnumDecl { name, variants, visibility } => {
+            Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 Ok(Stmt::EnumDecl {
                     name: *name,
+                    generic_params: generic_params.clone(),
                     variants: variants.clone(),
                     visibility: visibility.clone(),
                 })

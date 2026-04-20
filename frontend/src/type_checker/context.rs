@@ -32,8 +32,12 @@ pub struct TypeCheckContext {
     // type-checked (e.g. `<A: Allocator>`). Cleared between functions.
     pub current_fn_generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
     // Registered enum types: name -> ordered variant definitions. Each variant
-    // has an optional tuple payload (empty for unit variants).
+    // has an optional tuple payload (empty for unit variants). Payload types
+    // may reference the enum's generic parameters, recorded separately below.
     pub enum_definitions: HashMap<DefaultSymbol, Vec<EnumVariantDef>>,
+    // Generic parameter symbols declared by each generic enum, in order.
+    // Missing entry means the enum is non-generic.
+    pub enum_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
 }
 
 impl TypeCheckContext {
@@ -50,6 +54,7 @@ impl TypeCheckContext {
             current_impl_generic_params: None,
             current_fn_generic_bounds: HashMap::new(),
             enum_definitions: HashMap::new(),
+            enum_generic_params: HashMap::new(),
         }
     }
 

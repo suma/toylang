@@ -600,7 +600,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // Set type hint for this argument
                     self.type_inference.type_hint = Some(expected_type.clone());
                     let arg_type = self.visit_expr(arg)?;
-                    
+
                     // Check type compatibility — `is_equivalent` handles the
                     // Identifier↔Struct and Identifier↔Enum cases so user-named
                     // types unify with their resolved form.
@@ -852,7 +852,8 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Enum tuple-variant construction: `Enum::Variant(args)` syntactically
         // matches `Struct::assoc(args)`. Intercept when the left side is a
-        // registered enum and the right side names one of its variants.
+        // registered enum and the right side names one of its variants. For
+        // generic enums, infer the type parameters from argument types.
         if let Some(variants) = self.context.enum_definitions.get(&struct_name).cloned() {
             if let Some(variant_def) = variants.iter().find(|v| v.name == function_name) {
                 if args.len() != variant_def.payload_types.len() {
@@ -863,18 +864,43 @@ impl<'a> TypeCheckerVisitor<'a> {
                         enum_str, v_str, variant_def.payload_types.len(), args.len()
                     )));
                 }
+                let generic_params = self.context.enum_generic_params.get(&struct_name).cloned().unwrap_or_default();
+                let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
                 for (arg_expr, expected_ty) in args.iter().zip(variant_def.payload_types.iter()) {
                     let actual_ty = self.visit_expr(arg_expr)?;
-                    if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                    // When the declared payload references a generic parameter,
+                    // record the argument's concrete type as that parameter.
+                    if let TypeDecl::Generic(p) = expected_ty {
+                        if generic_params.contains(p) {
+                            if let Some(prev) = substitutions.get(p) {
+                                if !prev.is_equivalent(&actual_ty) {
+                                    let enum_str = self.resolve_symbol_name(struct_name);
+                                    let v_str = self.resolve_symbol_name(function_name);
+                                    return Err(TypeCheckError::generic_error(&format!(
+                                        "variant '{}::{}' generic parameter conflict: {:?} vs {:?}",
+                                        enum_str, v_str, prev, actual_ty
+                                    )));
+                                }
+                            } else {
+                                substitutions.insert(*p, actual_ty.clone());
+                            }
+                            continue;
+                        }
+                    }
+                    let expected_resolved = expected_ty.substitute_generics(&substitutions);
+                    if !actual_ty.is_equivalent(&expected_resolved) && !matches!(actual_ty, TypeDecl::Unknown) {
                         let enum_str = self.resolve_symbol_name(struct_name);
                         let v_str = self.resolve_symbol_name(function_name);
                         return Err(TypeCheckError::generic_error(&format!(
                             "variant '{}::{}' payload type mismatch: expected {:?}, found {:?}",
-                            enum_str, v_str, expected_ty, actual_ty
+                            enum_str, v_str, expected_resolved, actual_ty
                         )));
                     }
                 }
-                return Ok(TypeDecl::Enum(struct_name));
+                let type_args: Vec<TypeDecl> = generic_params.iter()
+                    .map(|p| substitutions.get(p).cloned().unwrap_or(TypeDecl::Generic(*p)))
+                    .collect();
+                return Ok(TypeDecl::Enum(struct_name, type_args));
             }
         }
 

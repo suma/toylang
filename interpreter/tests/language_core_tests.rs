@@ -1241,6 +1241,69 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_generic_enum_tuple_variant_infers_type_params() {
+        let source = r#"
+            enum Option<T> {
+                None,
+                Some(T),
+            }
+
+            fn main() -> i64 {
+                val x: Option<i64> = Option::Some(42i64)
+                match x {
+                    Option::Some(v) => v,
+                    Option::None => 0i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(42)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_generic_enum_unit_variant_with_type_hint() {
+        let source = r#"
+            enum Option<T> {
+                None,
+                Some(T),
+            }
+
+            fn unwrap_or(o: Option<i64>, default: i64) -> i64 {
+                match o {
+                    Option::Some(v) => v,
+                    Option::None => default,
+                }
+            }
+
+            fn main() -> i64 {
+                val a: Option<i64> = Option::Some(100i64)
+                val b: Option<i64> = Option::None
+                unwrap_or(a, 1i64) + unwrap_or(b, 2i64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(102)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_generic_enum_binding_uses_substituted_payload_type() {
+        // `Some(v)` binds v with the substituted payload type (i64 here),
+        // so the arm body can treat it as an i64 without further casts.
+        let source = r#"
+            enum Box<T> { Put(T) }
+
+            fn main() -> i64 {
+                val b = Box::Put(7i64)
+                match b {
+                    Box::Put(v) => v + 1i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(8)"), "got: {}", result);
+    }
+
+    #[test]
     fn test_unreachable_arm_after_wildcard_rejected() {
         let source = r#"
             enum Color { Red, Green }

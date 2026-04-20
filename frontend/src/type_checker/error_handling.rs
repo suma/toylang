@@ -229,7 +229,17 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
             TypeDecl::Number => "Number".to_string(),
             TypeDecl::Ptr => "Ptr".to_string(),
             TypeDecl::Allocator => "Allocator".to_string(),
-            TypeDecl::Enum(name) => self.resolve_symbol_name(*name).to_string(),
+            TypeDecl::Enum(name, type_params) => {
+                let name_str = self.resolve_symbol_name(*name);
+                if type_params.is_empty() {
+                    name_str.to_string()
+                } else {
+                    let param_strs: Vec<String> = type_params.iter()
+                        .map(|t| self.format_type_for_error(t))
+                        .collect();
+                    format!("{}<{}>", name_str, param_strs.join(", "))
+                }
+            },
             TypeDecl::Range(inner) => format!("Range<{}>", self.format_type_for_error(inner)),
         }
     }

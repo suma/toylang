@@ -69,6 +69,7 @@ pub enum Stmt {
     },
     EnumDecl {
         name: DefaultSymbol,
+        generic_params: Vec<DefaultSymbol>,  // empty for non-generic enums
         variants: Vec<EnumVariantDef>,
         visibility: Visibility,
     },

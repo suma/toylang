@@ -757,6 +757,7 @@ pub struct StmtPool {
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
     pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
+    pub enum_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For enum generic parameters
 }
 
 impl Default for StmtPool {
@@ -783,6 +784,7 @@ impl StmtPool {
             visibility: Vec::new(),
             impl_methods: Vec::new(),
             enum_variants: Vec::new(),
+            enum_generic_params: Vec::new(),
         }
     }
 
@@ -803,6 +805,7 @@ impl StmtPool {
             visibility: Vec::with_capacity(cap),
             impl_methods: Vec::with_capacity(cap),
             enum_variants: Vec::with_capacity(cap),
+            enum_generic_params: Vec::with_capacity(cap),
         }
     }
 
@@ -825,6 +828,7 @@ impl StmtPool {
             self.visibility.resize(current_len + extend_count, None);
             self.impl_methods.resize(current_len + extend_count, None);
             self.enum_variants.resize(current_len + extend_count, None);
+            self.enum_generic_params.resize(current_len + extend_count, None);
         }
     }
 
@@ -884,9 +888,10 @@ impl StmtPool {
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
             }
-            Stmt::EnumDecl { name, variants, visibility } => {
+            Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 self.stmt_types[index] = StmtType::EnumDecl;
                 self.struct_name[index] = Some(name);
+                self.enum_generic_params[index] = Some(generic_params);
                 self.enum_variants[index] = Some(variants);
                 self.visibility[index] = Some(visibility);
             }
@@ -956,6 +961,7 @@ impl StmtPool {
             StmtType::EnumDecl => {
                 Some(Stmt::EnumDecl {
                     name: self.struct_name[index]?,
+                    generic_params: self.enum_generic_params[index].clone()?,
                     variants: self.enum_variants[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })

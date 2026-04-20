@@ -66,7 +66,7 @@ impl Acceptable for Stmt {
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
             Stmt::ImplBlock { target_type, methods } => visitor.visit_impl_block(*target_type, methods),
-            Stmt::EnumDecl { name, variants, visibility } => visitor.visit_enum_decl(*name, variants, visibility),
+            Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
         }
     }
 }
@@ -365,7 +365,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_impl_block_impl(target_type, methods)
     }
 
-    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         // Reject duplicate enum names and duplicate variant names inside one enum.
         if self.context.enum_definitions.contains_key(&name) {
             let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
@@ -382,6 +382,9 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             }
         }
         self.context.enum_definitions.insert(name, variants.clone());
+        if !generic_params.is_empty() {
+            self.context.enum_generic_params.insert(name, generic_params.clone());
+        }
         Ok(TypeDecl::Unit)
     }
 
@@ -393,9 +396,13 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // Accept either a resolved Enum type or a bare Identifier naming a
         // registered enum (parser emits `TypeDecl::Identifier` for user-named
         // types and does not yet specialize to `Enum`).
-        let enum_name = match &scrutinee_ty {
-            TypeDecl::Enum(name) => *name,
-            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
+        let (enum_name, enum_type_args) = match &scrutinee_ty {
+            TypeDecl::Enum(name, args) => (*name, args.clone()),
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
+            // Parser can emit Struct(name, params) for `Name<...>` annotations
+            // before we know whether Name is a struct or enum; accept it here
+            // when Name is a registered enum.
+            TypeDecl::Struct(name, args) if self.context.enum_definitions.contains_key(name) => (*name, args.clone()),
             _ => {
                 return Err(TypeCheckError::new(format!(
                     "match scrutinee must be an enum, got {:?}", scrutinee_ty
@@ -466,12 +473,21 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     }
                     if !bindings.is_empty() {
                         // Introduce each Name binding with the corresponding
-                        // payload type for the arm body's scope.
+                        // payload type for the arm body's scope. For generic
+                        // enums, substitute type parameters using the
+                        // scrutinee's type arguments so `Some(x) => x` binds
+                        // `x` to the concrete element type.
                         self.context.vars.push(std::collections::HashMap::new());
                         pushed_scope = true;
+                        let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
+                        let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                        for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
+                            substitutions.insert(*param, arg.clone());
+                        }
                         for (binding, payload_ty) in bindings.iter().zip(variant_def.payload_types.iter()) {
                             if let crate::ast::PatternBinding::Name(sym) = binding {
-                                self.context.set_var(*sym, payload_ty.clone());
+                                let resolved = payload_ty.substitute_generics(&substitutions);
+                                self.context.set_var(*sym, resolved);
                             }
                         }
                     }
@@ -539,7 +555,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         if path.len() == 2 {
             let enum_name = path[0];
             let variant_name = path[1];
-            if let Some(variants) = self.context.enum_definitions.get(&enum_name) {
+            if let Some(variants) = self.context.enum_definitions.get(&enum_name).cloned() {
                 if let Some(v) = variants.iter().find(|v| v.name == variant_name) {
                     if !v.payload_types.is_empty() {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
@@ -549,7 +565,33 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             enum_str, v_str, v.payload_types.len(), enum_str, v_str
                         )));
                     }
-                    return Ok(TypeDecl::Enum(enum_name));
+                    // For generic unit variants, take type arguments from the
+                    // declared hint (e.g. `val x: Option<i64> = Option::None`).
+                    // Without a hint, default to `Generic(T)` placeholders; the
+                    // `Identifier ↔ Enum` equivalence rule makes this work at
+                    // typical assignment sites, and the type inference engine
+                    // may later resolve them.
+                    let generic_params = self.context.enum_generic_params.get(&enum_name).cloned();
+                    let expected_arity = generic_params.as_ref().map_or(0, |p| p.len());
+                    let type_args = match &self.type_inference.type_hint {
+                        Some(TypeDecl::Enum(hint_name, hint_args))
+                            if *hint_name == enum_name && expected_arity == hint_args.len() =>
+                        {
+                            hint_args.clone()
+                        }
+                        // Parser emits `Struct(name, ...)` for `Name<T>`
+                        // annotations before knowing it's an enum; accept it
+                        // here as a valid hint shape.
+                        Some(TypeDecl::Struct(hint_name, hint_args))
+                            if *hint_name == enum_name && expected_arity == hint_args.len() =>
+                        {
+                            hint_args.clone()
+                        }
+                        _ => generic_params
+                            .map(|ps| ps.iter().map(|p| TypeDecl::Generic(*p)).collect())
+                            .unwrap_or_default(),
+                    };
+                    return Ok(TypeDecl::Enum(enum_name, type_args));
                 }
                 let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                 let v_str = self.core.string_interner.resolve(variant_name).unwrap_or("?").to_string();

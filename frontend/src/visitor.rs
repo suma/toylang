@@ -59,5 +59,5 @@ pub trait AstVisitor {
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_enum_decl(&mut self, name: DefaultSymbol, variants: &Vec<EnumVariantDef>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
 }

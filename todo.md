@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+132. Enum + match（Phase 3）: ジェネリック `enum Option<T> { None, Some(T) }`。タプル variant 引数からの型パラメータ推論、ユニット variant の型注釈ヒント補完、match パターンバインディングでの型パラメータ置換 (2026-04-21)
 131. match の到達性チェック: `_` 以降の arm / 同一 variant の重複 arm を型チェックエラーとして検出 (2026-04-20)
 130. Range literal を式として利用可能に: `0u64..10u64` を式位置で使える。`for i in 0..n` と `val r = 0..n` の両方が動作、`to` 形式も互換維持。`Object::Range`、`TypeDecl::Range(Box<T>)` 追加 (2026-04-19)
 129. Enum + match（Phase 2c）: 網羅性チェック。wildcard なしで variant 欠落の場合に型チェックエラー。欠けている variant 名をエラーに明示 (2026-04-19)
@@ -29,8 +30,8 @@
 
 ## 未実装 📋
 
-96. **Enum/match 拡張** — Phase 1/2/2c（unit + tuple variant、バインディングパターン、網羅性 + 到達性チェック）完了。ジェネリック `enum Option<T>`（Phase 3）、ネストパターンは未実装
-29. **Option型によるNull安全性** — Enum 導入後、`Option<T> = Some(T) | None`
+96. **Enum/match 拡張** — Phase 1/2/2c/3（unit + tuple + generic variant、バインディング、網羅性 + 到達性チェック）完了。ネストパターン（`Some(Some(x))`）、複雑な推論、標準 Option/Result ライブラリは未実装
+29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
@@ -72,7 +73,7 @@
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 867 テスト（100% 成功率、2026-04-20 時点）
+- 合計 870 テスト（100% 成功率、2026-04-21 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

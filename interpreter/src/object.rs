@@ -388,7 +388,7 @@ impl Object {
             }
             Object::Pointer(_) => TypeDecl::Ptr,
             Object::Allocator(_) => TypeDecl::Allocator,
-            Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name),
+            Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name, Vec::new()),
             Object::Range { start, .. } => TypeDecl::Range(Box::new(start.borrow().get_type())),
         }
     }

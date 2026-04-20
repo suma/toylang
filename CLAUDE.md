@@ -139,7 +139,8 @@ fn main() -> u64 {
   - 各 arm は式。全 arm が同じ型でなければならない
   - パターン: `Enum::Variant` / `Enum::Variant(x, _, y)`（`_` は discard） / `_`（全 catch）
   - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
-  - ジェネリック enum・ネストパターン・unreachable arm 警告は未対応（Phase 3 以降）
+  - 到達性チェック: 同じ variant を 2 回 arm に書く、または `_` の後ろに arm を置くと型チェックエラー
+  - ジェネリック enum・ネストパターンは未対応（Phase 3 以降）
 
 ## Architecture Notes
 

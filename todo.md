@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+131. match の到達性チェック: `_` 以降の arm / 同一 variant の重複 arm を型チェックエラーとして検出 (2026-04-20)
 130. Range literal を式として利用可能に: `0u64..10u64` を式位置で使える。`for i in 0..n` と `val r = 0..n` の両方が動作、`to` 形式も互換維持。`Object::Range`、`TypeDecl::Range(Box<T>)` 追加 (2026-04-19)
 129. Enum + match（Phase 2c）: 網羅性チェック。wildcard なしで variant 欠落の場合に型チェックエラー。欠けている variant 名をエラーに明示 (2026-04-19)
 128. Enum + match（Phase 2）: タプル variant `Shape::Circle(i64)`, `Rect(i64, i64)` のコンストラクタ、バインディングパターン `Circle(r)` と `_` discard、型チェックの payload 型検証 (2026-04-19)
@@ -28,7 +29,7 @@
 
 ## 未実装 📋
 
-96. **Enum/match 拡張** — Phase 1/2/2c（unit + tuple variant、バインディングパターン、網羅性チェック）完了。ジェネリック `enum Option<T>`（Phase 3）、ネストパターン、unreachable arm の警告は未実装
+96. **Enum/match 拡張** — Phase 1/2/2c（unit + tuple variant、バインディングパターン、網羅性 + 到達性チェック）完了。ジェネリック `enum Option<T>`（Phase 3）、ネストパターンは未実装
 29. **Option型によるNull安全性** — Enum 導入後、`Option<T> = Some(T) | None`
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
@@ -71,7 +72,7 @@
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 865 テスト（100% 成功率、2026-04-19 時点）
+- 合計 867 テスト（100% 成功率、2026-04-20 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

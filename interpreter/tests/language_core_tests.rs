@@ -1241,6 +1241,45 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_unreachable_arm_after_wildcard_rejected() {
+        let source = r#"
+            enum Color { Red, Green }
+
+            fn main() -> i64 {
+                val c: Color = Color::Red
+                match c {
+                    _ => 0i64,
+                    Color::Red => 1i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected unreachable arm error");
+        let err = result.unwrap_err();
+        assert!(err.contains("wildcard"), "error should mention wildcard: {}", err);
+    }
+
+    #[test]
+    fn test_duplicate_variant_arm_rejected() {
+        let source = r#"
+            enum Color { Red, Green }
+
+            fn main() -> i64 {
+                val c: Color = Color::Red
+                match c {
+                    Color::Red => 1i64,
+                    Color::Red => 2i64,
+                    Color::Green => 3i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected duplicate variant arm error");
+        let err = result.unwrap_err();
+        assert!(err.contains("already handled"), "error should mention repeated arm: {}", err);
+    }
+
+    #[test]
     fn test_duplicate_variant_rejected() {
         let source = r#"
             enum Color {

@@ -414,7 +414,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
         let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut has_wildcard = false;
-        for (pat, body) in arms {
+        for (arm_index, (pat, body)) in arms.iter().enumerate() {
+            // Any arm after a wildcard is unreachable — the wildcard already
+            // matched every remaining value. This catches the common reorder
+            // mistake where a catch-all was pasted above specific cases.
+            if has_wildcard {
+                return Err(TypeCheckError::new(format!(
+                    "unreachable match arm at position {}: a wildcard `_` arm already covers every value",
+                    arm_index
+                )));
+            }
             let mut pushed_scope = false;
             match pat {
                 Pattern::Wildcard => {
@@ -439,6 +448,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             )));
                         }
                     };
+                    if covered_variants.contains(pat_variant) {
+                        let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                        let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
+                        return Err(TypeCheckError::new(format!(
+                            "unreachable match arm: variant '{}::{}' already handled by an earlier arm",
+                            enum_str, v_str
+                        )));
+                    }
                     if bindings.len() != variant_def.payload_types.len() {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();

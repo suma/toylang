@@ -290,6 +290,13 @@ impl EvaluationContext<'_> {
                 let offset = offset_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
 
+                // Prefer a previously-stashed typed slot (non-u64 writes and
+                // generic `List<T>` reads both round-trip through this map).
+                // Fall back to the byte-level u64 read so the classic
+                // List<u64> path keeps working.
+                if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
+                    return Ok(EvaluationResult::Value(value));
+                }
                 match self.heap_manager.borrow().read_u64(addr, offset as usize) {
                     Some(value) => Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(value))))),
                     None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
@@ -317,14 +324,25 @@ impl EvaluationContext<'_> {
 
                 let value_result = self.evaluate(&args[2])?;
                 let value_obj = self.extract_value(Ok(value_result))?;
-                let value = value_obj.borrow().try_unwrap_uint64()
-                    .map_err(|_| InterpreterError::InternalError("ptr_write expects u64 value as third argument".to_string()))?;
 
-                if self.heap_manager.borrow_mut().write_u64(addr, offset as usize, value) {
-                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
-                } else {
-                    Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()))
+                // Snapshot the value type so u64 writes can continue to land
+                // in the byte buffer (for existing consumers / future native
+                // codegen), while everything else is recorded only in the
+                // typed-slot map.
+                let value_type = value_obj.borrow().get_type();
+                let bytes_written = matches!(value_type, TypeDecl::UInt64) && {
+                    let v = value_obj.borrow().try_unwrap_uint64().unwrap();
+                    self.heap_manager.borrow_mut().write_u64(addr, offset as usize, v)
+                };
+                // For typed reads we always store into the slot map so
+                // subsequent `ptr_read` calls can recover the original
+                // `RcObject` (needed for bool / i64 / user structs / enums).
+                self.heap_manager.borrow_mut().typed_write(addr, offset as usize, value_obj.clone());
+
+                if matches!(value_type, TypeDecl::UInt64) && !bytes_written {
+                    return Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()));
                 }
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
             }
 
             BuiltinFunction::PtrIsNull => {

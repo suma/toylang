@@ -216,6 +216,7 @@ fn main() -> u64 {
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin が自動で現在の allocator を通るため、`with allocator = arena { ... }` で囲むだけで arena 経由になる
 - `struct List<T, A: Allocator>` のように allocator を型パラメータにも取れる。フィールドに直接現れない `T` はメソッド戻り値型（`Self`）や val 注釈（`val list: List<u64, Allocator> = ...`）をヒントに推論。要素サイズが必要な場合は `__builtin_sizeof(probe)` を使う
+- `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する
 
 ### 進捗（2026-04-19 現在）
 

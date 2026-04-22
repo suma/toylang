@@ -844,6 +844,26 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     }
 
     fn visit_builtin_call(&mut self, func: &BuiltinFunction, _args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // `ptr_read` originally always returned u64, but generic `List<T>`
+        // code stores non-u64 values. When the caller supplies a primitive
+        // type hint (e.g. `val v: i64 = __builtin_ptr_read(p, off)` or a
+        // method with a `T` return type being visited under its hint),
+        // surface the hint as the result so nested expressions pick up
+        // the right element type. Fall back to u64 for backward compat.
+        if matches!(func, BuiltinFunction::PtrRead) {
+            if let Some(hint) = &self.type_inference.type_hint {
+                if matches!(hint,
+                    TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool
+                    | TypeDecl::Ptr | TypeDecl::String
+                    | TypeDecl::Struct(_, _) | TypeDecl::Enum(_, _)
+                    | TypeDecl::Generic(_)
+                ) {
+                    return Ok(hint.clone());
+                }
+            }
+            return Ok(TypeDecl::UInt64);
+        }
+
         // Find matching function signature from pre-built table
         let signature = self.builtin_function_signatures.iter().find(|sig| sig.func == *func).cloned();
 

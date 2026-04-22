@@ -240,6 +240,14 @@ pub struct HeapManager {
     memory: Vec<u8>,
     allocations: HashMap<usize, usize>, // address -> size
     next_addr: usize,
+    // Typed-slot storage keyed by (base address, byte offset). When a write
+    // stores a non-u64 value (bool, i64, user struct, enum variant, ...)
+    // the evaluator records the `RcObject` here so a matching `ptr_read`
+    // can return it verbatim without round-tripping through the byte buffer.
+    // u64 writes also update the byte buffer for backward compatibility with
+    // byte-level reads, but still deposit the Rc here to keep a single source
+    // of truth.
+    typed_slots: HashMap<(usize, usize), crate::object::RcObject>,
 }
 
 impl HeapManager {
@@ -248,7 +256,20 @@ impl HeapManager {
             memory: Vec::new(),
             allocations: HashMap::new(),
             next_addr: 1, // 0 is reserved for null pointer
+            typed_slots: HashMap::new(),
         }
+    }
+
+    /// Record a typed slot so a later `typed_read` can return the exact Rc.
+    pub fn typed_write(&mut self, addr: usize, offset: usize, value: crate::object::RcObject) {
+        if addr != 0 {
+            self.typed_slots.insert((addr, offset), value);
+        }
+    }
+
+    /// Look up a previously-stored typed value, if any.
+    pub fn typed_read(&self, addr: usize, offset: usize) -> Option<crate::object::RcObject> {
+        self.typed_slots.get(&(addr, offset)).cloned()
     }
     
     /// Allocate memory and return address
@@ -289,7 +310,7 @@ impl HeapManager {
         if let Some(old_size) = self.allocations.get(&addr).copied() {
             // Allocate new memory
             let new_addr = self.alloc(new_size);
-            
+
             // Copy old data to new location
             let copy_size = old_size.min(new_size);
             // First get the source data to avoid borrowing conflicts
@@ -299,10 +320,28 @@ impl HeapManager {
                     dest.copy_from_slice(&temp_data);
                 }
             }
-            
+
+            // Relocate typed slots from the old address to the new one so
+            // values stashed under the previous base keep matching ptr_read
+            // after realloc.
+            let moved: Vec<(usize, crate::object::RcObject)> = self.typed_slots
+                .iter()
+                .filter_map(|((a, off), v)| {
+                    if *a == addr && *off < copy_size {
+                        Some((*off, v.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            self.typed_slots.retain(|(a, _), _| *a != addr);
+            for (off, v) in moved {
+                self.typed_slots.insert((new_addr, off), v);
+            }
+
             // Free old memory
             self.free(addr);
-            
+
             new_addr
         } else {
             0 // Invalid address

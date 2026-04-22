@@ -311,6 +311,7 @@ EvaluationContext {
 
 | 日付 | Phase | 内容 |
 |---|---|---|
+| 2026-04-22 | Phase 3 部分（allocator 型パラメータ） | `struct List<T, A: Allocator>` 形式をサポート。フィールドに現れない型パラメータを val 注釈 / メソッド return type からヒント推論、struct-level bound を impl 内部へマージ、block の numeric hint が外側 hint を上書きしないよう修正 |
 | 2026-04-22 | Phase 3 前提（sizeof builtin） | `__builtin_sizeof(value)` を追加、value の型（primitive のみ）を u64 のバイトサイズに評価。generic `T` の実体サイズ取得が可能になり、将来のジェネリック List<T> 実装の土台が整った |
 | 2026-04-19 | Phase 3 部分（ユーザ List<u64>） | struct フィールドに `ptr`/`Allocator` を許可、非ジェネリック struct の Self/Identifier 正規化、struct+impl で書いた List が `with allocator = arena` 内で動作 |
 | 2026-04-19 | Phase 3 部分（自動 ambient 挿入） | `visit_call` で末尾 Allocator 引数省略時に合成 `BuiltinCall(CurrentAllocator)` を AST に挿入。Allocator vs `Generic(A: Allocator)` の比較も許可 |

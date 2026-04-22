@@ -44,14 +44,35 @@ impl<'a> TypeCheckerVisitor<'a> {
 
             // Install the method's declared bounds (inherited from its impl block)
             // so the body can see `<A: Allocator>` style constraints, mirroring the
-            // Function path in type_check.
+            // Function path in type_check. Also merge in the struct's own
+            // generic bounds so that `struct List<T, A: Allocator>` makes A's
+            // bound visible inside methods that don't restate it.
+            let mut merged_bounds = method.generic_bounds.clone();
+            if let Some(struct_bounds) = self.context.get_struct_generic_bounds(struct_symbol).cloned() {
+                for (param, bound) in struct_bounds {
+                    merged_bounds.entry(param).or_insert(bound);
+                }
+            }
             let prev_bounds = std::mem::replace(
                 &mut self.context.current_fn_generic_bounds,
-                method.generic_bounds.clone(),
+                merged_bounds,
             );
+
+            // Seed the body's type hint with the method's declared return
+            // type so struct literals at the tail position can pick up type
+            // parameters that aren't constrained by any field (e.g. the `T`
+            // in `List<T, A>` when no field directly references T).
+            let prev_hint = self.type_inference.type_hint.clone();
+            if let Some(ret_ty) = &method.return_type {
+                let resolved = self.resolve_self_type(ret_ty);
+                self.type_inference.type_hint = Some(resolved);
+            }
 
             // Type check method body
             let body_result = self.visit_stmt(&method.code);
+
+            // Restore type hint
+            self.type_inference.type_hint = prev_hint;
 
             // Restore generic bounds and parameter context
             self.context.current_fn_generic_bounds = prev_bounds;

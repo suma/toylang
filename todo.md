@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+137. Allocator を型パラメータに取る struct: `struct List<T, A: Allocator>` 形式。struct 生成時に型注釈をヒントとしてフィールドに現れない T を推論、メソッド内の `Self` 再構築に return type ヒントを伝播、struct-level bound を impl body へマージ、block レベルの型ヒント上書きを修正 (2026-04-22)
 136. `__builtin_sizeof(value)` builtin: 引数の型のバイトサイズを u64 で返す。generic `T` の実体サイズを取得するジェネリックコレクションの土台。現状 primitive（u64/i64/bool/ptr/unit）のみ対応、struct/enum/str は未対応 (2026-04-22)
 135. match の文字列リテラルパターン: `"hello" => ...` で分岐可能。scrutinee 型に `str` を追加、重複リテラルは unreachable エラー、wildcard 必須 (2026-04-22)
 134. match のネストパターン: タプル variant のサブパターンに再帰的なパターンを書ける（`Option::Some(Option::Some(v))`、`Box::Put(Color::Red)`、`Some(42i64)`）。`Pattern` を再帰構造に統合し `PatternBinding` を削除、型ヒントをネスト構築に伝播、irrefutable 判定で不要な unreachable を避ける (2026-04-22)
@@ -39,7 +40,7 @@
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
-121. **Allocator システム残作業** — `__builtin_sizeof` は先行実装済み。残り: ジェネリック `List<T>` の一般化、`List<T, A>` 等の allocator 型パラメータ、IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
+121. **Allocator システム残作業** — `__builtin_sizeof`、`struct List<T, A: Allocator>` 実装済み（値型 T=u64 で実用）。残り: T が任意型の場合の汎用 `List<T>` 支援（sizeof の struct/enum 対応、要素書込/読取 ABI）、IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
 
 ## 検討中の機能
 
@@ -77,7 +78,7 @@
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 886 テスト（100% 成功率、2026-04-22 時点）
+- 合計 890 テスト（100% 成功率、2026-04-22 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

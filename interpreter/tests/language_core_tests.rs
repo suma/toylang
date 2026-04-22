@@ -951,6 +951,57 @@ mod heap_operations {
     }
 
     #[test]
+    fn test_generic_list_with_allocator_type_param() {
+        // struct List<T, A: Allocator> with push/get working under an arena.
+        let source = r#"
+            struct List<T, A: Allocator> {
+                data: ptr,
+                len: u64,
+                cap: u64,
+                alloc: A,
+            }
+
+            impl List {
+                fn push(self: Self, value: u64) -> Self {
+                    val elem_size: u64 = __builtin_sizeof(value)
+                    var new_cap: u64 = self.cap
+                    if self.cap == 0u64 {
+                        new_cap = 8u64
+                    } elif self.len >= self.cap {
+                        new_cap = self.cap * 2u64
+                    }
+                    var new_data: ptr = self.data
+                    if new_cap != self.cap {
+                        new_data = __builtin_heap_realloc(self.data, new_cap * elem_size)
+                    }
+                    __builtin_ptr_write(new_data, self.len * elem_size, value)
+                    List { data: new_data, len: self.len + 1u64, cap: new_cap, alloc: self.alloc }
+                }
+
+                fn get(self: Self, index: u64) -> u64 {
+                    __builtin_ptr_read(self.data, index * 8u64)
+                }
+            }
+
+            fn main() -> u64 {
+                val arena = __builtin_arena_allocator()
+                with allocator = arena {
+                    val empty: List<u64, Allocator> = List {
+                        data: __builtin_heap_alloc(0u64),
+                        len: 0u64,
+                        cap: 0u64,
+                        alloc: ambient,
+                    }
+                    val list = empty.push(10u64).push(20u64).push(30u64)
+                    list.get(0u64) + list.get(1u64) + list.get(2u64)
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(60)"), "got: {}", result);
+    }
+
+    #[test]
     fn test_sizeof_primitives() {
         let source = r#"
             fn main() -> u64 {

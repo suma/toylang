@@ -284,8 +284,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Pre-scan for explicit type declarations and establish global type context
         let original_hint = self.type_inference.type_hint.clone();
-        if let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
-            self.type_inference.type_hint = Some(numeric_type);
+        // Only override the inherited hint when it's unset, so an outer hint
+        // (e.g. the method's declared return type) isn't clobbered by a
+        // numeric-scan result from a transient `val x: u64 = ...` in the body.
+        if original_hint.is_none() {
+            if let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
+                self.type_inference.type_hint = Some(numeric_type);
+            }
         }
 
         // Process each statement

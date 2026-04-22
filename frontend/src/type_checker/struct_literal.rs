@@ -329,7 +329,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        let substitutions = match self.type_inference.solve_constraints() {
+        let mut substitutions = match self.type_inference.solve_constraints() {
             Ok(solution) => solution,
             Err(e) => {
                 self.type_inference.pop_generic_scope();
@@ -360,6 +360,30 @@ impl<'a> TypeCheckerVisitor<'a> {
                         return Err(TypeCheckError::type_mismatch(substituted_expected, actual_type.clone()));
                     }
                 }
+            }
+        }
+
+        // Fall back to the caller-provided type hint when a parameter
+        // wasn't pinned down by any field — useful when a parameter has
+        // no field referencing it (e.g. the `T` in `List<T, A>` whose
+        // fields are only `data: ptr`, `alloc: A`). The hint appears as
+        // `Struct(name, args)` or `Enum(name, args)` with matching arity.
+        let hint_args: Option<Vec<TypeDecl>> = match &self.type_inference.type_hint {
+            Some(TypeDecl::Struct(hint_name, args))
+                if *hint_name == *struct_name && args.len() == generic_params.len() =>
+            {
+                Some(args.clone())
+            }
+            Some(TypeDecl::Enum(hint_name, args))
+                if *hint_name == *struct_name && args.len() == generic_params.len() =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        };
+        if let Some(args) = hint_args {
+            for (param, arg) in generic_params.iter().zip(args.iter()) {
+                substitutions.entry(*param).or_insert_with(|| arg.clone());
             }
         }
 

@@ -215,6 +215,7 @@ fn main() -> u64 {
 - bound は関数・struct・impl の各レベルで伝播。呼び出し側 generic の bound が一致すれば連鎖通過
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin が自動で現在の allocator を通るため、`with allocator = arena { ... }` で囲むだけで arena 経由になる
+- `struct List<T, A: Allocator>` のように allocator を型パラメータにも取れる。フィールドに直接現れない `T` はメソッド戻り値型（`Self`）や val 注釈（`val list: List<u64, Allocator> = ...`）をヒントに推論。要素サイズが必要な場合は `__builtin_sizeof(probe)` を使う
 
 ### 進捗（2026-04-19 現在）
 

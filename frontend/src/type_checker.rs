@@ -46,5 +46,6 @@ mod tests;
 mod visitor;
 mod visitor_impl;
 mod module_access;
+mod pattern_match;
 
 pub use visitor::TypeCheckerVisitor;

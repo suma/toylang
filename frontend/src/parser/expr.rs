@@ -355,7 +355,8 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
         }
         _ => {}
     }
-    // Enum variant path `Name::Variant` or `Name::Variant(a, _, b)`.
+    // Identifier: either a Name binding (plain `x`) or the start of an
+    // enum variant path (`Name::Variant` / `Name::Variant(...)`).
     let first = match parser.peek() {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
@@ -372,6 +373,10 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             ));
         }
     };
+    // A bare identifier (no `::`) binds the scrutinee to that name.
+    if parser.peek() != Some(&Kind::DoubleColon) {
+        return Ok(crate::ast::Pattern::Name(first));
+    }
     parser.expect_err(&Kind::DoubleColon)?;
     let second = match parser.peek() {
         Some(Kind::Identifier(s)) => {
@@ -389,9 +394,10 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             ));
         }
     };
-    // Optional tuple-variant bindings: `(a, _, b)`. Each slot is either a
-    // name to bind or `_` for discard.
-    let mut bindings: Vec<crate::ast::PatternBinding> = Vec::new();
+    // Optional tuple-variant sub-patterns: `(p, q, r)`. Each slot is itself
+    // any pattern, enabling nested matches such as `Some(Some(x))` or
+    // `Box(Color::Red)`.
+    let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         parser.next(); // consume '('
         loop {
@@ -399,28 +405,8 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             if matches!(parser.peek(), Some(Kind::ParenClose)) {
                 break;
             }
-            let binding = match parser.peek() {
-                Some(Kind::Identifier(s)) => {
-                    let s_owned = s.to_string();
-                    if s_owned == "_" {
-                        parser.next();
-                        crate::ast::PatternBinding::Wildcard
-                    } else {
-                        let sym = parser.string_interner.get_or_intern(s_owned);
-                        parser.next();
-                        crate::ast::PatternBinding::Name(sym)
-                    }
-                }
-                other => {
-                    let other_str = format!("{:?}", other);
-                    let location = parser.current_source_location();
-                    return Err(ParserError::generic_error(
-                        location,
-                        format!("expected identifier or `_` in variant pattern, got {}", other_str),
-                    ));
-                }
-            };
-            bindings.push(binding);
+            let sub = parse_match_pattern(parser)?;
+            sub_patterns.push(sub);
             parser.skip_newlines();
             if matches!(parser.peek(), Some(Kind::Comma)) {
                 parser.next();
@@ -430,7 +416,7 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
         }
         parser.expect_err(&Kind::ParenClose)?;
     }
-    Ok(crate::ast::Pattern::EnumVariant(first, second, bindings))
+    Ok(crate::ast::Pattern::EnumVariant(first, second, sub_patterns))
 }
 
 pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {

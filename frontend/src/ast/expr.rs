@@ -83,24 +83,20 @@ pub struct EnumVariantDef {
     pub payload_types: Vec<TypeDecl>,
 }
 
-/// A single sub-pattern inside a tuple-variant pattern. Each slot either binds
-/// the value to a name or discards it with `_`. Nested structural matches land
-/// in a later phase.
-#[derive(Debug, PartialEq, Clone)]
-pub enum PatternBinding {
-    Name(DefaultSymbol),
-    Wildcard,
-}
-
-/// Patterns for `match` arms.
+/// Patterns for `match` arms. Patterns compose recursively — tuple-variant
+/// sub-patterns can themselves be any Pattern, enabling nested matches such
+/// as `Some(Some(x))` or `Some(Color::Red)`.
 #[derive(Debug, PartialEq, Clone)]
 pub enum Pattern {
-    /// `Enum::Variant` for unit variants, or `Enum::Variant(a, _, b)` for
-    /// tuple variants. The bindings vector is empty for unit variants.
-    EnumVariant(DefaultSymbol, DefaultSymbol, Vec<PatternBinding>),
+    /// `Enum::Variant` for unit variants, or `Enum::Variant(p, q, r)` for
+    /// tuple variants. The sub-pattern vector is empty for unit variants.
+    EnumVariant(DefaultSymbol, DefaultSymbol, Vec<Pattern>),
     /// Integer / bool literal pattern such as `0i64`, `42u64`, or `true`.
     /// The stored `ExprRef` points at a literal expression in the pool.
     Literal(ExprRef),
+    /// Identifier pattern — binds the matched value to `name` in the arm
+    /// body's scope. Only legal as a sub-pattern of a tuple variant.
+    Name(DefaultSymbol),
     Wildcard, // _
 }
 

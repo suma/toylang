@@ -866,7 +866,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 let generic_params = self.context.enum_generic_params.get(&struct_name).cloned().unwrap_or_default();
                 let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                // Seed substitutions from the outer type hint so nested
+                // variant construction (`Option::Some(Option::None)` with
+                // hint `Option<Option<i64>>`) can flow the inner type args
+                // down to the payload expression.
+                let outer_hint = self.type_inference.type_hint.clone();
+                let hint_args: Vec<TypeDecl> = match &outer_hint {
+                    Some(TypeDecl::Enum(hint_name, a)) if *hint_name == struct_name => a.clone(),
+                    Some(TypeDecl::Struct(hint_name, a)) if *hint_name == struct_name => a.clone(),
+                    _ => Vec::new(),
+                };
+                if hint_args.len() == generic_params.len() {
+                    for (param, arg) in generic_params.iter().zip(hint_args.iter()) {
+                        substitutions.insert(*param, arg.clone());
+                    }
+                }
+                let saved_hint = outer_hint;
                 for (arg_expr, expected_ty) in args.iter().zip(variant_def.payload_types.iter()) {
+                    // Push a hint equal to the payload type with current
+                    // substitutions applied so inner literals / nested
+                    // variants see the concrete expected type.
+                    let resolved_hint = expected_ty.substitute_generics(&substitutions);
+                    self.type_inference.type_hint = Some(resolved_hint);
                     let actual_ty = self.visit_expr(arg_expr)?;
                     // When the declared payload references a generic parameter,
                     // record the argument's concrete type as that parameter.
@@ -897,6 +918,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         )));
                     }
                 }
+                self.type_inference.type_hint = saved_hint;
                 let type_args: Vec<TypeDecl> = generic_params.iter()
                     .map(|p| substitutions.get(p).cloned().unwrap_or(TypeDecl::Generic(*p)))
                     .collect();

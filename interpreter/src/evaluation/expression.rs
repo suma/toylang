@@ -370,57 +370,65 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
         let scrutinee_val = self.extract_value(scrutinee_val)?;
-        // Snapshot the scrutinee's enum data (if any) for variant pattern
-        // comparison. Non-enum scrutinees produce None and feed through the
-        // literal pattern path instead.
-        let enum_info: Option<(DefaultSymbol, DefaultSymbol, Vec<RcObject>)> = match &*scrutinee_val.borrow() {
-            Object::EnumVariant { enum_name, variant_name, values } => {
-                Some((*enum_name, *variant_name, values.iter().cloned().collect()))
-            }
-            _ => None,
-        };
         for (pattern, body) in arms {
-            match pattern {
-                Pattern::Wildcard => {
-                    return self.evaluate(body);
-                }
-                Pattern::Literal(literal_expr) => {
-                    let lit_value = self.evaluate(literal_expr);
-                    let lit_value = self.extract_value(lit_value)?;
-                    let matched = *scrutinee_val.borrow() == *lit_value.borrow();
-                    if matched {
-                        return self.evaluate(body);
-                    }
-                }
-                Pattern::EnumVariant(p_enum, p_variant, bindings) => {
-                    let (enum_name, variant_name, values) = match &enum_info {
-                        Some(info) => info.clone(),
-                        None => {
-                            return Err(InterpreterError::InternalError(
-                                "enum-variant pattern on non-enum scrutinee".to_string()
-                            ));
-                        }
-                    };
-                    if *p_enum != enum_name || *p_variant != variant_name {
-                        continue;
-                    }
-                    if !bindings.is_empty() {
-                        self.environment.enter_block();
-                        for (binding, payload) in bindings.iter().zip(values.iter()) {
-                            if let PatternBinding::Name(sym) = binding {
-                                self.environment.set_val(*sym, payload.clone());
-                            }
-                        }
-                        let result = self.evaluate(body);
-                        self.environment.exit_block();
-                        return result;
-                    }
-                    return self.evaluate(body);
-                }
+            // Probe each arm in a fresh scope so bindings that were set
+            // during a partial match don't leak across arms when the
+            // match ultimately fails.
+            self.environment.enter_block();
+            let matched = self.try_match_pattern(pattern, &scrutinee_val)?;
+            if matched {
+                let result = self.evaluate(body);
+                self.environment.exit_block();
+                return result;
             }
+            self.environment.exit_block();
         }
         Err(InterpreterError::InternalError(
             "no matching arm in match expression".to_string(),
         ))
+    }
+
+    /// Try to match `pattern` against `value`, binding any `Name`
+    /// sub-patterns into the current environment scope. Returns `true` if
+    /// the pattern matches; on mismatch the caller should unwind the scope
+    /// it pushed so abandoned bindings don't persist.
+    fn try_match_pattern(
+        &mut self,
+        pattern: &Pattern,
+        value: &RcObject,
+    ) -> Result<bool, InterpreterError> {
+        match pattern {
+            Pattern::Wildcard => Ok(true),
+            Pattern::Name(sym) => {
+                self.environment.set_val(*sym, value.clone());
+                Ok(true)
+            }
+            Pattern::Literal(literal_expr) => {
+                let lit_value = self.evaluate(literal_expr);
+                let lit_value = self.extract_value(lit_value)?;
+                let eq = *value.borrow() == *lit_value.borrow();
+                Ok(eq)
+            }
+            Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
+                let (enum_name, variant_name, values) = match &*value.borrow() {
+                    Object::EnumVariant { enum_name, variant_name, values } => {
+                        (*enum_name, *variant_name, values.clone())
+                    }
+                    _ => return Ok(false),
+                };
+                if *p_enum != enum_name || *p_variant != variant_name {
+                    return Ok(false);
+                }
+                if sub_patterns.len() != values.len() {
+                    return Ok(false);
+                }
+                for (sub, payload) in sub_patterns.iter().zip(values.iter()) {
+                    if !self.try_match_pattern(sub, payload)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+        }
     }
 }

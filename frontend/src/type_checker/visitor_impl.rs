@@ -151,6 +151,107 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
     }
 }
 
+/// A pattern is irrefutable when it always matches any value of the expected
+/// type. `Name` and `Wildcard` are irrefutable. Literals are refutable by
+/// value. An `EnumVariant` pattern narrows to a single variant, so it is
+/// refutable in any enum with more than one variant — we conservatively
+/// treat it as refutable, since the check only affects whether an already-
+/// seen top-level variant triggers an "unreachable arm" error when the
+/// same variant reappears with different sub-patterns.
+fn is_irrefutable_pattern(pat: &Pattern) -> bool {
+    match pat {
+        Pattern::Wildcard | Pattern::Name(_) => true,
+        Pattern::Literal(_) | Pattern::EnumVariant(_, _, _) => false,
+    }
+}
+
+impl<'a> TypeCheckerVisitor<'a> {
+    /// Recursively type-check a sub-pattern against the expected payload type.
+    /// Introduces any `Name` bindings into the *current* variable scope, which
+    /// callers are responsible for pushing/popping around the arm body.
+    fn check_sub_pattern(&mut self, pat: &Pattern, expected_ty: &TypeDecl) -> Result<(), TypeCheckError> {
+        match pat {
+            Pattern::Wildcard => Ok(()),
+            Pattern::Name(sym) => {
+                self.context.set_var(*sym, expected_ty.clone());
+                Ok(())
+            }
+            Pattern::Literal(lit_expr) => {
+                if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64) {
+                    return Err(TypeCheckError::new(format!(
+                        "literal pattern is only valid where a primitive value is expected, got {:?}",
+                        expected_ty
+                    )));
+                }
+                let saved_hint = self.type_inference.type_hint.clone();
+                self.type_inference.type_hint = Some(expected_ty.clone());
+                let lit_ty = self.visit_expr(lit_expr)?;
+                self.type_inference.type_hint = saved_hint;
+                if !lit_ty.is_equivalent(expected_ty) {
+                    return Err(TypeCheckError::new(format!(
+                        "literal pattern type {:?} does not match expected {:?}",
+                        lit_ty, expected_ty
+                    )));
+                }
+                Ok(())
+            }
+            Pattern::EnumVariant(pat_enum, pat_variant, sub_patterns) => {
+                // Extract the enum name + type args from the expected payload
+                // type. Accept Enum, Struct (parser can emit this), or
+                // Identifier forms, the same way the top-level match logic
+                // does.
+                let (enum_name, enum_type_args) = match expected_ty {
+                    TypeDecl::Enum(name, args) => (*name, args.clone()),
+                    TypeDecl::Struct(name, args)
+                        if self.context.enum_definitions.contains_key(name) => (*name, args.clone()),
+                    TypeDecl::Identifier(name)
+                        if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
+                    _ => {
+                        return Err(TypeCheckError::new(format!(
+                            "enum-variant sub-pattern expects an enum payload, got {:?}",
+                            expected_ty
+                        )));
+                    }
+                };
+                if *pat_enum != enum_name {
+                    let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                    let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
+                    return Err(TypeCheckError::new(format!(
+                        "nested pattern refers to enum '{}', but payload type is enum '{}'", got, expected
+                    )));
+                }
+                let variants = self.context.enum_definitions.get(&enum_name).cloned()
+                    .ok_or_else(|| TypeCheckError::new("nested match on unknown enum".to_string()))?;
+                let variant_def = variants.iter().find(|v| v.name == *pat_variant)
+                    .cloned()
+                    .ok_or_else(|| {
+                        let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                        let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
+                        TypeCheckError::new(format!("'{}' is not a variant of enum '{}'", v_str, enum_str))
+                    })?;
+                if sub_patterns.len() != variant_def.payload_types.len() {
+                    let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+                    let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
+                    return Err(TypeCheckError::new(format!(
+                        "variant '{}::{}' has {} payload field(s) but pattern bound {}",
+                        enum_str, v_str, variant_def.payload_types.len(), sub_patterns.len()
+                    )));
+                }
+                let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
+                let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
+                    substitutions.insert(*param, arg.clone());
+                }
+                for (sub, payload_ty) in sub_patterns.iter().zip(variant_def.payload_types.iter()) {
+                    let resolved = payload_ty.substitute_generics(&substitutions);
+                    self.check_sub_pattern(sub, &resolved)?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
     // Core Visitor Methods
@@ -430,7 +531,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
         // Track coverage to enforce exhaustiveness and reject unreachable arms.
         let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
-        let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        // Two sets because of nested patterns:
+        //  - `fully_covered_variants` gates the unreachable-arm check and only
+        //    includes variants whose sub-patterns were all irrefutable.
+        //  - `seen_variants` gates exhaustiveness; any arm for a variant
+        //    counts, since exhaustiveness across arbitrary nested patterns is
+        //    undecidable in our simple analysis.
+        let mut fully_covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut seen_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut covered_int64: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut covered_uint64: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
@@ -445,6 +553,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             let mut pushed_scope = false;
             match pat {
                 Pattern::Wildcard => {
+                    has_wildcard = true;
+                }
+                Pattern::Name(sym) => {
+                    // Bare name at top level binds the whole scrutinee; it is
+                    // irrefutable and therefore acts like a wildcard for
+                    // exhaustiveness.
+                    self.context.vars.push(std::collections::HashMap::new());
+                    pushed_scope = true;
+                    self.context.set_var(*sym, scrutinee_ty.clone());
                     has_wildcard = true;
                 }
                 Pattern::Literal(literal_expr) => {
@@ -531,11 +648,16 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                             )));
                         }
                     };
-                    if covered_variants.contains(pat_variant) {
+                    // `Option::Some(Some(x))` and `Option::Some(None)` share
+                    // the top variant `Some` but aren't redundant — they
+                    // cover disjoint sub-patterns. So we only treat a
+                    // variant as redundant when an earlier arm's sub-patterns
+                    // are all irrefutable (Name / Wildcard at every slot).
+                    if fully_covered_variants.contains(pat_variant) {
                         let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let v_str = self.core.string_interner.resolve(*pat_variant).unwrap_or("?").to_string();
                         return Err(TypeCheckError::new(format!(
-                            "unreachable match arm: variant '{}::{}' already handled by an earlier arm",
+                            "unreachable match arm: variant '{}::{}' already fully covered by an earlier arm",
                             enum_str, v_str
                         )));
                     }
@@ -555,14 +677,20 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         for (param, arg) in generic_params.iter().zip(enum_type_args.iter()) {
                             substitutions.insert(*param, arg.clone());
                         }
-                        for (binding, payload_ty) in bindings.iter().zip(variant_def.payload_types.iter()) {
-                            if let crate::ast::PatternBinding::Name(sym) = binding {
-                                let resolved = payload_ty.substitute_generics(&substitutions);
-                                self.context.set_var(*sym, resolved);
-                            }
+                        for (sub_pat, payload_ty) in bindings.iter().zip(variant_def.payload_types.iter()) {
+                            let resolved = payload_ty.substitute_generics(&substitutions);
+                            self.check_sub_pattern(sub_pat, &resolved)?;
                         }
                     }
-                    covered_variants.insert(*pat_variant);
+                    // Only mark the variant as fully covered if every
+                    // sub-pattern is irrefutable. Refutable sub-patterns
+                    // (literals, nested enum variants) leave part of the
+                    // variant's value space unmatched, so another arm
+                    // targeting the same variant can still be useful.
+                    if bindings.iter().all(is_irrefutable_pattern) {
+                        fully_covered_variants.insert(*pat_variant);
+                    }
+                    seen_variants.insert(*pat_variant);
                 }
             }
             let body_ty = self.visit_expr(body)?;
@@ -579,7 +707,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             match &kind {
                 ScrutineeKind::Enum { name, variants, .. } => {
                     let missing: Vec<DefaultSymbol> = variants.iter()
-                        .filter(|v| !covered_variants.contains(&v.name))
+                        .filter(|v| !seen_variants.contains(&v.name))
                         .map(|v| v.name)
                         .collect();
                     if !missing.is_empty() {

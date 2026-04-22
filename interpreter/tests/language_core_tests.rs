@@ -1339,7 +1339,7 @@ mod enum_and_match {
         let result = execute_test_program(source);
         assert!(result.is_err(), "expected duplicate variant arm error");
         let err = result.unwrap_err();
-        assert!(err.contains("already handled"), "error should mention repeated arm: {}", err);
+        assert!(err.contains("already fully covered"), "error should mention repeated arm: {}", err);
     }
 
     #[test]
@@ -1437,6 +1437,92 @@ mod enum_and_match {
         "#;
         let result = execute_test_program(source);
         assert!(result.is_err(), "expected literal type mismatch");
+    }
+
+    #[test]
+    fn test_nested_enum_pattern_match() {
+        let source = r#"
+            enum Option<T> {
+                None,
+                Some(T),
+            }
+
+            fn main() -> i64 {
+                val b: Option<Option<i64>> = Option::Some(Option::Some(5i64))
+                match b {
+                    Option::Some(Option::Some(v)) => v + 10i64,
+                    Option::Some(Option::None) => -1i64,
+                    Option::None => -2i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(15)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_nested_pattern_partial_variant_allows_followup_arm() {
+        // Having `Some(Some(v))` and `Some(None)` as separate arms is fine;
+        // the first only covers part of the `Some` value space, so the
+        // second is still reachable.
+        let source = r#"
+            enum Option<T> { None, Some(T) }
+
+            fn classify(o: Option<Option<i64>>) -> i64 {
+                match o {
+                    Option::Some(Option::Some(v)) => v,
+                    Option::Some(Option::None) => 999i64,
+                    Option::None => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                classify(Option::Some(Option::Some(5i64)))
+                    + classify(Option::Some(Option::None))
+                    + classify(Option::None)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(1004)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_nested_enum_pattern_unit_inside_tuple() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+            enum Box { Put(Color) }
+
+            fn main() -> i64 {
+                val b = Box::Put(Color::Green)
+                match b {
+                    Box::Put(Color::Red) => 1i64,
+                    Box::Put(Color::Green) => 2i64,
+                    Box::Put(Color::Blue) => 3i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(2)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_name_pattern_at_top_level_binds_scrutinee() {
+        let source = r#"
+            enum Color { Red, Green, Blue }
+
+            fn color_code(c: Color) -> i64 {
+                match c {
+                    Color::Red => 1i64,
+                    other => 99i64,
+                }
+            }
+
+            fn main() -> i64 {
+                color_code(Color::Red) + color_code(Color::Blue)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(100)"), "got: {}", result);
     }
 
     #[test]

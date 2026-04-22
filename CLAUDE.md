@@ -198,7 +198,7 @@ fn main() -> u64 {
 | `__builtin_default_allocator()` | プロセス全体の global allocator |
 | `__builtin_arena_allocator()` | 新規 arena（drop で一括解放） |
 | `__builtin_fixed_buffer_allocator(capacity: u64)` | バイト数 quota 付き（超過で null） |
-| `__builtin_sizeof(value)` | 値の型のバイトサイズ（u64）。generic `T` の実体サイズを取得するのに使う |
+| `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ enum（1-byte タグ + payload）/ tuple / array をサポート。generic `T` の実体サイズ取得に使う |
 | `fn f<A: Allocator>(a: A)` | allocator をジェネリックに受け取る関数 |
 
 ### 典型的な使い方

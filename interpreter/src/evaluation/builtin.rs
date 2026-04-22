@@ -6,6 +6,51 @@ use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use super::{EvaluationContext, EvaluationResult};
 
+/// Compute the byte size of a runtime value by walking its Object tree.
+/// Primitives have fixed widths; composite values sum their components.
+/// Enum variants include a 1-byte tag — note that this yields a
+/// variant-specific size, so `List<SomeEnum>` users who need a uniform
+/// stride should probe the largest variant.
+fn object_byte_size(value: &Object) -> Option<u64> {
+    match value {
+        Object::Int64(_) | Object::UInt64(_) | Object::Pointer(_) => Some(8),
+        Object::Bool(_) => Some(1),
+        Object::Unit => Some(0),
+        Object::Struct { fields, .. } => {
+            let mut total: u64 = 0;
+            for v in fields.values() {
+                total = total.saturating_add(object_byte_size(&v.borrow())?);
+            }
+            Some(total)
+        }
+        Object::Tuple(elements) => {
+            let mut total: u64 = 0;
+            for e in elements.iter() {
+                total = total.saturating_add(object_byte_size(&e.borrow())?);
+            }
+            Some(total)
+        }
+        Object::Array(elements) => {
+            let mut total: u64 = 0;
+            for e in elements.iter() {
+                total = total.saturating_add(object_byte_size(&e.borrow())?);
+            }
+            Some(total)
+        }
+        Object::EnumVariant { values, .. } => {
+            // 1-byte tag + payload sizes.
+            let mut total: u64 = 1;
+            for v in values.iter() {
+                total = total.saturating_add(object_byte_size(&v.borrow())?);
+            }
+            Some(total)
+        }
+        // Opaque / non-serialisable values have no canonical byte size.
+        Object::ConstString(_) | Object::String(_) | Object::Dict(_)
+        | Object::Null(_) | Object::Allocator(_) | Object::Range { .. } => None,
+    }
+}
+
 impl EvaluationContext<'_> {
     /// Evaluate builtin method calls
     pub(super) fn evaluate_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
@@ -511,23 +556,16 @@ impl EvaluationContext<'_> {
                         found: args.len(),
                     });
                 }
-                // Evaluate the probe expression to determine its concrete
-                // runtime type. The value itself is discarded; we only use
-                // it to read its type tag.
+                // Evaluate the probe expression, then walk its runtime
+                // Object recursively to accumulate a byte size.
                 let value = self.evaluate(&args[0])?;
                 let value = self.extract_value(Ok(value))?;
-                let ty = value.borrow().get_type();
-                let size: u64 = match ty {
-                    TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Ptr => 8,
-                    TypeDecl::Bool => 1,
-                    TypeDecl::Unit => 0,
-                    other => {
-                        return Err(InterpreterError::InternalError(format!(
-                            "__builtin_sizeof: size of type {:?} is not supported yet",
-                            other
-                        )));
-                    }
-                };
+                let size = object_byte_size(&value.borrow()).ok_or_else(|| {
+                    InterpreterError::InternalError(format!(
+                        "__builtin_sizeof: size of value {:?} is not supported",
+                        value.borrow()
+                    ))
+                })?;
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(size)))))
             }
 

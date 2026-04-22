@@ -1143,6 +1143,43 @@ mod heap_operations {
     }
 
     #[test]
+    fn test_sizeof_struct_sums_field_widths() {
+        let source = r#"
+            struct Point {
+                x: u64,
+                y: i64,
+                active: bool,
+            }
+
+            fn main() -> u64 {
+                val p: Point = Point { x: 0u64, y: 0i64, active: false }
+                __builtin_sizeof(p)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(17)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_enum_adds_tag_and_payload() {
+        // Unit variants take 1 byte (tag only). Tuple variants add their
+        // payload sizes on top of the 1-byte tag.
+        let source = r#"
+            enum Option<T> { None, Some(T) }
+            enum Color { Red, Green, Blue }
+
+            fn main() -> u64 {
+                val n: Option<i64> = Option::None
+                val s: Option<i64> = Option::Some(42i64)
+                val c: Color = Color::Red
+                __builtin_sizeof(n) + __builtin_sizeof(s) + __builtin_sizeof(c)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(11)"), "got: {}", result);
+    }
+
+    #[test]
     fn test_sizeof_with_heap_alloc_sizing() {
         // Realistic usage: allocate space for one element using sizeof.
         let source = r#"

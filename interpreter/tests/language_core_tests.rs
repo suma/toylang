@@ -1343,6 +1343,103 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_literal_pattern_on_int64() {
+        let source = r#"
+            fn describe(n: i64) -> i64 {
+                match n {
+                    0i64 => 100i64,
+                    1i64 => 200i64,
+                    _ => 999i64,
+                }
+            }
+
+            fn main() -> i64 {
+                describe(0i64) + describe(1i64) + describe(5i64)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(1299)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_literal_pattern_on_bool_is_exhaustive() {
+        let source = r#"
+            fn f(b: bool) -> i64 {
+                match b {
+                    true => 1i64,
+                    false => 0i64,
+                }
+            }
+
+            fn main() -> i64 {
+                f(true) + f(false)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(1)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_non_exhaustive_bool_match_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val b: bool = true
+                match b {
+                    true => 1i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected non-exhaustive bool error");
+    }
+
+    #[test]
+    fn test_int_match_without_wildcard_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val n: i64 = 3i64
+                match n {
+                    0i64 => 1i64,
+                    1i64 => 2i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected non-exhaustive int error");
+    }
+
+    #[test]
+    fn test_duplicate_literal_pattern_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val n: i64 = 0i64
+                match n {
+                    0i64 => 1i64,
+                    0i64 => 2i64,
+                    _ => 3i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected duplicate literal error");
+    }
+
+    #[test]
+    fn test_literal_pattern_type_mismatch_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val n: i64 = 0i64
+                match n {
+                    0u64 => 1i64,
+                    _ => 2i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected literal type mismatch");
+    }
+
+    #[test]
     fn test_duplicate_variant_rejected() {
         let source = r#"
             enum Color {

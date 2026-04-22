@@ -370,28 +370,41 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
         let scrutinee_val = self.extract_value(scrutinee_val)?;
-        let (enum_name, variant_name, values): (DefaultSymbol, DefaultSymbol, Vec<RcObject>) = match &*scrutinee_val.borrow() {
+        // Snapshot the scrutinee's enum data (if any) for variant pattern
+        // comparison. Non-enum scrutinees produce None and feed through the
+        // literal pattern path instead.
+        let enum_info: Option<(DefaultSymbol, DefaultSymbol, Vec<RcObject>)> = match &*scrutinee_val.borrow() {
             Object::EnumVariant { enum_name, variant_name, values } => {
-                (*enum_name, *variant_name, values.iter().cloned().collect())
+                Some((*enum_name, *variant_name, values.iter().cloned().collect()))
             }
-            other => {
-                return Err(InterpreterError::InternalError(format!(
-                    "match scrutinee must be an enum variant, got {:?}", other
-                )));
-            }
+            _ => None,
         };
         for (pattern, body) in arms {
             match pattern {
                 Pattern::Wildcard => {
                     return self.evaluate(body);
                 }
+                Pattern::Literal(literal_expr) => {
+                    let lit_value = self.evaluate(literal_expr);
+                    let lit_value = self.extract_value(lit_value)?;
+                    let matched = *scrutinee_val.borrow() == *lit_value.borrow();
+                    if matched {
+                        return self.evaluate(body);
+                    }
+                }
                 Pattern::EnumVariant(p_enum, p_variant, bindings) => {
+                    let (enum_name, variant_name, values) = match &enum_info {
+                        Some(info) => info.clone(),
+                        None => {
+                            return Err(InterpreterError::InternalError(
+                                "enum-variant pattern on non-enum scrutinee".to_string()
+                            ));
+                        }
+                    };
                     if *p_enum != enum_name || *p_variant != variant_name {
                         continue;
                     }
                     if !bindings.is_empty() {
-                        // Push a scope and bind each Name slot to the payload
-                        // value at that index; Wildcard slots bind nothing.
                         self.environment.enter_block();
                         for (binding, payload) in bindings.iter().zip(values.iter()) {
                             if let PatternBinding::Name(sym) = binding {
@@ -406,8 +419,6 @@ impl EvaluationContext<'_> {
                 }
             }
         }
-        // Type checker is expected to catch non-exhaustive matches on known
-        // enums; this runtime check is a defensive fallback.
         Err(InterpreterError::InternalError(
             "no matching arm in match expression".to_string(),
         ))

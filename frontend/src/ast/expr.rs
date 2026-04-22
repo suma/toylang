@@ -98,6 +98,9 @@ pub enum Pattern {
     /// `Enum::Variant` for unit variants, or `Enum::Variant(a, _, b)` for
     /// tuple variants. The bindings vector is empty for unit variants.
     EnumVariant(DefaultSymbol, DefaultSymbol, Vec<PatternBinding>),
+    /// Integer / bool literal pattern such as `0i64`, `42u64`, or `true`.
+    /// The stored `ExprRef` points at a literal expression in the pool.
+    Literal(ExprRef),
     Wildcard, // _
 }
 

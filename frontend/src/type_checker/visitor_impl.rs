@@ -393,38 +393,49 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             return Err(TypeCheckError::new("match expression must have at least one arm".to_string()));
         }
         let scrutinee_ty = self.visit_expr(scrutinee)?;
-        // Accept either a resolved Enum type or a bare Identifier naming a
-        // registered enum (parser emits `TypeDecl::Identifier` for user-named
-        // types and does not yet specialize to `Enum`).
-        let (enum_name, enum_type_args) = match &scrutinee_ty {
-            TypeDecl::Enum(name, args) => (*name, args.clone()),
-            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => (*name, Vec::new()),
-            // Parser can emit Struct(name, params) for `Name<...>` annotations
-            // before we know whether Name is a struct or enum; accept it here
-            // when Name is a registered enum.
-            TypeDecl::Struct(name, args) if self.context.enum_definitions.contains_key(name) => (*name, args.clone()),
+
+        // Classify the scrutinee. Enum matches and primitive matches accept
+        // different pattern shapes, so we dispatch on this up-front.
+        enum ScrutineeKind {
+            Enum {
+                name: DefaultSymbol,
+                type_args: Vec<TypeDecl>,
+                variants: Vec<crate::ast::EnumVariantDef>,
+            },
+            Primitive(TypeDecl),
+        }
+        let kind = match &scrutinee_ty {
+            TypeDecl::Enum(name, args) => {
+                let variants = self.context.enum_definitions.get(name)
+                    .cloned()
+                    .ok_or_else(|| TypeCheckError::new("match on unknown enum".to_string()))?;
+                ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
+            }
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => {
+                let variants = self.context.enum_definitions.get(name).cloned().unwrap();
+                ScrutineeKind::Enum { name: *name, type_args: Vec::new(), variants }
+            }
+            TypeDecl::Struct(name, args) if self.context.enum_definitions.contains_key(name) => {
+                let variants = self.context.enum_definitions.get(name).cloned().unwrap();
+                ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
+            }
+            TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 => ScrutineeKind::Primitive(scrutinee_ty.clone()),
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum, got {:?}", scrutinee_ty
+                    "match scrutinee must be an enum or a primitive (bool / i64 / u64), got {:?}",
+                    scrutinee_ty
                 )));
             }
         };
-        let variants = self.context.enum_definitions.get(&enum_name)
-            .cloned()
-            .ok_or_else(|| TypeCheckError::new("match on unknown enum".to_string()))?;
 
-        // Validate each pattern and collect arm body types. Tuple-variant
-        // bindings introduce fresh variables scoped to the arm body, so we
-        // push a new variable scope around each body visit. While walking
-        // the arms we also track coverage so the loop below can enforce
-        // exhaustiveness.
+        // Track coverage to enforce exhaustiveness and reject unreachable arms.
         let mut arm_types: Vec<TypeDecl> = Vec::with_capacity(arms.len());
         let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut covered_int64: std::collections::HashSet<i64> = std::collections::HashSet::new();
+        let mut covered_uint64: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
         let mut has_wildcard = false;
         for (arm_index, (pat, body)) in arms.iter().enumerate() {
-            // Any arm after a wildcard is unreachable — the wildcard already
-            // matched every remaining value. This catches the common reorder
-            // mistake where a catch-all was pasted above specific cases.
             if has_wildcard {
                 return Err(TypeCheckError::new(format!(
                     "unreachable match arm at position {}: a wildcard `_` arm already covers every value",
@@ -436,7 +447,72 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 Pattern::Wildcard => {
                     has_wildcard = true;
                 }
+                Pattern::Literal(literal_expr) => {
+                    let prim_ty = match &kind {
+                        ScrutineeKind::Primitive(t) => t.clone(),
+                        ScrutineeKind::Enum { .. } => {
+                            return Err(TypeCheckError::new(
+                                "literal pattern cannot be used in a match on an enum".to_string()
+                            ));
+                        }
+                    };
+                    // Literal expression must have the same primitive type as
+                    // the scrutinee. We visit it with the scrutinee type as a
+                    // hint so bare numeric literals pick up i64 / u64.
+                    let saved_hint = self.type_inference.type_hint.clone();
+                    self.type_inference.type_hint = Some(prim_ty.clone());
+                    let lit_ty = self.visit_expr(literal_expr)?;
+                    self.type_inference.type_hint = saved_hint;
+                    if !lit_ty.is_equivalent(&prim_ty) {
+                        return Err(TypeCheckError::new(format!(
+                            "literal pattern type {:?} does not match scrutinee type {:?}",
+                            lit_ty, prim_ty
+                        )));
+                    }
+                    // Record the concrete literal value for duplicate / exhaustiveness checks.
+                    if let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
+                        match lit_expr {
+                            Expr::Int64(v) => {
+                                if !covered_int64.insert(v) {
+                                    return Err(TypeCheckError::new(format!(
+                                        "unreachable match arm: literal {} already handled by an earlier arm", v
+                                    )));
+                                }
+                            }
+                            Expr::UInt64(v) => {
+                                if !covered_uint64.insert(v) {
+                                    return Err(TypeCheckError::new(format!(
+                                        "unreachable match arm: literal {} already handled by an earlier arm", v
+                                    )));
+                                }
+                            }
+                            Expr::True => {
+                                if !covered_bool.insert(true) {
+                                    return Err(TypeCheckError::new(
+                                        "unreachable match arm: literal `true` already handled by an earlier arm".to_string()
+                                    ));
+                                }
+                            }
+                            Expr::False => {
+                                if !covered_bool.insert(false) {
+                                    return Err(TypeCheckError::new(
+                                        "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
+                                    ));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 Pattern::EnumVariant(pat_enum, pat_variant, bindings) => {
+                    let (enum_name, enum_type_args, variants) = match &kind {
+                        ScrutineeKind::Enum { name, type_args, variants } => (*name, type_args.clone(), variants.clone()),
+                        ScrutineeKind::Primitive(t) => {
+                            return Err(TypeCheckError::new(format!(
+                                "enum-variant pattern cannot be used in a match on {:?}", t
+                            )));
+                        }
+                    };
                     if *pat_enum != enum_name {
                         let expected = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
                         let got = self.core.string_interner.resolve(*pat_enum).unwrap_or("?").to_string();
@@ -472,11 +548,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                         )));
                     }
                     if !bindings.is_empty() {
-                        // Introduce each Name binding with the corresponding
-                        // payload type for the arm body's scope. For generic
-                        // enums, substitute type parameters using the
-                        // scrutinee's type arguments so `Some(x) => x` binds
-                        // `x` to the concrete element type.
                         self.context.vars.push(std::collections::HashMap::new());
                         pushed_scope = true;
                         let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
@@ -501,25 +572,41 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             arm_types.push(body_ty);
         }
 
-        // Exhaustiveness: without a wildcard arm, every variant of the enum
-        // must appear at least once as an arm pattern. This catches the
-        // `Option`-style mistake where a new variant is added to the enum
-        // but an existing match is never updated.
+        // Exhaustiveness. Enums must cover every variant. `bool` must cover
+        // both `true` and `false`. Other primitives have an unbounded value
+        // space, so a wildcard is mandatory.
         if !has_wildcard {
-            let missing: Vec<DefaultSymbol> = variants.iter()
-                .filter(|v| !covered_variants.contains(&v.name))
-                .map(|v| v.name)
-                .collect();
-            if !missing.is_empty() {
-                let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
-                let missing_strs: Vec<String> = missing.iter()
-                    .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
-                    .collect();
-                return Err(TypeCheckError::new(format!(
-                    "non-exhaustive match on enum '{}': missing variant(s) {} — add an arm for each or a wildcard `_`",
-                    enum_str,
-                    missing_strs.join(", ")
-                )));
+            match &kind {
+                ScrutineeKind::Enum { name, variants, .. } => {
+                    let missing: Vec<DefaultSymbol> = variants.iter()
+                        .filter(|v| !covered_variants.contains(&v.name))
+                        .map(|v| v.name)
+                        .collect();
+                    if !missing.is_empty() {
+                        let enum_str = self.core.string_interner.resolve(*name).unwrap_or("?").to_string();
+                        let missing_strs: Vec<String> = missing.iter()
+                            .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
+                            .collect();
+                        return Err(TypeCheckError::new(format!(
+                            "non-exhaustive match on enum '{}': missing variant(s) {} — add an arm for each or a wildcard `_`",
+                            enum_str,
+                            missing_strs.join(", ")
+                        )));
+                    }
+                }
+                ScrutineeKind::Primitive(TypeDecl::Bool) => {
+                    if !covered_bool.contains(&true) || !covered_bool.contains(&false) {
+                        return Err(TypeCheckError::new(
+                            "non-exhaustive match on bool: cover both `true` and `false` or add a wildcard `_`".to_string()
+                        ));
+                    }
+                }
+                ScrutineeKind::Primitive(t) => {
+                    return Err(TypeCheckError::new(format!(
+                        "non-exhaustive match on {:?}: primitive value space is unbounded, add a wildcard `_` arm",
+                        t
+                    )));
+                }
             }
         }
 

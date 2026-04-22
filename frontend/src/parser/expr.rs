@@ -317,6 +317,44 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             return Ok(crate::ast::Pattern::Wildcard);
         }
     }
+    // Integer and bool literal patterns. We build them as regular literal
+    // expressions so the type checker can reuse its existing rules for
+    // determining the literal's type.
+    match parser.peek() {
+        Some(&Kind::UInt64(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let expr_ref = parser.ast_builder.uint64_expr(n, Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
+        Some(&Kind::Int64(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let expr_ref = parser.ast_builder.int64_expr(n, Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
+        Some(Kind::Integer(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            parser.next();
+            let sym = parser.string_interner.get_or_intern(s_copy);
+            let expr_ref = parser.ast_builder.number_expr(sym, Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
+        Some(&Kind::True) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let expr_ref = parser.ast_builder.bool_true_expr(Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
+        Some(&Kind::False) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let expr_ref = parser.ast_builder.bool_false_expr(Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
+        _ => {}
+    }
     // Enum variant path `Name::Variant` or `Name::Variant(a, _, b)`.
     let first = match parser.peek() {
         Some(Kind::Identifier(s)) => {

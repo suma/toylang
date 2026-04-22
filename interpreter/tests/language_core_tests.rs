@@ -1506,6 +1506,57 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_string_literal_pattern() {
+        let source = r#"
+            fn classify(s: str) -> i64 {
+                match s {
+                    "zero" => 0i64,
+                    "one" => 1i64,
+                    "two" => 2i64,
+                    _ => -1i64,
+                }
+            }
+
+            fn main() -> i64 {
+                classify("one") + classify("two") + classify("unknown")
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("Int64(2)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_string_pattern_without_wildcard_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val s: str = "x"
+                match s {
+                    "a" => 1i64,
+                    "b" => 2i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected non-exhaustive str error");
+    }
+
+    #[test]
+    fn test_duplicate_string_literal_pattern_rejected() {
+        let source = r#"
+            fn main() -> i64 {
+                val s: str = "x"
+                match s {
+                    "a" => 1i64,
+                    "a" => 2i64,
+                    _ => 3i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        assert!(result.is_err(), "expected duplicate string literal error");
+    }
+
+    #[test]
     fn test_name_pattern_at_top_level_binds_scrutinee() {
         let source = r#"
             enum Color { Red, Green, Blue }

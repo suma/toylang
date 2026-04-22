@@ -141,7 +141,7 @@ fn main() -> u64 {
   - 網羅性チェック: wildcard がなく variant が欠落していると型チェックエラー
   - 到達性チェック: 同じ variant を 2 回 arm に書く、または `_` の後ろに arm を置くと型チェックエラー
   - ジェネリック enum: `enum Option<T> { None, Some(T) }` をサポート。タプル variant の引数から型パラメータを推論、ユニット variant（`None`）は `val x: Option<i64> = Option::None` のように型注釈から補完
-  - リテラルパターン: scrutinee が `bool`/`i64`/`u64` のとき、`0i64 => ...` / `true => ...` のようにリテラルで分岐可能。`bool` は両値で網羅、整数は wildcard 必須
+  - リテラルパターン: scrutinee が `bool`/`i64`/`u64`/`str` のとき、`0i64 => ...` / `true => ...` / `"hello" => ...` のようにリテラルで分岐可能。`bool` は両値で網羅、整数・文字列は wildcard 必須
   - ネストパターン: `Option::Some(Option::Some(v))` や `Box::Put(Color::Red)` のように、タプル variant のサブパターンに再帰的にパターンを書ける。サブパターン位置には Name バインディング、`_` ワイルドカード、リテラル、ネストした enum variant を記述可能
 
 ## Architecture Notes

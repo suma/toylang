@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+135. match の文字列リテラルパターン: `"hello" => ...` で分岐可能。scrutinee 型に `str` を追加、重複リテラルは unreachable エラー、wildcard 必須 (2026-04-22)
 134. match のネストパターン: タプル variant のサブパターンに再帰的なパターンを書ける（`Option::Some(Option::Some(v))`、`Box::Put(Color::Red)`、`Some(42i64)`）。`Pattern` を再帰構造に統合し `PatternBinding` を削除、型ヒントをネスト構築に伝播、irrefutable 判定で不要な unreachable を避ける (2026-04-22)
 133. match のリテラルパターン: primitive scrutinee（`bool`/`i64`/`u64`）に対して `0i64 =>`、`true =>` のようなリテラルで分岐可能。bool は両値網羅、整数は wildcard 必須、重複リテラルは unreachable エラー (2026-04-22)
 132. Enum + match（Phase 3）: ジェネリック `enum Option<T> { None, Some(T) }`。タプル variant 引数からの型パラメータ推論、ユニット variant の型注釈ヒント補完、match パターンバインディングでの型パラメータ置換 (2026-04-21)
@@ -32,7 +33,7 @@
 
 ## 未実装 📋
 
-96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネストパターン完了。標準 Option/Result ライブラリ、文字列リテラルパターン、深い網羅性解析は未実装
+96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
@@ -75,7 +76,7 @@
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 880 テスト（100% 成功率、2026-04-22 時点）
+- 合計 883 テスト（100% 成功率、2026-04-22 時点）
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

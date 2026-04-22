@@ -177,7 +177,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Ok(())
             }
             Pattern::Literal(lit_expr) => {
-                if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64) {
+                if !matches!(expected_ty, TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String) {
                     return Err(TypeCheckError::new(format!(
                         "literal pattern is only valid where a primitive value is expected, got {:?}",
                         expected_ty
@@ -520,10 +520,10 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 let variants = self.context.enum_definitions.get(name).cloned().unwrap();
                 ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
             }
-            TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 => ScrutineeKind::Primitive(scrutinee_ty.clone()),
+            TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum or a primitive (bool / i64 / u64), got {:?}",
+                    "match scrutinee must be an enum or a primitive (bool / i64 / u64 / str), got {:?}",
                     scrutinee_ty
                 )));
             }
@@ -542,6 +542,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         let mut covered_int64: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut covered_uint64: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
+        let mut covered_strings: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut has_wildcard = false;
         for (arm_index, (pat, body)) in arms.iter().enumerate() {
             if has_wildcard {
@@ -615,6 +616,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                                     return Err(TypeCheckError::new(
                                         "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
                                     ));
+                                }
+                            }
+                            Expr::String(sym) => {
+                                if !covered_strings.insert(sym) {
+                                    let s = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+                                    return Err(TypeCheckError::new(format!(
+                                        "unreachable match arm: literal {:?} already handled by an earlier arm",
+                                        s
+                                    )));
                                 }
                             }
                             _ => {}
@@ -730,9 +740,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                     }
                 }
                 ScrutineeKind::Primitive(t) => {
+                    let t_name = match t {
+                        TypeDecl::Int64 => "i64".to_string(),
+                        TypeDecl::UInt64 => "u64".to_string(),
+                        TypeDecl::String => "str".to_string(),
+                        other => format!("{:?}", other),
+                    };
                     return Err(TypeCheckError::new(format!(
-                        "non-exhaustive match on {:?}: primitive value space is unbounded, add a wildcard `_` arm",
-                        t
+                        "non-exhaustive match on {}: primitive value space is unbounded, add a wildcard `_` arm",
+                        t_name
                     )));
                 }
             }

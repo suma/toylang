@@ -353,6 +353,14 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             let expr_ref = parser.ast_builder.bool_false_expr(Some(location));
             return Ok(crate::ast::Pattern::Literal(expr_ref));
         }
+        Some(Kind::String(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            parser.next();
+            let sym = parser.string_interner.get_or_intern(s_copy);
+            let expr_ref = parser.ast_builder.string_expr(sym, Some(location));
+            return Ok(crate::ast::Pattern::Literal(expr_ref));
+        }
         _ => {}
     }
     // Identifier: either a Name binding (plain `x`) or the start of an

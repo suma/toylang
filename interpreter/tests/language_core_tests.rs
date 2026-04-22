@@ -949,6 +949,54 @@ mod heap_operations {
         let result = execute_test_program(source).expect("Program should execute successfully");
         assert!(result.contains("UInt64(666)"), "Expected UInt64(666), got: {}", result);
     }
+
+    #[test]
+    fn test_sizeof_primitives() {
+        let source = r#"
+            fn main() -> u64 {
+                val a: u64 = __builtin_sizeof(0u64)
+                val b: u64 = __builtin_sizeof(0i64)
+                val c: u64 = __builtin_sizeof(true)
+                a + b + c
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(17)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_through_generic_parameter() {
+        // Generic functions propagate concrete types at call site, so
+        // `__builtin_sizeof(probe)` reports the real element size.
+        let source = r#"
+            fn elem_size<T>(probe: T) -> u64 {
+                __builtin_sizeof(probe)
+            }
+
+            fn main() -> u64 {
+                elem_size(0u64) + elem_size(true)
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(9)"), "got: {}", result);
+    }
+
+    #[test]
+    fn test_sizeof_with_heap_alloc_sizing() {
+        // Realistic usage: allocate space for one element using sizeof.
+        let source = r#"
+            fn main() -> u64 {
+                val arena = __builtin_arena_allocator()
+                with allocator = arena {
+                    val p = __builtin_heap_alloc(__builtin_sizeof(0u64))
+                    __builtin_ptr_write(p, 0u64, 42u64)
+                    __builtin_ptr_read(p, 0u64)
+                }
+            }
+        "#;
+        let result = execute_test_program(source).expect("should execute");
+        assert!(result.contains("UInt64(42)"), "got: {}", result);
+    }
 }
 
 mod enum_and_match {

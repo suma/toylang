@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::type_decl::TypeDecl;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use super::{EvaluationContext, EvaluationResult};
@@ -482,6 +483,34 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(
                     Object::Allocator(arena),
                 ))))
+            }
+
+            BuiltinFunction::SizeOf => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "__builtin_sizeof takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                // Evaluate the probe expression to determine its concrete
+                // runtime type. The value itself is discarded; we only use
+                // it to read its type tag.
+                let value = self.evaluate(&args[0])?;
+                let value = self.extract_value(Ok(value))?;
+                let ty = value.borrow().get_type();
+                let size: u64 = match ty {
+                    TypeDecl::UInt64 | TypeDecl::Int64 | TypeDecl::Ptr => 8,
+                    TypeDecl::Bool => 1,
+                    TypeDecl::Unit => 0,
+                    other => {
+                        return Err(InterpreterError::InternalError(format!(
+                            "__builtin_sizeof: size of type {:?} is not supported yet",
+                            other
+                        )));
+                    }
+                };
+                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(size)))))
             }
 
             BuiltinFunction::Print | BuiltinFunction::Println => {

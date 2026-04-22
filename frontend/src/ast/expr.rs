@@ -169,6 +169,9 @@ pub enum BuiltinFunction {
     // everyday user-facing operations, not low-level intrinsics).
     Print,   // print(value) -> unit (no trailing newline)
     Println, // println(value) -> unit (trailing newline)
+
+    // Type introspection
+    SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +200,9 @@ pub struct BuiltinFunctionSymbols {
     // Output
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
+
+    // Type introspection
+    pub sizeof: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -220,6 +226,7 @@ impl BuiltinFunctionSymbols {
             // for low-level memory primitives.
             print: interner.get_or_intern("print"),
             println: interner.get_or_intern("println"),
+            sizeof: interner.get_or_intern("__builtin_sizeof"),
         }
     }
 
@@ -239,6 +246,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.fixed_buffer_allocator { Some(BuiltinFunction::FixedBufferAllocator) }
         else if symbol == self.print { Some(BuiltinFunction::Print) }
         else if symbol == self.println { Some(BuiltinFunction::Println) }
+        else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else { None }
     }
 }

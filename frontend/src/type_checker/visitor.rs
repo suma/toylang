@@ -201,6 +201,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::Unit,
             },
+            // `__builtin_sizeof` takes a single probe value and returns the
+            // byte size of its type as u64. The arg type is not constrained
+            // at signature level — visit_builtin_call leaves type validation
+            // to the evaluator for generic cases.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::SizeOf,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::UInt64,
+            },
         ]
     }
 

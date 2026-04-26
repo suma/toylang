@@ -792,13 +792,18 @@ impl<'a, 'b> State<'a, 'b> {
         // gives us a writable scratch copy without disturbing the shared
         // state if check_expr happens to add a duplicate entry.
         let mut hints = self.ptr_read_hints.clone();
+        let mut reason: Option<String> = None;
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
             &mut callees,
             &mut hints,
+            &mut reason,
         )
-        .ok_or_else(|| "type lookup failed in codegen".to_string())
+        .ok_or_else(|| {
+            reason
+                .unwrap_or_else(|| "type lookup failed in codegen".to_string())
+        })
     }
 }

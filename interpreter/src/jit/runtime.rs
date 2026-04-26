@@ -327,11 +327,11 @@ pub fn try_execute_main(
 
     let main_fn = find_main(program, interner)?;
 
-    let eligible = match eligibility::analyze(program, &main_fn) {
-        Some(e) => e,
-        None => {
+    let eligible = match eligibility::analyze(program, &main_fn, interner) {
+        Ok(e) => e,
+        Err(reason) => {
             if verbose {
-                eprintln!("JIT: skipped (main or callee uses unsupported features)");
+                eprintln!("JIT: skipped ({reason})");
             }
             return None;
         }

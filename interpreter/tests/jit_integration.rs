@@ -138,4 +138,16 @@ fn unsupported_program_falls_back_silently() {
         "expected fallback log, got stderr: {}",
         r.stderr
     );
+    // The skip log should now identify the offending function and the
+    // specific construct rather than a generic "unsupported feature".
+    assert!(
+        r.stderr.contains("function `main`"),
+        "expected function name in skip reason, got stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("array literal"),
+        "expected concrete reason in skip log, got stderr: {}",
+        r.stderr
+    );
 }

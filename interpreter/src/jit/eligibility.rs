@@ -12,7 +12,16 @@ use std::rc::Rc;
 
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
+
+/// Records the *first* reason eligibility analysis rejected the program.
+/// Subsequent rejections deeper in the recursion are ignored — the user
+/// only needs the closest hint to the surface.
+fn note(reason: &mut Option<String>, msg: impl FnOnce() -> String) {
+    if reason.is_none() {
+        *reason = Some(msg());
+    }
+}
 
 /// JIT-supported scalar types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +73,8 @@ pub struct EligibleSet {
 pub fn analyze(
     program: &Program,
     main: &Rc<Function>,
-) -> Option<EligibleSet> {
+    interner: &DefaultStringInterner,
+) -> Result<EligibleSet, String> {
     let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
     for f in &program.function {
         function_map.insert(f.name, f.clone());
@@ -81,19 +91,39 @@ pub fn analyze(
             continue;
         }
 
-        let sig = match function_signature(&func) {
-            Some(s) => s,
-            None => return None,
+        let fname = || {
+            interner
+                .resolve(func.name)
+                .unwrap_or("<anon>")
+                .to_string()
         };
 
         // Generic functions are not supported.
         if !func.generic_params.is_empty() {
-            return None;
+            return Err(format!("function `{}` is generic", fname()));
         }
 
+        let mut sig_reason: Option<String> = None;
+        let sig = match function_signature(&func, &mut sig_reason) {
+            Some(s) => s,
+            None => {
+                let detail = sig_reason.unwrap_or_else(|| "unsupported signature".into());
+                return Err(format!("function `{}`: {}", fname(), detail));
+            }
+        };
+
         let mut callees: Vec<DefaultSymbol> = Vec::new();
-        if !check_function_body(program, &func, &sig, &mut callees, &mut ptr_read_hints) {
-            return None;
+        let mut body_reason: Option<String> = None;
+        if !check_function_body(
+            program,
+            &func,
+            &sig,
+            &mut callees,
+            &mut ptr_read_hints,
+            &mut body_reason,
+        ) {
+            let detail = body_reason.unwrap_or_else(|| "unsupported feature".into());
+            return Err(format!("function `{}`: {}", fname(), detail));
         }
 
         signatures.insert(func.name, sig);
@@ -103,31 +133,55 @@ pub fn analyze(
             if let Some(callee_fn) = function_map.get(&callee) {
                 stack.push(callee_fn.clone());
             } else {
-                // Unknown callee (could be a method, builtin, or something we
-                // don't recognize). Bail out.
-                return None;
+                let cname = interner.resolve(callee).unwrap_or("<anon>");
+                return Err(format!(
+                    "function `{}` calls unknown / non-eligible function `{cname}`",
+                    fname()
+                ));
             }
         }
     }
 
-    Some(EligibleSet {
+    Ok(EligibleSet {
         functions: eligible_funcs,
         signatures,
         ptr_read_hints,
     })
 }
 
-fn function_signature(func: &Function) -> Option<FuncSignature> {
+fn function_signature(
+    func: &Function,
+    reject_reason: &mut Option<String>,
+) -> Option<FuncSignature> {
     let mut params = Vec::with_capacity(func.parameter.len());
-    for (name, td) in &func.parameter {
-        let st = ScalarTy::from_type_decl(td)?;
+    for (_, td) in &func.parameter {
+        let st = match ScalarTy::from_type_decl(td) {
+            Some(s) => s,
+            None => {
+                note(reject_reason, || {
+                    format!("parameter has unsupported type {td:?}")
+                });
+                return None;
+            }
+        };
         if st == ScalarTy::Unit {
+            note(reject_reason, || {
+                "parameter type Unit is not supported".to_string()
+            });
             return None;
         }
-        params.push((*name, st));
+        params.push((func.parameter[params.len()].0, st));
     }
     let ret = match &func.return_type {
-        Some(td) => ScalarTy::from_type_decl(td)?,
+        Some(td) => match ScalarTy::from_type_decl(td) {
+            Some(s) => s,
+            None => {
+                note(reject_reason, || {
+                    format!("return type {td:?} is not supported")
+                });
+                return None;
+            }
+        },
         None => ScalarTy::Unit,
     };
     Some(FuncSignature { params, ret })
@@ -142,12 +196,20 @@ fn check_function_body(
     sig: &FuncSignature,
     callees: &mut Vec<DefaultSymbol>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
 ) -> bool {
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     for (n, t) in &sig.params {
         locals.insert(*n, *t);
     }
-    check_stmt(program, &func.code, &mut locals, callees, ptr_read_hints)
+    check_stmt(
+        program,
+        &func.code,
+        &mut locals,
+        callees,
+        ptr_read_hints,
+        reject_reason,
+    )
 }
 
 fn check_stmt(
@@ -156,6 +218,7 @@ fn check_stmt(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     callees: &mut Vec<DefaultSymbol>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
 ) -> bool {
     let stmt = match program.statement.get(stmt_ref) {
         Some(s) => s,
@@ -163,7 +226,7 @@ fn check_stmt(
     };
     match stmt {
         Stmt::Expression(e) => {
-            check_expr(program, &e, locals, callees, ptr_read_hints).is_some()
+            check_expr(program, &e, locals, callees, ptr_read_hints, reject_reason).is_some()
         }
         Stmt::Val(name, type_decl, value) => {
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
@@ -173,7 +236,7 @@ fn check_stmt(
             if let Some(t) = declared_hint {
                 register_ptr_read_hint(program, &value, t, ptr_read_hints);
             }
-            let val_ty = match check_expr(program, &value, locals, callees, ptr_read_hints) {
+            let val_ty = match check_expr(program, &value, locals, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -199,7 +262,7 @@ fn check_stmt(
                     Some(t) => t,
                     None => return false,
                 },
-                (None, Some(v)) => match check_expr(program, &v, locals, callees, ptr_read_hints) {
+                (None, Some(v)) => match check_expr(program, &v, locals, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 },
@@ -209,7 +272,7 @@ fn check_stmt(
                 if type_decl.is_some() {
                     register_ptr_read_hint(program, &v, declared, ptr_read_hints);
                 }
-                let val_ty = match check_expr(program, &v, locals, callees, ptr_read_hints) {
+                let val_ty = match check_expr(program, &v, locals, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 };
@@ -225,18 +288,18 @@ fn check_stmt(
         }
         Stmt::Return(value) => {
             if let Some(v) = value {
-                check_expr(program, &v, locals, callees, ptr_read_hints).is_some()
+                check_expr(program, &v, locals, callees, ptr_read_hints, reject_reason).is_some()
             } else {
                 true
             }
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::For(var, start, end, block) => {
-            let start_ty = match check_expr(program, &start, locals, callees, ptr_read_hints) {
+            let start_ty = match check_expr(program, &start, locals, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
-            let end_ty = match check_expr(program, &end, locals, callees, ptr_read_hints) {
+            let end_ty = match check_expr(program, &end, locals, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -248,7 +311,7 @@ fn check_stmt(
             }
             let prev = locals.insert(var, start_ty);
             let body_ok =
-                check_expr(program, &block, locals, callees, ptr_read_hints).is_some();
+                check_expr(program, &block, locals, callees, ptr_read_hints, reject_reason).is_some();
             match prev {
                 Some(t) => {
                     locals.insert(var, t);
@@ -260,14 +323,14 @@ fn check_stmt(
             body_ok
         }
         Stmt::While(cond, block) => {
-            let cond_ty = match check_expr(program, &cond, locals, callees, ptr_read_hints) {
+            let cond_ty = match check_expr(program, &cond, locals, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
             if cond_ty != ScalarTy::Bool {
                 return false;
             }
-            check_expr(program, &block, locals, callees, ptr_read_hints).is_some()
+            check_expr(program, &block, locals, callees, ptr_read_hints, reject_reason).is_some()
         }
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
@@ -305,6 +368,7 @@ pub(crate) fn check_expr(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     callees: &mut Vec<DefaultSymbol>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
 ) -> Option<ScalarTy> {
     let expr = program.expression.get(expr_ref)?;
     match expr {
@@ -313,8 +377,8 @@ pub(crate) fn check_expr(
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
         Expr::Binary(op, lhs, rhs) => {
-            let lt = check_expr(program, &lhs, locals, callees, ptr_read_hints)?;
-            let rt = check_expr(program, &rhs, locals, callees, ptr_read_hints)?;
+            let lt = check_expr(program, &lhs, locals, callees, ptr_read_hints, reject_reason)?;
+            let rt = check_expr(program, &rhs, locals, callees, ptr_read_hints, reject_reason)?;
             if lt != rt {
                 return None;
             }
@@ -364,7 +428,7 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Unary(op, operand) => {
-            let t = check_expr(program, &operand, locals, callees, ptr_read_hints)?;
+            let t = check_expr(program, &operand, locals, callees, ptr_read_hints, reject_reason)?;
             match op {
                 UnaryOp::BitwiseNot => {
                     if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
@@ -397,9 +461,9 @@ pub(crate) fn check_expr(
             for s in &stmts {
                 let stmt = program.statement.get(s)?;
                 if let Stmt::Expression(e) = &stmt {
-                    last_ty = check_expr(program, e, &mut snapshot, callees, ptr_read_hints)?;
+                    last_ty = check_expr(program, e, &mut snapshot, callees, ptr_read_hints, reject_reason)?;
                 } else {
-                    if !check_stmt(program, s, &mut snapshot, callees, ptr_read_hints) {
+                    if !check_stmt(program, s, &mut snapshot, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     last_ty = ScalarTy::Unit;
@@ -408,22 +472,22 @@ pub(crate) fn check_expr(
             Some(last_ty)
         }
         Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-            let ct = check_expr(program, &cond, locals, callees, ptr_read_hints)?;
+            let ct = check_expr(program, &cond, locals, callees, ptr_read_hints, reject_reason)?;
             if ct != ScalarTy::Bool {
                 return None;
             }
-            let then_ty = check_expr(program, &if_block, locals, callees, ptr_read_hints)?;
+            let then_ty = check_expr(program, &if_block, locals, callees, ptr_read_hints, reject_reason)?;
             for (ec, eb) in &elif_pairs {
-                let et = check_expr(program, ec, locals, callees, ptr_read_hints)?;
+                let et = check_expr(program, ec, locals, callees, ptr_read_hints, reject_reason)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
-                let bt = check_expr(program, eb, locals, callees, ptr_read_hints)?;
+                let bt = check_expr(program, eb, locals, callees, ptr_read_hints, reject_reason)?;
                 if bt != then_ty {
                     return None;
                 }
             }
-            let else_ty = check_expr(program, &else_block, locals, callees, ptr_read_hints)?;
+            let else_ty = check_expr(program, &else_block, locals, callees, ptr_read_hints, reject_reason)?;
             // Allow if-without-else: the parser inserts an empty Block whose
             // type is Unit. Permit it only when both branches are Unit.
             if else_ty == then_ty {
@@ -443,7 +507,7 @@ pub(crate) fn check_expr(
                 _ => return None,
             };
             let lhs_ty = locals.get(&name).copied()?;
-            let rhs_ty = check_expr(program, &rhs, locals, callees, ptr_read_hints)?;
+            let rhs_ty = check_expr(program, &rhs, locals, callees, ptr_read_hints, reject_reason)?;
             if rhs_ty != lhs_ty {
                 return None;
             }
@@ -456,7 +520,7 @@ pub(crate) fn check_expr(
                 _ => return None,
             };
             for a in &arg_list {
-                check_expr(program, a, locals, callees, ptr_read_hints)?;
+                check_expr(program, a, locals, callees, ptr_read_hints, reject_reason)?;
             }
             callees.push(name);
             // The caller will resolve the callee's return type after the
@@ -480,16 +544,24 @@ pub(crate) fn check_expr(
         Expr::BuiltinCall(func, args) => {
             // Type-check each argument against an expected ScalarTy.
             let check_args = |expected: &[ScalarTy],
-                                  args: &Vec<ExprRef>,
-                                  locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-                                  callees: &mut Vec<DefaultSymbol>,
-                                  ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>|
+                              args: &Vec<ExprRef>,
+                              locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+                              callees: &mut Vec<DefaultSymbol>,
+                              ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+                              reject_reason: &mut Option<String>|
              -> bool {
                 if args.len() != expected.len() {
+                    note(reject_reason, || {
+                        format!(
+                            "builtin called with {} arg(s), expected {}",
+                            args.len(),
+                            expected.len()
+                        )
+                    });
                     return false;
                 }
                 for (a, want) in args.iter().zip(expected.iter()) {
-                    match check_expr(program, a, locals, callees, ptr_read_hints) {
+                    match check_expr(program, a, locals, callees, ptr_read_hints, reject_reason) {
                         Some(t) if t == *want => {}
                         _ => return false,
                     }
@@ -501,32 +573,32 @@ pub(crate) fn check_expr(
                     if args.len() != 1 {
                         return None;
                     }
-                    let t = check_expr(program, &args[0], locals, callees, ptr_read_hints)?;
+                    let t = check_expr(program, &args[0], locals, callees, ptr_read_hints, reject_reason)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapAlloc => {
-                    if !check_args(&[ScalarTy::U64], &args, locals, callees, ptr_read_hints) {
+                    if !check_args(&[ScalarTy::U64], &args, locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::HeapFree => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapRealloc => {
-                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees, ptr_read_hints) {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::PtrIsNull => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Bool)
@@ -538,6 +610,7 @@ pub(crate) fn check_expr(
                         locals,
                         callees,
                         ptr_read_hints,
+                        reject_reason,
                     ) {
                         return None;
                     }
@@ -550,6 +623,7 @@ pub(crate) fn check_expr(
                         locals,
                         callees,
                         ptr_read_hints,
+                        reject_reason,
                     ) {
                         return None;
                     }
@@ -566,18 +640,27 @@ pub(crate) fn check_expr(
                         locals,
                         callees,
                         ptr_read_hints,
+                        reject_reason,
                     ) {
                         return None;
                     }
-                    ptr_read_hints.get(expr_ref).copied()
+                    let resolved = ptr_read_hints.get(expr_ref).copied();
+                    if resolved.is_none() {
+                        note(reject_reason, || {
+                            "ptr_read used outside a typed val/var/assign — JIT \
+                             needs the result type to be statically known"
+                                .to_string()
+                        });
+                    }
+                    resolved
                 }
                 BuiltinFunction::PtrWrite => {
                     if args.len() != 3 {
                         return None;
                     }
-                    let p = check_expr(program, &args[0], locals, callees, ptr_read_hints)?;
-                    let off = check_expr(program, &args[1], locals, callees, ptr_read_hints)?;
-                    let v = check_expr(program, &args[2], locals, callees, ptr_read_hints)?;
+                    let p = check_expr(program, &args[0], locals, callees, ptr_read_hints, reject_reason)?;
+                    let off = check_expr(program, &args[1], locals, callees, ptr_read_hints, reject_reason)?;
+                    let v = check_expr(program, &args[2], locals, callees, ptr_read_hints, reject_reason)?;
                     if p != ScalarTy::Ptr || off != ScalarTy::U64 {
                         return None;
                     }
@@ -589,13 +672,18 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Unit)
                 }
-                _ => None,
+                other => {
+                    note(reject_reason, || {
+                        format!("uses unsupported builtin {other:?}")
+                    });
+                    None
+                }
             }
         }
         Expr::Cast(inner, target) => {
             // Match the interpreter: only i64 ↔ u64 (or identity for those
             // two) is permitted. bool casts are intentionally excluded.
-            let inner_ty = check_expr(program, &inner, locals, callees, ptr_read_hints)?;
+            let inner_ty = check_expr(program, &inner, locals, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
             if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
                 return None;
@@ -606,24 +694,37 @@ pub(crate) fn check_expr(
             Some(target_ty)
         }
         // Everything else is unsupported in this iteration.
-        Expr::Number(_)
-        | Expr::Null
-        | Expr::ExprList(_)
-        | Expr::String(_)
-        | Expr::ArrayLiteral(_)
-        | Expr::FieldAccess(_, _)
-        | Expr::MethodCall(_, _, _)
-        | Expr::StructLiteral(_, _)
-        | Expr::QualifiedIdentifier(_)
-        | Expr::BuiltinMethodCall(_, _, _)
-        | Expr::SliceAccess(_, _)
-        | Expr::SliceAssign(_, _, _, _)
-        | Expr::AssociatedFunctionCall(_, _, _)
-        | Expr::DictLiteral(_)
-        | Expr::TupleLiteral(_)
-        | Expr::TupleAccess(_, _)
-        | Expr::With(_, _)
-        | Expr::Match(_, _)
-        | Expr::Range(_, _) => None,
+        other => {
+            note(reject_reason, || {
+                format!("uses unsupported expression {}", expr_kind_name(&other))
+            });
+            None
+        }
+    }
+}
+
+/// Short human-readable name of an Expr variant for reject messages.
+fn expr_kind_name(e: &Expr) -> &'static str {
+    match e {
+        Expr::Number(_) => "untyped numeric literal",
+        Expr::Null => "null",
+        Expr::ExprList(_) => "expression list",
+        Expr::String(_) => "string literal",
+        Expr::ArrayLiteral(_) => "array literal",
+        Expr::FieldAccess(_, _) => "field access",
+        Expr::MethodCall(_, _, _) => "method call",
+        Expr::StructLiteral(_, _) => "struct literal",
+        Expr::QualifiedIdentifier(_) => "qualified identifier",
+        Expr::BuiltinMethodCall(_, _, _) => "builtin method call",
+        Expr::SliceAccess(_, _) => "slice access",
+        Expr::SliceAssign(_, _, _, _) => "slice assign",
+        Expr::AssociatedFunctionCall(_, _, _) => "associated function call",
+        Expr::DictLiteral(_) => "dict literal",
+        Expr::TupleLiteral(_) => "tuple literal",
+        Expr::TupleAccess(_, _) => "tuple access",
+        Expr::With(_, _) => "`with allocator` block",
+        Expr::Match(_, _) => "match expression",
+        Expr::Range(_, _) => "range value",
+        _ => "expression",
     }
 }

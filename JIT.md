@@ -82,9 +82,18 @@ and generic type parameters are **not** supported.
 `Stmt::Continue`. `StructDecl` / `ImplBlock` / `EnumDecl` cause the
 enclosing function to be rejected.
 
+### Generic functions
+
+A generic function `fn id<T>(x: T) -> T { x }` is monomorphized per call
+site: each unique combination of substituted scalar types becomes its
+own cranelift function (e.g. `id__I64` and `id__U64`). Generic bounds
+(`<A: Allocator>`) are still rejected, and a generic function body
+cannot use `__builtin_ptr_read` because the per-call expected type
+cannot be expressed in the shared hint table.
+
 ### Not supported (silent fallback)
 
-* Generic functions (`fn id<T>(x: T) -> T`).
+* Generic bounds (`<A: Allocator>`).
 * String, Array, Struct, Enum, Tuple, Dict, Range values.
 * Method calls, associated functions, field access.
 * `with allocator = …` blocks and the allocator stack.
@@ -152,6 +161,7 @@ loops benefit the most.
 * `jit_heap.t` — alloc / realloc / free / `ptr_is_null` / `mem_set` → exit 42
 * `jit_ptr.t` — `ptr_read` / `ptr_write` round-trip across all four types → exit 103
 * `jit_sizeof.t` — `__builtin_sizeof` of all scalar types → exit 25
+* `jit_generic.t` — `id<T>` and `add<T>` monomorphized for `i64` and `u64` → exit 206
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -161,11 +171,10 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #150 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #152 ("JIT Phase 2 拡張"):
 
 * `struct` field access / method dispatch.
 * `with allocator = …` and the allocator stack.
-* Generic function monomorphization at JIT time.
 * Caching compiled functions across `execute_program` calls (would
   amortize the ~100 µs cranelift overhead in repeated bench runs and
   in long-running sessions).

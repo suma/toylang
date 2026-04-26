@@ -13,13 +13,27 @@ use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use frontend::ast::{Function, Program};
-use string_interner::{DefaultStringInterner, DefaultSymbol};
+use string_interner::DefaultStringInterner;
 
 use crate::heap::HeapManager;
 use crate::object::{Object, RcObject};
 
 use super::codegen;
-use super::eligibility::{self, EligibleSet, ScalarTy};
+use super::eligibility::{self, EligibleSet, MonoKey, ScalarTy};
+
+/// Build a unique display / link name for a monomorphization. For
+/// non-generic functions this is just the source name; for monomorphs we
+/// append a `<...>`-shaped suffix so the cranelift module's symbol table
+/// stays unambiguous.
+fn mono_display_name(interner: &DefaultStringInterner, key: &MonoKey) -> String {
+    let base = interner.resolve(key.0).unwrap_or("<anon>");
+    if key.1.is_empty() {
+        base.to_string()
+    } else {
+        let parts: Vec<String> = key.1.iter().map(|t| format!("{t:?}")).collect();
+        format!("{base}__{}", parts.join("_"))
+    }
+}
 
 // JIT host helpers need to share a HeapManager with whoever called us. We
 // stash one in a thread-local for the duration of try_execute_main; the
@@ -392,26 +406,28 @@ fn compile_and_run(
         helper_ids.insert(h, id);
     }
 
-    // Phase 1: declare every eligible function so that calls between them
-    // can resolve before any function is defined.
-    let mut func_ids: HashMap<DefaultSymbol, FuncId> = HashMap::new();
-    for (name, sig) in &eligible.signatures {
+    // Phase 1: declare every eligible monomorphization so that calls
+    // between them can resolve before any function is defined. Monomorphs
+    // get a synthetic display name so the linker can distinguish e.g.
+    // `id<i64>` from `id<u64>`.
+    let mut func_ids: HashMap<eligibility::MonoKey, FuncId> = HashMap::new();
+    for (key, sig) in &eligible.signatures {
         let cl_sig = codegen::make_signature(&module, sig);
-        let display_name = interner.resolve(*name).unwrap_or("<jit-fn>");
+        let display_name = mono_display_name(interner, key);
         let id = module
-            .declare_function(display_name, Linkage::Export, &cl_sig)
+            .declare_function(&display_name, Linkage::Export, &cl_sig)
             .map_err(|e| format!("declare {display_name}: {e}"))?;
-        func_ids.insert(*name, id);
+        func_ids.insert(key.clone(), id);
     }
 
-    // Phase 2: translate and define each function.
+    // Phase 2: translate and define each monomorphization.
     let mut ctx = Context::new();
     let mut builder_ctx = FunctionBuilderContext::new();
-    let mut compiled_names: Vec<&str> = Vec::new();
-    for (name, func) in &eligible.functions {
+    let mut compiled_names: Vec<String> = Vec::new();
+    for (key, func) in &eligible.monomorphs {
         let sig = eligible
             .signatures
-            .get(name)
+            .get(key)
             .ok_or_else(|| "missing signature".to_string())?;
         ctx.clear();
         codegen::translate_function(
@@ -422,18 +438,20 @@ fn compile_and_run(
             &eligible.signatures,
             &func_ids,
             &helper_ids,
+            &eligible.call_targets,
             &eligible.ptr_read_hints,
             &mut ctx,
             &mut builder_ctx,
         )?;
-        let id = func_ids.get(name).copied().ok_or_else(|| "missing id".to_string())?;
+        let id = func_ids
+            .get(key)
+            .copied()
+            .ok_or_else(|| "missing id".to_string())?;
         module
             .define_function(id, &mut ctx)
             .map_err(|e| format!("define: {e}"))?;
         if verbose {
-            if let Some(n) = interner.resolve(*name) {
-                compiled_names.push(n);
-            }
+            compiled_names.push(mono_display_name(interner, key));
         }
     }
 
@@ -445,14 +463,15 @@ fn compile_and_run(
         eprintln!("JIT compiled: {}", compiled_names.join(", "));
     }
 
+    let main_key: eligibility::MonoKey = (main_fn.name, Vec::new());
     let main_id = func_ids
-        .get(&main_fn.name)
+        .get(&main_key)
         .copied()
         .ok_or_else(|| "main not in func_ids".to_string())?;
     let main_ptr = module.get_finalized_function(main_id);
     let main_sig = eligible
         .signatures
-        .get(&main_fn.name)
+        .get(&main_key)
         .ok_or_else(|| "main signature missing".to_string())?;
 
     // Install a fresh HeapManager so heap_alloc / mem_* callbacks have

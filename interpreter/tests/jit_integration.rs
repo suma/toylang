@@ -135,6 +135,23 @@ fn sizeof_example_returns_25() {
     assert_eq!(r.code, 25);
 }
 
+#[test]
+fn generic_example_matches_between_modes() {
+    assert_match("example/jit_generic.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn generic_example_compiles_each_monomorph() {
+    let r = run("example/jit_generic.t", true, true);
+    assert_eq!(r.code, 206);
+    // Three distinct monomorphizations of two source functions plus
+    // main itself should appear in the compile log.
+    assert!(r.stderr.contains("id__I64"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("id__U64"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("add__U64"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn unsupported_program_falls_back_silently() {

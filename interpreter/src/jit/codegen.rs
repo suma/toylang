@@ -11,7 +11,7 @@ use cranelift_module::{FuncId, Module};
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
-use super::eligibility::{FuncSignature, ScalarTy};
+use super::eligibility::{FuncSignature, MonoKey, ScalarTy};
 use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
@@ -42,9 +42,10 @@ pub fn translate_function<M: Module>(
     program: &Program,
     func: &Function,
     sig: &FuncSignature,
-    func_signatures: &HashMap<DefaultSymbol, FuncSignature>,
-    func_ids: &HashMap<DefaultSymbol, FuncId>,
+    func_signatures: &HashMap<MonoKey, FuncSignature>,
+    func_ids: &HashMap<MonoKey, FuncId>,
     helper_ids: &HashMap<HelperKind, FuncId>,
+    call_targets: &HashMap<ExprRef, MonoKey>,
     ptr_read_hints: &HashMap<ExprRef, ScalarTy>,
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
@@ -56,11 +57,13 @@ pub fn translate_function<M: Module>(
     builder.append_block_params_for_function_params(entry);
     builder.switch_to_block(entry);
 
-    // Pre-import every callee's FuncId so we can emit `call` instructions.
-    let mut func_refs: HashMap<DefaultSymbol, FuncRef> = HashMap::new();
-    for (callee_name, callee_id) in func_ids {
+    // Pre-import every monomorph's FuncId so we can emit `call`
+    // instructions. The map is keyed by MonoKey so different
+    // specializations of the same generic resolve to distinct FuncRefs.
+    let mut func_refs: HashMap<MonoKey, FuncRef> = HashMap::new();
+    for (callee_key, callee_id) in func_ids {
         let r = module.declare_func_in_func(*callee_id, builder.func);
-        func_refs.insert(*callee_name, r);
+        func_refs.insert(callee_key.clone(), r);
     }
     let mut helper_refs: HashMap<HelperKind, FuncRef> = HashMap::new();
     for (kind, id) in helper_ids {
@@ -98,6 +101,7 @@ pub fn translate_function<M: Module>(
         func_signatures,
         func_refs: &func_refs,
         helper_refs: &helper_refs,
+        call_targets,
         ptr_read_hints,
         loop_stack: Vec::new(),
         return_ty: sig.ret,
@@ -133,9 +137,12 @@ struct State<'a, 'b> {
     local_types: &'a mut HashMap<DefaultSymbol, ScalarTy>,
     local_vars: &'a mut HashMap<DefaultSymbol, Variable>,
     #[allow(dead_code)]
-    func_signatures: &'a HashMap<DefaultSymbol, FuncSignature>,
-    func_refs: &'a HashMap<DefaultSymbol, FuncRef>,
+    func_signatures: &'a HashMap<MonoKey, FuncSignature>,
+    func_refs: &'a HashMap<MonoKey, FuncRef>,
     helper_refs: &'a HashMap<HelperKind, FuncRef>,
+    /// Map from each `Expr::Call` ExprRef to the monomorphization the
+    /// JIT must dispatch to. Set during eligibility analysis.
+    call_targets: &'a HashMap<ExprRef, MonoKey>,
     /// Pre-computed expected return type for each `__builtin_ptr_read(...)`
     /// expression in the function body. Built by eligibility from the
     /// surrounding val/var/assign annotations.
@@ -435,7 +442,7 @@ impl<'a, 'b> State<'a, 'b> {
                 // reinterpretation with no instruction needed.
                 self.gen_expr(&inner)
             }
-            Expr::Call(name, args_ref) => {
+            Expr::Call(_, args_ref) => {
                 let args_expr = self
                     .program
                     .expression
@@ -452,9 +459,17 @@ impl<'a, 'b> State<'a, 'b> {
                         .ok_or_else(|| "call arg produced no value".to_string())?;
                     arg_values.push(v);
                 }
+                // Resolve which monomorphization this call targets. The
+                // table is populated by eligibility from the call site's
+                // arg types, so different specializations of the same
+                // generic source function dispatch to distinct FuncRefs.
+                let target_key = self
+                    .call_targets
+                    .get(expr_ref)
+                    .ok_or_else(|| "call has no resolved monomorph target".to_string())?;
                 let func_ref = *self
                     .func_refs
-                    .get(&name)
+                    .get(target_key)
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
                 let call = self.builder.ins().call(func_ref, &arg_values);
                 let results = self.builder.inst_results(call).to_vec();
@@ -812,10 +827,15 @@ impl<'a, 'b> State<'a, 'b> {
         // state if check_expr happens to add a duplicate entry.
         let mut hints = self.ptr_read_hints.clone();
         let mut reason: Option<String> = None;
+        // The substitutions for the current monomorph were already applied
+        // when local types were registered, so codegen-time type lookups
+        // don't need a separate substitution map.
+        let empty_subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
+            &empty_subs,
             &mut callees,
             &mut hints,
             &mut reason,

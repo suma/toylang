@@ -1,6 +1,8 @@
 use std::env;
 use std::fs;
+use std::process;
 use interpreter::error_formatter::ErrorFormatter;
+use interpreter::object::Object;
 use compiler_core::CompilerSession;
 
 /// Parse the source file using CompilerSession and handle parse errors
@@ -32,14 +34,22 @@ fn handle_type_checking(program: &mut frontend::ast::Program, string_interner: &
     }
 }
 
-/// Execute the program and handle runtime errors
-fn handle_execution(program: &frontend::ast::Program, string_interner: &string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<(), ()> {
+/// Execute the program and handle runtime errors.
+///
+/// Returns `Ok(Some(code))` when `main` produced a numeric value that should
+/// become the process exit code; `Ok(None)` for non-numeric results (which are
+/// printed as before). `Err(())` indicates a runtime error.
+fn handle_execution(program: &frontend::ast::Program, string_interner: &string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<Option<i32>, ()> {
     let formatter = ErrorFormatter::new(source, filename);
-    
+
     match interpreter::execute_program(program, string_interner, Some(source), Some(filename)) {
         Ok(result) => {
-            println!("Result: {result:?}");
-            Ok(())
+            let code = match &*result.borrow() {
+                Object::Int64(v) => Some(*v as i32),
+                Object::UInt64(v) => Some(*v as i32),
+                _ => None,
+            };
+            Ok(code)
         }
         Err(error) => {
             formatter.display_runtime_error(&error);
@@ -97,9 +107,14 @@ fn main() {
     if verbose {
         println!("Executing program");
     }
-    if let Err(()) = handle_execution(&program, session.string_interner(), &source, filename) {
-        if verbose {
-            println!("Execution failed");
+    match handle_execution(&program, session.string_interner(), &source, filename) {
+        Ok(Some(code)) => process::exit(code),
+        Ok(None) => {}
+        Err(()) => {
+            if verbose {
+                println!("Execution failed");
+            }
+            process::exit(1);
         }
     }
 }

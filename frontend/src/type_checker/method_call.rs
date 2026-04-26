@@ -1,0 +1,310 @@
+//! Method-call type checking — instance methods (`x.foo()`) and associated
+//! functions (`Struct::new()`).
+//!
+//! Pulled out of `expression.rs` to keep that file focused on plain
+//! expression visitors. Methods here remain inherent on
+//! `TypeCheckerVisitor`; `visitor_impl.rs` still routes the trait method
+//! calls into them via thin wrappers.
+
+use string_interner::DefaultSymbol;
+use std::collections::HashMap;
+use crate::ast::*;
+use crate::type_decl::*;
+use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
+use crate::type_checker::generics::GenericTypeChecking;
+use crate::type_checker::method::MethodProcessing;
+
+impl<'a> TypeCheckerVisitor<'a> {
+    /// Type check method calls - implementation used by type_checker.rs
+    pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        let method_name = self.resolve_symbol_name(*method);
+        
+        
+        let obj_type = self.visit_expr(obj)?;
+        
+        
+        // Check if obj is a variable and get its name for type mapping lookup
+        let _var_name = if let Some(obj_expr) = self.core.expr_pool.get(obj) {
+            match obj_expr {
+                Expr::Identifier(name) => Some(name.clone()),
+                _ => None
+            }
+        } else {
+            None
+        };
+        
+        // The obj_type should already contain the concrete type parameters
+        // No need to look up mappings, just use the type as-is
+        let resolved_obj_type = obj_type.clone();
+        
+        // Type check arguments
+        let mut arg_types = Vec::new();
+        for arg in args {
+            arg_types.push(self.visit_expr(arg)?);
+        }
+        
+        // Check for builtin methods
+        let method_str = self.resolve_symbol_name(*method);
+        let builtin_method = self.builtin_methods.get(&(resolved_obj_type.clone(), method_str.to_string())).cloned();
+        if let Some(builtin_method) = builtin_method {
+            // visit_builtin_method_call expects ExprRef, not TypeDecl
+            return self.visit_builtin_method_call(obj, &builtin_method, args);
+        }
+        
+        // Check struct methods
+        // Note: Current struct definition does not include methods
+        // Method support will be added in a future refactoring
+        
+        // Check other type methods
+        let result = self.visit_method_call_on_type(&resolved_obj_type, method, args, &arg_types);
+        
+        // Debug: If result is Generic, show what happened
+        if let Ok(TypeDecl::Generic(sym)) = &result {
+            let sym_str = self.resolve_symbol_name(*sym);
+            return Err(TypeCheckError::generic_error(&format!(
+                "DEBUG: Method '{}' returned unresolved Generic('{}') for object type {:?}",
+                method_name, sym_str, resolved_obj_type
+            )));
+        }
+        
+        result
+    }
+
+    /// Helper method to handle method calls on a specific type
+    pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
+        let method_name = self.resolve_symbol_name(*method);
+        
+        
+        
+        // Check if this is a user-defined method for a struct
+        if let TypeDecl::Struct(struct_name, type_params) = obj_type {
+            let struct_name_str = self.resolve_symbol_name(*struct_name);
+            
+            // Check if this is a generic struct with type parameters
+            
+            if !type_params.is_empty() {
+                // Handle generic struct method call
+                let method_func_opt = self.context.get_struct_method(*struct_name, *method);
+                
+                
+                if let Some(method_func) = method_func_opt {
+                    // Create substitution map from generic parameters to concrete types
+                    let generic_params = self.context.get_struct_generic_params(*struct_name).cloned();
+                    
+                    
+                    let generic_params = generic_params.unwrap_or_default();
+                    let mut substitutions = HashMap::new();
+                    for (i, generic_param) in generic_params.iter().enumerate() {
+                        if let Some(concrete_type) = type_params.get(i) {
+                            substitutions.insert(*generic_param, concrete_type.clone());
+                        }
+                    }
+                    
+                    
+                    // Apply substitutions to method return type
+                    let method_return_type = method_func.return_type.as_ref().unwrap_or(&TypeDecl::Unit);
+                    
+                    let resolved_return_type = match method_return_type {
+                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, type_params.clone()),
+                        TypeDecl::Generic(param) => {
+                            let result = substitutions.get(param).cloned().unwrap_or_else(|| TypeDecl::Generic(*param));
+                            result
+                        },
+                        other => other.substitute_generics(&substitutions)
+                    };
+                    
+                    
+                    return Ok(resolved_return_type);
+                } else {
+                    // Method not found, but let's see what we have
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "Method '{}' not found for struct '{}' with type params {:?}",
+                        method_name, struct_name_str, type_params
+                    )));
+                }
+            } else {
+                // Handle non-generic struct method call
+                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, &method_name, &self.core.string_interner) {
+                    // Resolve `Self` and bare `Identifier(name)` to the concrete
+                    // struct type so chained method calls find the next method.
+                    let resolved = match method_return_type {
+                        TypeDecl::Self_ => TypeDecl::Struct(*struct_name, vec![]),
+                        TypeDecl::Identifier(name)
+                            if self.context.struct_definitions.contains_key(&name) =>
+                        {
+                            TypeDecl::Struct(name, vec![])
+                        }
+                        other => other,
+                    };
+                    return Ok(resolved);
+                }
+            }
+        }
+
+        // Check array methods
+        if let TypeDecl::Array(_, _) = obj_type {
+            if method_name == "len" {
+                // Array len() returns u64
+                return Ok(TypeDecl::UInt64);
+            }
+        }
+
+        // Check builtin methods
+        if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
+            // For builtin methods, we need to create a temporary expression ref for the object
+            // This is a bit of a hack but necessary for the current API
+            let dummy_obj_ref = ExprRef(0); // Use dummy ref for now
+            return self.visit_builtin_method_call(&dummy_obj_ref, &builtin_method, args);
+        }
+        
+        Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))
+    }
+
+    /// Type check associated function calls - implementation
+    pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Handle Container::function_name(args) type calls for any associated function
+
+        // Enum tuple-variant construction: `Enum::Variant(args)` syntactically
+        // matches `Struct::assoc(args)`. Intercept when the left side is a
+        // registered enum and the right side names one of its variants. For
+        // generic enums, infer the type parameters from argument types.
+        if let Some(variants) = self.context.enum_definitions.get(&struct_name).cloned() {
+            if let Some(variant_def) = variants.iter().find(|v| v.name == function_name) {
+                if args.len() != variant_def.payload_types.len() {
+                    let enum_str = self.resolve_symbol_name(struct_name);
+                    let v_str = self.resolve_symbol_name(function_name);
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "variant '{}::{}' expects {} argument(s), found {}",
+                        enum_str, v_str, variant_def.payload_types.len(), args.len()
+                    )));
+                }
+                let generic_params = self.context.enum_generic_params.get(&struct_name).cloned().unwrap_or_default();
+                let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                // Seed substitutions from the outer type hint so nested
+                // variant construction (`Option::Some(Option::None)` with
+                // hint `Option<Option<i64>>`) can flow the inner type args
+                // down to the payload expression.
+                let outer_hint = self.type_inference.type_hint.clone();
+                let hint_args: Vec<TypeDecl> = match &outer_hint {
+                    Some(TypeDecl::Enum(hint_name, a)) if *hint_name == struct_name => a.clone(),
+                    Some(TypeDecl::Struct(hint_name, a)) if *hint_name == struct_name => a.clone(),
+                    _ => Vec::new(),
+                };
+                if hint_args.len() == generic_params.len() {
+                    for (param, arg) in generic_params.iter().zip(hint_args.iter()) {
+                        substitutions.insert(*param, arg.clone());
+                    }
+                }
+                let saved_hint = outer_hint;
+                for (arg_expr, expected_ty) in args.iter().zip(variant_def.payload_types.iter()) {
+                    // Push a hint equal to the payload type with current
+                    // substitutions applied so inner literals / nested
+                    // variants see the concrete expected type.
+                    let resolved_hint = expected_ty.substitute_generics(&substitutions);
+                    self.type_inference.type_hint = Some(resolved_hint);
+                    let actual_ty = self.visit_expr(arg_expr)?;
+                    // When the declared payload references a generic parameter,
+                    // record the argument's concrete type as that parameter.
+                    if let TypeDecl::Generic(p) = expected_ty {
+                        if generic_params.contains(p) {
+                            if let Some(prev) = substitutions.get(p) {
+                                if !prev.is_equivalent(&actual_ty) {
+                                    let enum_str = self.resolve_symbol_name(struct_name);
+                                    let v_str = self.resolve_symbol_name(function_name);
+                                    return Err(TypeCheckError::generic_error(&format!(
+                                        "variant '{}::{}' generic parameter conflict: {:?} vs {:?}",
+                                        enum_str, v_str, prev, actual_ty
+                                    )));
+                                }
+                            } else {
+                                substitutions.insert(*p, actual_ty.clone());
+                            }
+                            continue;
+                        }
+                    }
+                    let expected_resolved = expected_ty.substitute_generics(&substitutions);
+                    if !actual_ty.is_equivalent(&expected_resolved) && !matches!(actual_ty, TypeDecl::Unknown) {
+                        let enum_str = self.resolve_symbol_name(struct_name);
+                        let v_str = self.resolve_symbol_name(function_name);
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "variant '{}::{}' payload type mismatch: expected {:?}, found {:?}",
+                            enum_str, v_str, expected_resolved, actual_ty
+                        )));
+                    }
+                }
+                self.type_inference.type_hint = saved_hint;
+                let type_args: Vec<TypeDecl> = generic_params.iter()
+                    .map(|p| substitutions.get(p).cloned().unwrap_or(TypeDecl::Generic(*p)))
+                    .collect();
+                return Ok(TypeDecl::Enum(struct_name, type_args));
+            }
+        }
+
+        // Verify the struct exists — generic and non-generic both count.
+        if !self.context.struct_definitions.contains_key(&struct_name) {
+            return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
+        }
+
+        let function_name_str = self.resolve_symbol_name(function_name);
+
+        let method = self.context.get_struct_method(struct_name, function_name)
+            .cloned()
+            .ok_or_else(|| TypeCheckError::generic_error(&format!(
+                "Associated function '{}' not found for struct '{:?}'",
+                function_name_str, struct_name
+            )))?;
+
+        if self.context.is_generic_struct(struct_name) {
+            // Generic struct: delegate to the constraint-based inference path.
+            return self.handle_generic_associated_function_call(struct_name, function_name, args, &method);
+        }
+
+        // Non-generic struct: type-check arguments directly against the method
+        // parameter list (skipping any leading `self` since `Struct::fn(...)` is
+        // called without an instance).
+        let params: Vec<_> = if method.has_self_param {
+            method.parameter.iter().skip(1).cloned().collect()
+        } else {
+            method.parameter.iter().cloned().collect()
+        };
+
+        if args.len() != params.len() {
+            return Err(TypeCheckError::generic_error(&format!(
+                "Associated function '{}::{}' expects {} arguments, found {}",
+                self.resolve_symbol_name(struct_name),
+                function_name_str,
+                params.len(),
+                args.len()
+            )));
+        }
+
+        for (arg_expr, (_, expected_ty)) in args.iter().zip(params.iter()) {
+            let actual_ty = self.visit_expr(arg_expr)?;
+            if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                return Err(TypeCheckError::type_mismatch(
+                    expected_ty.clone(),
+                    actual_ty,
+                ).with_context(&format!(
+                    "argument of associated function '{}::{}'",
+                    self.resolve_symbol_name(struct_name),
+                    function_name_str
+                )));
+            }
+        }
+
+        // Normalize the method's return type so downstream dispatch sees the
+        // struct form. `Self` and bare `Identifier(struct_name)` both become
+        // `Struct(struct_name, [])`.
+        let return_ty = method.return_type.clone().unwrap_or(TypeDecl::Unit);
+        let return_ty = match return_ty {
+            TypeDecl::Self_ => TypeDecl::Struct(struct_name, vec![]),
+            TypeDecl::Identifier(name)
+                if self.context.struct_definitions.contains_key(&name) =>
+            {
+                TypeDecl::Struct(name, vec![])
+            }
+            other => other,
+        };
+        Ok(return_ty)
+    }
+}

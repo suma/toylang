@@ -440,6 +440,7 @@ fn compile_and_run(
             &helper_ids,
             &eligible.call_targets,
             &eligible.ptr_read_hints,
+            &eligible.struct_layouts,
             &mut ctx,
             &mut builder_ctx,
         )?;

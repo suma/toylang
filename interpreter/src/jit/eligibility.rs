@@ -61,6 +61,24 @@ pub struct FuncSignature {
 /// one MonoKey `(name, vec![])`.
 pub type MonoKey = (DefaultSymbol, Vec<ScalarTy>);
 
+/// Field layout for a JIT-compatible struct: every field must be a JIT
+/// scalar type (no nested structs in this iteration). Field names are
+/// stored as `DefaultSymbol`s so they can be matched directly against
+/// the symbols carried by `Expr::StructLiteral` and `Expr::FieldAccess`.
+#[derive(Debug, Clone)]
+pub struct StructLayout {
+    pub fields: Vec<(DefaultSymbol, ScalarTy)>,
+}
+
+impl StructLayout {
+    pub fn field(&self, name: DefaultSymbol) -> Option<ScalarTy> {
+        self.fields
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, t)| *t)
+    }
+}
+
 /// Result of eligibility analysis. Each MonoKey corresponds to one
 /// cranelift function the runtime will compile.
 pub struct EligibleSet {
@@ -82,6 +100,9 @@ pub struct EligibleSet {
     /// Generic functions cannot use PtrRead: the same ExprRef would need
     /// distinct types per monomorph.
     pub ptr_read_hints: HashMap<ExprRef, ScalarTy>,
+    /// Layout of every struct type the JIT understands. Built in a
+    /// pre-pass over top-level `Stmt::StructDecl` declarations.
+    pub struct_layouts: HashMap<DefaultSymbol, StructLayout>,
 }
 
 /// Per-callsite monomorphization record. `call_expr` identifies the
@@ -103,6 +124,12 @@ pub fn analyze(
     for f in &program.function {
         function_map.insert(f.name, f.clone());
     }
+
+    // Pre-pass: build layouts for every struct whose fields are all
+    // JIT-supported scalars. Anything else (nested struct fields,
+    // generic structs, struct with arrays / strings, …) is silently
+    // omitted; reads from such types would later reject anyway.
+    let struct_layouts = collect_struct_layouts(program, interner);
 
     let mut visited: HashSet<MonoKey> = HashSet::new();
     let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::new();
@@ -162,6 +189,7 @@ pub fn analyze(
             &func,
             &sig,
             &substitutions,
+            &struct_layouts,
             &mut callees,
             &mut ptr_read_hints,
             &mut body_reason,
@@ -194,7 +222,66 @@ pub fn analyze(
         signatures,
         call_targets,
         ptr_read_hints,
+        struct_layouts,
     })
+}
+
+fn collect_struct_layouts(
+    program: &Program,
+    interner: &DefaultStringInterner,
+) -> HashMap<DefaultSymbol, StructLayout> {
+    let mut out: HashMap<DefaultSymbol, StructLayout> = HashMap::new();
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(Stmt::StructDecl {
+            name,
+            generic_params,
+            fields,
+            ..
+        }) = program.statement.get(&stmt_ref)
+        {
+            // Generic structs aren't supported in this iteration — the
+            // JIT would need per-monomorph layouts.
+            if !generic_params.is_empty() {
+                continue;
+            }
+            let mut scalar_fields: Vec<(DefaultSymbol, ScalarTy)> = Vec::with_capacity(fields.len());
+            let mut all_scalar = true;
+            for f in &fields {
+                match ScalarTy::from_type_decl(&f.type_decl) {
+                    Some(t) if t != ScalarTy::Unit => {
+                        // Resolving the field name to its symbol via the
+                        // interner avoids an extra string lookup at every
+                        // FieldAccess site.
+                        let sym = interner
+                            .get(f.name.as_str())
+                            .unwrap_or_else(|| {
+                                // Fall back: insert into a clone of the
+                                // interner. This shouldn't happen in
+                                // practice because the parser interned
+                                // every identifier already.
+                                let mut tmp = interner.clone();
+                                tmp.get_or_intern(f.name.as_str())
+                            });
+                        scalar_fields.push((sym, t));
+                    }
+                    _ => {
+                        all_scalar = false;
+                        break;
+                    }
+                }
+            }
+            if all_scalar {
+                out.insert(
+                    name,
+                    StructLayout {
+                        fields: scalar_fields,
+                    },
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Format a monomorphization for diagnostic output, e.g. `id<i64>`.
@@ -337,6 +424,7 @@ fn check_function_body(
     func: &Function,
     sig: &FuncSignature,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
@@ -355,15 +443,136 @@ fn check_function_body(
     for (n, t) in &sig.params {
         locals.insert(*n, *t);
     }
+    let mut struct_locals: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     check_stmt(
         program,
         &func.code,
         &mut locals,
+        &mut struct_locals,
         substitutions,
+        struct_layouts,
         callees,
         ptr_read_hints,
         reject_reason,
     )
+}
+
+/// If the value-position expression is a `StructLiteral` whose struct
+/// name has a registered scalar layout, return that struct name. Used to
+/// special-case `val p = Point { … }` / `var p = Point { … }`.
+fn struct_literal_target(
+    program: &Program,
+    value_ref: &ExprRef,
+    type_decl: Option<&TypeDecl>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    reject_reason: &mut Option<String>,
+) -> Option<DefaultSymbol> {
+    let expr = program.expression.get(value_ref)?;
+    let lit_name = match expr {
+        Expr::StructLiteral(name, _) => name,
+        _ => return None,
+    };
+    if !struct_layouts.contains_key(&lit_name) {
+        note(reject_reason, || {
+            "struct literal references a struct without a JIT-eligible scalar layout".to_string()
+        });
+        return None;
+    }
+    // If a type annotation is present, it must agree with the literal's
+    // struct name. Unknown is the parser's placeholder for "no annotation"
+    // (the type checker leaves it in place for many shapes), so accept it
+    // as if it weren't there. Generic struct annotations (`Point<T>`) and
+    // unrelated names are rejected.
+    if let Some(td) = type_decl {
+        match td {
+            // The parser leaves Unknown when the user writes
+            // `var p = Point { … }` without an annotation, so accept it.
+            TypeDecl::Unknown => {}
+            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _) if *s == lit_name => {}
+            _ => {
+                note(reject_reason, || {
+                    "struct literal type annotation does not match literal name".to_string()
+                });
+                return None;
+            }
+        }
+    }
+    Some(lit_name)
+}
+
+/// Validate every field of a struct literal against the registered
+/// layout. Records callees / ptr_read hints encountered while typing the
+/// individual field initializers.
+#[allow(clippy::too_many_arguments)]
+fn check_struct_literal_fields(
+    program: &Program,
+    value_ref: &ExprRef,
+    struct_name: DefaultSymbol,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    let layout = match struct_layouts.get(&struct_name) {
+        Some(l) => l.clone(),
+        None => {
+            note(reject_reason, || {
+                "struct layout missing in JIT analysis".to_string()
+            });
+            return false;
+        }
+    };
+    let expr = match program.expression.get(value_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    let lit_fields = match expr {
+        Expr::StructLiteral(_, fields) => fields,
+        _ => return false,
+    };
+    if lit_fields.len() != layout.fields.len() {
+        note(reject_reason, || {
+            format!(
+                "struct literal has {} field(s), layout expects {}",
+                lit_fields.len(),
+                layout.fields.len()
+            )
+        });
+        return false;
+    }
+    for (field_sym, field_expr) in &lit_fields {
+        let want = match layout.field(*field_sym) {
+            Some(t) => t,
+            None => {
+                note(reject_reason, || "unknown field in struct literal".to_string());
+                return false;
+            }
+        };
+        let actual = match check_expr(
+            program,
+            field_expr,
+            locals,
+            struct_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        ) {
+            Some(t) => t,
+            None => return false,
+        };
+        if actual != want {
+            note(reject_reason, || {
+                format!("struct literal field type {actual:?} does not match layout {want:?}")
+            });
+            return false;
+        }
+    }
+    true
 }
 
 /// Quick syntactic walk to detect any PtrRead within a function body.
@@ -447,7 +656,9 @@ fn check_stmt(
     program: &Program,
     stmt_ref: &StmtRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
@@ -458,9 +669,33 @@ fn check_stmt(
     };
     match stmt {
         Stmt::Expression(e) => {
-            check_expr(program, &e, locals, substitutions, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &e, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         Stmt::Val(name, type_decl, value) => {
+            // Special-case: a struct-literal RHS registers `name` as a
+            // struct local. Field-by-field types are validated against the
+            // struct's known layout; everything else falls through to the
+            // scalar path.
+            if let Some(struct_name) =
+                struct_literal_target(program, &value, type_decl.as_ref(), struct_layouts, reject_reason)
+            {
+                if !check_struct_literal_fields(
+                    program,
+                    &value,
+                    struct_name,
+                    locals,
+                    struct_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                ) {
+                    return false;
+                }
+                struct_locals.insert(name, struct_name);
+                return true;
+            }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
             // If both the annotation and the RHS are PtrRead-shaped, record
             // the expected return type before recursing so check_expr can
@@ -468,7 +703,7 @@ fn check_stmt(
             if let Some(t) = declared_hint {
                 register_ptr_read_hint(program, &value, t, ptr_read_hints);
             }
-            let val_ty = match check_expr(program, &value, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+            let val_ty = match check_expr(program, &value, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -489,12 +724,36 @@ fn check_stmt(
             true
         }
         Stmt::Var(name, type_decl, value) => {
+            // Mirror the Val struct-literal special case — `var p = Point { ... }`
+            // also registers a struct local.
+            if let Some(v) = value {
+                if let Some(struct_name) =
+                    struct_literal_target(program, &v, type_decl.as_ref(), struct_layouts, reject_reason)
+                {
+                    if !check_struct_literal_fields(
+                        program,
+                        &v,
+                        struct_name,
+                        locals,
+                        struct_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    ) {
+                        return false;
+                    }
+                    struct_locals.insert(name, struct_name);
+                    return true;
+                }
+            }
             let declared = match (type_decl.as_ref(), value) {
                 (Some(td), _) => match ScalarTy::from_type_decl(td) {
                     Some(t) => t,
                     None => return false,
                 },
-                (None, Some(v)) => match check_expr(program, &v, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+                (None, Some(v)) => match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 },
@@ -504,7 +763,7 @@ fn check_stmt(
                 if type_decl.is_some() {
                     register_ptr_read_hint(program, &v, declared, ptr_read_hints);
                 }
-                let val_ty = match check_expr(program, &v, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+                let val_ty = match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 };
@@ -520,18 +779,18 @@ fn check_stmt(
         }
         Stmt::Return(value) => {
             if let Some(v) = value {
-                check_expr(program, &v, locals, substitutions, callees, ptr_read_hints, reject_reason).is_some()
+                check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
             } else {
                 true
             }
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::For(var, start, end, block) => {
-            let start_ty = match check_expr(program, &start, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+            let start_ty = match check_expr(program, &start, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
-            let end_ty = match check_expr(program, &end, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+            let end_ty = match check_expr(program, &end, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -543,7 +802,7 @@ fn check_stmt(
             }
             let prev = locals.insert(var, start_ty);
             let body_ok =
-                check_expr(program, &block, locals, substitutions, callees, ptr_read_hints, reject_reason).is_some();
+                check_expr(program, &block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some();
             match prev {
                 Some(t) => {
                     locals.insert(var, t);
@@ -555,14 +814,14 @@ fn check_stmt(
             body_ok
         }
         Stmt::While(cond, block) => {
-            let cond_ty = match check_expr(program, &cond, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+            let cond_ty = match check_expr(program, &cond, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
             if cond_ty != ScalarTy::Bool {
                 return false;
             }
-            check_expr(program, &block, locals, substitutions, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
@@ -598,7 +857,9 @@ pub(crate) fn check_expr(
     program: &Program,
     expr_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
@@ -610,8 +871,8 @@ pub(crate) fn check_expr(
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
         Expr::Binary(op, lhs, rhs) => {
-            let lt = check_expr(program, &lhs, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
-            let rt = check_expr(program, &rhs, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let lt = check_expr(program, &lhs, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let rt = check_expr(program, &rhs, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if lt != rt {
                 return None;
             }
@@ -661,7 +922,7 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Unary(op, operand) => {
-            let t = check_expr(program, &operand, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let t = check_expr(program, &operand, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             match op {
                 UnaryOp::BitwiseNot => {
                     if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
@@ -694,9 +955,9 @@ pub(crate) fn check_expr(
             for s in &stmts {
                 let stmt = program.statement.get(s)?;
                 if let Stmt::Expression(e) = &stmt {
-                    last_ty = check_expr(program, e, &mut snapshot, substitutions, callees, ptr_read_hints, reject_reason)?;
+                    last_ty = check_expr(program, e, &mut snapshot, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 } else {
-                    if !check_stmt(program, s, &mut snapshot, substitutions, callees, ptr_read_hints, reject_reason) {
+                    if !check_stmt(program, s, &mut snapshot, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     last_ty = ScalarTy::Unit;
@@ -705,22 +966,22 @@ pub(crate) fn check_expr(
             Some(last_ty)
         }
         Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-            let ct = check_expr(program, &cond, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let ct = check_expr(program, &cond, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if ct != ScalarTy::Bool {
                 return None;
             }
-            let then_ty = check_expr(program, &if_block, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let then_ty = check_expr(program, &if_block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             for (ec, eb) in &elif_pairs {
-                let et = check_expr(program, ec, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+                let et = check_expr(program, ec, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
-                let bt = check_expr(program, eb, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+                let bt = check_expr(program, eb, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if bt != then_ty {
                     return None;
                 }
             }
-            let else_ty = check_expr(program, &else_block, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let else_ty = check_expr(program, &else_block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             // Allow if-without-else: the parser inserts an empty Block whose
             // type is Unit. Permit it only when both branches are Unit.
             if else_ty == then_ty {
@@ -732,19 +993,80 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Assign(lhs, rhs) => {
-            // Only assignment to an identifier (a previously declared local)
-            // is supported.
+            // Two assignment shapes are supported:
+            //   1) `name = value` for a previously declared scalar local
+            //   2) `name.field = value` for a struct local's field
             let lhs_expr = program.expression.get(&lhs)?;
-            let name = match lhs_expr {
-                Expr::Identifier(s) => s,
-                _ => return None,
-            };
-            let lhs_ty = locals.get(&name).copied()?;
-            let rhs_ty = check_expr(program, &rhs, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
-            if rhs_ty != lhs_ty {
-                return None;
+            match lhs_expr {
+                Expr::Identifier(name) => {
+                    let lhs_ty = locals.get(&name).copied()?;
+                    let rhs_ty = check_expr(
+                        program,
+                        &rhs,
+                        locals,
+                        struct_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if rhs_ty != lhs_ty {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                Expr::FieldAccess(receiver, field_name) => {
+                    let receiver_expr = program.expression.get(&receiver)?;
+                    let recv_name = match receiver_expr {
+                        Expr::Identifier(s) => s,
+                        _ => {
+                            note(reject_reason, || {
+                                "field-assign receiver must be a struct local".to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    let struct_name = match struct_locals.get(&recv_name).copied() {
+                        Some(s) => s,
+                        None => {
+                            note(reject_reason, || {
+                                "field-assign target is not a struct local".to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    let field_ty = struct_layouts
+                        .get(&struct_name)
+                        .and_then(|l| l.field(field_name))?;
+                    let rhs_ty = check_expr(
+                        program,
+                        &rhs,
+                        locals,
+                        struct_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if rhs_ty != field_ty {
+                        note(reject_reason, || {
+                            format!(
+                                "field assign rhs type {rhs_ty:?} does not match field type {field_ty:?}"
+                            )
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                _ => {
+                    note(reject_reason, || {
+                        "assignment target must be an identifier or struct field".to_string()
+                    });
+                    None
+                }
             }
-            Some(ScalarTy::Unit)
         }
         Expr::Call(name, args_ref) => {
             let args_expr = program.expression.get(&args_ref)?;
@@ -758,7 +1080,9 @@ pub(crate) fn check_expr(
                     program,
                     a,
                     locals,
+                    struct_locals,
                     substitutions,
+                    struct_layouts,
                     callees,
                     ptr_read_hints,
                     reject_reason,
@@ -811,6 +1135,7 @@ pub(crate) fn check_expr(
             let check_args = |expected: &[ScalarTy],
                               args: &Vec<ExprRef>,
                               locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+                              struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
                               callees: &mut Vec<MonoCall>,
                               ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
                               reject_reason: &mut Option<String>|
@@ -826,7 +1151,17 @@ pub(crate) fn check_expr(
                     return false;
                 }
                 for (a, want) in args.iter().zip(expected.iter()) {
-                    match check_expr(program, a, locals, substitutions, callees, ptr_read_hints, reject_reason) {
+                    match check_expr(
+                        program,
+                        a,
+                        locals,
+                        struct_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    ) {
                         Some(t) if t == *want => {}
                         _ => return false,
                     }
@@ -838,32 +1173,32 @@ pub(crate) fn check_expr(
                     if args.len() != 1 {
                         return None;
                     }
-                    let t = check_expr(program, &args[0], locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+                    let t = check_expr(program, &args[0], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapAlloc => {
-                    if !check_args(&[ScalarTy::U64], &args, locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::U64], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::HeapFree => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapRealloc => {
-                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::PtrIsNull => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Bool)
@@ -873,6 +1208,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::Ptr, ScalarTy::U64],
                         &args,
                         locals,
+                    struct_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -886,6 +1222,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::U64, ScalarTy::U64],
                         &args,
                         locals,
+                    struct_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -903,6 +1240,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::U64],
                         &args,
                         locals,
+                    struct_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -933,7 +1271,9 @@ pub(crate) fn check_expr(
                         program,
                         &args[0],
                         locals,
+                        struct_locals,
                         substitutions,
+                        struct_layouts,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -953,9 +1293,9 @@ pub(crate) fn check_expr(
                     if args.len() != 3 {
                         return None;
                     }
-                    let p = check_expr(program, &args[0], locals, substitutions, callees, ptr_read_hints, reject_reason)?;
-                    let off = check_expr(program, &args[1], locals, substitutions, callees, ptr_read_hints, reject_reason)?;
-                    let v = check_expr(program, &args[2], locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+                    let p = check_expr(program, &args[0], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let off = check_expr(program, &args[1], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let v = check_expr(program, &args[2], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if p != ScalarTy::Ptr || off != ScalarTy::U64 {
                         return None;
                     }
@@ -975,10 +1315,41 @@ pub(crate) fn check_expr(
                 }
             }
         }
+        Expr::FieldAccess(receiver, field_name) => {
+            // Read access on a struct local: returns the field's scalar
+            // type. Anything else (FieldAccess on a function call result,
+            // nested FieldAccess, etc.) falls through to ineligible.
+            let receiver_expr = program.expression.get(&receiver)?;
+            let recv_name = match receiver_expr {
+                Expr::Identifier(s) => s,
+                _ => {
+                    note(reject_reason, || {
+                        "field access receiver must be a struct local".to_string()
+                    });
+                    return None;
+                }
+            };
+            let struct_name = match struct_locals.get(&recv_name).copied() {
+                Some(s) => s,
+                None => {
+                    note(reject_reason, || {
+                        "field access on a non-struct local".to_string()
+                    });
+                    return None;
+                }
+            };
+            let field_ty = struct_layouts
+                .get(&struct_name)
+                .and_then(|l| l.field(field_name));
+            if field_ty.is_none() {
+                note(reject_reason, || "unknown field on struct".to_string());
+            }
+            field_ty
+        }
         Expr::Cast(inner, target) => {
             // Match the interpreter: only i64 ↔ u64 (or identity for those
             // two) is permitted. bool casts are intentionally excluded.
-            let inner_ty = check_expr(program, &inner, locals, substitutions, callees, ptr_read_hints, reject_reason)?;
+            let inner_ty = check_expr(program, &inner, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
             if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
                 return None;

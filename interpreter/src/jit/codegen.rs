@@ -11,7 +11,7 @@ use cranelift_module::{FuncId, Module};
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
-use super::eligibility::{FuncSignature, MonoKey, ScalarTy};
+use super::eligibility::{FuncSignature, MonoKey, ScalarTy, StructLayout};
 use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
@@ -47,6 +47,7 @@ pub fn translate_function<M: Module>(
     helper_ids: &HashMap<HelperKind, FuncId>,
     call_targets: &HashMap<ExprRef, MonoKey>,
     ptr_read_hints: &HashMap<ExprRef, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
 ) -> Result<(), String> {
@@ -93,16 +94,22 @@ pub fn translate_function<M: Module>(
         _ => return Err("function body must be an expression statement".into()),
     };
 
+    let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
+        HashMap::new();
+    let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     let mut state = State {
         program,
         builder,
         local_types: &mut local_types,
         local_vars: &mut local_vars,
+        struct_locals: &mut struct_locals,
+        struct_local_types: &mut struct_local_types,
         func_signatures,
         func_refs: &func_refs,
         helper_refs: &helper_refs,
         call_targets,
         ptr_read_hints,
+        struct_layouts,
         loop_stack: Vec::new(),
         return_ty: sig.ret,
         terminated: false,
@@ -136,6 +143,14 @@ struct State<'a, 'b> {
     builder: FunctionBuilder<'b>,
     local_types: &'a mut HashMap<DefaultSymbol, ScalarTy>,
     local_vars: &'a mut HashMap<DefaultSymbol, Variable>,
+    /// For each struct local, maps each field name (symbol) to the
+    /// Variable that backs it. Struct values are decomposed into one
+    /// SSA Variable per scalar field for the duration of the function.
+    struct_locals: &'a mut HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>>,
+    /// Mirror of the eligibility-side `struct_locals` (local name ->
+    /// struct type name). Forwarded into eligibility's `check_expr` from
+    /// `expr_type` so FieldAccess type lookups resolve correctly.
+    struct_local_types: &'a mut HashMap<DefaultSymbol, DefaultSymbol>,
     #[allow(dead_code)]
     func_signatures: &'a HashMap<MonoKey, FuncSignature>,
     func_refs: &'a HashMap<MonoKey, FuncRef>,
@@ -147,6 +162,8 @@ struct State<'a, 'b> {
     /// expression in the function body. Built by eligibility from the
     /// surrounding val/var/assign annotations.
     ptr_read_hints: &'a HashMap<ExprRef, ScalarTy>,
+    /// Layout for every JIT-compatible struct in the program.
+    struct_layouts: &'a HashMap<DefaultSymbol, StructLayout>,
     loop_stack: Vec<LoopFrame>,
     #[allow(dead_code)]
     return_ty: ScalarTy,
@@ -285,20 +302,59 @@ impl<'a, 'b> State<'a, 'b> {
                     .expression
                     .get(&lhs)
                     .ok_or_else(|| "missing lhs in assign".to_string())?;
-                let name = match lhs_expr {
+                match lhs_expr {
+                    Expr::Identifier(name) => {
+                        let var = self
+                            .local_vars
+                            .get(&name)
+                            .copied()
+                            .ok_or_else(|| "assign to undeclared local".to_string())?;
+                        let v = self
+                            .gen_expr(&rhs)?
+                            .ok_or_else(|| "rhs of assign produced no value".to_string())?;
+                        self.builder.def_var(var, v);
+                        Ok(None)
+                    }
+                    Expr::FieldAccess(receiver, field_name) => {
+                        let recv_expr = self
+                            .program
+                            .expression
+                            .get(&receiver)
+                            .ok_or_else(|| "missing field-access receiver".to_string())?;
+                        let recv_name = match recv_expr {
+                            Expr::Identifier(s) => s,
+                            _ => return Err("field-assign receiver must be a local".into()),
+                        };
+                        let var = self
+                            .struct_locals
+                            .get(&recv_name)
+                            .and_then(|fields| fields.get(&field_name).copied())
+                            .ok_or_else(|| "field-assign target unknown".to_string())?;
+                        let v = self
+                            .gen_expr(&rhs)?
+                            .ok_or_else(|| "rhs of field assign produced no value".to_string())?;
+                        self.builder.def_var(var, v);
+                        Ok(None)
+                    }
+                    _ => Err("assignment target must be identifier or field".into()),
+                }
+            }
+            Expr::FieldAccess(receiver, field_name) => {
+                let recv_expr = self
+                    .program
+                    .expression
+                    .get(&receiver)
+                    .ok_or_else(|| "missing field-access receiver".to_string())?;
+                let recv_name = match recv_expr {
                     Expr::Identifier(s) => s,
-                    _ => return Err("only identifier targets are JIT-compatible".to_string()),
+                    _ => return Err("field access receiver must be a local".into()),
                 };
                 let var = self
-                    .local_vars
-                    .get(&name)
-                    .copied()
-                    .ok_or_else(|| "assign to undeclared local".to_string())?;
-                let v = self
-                    .gen_expr(&rhs)?
-                    .ok_or_else(|| "rhs of assign produced no value".to_string())?;
-                self.builder.def_var(var, v);
-                Ok(None)
+                    .struct_locals
+                    .get(&recv_name)
+                    .and_then(|fields| fields.get(&field_name).copied())
+                    .ok_or_else(|| "field access target unknown".to_string())?;
+                Ok(Some(self.builder.use_var(var)))
             }
             Expr::BuiltinCall(func, args) => {
                 match func {
@@ -496,19 +552,29 @@ impl<'a, 'b> State<'a, 'b> {
                     last_value = self.gen_expr(&e)?;
                 }
                 Stmt::Val(name, _ty, value) => {
-                    let st = self.expr_type(&value)?;
-                    let v = self
-                        .gen_expr(&value)?
-                        .ok_or_else(|| "val rhs produced no value".to_string())?;
-                    let var = self
-                        .builder
-                        .declare_var(ir_type(st).expect("val type cannot be Unit"));
-                    self.builder.def_var(var, v);
-                    self.local_types.insert(name, st);
-                    self.local_vars.insert(name, var);
-                    last_value = None;
+                    if self.try_gen_struct_local(name, &value)? {
+                        last_value = None;
+                    } else {
+                        let st = self.expr_type(&value)?;
+                        let v = self
+                            .gen_expr(&value)?
+                            .ok_or_else(|| "val rhs produced no value".to_string())?;
+                        let var = self
+                            .builder
+                            .declare_var(ir_type(st).expect("val type cannot be Unit"));
+                        self.builder.def_var(var, v);
+                        self.local_types.insert(name, st);
+                        self.local_vars.insert(name, var);
+                        last_value = None;
+                    }
                 }
                 Stmt::Var(name, type_decl, value) => {
+                    if let Some(v) = value {
+                        if self.try_gen_struct_local(name, &v)? {
+                            last_value = None;
+                            continue;
+                        }
+                    }
                     let st = match type_decl.as_ref() {
                         Some(td) => ScalarTy::from_type_decl(td)
                             .ok_or_else(|| "var type unsupported".to_string())?,
@@ -797,6 +863,49 @@ impl<'a, 'b> State<'a, 'b> {
         Ok(self.builder.use_var(result_var))
     }
 
+    /// If `value_ref` is a struct literal whose layout we know, decompose
+    /// it into one Variable per scalar field and register `name` as a
+    /// struct local. Returns `Ok(true)` when handled, `Ok(false)` when
+    /// the RHS isn't a JIT-eligible struct literal.
+    fn try_gen_struct_local(
+        &mut self,
+        name: DefaultSymbol,
+        value_ref: &ExprRef,
+    ) -> Result<bool, String> {
+        let value = match self.program.expression.get(value_ref) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        let (struct_name, lit_fields) = match value {
+            Expr::StructLiteral(n, f) => (n, f),
+            _ => return Ok(false),
+        };
+        let layout = match self.struct_layouts.get(&struct_name) {
+            Some(l) => l.clone(),
+            None => return Ok(false),
+        };
+
+        // Generate each field's value first so they share the current
+        // (non-terminated) block, then declare a Variable per field.
+        let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+        for (field_sym, field_expr) in &lit_fields {
+            let want = layout
+                .field(*field_sym)
+                .ok_or_else(|| "unknown field in struct literal at codegen".to_string())?;
+            let v = self
+                .gen_expr(field_expr)?
+                .ok_or_else(|| "struct literal field produced no value".to_string())?;
+            let var = self
+                .builder
+                .declare_var(ir_type(want).expect("struct field cannot be Unit"));
+            self.builder.def_var(var, v);
+            field_vars.insert(*field_sym, var);
+        }
+        self.struct_locals.insert(name, field_vars);
+        self.struct_local_types.insert(name, struct_name);
+        Ok(true)
+    }
+
     fn call_helper(&mut self, kind: HelperKind, args: &[Value]) -> Result<Value, String> {
         let func_ref = *self
             .helper_refs
@@ -831,11 +940,17 @@ impl<'a, 'b> State<'a, 'b> {
         // when local types were registered, so codegen-time type lookups
         // don't need a separate substitution map.
         let empty_subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+        // Pass the active struct-local map so FieldAccess type lookups
+        // resolve through the layouts; cloning gives a writable scratch
+        // copy without disturbing the codegen-side state.
+        let mut struct_locals_view = self.struct_local_types.clone();
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
+            &mut struct_locals_view,
             &empty_subs,
+            self.struct_layouts,
             &mut callees,
             &mut hints,
             &mut reason,

@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+152. JIT Phase 2d (struct field アクセス): scalar フィールドのみの struct を JIT 対応。各フィールドを別 SSA Variable として decompose し、StructLiteral RHS / FieldAccess 読み出し / `p.field = value` 書き込みを許可。out-of-scope: struct copy, struct as func param/return, methods, nested struct, generic struct。example: `jit_struct.t` (2026-04-26)
 151. JIT Phase 2f (generic monomorphize): EligibleSet を `MonoKey = (Symbol, Vec<ScalarTy>)` keyed に refactor。`Call(generic_fn, args)` を見たとき arg 型から substitutions を推論、各 monomorph を別 cranelift 関数 (`id__I64`/`id__U64` 等) として compile。call_targets で各 Call → MonoKey を解決。generic 関数内で PtrRead は ineligible (typed-slot hint が ExprRef-keyed なため)。example: `jit_generic.t` (2026-04-26)
 150. JIT 機能ドキュメント (`JIT.md`): サポート範囲、env var、性能数値、skip 理由、example 一覧、未実装項目を 1 ファイルにまとめ。CLAUDE.md からも参照 (2026-04-26)
 149. JIT Phase 2g (`__builtin_sizeof` 対応): scalar 型 (i64/u64/ptr=8、bool=1) でコンパイル時定数を返す。eligibility は引数 1、JIT-対応 scalar、戻り値 u64。codegen は arg を gen_expr して値を捨て (副作用保存) iconst を返す (2026-04-26)
@@ -49,7 +50,7 @@
 
 ## 未実装 📋
 
-152. **JIT Phase 2 拡張** — Phase 1 / 2a (Cast) / 2b (print/println) / 2c (heap builtins) / 2c-2 (ptr_read/write) / 2g (sizeof) / 2f (generic monomorphize) は完了。残: (d) struct field/method、(e) allocator stack 連携、(h) 関数キャッシュで cranelift コンパイル overhead を償却。サポート範囲のまとめは `JIT.md`
+153. **JIT Phase 2 拡張** — Phase 1 / 2a (Cast) / 2b (print/println) / 2c (heap builtins) / 2c-2 (ptr_read/write) / 2g (sizeof) / 2f (generic) / 2d (struct field) は完了。残: (d-2) struct as param/return + method dispatch、(e) allocator stack 連携、(h) 関数キャッシュ。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）

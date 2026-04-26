@@ -82,6 +82,31 @@ and generic type parameters are **not** supported.
 `Stmt::Continue`. `StructDecl` / `ImplBlock` / `EnumDecl` cause the
 enclosing function to be rejected.
 
+### Structs
+
+A struct whose fields are all JIT scalars can be created and mutated
+locally:
+
+```rust
+struct Point { x: i64, y: i64 }
+
+fn main() -> u64 {
+    var p = Point { x: 1i64, y: 2i64 }
+    p.x = p.x + 9i64
+    val total: i64 = p.x + p.y
+    total as u64
+}
+```
+
+Each scalar field is decomposed into its own SSA `Variable`, so reads
+and writes never touch memory. Out of scope for this iteration:
+
+* Passing structs as function parameters or returning them.
+* Calling methods on struct values.
+* Copying a struct between locals (`var q = p`).
+* Nested struct fields.
+* Generic structs (`struct Box<T> { … }`).
+
 ### Generic functions
 
 A generic function `fn id<T>(x: T) -> T { x }` is monomorphized per call
@@ -162,6 +187,7 @@ loops benefit the most.
 * `jit_ptr.t` — `ptr_read` / `ptr_write` round-trip across all four types → exit 103
 * `jit_sizeof.t` — `__builtin_sizeof` of all scalar types → exit 25
 * `jit_generic.t` — `id<T>` and `add<T>` monomorphized for `i64` and `u64` → exit 206
+* `jit_struct.t` — `Point { x, y }` field reads / writes → exit 20
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -171,9 +197,10 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #152 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #153 ("JIT Phase 2 拡張"):
 
-* `struct` field access / method dispatch.
+* Struct values as function parameters / return values, and method
+  dispatch.
 * `with allocator = …` and the allocator stack.
 * Caching compiled functions across `execute_program` calls (would
   amortize the ~100 µs cranelift overhead in repeated bench runs and

@@ -140,6 +140,17 @@ fn generic_example_matches_between_modes() {
     assert_match("example/jit_generic.t");
 }
 
+#[test]
+fn struct_example_matches_between_modes() {
+    assert_match("example/jit_struct.t");
+}
+
+#[test]
+fn struct_example_returns_20() {
+    let r = run("example/jit_struct.t", false, false);
+    assert_eq!(r.code, 20);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn generic_example_compiles_each_monomorph() {

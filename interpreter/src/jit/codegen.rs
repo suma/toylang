@@ -36,6 +36,7 @@ pub fn make_signature<M: Module>(module: &M, sig: &FuncSignature) -> Signature {
 
 /// Compiles `func` into the cranelift `ctx`, ready to be passed to
 /// `Module::define_function`.
+#[allow(clippy::too_many_arguments)]
 pub fn translate_function<M: Module>(
     module: &mut M,
     program: &Program,
@@ -44,6 +45,7 @@ pub fn translate_function<M: Module>(
     func_signatures: &HashMap<DefaultSymbol, FuncSignature>,
     func_ids: &HashMap<DefaultSymbol, FuncId>,
     helper_ids: &HashMap<HelperKind, FuncId>,
+    ptr_read_hints: &HashMap<ExprRef, ScalarTy>,
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
 ) -> Result<(), String> {
@@ -96,6 +98,7 @@ pub fn translate_function<M: Module>(
         func_signatures,
         func_refs: &func_refs,
         helper_refs: &helper_refs,
+        ptr_read_hints,
         loop_stack: Vec::new(),
         return_ty: sig.ret,
         terminated: false,
@@ -133,6 +136,10 @@ struct State<'a, 'b> {
     func_signatures: &'a HashMap<DefaultSymbol, FuncSignature>,
     func_refs: &'a HashMap<DefaultSymbol, FuncRef>,
     helper_refs: &'a HashMap<HelperKind, FuncRef>,
+    /// Pre-computed expected return type for each `__builtin_ptr_read(...)`
+    /// expression in the function body. Built by eligibility from the
+    /// surrounding val/var/assign annotations.
+    ptr_read_hints: &'a HashMap<ExprRef, ScalarTy>,
     loop_stack: Vec<LoopFrame>,
     #[allow(dead_code)]
     return_ty: ScalarTy,
@@ -335,6 +342,48 @@ impl<'a, 'b> State<'a, 'b> {
                             .gen_expr(&args[1])?
                             .ok_or_else(|| "heap_realloc size".to_string())?;
                         Ok(Some(self.call_helper(HelperKind::HeapRealloc, &[p, n])?))
+                    }
+                    BuiltinFunction::PtrRead => {
+                        let expected = self
+                            .ptr_read_hints
+                            .get(expr_ref)
+                            .copied()
+                            .ok_or_else(|| "ptr_read without registered type hint".to_string())?;
+                        let p = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "ptr_read ptr".to_string())?;
+                        let off = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "ptr_read offset".to_string())?;
+                        let kind = match expected {
+                            ScalarTy::I64 => HelperKind::PtrReadI64,
+                            ScalarTy::U64 => HelperKind::PtrReadU64,
+                            ScalarTy::Bool => HelperKind::PtrReadBool,
+                            ScalarTy::Ptr => HelperKind::PtrReadPtr,
+                            _ => return Err("ptr_read expected type unsupported".into()),
+                        };
+                        Ok(Some(self.call_helper(kind, &[p, off])?))
+                    }
+                    BuiltinFunction::PtrWrite => {
+                        let val_ty = self.expr_type(&args[2])?;
+                        let p = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "ptr_write ptr".to_string())?;
+                        let off = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "ptr_write offset".to_string())?;
+                        let v = self
+                            .gen_expr(&args[2])?
+                            .ok_or_else(|| "ptr_write value".to_string())?;
+                        let kind = match val_ty {
+                            ScalarTy::I64 => HelperKind::PtrWriteI64,
+                            ScalarTy::U64 => HelperKind::PtrWriteU64,
+                            ScalarTy::Bool => HelperKind::PtrWriteBool,
+                            ScalarTy::Ptr => HelperKind::PtrWritePtr,
+                            _ => return Err("ptr_write value type unsupported".into()),
+                        };
+                        self.call_helper(kind, &[p, off, v])?;
+                        Ok(None)
                     }
                     BuiltinFunction::MemCopy
                     | BuiltinFunction::MemMove
@@ -739,7 +788,17 @@ impl<'a, 'b> State<'a, 'b> {
     fn expr_type(&self, expr_ref: &ExprRef) -> Result<ScalarTy, String> {
         let mut callees = Vec::new();
         let mut snapshot = self.local_types.clone();
-        super::eligibility::check_expr(self.program, expr_ref, &mut snapshot, &mut callees)
-            .ok_or_else(|| "type lookup failed in codegen".to_string())
+        // The hint map was finalized during eligibility analysis; cloning
+        // gives us a writable scratch copy without disturbing the shared
+        // state if check_expr happens to add a duplicate entry.
+        let mut hints = self.ptr_read_hints.clone();
+        super::eligibility::check_expr(
+            self.program,
+            expr_ref,
+            &mut snapshot,
+            &mut callees,
+            &mut hints,
+        )
+        .ok_or_else(|| "type lookup failed in codegen".to_string())
     }
 }

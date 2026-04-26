@@ -113,6 +113,17 @@ fn heap_example_matches_between_modes() {
     assert_match("example/jit_heap.t");
 }
 
+#[test]
+fn ptr_rw_example_matches_between_modes() {
+    assert_match("example/jit_ptr.t");
+}
+
+#[test]
+fn ptr_rw_example_returns_103() {
+    let r = run("example/jit_ptr.t", false, false);
+    assert_eq!(r.code, 103);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn unsupported_program_falls_back_silently() {

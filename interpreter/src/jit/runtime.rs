@@ -84,6 +84,95 @@ extern "C" fn jit_mem_set(addr: u64, value: u64, size: u64) {
     let _ = with_heap(|h| h.set_memory(addr as usize, value as u8, size as usize));
 }
 
+// ptr_read / ptr_write helpers — one per supported scalar type. They mirror
+// the interpreter's typed-slot semantics so a value written by one path can
+// be read back through the other. The `_u64` write also stamps the byte
+// buffer for backward compatibility with raw read_u64 consumers, matching
+// the interpreter's behavior.
+
+fn make_typed(obj: Object) -> Rc<RefCell<Object>> {
+    Rc::new(RefCell::new(obj))
+}
+
+extern "C" fn jit_ptr_write_i64(addr: u64, off: u64, v: i64) {
+    let _ = with_heap(|h| {
+        h.typed_write(addr as usize, off as usize, make_typed(Object::Int64(v)));
+    });
+}
+extern "C" fn jit_ptr_write_u64(addr: u64, off: u64, v: u64) {
+    let _ = with_heap(|h| {
+        h.typed_write(addr as usize, off as usize, make_typed(Object::UInt64(v)));
+        h.write_u64(addr as usize, off as usize, v);
+    });
+}
+extern "C" fn jit_ptr_write_bool(addr: u64, off: u64, v: u8) {
+    let _ = with_heap(|h| {
+        h.typed_write(addr as usize, off as usize, make_typed(Object::Bool(v != 0)));
+    });
+}
+extern "C" fn jit_ptr_write_ptr(addr: u64, off: u64, v: u64) {
+    let _ = with_heap(|h| {
+        h.typed_write(
+            addr as usize,
+            off as usize,
+            make_typed(Object::Pointer(v as usize)),
+        );
+    });
+}
+
+extern "C" fn jit_ptr_read_i64(addr: u64, off: u64) -> i64 {
+    with_heap(|h| {
+        if let Some(rc) = h.typed_read(addr as usize, off as usize) {
+            match &*rc.borrow() {
+                Object::Int64(v) => *v,
+                Object::UInt64(v) => *v as i64,
+                _ => 0,
+            }
+        } else {
+            h.read_u64(addr as usize, off as usize).unwrap_or(0) as i64
+        }
+    })
+    .unwrap_or(0)
+}
+extern "C" fn jit_ptr_read_u64(addr: u64, off: u64) -> u64 {
+    with_heap(|h| {
+        if let Some(rc) = h.typed_read(addr as usize, off as usize) {
+            match &*rc.borrow() {
+                Object::UInt64(v) => *v,
+                Object::Int64(v) => *v as u64,
+                _ => 0,
+            }
+        } else {
+            h.read_u64(addr as usize, off as usize).unwrap_or(0)
+        }
+    })
+    .unwrap_or(0)
+}
+extern "C" fn jit_ptr_read_bool(addr: u64, off: u64) -> u8 {
+    with_heap(|h| {
+        match h.typed_read(addr as usize, off as usize) {
+            Some(rc) => match &*rc.borrow() {
+                Object::Bool(b) => u8::from(*b),
+                _ => 0,
+            },
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+extern "C" fn jit_ptr_read_ptr(addr: u64, off: u64) -> u64 {
+    with_heap(|h| {
+        match h.typed_read(addr as usize, off as usize) {
+            Some(rc) => match &*rc.borrow() {
+                Object::Pointer(p) => *p as u64,
+                _ => 0,
+            },
+            None => 0,
+        }
+    })
+    .unwrap_or(0)
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -98,6 +187,14 @@ pub(crate) enum HelperKind {
     MemCopy,
     MemMove,
     MemSet,
+    PtrWriteI64,
+    PtrWriteU64,
+    PtrWriteBool,
+    PtrWritePtr,
+    PtrReadI64,
+    PtrReadU64,
+    PtrReadBool,
+    PtrReadPtr,
 }
 
 impl HelperKind {
@@ -115,6 +212,14 @@ impl HelperKind {
             HelperKind::MemCopy => "jit_mem_copy",
             HelperKind::MemMove => "jit_mem_move",
             HelperKind::MemSet => "jit_mem_set",
+            HelperKind::PtrWriteI64 => "jit_ptr_write_i64",
+            HelperKind::PtrWriteU64 => "jit_ptr_write_u64",
+            HelperKind::PtrWriteBool => "jit_ptr_write_bool",
+            HelperKind::PtrWritePtr => "jit_ptr_write_ptr",
+            HelperKind::PtrReadI64 => "jit_ptr_read_i64",
+            HelperKind::PtrReadU64 => "jit_ptr_read_u64",
+            HelperKind::PtrReadBool => "jit_ptr_read_bool",
+            HelperKind::PtrReadPtr => "jit_ptr_read_ptr",
         }
     }
 
@@ -132,6 +237,14 @@ impl HelperKind {
             HelperKind::MemCopy => jit_mem_copy as *const u8,
             HelperKind::MemMove => jit_mem_move as *const u8,
             HelperKind::MemSet => jit_mem_set as *const u8,
+            HelperKind::PtrWriteI64 => jit_ptr_write_i64 as *const u8,
+            HelperKind::PtrWriteU64 => jit_ptr_write_u64 as *const u8,
+            HelperKind::PtrWriteBool => jit_ptr_write_bool as *const u8,
+            HelperKind::PtrWritePtr => jit_ptr_write_ptr as *const u8,
+            HelperKind::PtrReadI64 => jit_ptr_read_i64 as *const u8,
+            HelperKind::PtrReadU64 => jit_ptr_read_u64 as *const u8,
+            HelperKind::PtrReadBool => jit_ptr_read_bool as *const u8,
+            HelperKind::PtrReadPtr => jit_ptr_read_ptr as *const u8,
         }
     }
 
@@ -148,10 +261,18 @@ impl HelperKind {
                 (vec![types::I64, types::I64, types::I64], None)
             }
             HelperKind::MemSet => (vec![types::I64, types::I64, types::I64], None),
+            HelperKind::PtrWriteI64 | HelperKind::PtrWriteU64 | HelperKind::PtrWritePtr => {
+                (vec![types::I64, types::I64, types::I64], None)
+            }
+            HelperKind::PtrWriteBool => (vec![types::I64, types::I64, types::I8], None),
+            HelperKind::PtrReadI64 | HelperKind::PtrReadU64 | HelperKind::PtrReadPtr => {
+                (vec![types::I64, types::I64], Some(types::I64))
+            }
+            HelperKind::PtrReadBool => (vec![types::I64, types::I64], Some(types::I8)),
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 12] = [
+    pub(crate) const ALL: [HelperKind; 20] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -164,6 +285,14 @@ impl HelperKind {
         HelperKind::MemCopy,
         HelperKind::MemMove,
         HelperKind::MemSet,
+        HelperKind::PtrWriteI64,
+        HelperKind::PtrWriteU64,
+        HelperKind::PtrWriteBool,
+        HelperKind::PtrWritePtr,
+        HelperKind::PtrReadI64,
+        HelperKind::PtrReadU64,
+        HelperKind::PtrReadBool,
+        HelperKind::PtrReadPtr,
     ];
 }
 
@@ -293,6 +422,7 @@ fn compile_and_run(
             &eligible.signatures,
             &func_ids,
             &helper_ids,
+            &eligible.ptr_read_hints,
             &mut ctx,
             &mut builder_ctx,
         )?;

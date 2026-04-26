@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+146. JIT Phase 2c-2 (ptr_read/ptr_write 対応): 8 helper を追加 (read/write × i64/u64/bool/ptr)。eligibility が val/var/assign の左辺型から `__builtin_ptr_read` の期待型を pre-pass で収集し `ptr_read_hints: HashMap<ExprRef, ScalarTy>` に格納。codegen は hint で helper を選択。callback は `HeapManager::typed_read/typed_write` を経由し interpreter と互換 (2026-04-26)
 145. JIT 統合テスト追加: `interpreter/tests/jit_integration.rs` で `INTERPRETER_JIT=1` ON/OFF のバイナリ実行を比較。fib/jit_cast/jit_print/jit_heap で exit code + stdout 往復一致、fallback プログラム (配列使用) の挙動、verbose ログ (`JIT compiled:` / `JIT: skipped`) の存在を検証。8 テスト追加 (--no-default-features では 5 テスト) (2026-04-26)
 144. JIT Phase 2c (heap builtins): `heap_alloc`/`heap_free`/`heap_realloc`/`ptr_is_null`/`mem_copy`/`mem_move`/`mem_set` を JIT で扱う。`ScalarTy::Ptr` を追加 (cranelift I64 マップ)、callback は thread_local の `JIT_HEAP` で `HeapManager` を共有、`PtrIsNull` は `icmp_imm` でインライン展開。`ptr_read`/`ptr_write` は typed-slot 仕様の都合で次回 (2026-04-26)
 143. JIT Phase 2b (print/println callback): `BuiltinCall(Print/Println, scalar_arg)` を JIT で扱う。`extern "C"` Rust callback (jit_print_i64/u64/bool + println 各種) を `JITBuilder.symbol()` で登録、`Linkage::Import` で declare、codegen は引数型から helper を選んで call。eligibility は arg=1, type∈{i64,u64,bool} を許可、return type は Unit (2026-04-26)
@@ -43,7 +44,7 @@
 
 ## 未実装 📋
 
-145. **JIT Phase 2 拡張** — Phase 1 / Phase 2a (Cast) / 2b (print/println) / 2c (heap builtins; ptr_read/write 除く) は完了。残: (c-2) `ptr_read`/`ptr_write` の typed-slot 互換実装、(d) struct field/method、(e) allocator stack 連携、(f) generic 関数の monomorphize
+147. **JIT Phase 2 拡張** — Phase 1 / 2a (Cast) / 2b (print/println) / 2c (heap builtins) / 2c-2 (ptr_read/write) は完了。残: (d) struct field/method、(e) allocator stack 連携、(f) generic 関数の monomorphize
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）

@@ -52,6 +52,13 @@ pub struct FuncSignature {
 pub struct EligibleSet {
     pub functions: HashMap<DefaultSymbol, Rc<Function>>,
     pub signatures: HashMap<DefaultSymbol, FuncSignature>,
+    /// `__builtin_ptr_read(...)` is type-polymorphic at the language level —
+    /// the interpreter picks the return type from the typed-slot store at
+    /// runtime. The JIT instead requires the expected scalar at compile
+    /// time, so eligibility records the type for every supported PtrRead
+    /// position (Val/Var/Assign with a typed identifier on the LHS).
+    /// Codegen reads back from this map to pick the right helper.
+    pub ptr_read_hints: HashMap<ExprRef, ScalarTy>,
 }
 
 pub fn analyze(
@@ -66,6 +73,7 @@ pub fn analyze(
     let mut visited: HashSet<DefaultSymbol> = HashSet::new();
     let mut signatures: HashMap<DefaultSymbol, FuncSignature> = HashMap::new();
     let mut eligible_funcs: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
+    let mut ptr_read_hints: HashMap<ExprRef, ScalarTy> = HashMap::new();
     let mut stack: Vec<Rc<Function>> = vec![main.clone()];
 
     while let Some(func) = stack.pop() {
@@ -84,7 +92,7 @@ pub fn analyze(
         }
 
         let mut callees: Vec<DefaultSymbol> = Vec::new();
-        if !check_function_body(program, &func, &sig, &mut callees) {
+        if !check_function_body(program, &func, &sig, &mut callees, &mut ptr_read_hints) {
             return None;
         }
 
@@ -105,6 +113,7 @@ pub fn analyze(
     Some(EligibleSet {
         functions: eligible_funcs,
         signatures,
+        ptr_read_hints,
     })
 }
 
@@ -132,12 +141,13 @@ fn check_function_body(
     func: &Function,
     sig: &FuncSignature,
     callees: &mut Vec<DefaultSymbol>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
 ) -> bool {
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     for (n, t) in &sig.params {
         locals.insert(*n, *t);
     }
-    check_stmt(program, &func.code, &mut locals, callees)
+    check_stmt(program, &func.code, &mut locals, callees, ptr_read_hints)
 }
 
 fn check_stmt(
@@ -145,15 +155,25 @@ fn check_stmt(
     stmt_ref: &StmtRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     callees: &mut Vec<DefaultSymbol>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
 ) -> bool {
     let stmt = match program.statement.get(stmt_ref) {
         Some(s) => s,
         None => return false,
     };
     match stmt {
-        Stmt::Expression(e) => check_expr(program, &e, locals, callees).is_some(),
+        Stmt::Expression(e) => {
+            check_expr(program, &e, locals, callees, ptr_read_hints).is_some()
+        }
         Stmt::Val(name, type_decl, value) => {
-            let val_ty = match check_expr(program, &value, locals, callees) {
+            let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
+            // If both the annotation and the RHS are PtrRead-shaped, record
+            // the expected return type before recursing so check_expr can
+            // accept the otherwise type-polymorphic builtin.
+            if let Some(t) = declared_hint {
+                register_ptr_read_hint(program, &value, t, ptr_read_hints);
+            }
+            let val_ty = match check_expr(program, &value, locals, callees, ptr_read_hints) {
                 Some(t) => t,
                 None => return false,
             };
@@ -179,14 +199,17 @@ fn check_stmt(
                     Some(t) => t,
                     None => return false,
                 },
-                (None, Some(v)) => match check_expr(program, &v, locals, callees) {
+                (None, Some(v)) => match check_expr(program, &v, locals, callees, ptr_read_hints) {
                     Some(t) => t,
                     None => return false,
                 },
                 (None, None) => return false,
             };
             if let Some(v) = value {
-                let val_ty = match check_expr(program, &v, locals, callees) {
+                if type_decl.is_some() {
+                    register_ptr_read_hint(program, &v, declared, ptr_read_hints);
+                }
+                let val_ty = match check_expr(program, &v, locals, callees, ptr_read_hints) {
                     Some(t) => t,
                     None => return false,
                 };
@@ -202,18 +225,18 @@ fn check_stmt(
         }
         Stmt::Return(value) => {
             if let Some(v) = value {
-                check_expr(program, &v, locals, callees).is_some()
+                check_expr(program, &v, locals, callees, ptr_read_hints).is_some()
             } else {
                 true
             }
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::For(var, start, end, block) => {
-            let start_ty = match check_expr(program, &start, locals, callees) {
+            let start_ty = match check_expr(program, &start, locals, callees, ptr_read_hints) {
                 Some(t) => t,
                 None => return false,
             };
-            let end_ty = match check_expr(program, &end, locals, callees) {
+            let end_ty = match check_expr(program, &end, locals, callees, ptr_read_hints) {
                 Some(t) => t,
                 None => return false,
             };
@@ -224,7 +247,8 @@ fn check_stmt(
                 return false;
             }
             let prev = locals.insert(var, start_ty);
-            let body_ok = check_expr(program, &block, locals, callees).is_some();
+            let body_ok =
+                check_expr(program, &block, locals, callees, ptr_read_hints).is_some();
             match prev {
                 Some(t) => {
                     locals.insert(var, t);
@@ -236,14 +260,14 @@ fn check_stmt(
             body_ok
         }
         Stmt::While(cond, block) => {
-            let cond_ty = match check_expr(program, &cond, locals, callees) {
+            let cond_ty = match check_expr(program, &cond, locals, callees, ptr_read_hints) {
                 Some(t) => t,
                 None => return false,
             };
             if cond_ty != ScalarTy::Bool {
                 return false;
             }
-            check_expr(program, &block, locals, callees).is_some()
+            check_expr(program, &block, locals, callees, ptr_read_hints).is_some()
         }
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
@@ -252,14 +276,35 @@ fn check_stmt(
     }
 }
 
+/// If `value_ref` is a direct `__builtin_ptr_read(...)` call, register
+/// `expected` as the read's return type so check_expr can accept it. The
+/// JIT only supports PtrRead in positions where the expected type is
+/// statically known (val/var with annotation, assignment to a typed
+/// identifier).
+fn register_ptr_read_hint(
+    program: &Program,
+    value_ref: &ExprRef,
+    expected: ScalarTy,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+) {
+    if let Some(Expr::BuiltinCall(BuiltinFunction::PtrRead, _)) =
+        program.expression.get(value_ref)
+    {
+        ptr_read_hints.insert(*value_ref, expected);
+    }
+}
+
 /// Returns the type produced by the expression, or `None` if the expression
 /// uses an unsupported construct. As a side effect, populates `callees` with
-/// names of user-defined functions invoked by this expression.
+/// names of user-defined functions invoked by this expression and
+/// `ptr_read_hints` with PtrRead expected return types where statically
+/// derivable from context.
 pub(crate) fn check_expr(
     program: &Program,
     expr_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     callees: &mut Vec<DefaultSymbol>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
 ) -> Option<ScalarTy> {
     let expr = program.expression.get(expr_ref)?;
     match expr {
@@ -268,8 +313,8 @@ pub(crate) fn check_expr(
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
         Expr::Binary(op, lhs, rhs) => {
-            let lt = check_expr(program, &lhs, locals, callees)?;
-            let rt = check_expr(program, &rhs, locals, callees)?;
+            let lt = check_expr(program, &lhs, locals, callees, ptr_read_hints)?;
+            let rt = check_expr(program, &rhs, locals, callees, ptr_read_hints)?;
             if lt != rt {
                 return None;
             }
@@ -319,7 +364,7 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Unary(op, operand) => {
-            let t = check_expr(program, &operand, locals, callees)?;
+            let t = check_expr(program, &operand, locals, callees, ptr_read_hints)?;
             match op {
                 UnaryOp::BitwiseNot => {
                     if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
@@ -352,9 +397,9 @@ pub(crate) fn check_expr(
             for s in &stmts {
                 let stmt = program.statement.get(s)?;
                 if let Stmt::Expression(e) = &stmt {
-                    last_ty = check_expr(program, e, &mut snapshot, callees)?;
+                    last_ty = check_expr(program, e, &mut snapshot, callees, ptr_read_hints)?;
                 } else {
-                    if !check_stmt(program, s, &mut snapshot, callees) {
+                    if !check_stmt(program, s, &mut snapshot, callees, ptr_read_hints) {
                         return None;
                     }
                     last_ty = ScalarTy::Unit;
@@ -363,22 +408,22 @@ pub(crate) fn check_expr(
             Some(last_ty)
         }
         Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-            let ct = check_expr(program, &cond, locals, callees)?;
+            let ct = check_expr(program, &cond, locals, callees, ptr_read_hints)?;
             if ct != ScalarTy::Bool {
                 return None;
             }
-            let then_ty = check_expr(program, &if_block, locals, callees)?;
+            let then_ty = check_expr(program, &if_block, locals, callees, ptr_read_hints)?;
             for (ec, eb) in &elif_pairs {
-                let et = check_expr(program, ec, locals, callees)?;
+                let et = check_expr(program, ec, locals, callees, ptr_read_hints)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
-                let bt = check_expr(program, eb, locals, callees)?;
+                let bt = check_expr(program, eb, locals, callees, ptr_read_hints)?;
                 if bt != then_ty {
                     return None;
                 }
             }
-            let else_ty = check_expr(program, &else_block, locals, callees)?;
+            let else_ty = check_expr(program, &else_block, locals, callees, ptr_read_hints)?;
             // Allow if-without-else: the parser inserts an empty Block whose
             // type is Unit. Permit it only when both branches are Unit.
             if else_ty == then_ty {
@@ -398,7 +443,7 @@ pub(crate) fn check_expr(
                 _ => return None,
             };
             let lhs_ty = locals.get(&name).copied()?;
-            let rhs_ty = check_expr(program, &rhs, locals, callees)?;
+            let rhs_ty = check_expr(program, &rhs, locals, callees, ptr_read_hints)?;
             if rhs_ty != lhs_ty {
                 return None;
             }
@@ -411,7 +456,7 @@ pub(crate) fn check_expr(
                 _ => return None,
             };
             for a in &arg_list {
-                check_expr(program, a, locals, callees)?;
+                check_expr(program, a, locals, callees, ptr_read_hints)?;
             }
             callees.push(name);
             // The caller will resolve the callee's return type after the
@@ -435,15 +480,16 @@ pub(crate) fn check_expr(
         Expr::BuiltinCall(func, args) => {
             // Type-check each argument against an expected ScalarTy.
             let check_args = |expected: &[ScalarTy],
-                              args: &Vec<ExprRef>,
-                              locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-                              callees: &mut Vec<DefaultSymbol>|
+                                  args: &Vec<ExprRef>,
+                                  locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+                                  callees: &mut Vec<DefaultSymbol>,
+                                  ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>|
              -> bool {
                 if args.len() != expected.len() {
                     return false;
                 }
                 for (a, want) in args.iter().zip(expected.iter()) {
-                    match check_expr(program, a, locals, callees) {
+                    match check_expr(program, a, locals, callees, ptr_read_hints) {
                         Some(t) if t == *want => {}
                         _ => return false,
                     }
@@ -455,32 +501,32 @@ pub(crate) fn check_expr(
                     if args.len() != 1 {
                         return None;
                     }
-                    let t = check_expr(program, &args[0], locals, callees)?;
+                    let t = check_expr(program, &args[0], locals, callees, ptr_read_hints)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapAlloc => {
-                    if !check_args(&[ScalarTy::U64], &args, locals, callees) {
+                    if !check_args(&[ScalarTy::U64], &args, locals, callees, ptr_read_hints) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::HeapFree => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapRealloc => {
-                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees) {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees, ptr_read_hints) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::PtrIsNull => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees, ptr_read_hints) {
                         return None;
                     }
                     Some(ScalarTy::Bool)
@@ -491,6 +537,7 @@ pub(crate) fn check_expr(
                         &args,
                         locals,
                         callees,
+                        ptr_read_hints,
                     ) {
                         return None;
                     }
@@ -502,20 +549,53 @@ pub(crate) fn check_expr(
                         &args,
                         locals,
                         callees,
+                        ptr_read_hints,
                     ) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
-                // ptr_read / ptr_write rely on the interpreter's typed-slot
-                // semantics which the JIT doesn't (yet) replicate.
+                BuiltinFunction::PtrRead => {
+                    // Args must be (ptr, u64). Return type is decided at the
+                    // call site context — we look it up in the hint map. If
+                    // the read appears in a position where eligibility never
+                    // got to register a hint, fail.
+                    if !check_args(
+                        &[ScalarTy::Ptr, ScalarTy::U64],
+                        &args,
+                        locals,
+                        callees,
+                        ptr_read_hints,
+                    ) {
+                        return None;
+                    }
+                    ptr_read_hints.get(expr_ref).copied()
+                }
+                BuiltinFunction::PtrWrite => {
+                    if args.len() != 3 {
+                        return None;
+                    }
+                    let p = check_expr(program, &args[0], locals, callees, ptr_read_hints)?;
+                    let off = check_expr(program, &args[1], locals, callees, ptr_read_hints)?;
+                    let v = check_expr(program, &args[2], locals, callees, ptr_read_hints)?;
+                    if p != ScalarTy::Ptr || off != ScalarTy::U64 {
+                        return None;
+                    }
+                    if !matches!(
+                        v,
+                        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool | ScalarTy::Ptr
+                    ) {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
                 _ => None,
             }
         }
         Expr::Cast(inner, target) => {
             // Match the interpreter: only i64 ↔ u64 (or identity for those
             // two) is permitted. bool casts are intentionally excluded.
-            let inner_ty = check_expr(program, &inner, locals, callees)?;
+            let inner_ty = check_expr(program, &inner, locals, callees, ptr_read_hints)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
             if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
                 return None;

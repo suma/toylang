@@ -48,10 +48,20 @@ impl ScalarTy {
     }
 }
 
+/// JIT-supported parameter / argument types. A `ParamTy::Struct` expands
+/// into one cranelift parameter per scalar field at the ABI level.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParamTy {
+    Scalar(ScalarTy),
+    /// Struct value, identified by its declared type name. Field layout
+    /// is looked up via `EligibleSet::struct_layouts`.
+    Struct(DefaultSymbol),
+}
+
 /// Signature of an eligible function in JIT-friendly form.
 #[derive(Debug, Clone)]
 pub struct FuncSignature {
-    pub params: Vec<(DefaultSymbol, ScalarTy)>,
+    pub params: Vec<(DefaultSymbol, ParamTy)>,
     pub ret: ScalarTy,
 }
 
@@ -174,7 +184,7 @@ pub fn analyze(
             .collect();
 
         let mut sig_reason: Option<String> = None;
-        let sig = match function_signature(&func, &substitutions, &mut sig_reason) {
+        let sig = match function_signature(&func, &substitutions, &struct_layouts, &mut sig_reason) {
             Some(s) => s,
             None => {
                 let detail = sig_reason.unwrap_or_else(|| "unsupported signature".into());
@@ -336,6 +346,15 @@ fn infer_substitutions(
     }
     let mut subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     for ((_, param_td), &arg_ty) in callee.parameter.iter().zip(arg_tys.iter()) {
+        // Struct param positions skip generic inference and scalar
+        // matching — the caller has already validated that the arg's
+        // struct type lines up with the callee's declared type.
+        if matches!(
+            param_td,
+            TypeDecl::Identifier(_) | TypeDecl::Struct(_, _)
+        ) {
+            continue;
+        }
         match param_td {
             TypeDecl::Generic(g) => {
                 if let Some(prev) = subs.insert(*g, arg_ty) {
@@ -380,12 +399,13 @@ fn infer_substitutions(
 fn function_signature(
     func: &Function,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     reject_reason: &mut Option<String>,
 ) -> Option<FuncSignature> {
     let mut params = Vec::with_capacity(func.parameter.len());
     for (_, td) in &func.parameter {
-        let st = match substitute_to_scalar(td, substitutions) {
-            Some(s) => s,
+        let pt = match resolve_param_ty(td, substitutions, struct_layouts) {
+            Some(p) => p,
             None => {
                 note(reject_reason, || {
                     format!("parameter has unsupported type {td:?}")
@@ -393,14 +413,16 @@ fn function_signature(
                 return None;
             }
         };
-        if st == ScalarTy::Unit {
+        if matches!(pt, ParamTy::Scalar(ScalarTy::Unit)) {
             note(reject_reason, || {
                 "parameter type Unit is not supported".to_string()
             });
             return None;
         }
-        params.push((func.parameter[params.len()].0, st));
+        params.push((func.parameter[params.len()].0, pt));
     }
+    // Returns are still scalar in this iteration; struct returns will
+    // arrive in a follow-up since they need cranelift multi-returns.
     let ret = match &func.return_type {
         Some(td) => match substitute_to_scalar(td, substitutions) {
             Some(s) => s,
@@ -414,6 +436,26 @@ fn function_signature(
         None => ScalarTy::Unit,
     };
     Some(FuncSignature { params, ret })
+}
+
+/// Resolve a TypeDecl into a JIT parameter type, considering both scalar
+/// substitutions (for generic monomorphs) and known struct layouts.
+pub(crate) fn resolve_param_ty(
+    td: &TypeDecl,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+) -> Option<ParamTy> {
+    if let Some(s) = substitute_to_scalar(td, substitutions) {
+        return Some(ParamTy::Scalar(s));
+    }
+    match td {
+        TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
+            if struct_layouts.contains_key(s) =>
+        {
+            Some(ParamTy::Struct(*s))
+        }
+        _ => None,
+    }
 }
 
 /// Walks a function body to confirm it only uses supported constructs and
@@ -440,10 +482,17 @@ fn check_function_body(
         return false;
     }
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
-    for (n, t) in &sig.params {
-        locals.insert(*n, *t);
-    }
     let mut struct_locals: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+    for (n, t) in &sig.params {
+        match t {
+            ParamTy::Scalar(s) => {
+                locals.insert(*n, *s);
+            }
+            ParamTy::Struct(struct_name) => {
+                struct_locals.insert(*n, *struct_name);
+            }
+        }
+    }
     check_stmt(
         program,
         &func.code,
@@ -1074,21 +1123,6 @@ pub(crate) fn check_expr(
                 Expr::ExprList(v) => v,
                 _ => return None,
             };
-            let mut arg_tys: Vec<ScalarTy> = Vec::with_capacity(arg_list.len());
-            for a in &arg_list {
-                let t = check_expr(
-                    program,
-                    a,
-                    locals,
-                    struct_locals,
-                    substitutions,
-                    struct_layouts,
-                    callees,
-                    ptr_read_hints,
-                    reject_reason,
-                )?;
-                arg_tys.push(t);
-            }
 
             // Locate the callee in the program's function table.
             let callee = program.function.iter().find(|f| f.name == name).cloned();
@@ -1100,10 +1134,73 @@ pub(crate) fn check_expr(
                 }
             };
 
-            // Infer substitutions for any generic params from arg types.
+            // Resolve each argument's type, allowing struct identifiers
+            // when the callee's parameter at that position is a struct.
+            // Generic substitutions are inferred only from scalar args;
+            // generic-over-struct functions aren't supported in this
+            // iteration.
+            if arg_list.len() != callee.parameter.len() {
+                note(reject_reason, || {
+                    format!(
+                        "call has {} arg(s), callee expects {}",
+                        arg_list.len(),
+                        callee.parameter.len()
+                    )
+                });
+                return None;
+            }
+            let mut scalar_arg_tys: Vec<ScalarTy> = Vec::with_capacity(arg_list.len());
+            let mut callee_param_tys: Vec<ParamTy> = Vec::with_capacity(arg_list.len());
+            for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
+                // Determine the declared param type up front so we can
+                // distinguish scalar vs struct expected shape. Generic
+                // params resolve via inference below.
+                let arg_expr = program.expression.get(a)?;
+                if let Expr::Identifier(id) = arg_expr {
+                    if let Some(struct_name) = struct_locals.get(&id).copied() {
+                        // Struct argument: callee's param must be a
+                        // matching struct type.
+                        match param_td {
+                            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
+                                if *s == struct_name && struct_layouts.contains_key(s) =>
+                            {
+                                callee_param_tys.push(ParamTy::Struct(struct_name));
+                                scalar_arg_tys.push(ScalarTy::Unit); // placeholder
+                                continue;
+                            }
+                            _ => {
+                                note(reject_reason, || {
+                                    "struct argument's type does not match callee parameter"
+                                        .to_string()
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                }
+                // Fall back to scalar typing.
+                let t = check_expr(
+                    program,
+                    a,
+                    locals,
+                    struct_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                )?;
+                scalar_arg_tys.push(t);
+                callee_param_tys.push(ParamTy::Scalar(t));
+            }
+
+            // Infer substitutions for any generic params from the scalar
+            // arg types. Struct args contribute placeholders that
+            // `infer_substitutions` skips because the callee's param
+            // type is concrete (not Generic).
             let callee_subs = match infer_substitutions(
                 &callee,
-                &arg_tys,
+                &scalar_arg_tys,
                 substitutions,
                 reject_reason,
             ) {
@@ -1124,7 +1221,15 @@ pub(crate) fn check_expr(
                 mono_args,
             });
 
-            // Compute callee's substituted return type.
+            // The struct-arg placeholders we put in `scalar_arg_tys` keep
+            // the inferer happy; they must agree with the callee's
+            // declared (non-generic) struct types, which we already
+            // verified above.
+            let _ = callee_param_tys;
+
+            // Compute callee's substituted return type. Struct returns
+            // aren't supported yet — substitute_to_scalar returns None
+            // for `TypeDecl::Identifier(struct)` so such calls reject.
             match &callee.return_type {
                 Some(td) => substitute_to_scalar(td, &callee_subs),
                 None => Some(ScalarTy::Unit),

@@ -85,23 +85,30 @@ enclosing function to be rejected.
 ### Structs
 
 A struct whose fields are all JIT scalars can be created and mutated
-locally:
+locally and passed across function boundaries:
 
 ```rust
 struct Point { x: i64, y: i64 }
 
+fn sum_xy(p: Point) -> i64 {
+    p.x + p.y
+}
+
 fn main() -> u64 {
     var p = Point { x: 1i64, y: 2i64 }
     p.x = p.x + 9i64
-    val total: i64 = p.x + p.y
+    val total: i64 = sum_xy(p) + p.x + p.y
     total as u64
 }
 ```
 
 Each scalar field is decomposed into its own SSA `Variable`, so reads
-and writes never touch memory. Out of scope for this iteration:
+and writes never touch memory. Struct parameters expand into one
+cranelift parameter per field at the ABI level; arguments at call
+sites must be `Identifier`s referring to a known struct local. Out
+of scope for this iteration:
 
-* Passing structs as function parameters or returning them.
+* Returning structs from functions (needs cranelift multi-returns).
 * Calling methods on struct values.
 * Copying a struct between locals (`var q = p`).
 * Nested struct fields.
@@ -190,6 +197,7 @@ the native code itself is faster.
 * `jit_sizeof.t` — `__builtin_sizeof` of all scalar types → exit 25
 * `jit_generic.t` — `id<T>` and `add<T>` monomorphized for `i64` and `u64` → exit 206
 * `jit_struct.t` — `Point { x, y }` field reads / writes → exit 20
+* `jit_struct_param.t` — struct passed across a `sum_xy(Point) -> i64` call → exit 24
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -199,8 +207,8 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #154 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #155 ("JIT Phase 2 拡張"):
 
-* Struct values as function parameters / return values, and method
-  dispatch.
+* Returning struct values (needs cranelift multi-returns).
+* Method dispatch on struct values.
 * `with allocator = …` and the allocator stack.

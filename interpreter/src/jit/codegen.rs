@@ -11,7 +11,7 @@ use cranelift_module::{FuncId, Module};
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
-use super::eligibility::{FuncSignature, MonoKey, ScalarTy, StructLayout};
+use super::eligibility::{FuncSignature, MonoKey, ParamTy, ScalarTy, StructLayout};
 use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
@@ -22,11 +22,33 @@ pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
     }
 }
 
-pub fn make_signature<M: Module>(module: &M, sig: &FuncSignature) -> Signature {
+pub fn make_signature<M: Module>(
+    module: &M,
+    sig: &FuncSignature,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+) -> Signature {
     let call_conv = module.target_config().default_call_conv;
     let mut s = Signature::new(call_conv);
     for (_, t) in &sig.params {
-        s.params.push(AbiParam::new(ir_type(*t).expect("param cannot be Unit")));
+        match t {
+            ParamTy::Scalar(scalar) => {
+                s.params.push(AbiParam::new(
+                    ir_type(*scalar).expect("param cannot be Unit"),
+                ));
+            }
+            ParamTy::Struct(struct_name) => {
+                // A struct parameter expands into one cranelift parameter
+                // per scalar field, matching the order in the layout.
+                let layout = struct_layouts
+                    .get(struct_name)
+                    .expect("struct layout missing for declared param");
+                for (_, field_ty) in &layout.fields {
+                    s.params.push(AbiParam::new(
+                        ir_type(*field_ty).expect("struct field cannot be Unit"),
+                    ));
+                }
+            }
+        }
     }
     if let Some(rt) = ir_type(sig.ret) {
         s.returns.push(AbiParam::new(rt));
@@ -51,7 +73,7 @@ pub fn translate_function<M: Module>(
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
 ) -> Result<(), String> {
-    ctx.func.signature = make_signature(module, sig);
+    ctx.func.signature = make_signature(module, sig, struct_layouts);
 
     let mut builder = FunctionBuilder::new(&mut ctx.func, builder_ctx);
     let entry = builder.create_block();
@@ -74,14 +96,42 @@ pub fn translate_function<M: Module>(
 
     // Pull each parameter into a Variable so we can `use_var` it later (the
     // direct block-param value cannot be reread from a different block).
+    // Struct parameters are decomposed into one Variable per scalar field
+    // and registered in `struct_locals`.
     let mut local_types: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     let mut local_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+    let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
+        HashMap::new();
+    let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     let block_params: Vec<Value> = builder.block_params(entry).to_vec();
-    for (i, (name, ty)) in sig.params.iter().enumerate() {
-        let var = builder.declare_var(ir_type(*ty).expect("param cannot be Unit"));
-        builder.def_var(var, block_params[i]);
-        local_types.insert(*name, *ty);
-        local_vars.insert(*name, var);
+    let mut block_param_idx: usize = 0;
+    for (name, ty) in &sig.params {
+        match ty {
+            ParamTy::Scalar(scalar) => {
+                let var = builder
+                    .declare_var(ir_type(*scalar).expect("param cannot be Unit"));
+                builder.def_var(var, block_params[block_param_idx]);
+                block_param_idx += 1;
+                local_types.insert(*name, *scalar);
+                local_vars.insert(*name, var);
+            }
+            ParamTy::Struct(struct_name) => {
+                let layout = struct_layouts
+                    .get(struct_name)
+                    .ok_or_else(|| "struct param has no layout".to_string())?;
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                for (field_sym, field_ty) in &layout.fields {
+                    let var = builder.declare_var(
+                        ir_type(*field_ty).expect("struct field cannot be Unit"),
+                    );
+                    builder.def_var(var, block_params[block_param_idx]);
+                    block_param_idx += 1;
+                    field_vars.insert(*field_sym, var);
+                }
+                struct_locals.insert(*name, field_vars);
+                struct_local_types.insert(*name, *struct_name);
+            }
+        }
     }
 
     // Function body: a single Stmt::Expression(block_expr).
@@ -94,9 +144,6 @@ pub fn translate_function<M: Module>(
         _ => return Err("function body must be an expression statement".into()),
     };
 
-    let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
-        HashMap::new();
-    let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     let mut state = State {
         program,
         builder,
@@ -508,21 +555,68 @@ impl<'a, 'b> State<'a, 'b> {
                     Expr::ExprList(v) => v,
                     _ => return Err("call args must be ExprList".to_string()),
                 };
-                let mut arg_values = Vec::with_capacity(arg_list.len());
-                for a in &arg_list {
-                    let v = self
-                        .gen_expr(a)?
-                        .ok_or_else(|| "call arg produced no value".to_string())?;
-                    arg_values.push(v);
-                }
-                // Resolve which monomorphization this call targets. The
-                // table is populated by eligibility from the call site's
-                // arg types, so different specializations of the same
-                // generic source function dispatch to distinct FuncRefs.
+
+                // Resolve which monomorphization this call targets so we
+                // know its parameter shape (and can expand struct args
+                // into per-field cranelift values).
                 let target_key = self
                     .call_targets
                     .get(expr_ref)
                     .ok_or_else(|| "call has no resolved monomorph target".to_string())?;
+                let target_sig = self
+                    .func_signatures
+                    .get(target_key)
+                    .ok_or_else(|| "missing callee signature in JIT".to_string())?;
+
+                let mut arg_values = Vec::with_capacity(arg_list.len());
+                if arg_list.len() != target_sig.params.len() {
+                    return Err("call arg count differs from callee signature".into());
+                }
+                for (a, (_, param_ty)) in arg_list.iter().zip(target_sig.params.iter()) {
+                    match param_ty {
+                        ParamTy::Scalar(_) => {
+                            let v = self
+                                .gen_expr(a)?
+                                .ok_or_else(|| "call arg produced no value".to_string())?;
+                            arg_values.push(v);
+                        }
+                        ParamTy::Struct(struct_name) => {
+                            // Struct argument must be an identifier
+                            // referring to a known struct local.
+                            let arg_expr = self
+                                .program
+                                .expression
+                                .get(a)
+                                .ok_or_else(|| "missing struct arg expr".to_string())?;
+                            let arg_name = match arg_expr {
+                                Expr::Identifier(s) => s,
+                                _ => return Err(
+                                    "struct argument must be a local identifier".into(),
+                                ),
+                            };
+                            let fields = self
+                                .struct_locals
+                                .get(&arg_name)
+                                .ok_or_else(|| "struct argument unknown".to_string())?
+                                .clone();
+                            let layout = self
+                                .struct_layouts
+                                .get(struct_name)
+                                .ok_or_else(|| "struct param has no layout".to_string())?;
+                            for (field_sym, _) in &layout.fields {
+                                let var = fields
+                                    .get(field_sym)
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        "struct argument missing required field"
+                                            .to_string()
+                                    })?;
+                                arg_values.push(self.builder.use_var(var));
+                            }
+                        }
+                    }
+                }
+
                 let func_ref = *self
                     .func_refs
                     .get(target_key)

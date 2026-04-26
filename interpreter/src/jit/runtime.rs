@@ -469,7 +469,7 @@ fn build_cache_entry(
     // `id<i64>` from `id<u64>`.
     let mut func_ids: HashMap<eligibility::MonoKey, FuncId> = HashMap::new();
     for (key, sig) in &eligible.signatures {
-        let cl_sig = codegen::make_signature(&module, sig);
+        let cl_sig = codegen::make_signature(&module, sig, &eligible.struct_layouts);
         let display_name = mono_display_name(interner, key);
         let id = module
             .declare_function(&display_name, Linkage::Export, &cl_sig)

@@ -151,6 +151,21 @@ fn struct_example_returns_20() {
     assert_eq!(r.code, 20);
 }
 
+#[test]
+fn struct_param_example_matches_between_modes() {
+    assert_match("example/jit_struct_param.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn struct_param_example_compiles_callee() {
+    let r = run("example/jit_struct_param.t", true, true);
+    assert_eq!(r.code, 24);
+    // sum_xy must be JIT-compiled alongside main since it's a callee
+    // that takes a struct parameter.
+    assert!(r.stderr.contains("sum_xy"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn generic_example_compiles_each_monomorph() {

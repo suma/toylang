@@ -16,7 +16,7 @@ use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
     match ty {
-        ScalarTy::I64 | ScalarTy::U64 => Some(types::I64),
+        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr => Some(types::I64),
         ScalarTy::Bool => Some(types::I8),
         ScalarTy::Unit => None,
     }
@@ -305,11 +305,56 @@ impl<'a, 'b> State<'a, 'b> {
                             (true, ScalarTy::Bool) => HelperKind::PrintlnBool,
                             _ => return Err("print arg type unsupported in JIT".into()),
                         };
-                        let func_ref = *self
-                            .helper_refs
-                            .get(&kind)
-                            .ok_or_else(|| "missing helper FuncRef".to_string())?;
-                        self.builder.ins().call(func_ref, &[v]);
+                        self.call_helper(kind, &[v])?;
+                        Ok(None)
+                    }
+                    BuiltinFunction::PtrIsNull => {
+                        let v = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "ptr_is_null arg".to_string())?;
+                        Ok(Some(self.builder.ins().icmp_imm(IntCC::Equal, v, 0)))
+                    }
+                    BuiltinFunction::HeapAlloc => {
+                        let size = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "heap_alloc size".to_string())?;
+                        Ok(Some(self.call_helper(HelperKind::HeapAlloc, &[size])?))
+                    }
+                    BuiltinFunction::HeapFree => {
+                        let p = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "heap_free ptr".to_string())?;
+                        self.call_helper(HelperKind::HeapFree, &[p])?;
+                        Ok(None)
+                    }
+                    BuiltinFunction::HeapRealloc => {
+                        let p = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "heap_realloc ptr".to_string())?;
+                        let n = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "heap_realloc size".to_string())?;
+                        Ok(Some(self.call_helper(HelperKind::HeapRealloc, &[p, n])?))
+                    }
+                    BuiltinFunction::MemCopy
+                    | BuiltinFunction::MemMove
+                    | BuiltinFunction::MemSet => {
+                        let kind = match func {
+                            BuiltinFunction::MemCopy => HelperKind::MemCopy,
+                            BuiltinFunction::MemMove => HelperKind::MemMove,
+                            BuiltinFunction::MemSet => HelperKind::MemSet,
+                            _ => unreachable!(),
+                        };
+                        let a = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "mem_* arg0".to_string())?;
+                        let b = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "mem_* arg1".to_string())?;
+                        let c = self
+                            .gen_expr(&args[2])?
+                            .ok_or_else(|| "mem_* arg2".to_string())?;
+                        self.call_helper(kind, &[a, b, c])?;
                         Ok(None)
                     }
                     _ => Err("unsupported builtin in JIT".into()),
@@ -667,6 +712,25 @@ impl<'a, 'b> State<'a, 'b> {
 
         self.switch_to(cont_blk);
         Ok(self.builder.use_var(result_var))
+    }
+
+    fn call_helper(&mut self, kind: HelperKind, args: &[Value]) -> Result<Value, String> {
+        let func_ref = *self
+            .helper_refs
+            .get(&kind)
+            .ok_or_else(|| "missing helper FuncRef".to_string())?;
+        let call = self.builder.ins().call(func_ref, args);
+        let results = self.builder.inst_results(call);
+        // For void helpers we still return a placeholder Value; callers
+        // discard it. For value-returning helpers the first result is what
+        // we want.
+        if let Some(first) = results.first() {
+            Ok(*first)
+        } else {
+            // Returning a fresh zero keeps the signature honest while
+            // making it impossible for callers to misuse the placeholder.
+            Ok(self.builder.ins().iconst(types::I64, 0))
+        }
     }
 
     /// Recover the (cached) scalar type of an expression. Mirrors the rules

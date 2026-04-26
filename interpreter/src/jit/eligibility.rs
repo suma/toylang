@@ -21,6 +21,9 @@ pub enum ScalarTy {
     U64,
     Bool,
     Unit,
+    /// Heap pointer. Internally a u64 / cranelift I64 — distinct from
+    /// `U64` for type checking but ABI-compatible.
+    Ptr,
 }
 
 impl ScalarTy {
@@ -30,6 +33,7 @@ impl ScalarTy {
             TypeDecl::UInt64 => Some(ScalarTy::U64),
             TypeDecl::Bool => Some(ScalarTy::Bool),
             TypeDecl::Unit => Some(ScalarTy::Unit),
+            TypeDecl::Ptr => Some(ScalarTy::Ptr),
             _ => None,
         }
     }
@@ -429,6 +433,23 @@ pub(crate) fn check_expr(
             None
         }
         Expr::BuiltinCall(func, args) => {
+            // Type-check each argument against an expected ScalarTy.
+            let check_args = |expected: &[ScalarTy],
+                              args: &Vec<ExprRef>,
+                              locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+                              callees: &mut Vec<DefaultSymbol>|
+             -> bool {
+                if args.len() != expected.len() {
+                    return false;
+                }
+                for (a, want) in args.iter().zip(expected.iter()) {
+                    match check_expr(program, a, locals, callees) {
+                        Some(t) if t == *want => {}
+                        _ => return false,
+                    }
+                }
+                true
+            };
             match func {
                 BuiltinFunction::Print | BuiltinFunction::Println => {
                     if args.len() != 1 {
@@ -440,6 +461,54 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Unit)
                 }
+                BuiltinFunction::HeapAlloc => {
+                    if !check_args(&[ScalarTy::U64], &args, locals, callees) {
+                        return None;
+                    }
+                    Some(ScalarTy::Ptr)
+                }
+                BuiltinFunction::HeapFree => {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees) {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                BuiltinFunction::HeapRealloc => {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, callees) {
+                        return None;
+                    }
+                    Some(ScalarTy::Ptr)
+                }
+                BuiltinFunction::PtrIsNull => {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, callees) {
+                        return None;
+                    }
+                    Some(ScalarTy::Bool)
+                }
+                BuiltinFunction::MemCopy | BuiltinFunction::MemMove => {
+                    if !check_args(
+                        &[ScalarTy::Ptr, ScalarTy::Ptr, ScalarTy::U64],
+                        &args,
+                        locals,
+                        callees,
+                    ) {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                BuiltinFunction::MemSet => {
+                    if !check_args(
+                        &[ScalarTy::Ptr, ScalarTy::U64, ScalarTy::U64],
+                        &args,
+                        locals,
+                        callees,
+                    ) {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                // ptr_read / ptr_write rely on the interpreter's typed-slot
+                // semantics which the JIT doesn't (yet) replicate.
                 _ => None,
             }
         }

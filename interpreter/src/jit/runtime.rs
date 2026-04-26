@@ -15,10 +15,27 @@ use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use frontend::ast::{Function, Program};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
+use crate::heap::HeapManager;
 use crate::object::{Object, RcObject};
 
 use super::codegen;
 use super::eligibility::{self, EligibleSet, ScalarTy};
+
+// JIT host helpers need to share a HeapManager with whoever called us. We
+// stash one in a thread-local for the duration of try_execute_main; the
+// extern "C" callbacks reach in to read or mutate it. JIT compiled code
+// runs on the same thread that installed the heap, so a single TLS slot is
+// enough.
+thread_local! {
+    static JIT_HEAP: RefCell<Option<Rc<RefCell<HeapManager>>>> = const { RefCell::new(None) };
+}
+
+fn with_heap<R>(f: impl FnOnce(&mut HeapManager) -> R) -> Option<R> {
+    JIT_HEAP.with(|slot| {
+        let borrowed = slot.borrow();
+        borrowed.as_ref().map(|hm| f(&mut hm.borrow_mut()))
+    })
+}
 
 // =============================================================================
 // JIT host callbacks
@@ -48,6 +65,25 @@ extern "C" fn jit_println_bool(v: u8) {
     println!("{}", v != 0);
 }
 
+extern "C" fn jit_heap_alloc(size: u64) -> u64 {
+    with_heap(|h| h.alloc(size as usize) as u64).unwrap_or(0)
+}
+extern "C" fn jit_heap_free(addr: u64) {
+    let _ = with_heap(|h| h.free(addr as usize));
+}
+extern "C" fn jit_heap_realloc(addr: u64, new_size: u64) -> u64 {
+    with_heap(|h| h.realloc(addr as usize, new_size as usize) as u64).unwrap_or(0)
+}
+extern "C" fn jit_mem_copy(src: u64, dest: u64, size: u64) {
+    let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
+}
+extern "C" fn jit_mem_move(src: u64, dest: u64, size: u64) {
+    let _ = with_heap(|h| h.move_memory(src as usize, dest as usize, size as usize));
+}
+extern "C" fn jit_mem_set(addr: u64, value: u64, size: u64) {
+    let _ = with_heap(|h| h.set_memory(addr as usize, value as u8, size as usize));
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -56,6 +92,12 @@ pub(crate) enum HelperKind {
     PrintlnU64,
     PrintBool,
     PrintlnBool,
+    HeapAlloc,
+    HeapFree,
+    HeapRealloc,
+    MemCopy,
+    MemMove,
+    MemSet,
 }
 
 impl HelperKind {
@@ -67,6 +109,12 @@ impl HelperKind {
             HelperKind::PrintlnU64 => "jit_println_u64",
             HelperKind::PrintBool => "jit_print_bool",
             HelperKind::PrintlnBool => "jit_println_bool",
+            HelperKind::HeapAlloc => "jit_heap_alloc",
+            HelperKind::HeapFree => "jit_heap_free",
+            HelperKind::HeapRealloc => "jit_heap_realloc",
+            HelperKind::MemCopy => "jit_mem_copy",
+            HelperKind::MemMove => "jit_mem_move",
+            HelperKind::MemSet => "jit_mem_set",
         }
     }
 
@@ -78,26 +126,44 @@ impl HelperKind {
             HelperKind::PrintlnU64 => jit_println_u64 as *const u8,
             HelperKind::PrintBool => jit_print_bool as *const u8,
             HelperKind::PrintlnBool => jit_println_bool as *const u8,
+            HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
+            HelperKind::HeapFree => jit_heap_free as *const u8,
+            HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
+            HelperKind::MemCopy => jit_mem_copy as *const u8,
+            HelperKind::MemMove => jit_mem_move as *const u8,
+            HelperKind::MemSet => jit_mem_set as *const u8,
         }
     }
 
-    fn arg_ty(self) -> types::Type {
+    /// Returns (param types, optional return type).
+    fn signature_shape(self) -> (Vec<types::Type>, Option<types::Type>) {
         match self {
-            HelperKind::PrintI64
-            | HelperKind::PrintlnI64
-            | HelperKind::PrintU64
-            | HelperKind::PrintlnU64 => types::I64,
-            HelperKind::PrintBool | HelperKind::PrintlnBool => types::I8,
+            HelperKind::PrintI64 | HelperKind::PrintlnI64 => (vec![types::I64], None),
+            HelperKind::PrintU64 | HelperKind::PrintlnU64 => (vec![types::I64], None),
+            HelperKind::PrintBool | HelperKind::PrintlnBool => (vec![types::I8], None),
+            HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
+            HelperKind::HeapFree => (vec![types::I64], None),
+            HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
+            HelperKind::MemCopy | HelperKind::MemMove => {
+                (vec![types::I64, types::I64, types::I64], None)
+            }
+            HelperKind::MemSet => (vec![types::I64, types::I64, types::I64], None),
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 6] = [
+    pub(crate) const ALL: [HelperKind; 12] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
         HelperKind::PrintlnU64,
         HelperKind::PrintBool,
         HelperKind::PrintlnBool,
+        HelperKind::HeapAlloc,
+        HelperKind::HeapFree,
+        HelperKind::HeapRealloc,
+        HelperKind::MemCopy,
+        HelperKind::MemMove,
+        HelperKind::MemSet,
     ];
 }
 
@@ -183,8 +249,14 @@ fn compile_and_run(
     let mut helper_ids: HashMap<HelperKind, FuncId> = HashMap::new();
     let helper_call_conv = module.target_config().default_call_conv;
     for h in HelperKind::ALL {
+        let (params, ret) = h.signature_shape();
         let mut sig = Signature::new(helper_call_conv);
-        sig.params.push(AbiParam::new(h.arg_ty()));
+        for p in params {
+            sig.params.push(AbiParam::new(p));
+        }
+        if let Some(r) = ret {
+            sig.returns.push(AbiParam::new(r));
+        }
         let id = module
             .declare_function(h.name(), Linkage::Import, &sig)
             .map_err(|e| format!("declare helper {}: {e}", h.name()))?;
@@ -253,6 +325,20 @@ fn compile_and_run(
         .get(&main_fn.name)
         .ok_or_else(|| "main signature missing".to_string())?;
 
+    // Install a fresh HeapManager so heap_alloc / mem_* callbacks have
+    // somewhere to read and mutate. The JIT path doesn't share heap state
+    // with the tree-walking interpreter; pointers returned from JIT main
+    // are only meaningful within this run.
+    let heap = Rc::new(RefCell::new(HeapManager::new()));
+    JIT_HEAP.with(|s| *s.borrow_mut() = Some(heap));
+    struct HeapGuard;
+    impl Drop for HeapGuard {
+        fn drop(&mut self) {
+            JIT_HEAP.with(|s| *s.borrow_mut() = None);
+        }
+    }
+    let _heap_guard = HeapGuard;
+
     // SAFETY: We just emitted, defined, and finalized this function with
     // the matching extern signature. The lifetime of the code is tied to
     // `module`, which we keep alive until after the call returns.
@@ -274,6 +360,10 @@ fn compile_and_run(
                 let f: extern "C" fn() = std::mem::transmute(main_ptr);
                 f();
                 Object::Unit
+            }
+            ScalarTy::Ptr => {
+                let f: extern "C" fn() -> u64 = std::mem::transmute(main_ptr);
+                Object::Pointer(f() as usize)
             }
         }
     };

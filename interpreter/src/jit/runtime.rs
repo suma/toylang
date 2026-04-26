@@ -15,7 +15,7 @@ use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use frontend::ast::{Function, Program};
 use string_interner::DefaultStringInterner;
 
-use crate::heap::HeapManager;
+use crate::heap::{Allocator, ArenaAllocator, GlobalAllocator, HeapManager};
 use crate::object::{Object, RcObject};
 
 use super::codegen;
@@ -43,19 +43,45 @@ fn mono_display_name(interner: &DefaultStringInterner, key: &MonoKey) -> String 
     }
 }
 
-// JIT host helpers need to share a HeapManager with whoever called us. We
-// stash one in a thread-local for the duration of try_execute_main; the
-// extern "C" callbacks reach in to read or mutate it. JIT compiled code
-// runs on the same thread that installed the heap, so a single TLS slot is
-// enough.
+// JIT host helpers share a HeapManager + allocator stack with whoever
+// called us. Both live in a thread-local for the duration of
+// try_execute_main; extern "C" callbacks reach in to read/mutate.
+//
+// The runtime stores every allocator we've ever materialized (the
+// "registry") plus the active allocator stack. Heap builtins dispatch
+// through `active.last()`, so `with allocator = expr { … }` simply
+// pushes / pops a registry index on entry / exit.
+struct JitRuntime {
+    heap: Rc<RefCell<HeapManager>>,
+    /// Every allocator created during this JIT run. Index 0 is the
+    /// `GlobalAllocator`; arenas allocated via `__builtin_arena_allocator`
+    /// land at later indices. Codegen treats indices as opaque u64
+    /// handles.
+    registry: Vec<Rc<dyn Allocator>>,
+    /// Active allocator stack — indices into `registry`. The bottom is
+    /// always the global allocator (index 0).
+    active: Vec<usize>,
+}
+
 thread_local! {
-    static JIT_HEAP: RefCell<Option<Rc<RefCell<HeapManager>>>> = const { RefCell::new(None) };
+    static JIT_RT: RefCell<Option<JitRuntime>> = const { RefCell::new(None) };
 }
 
 fn with_heap<R>(f: impl FnOnce(&mut HeapManager) -> R) -> Option<R> {
-    JIT_HEAP.with(|slot| {
+    JIT_RT.with(|slot| {
         let borrowed = slot.borrow();
-        borrowed.as_ref().map(|hm| f(&mut hm.borrow_mut()))
+        borrowed.as_ref().map(|rt| f(&mut rt.heap.borrow_mut()))
+    })
+}
+
+/// Look up the active allocator (top of stack); falls back to None
+/// when the runtime hasn't been installed.
+fn with_active_allocator<R>(f: impl FnOnce(&Rc<dyn Allocator>) -> R) -> Option<R> {
+    JIT_RT.with(|slot| {
+        let borrowed = slot.borrow();
+        let rt = borrowed.as_ref()?;
+        let idx = rt.active.last().copied()?;
+        rt.registry.get(idx).map(f)
     })
 }
 
@@ -88,13 +114,14 @@ extern "C" fn jit_println_bool(v: u8) {
 }
 
 extern "C" fn jit_heap_alloc(size: u64) -> u64 {
-    with_heap(|h| h.alloc(size as usize) as u64).unwrap_or(0)
+    with_active_allocator(|a| a.alloc(size as usize) as u64).unwrap_or(0)
 }
 extern "C" fn jit_heap_free(addr: u64) {
-    let _ = with_heap(|h| h.free(addr as usize));
+    let _ = with_active_allocator(|a| a.free(addr as usize));
 }
 extern "C" fn jit_heap_realloc(addr: u64, new_size: u64) -> u64 {
-    with_heap(|h| h.realloc(addr as usize, new_size as usize) as u64).unwrap_or(0)
+    with_active_allocator(|a| a.realloc(addr as usize, new_size as usize) as u64)
+        .unwrap_or(0)
 }
 extern "C" fn jit_mem_copy(src: u64, dest: u64, size: u64) {
     let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
@@ -195,6 +222,61 @@ extern "C" fn jit_ptr_read_ptr(addr: u64, off: u64) -> u64 {
     .unwrap_or(0)
 }
 
+// Allocator handle helpers. They return / consume `u64` indices into the
+// JIT runtime's allocator registry.
+
+extern "C" fn jit_default_allocator() -> u64 {
+    // The global allocator is always at index 0; if the runtime isn't
+    // installed we hand back 0 anyway (heap callbacks return null).
+    0
+}
+
+extern "C" fn jit_arena_allocator() -> u64 {
+    JIT_RT
+        .with(|slot| {
+            let mut borrowed = slot.borrow_mut();
+            let rt = borrowed.as_mut()?;
+            let arena = ArenaAllocator::new(rt.heap.clone());
+            let handle: Rc<dyn Allocator> = Rc::new(arena);
+            let idx = rt.registry.len();
+            rt.registry.push(handle);
+            Some(idx as u64)
+        })
+        .unwrap_or(0)
+}
+
+extern "C" fn jit_current_allocator() -> u64 {
+    JIT_RT
+        .with(|slot| {
+            let borrowed = slot.borrow();
+            borrowed.as_ref().and_then(|rt| rt.active.last().copied())
+        })
+        .map(|i| i as u64)
+        .unwrap_or(0)
+}
+
+extern "C" fn jit_with_allocator_push(handle: u64) {
+    JIT_RT.with(|slot| {
+        let mut borrowed = slot.borrow_mut();
+        if let Some(rt) = borrowed.as_mut() {
+            rt.active.push(handle as usize);
+        }
+    });
+}
+
+extern "C" fn jit_with_allocator_pop() {
+    JIT_RT.with(|slot| {
+        let mut borrowed = slot.borrow_mut();
+        if let Some(rt) = borrowed.as_mut() {
+            // The bottom of the stack (default allocator) must always
+            // remain — never pop below it.
+            if rt.active.len() > 1 {
+                rt.active.pop();
+            }
+        }
+    });
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -217,6 +299,11 @@ pub(crate) enum HelperKind {
     PtrReadU64,
     PtrReadBool,
     PtrReadPtr,
+    DefaultAllocator,
+    ArenaAllocator,
+    CurrentAllocator,
+    WithAllocatorPush,
+    WithAllocatorPop,
 }
 
 impl HelperKind {
@@ -242,6 +329,11 @@ impl HelperKind {
             HelperKind::PtrReadU64 => "jit_ptr_read_u64",
             HelperKind::PtrReadBool => "jit_ptr_read_bool",
             HelperKind::PtrReadPtr => "jit_ptr_read_ptr",
+            HelperKind::DefaultAllocator => "jit_default_allocator",
+            HelperKind::ArenaAllocator => "jit_arena_allocator",
+            HelperKind::CurrentAllocator => "jit_current_allocator",
+            HelperKind::WithAllocatorPush => "jit_with_allocator_push",
+            HelperKind::WithAllocatorPop => "jit_with_allocator_pop",
         }
     }
 
@@ -267,6 +359,11 @@ impl HelperKind {
             HelperKind::PtrReadU64 => jit_ptr_read_u64 as *const u8,
             HelperKind::PtrReadBool => jit_ptr_read_bool as *const u8,
             HelperKind::PtrReadPtr => jit_ptr_read_ptr as *const u8,
+            HelperKind::DefaultAllocator => jit_default_allocator as *const u8,
+            HelperKind::ArenaAllocator => jit_arena_allocator as *const u8,
+            HelperKind::CurrentAllocator => jit_current_allocator as *const u8,
+            HelperKind::WithAllocatorPush => jit_with_allocator_push as *const u8,
+            HelperKind::WithAllocatorPop => jit_with_allocator_pop as *const u8,
         }
     }
 
@@ -291,10 +388,15 @@ impl HelperKind {
                 (vec![types::I64, types::I64], Some(types::I64))
             }
             HelperKind::PtrReadBool => (vec![types::I64, types::I64], Some(types::I8)),
+            HelperKind::DefaultAllocator
+            | HelperKind::ArenaAllocator
+            | HelperKind::CurrentAllocator => (Vec::new(), Some(types::I64)),
+            HelperKind::WithAllocatorPush => (vec![types::I64], None),
+            HelperKind::WithAllocatorPop => (Vec::new(), None),
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 20] = [
+    pub(crate) const ALL: [HelperKind; 25] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -315,6 +417,11 @@ impl HelperKind {
         HelperKind::PtrReadU64,
         HelperKind::PtrReadBool,
         HelperKind::PtrReadPtr,
+        HelperKind::DefaultAllocator,
+        HelperKind::ArenaAllocator,
+        HelperKind::CurrentAllocator,
+        HelperKind::WithAllocatorPush,
+        HelperKind::WithAllocatorPop,
     ];
 }
 
@@ -559,17 +666,23 @@ fn build_cache_entry(
     })
 }
 
-/// Install a fresh `HeapManager`, dispatch to the cached `main`, then
-/// uninstall the heap. The JIT path doesn't share heap state with the
-/// tree-walking interpreter — pointers returned from JIT main are only
-/// meaningful within this run.
+/// Install a fresh `JitRuntime` (heap + allocator stack) for this run,
+/// dispatch to the cached `main`, then uninstall. The JIT path doesn't
+/// share heap state with the tree-walking interpreter — pointers
+/// returned from JIT main are only meaningful within this run.
 fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
     let heap = Rc::new(RefCell::new(HeapManager::new()));
-    JIT_HEAP.with(|s| *s.borrow_mut() = Some(heap));
+    let global: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap.clone()));
+    let rt = JitRuntime {
+        heap,
+        registry: vec![global],
+        active: vec![0],
+    };
+    JIT_RT.with(|s| *s.borrow_mut() = Some(rt));
     struct HeapGuard;
     impl Drop for HeapGuard {
         fn drop(&mut self) {
-            JIT_HEAP.with(|s| *s.borrow_mut() = None);
+            JIT_RT.with(|s| *s.borrow_mut() = None);
         }
     }
     let _heap_guard = HeapGuard;
@@ -600,6 +713,11 @@ fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
             ScalarTy::Ptr => {
                 let f: extern "C" fn() -> u64 = std::mem::transmute(main_ptr);
                 Object::Pointer(f() as usize)
+            }
+            ScalarTy::Allocator => {
+                // `main` returning an Allocator is meaningless to the
+                // process exit code; reject this in build_cache_entry.
+                unreachable!("main returning Allocator should be rejected")
             }
         }
     };

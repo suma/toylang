@@ -33,6 +33,10 @@ pub enum ScalarTy {
     /// Heap pointer. Internally a u64 / cranelift I64 — distinct from
     /// `U64` for type checking but ABI-compatible.
     Ptr,
+    /// Allocator handle. Internally a u64 index into the JIT runtime's
+    /// allocator registry; `with allocator = expr { … }` pushes / pops
+    /// the corresponding allocator on the active stack.
+    Allocator,
 }
 
 impl ScalarTy {
@@ -43,6 +47,7 @@ impl ScalarTy {
             TypeDecl::Bool => Some(ScalarTy::Bool),
             TypeDecl::Unit => Some(ScalarTy::Unit),
             TypeDecl::Ptr => Some(ScalarTy::Ptr),
+            TypeDecl::Allocator => Some(ScalarTy::Allocator),
             _ => None,
         }
     }
@@ -1012,6 +1017,84 @@ fn check_struct_literal_fields(
     true
 }
 
+/// Detect any control-flow exit (`return` / `break` / `continue`)
+/// inside an arbitrary expression. Used to keep `with allocator = …`
+/// bodies linear so the matching pop is guaranteed to run.
+fn body_has_unsupported_with_exit(program: &Program, expr_ref: &ExprRef) -> bool {
+    let mut found = false;
+    walk_expr_for_exit(program, expr_ref, &mut found);
+    found
+}
+
+fn walk_stmt_for_exit(program: &Program, stmt_ref: &StmtRef, found: &mut bool) {
+    if *found {
+        return;
+    }
+    let Some(stmt) = program.statement.get(stmt_ref) else {
+        return;
+    };
+    match stmt {
+        Stmt::Return(_) | Stmt::Break | Stmt::Continue => *found = true,
+        Stmt::Expression(e) => walk_expr_for_exit(program, &e, found),
+        Stmt::Val(_, _, e) => walk_expr_for_exit(program, &e, found),
+        Stmt::Var(_, _, Some(e)) => walk_expr_for_exit(program, &e, found),
+        Stmt::For(_, s, e, body) => {
+            walk_expr_for_exit(program, &s, found);
+            walk_expr_for_exit(program, &e, found);
+            walk_expr_for_exit(program, &body, found);
+        }
+        Stmt::While(c, body) => {
+            walk_expr_for_exit(program, &c, found);
+            walk_expr_for_exit(program, &body, found);
+        }
+        _ => {}
+    }
+}
+
+fn walk_expr_for_exit(program: &Program, expr_ref: &ExprRef, found: &mut bool) {
+    if *found {
+        return;
+    }
+    let Some(expr) = program.expression.get(expr_ref) else {
+        return;
+    };
+    match expr {
+        Expr::Block(stmts) => {
+            for s in &stmts {
+                walk_stmt_for_exit(program, s, found);
+            }
+        }
+        Expr::Binary(_, l, r) | Expr::Assign(l, r) | Expr::Range(l, r) => {
+            walk_expr_for_exit(program, &l, found);
+            walk_expr_for_exit(program, &r, found);
+        }
+        Expr::Unary(_, e) | Expr::Cast(e, _) | Expr::With(_, e) => {
+            walk_expr_for_exit(program, &e, found);
+        }
+        Expr::IfElifElse(c, t, elifs, el) => {
+            walk_expr_for_exit(program, &c, found);
+            walk_expr_for_exit(program, &t, found);
+            for (ec, eb) in &elifs {
+                walk_expr_for_exit(program, ec, found);
+                walk_expr_for_exit(program, eb, found);
+            }
+            walk_expr_for_exit(program, &el, found);
+        }
+        Expr::Call(_, a) => walk_expr_for_exit(program, &a, found),
+        Expr::ExprList(es) | Expr::ArrayLiteral(es) | Expr::TupleLiteral(es) => {
+            for e in &es {
+                walk_expr_for_exit(program, e, found);
+            }
+        }
+        Expr::BuiltinCall(_, args) => {
+            for a in &args {
+                walk_expr_for_exit(program, a, found);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Quick syntactic walk to detect any PtrRead within a function body.
 fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
     let mut found = false;
@@ -1162,11 +1245,13 @@ fn check_stmt(
                 None => return false,
             };
             let declared = match type_decl {
+                // The parser leaves Unknown when the user wrote no
+                // annotation; treat it as "infer from rhs".
+                Some(TypeDecl::Unknown) | None => val_ty,
                 Some(td) => match ScalarTy::from_type_decl(&td) {
                     Some(t) => t,
                     None => return false,
                 },
-                None => val_ty,
             };
             if declared != val_ty {
                 return false;
@@ -1217,11 +1302,15 @@ fn check_stmt(
                 }
             }
             let declared = match (type_decl.as_ref(), value) {
+                // Treat `Some(Unknown)` like `None` — the parser inserts
+                // it when the user wrote no annotation.
+                (Some(TypeDecl::Unknown), Some(v)) | (None, Some(v)) => {
+                    match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                        Some(t) => t,
+                        None => return false,
+                    }
+                }
                 (Some(td), _) => match ScalarTy::from_type_decl(td) {
-                    Some(t) => t,
-                    None => return false,
-                },
-                (None, Some(v)) => match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 },
@@ -1831,6 +1920,21 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Unit)
                 }
+                BuiltinFunction::DefaultAllocator
+                | BuiltinFunction::ArenaAllocator
+                | BuiltinFunction::CurrentAllocator => {
+                    if !args.is_empty() {
+                        note(reject_reason, || {
+                            format!(
+                                "{:?} expects no arguments, got {}",
+                                func,
+                                args.len()
+                            )
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Allocator)
+                }
                 other => {
                     note(reject_reason, || {
                         format!("uses unsupported builtin {other:?}")
@@ -1838,6 +1942,48 @@ pub(crate) fn check_expr(
                     None
                 }
             }
+        }
+        Expr::With(allocator_expr, body_expr) => {
+            // Validate the allocator producer first; it must yield an
+            // Allocator handle.
+            let alloc_ty = check_expr(
+                program,
+                &allocator_expr,
+                locals,
+                struct_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            )?;
+            if alloc_ty != ScalarTy::Allocator {
+                note(reject_reason, || {
+                    "`with allocator =` requires an Allocator-typed expression".to_string()
+                });
+                return None;
+            }
+            // The body must avoid `return` / `break` / `continue` so we
+            // can guarantee the matching `pop` runs. Tests use linear
+            // bodies so this restriction is acceptable for the first
+            // iteration.
+            if body_has_unsupported_with_exit(program, &body_expr) {
+                note(reject_reason, || {
+                    "`with` body cannot contain return/break/continue in JIT".to_string()
+                });
+                return None;
+            }
+            check_expr(
+                program,
+                &body_expr,
+                locals,
+                struct_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            )
         }
         Expr::MethodCall(receiver, method_name, args) => {
             // The receiver must be a known struct local; we don't yet

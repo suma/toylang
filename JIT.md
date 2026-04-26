@@ -49,6 +49,7 @@ reachable set ineligible.
 | `u64` | u64 | I64 |
 | `bool` | u8 (0 or 1) | I8 |
 | `ptr` | u64 (heap address) | I64 |
+| `Allocator` | u64 (registry handle) | I64 |
 | `Unit` | — | none |
 
 `String`, `Array`, `Struct`, `Enum`, `Tuple`, `Dict`, `Range`, `Allocator`
@@ -136,15 +137,35 @@ own cranelift function (e.g. `id__I64` and `id__U64`). Generic bounds
 cannot use `__builtin_ptr_read` because the per-call expected type
 cannot be expressed in the shared hint table.
 
+### Allocators
+
+`with allocator = expr { … }` blocks compile when `expr` is one of
+`__builtin_default_allocator()`, `__builtin_arena_allocator()`, or
+`__builtin_current_allocator()`. The JIT runtime maintains a registry
+of allocator instances plus an active stack; the `with` block lowers
+to a `push` of the chosen allocator before the body and a `pop`
+after, with `heap_alloc` / `heap_free` / `heap_realloc` dispatching
+through the active allocator. Bodies must be linear — `return`,
+`break`, and `continue` inside a `with` are rejected so the matching
+pop is guaranteed to run.
+
+```rust
+val arena = __builtin_arena_allocator()
+val total: u64 = with allocator = arena {
+    val p: ptr = __builtin_heap_alloc(8u64)
+    __builtin_ptr_write(p, 0u64, 12345u64)
+    val x: u64 = __builtin_ptr_read(p, 0u64)
+    x
+}
+```
+
 ### Not supported (silent fallback)
 
 * Generic bounds (`<A: Allocator>`).
 * String, Array, Struct, Enum, Tuple, Dict, Range values.
 * Method calls, associated functions, field access.
-* `with allocator = …` blocks and the allocator stack.
-* Allocator handle builtins (`__builtin_current_allocator`,
-  `__builtin_default_allocator`, `__builtin_arena_allocator`,
-  `__builtin_fixed_buffer_allocator`).
+* `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
+  variant — only `default` and `arena` are wired up so far).
 * `match` expressions.
 
 ## Architecture
@@ -213,6 +234,7 @@ the native code itself is faster.
 * `jit_struct_param.t` — struct passed across a `sum_xy(Point) -> i64` call → exit 24
 * `jit_struct_return.t` — `make_point(...) -> Point` factory used twice → exit 18
 * `jit_method.t` — `impl Point { fn dist_squared(self: Self) -> i64 }` dispatched twice → exit 194
+* `jit_allocator.t` — `with allocator = arena { … }` round-trip → exit 57 (12345 % 256)
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -222,7 +244,9 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #158 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 
-* `with allocator = …` and the allocator stack.
+* `__builtin_fixed_buffer_allocator` (quota-tracking allocator variant).
+* `with` bodies that contain `return` / `break` / `continue` (need
+  cleanup-style pop emission before the early exit).
 * Generic methods and generic structs.

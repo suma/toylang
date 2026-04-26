@@ -166,6 +166,20 @@ fn method_example_matches_between_modes() {
     assert_match("example/jit_method.t");
 }
 
+#[test]
+fn allocator_example_matches_between_modes() {
+    assert_match("example/jit_allocator.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn allocator_example_runs_under_jit() {
+    let r = run("example/jit_allocator.t", true, true);
+    // 12345 % 256 = 57
+    assert_eq!(r.code, 57);
+    assert!(r.stderr.contains("JIT compiled:"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn method_example_compiles_method() {

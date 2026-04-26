@@ -16,7 +16,9 @@ use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
     match ty {
-        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr => Some(types::I64),
+        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr | ScalarTy::Allocator => {
+            Some(types::I64)
+        }
         ScalarTy::Bool => Some(types::I8),
         ScalarTy::Unit => None,
     }
@@ -509,6 +511,17 @@ impl<'a, 'b> State<'a, 'b> {
                     _ => Err("assignment target must be identifier or field".into()),
                 }
             }
+            Expr::With(allocator_expr, body_expr) => {
+                let handle = self
+                    .gen_expr(&allocator_expr)?
+                    .ok_or_else(|| "with-allocator expr produced no value".to_string())?;
+                self.call_helper(HelperKind::WithAllocatorPush, &[handle])?;
+                let body_value = self.gen_expr(&body_expr)?;
+                // Eligibility forbids return/break/continue inside a
+                // `with` body, so control reaches the pop emit.
+                self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                Ok(body_value)
+            }
             Expr::FieldAccess(receiver, field_name) => {
                 let recv_expr = self
                     .program
@@ -575,6 +588,15 @@ impl<'a, 'b> State<'a, 'b> {
                             .gen_expr(&args[1])?
                             .ok_or_else(|| "heap_realloc size".to_string())?;
                         Ok(Some(self.call_helper(HelperKind::HeapRealloc, &[p, n])?))
+                    }
+                    BuiltinFunction::DefaultAllocator => {
+                        Ok(Some(self.call_helper(HelperKind::DefaultAllocator, &[])?))
+                    }
+                    BuiltinFunction::ArenaAllocator => {
+                        Ok(Some(self.call_helper(HelperKind::ArenaAllocator, &[])?))
+                    }
+                    BuiltinFunction::CurrentAllocator => {
+                        Ok(Some(self.call_helper(HelperKind::CurrentAllocator, &[])?))
                     }
                     BuiltinFunction::SizeOf => {
                         // Determine the size from the static type. Evaluate

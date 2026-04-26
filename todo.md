@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+148. JIT パフォーマンス計測: `interpreter/benches/jit_bench.rs` で interpreter / JIT を比較。実測 (Apple Silicon, release): fib_recursive(20) 13.65ms→107µs (127×)、loop_sum(100k) 51.6ms→134µs (383×)、fib_iter(50k) 39.2ms→106µs (371×)。JIT 側は cranelift コンパイル込み。`--no-default-features` ビルド成立 (2026-04-26)
 147. JIT skip 理由の詳細化: `analyze` が `Result<EligibleSet, String>` を返すように変更、各 reject 点で `note(reason, ...)` で具体的な理由 (関数名 + 構文要素 / unsupported builtin / ptr_read の type-hint 欠落 等) を記録。`-v` で `JIT: skipped (function `main`: uses unsupported expression array literal)` 形式で出力 (2026-04-26)
 146. JIT Phase 2c-2 (ptr_read/ptr_write 対応): 8 helper を追加 (read/write × i64/u64/bool/ptr)。eligibility が val/var/assign の左辺型から `__builtin_ptr_read` の期待型を pre-pass で収集し `ptr_read_hints: HashMap<ExprRef, ScalarTy>` に格納。codegen は hint で helper を選択。callback は `HeapManager::typed_read/typed_write` を経由し interpreter と互換 (2026-04-26)
 145. JIT 統合テスト追加: `interpreter/tests/jit_integration.rs` で `INTERPRETER_JIT=1` ON/OFF のバイナリ実行を比較。fib/jit_cast/jit_print/jit_heap で exit code + stdout 往復一致、fallback プログラム (配列使用) の挙動、verbose ログ (`JIT compiled:` / `JIT: skipped`) の存在を検証。8 テスト追加 (--no-default-features では 5 テスト) (2026-04-26)

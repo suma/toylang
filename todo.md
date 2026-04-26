@@ -56,6 +56,8 @@
 
 ## 未実装 📋
 
+161. **match arm への guard 追加** — `match x { Some(v) if v > 0 => …, _ => … }` のように `if cond` を arm に付ける構文。`Pattern` enum / `match_arms` の表現拡張、parser での `if` 期待、type_checker / interpreter / 網羅性チェックの調整、JIT は当面 fallback でも可。優先順位低めだが Option/Result 利用シーンで有用
+160. **タプルの文法と機能の拡充** — AST には `Expr::TupleLiteral(Vec<ExprRef>)` と `Expr::TupleAccess(_, usize)` が既存だが、(a) パーサ / 型チェッカでのタプル型 (`(i64, u64)`) アノテーション・型推論の整理、(b) 関数の引数 / 戻り値としてのタプル受け渡し、(c) パターンでの分解 (`val (a, b) = pair`、`match { (x, y) => … }`)、(d) example 整備が必要
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論

@@ -844,31 +844,34 @@ pub trait ExplicitDestructor {
 impl Drop for Object {
     fn drop(&mut self) {
         match self {
+            // The bindings below feed `destruction_log!`, which expands to a
+            // no-op in release builds without the `debug-logging` feature.
+            // `#[allow(unused_variables)]` keeps the patterns expressive
+            // without flipping every binding to `_name`.
+            #[allow(unused_variables)]
             Object::Struct { type_name, fields: _ } => {
-                // Log destruction for debugging
-                let struct_name = format!("struct_{:?}", type_name);
-                destruction_log!(format!("Destructing {}", struct_name));
-                
-                // Note: Custom __drop__ method should be called explicitly before object destruction
-                // This is done via the ExplicitDestructor trait in user code
-                
-                // Cleanup struct fields (automatic via Drop trait of HashMap)
-                // Each field (RcObject) will be automatically decremented and dropped if ref count reaches 0
+                destruction_log!(format!("Destructing struct_{:?}", type_name));
+                // Custom `__drop__` (if any) should be invoked before
+                // destruction via the ExplicitDestructor trait. Field
+                // RcObjects are released via HashMap's Drop.
             }
+            #[allow(unused_variables)]
             Object::Array(elements) => {
-                // Log array destruction
-                destruction_log!(format!("Destructing array with {} elements", elements.len()));
-                // Elements will be automatically dropped via Vec's Drop implementation
+                destruction_log!(format!(
+                    "Destructing array with {} elements",
+                    elements.len()
+                ));
             }
+            #[allow(unused_variables)]
             Object::Dict(dict) => {
-                // Log dictionary destruction
-                destruction_log!(format!("Destructing dict with {} entries", dict.len()));
-                // Dictionary entries will be automatically dropped via HashMap's Drop implementation
+                destruction_log!(format!(
+                    "Destructing dict with {} entries",
+                    dict.len()
+                ));
             }
+            #[allow(unused_variables)]
             Object::String(s) => {
-                // Log dynamic string destruction
                 destruction_log!(format!("Destructing dynamic string: {}", s));
-                // String will be automatically dropped
             }
             _ => {
                 // Other primitive types don't need special cleanup
@@ -880,18 +883,22 @@ impl Drop for Object {
 
 impl ExplicitDestructor for RcObject {
     fn call_drop_method(&self, evaluator: &mut crate::evaluation::EvaluationContext) -> Result<(), crate::error::InterpreterError> {
+        // `type_name` only feeds the `destruction_log!` invocation below,
+        // which compiles to nothing in release without `debug-logging`.
+        // Keep the binding for diagnostic builds and silence the lint
+        // for the no-op case.
+        #[allow(unused_variables)]
         let (type_name, struct_name_str) = {
             let obj_borrowed = self.borrow();
             match &*obj_borrowed {
                 Object::Struct { type_name, .. } => {
-                    // Resolve struct name while borrowed
                     let struct_name_str = evaluator.string_interner.resolve(*type_name)
                         .ok_or_else(|| crate::error::InterpreterError::InternalError("Failed to resolve struct name".to_string()))?
                         .to_string();
                     (*type_name, struct_name_str)
                 }
                 _ => {
-                    // Non-struct objects don't have __drop__ methods
+                    // Non-struct objects don't have __drop__ methods.
                     return Ok(());
                 }
             }

@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+154. interpreter unused-variable warnings 整理: `destruction_log!` macro が release build (debug-logging feature 無し) で no-op になり、引数で参照される binding が未使用になる問題を `#[allow(unused_variables)]` で抑止。debug/release/--no-default-features/--all-targets 全 4 profile で 0 warning に (2026-04-26)
 153. JIT Phase 2h (関数コンパイルキャッシュ): thread_local で `&Program` ポインタ identity を key に `JITModule` + `main_ptr` + return ScalarTy を保持。連続呼出で eligibility/codegen/finalize をスキップ。bench (Apple Silicon release): fib_recursive 107µs→31µs、loop_sum_100k 134µs→31µs、fib_iter_50k 106µs→31µs。speedup vs interpreter は 451×〜1741× に向上 (2026-04-26)
 152. JIT Phase 2d (struct field アクセス): scalar フィールドのみの struct を JIT 対応。各フィールドを別 SSA Variable として decompose し、StructLiteral RHS / FieldAccess 読み出し / `p.field = value` 書き込みを許可。out-of-scope: struct copy, struct as func param/return, methods, nested struct, generic struct。example: `jit_struct.t` (2026-04-26)
 151. JIT Phase 2f (generic monomorphize): EligibleSet を `MonoKey = (Symbol, Vec<ScalarTy>)` keyed に refactor。`Call(generic_fn, args)` を見たとき arg 型から substitutions を推論、各 monomorph を別 cranelift 関数 (`id__I64`/`id__U64` 等) として compile。call_targets で各 Call → MonoKey を解決。generic 関数内で PtrRead は ineligible (typed-slot hint が ExprRef-keyed なため)。example: `jit_generic.t` (2026-04-26)

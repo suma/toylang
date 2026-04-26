@@ -199,6 +199,56 @@ mod tuple_tests {
     }
 
     #[test]
+    fn test_match_tuple_pattern_basic() {
+        // Tuple sub-patterns may be literals, names, or wildcards;
+        // the second arm matches every tuple so exhaustiveness is OK.
+        let source = r#"
+        fn main() -> u64 {
+            val pair = (3u64, 5u64)
+            match pair {
+                (0u64, _) => 100u64,
+                (x, y) => x + y,
+            }
+        }
+    "#;
+        common::assert_program_result_u64(source, 8);
+    }
+
+    #[test]
+    fn test_match_tuple_pattern_nested() {
+        // Tuples may nest; each level decomposes through its own
+        // tuple pattern.
+        let source = r#"
+        fn main() -> u64 {
+            val nested = ((1u64, 2u64), 10u64)
+            match nested {
+                ((a, b), c) => a + b + c,
+            }
+        }
+    "#;
+        common::assert_program_result_u64(source, 13);
+    }
+
+    #[test]
+    fn test_match_tuple_non_exhaustive_errors() {
+        // Without an irrefutable arm, the type checker must reject
+        // the match.
+        let source = r#"
+        fn main() -> u64 {
+            val pair = (3u64, 5u64)
+            match pair {
+                (0u64, _) => 100u64,
+            }
+        }
+        "#;
+        let result = test_program(source);
+        assert!(
+            result.is_err(),
+            "non-exhaustive tuple match should fail to type-check"
+        );
+    }
+
+    #[test]
     fn test_tuple_destructure_from_call() {
         // The rhs can be any expression that evaluates to a tuple,
         // including a function call.

@@ -317,6 +317,37 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
             return Ok(crate::ast::Pattern::Wildcard);
         }
     }
+    // Tuple pattern: `(p, q, ...)`. Two or more sub-patterns are
+    // required so `(x)` continues to mean "parenthesized name binding"
+    // (which we forbid here for now — bare names without parentheses
+    // are the canonical form).
+    if matches!(parser.peek(), Some(Kind::ParenOpen)) {
+        parser.next(); // consume '('
+        let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
+        loop {
+            parser.skip_newlines();
+            if matches!(parser.peek(), Some(Kind::ParenClose)) {
+                break;
+            }
+            let sub = parse_match_pattern(parser)?;
+            sub_patterns.push(sub);
+            parser.skip_newlines();
+            if matches!(parser.peek(), Some(Kind::Comma)) {
+                parser.next();
+            } else {
+                break;
+            }
+        }
+        parser.expect_err(&Kind::ParenClose)?;
+        if sub_patterns.len() < 2 {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                "tuple pattern requires at least two sub-patterns".to_string(),
+            ));
+        }
+        return Ok(crate::ast::Pattern::Tuple(sub_patterns));
+    }
     // Integer and bool literal patterns. We build them as regular literal
     // expressions so the type checker can reuse its existing rules for
     // determining the literal's type.

@@ -24,6 +24,8 @@ pub(super) fn is_irrefutable_pattern(pat: &Pattern) -> bool {
     match pat {
         Pattern::Wildcard | Pattern::Name(_) => true,
         Pattern::Literal(_) | Pattern::EnumVariant(_, _, _) => false,
+        // A tuple pattern is irrefutable iff every sub-pattern is.
+        Pattern::Tuple(subs) => subs.iter().all(is_irrefutable_pattern),
     }
 }
 
@@ -54,6 +56,28 @@ impl<'a> TypeCheckerVisitor<'a> {
                         "literal pattern type {:?} does not match expected {:?}",
                         lit_ty, expected_ty
                     )));
+                }
+                Ok(())
+            }
+            Pattern::Tuple(sub_patterns) => {
+                let element_types = match expected_ty {
+                    TypeDecl::Tuple(ts) => ts,
+                    _ => {
+                        return Err(TypeCheckError::new(format!(
+                            "tuple pattern requires a tuple value, got {:?}",
+                            expected_ty
+                        )));
+                    }
+                };
+                if sub_patterns.len() != element_types.len() {
+                    return Err(TypeCheckError::new(format!(
+                        "tuple pattern has {} element(s), expected {}",
+                        sub_patterns.len(),
+                        element_types.len()
+                    )));
+                }
+                for (sub, ty) in sub_patterns.iter().zip(element_types.iter()) {
+                    self.check_sub_pattern(sub, ty)?;
                 }
                 Ok(())
             }
@@ -135,6 +159,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                 variants: Vec<crate::ast::EnumVariantDef>,
             },
             Primitive(TypeDecl),
+            // The element types are validated when each tuple-pattern
+            // arm is processed, but the wrapper here keeps the
+            // dispatch-by-kind shape uniform.
+            Tuple(#[allow(dead_code)] Vec<TypeDecl>),
         }
         let kind = match &scrutinee_ty {
             TypeDecl::Enum(name, args) => {
@@ -152,9 +180,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                 ScrutineeKind::Enum { name: *name, type_args: args.clone(), variants }
             }
             TypeDecl::Bool | TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::String => ScrutineeKind::Primitive(scrutinee_ty.clone()),
+            TypeDecl::Tuple(element_types) => ScrutineeKind::Tuple(element_types.clone()),
             _ => {
                 return Err(TypeCheckError::new(format!(
-                    "match scrutinee must be an enum or a primitive (bool / i64 / u64 / str), got {:?}",
+                    "match scrutinee must be an enum, primitive (bool / i64 / u64 / str), or tuple, got {:?}",
                     scrutinee_ty
                 )));
             }
@@ -202,6 +231,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         ScrutineeKind::Enum { .. } => {
                             return Err(TypeCheckError::new(
                                 "literal pattern cannot be used in a match on an enum".to_string()
+                            ));
+                        }
+                        ScrutineeKind::Tuple(_) => {
+                            return Err(TypeCheckError::new(
+                                "literal pattern cannot be used in a match on a tuple".to_string()
                             ));
                         }
                     };
@@ -262,6 +296,38 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 }
+                Pattern::Tuple(sub_patterns) => {
+                    // Tuple matches are independent of enum dispatch;
+                    // require the scrutinee to be a tuple type and
+                    // type-check each element through `check_sub_pattern`.
+                    let element_types = match &scrutinee_ty {
+                        TypeDecl::Tuple(ts) => ts.clone(),
+                        _ => {
+                            return Err(TypeCheckError::new(format!(
+                                "tuple pattern requires a tuple scrutinee, got {:?}",
+                                scrutinee_ty
+                            )));
+                        }
+                    };
+                    if sub_patterns.len() != element_types.len() {
+                        return Err(TypeCheckError::new(format!(
+                            "tuple pattern has {} element(s), expected {}",
+                            sub_patterns.len(),
+                            element_types.len()
+                        )));
+                    }
+                    self.context.vars.push(std::collections::HashMap::new());
+                    pushed_scope = true;
+                    for (sub, ty) in sub_patterns.iter().zip(element_types.iter()) {
+                        self.check_sub_pattern(sub, ty)?;
+                    }
+                    // A tuple of irrefutable sub-patterns covers all
+                    // possible tuple values, so it acts as a wildcard
+                    // for exhaustiveness.
+                    if sub_patterns.iter().all(is_irrefutable_pattern) {
+                        has_wildcard = true;
+                    }
+                }
                 Pattern::EnumVariant(pat_enum, pat_variant, bindings) => {
                     let (enum_name, enum_type_args, variants) = match &kind {
                         ScrutineeKind::Enum { name, type_args, variants } => (*name, type_args.clone(), variants.clone()),
@@ -269,6 +335,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                             return Err(TypeCheckError::new(format!(
                                 "enum-variant pattern cannot be used in a match on {:?}", t
                             )));
+                        }
+                        ScrutineeKind::Tuple(_) => {
+                            return Err(TypeCheckError::new(
+                                "enum-variant pattern cannot be used in a match on a tuple".to_string()
+                            ));
                         }
                     };
                     if *pat_enum != enum_name {
@@ -381,6 +452,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                         "non-exhaustive match on {}: primitive value space is unbounded, add a wildcard `_` arm",
                         t_name
                     )));
+                }
+                ScrutineeKind::Tuple(_) => {
+                    // Tuple value space is unbounded along each element;
+                    // the user must include either an irrefutable tuple
+                    // pattern (`(x, y)`) or a wildcard `_` arm.
+                    return Err(TypeCheckError::new(
+                        "non-exhaustive match on tuple: add an arm with an irrefutable tuple pattern or a wildcard `_`".to_string()
+                    ));
                 }
             }
         }

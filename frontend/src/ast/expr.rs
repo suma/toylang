@@ -97,6 +97,10 @@ pub enum Pattern {
     /// Identifier pattern — binds the matched value to `name` in the arm
     /// body's scope. Only legal as a sub-pattern of a tuple variant.
     Name(DefaultSymbol),
+    /// Tuple pattern, e.g. `(x, y)` or `(_, 0i64)`. Sub-patterns may be
+    /// any `Pattern`, including nested tuples. Currently irrefutable —
+    /// the scrutinee's tuple length and element types must match.
+    Tuple(Vec<Pattern>),
     Wildcard, // _
 }
 

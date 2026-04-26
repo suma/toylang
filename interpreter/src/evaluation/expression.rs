@@ -429,6 +429,21 @@ impl EvaluationContext<'_> {
                 }
                 Ok(true)
             }
+            Pattern::Tuple(sub_patterns) => {
+                let elements = match &*value.borrow() {
+                    Object::Tuple(elements) => elements.clone(),
+                    _ => return Ok(false),
+                };
+                if sub_patterns.len() != elements.len() {
+                    return Ok(false);
+                }
+                for (sub, element) in sub_patterns.iter().zip(elements.iter()) {
+                    if !self.try_match_pattern(sub, element)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
         }
     }
 }

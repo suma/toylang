@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, MethodFunction, Operator, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -65,11 +65,70 @@ pub struct FuncSignature {
     pub ret: ParamTy,
 }
 
-/// Identifies a single monomorphization of a function. The `Vec<ScalarTy>`
-/// is the substitution list ordered by `Function::generic_params`; it's
-/// empty for non-generic functions, so a non-generic function has exactly
-/// one MonoKey `(name, vec![])`.
-pub type MonoKey = (DefaultSymbol, Vec<ScalarTy>);
+/// Identifies *what* gets compiled: either a free function by name, or
+/// a struct method by `(struct_name, method_name)`. Methods get a
+/// distinct discriminator because the same method name may exist on
+/// multiple structs and the cranelift display name needs to disambiguate.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MonoTarget {
+    Function(DefaultSymbol),
+    Method(DefaultSymbol, DefaultSymbol),
+}
+
+/// Identifies a single monomorphization. The `Vec<ScalarTy>` is the
+/// substitution list ordered by the source's `generic_params` (always
+/// empty for non-generic targets in the current iteration; methods
+/// don't carry independent generics yet).
+pub type MonoKey = (MonoTarget, Vec<ScalarTy>);
+
+/// Source unit a monomorphization compiles from. `Function` and
+/// `MethodFunction` share enough of a shape (parameters, return type,
+/// generic params, body StmtRef) that we expose a small read-only view
+/// in `CallableInfo` so codegen / signature-building can stay generic.
+#[derive(Clone)]
+pub enum MonomorphSource {
+    Function(Rc<Function>),
+    Method(Rc<MethodFunction>),
+}
+
+impl MonomorphSource {
+    pub fn parameter(&self) -> &[(DefaultSymbol, TypeDecl)] {
+        match self {
+            MonomorphSource::Function(f) => &f.parameter,
+            MonomorphSource::Method(m) => &m.parameter,
+        }
+    }
+
+    pub fn return_type(&self) -> Option<&TypeDecl> {
+        match self {
+            MonomorphSource::Function(f) => f.return_type.as_ref(),
+            MonomorphSource::Method(m) => m.return_type.as_ref(),
+        }
+    }
+
+    pub fn generic_params(&self) -> &[DefaultSymbol] {
+        match self {
+            MonomorphSource::Function(f) => &f.generic_params,
+            MonomorphSource::Method(m) => &m.generic_params,
+        }
+    }
+
+    pub fn generic_bounds(
+        &self,
+    ) -> &std::collections::HashMap<DefaultSymbol, TypeDecl> {
+        match self {
+            MonomorphSource::Function(f) => &f.generic_bounds,
+            MonomorphSource::Method(m) => &m.generic_bounds,
+        }
+    }
+
+    pub fn code(&self) -> StmtRef {
+        match self {
+            MonomorphSource::Function(f) => f.code,
+            MonomorphSource::Method(m) => m.code,
+        }
+    }
+}
 
 /// Field layout for a JIT-compatible struct: every field must be a JIT
 /// scalar type (no nested structs in this iteration). Field names are
@@ -92,8 +151,9 @@ impl StructLayout {
 /// Result of eligibility analysis. Each MonoKey corresponds to one
 /// cranelift function the runtime will compile.
 pub struct EligibleSet {
-    /// Each monomorphization key -> the source `Function` it came from.
-    pub monomorphs: HashMap<MonoKey, Rc<Function>>,
+    /// Each monomorphization key -> its source (free function or
+    /// struct method).
+    pub monomorphs: HashMap<MonoKey, MonomorphSource>,
     /// Each monomorphization key -> its concrete (substituted) signature.
     pub signatures: HashMap<MonoKey, FuncSignature>,
     /// For every user-defined function call expression, the
@@ -116,12 +176,13 @@ pub struct EligibleSet {
 }
 
 /// Per-callsite monomorphization record. `call_expr` identifies the
-/// `Expr::Call` AST node so codegen can map back to the right callee
-/// FuncRef; `callee_name` and `mono_args` build the MonoKey.
+/// `Expr::Call` / `Expr::MethodCall` AST node so codegen can map back
+/// to the right callee FuncRef; `target` and `mono_args` build the
+/// MonoKey.
 #[derive(Debug, Clone)]
 pub(crate) struct MonoCall {
     pub call_expr: ExprRef,
-    pub callee_name: DefaultSymbol,
+    pub target: MonoTarget,
     pub mono_args: Vec<ScalarTy>,
 }
 
@@ -134,6 +195,9 @@ pub fn analyze(
     for f in &program.function {
         function_map.insert(f.name, f.clone());
     }
+    // method_map: (struct_name, method_name) -> MethodFunction. Built
+    // by walking top-level `Stmt::ImplBlock` declarations.
+    let method_map = collect_method_map(program);
 
     // Pre-pass: build layouts for every struct whose fields are all
     // JIT-supported scalars. Anything else (nested struct fields,
@@ -143,48 +207,58 @@ pub fn analyze(
 
     let mut visited: HashSet<MonoKey> = HashSet::new();
     let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::new();
-    let mut monomorphs: HashMap<MonoKey, Rc<Function>> = HashMap::new();
+    let mut monomorphs: HashMap<MonoKey, MonomorphSource> = HashMap::new();
     let mut call_targets: HashMap<ExprRef, MonoKey> = HashMap::new();
     let mut ptr_read_hints: HashMap<ExprRef, ScalarTy> = HashMap::new();
-    // Work item: (function, substitution-vec ordered by func.generic_params).
-    let mut stack: Vec<(Rc<Function>, Vec<ScalarTy>)> = vec![(main.clone(), Vec::new())];
+    // Work item: (source, target, substitution-vec ordered by source.generic_params).
+    let mut stack: Vec<(MonomorphSource, MonoTarget, Vec<ScalarTy>)> =
+        vec![(MonomorphSource::Function(main.clone()), MonoTarget::Function(main.name), Vec::new())];
 
-    while let Some((func, subs_vec)) = stack.pop() {
-        let key: MonoKey = (func.name, subs_vec.clone());
+    while let Some((source, target, subs_vec)) = stack.pop() {
+        let key: MonoKey = (target.clone(), subs_vec.clone());
         if !visited.insert(key.clone()) {
             continue;
         }
 
-        let fname_disp = display_mono(interner, &func, &subs_vec);
+        let fname_disp = display_mono(interner, &target, &subs_vec);
 
         // Generic bound checks (e.g. `<A: Allocator>`) require runtime
         // allocator handles which the JIT can't represent. Keep things
         // simple by rejecting bound generics.
-        if !func.generic_bounds.is_empty() {
+        if !source.generic_bounds().is_empty() {
             return Err(format!(
                 "function `{fname_disp}` has generic bounds (not supported in JIT)"
             ));
         }
 
-        // The substitution list must agree with the function's generic
-        // parameter count; mismatches are an analyzer bug, not a user
-        // problem, so promote to a hard error.
-        if subs_vec.len() != func.generic_params.len() {
+        // The substitution list must agree with the source's generic
+        // parameter count.
+        if subs_vec.len() != source.generic_params().len() {
             return Err(format!(
                 "internal: monomorph for `{fname_disp}` expected {} substitutions, got {}",
-                func.generic_params.len(),
+                source.generic_params().len(),
                 subs_vec.len()
             ));
         }
-        let substitutions: HashMap<DefaultSymbol, ScalarTy> = func
-            .generic_params
+        let substitutions: HashMap<DefaultSymbol, ScalarTy> = source
+            .generic_params()
             .iter()
             .copied()
             .zip(subs_vec.iter().copied())
             .collect();
 
+        let receiver_struct = match &target {
+            MonoTarget::Method(struct_name, _) => Some(*struct_name),
+            MonoTarget::Function(_) => None,
+        };
         let mut sig_reason: Option<String> = None;
-        let sig = match function_signature(&func, &substitutions, &struct_layouts, &mut sig_reason) {
+        let sig = match callable_signature(
+            &source,
+            receiver_struct,
+            &substitutions,
+            &struct_layouts,
+            &mut sig_reason,
+        ) {
             Some(s) => s,
             None => {
                 let detail = sig_reason.unwrap_or_else(|| "unsupported signature".into());
@@ -194,9 +268,9 @@ pub fn analyze(
 
         let mut callees: Vec<MonoCall> = Vec::new();
         let mut body_reason: Option<String> = None;
-        if !check_function_body(
+        if !check_callable_body(
             program,
-            &func,
+            &source,
             &sig,
             &substitutions,
             &struct_layouts,
@@ -209,21 +283,42 @@ pub fn analyze(
         }
 
         signatures.insert(key.clone(), sig);
-        monomorphs.insert(key.clone(), func.clone());
+        monomorphs.insert(key.clone(), source.clone());
 
         for call in callees {
-            let callee_fn = match function_map.get(&call.callee_name) {
-                Some(f) => f.clone(),
-                None => {
-                    let cname = interner.resolve(call.callee_name).unwrap_or("<anon>");
-                    return Err(format!(
-                        "function `{fname_disp}` calls unknown / non-eligible function `{cname}`"
-                    ));
+            // Resolve the callee. Methods come from method_map, free
+            // functions from function_map.
+            let (callee_source, callee_target) = match call.target {
+                MonoTarget::Function(name) => match function_map.get(&name) {
+                    Some(f) => (
+                        MonomorphSource::Function(f.clone()),
+                        MonoTarget::Function(name),
+                    ),
+                    None => {
+                        let cname = interner.resolve(name).unwrap_or("<anon>");
+                        return Err(format!(
+                            "function `{fname_disp}` calls unknown / non-eligible function `{cname}`"
+                        ));
+                    }
+                },
+                MonoTarget::Method(struct_name, method_name) => {
+                    match method_map.get(&(struct_name, method_name)) {
+                        Some(m) => (
+                            MonomorphSource::Method(m.clone()),
+                            MonoTarget::Method(struct_name, method_name),
+                        ),
+                        None => {
+                            let mname = interner.resolve(method_name).unwrap_or("<anon>");
+                            return Err(format!(
+                                "function `{fname_disp}` calls unknown method `{mname}`"
+                            ));
+                        }
+                    }
                 }
             };
-            let callee_key: MonoKey = (call.callee_name, call.mono_args);
+            let callee_key: MonoKey = (callee_target, call.mono_args);
             call_targets.insert(call.call_expr, callee_key.clone());
-            stack.push((callee_fn, callee_key.1));
+            stack.push((callee_source, callee_key.0.clone(), callee_key.1));
         }
     }
 
@@ -234,6 +329,43 @@ pub fn analyze(
         ptr_read_hints,
         struct_layouts,
     })
+}
+
+/// Look up a method on a struct by linear scanning ImplBlock decls.
+fn find_method(
+    program: &Program,
+    struct_name: DefaultSymbol,
+    method_name: DefaultSymbol,
+) -> Option<Rc<MethodFunction>> {
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(Stmt::ImplBlock { target_type, methods }) = program.statement.get(&stmt_ref) {
+            if target_type == struct_name {
+                if let Some(m) = methods.iter().find(|m| m.name == method_name) {
+                    return Some(m.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build a `(struct_name, method_name) -> MethodFunction` map from every
+/// top-level `Stmt::ImplBlock` in the program.
+fn collect_method_map(
+    program: &Program,
+) -> HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> {
+    let mut out: HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> =
+        HashMap::new();
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(Stmt::ImplBlock { target_type, methods }) = program.statement.get(&stmt_ref) {
+            for m in &methods {
+                out.insert((target_type, m.name), m.clone());
+            }
+        }
+    }
+    out
 }
 
 fn collect_struct_layouts(
@@ -294,18 +426,26 @@ fn collect_struct_layouts(
     out
 }
 
-/// Format a monomorphization for diagnostic output, e.g. `id<i64>`.
+/// Format a monomorphization for diagnostic output, e.g. `id<i64>` or
+/// `Point::dist`.
 fn display_mono(
     interner: &DefaultStringInterner,
-    func: &Function,
+    target: &MonoTarget,
     mono_args: &[ScalarTy],
 ) -> String {
-    let name = interner.resolve(func.name).unwrap_or("<anon>");
+    let base = match target {
+        MonoTarget::Function(s) => interner.resolve(*s).unwrap_or("<anon>").to_string(),
+        MonoTarget::Method(struct_sym, method_sym) => format!(
+            "{}::{}",
+            interner.resolve(*struct_sym).unwrap_or("<anon>"),
+            interner.resolve(*method_sym).unwrap_or("<anon>"),
+        ),
+    };
     if mono_args.is_empty() {
-        name.to_string()
+        base
     } else {
         let parts: Vec<String> = mono_args.iter().map(|t| format!("{t:?}")).collect();
-        format!("{name}<{}>", parts.join(", "))
+        format!("{base}<{}>", parts.join(", "))
     }
 }
 
@@ -396,19 +536,31 @@ fn infer_substitutions(
     Some(subs)
 }
 
-fn function_signature(
-    func: &Function,
+/// Compute a JIT signature for either a free function or a method.
+/// `receiver_struct` is `Some(struct)` when `source` is a method bound
+/// to that struct; the function uses it to resolve any `TypeDecl::Self_`
+/// references in the parameter list / return type.
+fn callable_signature(
+    source: &MonomorphSource,
+    receiver_struct: Option<DefaultSymbol>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     reject_reason: &mut Option<String>,
 ) -> Option<FuncSignature> {
-    let mut params = Vec::with_capacity(func.parameter.len());
-    for (_, td) in &func.parameter {
-        let pt = match resolve_param_ty(td, substitutions, struct_layouts) {
+    let parameters = source.parameter();
+    let mut params = Vec::with_capacity(parameters.len());
+    let self_struct = receiver_struct;
+    for (_, td) in parameters {
+        // Map `Self_` to the receiver's struct type for methods.
+        let resolved_td = match (td, self_struct) {
+            (TypeDecl::Self_, Some(s)) => TypeDecl::Identifier(s),
+            (other, _) => other.clone(),
+        };
+        let pt = match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
             Some(p) => p,
             None => {
                 note(reject_reason, || {
-                    format!("parameter has unsupported type {td:?}")
+                    format!("parameter has unsupported type {resolved_td:?}")
                 });
                 return None;
             }
@@ -419,21 +571,28 @@ fn function_signature(
             });
             return None;
         }
-        params.push((func.parameter[params.len()].0, pt));
+        params.push((parameters[params.len()].0, pt));
     }
     // Return type. Scalars and structs are both allowed; struct returns
     // expand into cranelift multi-returns (one cranelift return per
     // field) at the ABI layer.
-    let ret = match &func.return_type {
-        Some(td) => match resolve_param_ty(td, substitutions, struct_layouts) {
-            Some(p) => p,
-            None => {
-                note(reject_reason, || {
-                    format!("return type {td:?} is not supported")
-                });
-                return None;
+    let ret = match source.return_type() {
+        Some(td) => {
+            // Map `Self_` similarly for methods.
+            let resolved_td = match (td, self_struct) {
+                (TypeDecl::Self_, Some(s)) => TypeDecl::Identifier(s),
+                (other, _) => other.clone(),
+            };
+            match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
+                Some(p) => p,
+                None => {
+                    note(reject_reason, || {
+                        format!("return type {resolved_td:?} is not supported")
+                    });
+                    return None;
+                }
             }
-        },
+        }
         None => ParamTy::Scalar(ScalarTy::Unit),
     };
     Some(FuncSignature { params, ret })
@@ -459,12 +618,12 @@ pub(crate) fn resolve_param_ty(
     }
 }
 
-/// Walks a function body to confirm it only uses supported constructs and
-/// reports every callee found via `callees`. Returns false on the first
-/// unsupported construct.
-fn check_function_body(
+/// Walks a function or method body to confirm it only uses supported
+/// constructs and reports every callee found via `callees`. Returns
+/// false on the first unsupported construct.
+fn check_callable_body(
     program: &Program,
-    func: &Function,
+    source: &MonomorphSource,
     sig: &FuncSignature,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
@@ -472,11 +631,12 @@ fn check_function_body(
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
 ) -> bool {
-    // Generic functions are forbidden from using `__builtin_ptr_read`
+    let code = source.code();
+    // Generic sources are forbidden from using `__builtin_ptr_read`
     // because the hint table is keyed by ExprRef, which is shared across
-    // monomorphs of the same function body. Reject early so the diagnostic
-    // is clearer than a per-arm rejection deep inside the body.
-    if !func.generic_params.is_empty() && body_has_ptr_read(program, &func.code) {
+    // monomorphs of the same body. Reject early so the diagnostic is
+    // clearer than a per-arm rejection deep inside the body.
+    if !source.generic_params().is_empty() && body_has_ptr_read(program, &code) {
         note(reject_reason, || {
             "generic functions cannot use __builtin_ptr_read in JIT".to_string()
         });
@@ -503,7 +663,7 @@ fn check_function_body(
     if let ParamTy::Struct(struct_name) = &sig.ret {
         return check_struct_returning_body(
             program,
-            &func.code,
+            &code,
             *struct_name,
             &mut locals,
             &mut struct_locals,
@@ -517,7 +677,7 @@ fn check_function_body(
 
     check_stmt(
         program,
-        &func.code,
+        &code,
         &mut locals,
         &mut struct_locals,
         substitutions,
@@ -1476,7 +1636,7 @@ pub(crate) fn check_expr(
                 .collect();
             callees.push(MonoCall {
                 call_expr: *expr_ref,
-                callee_name: name,
+                target: MonoTarget::Function(name),
                 mono_args,
             });
 
@@ -1677,6 +1837,148 @@ pub(crate) fn check_expr(
                     });
                     None
                 }
+            }
+        }
+        Expr::MethodCall(receiver, method_name, args) => {
+            // The receiver must be a known struct local; we don't yet
+            // support method calls on temporary struct values.
+            let recv_expr = program.expression.get(&receiver)?;
+            let recv_name = match recv_expr {
+                Expr::Identifier(s) => s,
+                _ => {
+                    note(reject_reason, || {
+                        "method receiver must be a struct local".to_string()
+                    });
+                    return None;
+                }
+            };
+            let struct_name = match struct_locals.get(&recv_name).copied() {
+                Some(s) => s,
+                None => {
+                    note(reject_reason, || {
+                        "method receiver is not a known struct local".to_string()
+                    });
+                    return None;
+                }
+            };
+            // Validate each argument's type against the corresponding
+            // method parameter (skipping `self`). Methods don't yet
+            // support generics, so callee_subs is always empty.
+            // Linear scan over top-level ImplBlock decls is fine — only
+            // run once per call site, and the analyzer already pre-built
+            // a method_map for the work-stack pass.
+            let method = match find_method(program, struct_name, method_name) {
+                Some(m) => m,
+                None => {
+                    note(reject_reason, || {
+                        "method not found on struct".to_string()
+                    });
+                    return None;
+                }
+            };
+            if !method.generic_params.is_empty() {
+                note(reject_reason, || {
+                    "generic methods are not yet JIT-compatible".to_string()
+                });
+                return None;
+            }
+            // The first parameter is the receiver (`self: Self` in the
+            // language's preferred style). Remaining parameters must
+            // line up with the explicit arguments at the call site.
+            if method.parameter.is_empty() {
+                note(reject_reason, || {
+                    "method has no parameters; expected `self`".to_string()
+                });
+                return None;
+            }
+            let expected_param_count = method.parameter.len() - 1;
+            if args.len() != expected_param_count {
+                note(reject_reason, || {
+                    format!(
+                        "method call has {} arg(s), expects {}",
+                        args.len(),
+                        expected_param_count
+                    )
+                });
+                return None;
+            }
+            for (i, arg) in args.iter().enumerate() {
+                let param_td = &method.parameter[i + 1].1;
+                let arg_expr = program.expression.get(arg)?;
+                if let Expr::Identifier(id) = arg_expr {
+                    if let Some(arg_struct) = struct_locals.get(&id).copied() {
+                        match param_td {
+                            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
+                                if *s == arg_struct
+                                    && struct_layouts.contains_key(s) =>
+                            {
+                                continue;
+                            }
+                            _ => {
+                                note(reject_reason, || {
+                                    "method struct argument type mismatch".to_string()
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                }
+                // Scalar arg path
+                let actual = check_expr(
+                    program,
+                    arg,
+                    locals,
+                    struct_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                )?;
+                let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                    Some(ParamTy::Scalar(s)) => s,
+                    _ => {
+                        note(reject_reason, || {
+                            "method parameter type unsupported".to_string()
+                        });
+                        return None;
+                    }
+                };
+                if actual != want {
+                    note(reject_reason, || {
+                        format!("method arg type mismatch: got {actual:?}, want {want:?}")
+                    });
+                    return None;
+                }
+            }
+            callees.push(MonoCall {
+                call_expr: *expr_ref,
+                target: MonoTarget::Method(struct_name, method_name),
+                mono_args: Vec::new(),
+            });
+            // Compute method's return type.
+            match &method.return_type {
+                Some(td) => {
+                    let resolved = match td {
+                        TypeDecl::Self_ => TypeDecl::Identifier(struct_name),
+                        other => other.clone(),
+                    };
+                    match resolve_param_ty(&resolved, substitutions, struct_layouts) {
+                        Some(ParamTy::Scalar(s)) => Some(s),
+                        Some(ParamTy::Struct(_)) => {
+                            // Struct-returning methods only flow through
+                            // val/var rhs, similar to free-function struct
+                            // returns. Reject in arbitrary positions.
+                            note(reject_reason, || {
+                                "struct-returning method must be the rhs of a val/var"
+                                    .to_string()
+                            });
+                            None
+                        }
+                        None => None,
+                    }
+                }
+                None => Some(ScalarTy::Unit),
             }
         }
         Expr::FieldAccess(receiver, field_name) => {

@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+157. JIT Phase 2d-4 (struct method dispatch): `MonoTarget::Method(struct, method)` を導入、`MonomorphSource` enum で Function/Method を統一。method 本体を `self: Self` 入りの普通の関数として codegen、`p.method()` 呼出は receiver を struct arg に展開して通常の Call と同じ経路。`Self` は monomorph 時点で受領 struct に解決。Out of scope: 動的 dispatch、generic method。example: `jit_method.t` (2026-04-26)
 156. JIT Phase 2d-3 (struct return / multi-return): `FuncSignature.ret` を `ParamTy` 化、struct return は cranelift signature の returns に layout 順展開。codegen は struct-returning 関数の body 末尾 (Identifier or StructLiteral) を gather して return_、Call site は val/var RHS で multi-result から struct local を再構築。main return は scalar 限定。example: `jit_struct_return.t` (2026-04-26)
 155. JIT Phase 2d-2 (struct as func parameter): `ParamTy::Struct(name)` を導入、関数 param が struct のとき各 scalar field を別 cranelift param に分解。codegen は entry block で param 値群を struct_locals の Variable に振り分け、Call site は `Identifier(struct_local)` 経由で field values に展開。Out of scope: struct return (multi-return が必要)。example: `jit_struct_param.t` (2026-04-26)
 154. interpreter unused-variable warnings 整理: `destruction_log!` macro が release build (debug-logging feature 無し) で no-op になり、引数で参照される binding が未使用になる問題を `#[allow(unused_variables)]` で抑止。debug/release/--no-default-features/--all-targets 全 4 profile で 0 warning に (2026-04-26)
@@ -54,7 +55,7 @@
 
 ## 未実装 📋
 
-157. **JIT Phase 2 拡張** — Phase 1 / 2a (Cast) / 2b (print/println) / 2c (heap builtins) / 2c-2 (ptr_read/write) / 2g (sizeof) / 2f (generic) / 2d (struct field) / 2h (compile cache) / 2d-2 (struct as param) / 2d-3 (struct return) は完了。残: (d-4) method dispatch、(e) allocator stack 連携。サポート範囲のまとめは `JIT.md`
+158. **JIT Phase 2 拡張** — Phase 1 / 2a (Cast) / 2b (print/println) / 2c (heap builtins) / 2c-2 (ptr_read/write) / 2g (sizeof) / 2f (generic) / 2d (struct field) / 2h (compile cache) / 2d-2 (struct as param) / 2d-3 (struct return) / 2d-4 (method dispatch) は完了。残: (e) allocator stack 連携、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）

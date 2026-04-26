@@ -8,10 +8,10 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
-use super::eligibility::{FuncSignature, MonoKey, ParamTy, ScalarTy, StructLayout};
+use super::eligibility::{FuncSignature, MonoKey, MonomorphSource, ParamTy, ScalarTy, StructLayout};
 use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
@@ -77,7 +77,7 @@ pub fn make_signature<M: Module>(
 pub fn translate_function<M: Module>(
     module: &mut M,
     program: &Program,
-    func: &Function,
+    source: &MonomorphSource,
     sig: &FuncSignature,
     func_signatures: &HashMap<MonoKey, FuncSignature>,
     func_ids: &HashMap<MonoKey, FuncId>,
@@ -149,10 +149,11 @@ pub fn translate_function<M: Module>(
         }
     }
 
-    // Function body: a single Stmt::Expression(block_expr).
+    // Function body: a single Stmt::Expression(block_expr). Both free
+    // functions and methods expose `code` via MonomorphSource.
     let body_stmt = program
         .statement
-        .get(&func.code)
+        .get(&source.code())
         .ok_or_else(|| "missing function body".to_string())?;
     let body_expr = match body_stmt {
         Stmt::Expression(e) => e,
@@ -667,11 +668,13 @@ impl<'a, 'b> State<'a, 'b> {
                 // reinterpretation with no instruction needed.
                 self.gen_expr(&inner)
             }
-            Expr::Call(_, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
                 // Resolve the callee's signature and reject struct-
                 // returning calls outside of a Val/Var rhs (handled in
                 // try_gen_struct_local). Scalar / unit returns flow
-                // through the regular gen_expr path.
+                // through the regular gen_expr path. Methods reuse the
+                // same path; the call_targets entry already tells us
+                // which monomorph to dispatch to.
                 let target_key = self
                     .call_targets
                     .get(expr_ref)
@@ -1067,7 +1070,7 @@ impl<'a, 'b> State<'a, 'b> {
                 self.struct_local_types.insert(name, struct_name);
                 Ok(true)
             }
-            Expr::Call(_, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
                 // Look up the call's resolved monomorph to see if it
                 // returns a struct. If yes, handle the multi-return.
                 let target_key = match self.call_targets.get(value_ref) {
@@ -1132,18 +1135,29 @@ impl<'a, 'b> State<'a, 'b> {
             .expression
             .get(call_expr_ref)
             .ok_or_else(|| "missing call expression".to_string())?;
-        let args_ref = match call_expr {
-            Expr::Call(_, a) => a,
+        // Build the unified argument list. For free-function `Call`s we
+        // unwrap the inner `ExprList`; for `MethodCall` we synthesize
+        // [receiver, ...args] so the rest of this function stays
+        // independent of which form we're dispatching.
+        let arg_list: Vec<ExprRef> = match call_expr {
+            Expr::Call(_, args_ref) => {
+                let args_expr = self
+                    .program
+                    .expression
+                    .get(&args_ref)
+                    .ok_or_else(|| "missing call args".to_string())?;
+                match args_expr {
+                    Expr::ExprList(v) => v,
+                    _ => return Err("call args must be ExprList".to_string()),
+                }
+            }
+            Expr::MethodCall(receiver, _, args) => {
+                let mut all = Vec::with_capacity(args.len() + 1);
+                all.push(receiver);
+                all.extend(args.iter().copied());
+                all
+            }
             _ => return Err("not a call expression".into()),
-        };
-        let args_expr = self
-            .program
-            .expression
-            .get(&args_ref)
-            .ok_or_else(|| "missing call args".to_string())?;
-        let arg_list = match args_expr {
-            Expr::ExprList(v) => v,
-            _ => return Err("call args must be ExprList".to_string()),
         };
         if arg_list.len() != target_sig.params.len() {
             return Err("call arg count differs from callee signature".into());

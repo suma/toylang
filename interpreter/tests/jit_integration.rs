@@ -161,6 +161,25 @@ fn struct_return_example_matches_between_modes() {
     assert_match("example/jit_struct_return.t");
 }
 
+#[test]
+fn method_example_matches_between_modes() {
+    assert_match("example/jit_method.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn method_example_compiles_method() {
+    let r = run("example/jit_method.t", true, true);
+    assert_eq!(r.code, 194);
+    // The method should appear in the JIT compile log under its
+    // synthetic display name `Point__dist_squared`.
+    assert!(
+        r.stderr.contains("Point__dist_squared"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn struct_return_example_compiles_factory() {

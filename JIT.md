@@ -113,12 +113,18 @@ multi-return whose results the caller reassembles into a fresh
 struct local. Arguments at call sites must be `Identifier`s
 referring to a known struct local; the body of a struct-returning
 function must end in either an `Identifier` or a `StructLiteral`.
+
+Methods declared in `impl` blocks dispatch through the same path
+as free functions: `p.dist_squared()` becomes a normal cranelift
+call where the receiver expands into per-field arguments and any
+extra arguments follow. `Self` references in the method's signature
+resolve to the impl block's target struct.
+
 Out of scope for this iteration:
 
-* Calling methods on struct values.
 * Copying a struct between locals (`var q = p`).
 * Nested struct fields.
-* Generic structs (`struct Box<T> { … }`).
+* Generic structs (`struct Box<T> { … }`) and generic methods.
 * `main` returning a struct.
 
 ### Generic functions
@@ -206,6 +212,7 @@ the native code itself is faster.
 * `jit_struct.t` — `Point { x, y }` field reads / writes → exit 20
 * `jit_struct_param.t` — struct passed across a `sum_xy(Point) -> i64` call → exit 24
 * `jit_struct_return.t` — `make_point(...) -> Point` factory used twice → exit 18
+* `jit_method.t` — `impl Point { fn dist_squared(self: Self) -> i64 }` dispatched twice → exit 194
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -215,7 +222,7 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #157 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #158 ("JIT Phase 2 拡張"):
 
-* Method dispatch on struct values.
 * `with allocator = …` and the allocator stack.
+* Generic methods and generic structs.

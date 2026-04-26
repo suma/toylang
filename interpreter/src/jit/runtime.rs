@@ -21,14 +21,22 @@ use crate::object::{Object, RcObject};
 use super::codegen;
 use super::eligibility::{self, EligibleSet, MonoKey, ScalarTy};
 
-/// Build a unique display / link name for a monomorphization. For
-/// non-generic functions this is just the source name; for monomorphs we
-/// append a `<...>`-shaped suffix so the cranelift module's symbol table
-/// stays unambiguous.
+/// Build a unique display / link name for a monomorphization. Free
+/// functions use their source name; methods use `Struct::method`; both
+/// append a `<...>`-shaped suffix when generic substitutions apply.
 fn mono_display_name(interner: &DefaultStringInterner, key: &MonoKey) -> String {
-    let base = interner.resolve(key.0).unwrap_or("<anon>");
+    let base = match &key.0 {
+        eligibility::MonoTarget::Function(s) => {
+            interner.resolve(*s).unwrap_or("<anon>").to_string()
+        }
+        eligibility::MonoTarget::Method(struct_sym, method_sym) => format!(
+            "{}__{}",
+            interner.resolve(*struct_sym).unwrap_or("<anon>"),
+            interner.resolve(*method_sym).unwrap_or("<anon>"),
+        ),
+    };
     if key.1.is_empty() {
-        base.to_string()
+        base
     } else {
         let parts: Vec<String> = key.1.iter().map(|t| format!("{t:?}")).collect();
         format!("{base}__{}", parts.join("_"))
@@ -481,7 +489,7 @@ fn build_cache_entry(
     let mut ctx = Context::new();
     let mut builder_ctx = FunctionBuilderContext::new();
     let mut compiled_names: Vec<String> = Vec::new();
-    for (key, func) in &eligible.monomorphs {
+    for (key, source) in &eligible.monomorphs {
         let sig = eligible
             .signatures
             .get(key)
@@ -490,7 +498,7 @@ fn build_cache_entry(
         codegen::translate_function(
             &mut module,
             program,
-            func,
+            source,
             sig,
             &eligible.signatures,
             &func_ids,
@@ -521,7 +529,8 @@ fn build_cache_entry(
         eprintln!("JIT compiled: {}", compiled_names.join(", "));
     }
 
-    let main_key: eligibility::MonoKey = (main_fn.name, Vec::new());
+    let main_key: eligibility::MonoKey =
+        (eligibility::MonoTarget::Function(main_fn.name), Vec::new());
     let main_id = func_ids
         .get(&main_key)
         .copied()

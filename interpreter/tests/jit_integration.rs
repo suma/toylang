@@ -156,6 +156,19 @@ fn struct_param_example_matches_between_modes() {
     assert_match("example/jit_struct_param.t");
 }
 
+#[test]
+fn struct_return_example_matches_between_modes() {
+    assert_match("example/jit_struct_return.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn struct_return_example_compiles_factory() {
+    let r = run("example/jit_struct_return.t", true, true);
+    assert_eq!(r.code, 18);
+    assert!(r.stderr.contains("make_point"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn struct_param_example_compiles_callee() {

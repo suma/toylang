@@ -62,7 +62,7 @@ pub enum ParamTy {
 #[derive(Debug, Clone)]
 pub struct FuncSignature {
     pub params: Vec<(DefaultSymbol, ParamTy)>,
-    pub ret: ScalarTy,
+    pub ret: ParamTy,
 }
 
 /// Identifies a single monomorphization of a function. The `Vec<ScalarTy>`
@@ -421,11 +421,12 @@ fn function_signature(
         }
         params.push((func.parameter[params.len()].0, pt));
     }
-    // Returns are still scalar in this iteration; struct returns will
-    // arrive in a follow-up since they need cranelift multi-returns.
+    // Return type. Scalars and structs are both allowed; struct returns
+    // expand into cranelift multi-returns (one cranelift return per
+    // field) at the ABI layer.
     let ret = match &func.return_type {
-        Some(td) => match substitute_to_scalar(td, substitutions) {
-            Some(s) => s,
+        Some(td) => match resolve_param_ty(td, substitutions, struct_layouts) {
+            Some(p) => p,
             None => {
                 note(reject_reason, || {
                     format!("return type {td:?} is not supported")
@@ -433,7 +434,7 @@ fn function_signature(
                 return None;
             }
         },
-        None => ScalarTy::Unit,
+        None => ParamTy::Scalar(ScalarTy::Unit),
     };
     Some(FuncSignature { params, ret })
 }
@@ -493,6 +494,27 @@ fn check_function_body(
             }
         }
     }
+
+    // For struct-returning functions, the body's terminal expression
+    // must produce a struct value (Identifier of a struct local, or a
+    // StructLiteral). check_expr rejects struct literals in arbitrary
+    // positions, so we process the leading statements normally and then
+    // validate the trailing expression by hand.
+    if let ParamTy::Struct(struct_name) = &sig.ret {
+        return check_struct_returning_body(
+            program,
+            &func.code,
+            *struct_name,
+            &mut locals,
+            &mut struct_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        );
+    }
+
     check_stmt(
         program,
         &func.code,
@@ -504,6 +526,138 @@ fn check_function_body(
         ptr_read_hints,
         reject_reason,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn check_struct_returning_body(
+    program: &Program,
+    body_stmt_ref: &StmtRef,
+    struct_name: DefaultSymbol,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    let body_stmt = match program.statement.get(body_stmt_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let body_expr_ref = match body_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "struct-returning function body must be an expression".to_string()
+            });
+            return false;
+        }
+    };
+    let body_expr = match program.expression.get(&body_expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    let block_stmts = match body_expr {
+        Expr::Block(stmts) => stmts,
+        _ => {
+            note(reject_reason, || {
+                "struct-returning function body must be a block".to_string()
+            });
+            return false;
+        }
+    };
+    if block_stmts.is_empty() {
+        note(reject_reason, || {
+            "struct-returning function body cannot be empty".to_string()
+        });
+        return false;
+    }
+    let (last_ref, leading) = block_stmts.split_last().unwrap();
+    for s in leading {
+        if !check_stmt(
+            program,
+            s,
+            locals,
+            struct_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        ) {
+            return false;
+        }
+    }
+    // The trailing statement must produce the declared struct value.
+    let last_stmt = match program.statement.get(last_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "struct-returning function body must end in an expression".to_string()
+            });
+            return false;
+        }
+    };
+    let result_expr = match program.expression.get(&result_expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    match result_expr {
+        Expr::Identifier(name) => {
+            match struct_locals.get(&name).copied() {
+                Some(s) if s == struct_name => true,
+                Some(_) => {
+                    note(reject_reason, || {
+                        "returned struct local has a different type than declared"
+                            .to_string()
+                    });
+                    false
+                }
+                None => {
+                    note(reject_reason, || {
+                        "returned identifier is not a known struct local".to_string()
+                    });
+                    false
+                }
+            }
+        }
+        Expr::StructLiteral(lit_name, _) => {
+            if lit_name != struct_name {
+                note(reject_reason, || {
+                    "returned struct literal does not match declared return type"
+                        .to_string()
+                });
+                return false;
+            }
+            // Validate fields against the layout. Use a temporary
+            // variable name so check_struct_literal_fields can be reused
+            // — we don't need to actually keep the struct local around.
+            check_struct_literal_fields(
+                program,
+                &result_expr_ref,
+                struct_name,
+                locals,
+                struct_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            )
+        }
+        _ => {
+            note(reject_reason, || {
+                "struct return value must be an identifier or struct literal"
+                    .to_string()
+            });
+            false
+        }
+    }
 }
 
 /// If the value-position expression is a `StructLiteral` whose struct
@@ -547,6 +701,80 @@ fn struct_literal_target(
         }
     }
     Some(lit_name)
+}
+
+/// If `value_ref` is a `Call(callee, args)` whose callee returns a known
+/// struct type, validate each argument against the callee's parameters
+/// (Identifier-of-struct-local for struct params; ScalarTy for scalar
+/// params), record the monomorphization, and return the resulting
+/// struct's name. Caller registers the struct local.
+#[allow(clippy::too_many_arguments)]
+fn check_struct_returning_call(
+    program: &Program,
+    value_ref: &ExprRef,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> Option<DefaultSymbol> {
+    let expr = program.expression.get(value_ref)?;
+    let (callee_name, args_ref) = match expr {
+        Expr::Call(n, a) => (n, a),
+        _ => return None,
+    };
+    let callee = program
+        .function
+        .iter()
+        .find(|f| f.name == callee_name)
+        .cloned()?;
+    // Only proceed when the callee returns a known struct.
+    let ret_struct = match &callee.return_type {
+        Some(td) => match td {
+            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
+                if struct_layouts.contains_key(s) =>
+            {
+                *s
+            }
+            _ => return None,
+        },
+        None => return None,
+    };
+    // Reuse the regular Call analysis by delegating to check_expr; it
+    // populates callees/call_targets and validates arguments. The
+    // expected return type from check_expr will be None (struct returns
+    // aren't representable as ScalarTy), but the side effects we need
+    // already happened.
+    //
+    // We re-run the call's argument validation manually here so the
+    // overall eligibility analysis stays in sync. The check_expr's
+    // existing Call branch handles struct-typed parameters, generic
+    // inference, and call_targets registration.
+    let saved_callees_len = callees.len();
+    let result = check_expr(
+        program,
+        value_ref,
+        locals,
+        struct_locals,
+        substitutions,
+        struct_layouts,
+        callees,
+        ptr_read_hints,
+        reject_reason,
+    );
+    // For struct-returning calls, check_expr returns None (since its
+    // result type isn't a ScalarTy). That's fine — we only care that
+    // the side-effects (call recording, argument validation) succeeded.
+    // If check_expr failed before recording the call, treat that as a
+    // genuine eligibility failure; otherwise propagate the struct
+    // return type.
+    if result.is_none() && callees.len() == saved_callees_len {
+        return None;
+    }
+    let _ = args_ref; // suppress unused warning
+    Some(ret_struct)
 }
 
 /// Validate every field of a struct literal against the registered
@@ -745,6 +973,23 @@ fn check_stmt(
                 struct_locals.insert(name, struct_name);
                 return true;
             }
+            // Special-case: a struct-returning function call also lands as
+            // a fresh struct local. Validate the call site (and its args)
+            // through the normal Call eligibility path.
+            if let Some(struct_name) = check_struct_returning_call(
+                program,
+                &value,
+                locals,
+                struct_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            ) {
+                struct_locals.insert(name, struct_name);
+                return true;
+            }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
             // If both the annotation and the RHS are PtrRead-shaped, record
             // the expected return type before recursing so check_expr can
@@ -793,6 +1038,20 @@ fn check_stmt(
                     ) {
                         return false;
                     }
+                    struct_locals.insert(name, struct_name);
+                    return true;
+                }
+                if let Some(struct_name) = check_struct_returning_call(
+                    program,
+                    &v,
+                    locals,
+                    struct_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                ) {
                     struct_locals.insert(name, struct_name);
                     return true;
                 }

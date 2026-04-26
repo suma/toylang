@@ -84,35 +84,42 @@ enclosing function to be rejected.
 
 ### Structs
 
-A struct whose fields are all JIT scalars can be created and mutated
-locally and passed across function boundaries:
+A struct whose fields are all JIT scalars can flow through function
+parameters and return values, in addition to local mutation:
 
 ```rust
 struct Point { x: i64, y: i64 }
+
+fn make_point(x: i64, y: i64) -> Point {
+    Point { x: x, y: y }
+}
 
 fn sum_xy(p: Point) -> i64 {
     p.x + p.y
 }
 
 fn main() -> u64 {
-    var p = Point { x: 1i64, y: 2i64 }
-    p.x = p.x + 9i64
-    val total: i64 = sum_xy(p) + p.x + p.y
+    val a = make_point(3i64, 4i64)
+    val b = make_point(5i64, 6i64)
+    val total: i64 = sum_xy(a) + sum_xy(b)
     total as u64
 }
 ```
 
 Each scalar field is decomposed into its own SSA `Variable`, so reads
 and writes never touch memory. Struct parameters expand into one
-cranelift parameter per field at the ABI level; arguments at call
-sites must be `Identifier`s referring to a known struct local. Out
-of scope for this iteration:
+cranelift parameter per field; struct returns expand into a
+multi-return whose results the caller reassembles into a fresh
+struct local. Arguments at call sites must be `Identifier`s
+referring to a known struct local; the body of a struct-returning
+function must end in either an `Identifier` or a `StructLiteral`.
+Out of scope for this iteration:
 
-* Returning structs from functions (needs cranelift multi-returns).
 * Calling methods on struct values.
 * Copying a struct between locals (`var q = p`).
 * Nested struct fields.
 * Generic structs (`struct Box<T> { … }`).
+* `main` returning a struct.
 
 ### Generic functions
 
@@ -198,6 +205,7 @@ the native code itself is faster.
 * `jit_generic.t` — `id<T>` and `add<T>` monomorphized for `i64` and `u64` → exit 206
 * `jit_struct.t` — `Point { x, y }` field reads / writes → exit 20
 * `jit_struct_param.t` — struct passed across a `sum_xy(Point) -> i64` call → exit 24
+* `jit_struct_return.t` — `make_point(...) -> Point` factory used twice → exit 18
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -207,8 +215,7 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #155 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #157 ("JIT Phase 2 拡張"):
 
-* Returning struct values (needs cranelift multi-returns).
 * Method dispatch on struct values.
 * `with allocator = …` and the allocator stack.

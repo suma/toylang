@@ -50,8 +50,23 @@ pub fn make_signature<M: Module>(
             }
         }
     }
-    if let Some(rt) = ir_type(sig.ret) {
-        s.returns.push(AbiParam::new(rt));
+    match &sig.ret {
+        ParamTy::Scalar(scalar) => {
+            if let Some(rt) = ir_type(*scalar) {
+                s.returns.push(AbiParam::new(rt));
+            }
+        }
+        ParamTy::Struct(struct_name) => {
+            // Struct returns expand into one cranelift return per field.
+            let layout = struct_layouts
+                .get(struct_name)
+                .expect("struct layout missing for declared return");
+            for (_, field_ty) in &layout.fields {
+                s.returns.push(AbiParam::new(
+                    ir_type(*field_ty).expect("struct return field cannot be Unit"),
+                ));
+            }
+        }
     }
     s
 }
@@ -158,31 +173,138 @@ pub fn translate_function<M: Module>(
         ptr_read_hints,
         struct_layouts,
         loop_stack: Vec::new(),
-        return_ty: sig.ret,
+        return_ty: sig.ret.clone(),
         terminated: false,
     };
 
-    let body_value = state.gen_expr(&body_expr)?;
-
-    if !state.terminated {
-        match sig.ret {
-            ScalarTy::Unit => {
-                state.builder.ins().return_(&[]);
+    // Struct returns take a different path: the body's last expression
+    // must produce a struct value (Identifier of a struct local, or a
+    // StructLiteral). We process leading stmts normally and then gather
+    // the struct fields from the trailing expression.
+    if let ParamTy::Struct(struct_name) = &sig.ret {
+        emit_struct_return(&mut state, &body_expr, *struct_name)?;
+    } else {
+        let body_value = state.gen_expr(&body_expr)?;
+        if !state.terminated {
+            match &sig.ret {
+                ParamTy::Scalar(ScalarTy::Unit) => {
+                    state.builder.ins().return_(&[]);
+                }
+                ParamTy::Scalar(_) => {
+                    let v = body_value.ok_or_else(|| {
+                        "function body did not produce a value".to_string()
+                    })?;
+                    state.builder.ins().return_(&[v]);
+                }
+                ParamTy::Struct(_) => unreachable!(),
             }
-            _ => {
-                let v = body_value.ok_or_else(|| {
-                    "function body did not produce a value".to_string()
-                })?;
-                state.builder.ins().return_(&[v]);
-            }
+            state.terminated = true;
         }
-        state.terminated = true;
     }
 
     state.builder.seal_all_blocks();
     state.builder.finalize();
 
     Ok(())
+}
+
+/// Process a struct-returning function's body. Leading statements run
+/// through the regular block lowering; the final expression must
+/// produce a struct value, whose fields we collect and emit as a
+/// cranelift multi-return.
+fn emit_struct_return(
+    state: &mut State,
+    body_expr: &ExprRef,
+    struct_name: DefaultSymbol,
+) -> Result<(), String> {
+    let body = state
+        .program
+        .expression
+        .get(body_expr)
+        .ok_or_else(|| "missing function body expression".to_string())?;
+    let block_stmts = match body {
+        Expr::Block(stmts) => stmts,
+        _ => return Err("struct-returning function body must be a block".into()),
+    };
+    if block_stmts.is_empty() {
+        return Err("struct-returning function body is empty".into());
+    }
+    let (last, leading) = block_stmts.split_last().unwrap();
+    // Run leading statements through the standard block lowering.
+    if !leading.is_empty() {
+        let _ = state.gen_block(leading)?;
+        if state.terminated {
+            return Ok(());
+        }
+    }
+    let last_stmt = state
+        .program
+        .statement
+        .get(last)
+        .ok_or_else(|| "missing last stmt of struct-returning body".to_string())?;
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => return Err("last stmt of struct-returning body must be an expression".into()),
+    };
+    let values = gather_struct_values(state, &result_expr_ref, struct_name)?;
+    if !state.terminated {
+        state.builder.ins().return_(&values);
+        state.terminated = true;
+    }
+    Ok(())
+}
+
+/// Collect the field values of a struct-producing expression in layout
+/// order, ready to feed into `return_(...)` or to populate a fresh
+/// struct local in the caller.
+fn gather_struct_values(
+    state: &mut State,
+    expr_ref: &ExprRef,
+    struct_name: DefaultSymbol,
+) -> Result<Vec<Value>, String> {
+    let layout = state
+        .struct_layouts
+        .get(&struct_name)
+        .cloned()
+        .ok_or_else(|| "struct layout missing in JIT codegen".to_string())?;
+    let expr = state
+        .program
+        .expression
+        .get(expr_ref)
+        .ok_or_else(|| "missing struct-producing expression".to_string())?;
+    match expr {
+        Expr::Identifier(name) => {
+            let fields = state
+                .struct_locals
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| "identifier is not a known struct local".to_string())?;
+            let mut values = Vec::with_capacity(layout.fields.len());
+            for (field_sym, _) in &layout.fields {
+                let var = fields
+                    .get(field_sym)
+                    .copied()
+                    .ok_or_else(|| "struct local missing required field".to_string())?;
+                values.push(state.builder.use_var(var));
+            }
+            Ok(values)
+        }
+        Expr::StructLiteral(_, lit_fields) => {
+            let mut values = Vec::with_capacity(layout.fields.len());
+            for (field_sym, _) in &layout.fields {
+                let (_, field_expr_ref) = lit_fields
+                    .iter()
+                    .find(|(s, _)| s == field_sym)
+                    .ok_or_else(|| "struct literal missing required field".to_string())?;
+                let v = state
+                    .gen_expr(field_expr_ref)?
+                    .ok_or_else(|| "struct literal field produced no value".to_string())?;
+                values.push(v);
+            }
+            Ok(values)
+        }
+        _ => Err("struct return value must be an identifier or struct literal".into()),
+    }
 }
 
 struct State<'a, 'b> {
@@ -213,7 +335,7 @@ struct State<'a, 'b> {
     struct_layouts: &'a HashMap<DefaultSymbol, StructLayout>,
     loop_stack: Vec<LoopFrame>,
     #[allow(dead_code)]
-    return_ty: ScalarTy,
+    return_ty: ParamTy,
     /// Tracks whether the current cranelift block has had a terminator
     /// emitted. We can't query the builder directly because the relevant
     /// helper is private.
@@ -545,81 +667,30 @@ impl<'a, 'b> State<'a, 'b> {
                 // reinterpretation with no instruction needed.
                 self.gen_expr(&inner)
             }
-            Expr::Call(_, args_ref) => {
-                let args_expr = self
-                    .program
-                    .expression
-                    .get(&args_ref)
-                    .ok_or_else(|| "missing call args".to_string())?;
-                let arg_list = match args_expr {
-                    Expr::ExprList(v) => v,
-                    _ => return Err("call args must be ExprList".to_string()),
-                };
-
-                // Resolve which monomorphization this call targets so we
-                // know its parameter shape (and can expand struct args
-                // into per-field cranelift values).
+            Expr::Call(_, _) => {
+                // Resolve the callee's signature and reject struct-
+                // returning calls outside of a Val/Var rhs (handled in
+                // try_gen_struct_local). Scalar / unit returns flow
+                // through the regular gen_expr path.
                 let target_key = self
                     .call_targets
                     .get(expr_ref)
-                    .ok_or_else(|| "call has no resolved monomorph target".to_string())?;
+                    .ok_or_else(|| "call has no resolved monomorph target".to_string())?
+                    .clone();
                 let target_sig = self
                     .func_signatures
-                    .get(target_key)
-                    .ok_or_else(|| "missing callee signature in JIT".to_string())?;
-
-                let mut arg_values = Vec::with_capacity(arg_list.len());
-                if arg_list.len() != target_sig.params.len() {
-                    return Err("call arg count differs from callee signature".into());
+                    .get(&target_key)
+                    .ok_or_else(|| "missing callee signature in JIT".to_string())?
+                    .clone();
+                if matches!(target_sig.ret, ParamTy::Struct(_)) {
+                    return Err(
+                        "struct-returning call must be the rhs of a val/var".into(),
+                    );
                 }
-                for (a, (_, param_ty)) in arg_list.iter().zip(target_sig.params.iter()) {
-                    match param_ty {
-                        ParamTy::Scalar(_) => {
-                            let v = self
-                                .gen_expr(a)?
-                                .ok_or_else(|| "call arg produced no value".to_string())?;
-                            arg_values.push(v);
-                        }
-                        ParamTy::Struct(struct_name) => {
-                            // Struct argument must be an identifier
-                            // referring to a known struct local.
-                            let arg_expr = self
-                                .program
-                                .expression
-                                .get(a)
-                                .ok_or_else(|| "missing struct arg expr".to_string())?;
-                            let arg_name = match arg_expr {
-                                Expr::Identifier(s) => s,
-                                _ => return Err(
-                                    "struct argument must be a local identifier".into(),
-                                ),
-                            };
-                            let fields = self
-                                .struct_locals
-                                .get(&arg_name)
-                                .ok_or_else(|| "struct argument unknown".to_string())?
-                                .clone();
-                            let layout = self
-                                .struct_layouts
-                                .get(struct_name)
-                                .ok_or_else(|| "struct param has no layout".to_string())?;
-                            for (field_sym, _) in &layout.fields {
-                                let var = fields
-                                    .get(field_sym)
-                                    .copied()
-                                    .ok_or_else(|| {
-                                        "struct argument missing required field"
-                                            .to_string()
-                                    })?;
-                                arg_values.push(self.builder.use_var(var));
-                            }
-                        }
-                    }
-                }
-
+                let arg_values = self.gather_call_args(expr_ref, &target_sig)?;
                 let func_ref = *self
                     .func_refs
-                    .get(target_key)
+                    .get(&target_key)
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
                 let call = self.builder.ins().call(func_ref, &arg_values);
                 let results = self.builder.inst_results(call).to_vec();
@@ -959,8 +1030,10 @@ impl<'a, 'b> State<'a, 'b> {
 
     /// If `value_ref` is a struct literal whose layout we know, decompose
     /// it into one Variable per scalar field and register `name` as a
-    /// struct local. Returns `Ok(true)` when handled, `Ok(false)` when
-    /// the RHS isn't a JIT-eligible struct literal.
+    /// struct local. Also handles struct-returning calls by collecting
+    /// the multi-result values into the same kind of struct local.
+    /// Returns `Ok(true)` when handled, `Ok(false)` when the RHS doesn't
+    /// produce a JIT-eligible struct value.
     fn try_gen_struct_local(
         &mut self,
         name: DefaultSymbol,
@@ -970,34 +1043,153 @@ impl<'a, 'b> State<'a, 'b> {
             Some(v) => v,
             None => return Ok(false),
         };
-        let (struct_name, lit_fields) = match value {
-            Expr::StructLiteral(n, f) => (n, f),
-            _ => return Ok(false),
-        };
-        let layout = match self.struct_layouts.get(&struct_name) {
-            Some(l) => l.clone(),
-            None => return Ok(false),
-        };
+        match value {
+            Expr::StructLiteral(struct_name, lit_fields) => {
+                let layout = match self.struct_layouts.get(&struct_name) {
+                    Some(l) => l.clone(),
+                    None => return Ok(false),
+                };
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                for (field_sym, field_expr) in &lit_fields {
+                    let want = layout.field(*field_sym).ok_or_else(|| {
+                        "unknown field in struct literal at codegen".to_string()
+                    })?;
+                    let v = self
+                        .gen_expr(field_expr)?
+                        .ok_or_else(|| "struct literal field produced no value".to_string())?;
+                    let var = self
+                        .builder
+                        .declare_var(ir_type(want).expect("struct field cannot be Unit"));
+                    self.builder.def_var(var, v);
+                    field_vars.insert(*field_sym, var);
+                }
+                self.struct_locals.insert(name, field_vars);
+                self.struct_local_types.insert(name, struct_name);
+                Ok(true)
+            }
+            Expr::Call(_, _) => {
+                // Look up the call's resolved monomorph to see if it
+                // returns a struct. If yes, handle the multi-return.
+                let target_key = match self.call_targets.get(value_ref) {
+                    Some(k) => k.clone(),
+                    None => return Ok(false),
+                };
+                let target_sig = match self.func_signatures.get(&target_key) {
+                    Some(s) => s.clone(),
+                    None => return Ok(false),
+                };
+                let struct_name = match target_sig.ret {
+                    ParamTy::Struct(s) => s,
+                    _ => return Ok(false),
+                };
+                let layout = self
+                    .struct_layouts
+                    .get(&struct_name)
+                    .cloned()
+                    .ok_or_else(|| "struct return has no layout".to_string())?;
 
-        // Generate each field's value first so they share the current
-        // (non-terminated) block, then declare a Variable per field.
-        let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
-        for (field_sym, field_expr) in &lit_fields {
-            let want = layout
-                .field(*field_sym)
-                .ok_or_else(|| "unknown field in struct literal at codegen".to_string())?;
-            let v = self
-                .gen_expr(field_expr)?
-                .ok_or_else(|| "struct literal field produced no value".to_string())?;
-            let var = self
-                .builder
-                .declare_var(ir_type(want).expect("struct field cannot be Unit"));
-            self.builder.def_var(var, v);
-            field_vars.insert(*field_sym, var);
+                // Emit the call: gen_expr drops all but the first result,
+                // so we duplicate the arg-gathering logic here and call
+                // through directly to grab the full result list.
+                let arg_values = self.gather_call_args(value_ref, &target_sig)?;
+                let func_ref = *self
+                    .func_refs
+                    .get(&target_key)
+                    .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let call = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call).to_vec();
+                if results.len() != layout.fields.len() {
+                    return Err(
+                        "struct-returning call produced wrong number of results".into(),
+                    );
+                }
+                let mut field_vars: HashMap<DefaultSymbol, Variable> = HashMap::new();
+                for ((field_sym, field_ty), v) in layout.fields.iter().zip(results.iter()) {
+                    let var = self
+                        .builder
+                        .declare_var(ir_type(*field_ty).expect("struct field cannot be Unit"));
+                    self.builder.def_var(var, *v);
+                    field_vars.insert(*field_sym, var);
+                }
+                self.struct_locals.insert(name, field_vars);
+                self.struct_local_types.insert(name, struct_name);
+                Ok(true)
+            }
+            _ => Ok(false),
         }
-        self.struct_locals.insert(name, field_vars);
-        self.struct_local_types.insert(name, struct_name);
-        Ok(true)
+    }
+
+    /// Build the cranelift argument list for a Call expression by
+    /// expanding any struct identifier args into per-field values, in
+    /// the same order the callee declared them.
+    fn gather_call_args(
+        &mut self,
+        call_expr_ref: &ExprRef,
+        target_sig: &FuncSignature,
+    ) -> Result<Vec<Value>, String> {
+        let call_expr = self
+            .program
+            .expression
+            .get(call_expr_ref)
+            .ok_or_else(|| "missing call expression".to_string())?;
+        let args_ref = match call_expr {
+            Expr::Call(_, a) => a,
+            _ => return Err("not a call expression".into()),
+        };
+        let args_expr = self
+            .program
+            .expression
+            .get(&args_ref)
+            .ok_or_else(|| "missing call args".to_string())?;
+        let arg_list = match args_expr {
+            Expr::ExprList(v) => v,
+            _ => return Err("call args must be ExprList".to_string()),
+        };
+        if arg_list.len() != target_sig.params.len() {
+            return Err("call arg count differs from callee signature".into());
+        }
+        let mut arg_values = Vec::new();
+        for (a, (_, param_ty)) in arg_list.iter().zip(target_sig.params.iter()) {
+            match param_ty {
+                ParamTy::Scalar(_) => {
+                    let v = self
+                        .gen_expr(a)?
+                        .ok_or_else(|| "call arg produced no value".to_string())?;
+                    arg_values.push(v);
+                }
+                ParamTy::Struct(struct_name) => {
+                    let arg_expr = self
+                        .program
+                        .expression
+                        .get(a)
+                        .ok_or_else(|| "missing struct arg expr".to_string())?;
+                    let arg_name = match arg_expr {
+                        Expr::Identifier(s) => s,
+                        _ => {
+                            return Err(
+                                "struct argument must be a local identifier".into(),
+                            )
+                        }
+                    };
+                    let fields = self
+                        .struct_locals
+                        .get(&arg_name)
+                        .ok_or_else(|| "struct argument unknown".to_string())?
+                        .clone();
+                    let layout = self
+                        .struct_layouts
+                        .get(struct_name)
+                        .ok_or_else(|| "struct param has no layout".to_string())?;
+                    for (field_sym, _) in &layout.fields {
+                        let var = fields.get(field_sym).copied().ok_or_else(|| {
+                            "struct argument missing required field".to_string()
+                        })?;
+                        arg_values.push(self.builder.use_var(var));
+                    }
+                }
+            }
+        }
+        Ok(arg_values)
     }
 
     fn call_helper(&mut self, kind: HelperKind, args: &[Value]) -> Result<Value, String> {

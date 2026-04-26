@@ -532,11 +532,21 @@ fn build_cache_entry(
         .get(&main_key)
         .ok_or_else(|| "main signature missing".to_string())?;
 
+    // `main` must return a scalar so the runtime can map the result to
+    // an `Object` and process exit code. Struct-returning `main` would
+    // need an entirely different surface, so reject it here.
+    let main_ret = match &main_sig.ret {
+        eligibility::ParamTy::Scalar(s) => *s,
+        eligibility::ParamTy::Struct(_) => {
+            return Err("main returning a struct is not supported in JIT".into());
+        }
+    };
+
     Ok(CachedJit {
         program_id,
         _module: module,
         main_ptr,
-        main_ret: main_sig.ret,
+        main_ret,
     })
 }
 

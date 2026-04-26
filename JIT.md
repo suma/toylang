@@ -166,16 +166,18 @@ recursion are ignored to keep the message close to the surface.
 
 `cargo bench --bench jit_bench --warm-up-time 1 --measurement-time 3`
 
-| Workload | Tree-walk | JIT (incl. compile) | Speedup |
+| Workload | Tree-walk | JIT (cached) | Speedup |
 |---|---|---|---|
-| `fib(20)` recursive | 13.65 ms | 107 µs | ~127× |
-| `sum_to(100k)` while-loop | 51.6 ms | 134 µs | ~383× |
-| `fib_iter(50k)` | 39.2 ms | 106 µs | ~371× |
+| `fib(20)` recursive | 13.9 ms | 30.8 µs | ~451× |
+| `sum_to(100k)` while-loop | 53.8 ms | 30.9 µs | ~1741× |
+| `fib_iter(50k)` | 40.8 ms | 31.0 µs | ~1316× |
 
-The JIT timings include cranelift compilation per `execute_program`
-call (no caching across runs), so the marginal compile overhead is
-roughly ~100 µs for a couple of small functions. Tight numeric
-loops benefit the most.
+A thread-local cache keyed by `&Program` pointer-identity stores the
+finalized `JITModule` after the first compile, so repeated calls to
+`execute_program` (such as criterion's iter loop) skip eligibility,
+codegen and finalization entirely. The remaining ~31 µs reflect the
+heap install / cached-pointer dispatch / `Object` wrapping path —
+the native code itself is faster.
 
 ## Examples
 
@@ -197,11 +199,8 @@ the same end-to-end output as the interpreter.
 
 ## Future work
 
-Tracked under todo.md item #153 ("JIT Phase 2 拡張"):
+Tracked under todo.md item #154 ("JIT Phase 2 拡張"):
 
 * Struct values as function parameters / return values, and method
   dispatch.
 * `with allocator = …` and the allocator stack.
-* Caching compiled functions across `execute_program` calls (would
-  amortize the ~100 µs cranelift overhead in repeated bench runs and
-  in long-running sessions).

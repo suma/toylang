@@ -327,6 +327,41 @@ fn find_main(program: &Program, interner: &DefaultStringInterner) -> Option<Rc<F
         .cloned()
 }
 
+/// Cached JIT artifacts for one program. The `JITModule` keeps the
+/// executable code alive; `main_ptr` is only valid while the module is
+/// kept around. Cache hits skip eligibility, codegen and finalization
+/// entirely — we just call the cached function pointer again.
+struct CachedJit {
+    program_id: usize,
+    /// Owns the executable code.
+    _module: JITModule,
+    main_ptr: *const u8,
+    main_ret: ScalarTy,
+}
+
+thread_local! {
+    static JIT_CACHE: RefCell<Option<CachedJit>> = const { RefCell::new(None) };
+}
+
+fn cache_lookup(program_id: usize) -> Option<(*const u8, ScalarTy)> {
+    JIT_CACHE.with(|c| {
+        c.borrow().as_ref().and_then(|cj| {
+            if cj.program_id == program_id {
+                Some((cj.main_ptr, cj.main_ret))
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn cache_store(cached: CachedJit) {
+    // Replacing the cache drops any previous JITModule, freeing the old
+    // executable code. The cached `main_ptr` for that program becomes
+    // invalid, so callers must always look up afresh after a store.
+    JIT_CACHE.with(|c| *c.borrow_mut() = Some(cached));
+}
+
 /// Try to JIT-compile and execute `main`. Returns `Some(result)` when the
 /// program was fully handled by the JIT, and `None` when the caller should
 /// fall back to the tree-walking interpreter.
@@ -341,34 +376,56 @@ pub fn try_execute_main(
 
     let main_fn = find_main(program, interner)?;
 
-    let eligible = match eligibility::analyze(program, &main_fn, interner) {
-        Ok(e) => e,
-        Err(reason) => {
-            if verbose {
-                eprintln!("JIT: skipped ({reason})");
-            }
-            return None;
+    // Pointer identity of `program` is the cache key. Re-running the same
+    // parsed program (e.g. inside a benchmark loop) hits the cache; a
+    // freshly parsed program in another invocation always misses.
+    let program_id = program as *const Program as usize;
+    let (main_ptr, main_ret) = match cache_lookup(program_id) {
+        Some(hit) => hit,
+        None => {
+            let eligible = match eligibility::analyze(program, &main_fn, interner) {
+                Ok(e) => e,
+                Err(reason) => {
+                    if verbose {
+                        eprintln!("JIT: skipped ({reason})");
+                    }
+                    return None;
+                }
+            };
+            let cached = match build_cache_entry(
+                program,
+                interner,
+                &main_fn,
+                &eligible,
+                program_id,
+                verbose,
+            ) {
+                Ok(c) => c,
+                Err(err) => {
+                    if verbose {
+                        eprintln!("JIT: skipped ({err})");
+                    }
+                    return None;
+                }
+            };
+            let main_ptr = cached.main_ptr;
+            let main_ret = cached.main_ret;
+            cache_store(cached);
+            (main_ptr, main_ret)
         }
     };
 
-    match compile_and_run(program, interner, &main_fn, &eligible, verbose) {
-        Ok(obj) => Some(obj),
-        Err(err) => {
-            if verbose {
-                eprintln!("JIT: skipped ({err})");
-            }
-            None
-        }
-    }
+    Some(execute_cached(main_ptr, main_ret))
 }
 
-fn compile_and_run(
+fn build_cache_entry(
     program: &Program,
     interner: &DefaultStringInterner,
     main_fn: &Rc<Function>,
     eligible: &EligibleSet,
+    program_id: usize,
     verbose: bool,
-) -> Result<RcObject, String> {
+) -> Result<CachedJit, String> {
     let mut flag_builder = settings::builder();
     flag_builder
         .set("use_colocated_libcalls", "false")
@@ -475,10 +532,19 @@ fn compile_and_run(
         .get(&main_key)
         .ok_or_else(|| "main signature missing".to_string())?;
 
-    // Install a fresh HeapManager so heap_alloc / mem_* callbacks have
-    // somewhere to read and mutate. The JIT path doesn't share heap state
-    // with the tree-walking interpreter; pointers returned from JIT main
-    // are only meaningful within this run.
+    Ok(CachedJit {
+        program_id,
+        _module: module,
+        main_ptr,
+        main_ret: main_sig.ret,
+    })
+}
+
+/// Install a fresh `HeapManager`, dispatch to the cached `main`, then
+/// uninstall the heap. The JIT path doesn't share heap state with the
+/// tree-walking interpreter — pointers returned from JIT main are only
+/// meaningful within this run.
+fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
     let heap = Rc::new(RefCell::new(HeapManager::new()));
     JIT_HEAP.with(|s| *s.borrow_mut() = Some(heap));
     struct HeapGuard;
@@ -489,11 +555,12 @@ fn compile_and_run(
     }
     let _heap_guard = HeapGuard;
 
-    // SAFETY: We just emitted, defined, and finalized this function with
-    // the matching extern signature. The lifetime of the code is tied to
-    // `module`, which we keep alive until after the call returns.
+    // SAFETY: The cached entry was emitted, defined, and finalized with
+    // the recorded return type; its `JITModule` is kept alive in the
+    // thread-local cache, so `main_ptr` remains valid for the duration of
+    // this call.
     let result = unsafe {
-        match main_sig.ret {
+        match main_ret {
             ScalarTy::I64 => {
                 let f: extern "C" fn() -> i64 = std::mem::transmute(main_ptr);
                 Object::Int64(f())
@@ -518,9 +585,5 @@ fn compile_and_run(
         }
     };
 
-    // The JITModule must live at least until after the function returns.
-    // Drop it after we capture the value.
-    drop(module);
-
-    Ok(Rc::new(RefCell::new(result)))
+    Rc::new(RefCell::new(result))
 }

@@ -2,6 +2,9 @@
 
 ## 完了済み ✅
 
+142. JIT Phase 2a (Cast 対応): `Expr::Cast` を eligibility/codegen に追加。i64 ↔ u64 (identity 含む) のみ対応。両者ともクランリフトの I64 にマップされるため codegen は no-op (2026-04-26)
+141. main の数値戻り値を process exit code に: `Object::Int64`/`UInt64` のときに `process::exit` で値を返す。fib なら `cargo run example/fib.t` の終了コードが 8 になる (2026-04-26)
+140. cranelift-based JIT (Phase 1): `INTERPRETER_JIT=1` env var で opt-in、cargo feature `jit` (default on)。i64/u64/bool/Unit のみ使う関数 (`main` から transitively reachable) を一括コンパイル。リテラル/算術/比較/論理 (短絡)/ビット/シフト/単項/val/var/代入/if-elif-else/while/for-range/break/continue/return/関数呼び出しに対応。サポート外は silent fallback (`-v` で skip 理由表示)。設計は `~/.claude/plans/mutable-wobbling-kettle.md` (2026-04-26)
 139. `__builtin_sizeof` の struct / enum / tuple / array 対応: struct はフィールド合計、enum は 1-byte タグ + payload 合計（variant 依存）、tuple / array は要素合計。`List<Option<i64>>` のようなケースで stride 計算に利用可能 (2026-04-22)
 138. 任意型 T に対応した `ptr_write` / `ptr_read`: HeapManager に typed-slot map を追加、write は任意型の RcObject を保存、read は型ヒント（`val v: T = ...`）に従って返す。`List<i64>` / `List<bool>` / `List<T>` の実用的な動作 (2026-04-22)
 137. Allocator を型パラメータに取る struct: `struct List<T, A: Allocator>` 形式。struct 生成時に型注釈をヒントとしてフィールドに現れない T を推論、メソッド内の `Self` 再構築に return type ヒントを伝播、struct-level bound を impl body へマージ、block レベルの型ヒント上書きを修正 (2026-04-22)
@@ -37,6 +40,7 @@
 
 ## 未実装 📋
 
+143. **JIT Phase 2 拡張** — Phase 1 (i64/u64/bool 関数) と Phase 2a (Cast) は完了。残: (b) `print`/`println` の Rust callback 実装、(c) struct field/method、(d) builtin (heap_alloc/ptr_read/write など) コールバック、(e) allocator stack 連携、(f) generic 関数の monomorphize
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）

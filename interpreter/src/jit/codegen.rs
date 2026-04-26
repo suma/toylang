@@ -277,6 +277,13 @@ impl<'a, 'b> State<'a, 'b> {
                 self.builder.def_var(var, v);
                 Ok(None)
             }
+            Expr::Cast(inner, _target) => {
+                // Eligibility limits casts to i64 ↔ u64 (and identity for
+                // those two), all of which share cranelift's I64 backing
+                // storage. The cast is therefore a pure type-system
+                // reinterpretation with no instruction needed.
+                self.gen_expr(&inner)
+            }
             Expr::Call(name, args_ref) => {
                 let args_expr = self
                     .program

@@ -428,6 +428,19 @@ pub(crate) fn check_expr(
             }
             None
         }
+        Expr::Cast(inner, target) => {
+            // Match the interpreter: only i64 ↔ u64 (or identity for those
+            // two) is permitted. bool casts are intentionally excluded.
+            let inner_ty = check_expr(program, &inner, locals, callees)?;
+            let target_ty = ScalarTy::from_type_decl(&target)?;
+            if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
+                return None;
+            }
+            if !matches!(target_ty, ScalarTy::I64 | ScalarTy::U64) {
+                return None;
+            }
+            Some(target_ty)
+        }
         // Everything else is unsupported in this iteration.
         Expr::Number(_)
         | Expr::Null
@@ -446,7 +459,6 @@ pub(crate) fn check_expr(
         | Expr::DictLiteral(_)
         | Expr::TupleLiteral(_)
         | Expr::TupleAccess(_, _)
-        | Expr::Cast(_, _)
         | Expr::With(_, _)
         | Expr::Match(_, _)
         | Expr::Range(_, _) => None,

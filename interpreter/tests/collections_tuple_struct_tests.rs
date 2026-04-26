@@ -162,6 +162,60 @@ mod tuple_tests {
     }
 
     #[test]
+    fn test_tuple_val_destructure() {
+        // `val (a, b) = expr` desugars in the parser into a hidden
+        // temporary plus per-name bindings via `tmp.0` / `tmp.1`.
+        let source = r#"
+        fn main() -> u64 {
+            val (a, b) = (10u64, 20u64)
+            a + b
+        }
+    "#;
+        common::assert_program_result_u64(source, 30);
+    }
+
+    #[test]
+    fn test_tuple_var_destructure_with_mutation() {
+        // `var (m, n)` produces two mutable bindings.
+        let source = r#"
+        fn main() -> u64 {
+            var (m, n) = (1u64, 2u64)
+            m = m + 5u64
+            m + n
+        }
+    "#;
+        common::assert_program_result_u64(source, 8);
+    }
+
+    #[test]
+    fn test_tuple_destructure_three_elements() {
+        let source = r#"
+        fn main() -> u64 {
+            val (x, y, z) = (100u64, 200u64, 300u64)
+            x + y + z
+        }
+    "#;
+        common::assert_program_result_u64(source, 600);
+    }
+
+    #[test]
+    fn test_tuple_destructure_from_call() {
+        // The rhs can be any expression that evaluates to a tuple,
+        // including a function call.
+        let source = r#"
+        fn pair_swap(p: (u64, u64)) -> (u64, u64) {
+            (p.1, p.0)
+        }
+
+        fn main() -> u64 {
+            val (a, b) = pair_swap((3u64, 7u64))
+            a * 10u64 + b
+        }
+    "#;
+        common::assert_program_result_u64(source, 73);
+    }
+
+    #[test]
     fn test_empty_tuple_type() {
         let source = r#"
         fn main() -> u64 {

@@ -475,9 +475,16 @@ pub fn parse_block_impl(parser: &mut Parser, mut statements: Vec<StmtRef>) -> Pa
         
         // Parse statement
         let lhs = super::stmt::parse_stmt(parser);
-        
+
         match lhs {
             Ok(stmt) => {
+                // Drain any synthetic prelude statements the stmt
+                // parser appended (used by tuple destructuring) so
+                // they land in source order before the main stmt.
+                if !parser.pending_prelude_stmts.is_empty() {
+                    let prelude = std::mem::take(&mut parser.pending_prelude_stmts);
+                    statements.extend(prelude);
+                }
                 statements.push(stmt);
             }
             Err(err) => {

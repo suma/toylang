@@ -154,6 +154,16 @@ pub struct Parser<'a> {
     normalization_context: TokenNormalizationContext,
     /// Stack of parsing contexts to track where we are
     context_stack: Vec<ParseContext>,
+    /// Extra statements produced as a side effect of parsing a single
+    /// `val`/`var` form — used by the tuple-destructuring desugaring
+    /// (`val (a, b) = expr` expands to a temporary plus per-name
+    /// bindings). `parse_block_impl` drains this buffer immediately
+    /// before the return value of `parse_stmt`, preserving source
+    /// order.
+    pub pending_prelude_stmts: Vec<StmtRef>,
+    /// Counter feeding fresh synthetic identifiers (e.g.
+    /// `__tuple_tmp_0`, `__tuple_tmp_1`) during desugaring.
+    pub synthetic_counter: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -174,6 +184,8 @@ impl<'a> Parser<'a> {
             max_recursion_depth: 500,
             normalization_context: TokenNormalizationContext::new(),
             context_stack: vec![ParseContext::Expression],
+            pending_prelude_stmts: Vec::new(),
+            synthetic_counter: 0,
         }
     }
 

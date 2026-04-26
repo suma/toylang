@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+145. JIT 統合テスト追加: `interpreter/tests/jit_integration.rs` で `INTERPRETER_JIT=1` ON/OFF のバイナリ実行を比較。fib/jit_cast/jit_print/jit_heap で exit code + stdout 往復一致、fallback プログラム (配列使用) の挙動、verbose ログ (`JIT compiled:` / `JIT: skipped`) の存在を検証。8 テスト追加 (--no-default-features では 5 テスト) (2026-04-26)
 144. JIT Phase 2c (heap builtins): `heap_alloc`/`heap_free`/`heap_realloc`/`ptr_is_null`/`mem_copy`/`mem_move`/`mem_set` を JIT で扱う。`ScalarTy::Ptr` を追加 (cranelift I64 マップ)、callback は thread_local の `JIT_HEAP` で `HeapManager` を共有、`PtrIsNull` は `icmp_imm` でインライン展開。`ptr_read`/`ptr_write` は typed-slot 仕様の都合で次回 (2026-04-26)
 143. JIT Phase 2b (print/println callback): `BuiltinCall(Print/Println, scalar_arg)` を JIT で扱う。`extern "C"` Rust callback (jit_print_i64/u64/bool + println 各種) を `JITBuilder.symbol()` で登録、`Linkage::Import` で declare、codegen は引数型から helper を選んで call。eligibility は arg=1, type∈{i64,u64,bool} を許可、return type は Unit (2026-04-26)
 142. JIT Phase 2a (Cast 対応): `Expr::Cast` を eligibility/codegen に追加。i64 ↔ u64 (identity 含む) のみ対応。両者ともクランリフトの I64 にマップされるため codegen は no-op (2026-04-26)

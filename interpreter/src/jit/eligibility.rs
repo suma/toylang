@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ast::{Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -428,6 +428,21 @@ pub(crate) fn check_expr(
             }
             None
         }
+        Expr::BuiltinCall(func, args) => {
+            match func {
+                BuiltinFunction::Print | BuiltinFunction::Println => {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    let t = check_expr(program, &args[0], locals, callees)?;
+                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
+                _ => None,
+            }
+        }
         Expr::Cast(inner, target) => {
             // Match the interpreter: only i64 ↔ u64 (or identity for those
             // two) is permitted. bool casts are intentionally excluded.
@@ -452,7 +467,6 @@ pub(crate) fn check_expr(
         | Expr::StructLiteral(_, _)
         | Expr::QualifiedIdentifier(_)
         | Expr::BuiltinMethodCall(_, _, _)
-        | Expr::BuiltinCall(_, _)
         | Expr::SliceAccess(_, _)
         | Expr::SliceAssign(_, _, _, _)
         | Expr::AssociatedFunctionCall(_, _, _)

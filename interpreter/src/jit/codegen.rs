@@ -8,10 +8,11 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
-use frontend::ast::{Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, Operator, Program, Stmt, StmtRef, UnaryOp};
 use string_interner::DefaultSymbol;
 
 use super::eligibility::{FuncSignature, ScalarTy};
+use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
     match ty {
@@ -42,6 +43,7 @@ pub fn translate_function<M: Module>(
     sig: &FuncSignature,
     func_signatures: &HashMap<DefaultSymbol, FuncSignature>,
     func_ids: &HashMap<DefaultSymbol, FuncId>,
+    helper_ids: &HashMap<HelperKind, FuncId>,
     ctx: &mut Context,
     builder_ctx: &mut FunctionBuilderContext,
 ) -> Result<(), String> {
@@ -57,6 +59,11 @@ pub fn translate_function<M: Module>(
     for (callee_name, callee_id) in func_ids {
         let r = module.declare_func_in_func(*callee_id, builder.func);
         func_refs.insert(*callee_name, r);
+    }
+    let mut helper_refs: HashMap<HelperKind, FuncRef> = HashMap::new();
+    for (kind, id) in helper_ids {
+        let r = module.declare_func_in_func(*id, builder.func);
+        helper_refs.insert(*kind, r);
     }
 
     // Pull each parameter into a Variable so we can `use_var` it later (the
@@ -88,6 +95,7 @@ pub fn translate_function<M: Module>(
         local_vars: &mut local_vars,
         func_signatures,
         func_refs: &func_refs,
+        helper_refs: &helper_refs,
         loop_stack: Vec::new(),
         return_ty: sig.ret,
         terminated: false,
@@ -124,6 +132,7 @@ struct State<'a, 'b> {
     #[allow(dead_code)]
     func_signatures: &'a HashMap<DefaultSymbol, FuncSignature>,
     func_refs: &'a HashMap<DefaultSymbol, FuncRef>,
+    helper_refs: &'a HashMap<HelperKind, FuncRef>,
     loop_stack: Vec<LoopFrame>,
     #[allow(dead_code)]
     return_ty: ScalarTy,
@@ -276,6 +285,35 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "rhs of assign produced no value".to_string())?;
                 self.builder.def_var(var, v);
                 Ok(None)
+            }
+            Expr::BuiltinCall(func, args) => {
+                match func {
+                    BuiltinFunction::Print | BuiltinFunction::Println => {
+                        let arg_ref = args
+                            .first()
+                            .ok_or_else(|| "print/println requires one argument".to_string())?;
+                        let arg_ty = self.expr_type(arg_ref)?;
+                        let v = self
+                            .gen_expr(arg_ref)?
+                            .ok_or_else(|| "print arg produced no value".to_string())?;
+                        let kind = match (matches!(func, BuiltinFunction::Println), arg_ty) {
+                            (false, ScalarTy::I64) => HelperKind::PrintI64,
+                            (true, ScalarTy::I64) => HelperKind::PrintlnI64,
+                            (false, ScalarTy::U64) => HelperKind::PrintU64,
+                            (true, ScalarTy::U64) => HelperKind::PrintlnU64,
+                            (false, ScalarTy::Bool) => HelperKind::PrintBool,
+                            (true, ScalarTy::Bool) => HelperKind::PrintlnBool,
+                            _ => return Err("print arg type unsupported in JIT".into()),
+                        };
+                        let func_ref = *self
+                            .helper_refs
+                            .get(&kind)
+                            .ok_or_else(|| "missing helper FuncRef".to_string())?;
+                        self.builder.ins().call(func_ref, &[v]);
+                        Ok(None)
+                    }
+                    _ => Err("unsupported builtin in JIT".into()),
+                }
             }
             Expr::Cast(inner, _target) => {
                 // Eligibility limits casts to i64 ↔ u64 (and identity for

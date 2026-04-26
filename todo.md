@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+143. JIT Phase 2b (print/println callback): `BuiltinCall(Print/Println, scalar_arg)` を JIT で扱う。`extern "C"` Rust callback (jit_print_i64/u64/bool + println 各種) を `JITBuilder.symbol()` で登録、`Linkage::Import` で declare、codegen は引数型から helper を選んで call。eligibility は arg=1, type∈{i64,u64,bool} を許可、return type は Unit (2026-04-26)
 142. JIT Phase 2a (Cast 対応): `Expr::Cast` を eligibility/codegen に追加。i64 ↔ u64 (identity 含む) のみ対応。両者ともクランリフトの I64 にマップされるため codegen は no-op (2026-04-26)
 141. main の数値戻り値を process exit code に: `Object::Int64`/`UInt64` のときに `process::exit` で値を返す。fib なら `cargo run example/fib.t` の終了コードが 8 になる (2026-04-26)
 140. cranelift-based JIT (Phase 1): `INTERPRETER_JIT=1` env var で opt-in、cargo feature `jit` (default on)。i64/u64/bool/Unit のみ使う関数 (`main` から transitively reachable) を一括コンパイル。リテラル/算術/比較/論理 (短絡)/ビット/シフト/単項/val/var/代入/if-elif-else/while/for-range/break/continue/return/関数呼び出しに対応。サポート外は silent fallback (`-v` で skip 理由表示)。設計は `~/.claude/plans/mutable-wobbling-kettle.md` (2026-04-26)
@@ -40,7 +41,7 @@
 
 ## 未実装 📋
 
-143. **JIT Phase 2 拡張** — Phase 1 (i64/u64/bool 関数) と Phase 2a (Cast) は完了。残: (b) `print`/`println` の Rust callback 実装、(c) struct field/method、(d) builtin (heap_alloc/ptr_read/write など) コールバック、(e) allocator stack 連携、(f) generic 関数の monomorphize
+144. **JIT Phase 2 拡張** — Phase 1 (i64/u64/bool 関数) / Phase 2a (Cast) / Phase 2b (print/println) は完了。残: (c) struct field/method、(d) builtin (heap_alloc/ptr_read/write など) コールバック、(e) allocator stack 連携、(f) generic 関数の monomorphize
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
 30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）

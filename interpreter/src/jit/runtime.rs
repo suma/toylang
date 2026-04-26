@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use cranelift_codegen::ir::{types, AbiParam, Signature};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilderContext;
@@ -18,6 +19,87 @@ use crate::object::{Object, RcObject};
 
 use super::codegen;
 use super::eligibility::{self, EligibleSet, ScalarTy};
+
+// =============================================================================
+// JIT host callbacks
+//
+// JIT-compiled code calls these directly via Cranelift's `call` instruction.
+// They handle Phase 2b's `print` / `println` builtins for the supported
+// scalar types. Each callback uses the `extern "C"` ABI to match cranelift's
+// default calling convention; the symbol is registered with `JITBuilder` so
+// the loader can resolve calls into Rust.
+
+extern "C" fn jit_print_i64(v: i64) {
+    print!("{v}");
+}
+extern "C" fn jit_println_i64(v: i64) {
+    println!("{v}");
+}
+extern "C" fn jit_print_u64(v: u64) {
+    print!("{v}");
+}
+extern "C" fn jit_println_u64(v: u64) {
+    println!("{v}");
+}
+extern "C" fn jit_print_bool(v: u8) {
+    print!("{}", v != 0);
+}
+extern "C" fn jit_println_bool(v: u8) {
+    println!("{}", v != 0);
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum HelperKind {
+    PrintI64,
+    PrintlnI64,
+    PrintU64,
+    PrintlnU64,
+    PrintBool,
+    PrintlnBool,
+}
+
+impl HelperKind {
+    fn name(self) -> &'static str {
+        match self {
+            HelperKind::PrintI64 => "jit_print_i64",
+            HelperKind::PrintlnI64 => "jit_println_i64",
+            HelperKind::PrintU64 => "jit_print_u64",
+            HelperKind::PrintlnU64 => "jit_println_u64",
+            HelperKind::PrintBool => "jit_print_bool",
+            HelperKind::PrintlnBool => "jit_println_bool",
+        }
+    }
+
+    fn ptr(self) -> *const u8 {
+        match self {
+            HelperKind::PrintI64 => jit_print_i64 as *const u8,
+            HelperKind::PrintlnI64 => jit_println_i64 as *const u8,
+            HelperKind::PrintU64 => jit_print_u64 as *const u8,
+            HelperKind::PrintlnU64 => jit_println_u64 as *const u8,
+            HelperKind::PrintBool => jit_print_bool as *const u8,
+            HelperKind::PrintlnBool => jit_println_bool as *const u8,
+        }
+    }
+
+    fn arg_ty(self) -> types::Type {
+        match self {
+            HelperKind::PrintI64
+            | HelperKind::PrintlnI64
+            | HelperKind::PrintU64
+            | HelperKind::PrintlnU64 => types::I64,
+            HelperKind::PrintBool | HelperKind::PrintlnBool => types::I8,
+        }
+    }
+
+    pub(crate) const ALL: [HelperKind; 6] = [
+        HelperKind::PrintI64,
+        HelperKind::PrintlnI64,
+        HelperKind::PrintU64,
+        HelperKind::PrintlnU64,
+        HelperKind::PrintBool,
+        HelperKind::PrintlnBool,
+    ];
+}
 
 fn jit_enabled_via_env() -> bool {
     matches!(std::env::var("INTERPRETER_JIT").as_deref(), Ok("1"))
@@ -89,8 +171,25 @@ fn compile_and_run(
     let isa = isa_builder
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| format!("isa: {e}"))?;
-    let builder = JITBuilder::with_isa(isa, default_libcall_names());
+    let mut builder = JITBuilder::with_isa(isa, default_libcall_names());
+    for h in HelperKind::ALL {
+        builder.symbol(h.name(), h.ptr());
+    }
     let mut module = JITModule::new(builder);
+
+    // Declare host callbacks (print/println variants) up front so codegen
+    // can pre-import them into each function the same way it does for
+    // user-defined callees.
+    let mut helper_ids: HashMap<HelperKind, FuncId> = HashMap::new();
+    let helper_call_conv = module.target_config().default_call_conv;
+    for h in HelperKind::ALL {
+        let mut sig = Signature::new(helper_call_conv);
+        sig.params.push(AbiParam::new(h.arg_ty()));
+        let id = module
+            .declare_function(h.name(), Linkage::Import, &sig)
+            .map_err(|e| format!("declare helper {}: {e}", h.name()))?;
+        helper_ids.insert(h, id);
+    }
 
     // Phase 1: declare every eligible function so that calls between them
     // can resolve before any function is defined.
@@ -121,6 +220,7 @@ fn compile_and_run(
             sig,
             &eligible.signatures,
             &func_ids,
+            &helper_ids,
             &mut ctx,
             &mut builder_ctx,
         )?;

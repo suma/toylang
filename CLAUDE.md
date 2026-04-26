@@ -176,6 +176,10 @@ fn main() -> u64 {
 ## ビルトイン関数
 - ビルトイン関数の実装方針は `BUILTIN_ARCHITECTURE.md` に記述されています
 
+## Cranelift JIT
+
+`interpreter` には数値 / bool 関数を cranelift で native code 化するオプトインの JIT が入っている。`INTERPRETER_JIT=1` で有効化、cargo feature `jit` (default on) でビルド時にも切替可。サポート範囲・性能・skip 理由・拡張ロードマップは `JIT.md` を参照。
+
 ## 入出力ビルトイン
 
 - `print(value)` — stdout に値を出力（改行なし）

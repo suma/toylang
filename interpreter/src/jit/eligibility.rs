@@ -654,6 +654,35 @@ pub(crate) fn check_expr(
                     }
                     resolved
                 }
+                BuiltinFunction::SizeOf => {
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!(
+                                "__builtin_sizeof takes 1 argument, got {}",
+                                args.len()
+                            )
+                        });
+                        return None;
+                    }
+                    let t = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if !matches!(
+                        t,
+                        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool | ScalarTy::Ptr
+                    ) {
+                        note(reject_reason, || {
+                            format!("__builtin_sizeof of {t:?} is not supported in JIT")
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::U64)
+                }
                 BuiltinFunction::PtrWrite => {
                     if args.len() != 3 {
                         return None;

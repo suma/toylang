@@ -343,6 +343,25 @@ impl<'a, 'b> State<'a, 'b> {
                             .ok_or_else(|| "heap_realloc size".to_string())?;
                         Ok(Some(self.call_helper(HelperKind::HeapRealloc, &[p, n])?))
                     }
+                    BuiltinFunction::SizeOf => {
+                        // Determine the size from the static type. Evaluate
+                        // the arg anyway so any side effects in the probe
+                        // expression match the interpreter (cranelift will
+                        // DCE the value when it's pure).
+                        let arg_ty = self.expr_type(&args[0])?;
+                        let _ = self.gen_expr(&args[0])?;
+                        let bytes: i64 = match arg_ty {
+                            ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr => 8,
+                            ScalarTy::Bool => 1,
+                            _ => {
+                                return Err(
+                                    "__builtin_sizeof for this type is not supported in JIT"
+                                        .into(),
+                                )
+                            }
+                        };
+                        Ok(Some(self.builder.ins().iconst(types::I64, bytes)))
+                    }
                     BuiltinFunction::PtrRead => {
                         let expected = self
                             .ptr_read_hints

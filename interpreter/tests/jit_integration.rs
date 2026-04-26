@@ -124,6 +124,17 @@ fn ptr_rw_example_returns_103() {
     assert_eq!(r.code, 103);
 }
 
+#[test]
+fn sizeof_example_matches_between_modes() {
+    assert_match("example/jit_sizeof.t");
+}
+
+#[test]
+fn sizeof_example_returns_25() {
+    let r = run("example/jit_sizeof.t", false, false);
+    assert_eq!(r.code, 25);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn unsupported_program_falls_back_silently() {

@@ -4,6 +4,8 @@ pub mod evaluation;
 pub mod error;
 pub mod error_formatter;
 pub mod heap;
+#[cfg(feature = "jit")]
+pub mod jit;
 
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -797,6 +799,13 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
                 .map(|v| (v.name, v.payload_types.len()))
                 .collect();
             eval.register_enum(name, variant_info);
+        }
+    }
+
+    #[cfg(feature = "jit")]
+    {
+        if let Some(result) = jit::try_execute_main(program, string_interner) {
+            return Ok(result);
         }
     }
 

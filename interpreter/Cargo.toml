@@ -10,9 +10,23 @@ description = ""
 frontend = { path = "../frontend" }
 compiler_core = { path = "../compiler_core" }
 string-interner = "0.19.0"
+cranelift = { version = "0.131", optional = true }
+cranelift-jit = { version = "0.131", optional = true }
+cranelift-module = { version = "0.131", optional = true }
+cranelift-frontend = { version = "0.131", optional = true }
+cranelift-codegen = { version = "0.131", optional = true }
+cranelift-native = { version = "0.131", optional = true }
 
 [features]
-default = []
+default = ["jit"]
+jit = [
+    "dep:cranelift",
+    "dep:cranelift-jit",
+    "dep:cranelift-module",
+    "dep:cranelift-frontend",
+    "dep:cranelift-codegen",
+    "dep:cranelift-native",
+]
 debug-logging = []
 test-logging = ["debug-logging"]
 

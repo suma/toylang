@@ -4,7 +4,7 @@ use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
 use crate::visitor::AstVisitor;
 use super::{
-    Expr, Stmt, Operator, UnaryOp, SliceInfo, Pattern, EnumVariantDef,
+    Expr, Stmt, Operator, UnaryOp, SliceInfo, MatchArm, EnumVariantDef,
     BuiltinMethod, BuiltinFunction,
     StructField, Visibility, MethodFunction,
 };
@@ -111,7 +111,7 @@ pub struct ExprPool {
     pub third_operand: Vec<Option<ExprRef>>,       // For index assign (value), if-elif-else (else block)
     pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
     pub target_type: Vec<Option<TypeDecl>>,        // For cast expressions
-    pub match_arms: Vec<Option<Vec<(Pattern, ExprRef)>>>,  // For match expressions
+    pub match_arms: Vec<Option<Vec<MatchArm>>>,  // For match expressions
 }
 
 impl Default for ExprPool {

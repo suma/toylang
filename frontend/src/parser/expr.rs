@@ -284,16 +284,27 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
 
     parser.expect_err(&Kind::BraceOpen)?;
     parser.skip_newlines();
-    let mut arms: Vec<(crate::ast::Pattern, ExprRef)> = Vec::new();
+    let mut arms: Vec<crate::ast::MatchArm> = Vec::new();
     loop {
         parser.skip_newlines();
         if matches!(parser.peek(), Some(Kind::BraceClose)) {
             break;
         }
         let pattern = parse_match_pattern(parser)?;
+        // Optional guard: `if <expr>` between the pattern and `=>`.
+        // Struct-literal-in-condition restriction matches `if` / `while`.
+        let guard = if matches!(parser.peek(), Some(Kind::If)) {
+            parser.next();
+            parser.push_context(crate::parser::core::ParseContext::Condition);
+            let g = parse_logical_expr(parser)?;
+            parser.pop_context();
+            Some(g)
+        } else {
+            None
+        };
         parser.expect_err(&Kind::FatArrow)?;
         let body = parse_logical_expr(parser)?;
-        arms.push((pattern, body));
+        arms.push(crate::ast::MatchArm { pattern, guard, body });
         parser.skip_newlines();
         if matches!(parser.peek(), Some(Kind::Comma)) {
             parser.next();

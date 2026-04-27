@@ -249,6 +249,101 @@ mod tuple_tests {
     }
 
     #[test]
+    fn test_match_guard_basic() {
+        // The guard is evaluated after the pattern matches and its
+        // bindings are visible inside the guard expression.
+        let source = r#"
+        fn classify(n: i64) -> i64 {
+            match n {
+                0i64 => 0i64,
+                v if v < 0i64 => 1i64,
+                v if v < 100i64 => 2i64,
+                _ => 3i64,
+            }
+        }
+        fn main() -> i64 {
+            classify(0i64) + classify(0i64 - 5i64) + classify(50i64) + classify(500i64)
+        }
+    "#;
+        common::assert_program_result_i64(source, 6);
+    }
+
+    #[test]
+    fn test_match_guard_falls_through_to_next_arm() {
+        // When the guard is false, control moves to the next arm even
+        // though the pattern itself matched.
+        let source = r#"
+        fn classify(n: i64) -> i64 {
+            match n {
+                v if v == 1i64 => 100i64,
+                v if v == 2i64 => 200i64,
+                _ => 999i64,
+            }
+        }
+        fn main() -> i64 {
+            classify(2i64)
+        }
+    "#;
+        common::assert_program_result_i64(source, 200);
+    }
+
+    #[test]
+    fn test_match_guard_with_tuple_pattern() {
+        // Tuple bindings flow into the guard scope.
+        let source = r#"
+        fn classify(p: (i64, i64)) -> i64 {
+            match p {
+                (x, y) if x == y => 1i64,
+                (_, n) if n > 100i64 => 4i64,
+                _ => 9i64,
+            }
+        }
+        fn main() -> i64 {
+            classify((5i64, 5i64)) + classify((1i64, 200i64)) + classify((1i64, 2i64))
+        }
+    "#;
+        common::assert_program_result_i64(source, 14);
+    }
+
+    #[test]
+    fn test_match_guard_keeps_exhaustiveness_strict() {
+        // A guarded arm with an otherwise-irrefutable pattern is still
+        // refutable for exhaustiveness; without a true wildcard the
+        // type checker must reject the match.
+        let source = r#"
+        fn main() -> i64 {
+            val n: i64 = 1i64
+            match n {
+                v if v < 100i64 => 0i64,
+            }
+        }
+        "#;
+        let result = test_program(source);
+        assert!(
+            result.is_err(),
+            "match with only a guarded irrefutable arm must fail exhaustiveness"
+        );
+    }
+
+    #[test]
+    fn test_match_guard_non_bool_rejected() {
+        let source = r#"
+        fn main() -> i64 {
+            val n: i64 = 1i64
+            match n {
+                v if v + 1i64 => 0i64,
+                _ => 1i64,
+            }
+        }
+        "#;
+        let result = test_program(source);
+        assert!(
+            result.is_err(),
+            "match guard with non-bool expression must fail type checking"
+        );
+    }
+
+    #[test]
     fn test_tuple_destructure_from_call() {
         // The rhs can be any expression that evaluates to a tuple,
         // including a function call.

@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+161. match arm guard: `match x { v if v < 0 => …, _ => … }` のように pattern と `=>` の間に `if <bool>` を置ける。AST は `MatchArm { pattern, guard: Option<ExprRef>, body }` 構造体に統一、parser は guard 式を `Condition` context で読む（struct literal 禁止）、type_checker は guard を `Bool` 型でチェックし pattern bindings を可視に保つ。guarded arm は exhaustiveness で wildcard 扱いせず、literal/enum-variant の "fully covered" マークも付けないので網羅性が緩まない。interpreter は pattern 一致後に guard を評価し false なら次の arm にフォールスルー（bindings はスコープごと破棄）。example: `match_guard.t`、tests: `collections_tuple_struct_tests` に 5 件追加。JIT は match を従来どおり silent fallback (2026-04-27)
 160. match のタプルパターン: `Pattern::Tuple(Vec<Pattern>)` を AST に追加。parser で `( p, q, ... )` を 2 要素以上のタプルパターンとして認識、type_checker は `ScrutineeKind::Tuple(Vec<TypeDecl>)` を導入し各要素を `check_sub_pattern` で再帰検証、interpreter は `Object::Tuple` の対応要素を順に sub-pattern に渡す。irrefutable な (`_` / 名前束縛のみの) タプルパターンは exhaustiveness で wildcard 扱い、リテラル混在の場合は wildcard 必須。ネストしたタプルパターン (`((a, b), c)`) も動作。example: `match_tuple.t`、tests: `collections_tuple_struct_tests` に 3 件追加 (2026-04-26)
 159. タプル `val (a, b) = expr` / `var (a, b) = expr` 分解: パーサ desugar で隠し temporary + 各名へ `tmp.0`, `tmp.1`, … で bind。`Parser.pending_prelude_stmts` を `parse_block_impl` が drain して source 順に展開。3 要素以上、関数戻り値の分解、`var` 形式と再代入の組み合わせも動作。example: `tuple_destructure.t`、tests: `collections_tuple_struct_tests` に 4 件追加 (2026-04-26)
 158. JIT Phase 2e (allocator stack): JIT runtime に allocator registry + active stack を追加。`__builtin_default_allocator()` / `__builtin_arena_allocator()` / `__builtin_current_allocator()` は registry index (u64) を返し、`with allocator = expr { … }` は push + body + pop でディスパッチ。heap_alloc 系 callback は active 先頭の allocator を経由。`with` body は linear 限定 (return/break/continue 不可)。`ScalarTy::Allocator` を追加。example: `jit_allocator.t` (2026-04-26)
@@ -58,7 +59,6 @@
 
 ## 未実装 📋
 
-161. **match arm への guard 追加** — `match x { Some(v) if v > 0 => …, _ => … }` のように `if cond` を arm に付ける構文。`Pattern` enum / `match_arms` の表現拡張、parser での `if` 期待、type_checker / interpreter / 網羅性チェックの調整、JIT は当面 fallback でも可。優先順位低めだが Option/Result 利用シーンで有用
 160. **タプルの文法と機能の拡充** — `(i64, u64)` 型アノテーション・関数 param/return・`p.0` アクセス・`val (a, b) = pair` / `var (a, b) = pair` 分解・`match { (x, y) => … }` パターン (ネスト OK) は完了。残: (a) `val ((a, b), c) = ...` のネストした分解 (val/var パターン側、現状 match のみネスト対応)、(b) JIT 対応 (現状 silent fallback)
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装

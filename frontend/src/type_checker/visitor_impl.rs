@@ -388,7 +388,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
 
-    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<(Pattern, ExprRef)>) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<MatchArm>) -> Result<TypeDecl, TypeCheckError> {
         self.visit_match_impl(scrutinee, arms)
     }
 

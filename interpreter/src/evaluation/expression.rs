@@ -366,20 +366,32 @@ impl EvaluationContext<'_> {
     pub(super) fn evaluate_match(
         &mut self,
         scrutinee: &ExprRef,
-        arms: &Vec<(Pattern, ExprRef)>,
+        arms: &Vec<MatchArm>,
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
         let scrutinee_val = self.extract_value(scrutinee_val)?;
-        for (pattern, body) in arms {
+        for arm in arms {
             // Probe each arm in a fresh scope so bindings that were set
             // during a partial match don't leak across arms when the
-            // match ultimately fails.
+            // match ultimately fails or the guard is false.
             self.environment.enter_block();
-            let matched = self.try_match_pattern(pattern, &scrutinee_val)?;
+            let matched = self.try_match_pattern(&arm.pattern, &scrutinee_val)?;
             if matched {
-                let result = self.evaluate(body);
-                self.environment.exit_block();
-                return result;
+                // Guard runs after the bindings are in scope. A `false`
+                // guard skips this arm and falls through to the next.
+                let guard_passed = if let Some(guard_expr) = arm.guard {
+                    let g = self.evaluate(&guard_expr);
+                    let g = self.extract_value(g)?;
+                    let b = matches!(&*g.borrow(), Object::Bool(true));
+                    b
+                } else {
+                    true
+                };
+                if guard_passed {
+                    let result = self.evaluate(&arm.body);
+                    self.environment.exit_block();
+                    return result;
+                }
             }
             self.environment.exit_block();
         }

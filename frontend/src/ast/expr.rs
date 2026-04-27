@@ -104,6 +104,18 @@ pub enum Pattern {
     Wildcard, // _
 }
 
+/// One arm of a `match` expression. The optional `guard` is a boolean
+/// expression evaluated **after** the pattern matches and the pattern's
+/// bindings are in scope; an arm with a `false` guard is skipped, so
+/// guarded arms count as refutable for exhaustiveness regardless of
+/// pattern shape.
+#[derive(Debug, PartialEq, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<ExprRef>,
+    pub body: ExprRef,
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Expr {
     Assign(ExprRef, ExprRef),   // lhs = rhs
@@ -136,7 +148,7 @@ pub enum Expr {
     TupleAccess(ExprRef, usize),  // tuple.0, tuple.1, etc - tuple element access
     Cast(ExprRef, TypeDecl),  // expr as type - type cast expression
     With(ExprRef, ExprRef),  // with allocator = allocator_expr { body } - scoped allocator binding
-    Match(ExprRef, Vec<(Pattern, ExprRef)>),  // match scrutinee { pat => body, ... }
+    Match(ExprRef, Vec<MatchArm>),  // match scrutinee { pat [if guard] => body, ... }
     Range(ExprRef, ExprRef),  // start..end — half-open integer range literal
 }
 

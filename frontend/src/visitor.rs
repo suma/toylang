@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, Pattern, EnumVariantDef};
+use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 use std::rc::Rc;
@@ -45,7 +45,7 @@ pub trait AstVisitor {
     fn visit_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<TypeDecl, TypeCheckError>;
     fn visit_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError>;
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<(Pattern, ExprRef)>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<MatchArm>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_range(&mut self, start: &ExprRef, end: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
 
     // Stmt variants

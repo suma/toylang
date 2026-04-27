@@ -143,7 +143,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub(super) fn visit_match_impl(
         &mut self,
         scrutinee: &ExprRef,
-        arms: &Vec<(Pattern, ExprRef)>,
+        arms: &Vec<MatchArm>,
     ) -> Result<TypeDecl, TypeCheckError> {
         if arms.is_empty() {
             return Err(TypeCheckError::new("match expression must have at least one arm".to_string()));
@@ -204,7 +204,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
         let mut covered_strings: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut has_wildcard = false;
-        for (arm_index, (pat, body)) in arms.iter().enumerate() {
+        for (arm_index, arm) in arms.iter().enumerate() {
+            let pat = &arm.pattern;
+            let body = &arm.body;
+            let is_guarded = arm.guard.is_some();
             if has_wildcard {
                 return Err(TypeCheckError::new(format!(
                     "unreachable match arm at position {}: a wildcard `_` arm already covers every value",
@@ -214,16 +217,21 @@ impl<'a> TypeCheckerVisitor<'a> {
             let mut pushed_scope = false;
             match pat {
                 Pattern::Wildcard => {
-                    has_wildcard = true;
+                    if !is_guarded {
+                        has_wildcard = true;
+                    }
                 }
                 Pattern::Name(sym) => {
                     // Bare name at top level binds the whole scrutinee; it is
                     // irrefutable and therefore acts like a wildcard for
-                    // exhaustiveness.
+                    // exhaustiveness — unless guarded, in which case the
+                    // guard can fail at runtime so coverage is not total.
                     self.context.vars.push(std::collections::HashMap::new());
                     pushed_scope = true;
                     self.context.set_var(*sym, scrutinee_ty.clone());
-                    has_wildcard = true;
+                    if !is_guarded {
+                        has_wildcard = true;
+                    }
                 }
                 Pattern::Literal(literal_expr) => {
                     let prim_ty = match &kind {
@@ -252,47 +260,52 @@ impl<'a> TypeCheckerVisitor<'a> {
                             lit_ty, prim_ty
                         )));
                     }
-                    // Record the concrete literal value for duplicate / exhaustiveness checks.
-                    if let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
-                        match lit_expr {
-                            Expr::Int64(v) => {
-                                if !covered_int64.insert(v) {
-                                    return Err(TypeCheckError::new(format!(
-                                        "unreachable match arm: literal {} already handled by an earlier arm", v
-                                    )));
+                    // Record the concrete literal value for duplicate /
+                    // exhaustiveness checks. A guarded arm does not fully
+                    // cover its literal (the guard might be false at run
+                    // time), so we skip the bookkeeping when `is_guarded`.
+                    if !is_guarded {
+                        if let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
+                            match lit_expr {
+                                Expr::Int64(v) => {
+                                    if !covered_int64.insert(v) {
+                                        return Err(TypeCheckError::new(format!(
+                                            "unreachable match arm: literal {} already handled by an earlier arm", v
+                                        )));
+                                    }
                                 }
-                            }
-                            Expr::UInt64(v) => {
-                                if !covered_uint64.insert(v) {
-                                    return Err(TypeCheckError::new(format!(
-                                        "unreachable match arm: literal {} already handled by an earlier arm", v
-                                    )));
+                                Expr::UInt64(v) => {
+                                    if !covered_uint64.insert(v) {
+                                        return Err(TypeCheckError::new(format!(
+                                            "unreachable match arm: literal {} already handled by an earlier arm", v
+                                        )));
+                                    }
                                 }
-                            }
-                            Expr::True => {
-                                if !covered_bool.insert(true) {
-                                    return Err(TypeCheckError::new(
-                                        "unreachable match arm: literal `true` already handled by an earlier arm".to_string()
-                                    ));
+                                Expr::True => {
+                                    if !covered_bool.insert(true) {
+                                        return Err(TypeCheckError::new(
+                                            "unreachable match arm: literal `true` already handled by an earlier arm".to_string()
+                                        ));
+                                    }
                                 }
-                            }
-                            Expr::False => {
-                                if !covered_bool.insert(false) {
-                                    return Err(TypeCheckError::new(
-                                        "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
-                                    ));
+                                Expr::False => {
+                                    if !covered_bool.insert(false) {
+                                        return Err(TypeCheckError::new(
+                                            "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
+                                        ));
+                                    }
                                 }
-                            }
-                            Expr::String(sym) => {
-                                if !covered_strings.insert(sym) {
-                                    let s = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
-                                    return Err(TypeCheckError::new(format!(
-                                        "unreachable match arm: literal {:?} already handled by an earlier arm",
-                                        s
-                                    )));
+                                Expr::String(sym) => {
+                                    if !covered_strings.insert(sym) {
+                                        let s = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+                                        return Err(TypeCheckError::new(format!(
+                                            "unreachable match arm: literal {:?} already handled by an earlier arm",
+                                            s
+                                        )));
+                                    }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
                 }
@@ -323,8 +336,9 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                     // A tuple of irrefutable sub-patterns covers all
                     // possible tuple values, so it acts as a wildcard
-                    // for exhaustiveness.
-                    if sub_patterns.iter().all(is_irrefutable_pattern) {
+                    // for exhaustiveness — except when the arm is
+                    // guarded (the guard can fail at runtime).
+                    if !is_guarded && sub_patterns.iter().all(is_irrefutable_pattern) {
                         has_wildcard = true;
                     }
                 }
@@ -395,14 +409,33 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                     // Only mark the variant as fully covered if every
-                    // sub-pattern is irrefutable. Refutable sub-patterns
-                    // (literals, nested enum variants) leave part of the
+                    // sub-pattern is irrefutable AND the arm is unguarded.
+                    // Refutable sub-patterns or a guard leave part of the
                     // variant's value space unmatched, so another arm
                     // targeting the same variant can still be useful.
-                    if bindings.iter().all(is_irrefutable_pattern) {
+                    if !is_guarded && bindings.iter().all(is_irrefutable_pattern) {
                         fully_covered_variants.insert(*pat_variant);
                     }
-                    seen_variants.insert(*pat_variant);
+                    if !is_guarded {
+                        seen_variants.insert(*pat_variant);
+                    }
+                }
+            }
+            // Guards see the pattern's bindings, so type-check them in
+            // the arm scope before the body.
+            if let Some(guard_expr) = arm.guard {
+                let saved_hint = self.type_inference.type_hint.clone();
+                self.type_inference.type_hint = Some(TypeDecl::Bool);
+                let guard_ty = self.visit_expr(&guard_expr)?;
+                self.type_inference.type_hint = saved_hint;
+                if !guard_ty.is_equivalent(&TypeDecl::Bool) {
+                    if pushed_scope {
+                        self.context.vars.pop();
+                    }
+                    return Err(TypeCheckError::new(format!(
+                        "match arm guard must be of type bool, got {:?}",
+                        guard_ty
+                    )));
                 }
             }
             let body_ty = self.visit_expr(body)?;

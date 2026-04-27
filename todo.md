@@ -79,6 +79,7 @@
 * モジュール拡張（バージョニング、リモートパッケージ）
 * 言語組み込みテスト機能
 * 言語内からのAST取得・操作
+* LSP (Language Server Protocol) 対応 — エディタ統合 (補完、go-to-definition、hover、診断、フォーマット)。frontend の AST/型チェッカ・SourceLocation を再利用して `tower-lsp` などで実装
 
 ## 実装済み機能サマリー
 

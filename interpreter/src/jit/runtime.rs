@@ -656,6 +656,9 @@ fn build_cache_entry(
         eligibility::ParamTy::Struct(_) => {
             return Err("main returning a struct is not supported in JIT".into());
         }
+        eligibility::ParamTy::Tuple(_) => {
+            return Err("main returning a tuple is not supported in JIT".into());
+        }
     };
 
     Ok(CachedJit {

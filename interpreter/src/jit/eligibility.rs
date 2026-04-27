@@ -54,13 +54,18 @@ impl ScalarTy {
 }
 
 /// JIT-supported parameter / argument types. A `ParamTy::Struct` expands
-/// into one cranelift parameter per scalar field at the ABI level.
+/// into one cranelift parameter per scalar field at the ABI level; a
+/// `ParamTy::Tuple` likewise expands into one parameter per element.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParamTy {
     Scalar(ScalarTy),
     /// Struct value, identified by its declared type name. Field layout
     /// is looked up via `EligibleSet::struct_layouts`.
     Struct(DefaultSymbol),
+    /// Tuple value with the listed element types. Tuples are
+    /// structural, so the element types alone identify the shape; no
+    /// separate layout map is needed.
+    Tuple(Vec<ScalarTy>),
 }
 
 /// Signature of an eligible function in JIT-friendly form.
@@ -491,12 +496,13 @@ fn infer_substitutions(
     }
     let mut subs: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     for ((_, param_td), &arg_ty) in callee.parameter.iter().zip(arg_tys.iter()) {
-        // Struct param positions skip generic inference and scalar
-        // matching — the caller has already validated that the arg's
-        // struct type lines up with the callee's declared type.
+        // Struct / tuple param positions skip generic inference and
+        // scalar matching — the caller has already validated that the
+        // arg's struct/tuple type lines up with the callee's declared
+        // type.
         if matches!(
             param_td,
-            TypeDecl::Identifier(_) | TypeDecl::Struct(_, _)
+            TypeDecl::Identifier(_) | TypeDecl::Struct(_, _) | TypeDecl::Tuple(_)
         ) {
             continue;
         }
@@ -605,6 +611,7 @@ fn callable_signature(
 
 /// Resolve a TypeDecl into a JIT parameter type, considering both scalar
 /// substitutions (for generic monomorphs) and known struct layouts.
+/// Tuples whose elements all resolve to scalars become `ParamTy::Tuple`.
 pub(crate) fn resolve_param_ty(
     td: &TypeDecl,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
@@ -618,6 +625,22 @@ pub(crate) fn resolve_param_ty(
             if struct_layouts.contains_key(s) =>
         {
             Some(ParamTy::Struct(*s))
+        }
+        TypeDecl::Tuple(elements) => {
+            // Tuples are scalar-only at the JIT layer; any non-scalar
+            // element means we silently fall back.
+            let mut scalars: Vec<ScalarTy> = Vec::with_capacity(elements.len());
+            for e in elements {
+                let s = substitute_to_scalar(e, substitutions)?;
+                if s == ScalarTy::Unit {
+                    return None;
+                }
+                scalars.push(s);
+            }
+            if scalars.len() < 2 {
+                return None;
+            }
+            Some(ParamTy::Tuple(scalars))
         }
         _ => None,
     }
@@ -649,6 +672,7 @@ fn check_callable_body(
     }
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
     let mut struct_locals: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+    let mut tuple_locals: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
     for (n, t) in &sig.params {
         match t {
             ParamTy::Scalar(s) => {
@@ -656,6 +680,9 @@ fn check_callable_body(
             }
             ParamTy::Struct(struct_name) => {
                 struct_locals.insert(*n, *struct_name);
+            }
+            ParamTy::Tuple(elements) => {
+                tuple_locals.insert(*n, elements.clone());
             }
         }
     }
@@ -672,6 +699,24 @@ fn check_callable_body(
             *struct_name,
             &mut locals,
             &mut struct_locals,
+            &mut tuple_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        );
+    }
+    // Tuple-returning functions follow a similar shape — last expression
+    // must produce a tuple value, fields are gathered for multi-return.
+    if let ParamTy::Tuple(element_tys) = &sig.ret {
+        return check_tuple_returning_body(
+            program,
+            &code,
+            element_tys,
+            &mut locals,
+            &mut struct_locals,
+            &mut tuple_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -685,6 +730,7 @@ fn check_callable_body(
         &code,
         &mut locals,
         &mut struct_locals,
+        &mut tuple_locals,
         substitutions,
         struct_layouts,
         callees,
@@ -700,6 +746,7 @@ fn check_struct_returning_body(
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -745,6 +792,7 @@ fn check_struct_returning_body(
             s,
             locals,
             struct_locals,
+            tuple_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -808,6 +856,7 @@ fn check_struct_returning_body(
                 struct_name,
                 locals,
                 struct_locals,
+                tuple_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -823,6 +872,287 @@ fn check_struct_returning_body(
             false
         }
     }
+}
+
+/// Tuple-returning analog of `check_struct_returning_body`. The body's
+/// last expression must be either a TupleLiteral with the declared
+/// element types or an Identifier of a tuple local with the same shape.
+#[allow(clippy::too_many_arguments)]
+fn check_tuple_returning_body(
+    program: &Program,
+    body_stmt_ref: &StmtRef,
+    element_tys: &[ScalarTy],
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    let body_stmt = match program.statement.get(body_stmt_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let body_expr_ref = match body_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "tuple-returning function body must be an expression".to_string()
+            });
+            return false;
+        }
+    };
+    let body_expr = match program.expression.get(&body_expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    let block_stmts = match body_expr {
+        Expr::Block(stmts) => stmts,
+        _ => {
+            note(reject_reason, || {
+                "tuple-returning function body must be a block".to_string()
+            });
+            return false;
+        }
+    };
+    if block_stmts.is_empty() {
+        note(reject_reason, || {
+            "tuple-returning function body cannot be empty".to_string()
+        });
+        return false;
+    }
+    let (last_ref, leading) = block_stmts.split_last().unwrap();
+    for s in leading {
+        if !check_stmt(
+            program,
+            s,
+            locals,
+            struct_locals,
+            tuple_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        ) {
+            return false;
+        }
+    }
+    let last_stmt = match program.statement.get(last_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "tuple-returning function body must end in an expression".to_string()
+            });
+            return false;
+        }
+    };
+    let result_expr = match program.expression.get(&result_expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    match result_expr {
+        Expr::Identifier(name) => match tuple_locals.get(&name).cloned() {
+            Some(shape) if shape.as_slice() == element_tys => true,
+            Some(_) => {
+                note(reject_reason, || {
+                    "returned tuple local has a different shape than declared".to_string()
+                });
+                false
+            }
+            None => {
+                note(reject_reason, || {
+                    "returned identifier is not a known tuple local".to_string()
+                });
+                false
+            }
+        },
+        Expr::TupleLiteral(elems) => check_tuple_literal_fields(
+            program,
+            &elems,
+            element_tys,
+            locals,
+            struct_locals,
+            tuple_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        ),
+        _ => {
+            note(reject_reason, || {
+                "tuple return value must be an identifier or tuple literal".to_string()
+            });
+            false
+        }
+    }
+}
+
+/// Validate every element of a tuple literal against the expected
+/// element types. Records callees / ptr_read hints encountered while
+/// typing the individual element initializers.
+#[allow(clippy::too_many_arguments)]
+fn check_tuple_literal_fields(
+    program: &Program,
+    elements: &[ExprRef],
+    expected: &[ScalarTy],
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    if elements.len() != expected.len() {
+        note(reject_reason, || {
+            format!(
+                "tuple literal has {} element(s), expected {}",
+                elements.len(),
+                expected.len()
+            )
+        });
+        return false;
+    }
+    for (e, want) in elements.iter().zip(expected.iter()) {
+        let actual = match check_expr(
+            program,
+            e,
+            locals,
+            struct_locals,
+            tuple_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        ) {
+            Some(t) => t,
+            None => return false,
+        };
+        if actual != *want {
+            note(reject_reason, || {
+                format!(
+                    "tuple literal element type {actual:?} does not match expected {want:?}"
+                )
+            });
+            return false;
+        }
+    }
+    true
+}
+
+/// If `value_ref` is a `TupleLiteral`, derive its element types by
+/// type-checking each child expression. Returns the shape only when all
+/// elements are JIT scalars.
+#[allow(clippy::too_many_arguments)]
+fn tuple_literal_target(
+    program: &Program,
+    value_ref: &ExprRef,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> Option<Vec<ScalarTy>> {
+    let expr = program.expression.get(value_ref)?;
+    let elems = match expr {
+        Expr::TupleLiteral(es) => es,
+        _ => return None,
+    };
+    if elems.len() < 2 {
+        return None;
+    }
+    let mut shape: Vec<ScalarTy> = Vec::with_capacity(elems.len());
+    for e in &elems {
+        let t = check_expr(
+            program,
+            e,
+            locals,
+            struct_locals,
+            tuple_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        )?;
+        if t == ScalarTy::Unit {
+            note(reject_reason, || {
+                "tuple element of Unit type is not supported in JIT".to_string()
+            });
+            return None;
+        }
+        shape.push(t);
+    }
+    Some(shape)
+}
+
+/// If `value_ref` is a `Call(callee, args)` whose callee returns a
+/// scalar tuple, validate args and record the call site, returning the
+/// tuple's element-type vector for the caller to register as a tuple
+/// local.
+#[allow(clippy::too_many_arguments)]
+fn check_tuple_returning_call(
+    program: &Program,
+    value_ref: &ExprRef,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> Option<Vec<ScalarTy>> {
+    let expr = program.expression.get(value_ref)?;
+    let callee_name = match expr {
+        Expr::Call(n, _) => n,
+        _ => return None,
+    };
+    let callee = program
+        .function
+        .iter()
+        .find(|f| f.name == callee_name)
+        .cloned()?;
+    // Only proceed when the callee's return is a tuple of scalars.
+    let element_tys = match &callee.return_type {
+        Some(td) => match resolve_param_ty(td, substitutions, struct_layouts) {
+            Some(ParamTy::Tuple(t)) => t,
+            _ => return None,
+        },
+        None => return None,
+    };
+    // Reuse the regular Call analysis for argument validation and
+    // monomorph recording.
+    let saved_callees_len = callees.len();
+    let _ = check_expr(
+        program,
+        value_ref,
+        locals,
+        struct_locals,
+        tuple_locals,
+        substitutions,
+        struct_layouts,
+        callees,
+        ptr_read_hints,
+        reject_reason,
+    );
+    if callees.len() == saved_callees_len {
+        return None;
+    }
+    Some(element_tys)
 }
 
 /// If the value-position expression is a `StructLiteral` whose struct
@@ -879,6 +1209,7 @@ fn check_struct_returning_call(
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -923,6 +1254,7 @@ fn check_struct_returning_call(
         value_ref,
         locals,
         struct_locals,
+        tuple_locals,
         substitutions,
         struct_layouts,
         callees,
@@ -952,6 +1284,7 @@ fn check_struct_literal_fields(
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -998,6 +1331,7 @@ fn check_struct_literal_fields(
             field_expr,
             locals,
             struct_locals,
+            tuple_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1177,6 +1511,7 @@ fn check_stmt(
     stmt_ref: &StmtRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1189,7 +1524,7 @@ fn check_stmt(
     };
     match stmt {
         Stmt::Expression(e) => {
-            check_expr(program, &e, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &e, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         Stmt::Val(name, type_decl, value) => {
             // Special-case: a struct-literal RHS registers `name` as a
@@ -1205,6 +1540,7 @@ fn check_stmt(
                     struct_name,
                     locals,
                     struct_locals,
+                    tuple_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -1224,6 +1560,7 @@ fn check_stmt(
                 &value,
                 locals,
                 struct_locals,
+                tuple_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -1233,6 +1570,47 @@ fn check_stmt(
                 struct_locals.insert(name, struct_name);
                 return true;
             }
+            // Tuple literal RHS — `val pair = (1i64, 2u64)` — registers
+            // `name` as a tuple local with the inferred element shape.
+            if let Some(shape) = tuple_literal_target(
+                program,
+                &value,
+                locals,
+                struct_locals,
+                tuple_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            ) {
+                tuple_locals.insert(name, shape);
+                return true;
+            }
+            // Tuple-returning call — `val pair = make_pair()`.
+            if let Some(shape) = check_tuple_returning_call(
+                program,
+                &value,
+                locals,
+                struct_locals,
+                tuple_locals,
+                substitutions,
+                struct_layouts,
+                callees,
+                ptr_read_hints,
+                reject_reason,
+            ) {
+                tuple_locals.insert(name, shape);
+                return true;
+            }
+            // Tuple alias — `val q = pair` where `pair` is already a
+            // known tuple local.
+            if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&value) {
+                if let Some(shape) = tuple_locals.get(&rhs_name).cloned() {
+                    tuple_locals.insert(name, shape);
+                    return true;
+                }
+            }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
             // If both the annotation and the RHS are PtrRead-shaped, record
             // the expected return type before recursing so check_expr can
@@ -1240,7 +1618,7 @@ fn check_stmt(
             if let Some(t) = declared_hint {
                 register_ptr_read_hint(program, &value, t, ptr_read_hints);
             }
-            let val_ty = match check_expr(program, &value, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let val_ty = match check_expr(program, &value, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -1275,6 +1653,7 @@ fn check_stmt(
                         struct_name,
                         locals,
                         struct_locals,
+                        tuple_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -1291,6 +1670,7 @@ fn check_stmt(
                     &v,
                     locals,
                     struct_locals,
+                    tuple_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -1300,12 +1680,48 @@ fn check_stmt(
                     struct_locals.insert(name, struct_name);
                     return true;
                 }
+                if let Some(shape) = tuple_literal_target(
+                    program,
+                    &v,
+                    locals,
+                    struct_locals,
+                    tuple_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                ) {
+                    tuple_locals.insert(name, shape);
+                    return true;
+                }
+                if let Some(shape) = check_tuple_returning_call(
+                    program,
+                    &v,
+                    locals,
+                    struct_locals,
+                    tuple_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                ) {
+                    tuple_locals.insert(name, shape);
+                    return true;
+                }
+                if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&v) {
+                    if let Some(shape) = tuple_locals.get(&rhs_name).cloned() {
+                        tuple_locals.insert(name, shape);
+                        return true;
+                    }
+                }
             }
             let declared = match (type_decl.as_ref(), value) {
                 // Treat `Some(Unknown)` like `None` — the parser inserts
                 // it when the user wrote no annotation.
                 (Some(TypeDecl::Unknown), Some(v)) | (None, Some(v)) => {
-                    match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                    match check_expr(program, &v, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                         Some(t) => t,
                         None => return false,
                     }
@@ -1320,7 +1736,7 @@ fn check_stmt(
                 if type_decl.is_some() {
                     register_ptr_read_hint(program, &v, declared, ptr_read_hints);
                 }
-                let val_ty = match check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                let val_ty = match check_expr(program, &v, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 };
@@ -1336,18 +1752,18 @@ fn check_stmt(
         }
         Stmt::Return(value) => {
             if let Some(v) = value {
-                check_expr(program, &v, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+                check_expr(program, &v, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
             } else {
                 true
             }
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::For(var, start, end, block) => {
-            let start_ty = match check_expr(program, &start, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let start_ty = match check_expr(program, &start, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
-            let end_ty = match check_expr(program, &end, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let end_ty = match check_expr(program, &end, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -1359,7 +1775,7 @@ fn check_stmt(
             }
             let prev = locals.insert(var, start_ty);
             let body_ok =
-                check_expr(program, &block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some();
+                check_expr(program, &block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some();
             match prev {
                 Some(t) => {
                     locals.insert(var, t);
@@ -1371,14 +1787,14 @@ fn check_stmt(
             body_ok
         }
         Stmt::While(cond, block) => {
-            let cond_ty = match check_expr(program, &cond, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let cond_ty = match check_expr(program, &cond, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
             if cond_ty != ScalarTy::Bool {
                 return false;
             }
-            check_expr(program, &block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
@@ -1415,6 +1831,7 @@ pub(crate) fn check_expr(
     expr_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1428,8 +1845,8 @@ pub(crate) fn check_expr(
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
         Expr::Binary(op, lhs, rhs) => {
-            let lt = check_expr(program, &lhs, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-            let rt = check_expr(program, &rhs, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let lt = check_expr(program, &lhs, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let rt = check_expr(program, &rhs, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if lt != rt {
                 return None;
             }
@@ -1479,7 +1896,7 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Unary(op, operand) => {
-            let t = check_expr(program, &operand, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let t = check_expr(program, &operand, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             match op {
                 UnaryOp::BitwiseNot => {
                     if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
@@ -1512,9 +1929,9 @@ pub(crate) fn check_expr(
             for s in &stmts {
                 let stmt = program.statement.get(s)?;
                 if let Stmt::Expression(e) = &stmt {
-                    last_ty = check_expr(program, e, &mut snapshot, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    last_ty = check_expr(program, e, &mut snapshot, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 } else {
-                    if !check_stmt(program, s, &mut snapshot, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                    if !check_stmt(program, s, &mut snapshot, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     last_ty = ScalarTy::Unit;
@@ -1523,22 +1940,22 @@ pub(crate) fn check_expr(
             Some(last_ty)
         }
         Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-            let ct = check_expr(program, &cond, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let ct = check_expr(program, &cond, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if ct != ScalarTy::Bool {
                 return None;
             }
-            let then_ty = check_expr(program, &if_block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let then_ty = check_expr(program, &if_block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             for (ec, eb) in &elif_pairs {
-                let et = check_expr(program, ec, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                let et = check_expr(program, ec, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
-                let bt = check_expr(program, eb, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                let bt = check_expr(program, eb, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if bt != then_ty {
                     return None;
                 }
             }
-            let else_ty = check_expr(program, &else_block, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let else_ty = check_expr(program, &else_block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             // Allow if-without-else: the parser inserts an empty Block whose
             // type is Unit. Permit it only when both branches are Unit.
             if else_ty == then_ty {
@@ -1562,6 +1979,7 @@ pub(crate) fn check_expr(
                         &rhs,
                         locals,
                         struct_locals,
+                        tuple_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -1601,6 +2019,7 @@ pub(crate) fn check_expr(
                         &rhs,
                         locals,
                         struct_locals,
+                        tuple_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -1685,6 +2104,28 @@ pub(crate) fn check_expr(
                             }
                         }
                     }
+                    if let Some(shape) = tuple_locals.get(&id).cloned() {
+                        // Tuple argument: callee's param must be a
+                        // matching tuple type.
+                        let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                            Some(ParamTy::Tuple(ts)) => ts,
+                            _ => {
+                                note(reject_reason, || {
+                                    "tuple argument's type does not match callee parameter".to_string()
+                                });
+                                return None;
+                            }
+                        };
+                        if want != shape {
+                            note(reject_reason, || {
+                                "tuple argument shape does not match callee parameter".to_string()
+                            });
+                            return None;
+                        }
+                        callee_param_tys.push(ParamTy::Tuple(shape));
+                        scalar_arg_tys.push(ScalarTy::Unit); // placeholder
+                        continue;
+                    }
                 }
                 // Fall back to scalar typing.
                 let t = check_expr(
@@ -1692,6 +2133,7 @@ pub(crate) fn check_expr(
                     a,
                     locals,
                     struct_locals,
+                    tuple_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -1749,6 +2191,7 @@ pub(crate) fn check_expr(
                               args: &Vec<ExprRef>,
                               locals: &mut HashMap<DefaultSymbol, ScalarTy>,
                               struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
                               callees: &mut Vec<MonoCall>,
                               ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
                               reject_reason: &mut Option<String>|
@@ -1769,6 +2212,7 @@ pub(crate) fn check_expr(
                         a,
                         locals,
                         struct_locals,
+                        tuple_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -1786,32 +2230,32 @@ pub(crate) fn check_expr(
                     if args.len() != 1 {
                         return None;
                     }
-                    let t = check_expr(program, &args[0], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let t = check_expr(program, &args[0], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapAlloc => {
-                    if !check_args(&[ScalarTy::U64], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::U64], &args, locals, struct_locals, tuple_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::HeapFree => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, tuple_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapRealloc => {
-                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, struct_locals, tuple_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::PtrIsNull => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, tuple_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Bool)
@@ -1822,6 +2266,7 @@ pub(crate) fn check_expr(
                         &args,
                         locals,
                     struct_locals,
+                    tuple_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -1836,6 +2281,7 @@ pub(crate) fn check_expr(
                         &args,
                         locals,
                     struct_locals,
+                    tuple_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -1854,6 +2300,7 @@ pub(crate) fn check_expr(
                         &args,
                         locals,
                     struct_locals,
+                    tuple_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -1885,6 +2332,7 @@ pub(crate) fn check_expr(
                         &args[0],
                         locals,
                         struct_locals,
+                        tuple_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -1906,9 +2354,9 @@ pub(crate) fn check_expr(
                     if args.len() != 3 {
                         return None;
                     }
-                    let p = check_expr(program, &args[0], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    let off = check_expr(program, &args[1], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    let v = check_expr(program, &args[2], locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let p = check_expr(program, &args[0], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let off = check_expr(program, &args[1], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let v = check_expr(program, &args[2], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if p != ScalarTy::Ptr || off != ScalarTy::U64 {
                         return None;
                     }
@@ -1951,6 +2399,7 @@ pub(crate) fn check_expr(
                 &allocator_expr,
                 locals,
                 struct_locals,
+                tuple_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -1978,6 +2427,7 @@ pub(crate) fn check_expr(
                 &body_expr,
                 locals,
                 struct_locals,
+                tuple_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -2075,6 +2525,7 @@ pub(crate) fn check_expr(
                     arg,
                     locals,
                     struct_locals,
+                    tuple_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -2121,6 +2572,13 @@ pub(crate) fn check_expr(
                             });
                             None
                         }
+                        Some(ParamTy::Tuple(_)) => {
+                            note(reject_reason, || {
+                                "tuple-returning method must be the rhs of a val/var"
+                                    .to_string()
+                            });
+                            None
+                        }
                         None => None,
                     }
                 }
@@ -2158,10 +2616,41 @@ pub(crate) fn check_expr(
             }
             field_ty
         }
+        Expr::TupleAccess(tuple, idx) => {
+            // Read access on a tuple local. The receiver must be an
+            // identifier already bound to a known tuple shape; the
+            // index must be in-range.
+            let recv_expr = program.expression.get(&tuple)?;
+            let recv_name = match recv_expr {
+                Expr::Identifier(s) => s,
+                _ => {
+                    note(reject_reason, || {
+                        "tuple access receiver must be a tuple local".to_string()
+                    });
+                    return None;
+                }
+            };
+            let shape = match tuple_locals.get(&recv_name).cloned() {
+                Some(v) => v,
+                None => {
+                    note(reject_reason, || {
+                        "tuple access on a non-tuple local".to_string()
+                    });
+                    return None;
+                }
+            };
+            if idx >= shape.len() {
+                note(reject_reason, || {
+                    format!("tuple index {idx} out of bounds for shape {shape:?}")
+                });
+                return None;
+            }
+            Some(shape[idx])
+        }
         Expr::Cast(inner, target) => {
             // Match the interpreter: only i64 ↔ u64 (or identity for those
             // two) is permitted. bool casts are intentionally excluded.
-            let inner_ty = check_expr(program, &inner, locals, struct_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let inner_ty = check_expr(program, &inner, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
             if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
                 return None;

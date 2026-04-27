@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+163. JIT タプル対応 (flat scalar tuples): `ParamTy::Tuple(Vec<ScalarTy>)` を導入、tuple 型の関数 param / return / val / var / TupleAccess / TupleLiteral RHS / tuple-returning call / tuple alias を JIT eligibility と codegen に追加。tuple param は要素ごとに cranelift param に分解、tuple return は multi-return、TupleAccess は要素 SSA Variable から `use_var`。`val (a, b) = expr` 分解は parser desugar (`val tmp = expr; val a = tmp.0; val b = tmp.1`) 経由で自動的に動く。tuple 引数は名前付き local 必須 (inline literal は不可)。Out of scope: ネストタプル、tuple-of-struct、main の tuple return。example: `jit_tuple.t`、tests: `jit_integration` に 2 件追加 (2026-04-27)
 162. ネストした val/var タプル分解: `parse_tuple_destructuring` を `DestructPat { Name | Tuple }` 木で再帰化、`emit_destructure` が深さに応じて `__tuple_tmp_N` を連鎖させる。outer `is_val/is_var` は leaf binding にのみ伝播し、内部 tmp は常に `val`。`val ((a, b), c) = ...` / `val ((a, b), (c, d)) = make()` / `val (((a, b), c), d) = ...` / `var ((a, b), c) = ...` + 再代入が動作。example: `tuple_destructure_nested.t`、tests: `collections_tuple_struct_tests` に 4 件追加 (2026-04-27)
 161. match arm guard: `match x { v if v < 0 => …, _ => … }` のように pattern と `=>` の間に `if <bool>` を置ける。AST は `MatchArm { pattern, guard: Option<ExprRef>, body }` 構造体に統一、parser は guard 式を `Condition` context で読む（struct literal 禁止）、type_checker は guard を `Bool` 型でチェックし pattern bindings を可視に保つ。guarded arm は exhaustiveness で wildcard 扱いせず、literal/enum-variant の "fully covered" マークも付けないので網羅性が緩まない。interpreter は pattern 一致後に guard を評価し false なら次の arm にフォールスルー（bindings はスコープごと破棄）。example: `match_guard.t`、tests: `collections_tuple_struct_tests` に 5 件追加。JIT は match を従来どおり silent fallback (2026-04-27)
 160. match のタプルパターン: `Pattern::Tuple(Vec<Pattern>)` を AST に追加。parser で `( p, q, ... )` を 2 要素以上のタプルパターンとして認識、type_checker は `ScrutineeKind::Tuple(Vec<TypeDecl>)` を導入し各要素を `check_sub_pattern` で再帰検証、interpreter は `Object::Tuple` の対応要素を順に sub-pattern に渡す。irrefutable な (`_` / 名前束縛のみの) タプルパターンは exhaustiveness で wildcard 扱い、リテラル混在の場合は wildcard 必須。ネストしたタプルパターン (`((a, b), c)`) も動作。example: `match_tuple.t`、tests: `collections_tuple_struct_tests` に 3 件追加 (2026-04-26)
@@ -60,7 +61,7 @@
 
 ## 未実装 📋
 
-160. **タプルの JIT 対応** — 構文・型・interpreter は完了 (`(i64, u64)` 型アノテーション、`val (a, b) = pair` / `var (a, b) = pair` のフラット & ネスト分解、`p.0` アクセス、`match { (x, y) => … }` パターン)。残: tuple 値 / tuple 引数 / tuple return / tuple destructure を JIT codegen で扱う (現状 silent fallback)
+160. **タプルの追加 JIT 対応** — フラットなスカラーtupleの param / return / TupleAccess / destructure / tuple-returning call は完了 (`#163`)。残: ネストタプル (`((a,b),c)`) と tuple-of-struct を JIT codegen で扱う (現状 silent fallback)、inline tuple literal を call argument として渡せるようにする
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論

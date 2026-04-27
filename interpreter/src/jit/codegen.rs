@@ -50,6 +50,15 @@ pub fn make_signature<M: Module>(
                     ));
                 }
             }
+            ParamTy::Tuple(elements) => {
+                // A tuple parameter expands into one cranelift parameter
+                // per element, in declaration order.
+                for el in elements {
+                    s.params.push(AbiParam::new(
+                        ir_type(*el).expect("tuple element cannot be Unit"),
+                    ));
+                }
+            }
         }
     }
     match &sig.ret {
@@ -66,6 +75,14 @@ pub fn make_signature<M: Module>(
             for (_, field_ty) in &layout.fields {
                 s.returns.push(AbiParam::new(
                     ir_type(*field_ty).expect("struct return field cannot be Unit"),
+                ));
+            }
+        }
+        ParamTy::Tuple(elements) => {
+            // Tuple returns expand into one cranelift return per element.
+            for el in elements {
+                s.returns.push(AbiParam::new(
+                    ir_type(*el).expect("tuple return element cannot be Unit"),
                 ));
             }
         }
@@ -120,6 +137,8 @@ pub fn translate_function<M: Module>(
     let mut struct_locals: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Variable>> =
         HashMap::new();
     let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+    let mut tuple_locals: HashMap<DefaultSymbol, Vec<Variable>> = HashMap::new();
+    let mut tuple_local_types: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
     let block_params: Vec<Value> = builder.block_params(entry).to_vec();
     let mut block_param_idx: usize = 0;
     for (name, ty) in &sig.params {
@@ -148,6 +167,18 @@ pub fn translate_function<M: Module>(
                 struct_locals.insert(*name, field_vars);
                 struct_local_types.insert(*name, *struct_name);
             }
+            ParamTy::Tuple(elements) => {
+                let mut element_vars: Vec<Variable> = Vec::with_capacity(elements.len());
+                for el in elements {
+                    let var = builder
+                        .declare_var(ir_type(*el).expect("tuple element cannot be Unit"));
+                    builder.def_var(var, block_params[block_param_idx]);
+                    block_param_idx += 1;
+                    element_vars.push(var);
+                }
+                tuple_locals.insert(*name, element_vars);
+                tuple_local_types.insert(*name, elements.clone());
+            }
         }
     }
 
@@ -169,6 +200,8 @@ pub fn translate_function<M: Module>(
         local_vars: &mut local_vars,
         struct_locals: &mut struct_locals,
         struct_local_types: &mut struct_local_types,
+        tuple_locals: &mut tuple_locals,
+        tuple_local_types: &mut tuple_local_types,
         func_signatures,
         func_refs: &func_refs,
         helper_refs: &helper_refs,
@@ -186,6 +219,8 @@ pub fn translate_function<M: Module>(
     // the struct fields from the trailing expression.
     if let ParamTy::Struct(struct_name) = &sig.ret {
         emit_struct_return(&mut state, &body_expr, *struct_name)?;
+    } else if let ParamTy::Tuple(elements) = &sig.ret {
+        emit_tuple_return(&mut state, &body_expr, elements)?;
     } else {
         let body_value = state.gen_expr(&body_expr)?;
         if !state.terminated {
@@ -199,7 +234,7 @@ pub fn translate_function<M: Module>(
                     })?;
                     state.builder.ins().return_(&[v]);
                 }
-                ParamTy::Struct(_) => unreachable!(),
+                ParamTy::Struct(_) | ParamTy::Tuple(_) => unreachable!(),
             }
             state.terminated = true;
         }
@@ -255,6 +290,96 @@ fn emit_struct_return(
         state.terminated = true;
     }
     Ok(())
+}
+
+/// Tuple analog of `emit_struct_return`. Body ends in either a
+/// `TupleLiteral` or an `Identifier(tuple_local)`; we gather the per-
+/// element Values in declaration order and emit them as a multi-return.
+fn emit_tuple_return(
+    state: &mut State,
+    body_expr: &ExprRef,
+    element_tys: &[ScalarTy],
+) -> Result<(), String> {
+    let body = state
+        .program
+        .expression
+        .get(body_expr)
+        .ok_or_else(|| "missing function body expression".to_string())?;
+    let block_stmts = match body {
+        Expr::Block(stmts) => stmts,
+        _ => return Err("tuple-returning function body must be a block".into()),
+    };
+    if block_stmts.is_empty() {
+        return Err("tuple-returning function body is empty".into());
+    }
+    let (last, leading) = block_stmts.split_last().unwrap();
+    if !leading.is_empty() {
+        let _ = state.gen_block(leading)?;
+        if state.terminated {
+            return Ok(());
+        }
+    }
+    let last_stmt = state
+        .program
+        .statement
+        .get(last)
+        .ok_or_else(|| "missing last stmt of tuple-returning body".to_string())?;
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => return Err("last stmt of tuple-returning body must be an expression".into()),
+    };
+    let values = gather_tuple_values(state, &result_expr_ref, element_tys)?;
+    if !state.terminated {
+        state.builder.ins().return_(&values);
+        state.terminated = true;
+    }
+    Ok(())
+}
+
+/// Pull the element Values out of a tuple-producing expression, in the
+/// declared element order. Either an Identifier of a known tuple local
+/// or an inline TupleLiteral is allowed.
+fn gather_tuple_values(
+    state: &mut State,
+    expr_ref: &ExprRef,
+    element_tys: &[ScalarTy],
+) -> Result<Vec<Value>, String> {
+    let expr = state
+        .program
+        .expression
+        .get(expr_ref)
+        .ok_or_else(|| "missing tuple-producing expression".to_string())?;
+    match expr {
+        Expr::Identifier(name) => {
+            let element_vars = state
+                .tuple_locals
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| "identifier is not a known tuple local".to_string())?;
+            if element_vars.len() != element_tys.len() {
+                return Err("tuple local shape disagrees with declared return".into());
+            }
+            let mut values = Vec::with_capacity(element_vars.len());
+            for var in &element_vars {
+                values.push(state.builder.use_var(*var));
+            }
+            Ok(values)
+        }
+        Expr::TupleLiteral(elements) => {
+            if elements.len() != element_tys.len() {
+                return Err("tuple literal element count differs from return".into());
+            }
+            let mut values = Vec::with_capacity(elements.len());
+            for e in &elements {
+                let v = state
+                    .gen_expr(e)?
+                    .ok_or_else(|| "tuple literal element produced no value".to_string())?;
+                values.push(v);
+            }
+            Ok(values)
+        }
+        _ => Err("tuple return value must be an identifier or tuple literal".into()),
+    }
 }
 
 /// Collect the field values of a struct-producing expression in layout
@@ -323,6 +448,13 @@ struct State<'a, 'b> {
     /// struct type name). Forwarded into eligibility's `check_expr` from
     /// `expr_type` so FieldAccess type lookups resolve correctly.
     struct_local_types: &'a mut HashMap<DefaultSymbol, DefaultSymbol>,
+    /// For each tuple local, maps the element index (via Vec position)
+    /// to the SSA Variable that backs it. Tuples have no field names —
+    /// only positional access through `TupleAccess(_, idx)`.
+    tuple_locals: &'a mut HashMap<DefaultSymbol, Vec<Variable>>,
+    /// Mirror of `tuple_locals` carrying the per-element ScalarTy so
+    /// codegen and `expr_type` can resolve TupleAccess types.
+    tuple_local_types: &'a mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
     #[allow(dead_code)]
     func_signatures: &'a HashMap<MonoKey, FuncSignature>,
     func_refs: &'a HashMap<MonoKey, FuncRef>,
@@ -539,6 +671,25 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "field access target unknown".to_string())?;
                 Ok(Some(self.builder.use_var(var)))
             }
+            Expr::TupleAccess(receiver, idx) => {
+                let recv_expr = self
+                    .program
+                    .expression
+                    .get(&receiver)
+                    .ok_or_else(|| "missing tuple-access receiver".to_string())?;
+                let recv_name = match recv_expr {
+                    Expr::Identifier(s) => s,
+                    _ => return Err("tuple access receiver must be a local".into()),
+                };
+                let element_vars = self
+                    .tuple_locals
+                    .get(&recv_name)
+                    .ok_or_else(|| "tuple access target unknown".to_string())?;
+                let var = *element_vars
+                    .get(idx)
+                    .ok_or_else(|| "tuple access index out of bounds".to_string())?;
+                Ok(Some(self.builder.use_var(var)))
+            }
             Expr::BuiltinCall(func, args) => {
                 match func {
                     BuiltinFunction::Print | BuiltinFunction::Println => {
@@ -712,6 +863,11 @@ impl<'a, 'b> State<'a, 'b> {
                         "struct-returning call must be the rhs of a val/var".into(),
                     );
                 }
+                if matches!(target_sig.ret, ParamTy::Tuple(_)) {
+                    return Err(
+                        "tuple-returning call must be the rhs of a val/var".into(),
+                    );
+                }
                 let arg_values = self.gather_call_args(expr_ref, &target_sig)?;
                 let func_ref = *self
                     .func_refs
@@ -744,6 +900,8 @@ impl<'a, 'b> State<'a, 'b> {
                 Stmt::Val(name, _ty, value) => {
                     if self.try_gen_struct_local(name, &value)? {
                         last_value = None;
+                    } else if self.try_gen_tuple_local(name, &value)? {
+                        last_value = None;
                     } else {
                         let st = self.expr_type(&value)?;
                         let v = self
@@ -761,6 +919,10 @@ impl<'a, 'b> State<'a, 'b> {
                 Stmt::Var(name, type_decl, value) => {
                     if let Some(v) = value {
                         if self.try_gen_struct_local(name, &v)? {
+                            last_value = None;
+                            continue;
+                        }
+                        if self.try_gen_tuple_local(name, &v)? {
                             last_value = None;
                             continue;
                         }
@@ -1144,6 +1306,100 @@ impl<'a, 'b> State<'a, 'b> {
         }
     }
 
+    /// Tuple analog of `try_gen_struct_local`. A val/var rhs that is a
+    /// `TupleLiteral`, a tuple-returning call, or an Identifier of an
+    /// existing tuple local is materialized into a fresh tuple local.
+    /// Returns `Ok(true)` when handled, `Ok(false)` otherwise.
+    fn try_gen_tuple_local(
+        &mut self,
+        name: DefaultSymbol,
+        value_ref: &ExprRef,
+    ) -> Result<bool, String> {
+        let value = match self.program.expression.get(value_ref) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        match value {
+            Expr::TupleLiteral(elements) => {
+                // Determine each element's type via expr_type so we
+                // know which cranelift IR type to declare.
+                let mut element_tys: Vec<ScalarTy> = Vec::with_capacity(elements.len());
+                for e in &elements {
+                    element_tys.push(self.expr_type(e)?);
+                }
+                let mut element_vars: Vec<Variable> = Vec::with_capacity(elements.len());
+                for (e, ty) in elements.iter().zip(element_tys.iter()) {
+                    let v = self
+                        .gen_expr(e)?
+                        .ok_or_else(|| "tuple literal element produced no value".to_string())?;
+                    let var = self
+                        .builder
+                        .declare_var(ir_type(*ty).expect("tuple element cannot be Unit"));
+                    self.builder.def_var(var, v);
+                    element_vars.push(var);
+                }
+                self.tuple_locals.insert(name, element_vars);
+                self.tuple_local_types.insert(name, element_tys);
+                Ok(true)
+            }
+            Expr::Identifier(rhs_name) => {
+                // Tuple-to-tuple alias: share the existing element
+                // Variables under the new name. Fall through if rhs is
+                // not a known tuple local.
+                let element_vars = match self.tuple_locals.get(&rhs_name) {
+                    Some(v) => v.clone(),
+                    None => return Ok(false),
+                };
+                let element_tys = self
+                    .tuple_local_types
+                    .get(&rhs_name)
+                    .cloned()
+                    .ok_or_else(|| "tuple alias missing element types".to_string())?;
+                self.tuple_locals.insert(name, element_vars);
+                self.tuple_local_types.insert(name, element_tys);
+                Ok(true)
+            }
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
+                let target_key = match self.call_targets.get(value_ref) {
+                    Some(k) => k.clone(),
+                    None => return Ok(false),
+                };
+                let target_sig = match self.func_signatures.get(&target_key) {
+                    Some(s) => s.clone(),
+                    None => return Ok(false),
+                };
+                let element_tys = match target_sig.ret.clone() {
+                    ParamTy::Tuple(ts) => ts,
+                    _ => return Ok(false),
+                };
+                let arg_values = self.gather_call_args(value_ref, &target_sig)?;
+                let func_ref = *self
+                    .func_refs
+                    .get(&target_key)
+                    .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let call = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call).to_vec();
+                if results.len() != element_tys.len() {
+                    return Err(
+                        "tuple-returning call produced wrong number of results".into(),
+                    );
+                }
+                let mut element_vars: Vec<Variable> = Vec::with_capacity(element_tys.len());
+                for (ty, v) in element_tys.iter().zip(results.iter()) {
+                    let var = self
+                        .builder
+                        .declare_var(ir_type(*ty).expect("tuple element cannot be Unit"));
+                    self.builder.def_var(var, *v);
+                    element_vars.push(var);
+                }
+                self.tuple_locals.insert(name, element_vars);
+                self.tuple_local_types.insert(name, element_tys);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Build the cranelift argument list for a Call expression by
     /// expanding any struct identifier args into per-field values, in
     /// the same order the callee declared them.
@@ -1223,6 +1479,31 @@ impl<'a, 'b> State<'a, 'b> {
                         arg_values.push(self.builder.use_var(var));
                     }
                 }
+                ParamTy::Tuple(_) => {
+                    // Tuple arguments must be a local identifier so we
+                    // can pull out the per-element SSA Variables.
+                    let arg_expr = self
+                        .program
+                        .expression
+                        .get(a)
+                        .ok_or_else(|| "missing tuple arg expr".to_string())?;
+                    let arg_name = match arg_expr {
+                        Expr::Identifier(s) => s,
+                        _ => {
+                            return Err(
+                                "tuple argument must be a local identifier".into(),
+                            )
+                        }
+                    };
+                    let element_vars = self
+                        .tuple_locals
+                        .get(&arg_name)
+                        .ok_or_else(|| "tuple argument unknown".to_string())?
+                        .clone();
+                    for var in &element_vars {
+                        arg_values.push(self.builder.use_var(*var));
+                    }
+                }
             }
         }
         Ok(arg_values)
@@ -1266,11 +1547,13 @@ impl<'a, 'b> State<'a, 'b> {
         // resolve through the layouts; cloning gives a writable scratch
         // copy without disturbing the codegen-side state.
         let mut struct_locals_view = self.struct_local_types.clone();
+        let mut tuple_locals_view = self.tuple_local_types.clone();
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
             &mut struct_locals_view,
+            &mut tuple_locals_view,
             &empty_subs,
             self.struct_layouts,
             &mut callees,

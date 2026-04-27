@@ -146,6 +146,20 @@ fn struct_example_matches_between_modes() {
 }
 
 #[test]
+fn tuple_example_matches_between_modes() {
+    assert_match("example/jit_tuple.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn tuple_example_compiles_callees() {
+    let r = run("example/jit_tuple.t", true, true);
+    assert_eq!(r.code, 33);
+    assert!(r.stderr.contains("swap"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("add_pair"), "stderr: {}", r.stderr);
+}
+
+#[test]
 fn struct_example_returns_20() {
     let r = run("example/jit_struct.t", false, false);
     assert_eq!(r.code, 20);

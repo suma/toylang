@@ -128,6 +128,39 @@ Out of scope for this iteration:
 * Generic structs (`struct Box<T> { … }`) and generic methods.
 * `main` returning a struct.
 
+### Tuples
+
+A tuple of scalar elements decomposes the same way a scalar-only struct
+does: each element becomes its own SSA `Variable`, parameters expand
+into one cranelift parameter per element, and tuple returns expand into
+a multi-return whose values populate a fresh tuple local in the caller.
+
+```rust
+fn swap(p: (u64, u64)) -> (u64, u64) {
+    (p.1, p.0)
+}
+
+fn main() -> u64 {
+    val src = (10u64, 20u64)
+    val (a, b) = swap(src)
+    a + b
+}
+```
+
+`val (a, b) = expr` destructuring works because the parser desugars
+into `val tmp = expr; val a = tmp.0; val b = tmp.1`, and the JIT
+matches both the `TupleLiteral` rhs (or tuple-returning call) and the
+subsequent `TupleAccess` reads. Tuple arguments at a call site must be
+`Identifier`s of a known tuple local — inline tuple literals as
+arguments are still rejected.
+
+Out of scope for this iteration:
+
+* Nested tuples (`((a, b), c)`-shaped types).
+* Inline `TupleLiteral` as a function argument.
+* Tuples whose elements are non-scalar (struct, string, etc.).
+* `main` returning a tuple.
+
 ### Generic functions
 
 A generic function `fn id<T>(x: T) -> T { x }` is monomorphized per call
@@ -162,7 +195,9 @@ val total: u64 = with allocator = arena {
 ### Not supported (silent fallback)
 
 * Generic bounds (`<A: Allocator>`).
-* String, Array, Struct, Enum, Tuple, Dict, Range values.
+* String, Array, Enum, Dict, Range values.
+* Nested tuples / non-scalar tuple elements (flat scalar tuples are
+  supported; see *Tuples* above).
 * Method calls, associated functions, field access.
 * `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
   variant — only `default` and `arena` are wired up so far).
@@ -235,6 +270,7 @@ the native code itself is faster.
 * `jit_struct_return.t` — `make_point(...) -> Point` factory used twice → exit 18
 * `jit_method.t` — `impl Point { fn dist_squared(self: Self) -> i64 }` dispatched twice → exit 194
 * `jit_allocator.t` — `with allocator = arena { … }` round-trip → exit 57 (12345 % 256)
+* `jit_tuple.t` — flat tuple param / return, destructure, and `TupleAccess` → exit 33
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout

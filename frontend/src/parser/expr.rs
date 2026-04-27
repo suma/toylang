@@ -92,9 +92,12 @@ impl<'a> Parser<'a> {
         let lhs = parse_range_expr(self);
         if lhs.is_ok() {
             return match self.peek() {
-                Some(Kind::Equal) => {
-                    parse_assign(self, lhs?)
-                }
+                Some(Kind::Equal)
+                | Some(Kind::PlusEqual)
+                | Some(Kind::MinusEqual)
+                | Some(Kind::StarEqual)
+                | Some(Kind::SlashEqual)
+                | Some(Kind::PercentEqual) => parse_assign(self, lhs?),
                 _ => lhs,
             };
         }
@@ -192,12 +195,53 @@ fn parse_dict_entries(parser: &mut Parser, mut entries: Vec<(ExprRef, ExprRef)>)
 
 pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprRef> {
     loop {
+        // Compound-assignment desugaring: `lhs op= rhs` lowers to
+        // `lhs = lhs op rhs`. The lhs is duplicated through the
+        // expression pool, which is fine for `Identifier` / `FieldAccess`
+        // / `TupleAccess` / `SliceAccess` shapes since their evaluation
+        // is cheap and the AST nodes are reusable. We deliberately do
+        // not capture rhs into a temporary, so any side effects on rhs
+        // run exactly once.
+        let compound = match parser.peek() {
+            Some(Kind::PlusEqual) => Some(Operator::IAdd),
+            Some(Kind::MinusEqual) => Some(Operator::ISub),
+            Some(Kind::StarEqual) => Some(Operator::IMul),
+            Some(Kind::SlashEqual) => Some(Operator::IDiv),
+            Some(Kind::PercentEqual) => Some(Operator::IMod),
+            _ => None,
+        };
+        if let Some(op) = compound {
+            parser.next();
+            let rhs = parse_logical_expr(parser)?;
+            let location = parser.current_source_location();
+            let combined = parser
+                .ast_builder
+                .binary_expr(op, lhs, rhs, Some(location.clone()));
+            if let Some(Expr::SliceAccess(object, slice_info)) =
+                parser.ast_builder.expr_pool.get(&lhs)
+            {
+                let start = slice_info.start;
+                let end = slice_info.end;
+                lhs = parser.ast_builder.slice_assign_expr(
+                    object,
+                    start,
+                    end,
+                    combined,
+                    Some(location),
+                );
+            } else {
+                lhs = parser
+                    .ast_builder
+                    .assign_expr(lhs, combined, Some(location));
+            }
+            continue;
+        }
         match parser.peek() {
             Some(Kind::Equal) => {
                 parser.next();
                 let new_rhs = parse_logical_expr(parser)?;
                 let location = parser.current_source_location();
-                
+
                 // Check if lhs is a SliceAccess expression and convert to SliceAssign
                 if let Some(Expr::SliceAccess(object, slice_info)) = parser.ast_builder.expr_pool.get(&lhs) {
                     let object = object;
@@ -704,6 +748,7 @@ pub fn parse_mul(parser: &mut Parser) -> ParserResult<ExprRef> {
         tokens: vec![
             (Kind::IMul, Operator::IMul),
             (Kind::IDiv, Operator::IDiv),
+            (Kind::IMod, Operator::IMod),
         ],
         next_precedence: parse_unary,
     };

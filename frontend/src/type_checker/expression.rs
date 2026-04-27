@@ -182,7 +182,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             Operator::IAdd if resolved_lhs_ty == TypeDecl::String && resolved_rhs_ty == TypeDecl::String => {
                 TypeDecl::String
             }
-            Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul => {
+            Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul | Operator::IMod => {
                 if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {

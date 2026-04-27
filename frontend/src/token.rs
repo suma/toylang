@@ -80,10 +80,18 @@ pub enum Kind {
     ISub,
     IMul,
     IDiv,
+    IMod,
     FAdd,
     FSub,
     FMul,
     FDiv,
+    // Compound-assignment operators. Parser desugars these into
+    // `lhs = lhs op rhs` so the AST stays small.
+    PlusEqual,    // +=
+    MinusEqual,   // -=
+    StarEqual,    // *=
+    SlashEqual,   // /=
+    PercentEqual, // %=
 
     Int64(i64),
     UInt64(u64),

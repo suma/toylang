@@ -296,6 +296,7 @@ pub enum Operator {
     ISub,
     IMul,
     IDiv,
+    IMod,
 
     // Comparison operator
     EQ, // ==

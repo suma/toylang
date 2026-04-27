@@ -103,6 +103,83 @@ mod basic_execution {
     // rather than binary subtraction continuing the previous statement.
 
     #[test]
+    fn test_modulo_i64() {
+        // Truncated remainder, matching Rust's `%`.
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            (17i64 % 5i64) + (-7i64 % 3i64)
+        }
+        ",
+            1,
+        );
+    }
+
+    #[test]
+    fn test_modulo_u64() {
+        common::assert_program_result_u64(
+            r"
+        fn main() -> u64 {
+            (100u64 % 7u64) + (255u64 % 16u64)
+        }
+        ",
+            17,
+        );
+    }
+
+    #[test]
+    fn test_compound_assign_arithmetic() {
+        // 10 +5 -2 *3 /2 %7 = 5
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            var x: i64 = 10i64
+            x += 5i64
+            x -= 2i64
+            x *= 3i64
+            x /= 2i64
+            x %= 7i64
+            x
+        }
+        ",
+            5,
+        );
+    }
+
+    #[test]
+    fn test_compound_assign_field() {
+        common::assert_program_result_i64(
+            r"
+        struct Point { x: i64, y: i64 }
+        fn main() -> i64 {
+            var p = Point { x: 10i64, y: 5i64 }
+            p.x += 3i64
+            p.y *= 4i64
+            p.x + p.y
+        }
+        ",
+            33,
+        );
+    }
+
+    #[test]
+    fn test_compound_assign_self_reference() {
+        // `x += x` exercises both copies of the duplicated lhs against
+        // the same SSA / runtime variable, so the result is doubled.
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            var x: i64 = 7i64
+            x += x
+            x *= x
+            x
+        }
+        ",
+            196,
+        );
+    }
+
+    #[test]
     fn test_unary_minus_on_variable() {
         common::assert_program_result_i64(r"
         fn main() -> i64 {

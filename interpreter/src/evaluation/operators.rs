@@ -13,6 +13,7 @@ pub(super) enum ArithmeticOp {
     Sub,
     Mul,
     Div,
+    Mod,
 }
 
 impl ArithmeticOp {
@@ -22,6 +23,7 @@ impl ArithmeticOp {
             ArithmeticOp::Sub => "evaluate_sub",
             ArithmeticOp::Mul => "evaluate_mul",
             ArithmeticOp::Div => "evaluate_div",
+            ArithmeticOp::Mod => "evaluate_mod",
         }
     }
 
@@ -31,6 +33,7 @@ impl ArithmeticOp {
             ArithmeticOp::Sub => "-",
             ArithmeticOp::Mul => "*",
             ArithmeticOp::Div => "/",
+            ArithmeticOp::Mod => "%",
         }
     }
 
@@ -40,6 +43,10 @@ impl ArithmeticOp {
             ArithmeticOp::Sub => l - r,
             ArithmeticOp::Mul => l * r,
             ArithmeticOp::Div => l / r,
+            // Rust's `%` is truncated remainder, matching most C-family
+            // languages — `(-7) % 3 == -1`. Diverges from mathematical
+            // modulo, which is fine for our use cases.
+            ArithmeticOp::Mod => l % r,
         }
     }
 
@@ -49,6 +56,7 @@ impl ArithmeticOp {
             ArithmeticOp::Sub => l - r,
             ArithmeticOp::Mul => l * r,
             ArithmeticOp::Div => l / r,
+            ArithmeticOp::Mod => l % r,
         }
     }
 }
@@ -286,6 +294,7 @@ impl EvaluationContext<'_> {
             Operator::ISub => self.evaluate_sub(&lhs_obj, &rhs_obj)?,
             Operator::IMul => self.evaluate_mul(&lhs_obj, &rhs_obj)?,
             Operator::IDiv => self.evaluate_div(&lhs_obj, &rhs_obj)?,
+            Operator::IMod => self.evaluate_mod(&lhs_obj, &rhs_obj)?,
             Operator::EQ => self.evaluate_eq(&lhs_obj, &rhs_obj)?,
             Operator::NE => self.evaluate_ne(&lhs_obj, &rhs_obj)?,
             Operator::LT => self.evaluate_lt(&lhs_obj, &rhs_obj)?,
@@ -317,6 +326,10 @@ impl EvaluationContext<'_> {
 
     pub fn evaluate_div(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
         self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Div)
+    }
+
+    pub fn evaluate_mod(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
+        self.evaluate_arithmetic_op(lhs, rhs, ArithmeticOp::Mod)
     }
 
     pub fn evaluate_eq(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {

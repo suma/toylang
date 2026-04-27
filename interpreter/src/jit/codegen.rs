@@ -551,6 +551,16 @@ impl<'a, 'b> State<'a, 'b> {
                             self.builder.ins().udiv(l, r)
                         }
                     }
+                    Operator::IMod => {
+                        // Cranelift's `srem` matches Rust's `%` (truncated)
+                        // for signed values; `urem` is the natural unsigned
+                        // remainder.
+                        if signed {
+                            self.builder.ins().srem(l, r)
+                        } else {
+                            self.builder.ins().urem(l, r)
+                        }
+                    }
                     Operator::EQ => self.builder.ins().icmp(IntCC::Equal, l, r),
                     Operator::NE => self.builder.ins().icmp(IntCC::NotEqual, l, r),
                     Operator::LT => {

@@ -82,10 +82,16 @@ macro_rules! token {
 "|"         return Ok(token!(self, Kind::Or));
 "^"         return Ok(token!(self, Kind::Xor));
 "~"         return Ok(token!(self, Kind::Tilde));
+"+="        return Ok(token!(self, Kind::PlusEqual));
+"-="        return Ok(token!(self, Kind::MinusEqual));
+"*="        return Ok(token!(self, Kind::StarEqual));
+"/="        return Ok(token!(self, Kind::SlashEqual));
+"%="        return Ok(token!(self, Kind::PercentEqual));
 "+"         return Ok(token!(self, Kind::IAdd));
 "-"         return Ok(token!(self, Kind::ISub));
 "*"         return Ok(token!(self, Kind::IMul));
 "/"         return Ok(token!(self, Kind::IDiv));
+"%"         return Ok(token!(self, Kind::IMod));
 
 
 -?[0-9]+"i64"       {

@@ -1851,7 +1851,7 @@ pub(crate) fn check_expr(
                 return None;
             }
             match op {
-                Operator::IAdd | Operator::ISub | Operator::IMul | Operator::IDiv => {
+                Operator::IAdd | Operator::ISub | Operator::IMul | Operator::IDiv | Operator::IMod => {
                     if matches!(lt, ScalarTy::I64 | ScalarTy::U64) {
                         Some(lt)
                     } else {

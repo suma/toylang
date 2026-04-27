@@ -249,6 +249,62 @@ mod tuple_tests {
     }
 
     #[test]
+    fn test_tuple_destructure_nested_val() {
+        // `val ((a, b), c) = ...` works through chained synthetic
+        // temporaries so any depth of nesting decomposes.
+        let source = r#"
+        fn main() -> u64 {
+            val ((a, b), c) = ((1u64, 2u64), 10u64)
+            a + b + c
+        }
+    "#;
+        common::assert_program_result_u64(source, 13);
+    }
+
+    #[test]
+    fn test_tuple_destructure_nested_both_sides() {
+        // Two nested tuple patterns on the same line, sourced from a
+        // function return value, exercise multiple synthetic
+        // `__tuple_tmp_N` allocations sharing one block scope.
+        let source = r#"
+        fn make() -> ((u64, u64), (u64, u64)) {
+            ((1u64, 2u64), (3u64, 4u64))
+        }
+        fn main() -> u64 {
+            val ((a, b), (c, d)) = make()
+            a + b * 10u64 + c * 100u64 + d * 1000u64
+        }
+    "#;
+        common::assert_program_result_u64(source, 4321);
+    }
+
+    #[test]
+    fn test_tuple_destructure_nested_var_reassign() {
+        // `var` flavor flows down to leaf bindings; reassignment after
+        // the destructure mutates the leaf var, not the temporary.
+        let source = r#"
+        fn main() -> u64 {
+            var ((a, b), c) = ((1u64, 2u64), 10u64)
+            a = a + 100u64
+            c = c + 1000u64
+            a + b + c
+        }
+    "#;
+        common::assert_program_result_u64(source, 1113);
+    }
+
+    #[test]
+    fn test_tuple_destructure_nested_three_deep() {
+        let source = r#"
+        fn main() -> u64 {
+            val (((a, b), c), d) = (((1u64, 2u64), 3u64), 4u64)
+            a + b + c + d
+        }
+    "#;
+        common::assert_program_result_u64(source, 10);
+    }
+
+    #[test]
     fn test_match_guard_basic() {
         // The guard is evaluated after the pattern matches and its
         // bindings are visible inside the guard expression.

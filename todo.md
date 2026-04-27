@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+162. ネストした val/var タプル分解: `parse_tuple_destructuring` を `DestructPat { Name | Tuple }` 木で再帰化、`emit_destructure` が深さに応じて `__tuple_tmp_N` を連鎖させる。outer `is_val/is_var` は leaf binding にのみ伝播し、内部 tmp は常に `val`。`val ((a, b), c) = ...` / `val ((a, b), (c, d)) = make()` / `val (((a, b), c), d) = ...` / `var ((a, b), c) = ...` + 再代入が動作。example: `tuple_destructure_nested.t`、tests: `collections_tuple_struct_tests` に 4 件追加 (2026-04-27)
 161. match arm guard: `match x { v if v < 0 => …, _ => … }` のように pattern と `=>` の間に `if <bool>` を置ける。AST は `MatchArm { pattern, guard: Option<ExprRef>, body }` 構造体に統一、parser は guard 式を `Condition` context で読む（struct literal 禁止）、type_checker は guard を `Bool` 型でチェックし pattern bindings を可視に保つ。guarded arm は exhaustiveness で wildcard 扱いせず、literal/enum-variant の "fully covered" マークも付けないので網羅性が緩まない。interpreter は pattern 一致後に guard を評価し false なら次の arm にフォールスルー（bindings はスコープごと破棄）。example: `match_guard.t`、tests: `collections_tuple_struct_tests` に 5 件追加。JIT は match を従来どおり silent fallback (2026-04-27)
 160. match のタプルパターン: `Pattern::Tuple(Vec<Pattern>)` を AST に追加。parser で `( p, q, ... )` を 2 要素以上のタプルパターンとして認識、type_checker は `ScrutineeKind::Tuple(Vec<TypeDecl>)` を導入し各要素を `check_sub_pattern` で再帰検証、interpreter は `Object::Tuple` の対応要素を順に sub-pattern に渡す。irrefutable な (`_` / 名前束縛のみの) タプルパターンは exhaustiveness で wildcard 扱い、リテラル混在の場合は wildcard 必須。ネストしたタプルパターン (`((a, b), c)`) も動作。example: `match_tuple.t`、tests: `collections_tuple_struct_tests` に 3 件追加 (2026-04-26)
 159. タプル `val (a, b) = expr` / `var (a, b) = expr` 分解: パーサ desugar で隠し temporary + 各名へ `tmp.0`, `tmp.1`, … で bind。`Parser.pending_prelude_stmts` を `parse_block_impl` が drain して source 順に展開。3 要素以上、関数戻り値の分解、`var` 形式と再代入の組み合わせも動作。example: `tuple_destructure.t`、tests: `collections_tuple_struct_tests` に 4 件追加 (2026-04-26)
@@ -59,7 +60,7 @@
 
 ## 未実装 📋
 
-160. **タプルの文法と機能の拡充** — `(i64, u64)` 型アノテーション・関数 param/return・`p.0` アクセス・`val (a, b) = pair` / `var (a, b) = pair` 分解・`match { (x, y) => … }` パターン (ネスト OK) は完了。残: (a) `val ((a, b), c) = ...` のネストした分解 (val/var パターン側、現状 match のみネスト対応)、(b) JIT 対応 (現状 silent fallback)
+160. **タプルの JIT 対応** — 構文・型・interpreter は完了 (`(i64, u64)` 型アノテーション、`val (a, b) = pair` / `var (a, b) = pair` のフラット & ネスト分解、`p.0` アクセス、`match { (x, y) => … }` パターン)。残: tuple 値 / tuple 引数 / tuple return / tuple destructure を JIT codegen で扱う (現状 silent fallback)
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
 96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
 29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論

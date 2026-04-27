@@ -201,31 +201,35 @@ pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {
     }
 }
 
-/// Lower `val (a, b, ...) = expr` (or `var (...) = ...`) into a series
-/// of plain `Val` / `Var` statements. The first synthetic statement
-/// binds `expr` to a fresh temporary; one statement per pattern name
-/// then binds each through `tmp.N` tuple access. The final per-name
-/// statement is returned to `parse_block_impl` while the others land
-/// in `pending_prelude_stmts` so they appear ahead of the primary one
-/// in the resulting block.
-fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<StmtRef> {
-    let location = parser.current_source_location();
+/// Internal tree shape used while desugaring `val (...) = expr`.
+/// A leaf binds the matched element to `name`; an inner node further
+/// destructures through another tuple pattern.
+enum DestructPat {
+    Name(DefaultSymbol),
+    Tuple(Vec<DestructPat>),
+}
+
+/// Parse a `(p, q, ...)` tuple sub-pattern, recursively. The leading
+/// `(` must already be visible at `parser.peek()`.
+fn parse_destruct_tuple(parser: &mut Parser) -> ParserResult<DestructPat> {
     parser.expect_err(&Kind::ParenOpen)?;
-    let mut names: Vec<DefaultSymbol> = Vec::new();
+    let mut subs: Vec<DestructPat> = Vec::new();
     loop {
-        match parser.peek().cloned() {
+        let sub = match parser.peek().cloned() {
+            Some(Kind::ParenOpen) => parse_destruct_tuple(parser)?,
             Some(Kind::Identifier(s)) => {
                 parser.next();
-                names.push(parser.string_interner.get_or_intern(s));
+                DestructPat::Name(parser.string_interner.get_or_intern(s.as_str()))
             }
             other => {
                 let loc = parser.current_source_location();
                 return Err(ParserError::generic_error(
                     loc,
-                    format!("expected identifier in tuple pattern, got {:?}", other),
+                    format!("expected identifier or `(` in tuple pattern, got {:?}", other),
                 ));
             }
-        }
+        };
+        subs.push(sub);
         match parser.peek().cloned() {
             Some(Kind::Comma) => {
                 parser.next();
@@ -241,13 +245,68 @@ fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<
         }
     }
     parser.expect_err(&Kind::ParenClose)?;
-    if names.len() < 2 {
+    if subs.len() < 2 {
         let loc = parser.current_source_location();
         return Err(ParserError::generic_error(
             loc,
-            "tuple destructuring requires at least two names".to_string(),
+            "tuple destructuring requires at least two sub-patterns".to_string(),
         ));
     }
+    Ok(DestructPat::Tuple(subs))
+}
+
+/// Walk the parsed pattern and emit the desugared `val` / `var`
+/// statements in source-order into `out`. `rhs_expr` is the expression
+/// to bind at this level: at the top call it is the user-written rhs;
+/// at recursive calls it is `__tuple_tmp_N.i`. Synthesized tmp
+/// bindings are always `val` (they are internal).
+fn emit_destructure(
+    parser: &mut Parser,
+    pat: &DestructPat,
+    rhs_expr: ExprRef,
+    is_val: bool,
+    location: &crate::type_checker::SourceLocation,
+    out: &mut Vec<StmtRef>,
+) {
+    match pat {
+        DestructPat::Name(sym) => {
+            let stmt = if is_val {
+                parser.ast_builder.val_stmt(*sym, Some(TypeDecl::Unknown), rhs_expr, Some(location.clone()))
+            } else {
+                parser.ast_builder.var_stmt(*sym, Some(TypeDecl::Unknown), Some(rhs_expr), Some(location.clone()))
+            };
+            out.push(stmt);
+        }
+        DestructPat::Tuple(subs) => {
+            let counter = parser.synthetic_counter;
+            parser.synthetic_counter += 1;
+            let tmp_name = format!("__tuple_tmp_{counter}");
+            let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
+            let tmp_stmt = parser
+                .ast_builder
+                .val_stmt(tmp_sym, Some(TypeDecl::Unknown), rhs_expr, Some(location.clone()));
+            out.push(tmp_stmt);
+            for (i, sub) in subs.iter().enumerate() {
+                let tmp_id = parser.ast_builder.identifier_expr(tmp_sym, Some(location.clone()));
+                let access = parser
+                    .ast_builder
+                    .tuple_access_expr(tmp_id, i, Some(location.clone()));
+                emit_destructure(parser, sub, access, is_val, location, out);
+            }
+        }
+    }
+}
+
+/// Lower `val (a, b, ...) = expr` (or `var (...) = ...`) into a series
+/// of plain `Val` / `Var` statements. Sub-patterns may themselves be
+/// tuple patterns, so `val ((a, b), c) = expr` decomposes through an
+/// extra synthetic temporary. The final per-name statement is returned
+/// to `parse_block_impl` while the others land in
+/// `pending_prelude_stmts` so they appear ahead of the primary one in
+/// the resulting block.
+fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<StmtRef> {
+    let location = parser.current_source_location();
+    let pat = parse_destruct_tuple(parser)?;
 
     // Optional whole-tuple type annotation, e.g. `val (a, b): (i64, i64) = ...`.
     // We currently parse-and-discard it; the rhs's element types
@@ -260,43 +319,18 @@ fn parse_tuple_destructuring(parser: &mut Parser, is_val: bool) -> ParserResult<
     parser.expect_err(&Kind::Equal)?;
     let rhs = super::expr::parse_range_expr(parser)?;
 
-    // Synthesize a unique temporary symbol for the rhs.
-    let counter = parser.synthetic_counter;
-    parser.synthetic_counter += 1;
-    let tmp_name = format!("__tuple_tmp_{counter}");
-    let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
+    let mut stmts: Vec<StmtRef> = Vec::new();
+    emit_destructure(parser, &pat, rhs, is_val, &location, &mut stmts);
 
-    // First the temporary binding (always val — re-binding doesn't
-    // matter for the destructuring shape).
-    let tmp_stmt =
-        parser
-            .ast_builder
-            .val_stmt(tmp_sym, Some(TypeDecl::Unknown), rhs, Some(location.clone()));
-    parser.pending_prelude_stmts.push(tmp_stmt);
-
-    // Then one binding per pattern name, except the last which becomes
-    // the "primary" StmtRef returned to the caller.
-    let last_idx = names.len() - 1;
-    for (i, name) in names.iter().enumerate() {
-        let tmp_id = parser.ast_builder.identifier_expr(tmp_sym, Some(location.clone()));
-        let access =
-            parser.ast_builder.tuple_access_expr(tmp_id, i, Some(location.clone()));
-        if i == last_idx {
-            let stmt = if is_val {
-                parser.ast_builder.val_stmt(*name, Some(TypeDecl::Unknown), access, Some(location.clone()))
-            } else {
-                parser.ast_builder.var_stmt(*name, Some(TypeDecl::Unknown), Some(access), Some(location.clone()))
-            };
-            return Ok(stmt);
-        }
-        let stmt = if is_val {
-            parser.ast_builder.val_stmt(*name, Some(TypeDecl::Unknown), access, Some(location.clone()))
-        } else {
-            parser.ast_builder.var_stmt(*name, Some(TypeDecl::Unknown), Some(access), Some(location.clone()))
-        };
+    // The last emitted statement (the rightmost leaf binding) is the
+    // primary; everything else is prelude.
+    let primary = stmts
+        .pop()
+        .expect("destructure emitted at least one statement");
+    for stmt in stmts {
         parser.pending_prelude_stmts.push(stmt);
     }
-    unreachable!("loop above always returns or pushes")
+    Ok(primary)
 }
 
 pub fn parse_struct_fields(parser: &mut Parser, fields: Vec<StructField>) -> ParserResult<Vec<StructField>> {

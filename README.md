@@ -2,6 +2,13 @@
 
 A complete programming language implementation featuring a frontend library and tree-walking interpreter, built as a learning project to explore language design and implementation techniques.
 
+> **For language syntax and semantics, see [`docs/language.md`](docs/language.md)** —
+> the consolidated reference. This README covers the project as a whole
+> (overview, build, test, examples). Per-component details live in
+> [`interpreter/README.md`](interpreter/README.md), [`JIT.md`](JIT.md),
+> [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md), and
+> [`BUILTIN_ARCHITECTURE.md`](BUILTIN_ARCHITECTURE.md).
+
 ## Overview
 
 This project implements a statically-typed programming language with comprehensive type checking, automatic type inference, and modern language features. The implementation is split into three main components:

@@ -3,6 +3,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **言語仕様の正本は [`docs/language.md`](docs/language.md)** にまとまっています。
+> 構文・型・セマンティクスを確認したい場合はそちらを参照してください。
+> 本ファイルは Claude Code 向けの運用ガイダンス（プロジェクト構成、ビルド・
+> テストコマンド、タスク管理ワークフロー）を中心に置きます。重複を許容する
+> 範囲では言語例を残していますが、最新の挙動は `docs/language.md` を信頼
+> してください。
+
 ## Project Structure
 
 This is a toy programming language implementation in Rust with two main components:

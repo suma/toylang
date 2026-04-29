@@ -201,6 +201,52 @@ val total: u64 = with allocator = arena {
 }
 ```
 
+### Panic
+
+`panic("literal")` lowers to a Rust host helper (`jit_panic`) plus a
+cranelift `trap UserCode(1)` terminator:
+
+```text
+panic("division by zero")
+↓ codegen
+  iconst.i64    <sym_id>          ; DefaultSymbol::to_usize() as u64
+  call          jit_panic(sym_id)
+  trap          UserCode(1)       ; CFG terminator; dead at runtime
+```
+
+The helper resolves the symbol id back to the original message through
+a thread-local pointer to the program's `StringInterner` (parked by
+`execute_cached` and cleared on the same `HeapGuard::drop` that tears
+down the heap state). It then prints
+
+```
+Runtime error occurred:
+panic: <message>
+```
+
+to stderr and `process::exit(1)`s. The cranelift `trap` after the call
+exists only so the basic block has a recognised terminator — by the
+time the trap would execute, the process is already gone. This avoids
+the DWARF-unwind / signal-handler infrastructure WebAssembly engines
+typically need for traps.
+
+The argument must be a parse-time `Expr::String(sym)`; `panic(SOME_CONST)`
+or `panic(some_str_var)` falls back. The JIT also rejects panic in
+expression position (`if cond { panic("…") } else { 5i64 }`) because
+the if-elif-else eligibility requires sibling branches to agree on a
+`ScalarTy` and panic returns `Unit` while the other branch is `i64`. A
+future `ScalarTy::Never` variant would lift this. The
+*statement-position* form
+
+```rust
+fn divide(a: i64, b: i64) -> i64 {
+    if b == 0i64 { panic("division by zero") }
+    a / b
+}
+```
+
+JITs cleanly because both branches of the inner `if` are `Unit`.
+
 ### Not supported (silent fallback)
 
 * Generic bounds (`<A: Allocator>`).
@@ -240,16 +286,25 @@ interpreter/src/jit/
                  and ptr_read_hints, or a String reject reason.
   codegen.rs     translates each eligible function into cranelift IR.
   runtime.rs     creates the JITModule, registers extern "C" host
-                 callbacks (print/println/heap/ptr_read/ptr_write),
-                 compiles every eligible function, transmutes the
-                 finalized main pointer, calls it, and wraps the
+                 callbacks (print/println/heap/ptr_read/ptr_write/
+                 panic), compiles every eligible function, transmutes
+                 the finalized main pointer, calls it, and wraps the
                  scalar result back into an Object.
 ```
 
-Host callbacks reach a `HeapManager` installed in a `thread_local`
-slot for the duration of `try_execute_main`. The JIT and the
-tree-walking interpreter currently use *separate* heaps — pointers
-returned from JIT main aren't valid in the interpreter and vice versa.
+Host callbacks reach two pieces of state through thread-local slots
+that `execute_cached` parks for the duration of the call:
+
+- a `HeapManager` (used by `heap_alloc` / `heap_free` / `heap_realloc`
+  / the `ptr_*` and `mem_*` helpers)
+- a `*const DefaultStringInterner` pointing at the program's interner,
+  which `jit_panic` dereferences to resolve a `DefaultSymbol` (passed
+  as a u64 immediate from JIT code) back into the original message text
+
+Both slots are cleared on the same drop guard so a borrow can never
+outlive `try_execute_main`. The JIT and the tree-walking interpreter
+currently use *separate* heaps — pointers returned from JIT main aren't
+valid in the interpreter and vice versa.
 
 ## Diagnostics
 
@@ -261,6 +316,8 @@ JIT: skipped (function `main`: uses unsupported expression array literal)
 JIT: skipped (function `main`: uses unsupported builtin ArenaAllocator)
 JIT: skipped (function `f` is generic)
 JIT: skipped (function `g`: ptr_read used outside a typed val/var/assign — JIT needs the result type to be statically known)
+JIT: skipped (function `bar`: panic argument must be a string literal in JIT)
+JIT: skipped (function `qux` has DbC contracts (not supported in JIT))
 ```
 
 The first reject reason wins. Subsequent rejections deeper in the

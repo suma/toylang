@@ -409,15 +409,21 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(TypeDecl::Unit);
         }
 
-        // Check if all blocks have the same type
-        let first_type = &block_types[0];
-        for block_type in &block_types[1..] {
-            if block_type != first_type {
+        // Pick the first concrete (non-Unknown) branch type as the result;
+        // Unknown branches (e.g. ones ending in `panic("...")`) unify with
+        // any concrete sibling. If every branch is Unknown the if-expression
+        // itself is Unknown — the surrounding context resolves it.
+        let result_ty = block_types.iter()
+            .find(|t| **t != TypeDecl::Unknown)
+            .cloned()
+            .unwrap_or(TypeDecl::Unknown);
+        for block_type in &block_types {
+            if *block_type != TypeDecl::Unknown && !block_type.is_equivalent(&result_ty) {
                 return Ok(TypeDecl::Unit); // Different types, return Unit
             }
         }
 
-        Ok(first_type.clone())
+        Ok(result_ty)
     }
 
     /// Type check assignment expressions

@@ -201,6 +201,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::Unit,
             },
+            // `panic(msg: str)` aborts the run. The "return type" is Unknown
+            // so the call expression unifies with any surrounding context
+            // (e.g. `if c { panic("...") } else { 5i64 }`); the value is
+            // never produced because evaluation always errors.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Panic,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::Unknown,
+            },
             // `__builtin_sizeof` takes a single probe value and returns the
             // byte size of its type as u64. The arg type is not constrained
             // at signature level — visit_builtin_call leaves type validation
@@ -400,7 +410,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // type parameters on the declared return type (which keeps the
                 // existing "missing generic type parameter" diagnostic firing).
                 _ => {
-                    if &last == expected_return_type {
+                    // `Unknown` arises from diverging expressions like
+                    // `panic("...")` and is treated as compatible with any
+                    // declared return type — the body never actually reaches
+                    // the return point, so the static type can stay flexible.
+                    if last == TypeDecl::Unknown {
+                        true
+                    } else if &last == expected_return_type {
                         true
                     } else {
                         match (&last, expected_return_type) {

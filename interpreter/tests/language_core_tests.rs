@@ -531,6 +531,57 @@ mod basic_execution {
         );
     }
 
+    // ----- panic builtin -----
+
+    #[test]
+    fn test_panic_aborts_with_message() {
+        let source = r#"
+        fn main() -> i64 {
+            panic("not implemented")
+            0i64
+        }
+        "#;
+        let result = common::test_program(source);
+        let err = result.expect_err("expected panic");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("panic:") && msg.contains("not implemented"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_panic_in_expression_position_unifies_with_branch_type() {
+        // The `then` branch panics; the `else` branch returns i64.
+        // Without the type-unifier change, the if-expression would
+        // collapse to Unit and the function would fail to typecheck.
+        common::assert_program_result_i64(
+            r#"
+        fn divide(a: i64, b: i64) -> i64 {
+            if b == 0i64 {
+                panic("division by zero")
+            } else {
+                a / b
+            }
+        }
+        fn main() -> i64 { divide(20i64, 4i64) }
+        "#,
+            5,
+        );
+    }
+
+    #[test]
+    fn test_panic_message_can_be_a_const() {
+        // Panic accepts any `str` expression, including a const.
+        let source = r#"
+        const ERR: str = "fatal"
+        fn main() -> i64 { panic(ERR) }
+        "#;
+        let result = common::test_program(source);
+        let err = result.expect_err("expected panic");
+        assert!(err.to_string().contains("panic: fatal"));
+    }
+
     /// Regression: a `return` in a value-producing position used to escape
     /// the function as a "Propagate flow:" runtime error because the helper
     /// type `InterpreterError::PropagateFlow` was created at every

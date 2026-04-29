@@ -570,6 +570,24 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(size)))))
             }
 
+            BuiltinFunction::Panic => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "panic takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                // The message arg is required to be `str` by the type
+                // checker, but we render via `to_display_string` so any
+                // accidental type mismatch still produces something
+                // human-readable (defensive fallback).
+                let value = self.evaluate(&args[0])?;
+                let value = try_value!(Ok(value));
+                let message = value.borrow().to_display_string(&self.string_interner);
+                Err(InterpreterError::Panic { message })
+            }
+
             BuiltinFunction::Print | BuiltinFunction::Println => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

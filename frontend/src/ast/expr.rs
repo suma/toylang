@@ -187,6 +187,12 @@ pub enum BuiltinFunction {
     Print,   // print(value) -> unit (no trailing newline)
     Println, // println(value) -> unit (trailing newline)
 
+    // Abrupt termination. `panic(msg: str)` aborts the current run with
+    // the supplied message; the type-checker pretends the call returns a
+    // type compatible with any context (Unknown), so it can appear in
+    // value positions like `if c { 5i64 } else { panic("bad") }`.
+    Panic,
+
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
 }
@@ -218,6 +224,9 @@ pub struct BuiltinFunctionSymbols {
     pub print: DefaultSymbol,
     pub println: DefaultSymbol,
 
+    // Termination
+    pub panic: DefaultSymbol,
+
     // Type introspection
     pub sizeof: DefaultSymbol,
 }
@@ -243,6 +252,7 @@ impl BuiltinFunctionSymbols {
             // for low-level memory primitives.
             print: interner.get_or_intern("print"),
             println: interner.get_or_intern("println"),
+            panic: interner.get_or_intern("panic"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
         }
     }
@@ -263,6 +273,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.fixed_buffer_allocator { Some(BuiltinFunction::FixedBufferAllocator) }
         else if symbol == self.print { Some(BuiltinFunction::Print) }
         else if symbol == self.println { Some(BuiltinFunction::Println) }
+        else if symbol == self.panic { Some(BuiltinFunction::Panic) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else { None }
     }

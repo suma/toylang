@@ -22,6 +22,9 @@ pub enum InterpreterError {
         function: String,
         clause_index: usize,
     },
+    /// Explicit user-triggered abort via the `panic("msg")` builtin.
+    /// The message is exactly what the user passed.
+    Panic { message: String },
 }
 
 impl fmt::Display for InterpreterError {
@@ -54,6 +57,9 @@ impl fmt::Display for InterpreterError {
             InterpreterError::ContractViolation { kind, function, clause_index } => {
                 write!(f, "Contract violation: `{kind}` clause #{idx} of function `{function}` evaluated to false",
                        idx = clause_index + 1)
+            }
+            InterpreterError::Panic { message } => {
+                write!(f, "panic: {message}")
             }
         }
     }

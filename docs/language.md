@@ -720,6 +720,36 @@ Both accept any type; rendering goes through `Object::to_display_string`
 (strings are unquoted, structs/dicts deterministic via sorted keys).
 These are user-facing names without the `__builtin_` prefix.
 
+### Termination
+
+```rust
+panic(message: str)   # aborts the run with `panic: <message>`
+```
+
+`panic` evaluates its argument, prints `panic: <message>` to stderr,
+and stops with a non-zero exit code. Type-wise the call is treated as
+`Unknown`, which means it unifies with any context — `panic` may sit
+in a value position like the `then` branch of an `if`-expression and
+the surrounding type is fixed by the *other* branches:
+
+```rust
+fn divide(a: i64, b: i64) -> i64 {
+    if b == 0i64 { panic("division by zero") } else { a / b }
+}
+```
+
+A function whose body diverges via `panic` (no value path) also
+typechecks regardless of the declared return type, since the
+divergent body is treated as `Unknown`:
+
+```rust
+fn unimplemented() -> i64 { panic("not implemented") }
+```
+
+`panic` cannot be caught from user code in this iteration; the run
+stops immediately. There is no `assert` builtin yet — until one
+exists, `if !cond { panic("...") }` is the idiomatic equivalent.
+
 ### Type introspection
 
 ```rust
@@ -855,8 +885,9 @@ These are real today; some appear in `todo.md` as planned work.
   write `1.5f64`.
 - **No labelled break / continue** — only the innermost loop is
   affected.
-- **No `panic` / `assert` builtins** — failures bubble up as
-  `InterpreterError`; user code can't trigger them directly.
+- **No `assert` builtin** — `panic("msg")` exists, but a structured
+  `assert(cond, "msg")` is not yet provided. `if !cond { panic("...") }`
+  works in the meantime.
 - **No string interpolation, raw strings, multi-line strings**.
 - **Modules resolve only on the local filesystem** under
   `modules/<name>/<name>.t`.

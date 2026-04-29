@@ -278,6 +278,131 @@ mod basic_execution {
         );
     }
 
+    // ----- Design-by-Contract tests -----
+
+    #[test]
+    fn test_contract_requires_and_ensures_pass() {
+        // Both predicates hold; the call returns 5.
+        common::assert_program_result_i64(
+            r"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+            ensures  result * b == a
+        {
+            a / b
+        }
+        fn main() -> i64 { divide(20i64, 4i64) }
+        ",
+            5,
+        );
+    }
+
+    #[test]
+    fn test_contract_requires_violation_at_runtime() {
+        // Calling with b == 0 trips `requires b != 0i64`.
+        let source = r"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+        {
+            a / b
+        }
+        fn main() -> i64 { divide(1i64, 0i64) }
+        ";
+        let result = common::test_program(source);
+        let err = result.expect_err("expected requires violation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Contract violation") && msg.contains("requires") && msg.contains("divide"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_contract_ensures_violation_at_runtime() {
+        // Implementation lies: returns -x for any x, violating ensures.
+        let source = r"
+        fn buggy_abs(x: i64) -> i64
+            ensures result >= 0i64
+        {
+            -x
+        }
+        fn main() -> i64 { buggy_abs(5i64) }
+        ";
+        let result = common::test_program(source);
+        let err = result.expect_err("expected ensures violation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Contract violation") && msg.contains("ensures") && msg.contains("buggy_abs"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_contract_multiple_requires_clauses_index() {
+        // Three `requires`; only the third (`x <= hi`) fails. The error
+        // message must report the third clause specifically (clause #3).
+        let source = r"
+        fn between(x: i64, lo: i64, hi: i64) -> i64
+            requires lo <= hi
+            requires lo <= x
+            requires x <= hi
+        {
+            x
+        }
+        fn main() -> i64 { between(20i64, 0i64, 10i64) }
+        ";
+        let result = common::test_program(source);
+        let err = result.expect_err("expected requires violation");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires") && msg.contains("#3") && msg.contains("between"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_contract_method_with_self_and_result() {
+        common::assert_program_result_i64(
+            r"
+        struct Counter { n: i64 }
+        impl Counter {
+            fn inc(self: Self) -> Self
+                requires self.n >= 0i64
+                ensures  result.n == self.n + 1i64
+            {
+                Counter { n: self.n + 1i64 }
+            }
+        }
+        fn main() -> i64 {
+            val c = Counter { n: 41i64 }
+            val c2 = c.inc()
+            c2.n
+        }
+        ",
+            42,
+        );
+    }
+
+    #[test]
+    fn test_contract_non_bool_clause_is_type_error() {
+        // `requires b` is i64-typed, not bool — must be rejected at type check.
+        let source = r"
+        fn divide(a: i64, b: i64) -> i64
+            requires b
+        {
+            a / b
+        }
+        fn main() -> i64 { divide(1i64, 1i64) }
+        ";
+        let result = common::test_program(source);
+        let err = result.expect_err("expected type error on non-bool requires clause");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("requires") && msg.contains("bool"),
+            "unexpected error: {msg}"
+        );
+    }
+
     #[test]
     fn test_unary_minus_on_variable() {
         common::assert_program_result_i64(r"

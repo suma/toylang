@@ -256,6 +256,18 @@ impl<'a> AstIntegrationContext<'a> {
         let new_code = self.stmt_mapping.get(&function.code.0)
             .ok_or("Cannot find function code statement mapping")?.clone();
         
+        // Remap contract clauses through the same expression mapping the
+        // body uses. Each ExprRef in `requires`/`ensures` was added to the
+        // module's pool, so the import path must follow the same redirect.
+        let new_requires = function.requires.iter()
+            .map(|e| self.expr_mapping.get(&e.0).cloned()
+                .ok_or_else(|| "Cannot find requires-clause expr mapping".to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new_ensures = function.ensures.iter()
+            .map(|e| self.expr_mapping.get(&e.0).cloned()
+                .ok_or_else(|| "Cannot find ensures-clause expr mapping".to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Function {
             node: function.node.clone(),
             name: new_name,
@@ -263,6 +275,8 @@ impl<'a> AstIntegrationContext<'a> {
             generic_bounds: function.generic_bounds.clone(), // Copy generic bounds (e.g. <A: Allocator>)
             parameter: new_parameters,
             return_type: function.return_type.clone(),
+            requires: new_requires,
+            ensures: new_ensures,
             code: new_code,
             visibility: function.visibility.clone()
         })
@@ -283,6 +297,15 @@ impl<'a> AstIntegrationContext<'a> {
         let new_code = self.stmt_mapping.get(&method.code.0)
             .ok_or("Cannot find method code statement mapping")?.clone();
         
+        let new_requires = method.requires.iter()
+            .map(|e| self.expr_mapping.get(&e.0).cloned()
+                .ok_or_else(|| "Cannot find requires-clause expr mapping".to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let new_ensures = method.ensures.iter()
+            .map(|e| self.expr_mapping.get(&e.0).cloned()
+                .ok_or_else(|| "Cannot find ensures-clause expr mapping".to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Rc::new(MethodFunction {
             node: method.node.clone(),
             name: new_name,
@@ -290,6 +313,8 @@ impl<'a> AstIntegrationContext<'a> {
             generic_bounds: method.generic_bounds.clone(), // Copy inherited impl bounds
             parameter: new_parameters,
             return_type: method.return_type.clone(),
+            requires: new_requires,
+            ensures: new_ensures,
             code: new_code,
             has_self_param: method.has_self_param,
             visibility: method.visibility.clone()

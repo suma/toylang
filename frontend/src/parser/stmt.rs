@@ -479,14 +479,15 @@ pub fn parse_impl_methods_with_generic_context(
                             }
                             _ => (),
                         }
-                        
+
+                        let (requires, ensures) = parser.parse_contract_clauses()?;
                         let block = super::expr::parse_block(parser)?;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
-                        
+
                         // Combine impl-level and method-level generic parameters
                         let mut combined_generic_params = generic_params.to_vec();
                         combined_generic_params.extend(method_generic_params);
-                        
+
                         methods.push(Rc::new(MethodFunction {
                             node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
@@ -496,6 +497,8 @@ pub fn parse_impl_methods_with_generic_context(
                             generic_bounds: generic_bounds.clone(),
                             parameter: params,
                             return_type: ret_ty,
+                            requires,
+                            ensures,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,
                             visibility,

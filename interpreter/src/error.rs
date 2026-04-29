@@ -14,6 +14,16 @@ pub enum InterpreterError {
     PropagateFlow(EvaluationResult),
     ObjectError(ObjectError),
     IndexOutOfBounds { index: isize, size: usize },
+    /// A `requires` or `ensures` clause evaluated to false at runtime.
+    /// `kind` is `"requires"` or `"ensures"`; `function` is the human-readable
+    /// function name; `clause_index` identifies which clause (0-based) failed
+    /// when multiple are declared. The original predicate text isn't kept,
+    /// so the diagnostic refers to the clause by position.
+    ContractViolation {
+        kind: &'static str,
+        function: String,
+        clause_index: usize,
+    },
 }
 
 impl fmt::Display for InterpreterError {
@@ -45,6 +55,10 @@ impl fmt::Display for InterpreterError {
             }
             InterpreterError::IndexOutOfBounds { index, size } => {
                 write!(f, "Array index {index} out of bounds for array of size {size}")
+            }
+            InterpreterError::ContractViolation { kind, function, clause_index } => {
+                write!(f, "Contract violation: `{kind}` clause #{idx} of function `{function}` evaluated to false",
+                       idx = clause_index + 1)
             }
         }
     }

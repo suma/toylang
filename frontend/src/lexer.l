@@ -37,6 +37,8 @@ macro_rules! token {
 "ambient"   return Ok(token!(self, Kind::Ambient));
 "enum"      return Ok(token!(self, Kind::Enum));
 "match"     return Ok(token!(self, Kind::Match));
+"requires"  return Ok(token!(self, Kind::Requires));
+"ensures"   return Ok(token!(self, Kind::Ensures));
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));

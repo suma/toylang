@@ -140,6 +140,16 @@ impl MonomorphSource {
             MonomorphSource::Method(m) => m.code,
         }
     }
+
+    /// Whether this source has any DbC clauses (`requires` / `ensures`).
+    /// Eligibility uses this to silent-fallback contract-bearing functions
+    /// rather than try to lower the predicates into cranelift IR.
+    pub fn has_contracts(&self) -> bool {
+        match self {
+            MonomorphSource::Function(f) => !f.requires.is_empty() || !f.ensures.is_empty(),
+            MonomorphSource::Method(m) => !m.requires.is_empty() || !m.ensures.is_empty(),
+        }
+    }
 }
 
 /// Field layout for a JIT-compatible struct: every field must be a JIT
@@ -240,6 +250,17 @@ pub fn analyze(
         if !source.generic_bounds().is_empty() {
             return Err(format!(
                 "function `{fname_disp}` has generic bounds (not supported in JIT)"
+            ));
+        }
+
+        // Design-by-Contract clauses (`requires` / `ensures`) are evaluated
+        // by the tree-walking interpreter to keep JIT codegen simple. Lowering
+        // the predicates to cranelift IR is feasible (they're just bool exprs
+        // over locals + `result`) but not required for correctness; silent
+        // fallback preserves the contract-violation error message and stack.
+        if source.has_contracts() {
+            return Err(format!(
+                "function `{fname_disp}` has DbC contracts (not supported in JIT)"
             ));
         }
 

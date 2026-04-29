@@ -28,13 +28,88 @@ impl EvaluationContext<'_> {
             param_index += 1;
         }
 
+        // Pre-body `requires` checks. `self` and named args are visible above.
+        if let Err(e) = self.evaluate_method_requires(&method) {
+            self.environment.exit_block();
+            return Err(e);
+        }
+
         // Execute method body
         let result = self.evaluate_method(&method);
+
+        // Post-body `ensures` checks with `result` bound to the method's
+        // produced value. Skip if the body already errored or propagated a
+        // non-value flow (e.g. break/continue would be a bug at this layer
+        // anyway, but we don't want to mask the original error).
+        let result = match result {
+            Ok(EvaluationResult::Value(v)) => {
+                if let Err(e) = self.evaluate_method_ensures(&method, v.clone()) {
+                    self.environment.exit_block();
+                    return Err(e);
+                }
+                Ok(EvaluationResult::Value(v))
+            }
+            Ok(EvaluationResult::Return(v)) => {
+                let ret = v.clone().unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
+                if let Err(e) = self.evaluate_method_ensures(&method, ret) {
+                    self.environment.exit_block();
+                    return Err(e);
+                }
+                Ok(EvaluationResult::Return(v))
+            }
+            other => other,
+        };
 
         // Clean up scope
         self.environment.exit_block();
 
         result
+    }
+
+    /// Evaluate every `requires` clause on the given method against the
+    /// current environment (parameters and `self` already bound). Returns
+    /// the first violation as a ContractViolation error.
+    fn evaluate_method_requires(&mut self, method: &MethodFunction) -> Result<(), InterpreterError> {
+        for (idx, cond) in method.requires.iter().enumerate() {
+            let cond_val = self.evaluate(cond);
+            let cond_obj = self.extract_value(cond_val)?;
+            let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+            if !passed {
+                let fname = self.string_interner.resolve(method.name).unwrap_or("<unknown>").to_string();
+                return Err(InterpreterError::ContractViolation {
+                    kind: "requires",
+                    function: fname,
+                    clause_index: idx,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Bind `result` to the method's produced value and evaluate every
+    /// `ensures` clause. The caller is responsible for cleaning up the
+    /// environment block; we don't enter/exit a new scope here so the
+    /// `result` binding lives in the same scope as the parameters.
+    fn evaluate_method_ensures(&mut self, method: &MethodFunction, return_value: RcObject) -> Result<(), InterpreterError> {
+        if method.ensures.is_empty() {
+            return Ok(());
+        }
+        let result_sym = self.string_interner.get_or_intern("result");
+        self.environment.set_val(result_sym, return_value);
+        for (idx, cond) in method.ensures.iter().enumerate() {
+            let cond_val = self.evaluate(cond);
+            let cond_obj = self.extract_value(cond_val)?;
+            let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+            if !passed {
+                let fname = self.string_interner.resolve(method.name).unwrap_or("<unknown>").to_string();
+                return Err(InterpreterError::ContractViolation {
+                    kind: "ensures",
+                    function: fname,
+                    clause_index: idx,
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Call an associated method (without self parameter)
@@ -61,8 +136,34 @@ impl EvaluationContext<'_> {
             param_index += 1;
         }
 
-        // Execute method body
+        // Same contract evaluation flow as `call_method`. Associated functions
+        // have no `self`, but `requires` / `ensures` predicates may still
+        // reference the named parameters and `result`.
+        if let Err(e) = self.evaluate_method_requires(&method) {
+            self.environment.exit_block();
+            return Err(e);
+        }
+
         let result = self.evaluate_method(&method);
+
+        let result = match result {
+            Ok(EvaluationResult::Value(v)) => {
+                if let Err(e) = self.evaluate_method_ensures(&method, v.clone()) {
+                    self.environment.exit_block();
+                    return Err(e);
+                }
+                Ok(EvaluationResult::Value(v))
+            }
+            Ok(EvaluationResult::Return(v)) => {
+                let ret = v.clone().unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
+                if let Err(e) = self.evaluate_method_ensures(&method, ret) {
+                    self.environment.exit_block();
+                    return Err(e);
+                }
+                Ok(EvaluationResult::Return(v))
+            }
+            other => other,
+        };
 
         // Clean up scope
         self.environment.exit_block();
@@ -480,19 +581,61 @@ impl EvaluationContext<'_> {
             self.environment.set_val(name, value.clone());
         }
 
-        let res = self.evaluate_block(&block)?;
-        self.environment.exit_block();
+        // Evaluate `requires` clauses with parameters in scope, before the body.
+        // A false predicate aborts the call with ContractViolation; the env block
+        // is unwound by the early return path's stack drop.
+        for (idx, cond) in function.requires.iter().enumerate() {
+            let cond_val = self.evaluate(cond);
+            let cond_obj = self.extract_value(cond_val)?;
+            let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+            if !passed {
+                self.environment.exit_block();
+                let fname = self.string_interner.resolve(function.name).unwrap_or("<unknown>").to_string();
+                return Err(InterpreterError::ContractViolation {
+                    kind: "requires",
+                    function: fname,
+                    clause_index: idx,
+                });
+            }
+        }
 
-        if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
-            Ok(Rc::new(RefCell::new(Object::Unit)))
+        let res = self.evaluate_block(&block)?;
+
+        let return_value: RcObject = if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
+            Rc::new(RefCell::new(Object::Unit))
         } else {
-            Ok(match res {
+            match res {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
                 EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
-            })
+            }
+        };
+
+        // Evaluate `ensures` clauses with `result` bound to the return value.
+        // Parameters are still in scope from the entry-time bindings above; the
+        // type checker only allows `result` and parameters in postconditions.
+        if !function.ensures.is_empty() {
+            let result_sym = self.string_interner.get_or_intern("result");
+            self.environment.set_val(result_sym, return_value.clone());
+            for (idx, cond) in function.ensures.iter().enumerate() {
+                let cond_val = self.evaluate(cond);
+                let cond_obj = self.extract_value(cond_val)?;
+                let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+                if !passed {
+                    self.environment.exit_block();
+                    let fname = self.string_interner.resolve(function.name).unwrap_or("<unknown>").to_string();
+                    return Err(InterpreterError::ContractViolation {
+                        kind: "ensures",
+                        function: fname,
+                        clause_index: idx,
+                    });
+                }
+            }
         }
+
+        self.environment.exit_block();
+        Ok(return_value)
     }
 
     /// Call a struct method by name

@@ -72,6 +72,12 @@ impl<'a> Parser<'a> {
                                 let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
                                 ret_ty = Some(self.parse_type_declaration_with_generic_context(&generic_context)?);
                             }
+                            // Design-by-Contract clauses live between the
+                            // return type and the body block, mirroring how
+                            // `<T: Bound>` annotates a generic param. They are
+                            // optional and may repeat; multiple clauses of the
+                            // same kind are AND-composed by the type checker.
+                            let (requires, ensures) = self.parse_contract_clauses()?;
                             let block = super::expr::parse_block(self)?;
                             let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(fn_end_pos);
@@ -83,6 +89,8 @@ impl<'a> Parser<'a> {
                                 generic_bounds,
                                 parameter: params,
                                 return_type: ret_ty,
+                                requires,
+                                ensures,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
                                 visibility,
                             }));

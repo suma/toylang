@@ -38,6 +38,13 @@ pub struct Function {
     pub generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
+    /// `requires` clauses (preconditions). Each entry is a bool-typed
+    /// expression evaluated on function entry; AND-composed.
+    pub requires: Vec<ExprRef>,
+    /// `ensures` clauses (postconditions). Each entry is a bool-typed
+    /// expression evaluated just before return; the special identifier
+    /// `result` is in scope and refers to the return value.
+    pub ensures: Vec<ExprRef>,
     pub code: StmtRef,
     pub visibility: Visibility,
 }
@@ -74,6 +81,8 @@ pub struct MethodFunction {
     pub generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
     pub parameter: ParameterList,
     pub return_type: Option<TypeDecl>,
+    pub requires: Vec<ExprRef>,
+    pub ensures: Vec<ExprRef>,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
     pub visibility: Visibility,

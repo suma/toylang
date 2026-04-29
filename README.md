@@ -23,6 +23,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
 - **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }` with `match` expressions that support tuple variants, binding patterns, and wildcards
 - **Generics**: Type-safe generic functions and structures with automatic type inference
+- **Design by Contract**: `requires` (preconditions) and `ensures` (postconditions) clauses on functions and methods, with `result` referring to the return value inside `ensures`
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
 - **Unary Operators**: `-x` for signed integer negation, `!` / `~` for logical and bitwise not
 - **Resource Management**: Automatic destruction system with custom `__drop__` methods
@@ -306,6 +307,29 @@ fn main() -> u64 {
     val bool_container = Container { value: true }
     
     result1
+}
+```
+
+### Design by Contract
+```rust
+# `requires` runs at function entry; `ensures` runs at exit with `result`
+# bound to the return value. Multiple clauses of either kind are AND-composed,
+# and a violation aborts the call with a clause-specific error message.
+fn divide(a: i64, b: i64) -> i64
+    requires b != 0i64
+    ensures  result * b == a
+{
+    a / b
+}
+
+# Methods can use `self` in both clauses.
+impl Counter {
+    fn inc(self: Self) -> Self
+        requires self.n >= 0i64
+        ensures  result.n == self.n + 1i64
+    {
+        Counter { n: self.n + 1i64 }
+    }
 }
 ```
 

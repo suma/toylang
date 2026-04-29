@@ -338,6 +338,13 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.context.set_var(*name, type_decl.clone());
         });
 
+        // `requires` clauses see only the parameters, not `result`. Each must
+        // be a bool expression — anything else is rejected here so the
+        // diagnostic points at the contract, not the call site.
+        for cond in &func.requires {
+            self.check_contract_clause(cond, "requires")?;
+        }
+
         // Pre-scan for explicit type declarations and establish global type context
         let original_hint = self.type_inference.type_hint.clone();
         if let Some(numeric_type) = self.scan_numeric_type_hint(&statements) {
@@ -436,7 +443,50 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // `ensures` runs after the body has type-checked, with `result` bound
+        // to the actual return type. We use `last` rather than `func.return_type`
+        // so an inferred Unit body is checked against an `ensures` that may
+        // reference `result: Unit` (rare but legal).
+        if !func.ensures.is_empty() {
+            let result_ty = func.return_type.clone().unwrap_or_else(|| last.clone());
+            self.push_context();
+            // Re-bind parameters: pop_context above cleared the scope.
+            for (name, type_decl) in &func.parameter {
+                self.context.set_var(*name, type_decl.clone());
+            }
+            // `result` becomes a regular variable for the duration of the
+            // ensures-clause type check. The interner already holds the
+            // symbol because the parser interned it as an Identifier when
+            // walking the predicate.
+            if let Some(result_sym) = self.core.string_interner.get("result") {
+                self.context.set_var(result_sym, result_ty);
+            }
+            for cond in &func.ensures {
+                self.check_contract_clause(cond, "ensures")?;
+            }
+            self.pop_context();
+        }
+
         self.function_checking.is_checked_fn.insert(func.name, Some(last.clone()));
         Ok(last)
+    }
+
+    /// Type-check a single contract predicate. Reused by both `requires`
+    /// and `ensures`; the `kind` label feeds the error message so users
+    /// see exactly which contract failed to type.
+    fn check_contract_clause(
+        &mut self,
+        cond: &ExprRef,
+        kind: &str,
+    ) -> Result<(), TypeCheckError> {
+        let expr = self.core.expr_pool.get(cond)
+            .ok_or_else(|| TypeCheckError::generic_error("Invalid contract expression reference"))?;
+        let ty = expr.clone().accept(self)?;
+        if ty != TypeDecl::Bool {
+            return Err(TypeCheckError::generic_error(
+                &format!("`{kind}` clause must be of type bool, got {ty:?}")
+            ));
+        }
+        Ok(())
     }
 }

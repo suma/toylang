@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use string_interner::DefaultSymbol;
-use crate::ast::{Parameter, PackageDecl, ImportDecl};
+use crate::ast::{ExprRef, Parameter, PackageDecl, ImportDecl};
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
 use crate::parser::error::{ParserError, ParserResult};
@@ -136,6 +136,42 @@ impl<'a> Parser<'a> {
 
         self.skip_newlines();
         Ok(ImportDecl { module_path, alias })
+    }
+
+    /// Parse zero or more `requires <expr>` / `ensures <expr>` Design-by-
+    /// Contract clauses. Called between the optional return type and the
+    /// `{` body in `fn` declarations and `impl` methods. Multiple clauses of
+    /// the same kind are allowed; the type checker AND-composes them.
+    /// Returns `(requires, ensures)` in declaration order.
+    pub fn parse_contract_clauses(&mut self) -> ParserResult<(Vec<ExprRef>, Vec<ExprRef>)> {
+        let mut requires = Vec::new();
+        let mut ensures = Vec::new();
+        loop {
+            // Tolerate blank lines between clauses; the body's `{` ends the
+            // run. Newlines are not significant inside this parser.
+            self.skip_newlines();
+            match self.peek() {
+                Some(Kind::Requires) => {
+                    self.next();
+                    // `Condition` context disables struct-literal parsing so
+                    // the trailing `{ body }` of the function isn't mistaken
+                    // for a struct literal at the tail of the predicate.
+                    self.push_context(crate::parser::core::ParseContext::Condition);
+                    let cond = self.parse_expr_impl();
+                    self.pop_context();
+                    requires.push(cond?);
+                }
+                Some(Kind::Ensures) => {
+                    self.next();
+                    self.push_context(crate::parser::core::ParseContext::Condition);
+                    let cond = self.parse_expr_impl();
+                    self.pop_context();
+                    ensures.push(cond?);
+                }
+                _ => break,
+            }
+        }
+        Ok((requires, ensures))
     }
 
     /// Parse generic type parameters: `<T>`, `<T, U>`, or with bounds `<T: Bound, U>`.

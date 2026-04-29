@@ -11,10 +11,26 @@ pub struct Program {
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
     pub function: Vec<Rc<Function>>,
+    /// Top-level `const NAME: Type = expr` declarations. Evaluated once
+    /// at program startup and bound as immutable globals so any function
+    /// body (including `main`) can reference them.
+    pub consts: Vec<ConstDecl>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,
     pub location_pool: LocationPool,
+}
+
+/// Top-level `const NAME: Type = expression` declaration. The `value`
+/// expression lives in the same `ExprPool` as everything else; the
+/// interpreter evaluates it once at startup with no parameters in scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstDecl {
+    pub node: Node,
+    pub name: DefaultSymbol,
+    pub type_decl: TypeDecl,
+    pub value: ExprRef,
+    pub visibility: Visibility,
 }
 
 impl Program {

@@ -33,6 +33,7 @@ macro_rules! token {
 "as"        return Ok(token!(self, Kind::As));
 "val"       return Ok(token!(self, Kind::Val));
 "var"       return Ok(token!(self, Kind::Var));
+"const"     return Ok(token!(self, Kind::Const));
 "with"      return Ok(token!(self, Kind::With));
 "ambient"   return Ok(token!(self, Kind::Ambient));
 "enum"      return Ok(token!(self, Kind::Enum));

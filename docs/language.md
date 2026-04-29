@@ -68,7 +68,7 @@ Both forms can appear inline or on their own line.
 Reserved words, none of which can be used as identifiers:
 
 ```
-fn  val  var  return  break  continue
+fn  val  var  const  return  break  continue
 if  elif  else  for  in  to  while
 class  struct  impl  enum  match  Self
 true  false  null
@@ -293,6 +293,29 @@ var d                   # uninitialized (typed null until first assign)
 
 `val` produces a binding that cannot be reassigned. `var` permits later
 `=` assignment.
+
+### Top-level `const` declarations
+
+A `const` is an immutable binding declared at file scope (alongside
+`fn`, `struct`, `enum`, etc.) and visible from every function body:
+
+```rust
+const PI: f64 = 3.14159f64
+const MAX_RETRIES: u64 = 3u64
+const GREETING: str = "hello"
+
+fn area(r: f64) -> f64 { PI * r * r }
+```
+
+- The type annotation is **mandatory** (no inference).
+- The initializer is an arbitrary expression — including references to
+  *earlier-declared* consts. Forward references are not allowed.
+- Each const is evaluated **once** at program startup, before `main`,
+  and the result is bound as an immutable global.
+- Visibility (`pub const ...`) follows the same rules as `pub fn`.
+
+Today the JIT silently falls back to the tree-walking interpreter for
+any function that references a `const` — see [`JIT.md`](../JIT.md).
 
 #### Tuple destructuring
 

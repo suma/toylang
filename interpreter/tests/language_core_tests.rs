@@ -463,6 +463,74 @@ mod basic_execution {
         ", -5);
     }
 
+    // ----- top-level `const` declarations -----
+
+    #[test]
+    fn test_const_basic_usage() {
+        common::assert_program_result_u64(
+            r"
+        const ANSWER: u64 = 42u64
+        fn main() -> u64 { ANSWER }
+        ",
+            42,
+        );
+    }
+
+    #[test]
+    fn test_const_multiple_referenced_in_function() {
+        // Two consts in declaration order, both referenced from a non-main
+        // function — verifies consts persist across function-body scopes.
+        common::assert_program_result_i64(
+            r"
+        const TWO: i64 = 2i64
+        const THREE: i64 = 3i64
+        fn add(a: i64) -> i64 { a + TWO + THREE }
+        fn main() -> i64 { add(5i64) }
+        ",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_const_f64_value() {
+        common::assert_program_result_f64(
+            r"
+        const PI: f64 = 3.14f64
+        fn main() -> f64 { PI * 2.0f64 }
+        ",
+            6.28,
+        );
+    }
+
+    #[test]
+    fn test_const_initializer_can_reference_earlier_const() {
+        // `B` references `A` already in scope — declaration order is
+        // significant; forward references are not allowed.
+        common::assert_program_result_u64(
+            r"
+        const A: u64 = 5u64
+        const B: u64 = A + 10u64
+        fn main() -> u64 { B }
+        ",
+            15,
+        );
+    }
+
+    #[test]
+    fn test_const_type_mismatch_is_type_error() {
+        let source = r"
+        const X: u64 = true
+        fn main() -> u64 { X }
+        ";
+        let result = common::test_program(source);
+        let err = result.expect_err("expected type-check failure");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Const") && msg.contains("X"),
+            "unexpected error: {msg}"
+        );
+    }
+
     /// Regression: a `return` in a value-producing position used to escape
     /// the function as a "Propagate flow:" runtime error because the helper
     /// type `InterpreterError::PropagateFlow` was created at every

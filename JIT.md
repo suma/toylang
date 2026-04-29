@@ -211,6 +211,10 @@ val total: u64 = with allocator = arena {
 * `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
   variant — only `default` and `arena` are wired up so far).
 * `match` expressions.
+* Functions that reference a top-level `const`. The constant is bound
+  in the interpreter's environment at startup; the JIT eligibility
+  walker has no view of it and rejects the unresolved identifier,
+  triggering silent fallback.
 * Functions and methods carrying any `requires` / `ensures` clause.
   Contract evaluation lives in the tree-walking interpreter so that the
   `INTERPRETER_CONTRACTS=all|pre|post|off` env-var gate and the

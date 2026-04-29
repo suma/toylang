@@ -12,6 +12,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use frontend::ast::*;
 use frontend::type_checker::*;
+use frontend::type_decl::TypeDecl;
 use frontend::visitor::AstVisitor;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
@@ -140,6 +141,7 @@ pub fn check_typing(
     
     // Extract data before setting up TypeChecker to avoid borrowing conflicts
     let functions = program.function.clone();
+    let consts: Vec<frontend::ast::ConstDecl> = program.consts.clone();
     let mut impl_blocks = Vec::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
@@ -191,6 +193,36 @@ pub fn check_typing(
                 }
             }
         }
+    }
+
+    // Type-check top-level `const` declarations and register them in the
+    // global scope. Consts are checked in declaration order so each one
+    // can refer to earlier consts (forward references are not allowed).
+    // Functions inherit the bottom-most variable scope, so a const
+    // declared here is visible from every function body.
+    for c in consts.iter() {
+        let value_ty = match tc.visit_expr(&c.value) {
+            Ok(t) => t,
+            Err(err) => {
+                let msg = if let Some(ref fmt) = formatter {
+                    fmt.format_type_check_error(&err)
+                } else {
+                    let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
+                    format!("Const initializer error for `{cname}`: {err}")
+                };
+                errors.push(msg);
+                continue;
+            }
+        };
+        if !value_ty.is_equivalent(&c.type_decl) && value_ty != TypeDecl::Number {
+            let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
+            errors.push(format!(
+                "Const `{cname}` declared as {:?} but initializer has type {:?}",
+                c.type_decl, value_ty
+            ));
+            continue;
+        }
+        tc.context.set_var(c.name, c.type_decl.clone());
     }
 
     // Process impl blocks and collect errors
@@ -358,6 +390,30 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
                 .collect();
             eval.register_enum(name, variant_info);
         }
+    }
+
+    // Evaluate top-level `const` declarations once and bind their values
+    // in the bottom-most environment scope. Each const sees previously-
+    // declared consts (declaration order). A failure here surfaces as a
+    // runtime error before main runs.
+    for c in &program.consts {
+        let value_result = eval.evaluate(&c.value);
+        let value = match value_result {
+            Ok(crate::evaluation::EvaluationResult::Value(v)) => v,
+            Ok(_) => {
+                return Err(format!(
+                    "Const initializer for `{}` produced a non-value result",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Const initializer for `{}` failed: {e}",
+                    string_interner.resolve(c.name).unwrap_or("<unknown>")
+                ));
+            }
+        };
+        eval.environment.set_val(c.name, value);
     }
 
     #[cfg(feature = "jit")]

@@ -20,6 +20,7 @@ impl<'a> Parser<'a> {
             end_pos = Some(end);
         };
         let mut def_func = vec![];
+        let mut consts: Vec<ConstDecl> = vec![];
 
         // Parse package declaration (optional, at beginning of file)
         let package_decl = if matches!(self.peek(), Some(Kind::Package)) {
@@ -100,6 +101,45 @@ impl<'a> Parser<'a> {
                             self.next(); // Skip invalid token and continue
                         }
                     }
+                }
+                Some(Kind::Const) => {
+                    // Top-level `const NAME: Type = expr` declaration. Type
+                    // annotation is mandatory (no inference) so that const
+                    // signatures stay greppable. The value expression goes
+                    // through the regular expression parser, which lets it
+                    // see other const names that have already been declared
+                    // (forward references are not allowed).
+                    let const_start_pos = self.peek_position_n(0).unwrap().start;
+                    update_start_pos(const_start_pos);
+                    self.next(); // consume `const`
+
+                    let const_name = match self.peek().cloned() {
+                        Some(Kind::Identifier(s)) => {
+                            let sym = self.string_interner.get_or_intern(s);
+                            self.next();
+                            sym
+                        }
+                        _ => {
+                            self.collect_error("expected identifier after `const`");
+                            self.next();
+                            continue;
+                        }
+                    };
+
+                    self.expect_err(&Kind::Colon)?;
+                    let const_ty = self.parse_type_declaration()?;
+                    self.expect_err(&Kind::Equal)?;
+                    let value = self.parse_expr_impl()?;
+                    let const_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                    update_end_pos(const_end_pos);
+
+                    consts.push(ConstDecl {
+                        node: Node::new(const_start_pos, const_end_pos),
+                        name: const_name,
+                        type_decl: const_ty,
+                        value,
+                        visibility,
+                    });
                 }
                 Some(Kind::Struct) => {
                     let struct_start_pos = self.peek_position_n(0).unwrap().start;
@@ -313,6 +353,7 @@ impl<'a> Parser<'a> {
             package_decl,
             imports,
             function: def_func,
+            consts,
             statement: stmt,
             expression: expr,
             location_pool,

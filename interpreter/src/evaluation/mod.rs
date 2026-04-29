@@ -15,6 +15,55 @@ mod call;
 mod slice;
 mod builtin;
 
+/// Whether `requires` and `ensures` clauses are evaluated at runtime. The
+/// fields default to "both on" so the interpreter has the same semantics
+/// it had before the env-var gate was introduced. `INTERPRETER_CONTRACTS`
+/// flips one or both off; see `ContractMode::from_env`.
+#[derive(Debug, Clone, Copy)]
+pub struct ContractMode {
+    pub check_pre: bool,
+    pub check_post: bool,
+}
+
+impl Default for ContractMode {
+    fn default() -> Self {
+        Self { check_pre: true, check_post: true }
+    }
+}
+
+impl ContractMode {
+    /// Parse the active mode from the `INTERPRETER_CONTRACTS` environment
+    /// variable. Recognised values (case-insensitive):
+    ///   - `all` (or unset): both `requires` and `ensures` are evaluated
+    ///   - `pre`: only `requires` runs; `ensures` is skipped
+    ///   - `post`: only `ensures` runs; `requires` is skipped
+    ///   - `off`: neither runs (D's `-release` equivalent)
+    /// Any other value falls back to `all` and prints a warning to stderr,
+    /// matching the philosophy of `INTERPRETER_JIT` (typos shouldn't
+    /// silently disable safety).
+    pub fn from_env() -> Self {
+        let raw = match std::env::var("INTERPRETER_CONTRACTS") {
+            Ok(v) => v,
+            Err(_) => return Self::default(),
+        };
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "all" | "on" | "1" | "true" => {
+                Self { check_pre: true, check_post: true }
+            }
+            "pre" => Self { check_pre: true, check_post: false },
+            "post" => Self { check_pre: false, check_post: true },
+            "off" | "0" | "false" => Self { check_pre: false, check_post: false },
+            other => {
+                eprintln!(
+                    "warning: INTERPRETER_CONTRACTS={other:?} not recognised; using `all`. \
+                     Valid: all|pre|post|off"
+                );
+                Self::default()
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum EvaluationResult {
     None,
@@ -49,6 +98,10 @@ pub struct EvaluationContext<'a> {
     // variant records the payload arity so the interpreter can pull the
     // right number of argument values when building an EnumVariant object.
     pub(super) enum_definitions: HashMap<DefaultSymbol, Vec<(DefaultSymbol, usize)>>,
+    /// Runtime gate for Design-by-Contract evaluation. Read once from
+    /// `INTERPRETER_CONTRACTS` at construction; `call.rs` consults
+    /// `check_pre` / `check_post` to decide whether to evaluate each clause.
+    pub(super) contract_mode: ContractMode,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -70,7 +123,15 @@ impl<'a> EvaluationContext<'a> {
             global_allocator,
             allocator_stack,
             enum_definitions: HashMap::new(),
+            contract_mode: ContractMode::from_env(),
         }
+    }
+
+    /// Override the contract mode after construction. Tests use this to
+    /// exercise specific modes deterministically without process-level
+    /// env mutation.
+    pub fn set_contract_mode(&mut self, mode: ContractMode) {
+        self.contract_mode = mode;
     }
 
     pub fn register_enum(&mut self, name: DefaultSymbol, variants: Vec<(DefaultSymbol, usize)>) {

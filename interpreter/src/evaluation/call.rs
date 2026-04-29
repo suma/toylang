@@ -68,8 +68,12 @@ impl EvaluationContext<'_> {
 
     /// Evaluate every `requires` clause on the given method against the
     /// current environment (parameters and `self` already bound). Returns
-    /// the first violation as a ContractViolation error.
+    /// the first violation as a ContractViolation error. No-op when the
+    /// active `INTERPRETER_CONTRACTS` mode disables pre-checks.
     fn evaluate_method_requires(&mut self, method: &MethodFunction) -> Result<(), InterpreterError> {
+        if !self.contract_mode.check_pre {
+            return Ok(());
+        }
         for (idx, cond) in method.requires.iter().enumerate() {
             let cond_val = self.evaluate(cond);
             let cond_obj = self.extract_value(cond_val)?;
@@ -91,7 +95,7 @@ impl EvaluationContext<'_> {
     /// environment block; we don't enter/exit a new scope here so the
     /// `result` binding lives in the same scope as the parameters.
     fn evaluate_method_ensures(&mut self, method: &MethodFunction, return_value: RcObject) -> Result<(), InterpreterError> {
-        if method.ensures.is_empty() {
+        if !self.contract_mode.check_post || method.ensures.is_empty() {
             return Ok(());
         }
         let result_sym = self.string_interner.get_or_intern("result");
@@ -583,19 +587,23 @@ impl EvaluationContext<'_> {
 
         // Evaluate `requires` clauses with parameters in scope, before the body.
         // A false predicate aborts the call with ContractViolation; the env block
-        // is unwound by the early return path's stack drop.
-        for (idx, cond) in function.requires.iter().enumerate() {
-            let cond_val = self.evaluate(cond);
-            let cond_obj = self.extract_value(cond_val)?;
-            let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
-            if !passed {
-                self.environment.exit_block();
-                let fname = self.string_interner.resolve(function.name).unwrap_or("<unknown>").to_string();
-                return Err(InterpreterError::ContractViolation {
-                    kind: "requires",
-                    function: fname,
-                    clause_index: idx,
-                });
+        // is unwound by the early return path's stack drop. Skipped entirely when
+        // `INTERPRETER_CONTRACTS=post|off` so the predicates don't even evaluate
+        // (matching D's `-release` semantics).
+        if self.contract_mode.check_pre {
+            for (idx, cond) in function.requires.iter().enumerate() {
+                let cond_val = self.evaluate(cond);
+                let cond_obj = self.extract_value(cond_val)?;
+                let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+                if !passed {
+                    self.environment.exit_block();
+                    let fname = self.string_interner.resolve(function.name).unwrap_or("<unknown>").to_string();
+                    return Err(InterpreterError::ContractViolation {
+                        kind: "requires",
+                        function: fname,
+                        clause_index: idx,
+                    });
+                }
             }
         }
 
@@ -615,7 +623,8 @@ impl EvaluationContext<'_> {
         // Evaluate `ensures` clauses with `result` bound to the return value.
         // Parameters are still in scope from the entry-time bindings above; the
         // type checker only allows `result` and parameters in postconditions.
-        if !function.ensures.is_empty() {
+        // Skipped under `INTERPRETER_CONTRACTS=pre|off`.
+        if self.contract_mode.check_post && !function.ensures.is_empty() {
             let result_sym = self.string_interner.get_or_intern("result");
             self.environment.set_val(result_sym, return_value.clone());
             for (idx, cond) in function.ensures.iter().enumerate() {

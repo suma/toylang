@@ -112,7 +112,7 @@ fn main() -> u64 {
   - Multi-line comments do not support nesting
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
 - **OOP・モジュール関連キーワード**: `class`, `struct`, `impl`, `Self`, `enum`, `match`
-- **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止
+- **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`
 - **演算子**:

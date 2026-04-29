@@ -333,6 +333,21 @@ impl Counter {
 }
 ```
 
+Contract evaluation can be tuned at runtime through the
+`INTERPRETER_CONTRACTS` environment variable (the equivalent of D's
+`-release` flag):
+
+| Value (case-insensitive) | `requires` | `ensures` |
+|---|---|---|
+| `all` (default; also unset) | evaluated | evaluated |
+| `pre` | evaluated | skipped |
+| `post` | skipped | evaluated |
+| `off` | skipped | skipped |
+
+Unrecognised values print a warning to stderr and fall back to `all`
+so a typo can't silently disable contracts. The mode is read once at
+startup and cached on the evaluation context.
+
 ### Module System
 ```rust
 # math.t (in modules/math/math.t)

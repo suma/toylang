@@ -1,5 +1,9 @@
 # Allocator システム 実装計画
 
+> 実装側の設計・進捗ドキュメント。**ユーザ向けの構文・セマンティクス**は
+> [`docs/language.md`](docs/language.md) の *Allocators* 章を参照してください。
+> JIT 側の allocator 対応範囲は [`JIT.md`](JIT.md) の *Allocators* 節にあります。
+
 本ドキュメントは toylang における allocator システムの設計方針と段階的な実装計画をまとめたものです。
 
 関連する TODO 項目: `todo.md` の 121 番。

@@ -1,5 +1,10 @@
 # Cranelift JIT
 
+> Implementation-side companion to the language reference. For language
+> syntax and semantics see [`docs/language.md`](docs/language.md); for
+> the binary's CLI / env vars see
+> [`interpreter/README.md`](interpreter/README.md).
+
 `interpreter` ships an optional cranelift-based JIT for numeric / boolean
 code. It runs alongside the tree-walking interpreter: when enabled, the
 JIT examines `main` (and every function it transitively calls). If every
@@ -47,34 +52,37 @@ reachable set ineligible.
 |---|---|---|
 | `i64` | i64 | I64 |
 | `u64` | u64 | I64 |
+| `f64` | f64 (IEEE 754) | F64 |
 | `bool` | u8 (0 or 1) | I8 |
 | `ptr` | u64 (heap address) | I64 |
 | `Allocator` | u64 (registry handle) | I64 |
 | `Unit` | — | none |
 
-`String`, `Array`, `Struct`, `Enum`, `Tuple`, `Dict`, `Range`, `Allocator`
-and generic type parameters are **not** supported.
+`String`, `Array`, `Struct`, `Enum` (variants), `Dict`, `Range`, and
+unbounded generic type parameters are **not** supported. (`Struct` and
+flat scalar `Tuple` *are* supported — see the dedicated subsections.)
 
 ### Expressions
 
 | Supported | Notes |
 |---|---|
-| `Int64`, `UInt64`, `True`, `False` | scalar literals |
+| `Int64`, `UInt64`, `Float64`, `True`, `False` | scalar literals; floats use `f64const` |
 | `Identifier` | parameters and locals declared via `val`/`var` |
-| `Binary`: `+ - * /`, `== != < <= > >=`, `&& \|\|`, `& \| ^`, `<< >>` | arithmetic and comparisons honor signed/unsigned distinction; `&&`/`\|\|` short-circuit |
-| `Unary`: `-`, `!`, `~` | `-` only on `i64` |
+| `Binary` on integers: `+ - * / %`, `== != < <= > >=`, `&& \|\|`, `& \| ^`, `<< >>` | arithmetic and comparisons honor signed/unsigned distinction; `&&`/`\|\|` short-circuit |
+| `Binary` on `f64`: `+ - * /`, `== != < <= > >=` | lowered to `fadd`/`fsub`/`fmul`/`fdiv` and ordered `fcmp` (NaN compares false against everything, matching Rust's `PartialOrd`). `%` on `f64` is **not** JIT-supported (cranelift has no native `frem`) |
+| `Unary`: `-`, `!`, `~` | `-` accepts `i64` (`ineg`) and `f64` (`fneg`). `~` on integers, `!` on bool. |
 | `Block { stmts }` | last expression is the block value |
 | `if/elif/else` | all branches must agree on type |
 | `Assign(Identifier, expr)` | only to a previously declared local |
 | `Call(name, args)` | callee must itself be JIT-eligible |
-| `Cast(expr, T)` | only `i64` ↔ `u64` (and identity) |
+| `Cast(expr, T)` | `i64` ↔ `u64` (no-op at the IR level); `i64`/`u64` → `f64` via `fcvt_from_sint`/`fcvt_from_uint`; `f64` → `i64`/`u64` via `fcvt_to_sint_sat`/`fcvt_to_uint_sat` (saturating, NaN → 0; matches Rust `as`) |
 | `__builtin_sizeof(probe)` | scalar probe; result is a compile-time iconst |
 | `__builtin_heap_alloc / heap_free / heap_realloc` | route through `HeapManager` |
 | `__builtin_ptr_is_null` | inline `icmp_imm(Equal, p, 0)` |
 | `__builtin_mem_copy / mem_move / mem_set` | route through `HeapManager` |
 | `__builtin_ptr_write(p, off, value)` | helper picked from the value's static type |
 | `__builtin_ptr_read(p, off)` | only as the *direct* RHS of `val NAME: T = …`, `var NAME: T = …`, or `name = …` (the JIT needs a static expected type) |
-| `print(x) / println(x)` | scalar arg only; calls Rust `extern "C"` helpers |
+| `print(x) / println(x)` | scalar arg only; calls Rust `extern "C"` helpers (`jit_print_i64/u64/bool/f64` and `*_println_*`) |
 
 ### Statements
 
@@ -198,10 +206,17 @@ val total: u64 = with allocator = arena {
 * String, Array, Enum, Dict, Range values.
 * Nested tuples / non-scalar tuple elements (flat scalar tuples are
   supported; see *Tuples* above).
-* Method calls, associated functions, field access.
+* `f64` modulo (`%`) — cranelift has no native `frem`. Integer
+  modulo lowers to `srem`/`urem` and is fine.
 * `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
   variant — only `default` and `arena` are wired up so far).
 * `match` expressions.
+* Functions and methods carrying any `requires` / `ensures` clause.
+  Contract evaluation lives in the tree-walking interpreter so that the
+  `INTERPRETER_CONTRACTS=all|pre|post|off` env-var gate and the
+  `ContractViolation` diagnostic stay in one place. Callers see
+  `JIT: skipped (function 'foo' has DbC contracts (not supported in JIT))`
+  in `-v` mode.
 
 ## Architecture
 
@@ -271,6 +286,7 @@ the native code itself is faster.
 * `jit_method.t` — `impl Point { fn dist_squared(self: Self) -> i64 }` dispatched twice → exit 194
 * `jit_allocator.t` — `with allocator = arena { … }` round-trip → exit 57 (12345 % 256)
 * `jit_tuple.t` — flat tuple param / return, destructure, and `TupleAccess` → exit 33
+* `jit_float64.t` — `f64` arithmetic, comparisons, casts, `println(f64)` → exit 7
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -286,3 +302,7 @@ Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 * `with` bodies that contain `return` / `break` / `continue` (need
   cleanup-style pop emission before the early exit).
 * Generic methods and generic structs.
+* `f64` modulo via a runtime callback into `f64::rem`.
+* Lowering simple `requires` / `ensures` predicates to cranelift IR
+  so contract-bearing numeric kernels can JIT (currently any contract
+  forces fallback).

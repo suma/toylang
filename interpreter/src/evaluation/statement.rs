@@ -6,6 +6,7 @@ use string_interner::DefaultSymbol;
 use crate::environment::VariableSetType;
 use crate::object::Object;
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{convert_object, EvaluationContext, EvaluationResult};
 
 impl EvaluationContext<'_> {
@@ -66,10 +67,23 @@ impl EvaluationContext<'_> {
         for stmt in statements {
             match stmt {
                 Stmt::Val(name, _, e) => {
-                    last = self.handle_val_declaration(name, &e)?;
+                    // val/var declarations don't themselves produce a value, but
+                    // the rhs may propagate control flow (e.g. `val x = return ...`)
+                    // which we must surface to the enclosing function/loop.
+                    match self.handle_val_declaration(name, &e)? {
+                        flow @ (EvaluationResult::Return(_)
+                                | EvaluationResult::Break
+                                | EvaluationResult::Continue) => return Ok(flow),
+                        _ => last = None,
+                    }
                 }
                 Stmt::Var(name, _, e) => {
-                    last = self.handle_var_declaration(name, &e)?;
+                    match self.handle_var_declaration(name, &e)? {
+                        flow @ (EvaluationResult::Return(_)
+                                | EvaluationResult::Break
+                                | EvaluationResult::Continue) => return Ok(flow),
+                        _ => last = None,
+                    }
                 }
                 Stmt::Return(e) => {
                     return self.handle_return_statement(&e);
@@ -123,27 +137,31 @@ impl EvaluationContext<'_> {
         }
     }
 
-    /// Handles val (immutable variable) declarations
-    fn handle_val_declaration(&mut self, name: DefaultSymbol, expr: &ExprRef) -> Result<Option<EvaluationResult>, InterpreterError> {
+    /// Handles val (immutable variable) declarations.
+    ///
+    /// Returns `EvaluationResult::None` on success (a `val` is not itself a
+    /// value-producing statement). Control flow inside the rhs (e.g.
+    /// `val x = if cond { return 100 } else { 5 }`) is propagated as
+    /// `Ok(Return(...))` so the enclosing function returns correctly —
+    /// previously this would surface as a stray "Propagate flow:" error.
+    fn handle_val_declaration(&mut self, name: DefaultSymbol, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let value = self.evaluate(expr);
-        let value = self.extract_value(value)?;
+        let value = try_value!(value);
         self.environment.set_val(name, value);
-        Ok(None)
+        Ok(EvaluationResult::None)
     }
 
-    /// Handles var (mutable variable) declarations
-    fn handle_var_declaration(&mut self, name: DefaultSymbol, expr: &Option<ExprRef>) -> Result<Option<EvaluationResult>, InterpreterError> {
-        let value = if expr.is_none() {
-            self.null_object.clone()
+    /// Handles var (mutable variable) declarations. Same flow-propagation
+    /// convention as `handle_val_declaration`.
+    fn handle_var_declaration(&mut self, name: DefaultSymbol, expr: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+        let value = if let Some(e) = expr {
+            let res = self.evaluate(e);
+            try_value!(res)
         } else {
-            match self.evaluate(expr.as_ref().ok_or_else(|| InterpreterError::InternalError("Missing expression in value".to_string()))?)? {
-                EvaluationResult::Value(v) => v,
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| self.null_object.clone()),
-                _ => self.null_object.clone(),
-            }
+            self.null_object.clone()
         };
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
-        Ok(None)
+        Ok(EvaluationResult::None)
     }
 
     /// Handles return statements
@@ -164,7 +182,7 @@ impl EvaluationContext<'_> {
     fn handle_while_loop(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         loop {
             let cond_result = self.evaluate(cond)?;
-            let cond_value = self.extract_value(Ok(cond_result))?;
+            let cond_value = try_value!(Ok(cond_result));
             let cond_bool = cond_value.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
 
             if !cond_bool {
@@ -196,9 +214,9 @@ impl EvaluationContext<'_> {
     /// Handles for loop execution
     fn handle_for_loop(&mut self, identifier: DefaultSymbol, start: &ExprRef, end: &ExprRef, block: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let start = self.evaluate(start);
-        let start = self.extract_value(start)?;
+        let start = try_value!(start);
         let end = self.evaluate(end);
-        let end = self.extract_value(end)?;
+        let end = try_value!(end);
         let start_ty = start.borrow().get_type();
         let end_ty = end.borrow().get_type();
 
@@ -284,7 +302,7 @@ impl EvaluationContext<'_> {
         // Mutating through the Rc updates every alias (which is the whole point —
         // `self.field = x` inside a method has to be observable on the caller's copy).
         let obj_val = self.evaluate(obj);
-        let obj_val = self.extract_value(obj_val)?;
+        let obj_val = try_value!(obj_val);
 
         // Evaluate the right-hand side, mirroring handle_variable_assignment's
         // Null-shortcut so `obj.field = null` keeps working.
@@ -294,7 +312,7 @@ impl EvaluationContext<'_> {
             Expr::Null => self.null_object.clone(),
             _ => {
                 let v = self.evaluate(rhs);
-                self.extract_value(v)?
+                try_value!(v)
             }
         };
 
@@ -338,7 +356,7 @@ impl EvaluationContext<'_> {
             }
             _ => {
                 let rhs = self.evaluate(rhs);
-                self.extract_value(rhs)?
+                try_value!(rhs)
             }
         };
         let rhs_borrow = rhs.borrow();

@@ -5,6 +5,7 @@ use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::object::Object;
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 #[derive(Debug)]
@@ -260,7 +261,7 @@ impl EvaluationContext<'_> {
 
     pub fn evaluate_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let operand_result = self.evaluate(operand);
-        let operand_val = self.extract_value(operand_result)?;
+        let operand_val = try_value!(operand_result);
         let operand_obj = operand_val.borrow();
 
         let result = match op {
@@ -310,8 +311,8 @@ impl EvaluationContext<'_> {
         // Regular evaluation for all other operators
         let lhs = self.evaluate(lhs);
         let rhs = self.evaluate(rhs);
-        let lhs_val = self.extract_value(lhs)?;
-        let rhs_val = self.extract_value(rhs)?;
+        let lhs_val = try_value!(lhs);
+        let rhs_val = try_value!(rhs);
 
         let lhs_obj = lhs_val.borrow();
         let rhs_obj = rhs_val.borrow();
@@ -487,7 +488,7 @@ impl EvaluationContext<'_> {
     // Short-circuit evaluation for logical AND
     pub fn evaluate_logical_and_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let lhs_result = self.evaluate(lhs);
-        let lhs_val = self.extract_value(lhs_result)?;
+        let lhs_val = try_value!(lhs_result);
         let lhs_obj = lhs_val.borrow();
 
         let lhs_bool = lhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
@@ -499,7 +500,7 @@ impl EvaluationContext<'_> {
 
         // Left is true, so evaluate right side
         let rhs_result = self.evaluate(rhs);
-        let rhs_val = self.extract_value(rhs_result)?;
+        let rhs_val = try_value!(rhs_result);
         let rhs_obj = rhs_val.borrow();
 
         let rhs_bool = rhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
@@ -510,7 +511,7 @@ impl EvaluationContext<'_> {
     // Short-circuit evaluation for logical OR
     pub fn evaluate_logical_or_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let lhs_result = self.evaluate(lhs);
-        let lhs_val = self.extract_value(lhs_result)?;
+        let lhs_val = try_value!(lhs_result);
         let lhs_obj = lhs_val.borrow();
 
         let lhs_bool = lhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
@@ -522,7 +523,7 @@ impl EvaluationContext<'_> {
 
         // Left is false, so evaluate right side
         let rhs_result = self.evaluate(rhs);
-        let rhs_val = self.extract_value(rhs_result)?;
+        let rhs_val = try_value!(rhs_result);
         let rhs_obj = rhs_val.borrow();
 
         let rhs_bool = rhs_obj.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;

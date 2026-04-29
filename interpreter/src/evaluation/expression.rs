@@ -6,6 +6,7 @@ use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::object::{Object, ObjectKey, RcObject};
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{convert_object, EvaluationContext, EvaluationResult};
 
 impl EvaluationContext<'_> {
@@ -101,9 +102,9 @@ impl EvaluationContext<'_> {
             }
             Expr::Range(start, end) => {
                 let start_val = self.evaluate(&start);
-                let start_val = self.extract_value(start_val)?;
+                let start_val = try_value!(start_val);
                 let end_val = self.evaluate(&end);
-                let end_val = self.extract_value(end_val)?;
+                let end_val = try_value!(end_val);
                 let obj = Object::Range { start: start_val, end: end_val };
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
             }
@@ -114,7 +115,7 @@ impl EvaluationContext<'_> {
                 // pop must happen on every exit path (value, return, break, continue,
                 // error) so nested `with` blocks always restore the outer binding.
                 let allocator_val = self.evaluate(&allocator);
-                let allocator_val = self.extract_value(allocator_val)?;
+                let allocator_val = try_value!(allocator_val);
                 let allocator_rc = match &*allocator_val.borrow() {
                     Object::Allocator(rc) => rc.clone(),
                     other => return Err(InterpreterError::InternalError(format!(
@@ -150,7 +151,7 @@ impl EvaluationContext<'_> {
     pub(super) fn evaluate_if_elif_else(&mut self, cond: &ExprRef, then: &ExprRef, elif_pairs: &[(ExprRef, ExprRef)], _else: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Evaluate if condition
         let cond = self.evaluate(cond);
-        let cond = self.extract_value(cond)?;
+        let cond = try_value!(cond);
         let cond = cond.borrow();
         if cond.get_type() != TypeDecl::Bool {
             return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: "evaluate: Bad types for if condition".to_string()});
@@ -170,7 +171,7 @@ impl EvaluationContext<'_> {
             // Check elif conditions
             for (elif_cond, elif_block) in elif_pairs {
                 let elif_cond = self.evaluate(elif_cond);
-                let elif_cond = self.extract_value(elif_cond)?;
+                let elif_cond = try_value!(elif_cond);
                 let elif_cond = elif_cond.borrow();
                 if elif_cond.get_type() != TypeDecl::Bool {
                     return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: elif_cond.get_type(), message: "evaluate: Bad types for elif condition".to_string()});
@@ -220,7 +221,7 @@ impl EvaluationContext<'_> {
         let mut array_objects = Vec::new();
         for element in elements {
             let value = self.evaluate(element)?;
-            let obj = self.extract_value(Ok(value))?;
+            let obj = try_value!(Ok(value));
             array_objects.push(obj);
         }
         Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(array_objects))))))
@@ -232,7 +233,7 @@ impl EvaluationContext<'_> {
         for (key_ref, value_ref) in entries {
             // Evaluate key - now supports any Object type that can be used as a key
             let key_val = self.evaluate(key_ref)?;
-            let key_obj_rc = self.extract_value(Ok(key_val))?;
+            let key_obj_rc = try_value!(Ok(key_val));
 
             // Convert to ObjectKey - clone the object for use as a key
             let key_object = key_obj_rc.borrow().clone();
@@ -240,7 +241,7 @@ impl EvaluationContext<'_> {
 
             // Evaluate value
             let value_val = self.evaluate(value_ref)?;
-            let value_obj = self.extract_value(Ok(value_val))?;
+            let value_obj = try_value!(Ok(value_val));
 
             dict.insert(object_key, value_obj);
         }
@@ -254,7 +255,7 @@ impl EvaluationContext<'_> {
 
         for element_ref in elements {
             let element_val = self.evaluate(element_ref);
-            let element_obj = self.extract_value(element_val)?;
+            let element_obj = try_value!(element_val);
             tuple_elements.push(element_obj);
         }
 
@@ -264,7 +265,7 @@ impl EvaluationContext<'_> {
 
     pub(super) fn evaluate_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<EvaluationResult, InterpreterError> {
         let tuple_val = self.evaluate(tuple);
-        let tuple_obj = self.extract_value(tuple_val)?;
+        let tuple_obj = try_value!(tuple_val);
 
         let tuple_borrowed = tuple_obj.borrow();
         match &*tuple_borrowed {
@@ -289,7 +290,7 @@ impl EvaluationContext<'_> {
     /// Evaluate type cast expression (e.g., `x as i64`)
     pub(super) fn evaluate_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<EvaluationResult, InterpreterError> {
         let value = self.evaluate(expr);
-        let value_obj = self.extract_value(value)?;
+        let value_obj = try_value!(value);
 
         let borrowed = value_obj.borrow();
         let result = match (&*borrowed, target_type) {
@@ -377,7 +378,7 @@ impl EvaluationContext<'_> {
         arms: &Vec<MatchArm>,
     ) -> Result<EvaluationResult, InterpreterError> {
         let scrutinee_val = self.evaluate(scrutinee);
-        let scrutinee_val = self.extract_value(scrutinee_val)?;
+        let scrutinee_val = try_value!(scrutinee_val);
         for arm in arms {
             // Probe each arm in a fresh scope so bindings that were set
             // during a partial match don't leak across arms when the
@@ -389,7 +390,7 @@ impl EvaluationContext<'_> {
                 // guard skips this arm and falls through to the next.
                 let guard_passed = if let Some(guard_expr) = arm.guard {
                     let g = self.evaluate(&guard_expr);
-                    let g = self.extract_value(g)?;
+                    let g = try_value!(g);
                     let b = matches!(&*g.borrow(), Object::Bool(true));
                     b
                 } else {
@@ -424,8 +425,11 @@ impl EvaluationContext<'_> {
                 Ok(true)
             }
             Pattern::Literal(literal_expr) => {
-                let lit_value = self.evaluate(literal_expr);
-                let lit_value = self.extract_value(lit_value)?;
+                // Pattern literals are constants by construction; reject any
+                // control-flow signal as an internal bug rather than
+                // propagating it (this helper can't return EvaluationResult).
+                let lit_res = self.evaluate(literal_expr)?;
+                let lit_value = self.unwrap_value(lit_res)?;
                 let eq = *value.borrow() == *lit_value.borrow();
                 Ok(eq)
             }

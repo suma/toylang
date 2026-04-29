@@ -3,6 +3,7 @@ use std::rc::Rc;
 use frontend::ast::*;
 use crate::object::{Object, ObjectKey, RcObject};
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 impl EvaluationContext<'_> {
@@ -49,7 +50,7 @@ impl EvaluationContext<'_> {
 
     pub(super) fn evaluate_slice_access_with_info(&mut self, object: &ExprRef, slice_info: &SliceInfo) -> Result<EvaluationResult, InterpreterError> {
         let object_val = self.evaluate(object)?;
-        let object_obj = self.extract_value(Ok(object_val))?;
+        let object_obj = try_value!(Ok(object_val));
 
         let obj_borrowed = object_obj.borrow();
         match &*obj_borrowed {
@@ -59,7 +60,7 @@ impl EvaluationContext<'_> {
                 // Evaluate start index (default to 0)
                 let start_idx = if let Some(start_expr) = &slice_info.start {
                     let start_val = self.evaluate(start_expr)?;
-                    let start_obj = self.extract_value(Ok(start_val))?;
+                    let start_obj = try_value!(Ok(start_val));
                     self.resolve_array_index(&start_obj, array_len)?
                 } else {
                     0
@@ -68,7 +69,7 @@ impl EvaluationContext<'_> {
                 // Evaluate end index (default to array length)
                 let end_idx = if let Some(end_expr) = &slice_info.end {
                     let end_val = self.evaluate(end_expr)?;
-                    let end_obj = self.extract_value(Ok(end_val))?;
+                    let end_obj = try_value!(Ok(end_val));
                     // Use same logic as in original function for end index
                     let borrowed = end_obj.borrow();
                     match &*borrowed {
@@ -162,7 +163,7 @@ impl EvaluationContext<'_> {
                             drop(obj_borrowed); // Release borrow before method call
 
                             let start_val = self.evaluate(start_expr)?;
-                            let start_obj = self.extract_value(Ok(start_val))?;
+                            let start_obj = try_value!(Ok(start_val));
 
                             // Resolve names first before method call
                             let struct_name_str = self.string_interner.resolve(struct_name_val)
@@ -184,14 +185,14 @@ impl EvaluationContext<'_> {
 
                         let start_obj = if let Some(start_expr) = &slice_info.start {
                             let start_val = self.evaluate(start_expr)?;
-                            self.extract_value(Ok(start_val))?
+                            try_value!(Ok(start_val))
                         } else {
                             Rc::new(RefCell::new(Object::Int64(0)))
                         };
 
                         let end_obj = if let Some(end_expr) = &slice_info.end {
                             let end_val = self.evaluate(end_expr)?;
-                            self.extract_value(Ok(end_val))?
+                            try_value!(Ok(end_val))
                         } else {
                             Rc::new(RefCell::new(Object::Int64(i64::MAX)))
                         };
@@ -214,7 +215,7 @@ impl EvaluationContext<'_> {
 
     fn evaluate_slice_access(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let object_val = self.evaluate(object)?;
-        let object_obj = self.extract_value(Ok(object_val))?;
+        let object_obj = try_value!(Ok(object_val));
 
         let obj_borrowed = object_obj.borrow();
         match &*obj_borrowed {
@@ -224,7 +225,7 @@ impl EvaluationContext<'_> {
                 // Evaluate start index (default to 0)
                 let start_idx = if let Some(start_expr) = start {
                     let start_val = self.evaluate(start_expr)?;
-                    let start_obj = self.extract_value(Ok(start_val))?;
+                    let start_obj = try_value!(Ok(start_val));
                     self.resolve_array_index(&start_obj, array_len)?
                 } else {
                     0
@@ -233,7 +234,7 @@ impl EvaluationContext<'_> {
                 // Evaluate end index (default to array length)
                 let end_idx = if let Some(end_expr) = end {
                     let end_val = self.evaluate(end_expr)?;
-                    let end_obj = self.extract_value(Ok(end_val))?;
+                    let end_obj = try_value!(Ok(end_val));
                     // For end index, we need to allow array_len as valid (exclusive end)
                     let borrowed = end_obj.borrow();
                     match &*borrowed {
@@ -315,7 +316,7 @@ impl EvaluationContext<'_> {
                     // Single element access: dict[key]
                     if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let start_obj = try_value!(Ok(start_val));
 
                         // Create ObjectKey for dictionary lookup
                         let key_borrowed = start_obj.borrow();
@@ -343,7 +344,7 @@ impl EvaluationContext<'_> {
                         drop(obj_borrowed); // Release borrow before method call
 
                         let start_val = self.evaluate(start_expr)?;
-                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let start_obj = try_value!(Ok(start_val));
 
                         // Resolve names first before method call
                         let struct_name_str = self.string_interner.resolve(struct_name_val)
@@ -364,14 +365,14 @@ impl EvaluationContext<'_> {
 
                     let start_obj = if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        self.extract_value(Ok(start_val))?
+                        try_value!(Ok(start_val))
                     } else {
                         Rc::new(RefCell::new(Object::Int64(0)))
                     };
 
                     let end_obj = if let Some(end_expr) = end {
                         let end_val = self.evaluate(end_expr)?;
-                        self.extract_value(Ok(end_val))?
+                        try_value!(Ok(end_val))
                     } else {
                         Rc::new(RefCell::new(Object::Int64(-1)))
                     };
@@ -394,11 +395,11 @@ impl EvaluationContext<'_> {
     pub(super) fn evaluate_slice_assign(&mut self, object: &ExprRef, start: &Option<ExprRef>, end: &Option<ExprRef>, value: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         // Get the object being indexed
         let object_val = self.evaluate(object)?;
-        let object_obj = self.extract_value(Ok(object_val))?;
+        let object_obj = try_value!(Ok(object_val));
 
         // Evaluate the value to assign
         let value_val = self.evaluate(value)?;
-        let value_obj = self.extract_value(Ok(value_val))?;
+        let value_obj = try_value!(Ok(value_val));
 
         let obj_borrowed = object_obj.borrow();
         match &*obj_borrowed {
@@ -411,7 +412,7 @@ impl EvaluationContext<'_> {
                     // Single element assignment: arr[i] = value
                     if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let start_obj = try_value!(Ok(start_val));
                         let resolved_idx = self.resolve_array_index(&start_obj, array_len)?;
 
                         let mut obj_borrowed = object_obj.borrow_mut();
@@ -436,7 +437,7 @@ impl EvaluationContext<'_> {
                     // Single element assignment: dict[key] = value
                     if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let start_obj = try_value!(Ok(start_val));
 
                         // Create ObjectKey for dictionary assignment
                         let key_borrowed = start_obj.borrow();
@@ -467,7 +468,7 @@ impl EvaluationContext<'_> {
                     // Single element assignment: struct[key] = value
                     if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        let start_obj = self.extract_value(Ok(start_val))?;
+                        let start_obj = try_value!(Ok(start_val));
 
                         // Resolve names first before method call
                         let struct_name_str = self.string_interner.resolve(struct_name_val)
@@ -488,14 +489,14 @@ impl EvaluationContext<'_> {
                     // Range slice assignment: struct[start..end] = value calls __setslice__(self, start, end, value)
                     let start_obj = if let Some(start_expr) = start {
                         let start_val = self.evaluate(start_expr)?;
-                        self.extract_value(Ok(start_val))?
+                        try_value!(Ok(start_val))
                     } else {
                         Rc::new(RefCell::new(Object::Int64(0)))
                     };
 
                     let end_obj = if let Some(end_expr) = end {
                         let end_val = self.evaluate(end_expr)?;
-                        self.extract_value(Ok(end_val))?
+                        try_value!(Ok(end_val))
                     } else {
                         Rc::new(RefCell::new(Object::Int64(i64::MAX)))
                     };

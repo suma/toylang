@@ -152,16 +152,59 @@ impl<'a> EvaluationContext<'a> {
             .cloned()
     }
 
-    pub(super) fn extract_value(&mut self, result: Result<EvaluationResult, InterpreterError>) -> Result<Rc<RefCell<Object>>, InterpreterError> {
+    /// Drop the `EvaluationResult` envelope of a successful evaluation,
+    /// returning the produced value. **Pre-condition**: the caller has
+    /// already separated control-flow signals (Return / Break / Continue)
+    /// from values via `try_value!`. If a control-flow variant reaches
+    /// here, that's an interpreter bug — flag it as InternalError rather
+    /// than silently turning it into an error message the user sees.
+    pub(super) fn unwrap_value(
+        &self,
+        result: EvaluationResult,
+    ) -> Result<Rc<RefCell<Object>>, InterpreterError> {
         match result {
-            Ok(EvaluationResult::Value(v)) => Ok(v),
-            Ok(EvaluationResult::Return(v)) => Err(InterpreterError::PropagateFlow(EvaluationResult::Return(v))),
-            Ok(EvaluationResult::Break) => Err(InterpreterError::PropagateFlow(EvaluationResult::Break)),
-            Ok(EvaluationResult::Continue) => Err(InterpreterError::PropagateFlow(EvaluationResult::Continue)),
-            Ok(EvaluationResult::None) => Err(InterpreterError::InternalError("unexpected None".to_string())),
-            Err(e) => Err(e),
+            EvaluationResult::Value(v) => Ok(v),
+            EvaluationResult::Return(_)
+            | EvaluationResult::Break
+            | EvaluationResult::Continue
+            | EvaluationResult::None => Err(InterpreterError::InternalError(
+                "control-flow signal reached unwrap_value (use try_value! to extract values from positions where flow may occur)".to_string(),
+            )),
         }
     }
+}
+
+/// Extract a `Value` from an `evaluate*` result, propagating any
+/// control-flow signal (Return / Break / Continue) to the caller's
+/// caller via early `return Ok(flow)`. Errors propagate via `?`.
+///
+/// Replaces the old `extract_value`, which converted flow into
+/// `Err(InterpreterError::PropagateFlow(...))` and relied on no one
+/// catching it — a latent bug because flow then leaked out as a
+/// "Propagate flow:" message whenever `return` appeared in a value
+/// position (e.g. `val y = if cond { return X } else { Y }`).
+///
+/// **Caller contract**: must return
+/// `Result<EvaluationResult, InterpreterError>` so the macro can
+/// `return Ok(flow)` cleanly. For functions returning
+/// `Result<RcObject, InterpreterError>` (function-call boundaries,
+/// contract evaluation), handle flow inline instead.
+#[macro_export]
+macro_rules! try_value {
+    ($result:expr) => {
+        match $result {
+            Ok($crate::evaluation::EvaluationResult::Value(v)) => v,
+            Ok(flow @ $crate::evaluation::EvaluationResult::Return(_)) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Break) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Continue) => return Ok(flow),
+            Ok($crate::evaluation::EvaluationResult::None) => {
+                return Err($crate::error::InterpreterError::InternalError(
+                    "unexpected None evaluation result".to_string(),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    };
 }
 
 pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {

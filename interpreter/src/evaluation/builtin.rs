@@ -4,6 +4,7 @@ use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 /// Compute the byte size of a runtime value by walking its Object tree.
@@ -55,7 +56,7 @@ impl EvaluationContext<'_> {
     /// Evaluate builtin method calls
     pub(super) fn evaluate_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
         let receiver_value = self.evaluate(receiver)?;
-        let receiver_obj = self.extract_value(Ok(receiver_value))?;
+        let receiver_obj = try_value!(Ok(receiver_value));
 
         self.execute_builtin_method(&receiver_obj, method, args)
     }
@@ -101,7 +102,7 @@ impl EvaluationContext<'_> {
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
 
                 let arg_value = self.evaluate(&args[0])?;
-                let arg_obj = self.extract_value(Ok(arg_value))?;
+                let arg_obj = try_value!(Ok(arg_value));
                 let arg_string = arg_obj.borrow().to_string_value(&self.string_interner);
 
                 let concatenated = format!("{}{}", string_value, arg_string);
@@ -124,11 +125,11 @@ impl EvaluationContext<'_> {
                     .to_string();
 
                 let start_value = self.evaluate(&args[0])?;
-                let start_obj = self.extract_value(Ok(start_value))?;
+                let start_obj = try_value!(Ok(start_value));
                 let start = start_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
 
                 let end_value = self.evaluate(&args[1])?;
-                let end_obj = self.extract_value(Ok(end_value))?;
+                let end_obj = try_value!(Ok(end_value));
                 let end = end_obj.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)? as usize;
 
                 if start >= string_value.len() || end > string_value.len() || start > end {
@@ -155,7 +156,7 @@ impl EvaluationContext<'_> {
                     .to_string();
 
                 let arg_value = self.evaluate(&args[0])?;
-                let arg_obj = self.extract_value(Ok(arg_value))?;
+                let arg_obj = try_value!(Ok(arg_value));
                 let arg_symbol = arg_obj.borrow().try_unwrap_string().map_err(InterpreterError::ObjectError)?;
                 let arg_string = self.string_interner.resolve(arg_symbol)
                     .ok_or_else(|| InterpreterError::InternalError("Argument string symbol not found in interner".to_string()))?
@@ -222,7 +223,7 @@ impl EvaluationContext<'_> {
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
 
                 let separator_value = self.evaluate(&args[0])?;
-                let separator_obj = self.extract_value(Ok(separator_value))?;
+                let separator_obj = try_value!(Ok(separator_value));
                 let separator = separator_obj.borrow().to_string_value(&self.string_interner);
 
                 let parts: Vec<_> = string_value.split(&separator)
@@ -251,7 +252,7 @@ impl EvaluationContext<'_> {
                 }
 
                 let size_result = self.evaluate(&args[0])?;
-                let size_obj = self.extract_value(Ok(size_result))?;
+                let size_obj = try_value!(Ok(size_result));
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("heap_alloc expects u64 size".to_string()))?;
 
@@ -276,7 +277,7 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("heap_free expects pointer".to_string()))?;
 
@@ -298,12 +299,12 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let old_addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("heap_realloc expects pointer as first argument".to_string()))?;
 
                 let size_result = self.evaluate(&args[1])?;
-                let size_obj = self.extract_value(Ok(size_result))?;
+                let size_obj = try_value!(Ok(size_result));
                 let new_size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("heap_realloc expects u64 size as second argument".to_string()))?;
 
@@ -326,12 +327,12 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("ptr_read expects pointer as first argument".to_string()))?;
 
                 let offset_result = self.evaluate(&args[1])?;
-                let offset_obj = self.extract_value(Ok(offset_result))?;
+                let offset_obj = try_value!(Ok(offset_result));
                 let offset = offset_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("ptr_read expects u64 offset as second argument".to_string()))?;
 
@@ -358,17 +359,17 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("ptr_write expects pointer as first argument".to_string()))?;
 
                 let offset_result = self.evaluate(&args[1])?;
-                let offset_obj = self.extract_value(Ok(offset_result))?;
+                let offset_obj = try_value!(Ok(offset_result));
                 let offset = offset_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("ptr_write expects u64 offset as second argument".to_string()))?;
 
                 let value_result = self.evaluate(&args[2])?;
-                let value_obj = self.extract_value(Ok(value_result))?;
+                let value_obj = try_value!(Ok(value_result));
 
                 // Snapshot the value type so u64 writes can continue to land
                 // in the byte buffer (for existing consumers / future native
@@ -400,7 +401,7 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("ptr_is_null expects pointer".to_string()))?;
                 Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(addr == 0)))))
@@ -417,17 +418,17 @@ impl EvaluationContext<'_> {
                 }
 
                 let src_result = self.evaluate(&args[0])?;
-                let src_obj = self.extract_value(Ok(src_result))?;
+                let src_obj = try_value!(Ok(src_result));
                 let src_addr = src_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("mem_copy expects pointer as first argument".to_string()))?;
 
                 let dest_result = self.evaluate(&args[1])?;
-                let dest_obj = self.extract_value(Ok(dest_result))?;
+                let dest_obj = try_value!(Ok(dest_result));
                 let dest_addr = dest_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("mem_copy expects pointer as second argument".to_string()))?;
 
                 let size_result = self.evaluate(&args[2])?;
-                let size_obj = self.extract_value(Ok(size_result))?;
+                let size_obj = try_value!(Ok(size_result));
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_copy expects u64 size as third argument".to_string()))?;
 
@@ -448,17 +449,17 @@ impl EvaluationContext<'_> {
                 }
 
                 let src_result = self.evaluate(&args[0])?;
-                let src_obj = self.extract_value(Ok(src_result))?;
+                let src_obj = try_value!(Ok(src_result));
                 let src_addr = src_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("mem_move expects pointer as first argument".to_string()))?;
 
                 let dest_result = self.evaluate(&args[1])?;
-                let dest_obj = self.extract_value(Ok(dest_result))?;
+                let dest_obj = try_value!(Ok(dest_result));
                 let dest_addr = dest_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("mem_move expects pointer as second argument".to_string()))?;
 
                 let size_result = self.evaluate(&args[2])?;
-                let size_obj = self.extract_value(Ok(size_result))?;
+                let size_obj = try_value!(Ok(size_result));
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_move expects u64 size as third argument".to_string()))?;
 
@@ -479,17 +480,17 @@ impl EvaluationContext<'_> {
                 }
 
                 let ptr_result = self.evaluate(&args[0])?;
-                let ptr_obj = self.extract_value(Ok(ptr_result))?;
+                let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("mem_set expects pointer as first argument".to_string()))?;
 
                 let value_result = self.evaluate(&args[1])?;
-                let value_obj = self.extract_value(Ok(value_result))?;
+                let value_obj = try_value!(Ok(value_result));
                 let value = value_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_set expects u64 value as second argument".to_string()))?;
 
                 let size_result = self.evaluate(&args[2])?;
-                let size_obj = self.extract_value(Ok(size_result))?;
+                let size_obj = try_value!(Ok(size_result));
                 let size = size_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError("mem_set expects u64 size as third argument".to_string()))?;
 
@@ -559,7 +560,7 @@ impl EvaluationContext<'_> {
                 // Evaluate the probe expression, then walk its runtime
                 // Object recursively to accumulate a byte size.
                 let value = self.evaluate(&args[0])?;
-                let value = self.extract_value(Ok(value))?;
+                let value = try_value!(Ok(value));
                 let size = object_byte_size(&value.borrow()).ok_or_else(|| {
                     InterpreterError::InternalError(format!(
                         "__builtin_sizeof: size of value {:?} is not supported",
@@ -581,7 +582,7 @@ impl EvaluationContext<'_> {
                     });
                 }
                 let value = self.evaluate(&args[0])?;
-                let value = self.extract_value(Ok(value))?;
+                let value = try_value!(Ok(value));
                 let rendered = value.borrow().to_display_string(&self.string_interner);
                 if matches!(func, BuiltinFunction::Println) {
                     println!("{}", rendered);
@@ -600,7 +601,7 @@ impl EvaluationContext<'_> {
                     });
                 }
                 let capacity_result = self.evaluate(&args[0])?;
-                let capacity_obj = self.extract_value(Ok(capacity_result))?;
+                let capacity_obj = try_value!(Ok(capacity_result));
                 let capacity = capacity_obj.borrow().try_unwrap_uint64()
                     .map_err(|_| InterpreterError::InternalError(
                         "fixed_buffer_allocator expects u64 capacity".to_string()

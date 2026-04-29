@@ -463,6 +463,43 @@ mod basic_execution {
         ", -5);
     }
 
+    /// Regression: a `return` in a value-producing position used to escape
+    /// the function as a "Propagate flow:" runtime error because the helper
+    /// type `InterpreterError::PropagateFlow` was created at every
+    /// `extract_value` boundary and never caught. The replacement
+    /// `try_value!` macro propagates the control-flow signal as
+    /// `Ok(EvaluationResult::Return(...))` so the enclosing function
+    /// sees it and returns normally.
+    #[test]
+    fn test_return_inside_value_position_propagates() {
+        common::assert_program_result_i64(
+            r"
+        fn foo(x: i64) -> i64 {
+            val y: i64 = if x > 0i64 { return 100i64 } else { 5i64 }
+            y + 1i64
+        }
+        fn main() -> i64 { foo(1i64) }
+        ",
+            100,
+        );
+    }
+
+    /// Same regression in the else branch — the false condition path also
+    /// has to propagate flow correctly.
+    #[test]
+    fn test_return_inside_value_position_else_branch() {
+        common::assert_program_result_i64(
+            r"
+        fn foo(x: i64) -> i64 {
+            val y: i64 = if x > 0i64 { 5i64 } else { return 100i64 }
+            y + 1i64
+        }
+        fn main() -> i64 { foo(0i64) }
+        ",
+            100,
+        );
+    }
+
     #[test]
     fn test_unary_minus_at_statement_start() {
         // `-x` on its own line must not be absorbed as `7i64 - x`.

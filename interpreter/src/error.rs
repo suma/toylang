@@ -1,5 +1,4 @@
 use frontend::type_decl::TypeDecl;
-use crate::evaluation::EvaluationResult;
 use crate::object::ObjectError;
 use std::fmt;
 
@@ -11,7 +10,6 @@ pub enum InterpreterError {
     FunctionNotFound(String),
     FunctionParameterMismatch { message: String, expected: usize, found: usize },
     InternalError(String),
-    PropagateFlow(EvaluationResult),
     ObjectError(ObjectError),
     IndexOutOfBounds { index: isize, size: usize },
     /// A `requires` or `ensures` clause evaluated to false at runtime.
@@ -46,9 +44,6 @@ impl fmt::Display for InterpreterError {
             }
             InterpreterError::InternalError(message) => {
                 write!(f, "Internal error: {message}")
-            }
-            InterpreterError::PropagateFlow(result) => {
-                write!(f, "Propagate flow: {result:?}")
             }
             InterpreterError::ObjectError(err) => {
                 write!(f, "Object error: {err:?}")

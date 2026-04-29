@@ -6,6 +6,7 @@ use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
+use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 impl EvaluationContext<'_> {
@@ -75,8 +76,11 @@ impl EvaluationContext<'_> {
             return Ok(());
         }
         for (idx, cond) in method.requires.iter().enumerate() {
-            let cond_val = self.evaluate(cond);
-            let cond_obj = self.extract_value(cond_val)?;
+            // Contract predicates are bool expressions; control flow
+            // (Return / Break / Continue) inside them is meaningless and is
+            // rejected as an internal error rather than propagated.
+            let cond_res = self.evaluate(cond)?;
+            let cond_obj = self.unwrap_value(cond_res)?;
             let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
             if !passed {
                 let fname = self.string_interner.resolve(method.name).unwrap_or("<unknown>").to_string();
@@ -101,8 +105,8 @@ impl EvaluationContext<'_> {
         let result_sym = self.string_interner.get_or_intern("result");
         self.environment.set_val(result_sym, return_value);
         for (idx, cond) in method.ensures.iter().enumerate() {
-            let cond_val = self.evaluate(cond);
-            let cond_obj = self.extract_value(cond_val)?;
+            let cond_res = self.evaluate(cond)?;
+            let cond_obj = self.unwrap_value(cond_res)?;
             let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
             if !passed {
                 let fname = self.string_interner.resolve(method.name).unwrap_or("<unknown>").to_string();
@@ -217,7 +221,7 @@ impl EvaluationContext<'_> {
 
                     for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
                         let arg_result = self.evaluate(arg_expr)?;
-                        let arg_value = self.extract_value(Ok(arg_result))?;
+                        let arg_value = try_value!(Ok(arg_result));
                         let actual_type = arg_value.borrow().get_type();
 
                         // Skip type checking for generic functions since type checking was already done
@@ -255,7 +259,7 @@ impl EvaluationContext<'_> {
 
         // If not a module qualified name, evaluate as struct field access
         let obj_val = self.evaluate(obj)?;
-        let obj_val = self.extract_value(Ok(obj_val))?;
+        let obj_val = try_value!(Ok(obj_val));
         let obj_borrowed = obj_val.borrow();
 
         match &*obj_borrowed {
@@ -275,7 +279,7 @@ impl EvaluationContext<'_> {
     /// Evaluates method call expressions
     pub(super) fn evaluate_method_call(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
         let obj_val = self.evaluate(obj)?;
-        let obj_val = self.extract_value(Ok(obj_val))?;
+        let obj_val = try_value!(Ok(obj_val));
         let obj_borrowed = obj_val.borrow();
         let method_name = self.string_interner.resolve(*method).unwrap_or("<unknown>");
 
@@ -321,7 +325,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
 
                         let arg_value = self.evaluate(&args[0])?;
-                        let arg_obj = self.extract_value(Ok(arg_value))?;
+                        let arg_obj = try_value!(Ok(arg_value));
                         let arg_borrowed = arg_obj.borrow();
                         let arg_string = arg_borrowed.to_string_value(&self.string_interner);
 
@@ -339,7 +343,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
 
                         let arg_value = self.evaluate(&args[0])?;
-                        let arg_obj = self.extract_value(Ok(arg_value))?;
+                        let arg_obj = try_value!(Ok(arg_value));
                         let arg_borrowed = arg_obj.borrow();
                         let arg_string = arg_borrowed.to_string_value(&self.string_interner);
 
@@ -424,7 +428,7 @@ impl EvaluationContext<'_> {
                     let mut arg_values = Vec::new();
                     for arg in args {
                         let arg_val = self.evaluate(arg)?;
-                        let arg_val = self.extract_value(Ok(arg_val))?;
+                        let arg_val = try_value!(Ok(arg_val));
                         arg_values.push(arg_val);
                     }
 
@@ -457,7 +461,7 @@ impl EvaluationContext<'_> {
                 }
                 _ => {
                     let field_value = self.evaluate(field_expr)?;
-                    self.extract_value(Ok(field_value))?
+                    try_value!(Ok(field_value))
                 }
             };
 
@@ -483,7 +487,7 @@ impl EvaluationContext<'_> {
                 let mut arg_values = Vec::new();
                 for arg_expr in args {
                     let arg_value = self.evaluate(arg_expr)?;
-                    let arg_obj = self.extract_value(Ok(arg_value))?;
+                    let arg_obj = try_value!(Ok(arg_value));
                     arg_values.push(arg_obj);
                 }
                 let obj = Object::EnumVariant {
@@ -508,7 +512,7 @@ impl EvaluationContext<'_> {
         let mut arg_values = Vec::new();
         for arg_expr in args {
             let arg_value = self.evaluate(arg_expr)?;
-            let arg_obj = self.extract_value(Ok(arg_value))?;
+            let arg_obj = try_value!(Ok(arg_value));
             arg_values.push(arg_obj);
         }
 
@@ -592,8 +596,8 @@ impl EvaluationContext<'_> {
         // (matching D's `-release` semantics).
         if self.contract_mode.check_pre {
             for (idx, cond) in function.requires.iter().enumerate() {
-                let cond_val = self.evaluate(cond);
-                let cond_obj = self.extract_value(cond_val)?;
+                let cond_res = self.evaluate(cond)?;
+                let cond_obj = self.unwrap_value(cond_res)?;
                 let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
                 if !passed {
                     self.environment.exit_block();
@@ -628,8 +632,8 @@ impl EvaluationContext<'_> {
             let result_sym = self.string_interner.get_or_intern("result");
             self.environment.set_val(result_sym, return_value.clone());
             for (idx, cond) in function.ensures.iter().enumerate() {
-                let cond_val = self.evaluate(cond);
-                let cond_obj = self.extract_value(cond_val)?;
+                let cond_res = self.evaluate(cond)?;
+                let cond_obj = self.unwrap_value(cond_res)?;
                 let passed = cond_obj.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
                 if !passed {
                     self.environment.exit_block();

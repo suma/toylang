@@ -2,14 +2,14 @@
 
 use std::collections::HashMap;
 
-use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, AbiParam, FuncRef, InstBuilder, Signature};
+use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, AbiParam, FuncRef, InstBuilder, Signature, TrapCode};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, StmtRef, UnaryOp};
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultSymbol, Symbol};
 
 use super::eligibility::{FuncSignature, MonoKey, MonomorphSource, ParamTy, ScalarTy, StructLayout};
 use super::runtime::HelperKind;
@@ -735,6 +735,35 @@ impl<'a, 'b> State<'a, 'b> {
             }
             Expr::BuiltinCall(func, args) => {
                 match func {
+                    BuiltinFunction::Panic => {
+                        // Eligibility already validated args.len() == 1 and
+                        // that args[0] is `Expr::String(sym)`. We pass the
+                        // DefaultSymbol's u32 representation as a u64
+                        // immediate; the helper reaches back into the
+                        // thread-local interner pointer to format the
+                        // message and exit(1) before this block resumes.
+                        let arg_ref = args.first()
+                            .ok_or_else(|| "panic requires one argument".to_string())?;
+                        let arg_expr = self.program.expression.get(arg_ref)
+                            .ok_or_else(|| "panic arg expression missing".to_string())?;
+                        let sym = match arg_expr {
+                            Expr::String(s) => s,
+                            _ => return Err(
+                                "panic arg must be a string literal in JIT".into()
+                            ),
+                        };
+                        let sym_u64 = sym.to_usize() as u64;
+                        let sym_v = self.builder.ins().iconst(types::I64, sym_u64 as i64);
+                        self.call_helper(HelperKind::Panic, &[sym_v])?;
+                        // The helper exits the process, but cranelift can't
+                        // know that. Emit a trap to satisfy the verifier:
+                        // every basic block must end in a terminator. The
+                        // trap is dead code at runtime — we always exit
+                        // before reaching it.
+                        self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+                        self.terminated = true;
+                        Ok(None)
+                    }
                     BuiltinFunction::Print | BuiltinFunction::Println => {
                         let arg_ref = args
                             .first()

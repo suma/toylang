@@ -94,6 +94,72 @@ fn float64_example_matches_between_modes() {
 
 #[cfg(feature = "jit")]
 #[test]
+fn panic_example_compiles_and_aborts_via_helper() {
+    // jit_panic.t calls panic("division by zero") from a JIT-compiled
+    // function. The helper resolves the symbol via the thread-local
+    // interner pointer, prints the standard runtime-error block, and
+    // exits 1. Verify both the JIT compilation log and the matching
+    // tree-walker output.
+    let jit = run("example/jit_panic.t", true, true);
+    assert_eq!(jit.code, 1, "expected exit 1, stderr: {}", jit.stderr);
+    assert!(
+        jit.stderr.contains("JIT compiled:") && jit.stderr.contains("divide"),
+        "expected JIT compiled log; stderr: {}",
+        jit.stderr
+    );
+    assert!(
+        jit.stderr.contains("panic: division by zero"),
+        "expected panic message; stderr: {}",
+        jit.stderr
+    );
+
+    // The tree-walking interpreter must produce the same exit code and
+    // stderr text — the helper's format string mirrors the interpreter's
+    // error formatter exactly.
+    let plain = run("example/jit_panic.t", false, false);
+    assert_eq!(plain.code, jit.code);
+    assert!(
+        plain.stderr.contains("panic: division by zero"),
+        "stderr: {}",
+        plain.stderr
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn panic_with_dynamic_argument_falls_back() {
+    // A panic whose argument isn't a string literal — here `panic(ERR)`
+    // where ERR is a const — can't be JIT-emitted because codegen needs
+    // the DefaultSymbol at compile time. Eligibility rejects with a
+    // specific reason and the interpreter handles the panic.
+    use std::fs;
+    let path = "tests/fixtures/panic_dynamic_arg.t";
+    fs::create_dir_all("tests/fixtures").unwrap();
+    fs::write(
+        path,
+        r#"const ERR: str = "from const"
+fn main() -> i64 { panic(ERR) }
+"#,
+    )
+    .unwrap();
+    let r = run(path, true, true);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr.contains("panic: from const"),
+        "stderr: {}",
+        r.stderr
+    );
+    // JIT should report the specific skip reason somewhere in stderr,
+    // either for the literal-arg requirement or for the const reference.
+    assert!(
+        r.stderr.contains("JIT: skipped"),
+        "expected JIT skip log; stderr: {}",
+        r.stderr
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
 fn float64_example_compiles_main() {
     let r = run("example/jit_float64.t", true, true);
     assert_eq!(r.code, 7);

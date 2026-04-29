@@ -83,6 +83,7 @@ flat scalar `Tuple` *are* supported — see the dedicated subsections.)
 | `__builtin_ptr_write(p, off, value)` | helper picked from the value's static type |
 | `__builtin_ptr_read(p, off)` | only as the *direct* RHS of `val NAME: T = …`, `var NAME: T = …`, or `name = …` (the JIT needs a static expected type) |
 | `print(x) / println(x)` | scalar arg only; calls Rust `extern "C"` helpers (`jit_print_i64/u64/bool/f64` and `*_println_*`) |
+| `panic("literal")` | argument must be a parse-time `Expr::String(sym)`; codegen passes the symbol id as a u64 to `jit_panic`, which resolves it through a thread-local pointer to the program's `StringInterner` and `process::exit(1)`s. After the call, codegen emits `trap UserCode(1)` purely as a CFG terminator (always dead at runtime). Statement-position panics (`if cond { panic("…") }`) compile cleanly; expression-position panics (`if cond { panic("…") } else { value }`) silent-fall back today because `Panic` returns `ScalarTy::Unit` and the if-branches' types must match in eligibility. |
 
 ### Statements
 
@@ -211,6 +212,14 @@ val total: u64 = with allocator = arena {
 * `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
   variant — only `default` and `arena` are wired up so far).
 * `match` expressions.
+* `panic(expr)` where `expr` is anything other than a string literal —
+  e.g. `panic(SOME_CONST)` or `panic(some_str_var)`. The JIT's helper
+  receives a `DefaultSymbol`'s u32 representation as a u64 immediate,
+  which is only known at codegen time for inline literals.
+* `panic(...)` in expression position — `if cond { panic("…") } else
+  { 5i64 }` is rejected because eligibility requires both branches to
+  agree on a `ScalarTy`. The statement-position form (`if cond
+  { panic("…") }` followed by other statements) JITs cleanly.
 * Functions that reference a top-level `const`. The constant is bound
   in the interpreter's environment at startup; the JIT eligibility
   walker has no view of it and rejects the unresolved identifier,
@@ -291,6 +300,7 @@ the native code itself is faster.
 * `jit_allocator.t` — `with allocator = arena { … }` round-trip → exit 57 (12345 % 256)
 * `jit_tuple.t` — flat tuple param / return, destructure, and `TupleAccess` → exit 33
 * `jit_float64.t` — `f64` arithmetic, comparisons, casts, `println(f64)` → exit 7
+* `jit_panic.t` — `panic("literal")` lowered to `jit_panic` helper + `trap` terminator → exit 1 with `panic: division by zero` on stderr
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout
@@ -310,3 +320,6 @@ Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 * Lowering simple `requires` / `ensures` predicates to cranelift IR
   so contract-bearing numeric kernels can JIT (currently any contract
   forces fallback).
+* Expression-position panic (`if cond { panic("…") } else { value }`)
+  via a `ScalarTy::Never` variant that unifies with any sibling type
+  in if-elif-else eligibility.

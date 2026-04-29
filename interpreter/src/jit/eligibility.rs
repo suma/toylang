@@ -2259,6 +2259,26 @@ pub(crate) fn check_expr(
                 true
             };
             match func {
+                BuiltinFunction::Panic => {
+                    // `panic("literal")` is the only form the JIT can lower:
+                    // the message has to be a parse-time `Expr::String(sym)`
+                    // so codegen can pass the symbol id as a u64 immediate
+                    // to `jit_panic`. Anything dynamic (a const, a runtime
+                    // str, etc.) falls back to the interpreter where the
+                    // value is already a real Object::ConstString / String.
+                    if args.len() != 1 {
+                        note(reject_reason, || "panic takes 1 argument".to_string());
+                        return None;
+                    }
+                    let arg = program.expression.get(&args[0])?;
+                    if !matches!(arg, Expr::String(_)) {
+                        note(reject_reason, || {
+                            "panic argument must be a string literal in JIT".to_string()
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
                 BuiltinFunction::Print | BuiltinFunction::Println => {
                     if args.len() != 1 {
                         return None;

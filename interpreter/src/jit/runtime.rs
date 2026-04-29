@@ -65,6 +65,15 @@ struct JitRuntime {
 
 thread_local! {
     static JIT_RT: RefCell<Option<JitRuntime>> = const { RefCell::new(None) };
+    /// Raw pointer to the program's `DefaultStringInterner`, valid only
+    /// while `try_execute_main` is on the stack. The `jit_panic` helper
+    /// dereferences this to resolve a `DefaultSymbol` (passed as `u64`)
+    /// into the user's panic message. Using a raw pointer dodges the
+    /// lifetime gymnastics of storing a borrow in a thread-local; safety
+    /// is provided by `try_execute_main` clearing the slot before
+    /// returning so the pointer can never outlive the borrow.
+    static JIT_STRING_INTERNER: RefCell<Option<*const DefaultStringInterner>> =
+        const { RefCell::new(None) };
 }
 
 fn with_heap<R>(f: impl FnOnce(&mut HeapManager) -> R) -> Option<R> {
@@ -289,6 +298,41 @@ extern "C" fn jit_with_allocator_pop() {
     });
 }
 
+/// Helper invoked by JIT-emitted code when a `panic("literal")` fires.
+/// `sym_id` is the u32 representation of the message's `DefaultSymbol`,
+/// widened to u64 for the C ABI. We resolve it through the interner
+/// pointer that `execute_cached` parked in `JIT_STRING_INTERNER`,
+/// format the diagnostic to match the tree-walker's output (so
+/// integration tests stay byte-identical), and exit the process.
+///
+/// Calling `process::exit(1)` aborts cleanly without unwinding the
+/// JIT-compiled frames — they have no DWARF unwind info, so a Rust
+/// panic would be undefined behaviour. The cranelift `trap` emitted
+/// after this call is dead code; it exists only so the basic block
+/// has a recognised terminator.
+extern "C" fn jit_panic(sym_id: u64) {
+    let resolved = JIT_STRING_INTERNER.with(|slot| {
+        let p = *slot.borrow();
+        p.and_then(|raw| {
+            // SAFETY: `execute_cached` installed this pointer from a
+            // live `&DefaultStringInterner` borrow and clears it via
+            // `HeapGuard::drop` before that borrow ends. We're called
+            // while the JIT main is on the stack, so the borrow is
+            // still live here.
+            let interner: &DefaultStringInterner = unsafe { &*raw };
+            let sym_u32 = sym_id as u32;
+            string_interner::Symbol::try_from_usize(sym_u32 as usize)
+                .and_then(|sym: string_interner::DefaultSymbol| {
+                    interner.resolve(sym).map(|s| s.to_string())
+                })
+        })
+    });
+    let msg = resolved.unwrap_or_else(|| "<panic message unavailable>".to_string());
+    eprintln!("Runtime error occurred:");
+    eprintln!("panic: {}", msg);
+    std::process::exit(1);
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -299,6 +343,7 @@ pub(crate) enum HelperKind {
     PrintlnBool,
     PrintF64,
     PrintlnF64,
+    Panic,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -331,6 +376,7 @@ impl HelperKind {
             HelperKind::PrintlnBool => "jit_println_bool",
             HelperKind::PrintF64 => "jit_print_f64",
             HelperKind::PrintlnF64 => "jit_println_f64",
+            HelperKind::Panic => "jit_panic",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -363,6 +409,7 @@ impl HelperKind {
             HelperKind::PrintlnBool => jit_println_bool as *const u8,
             HelperKind::PrintF64 => jit_print_f64 as *const u8,
             HelperKind::PrintlnF64 => jit_println_f64 as *const u8,
+            HelperKind::Panic => jit_panic as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -392,6 +439,7 @@ impl HelperKind {
             HelperKind::PrintU64 | HelperKind::PrintlnU64 => (vec![types::I64], None),
             HelperKind::PrintBool | HelperKind::PrintlnBool => (vec![types::I8], None),
             HelperKind::PrintF64 | HelperKind::PrintlnF64 => (vec![types::F64], None),
+            HelperKind::Panic => (vec![types::I64], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -415,7 +463,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 27] = [
+    pub(crate) const ALL: [HelperKind; 28] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -424,6 +472,7 @@ impl HelperKind {
         HelperKind::PrintlnBool,
         HelperKind::PrintF64,
         HelperKind::PrintlnF64,
+        HelperKind::Panic,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,
@@ -551,7 +600,7 @@ pub fn try_execute_main(
         }
     };
 
-    Some(execute_cached(main_ptr, main_ret))
+    Some(execute_cached(main_ptr, main_ret, interner))
 }
 
 fn build_cache_entry(
@@ -694,7 +743,11 @@ fn build_cache_entry(
 /// dispatch to the cached `main`, then uninstall. The JIT path doesn't
 /// share heap state with the tree-walking interpreter — pointers
 /// returned from JIT main are only meaningful within this run.
-fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
+fn execute_cached(
+    main_ptr: *const u8,
+    main_ret: ScalarTy,
+    interner: &DefaultStringInterner,
+) -> RcObject {
     let heap = Rc::new(RefCell::new(HeapManager::new()));
     let global: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap.clone()));
     let rt = JitRuntime {
@@ -703,10 +756,16 @@ fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
         active: vec![0],
     };
     JIT_RT.with(|s| *s.borrow_mut() = Some(rt));
+    // Hand the helper layer a stable pointer to the program's interner
+    // so `jit_panic` can resolve a `DefaultSymbol` (passed as u64) into
+    // the user's panic message text. The pointer stays valid for as long
+    // as `interner` outlives this function call.
+    JIT_STRING_INTERNER.with(|s| *s.borrow_mut() = Some(interner as *const _));
     struct HeapGuard;
     impl Drop for HeapGuard {
         fn drop(&mut self) {
             JIT_RT.with(|s| *s.borrow_mut() = None);
+            JIT_STRING_INTERNER.with(|s| *s.borrow_mut() = None);
         }
     }
     let _heap_guard = HeapGuard;

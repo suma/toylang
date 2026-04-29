@@ -88,6 +88,23 @@ fn cast_example_matches_between_modes() {
 }
 
 #[test]
+fn float64_example_matches_between_modes() {
+    assert_match("example/jit_float64.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn float64_example_compiles_main() {
+    let r = run("example/jit_float64.t", true, true);
+    assert_eq!(r.code, 7);
+    assert!(
+        r.stderr.contains("JIT compiled: main"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn print_example_matches_between_modes() {
     assert_match("example/jit_print.t");
 }

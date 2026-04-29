@@ -28,6 +28,7 @@ fn note(reason: &mut Option<String>, msg: impl FnOnce() -> String) {
 pub enum ScalarTy {
     I64,
     U64,
+    F64,
     Bool,
     Unit,
     /// Heap pointer. Internally a u64 / cranelift I64 — distinct from
@@ -44,6 +45,7 @@ impl ScalarTy {
         match td {
             TypeDecl::Int64 => Some(ScalarTy::I64),
             TypeDecl::UInt64 => Some(ScalarTy::U64),
+            TypeDecl::Float64 => Some(ScalarTy::F64),
             TypeDecl::Bool => Some(ScalarTy::Bool),
             TypeDecl::Unit => Some(ScalarTy::Unit),
             TypeDecl::Ptr => Some(ScalarTy::Ptr),
@@ -1842,6 +1844,7 @@ pub(crate) fn check_expr(
     match expr {
         Expr::Int64(_) => Some(ScalarTy::I64),
         Expr::UInt64(_) => Some(ScalarTy::U64),
+        Expr::Float64(_) => Some(ScalarTy::F64),
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
         Expr::Binary(op, lhs, rhs) => {
@@ -1851,7 +1854,16 @@ pub(crate) fn check_expr(
                 return None;
             }
             match op {
-                Operator::IAdd | Operator::ISub | Operator::IMul | Operator::IDiv | Operator::IMod => {
+                Operator::IAdd | Operator::ISub | Operator::IMul | Operator::IDiv => {
+                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
+                        Some(lt)
+                    } else {
+                        None
+                    }
+                }
+                Operator::IMod => {
+                    // Cranelift exposes srem/urem for ints but no native f64
+                    // remainder; reject f64 mod here so codegen never sees it.
                     if matches!(lt, ScalarTy::I64 | ScalarTy::U64) {
                         Some(lt)
                     } else {
@@ -1866,7 +1878,7 @@ pub(crate) fn check_expr(
                     }
                 }
                 Operator::LT | Operator::LE | Operator::GT | Operator::GE => {
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64) {
+                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
                         Some(ScalarTy::Bool)
                     } else {
                         None
@@ -1914,9 +1926,9 @@ pub(crate) fn check_expr(
                 }
                 UnaryOp::Negate => {
                     // Negation of u64 is rejected at the type-check phase
-                    // already, but be defensive: only allow signed ints.
-                    if t == ScalarTy::I64 {
-                        Some(ScalarTy::I64)
+                    // already. Allow i64 and f64 (cranelift `fneg`).
+                    if matches!(t, ScalarTy::I64 | ScalarTy::F64) {
+                        Some(t)
                     } else {
                         None
                     }
@@ -2231,7 +2243,7 @@ pub(crate) fn check_expr(
                         return None;
                     }
                     let t = check_expr(program, &args[0], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
+                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
@@ -2648,14 +2660,15 @@ pub(crate) fn check_expr(
             Some(shape[idx])
         }
         Expr::Cast(inner, target) => {
-            // Match the interpreter: only i64 ↔ u64 (or identity for those
-            // two) is permitted. bool casts are intentionally excluded.
+            // Casts allowed: i64 ↔ u64 (identity at the cranelift layer),
+            // and i64/u64 ↔ f64 (real fcvt instructions). bool casts are
+            // intentionally excluded.
             let inner_ty = check_expr(program, &inner, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
-            if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64) {
+            if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
                 return None;
             }
-            if !matches!(target_ty, ScalarTy::I64 | ScalarTy::U64) {
+            if !matches!(target_ty, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
                 return None;
             }
             Some(target_ty)

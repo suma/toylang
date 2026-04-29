@@ -14,6 +14,7 @@ pub trait Acceptable {
 pub trait LiteralTypeChecker {
     fn check_int64_literal(&mut self, value: &i64) -> Result<TypeDecl, TypeCheckError>;
     fn check_uint64_literal(&mut self, value: &u64) -> Result<TypeDecl, TypeCheckError>;
+    fn check_float64_literal(&mut self, value: &f64) -> Result<TypeDecl, TypeCheckError>;
     fn check_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn check_string_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn check_boolean_literal(&mut self, value: &Expr) -> Result<TypeDecl, TypeCheckError>;

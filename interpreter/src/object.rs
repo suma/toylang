@@ -21,6 +21,7 @@ pub enum Object {
     Bool(bool),
     Int64(i64),
     UInt64(u64),
+    Float64(f64),
     ConstString(DefaultSymbol),  // String literals and interned strings (immutable, memory efficient)
     String(String),              // Runtime generated strings (mutable, direct data storage)
     Array(Box<Vec<RcObject>>),
@@ -142,6 +143,9 @@ impl Ord for ObjectKey {
             (Object::Bool(a), Object::Bool(b)) => a.cmp(b),
             (Object::Int64(a), Object::Int64(b)) => a.cmp(b),
             (Object::UInt64(a), Object::UInt64(b)) => a.cmp(b),
+            // Bit-pattern ordering on f64 — gives a total order (consistent with `Eq` above)
+            // so f64 can act as a Dict key. Not the same as numeric `<` ordering.
+            (Object::Float64(a), Object::Float64(b)) => a.to_bits().cmp(&b.to_bits()),
             (Object::ConstString(a), Object::ConstString(b)) => a.cmp(b),
             (Object::String(a), Object::String(b)) => a.cmp(b),
             (Object::Pointer(a), Object::Pointer(b)) => a.cmp(b),
@@ -154,6 +158,8 @@ impl Ord for ObjectKey {
             (_, Object::Int64(_)) => Ordering::Greater,
             (Object::UInt64(_), _) => Ordering::Less,
             (_, Object::UInt64(_)) => Ordering::Greater,
+            (Object::Float64(_), _) => Ordering::Less,
+            (_, Object::Float64(_)) => Ordering::Greater,
             (Object::ConstString(_), _) => Ordering::Less,
             (_, Object::ConstString(_)) => Ordering::Greater,
             (Object::String(_), _) => Ordering::Less,
@@ -197,6 +203,10 @@ impl PartialEq for Object {
             (Object::Bool(a), Object::Bool(b)) => a == b,
             (Object::Int64(a), Object::Int64(b)) => a == b,
             (Object::UInt64(a), Object::UInt64(b)) => a == b,
+            // Bit-equal comparison so f64 satisfies `Eq` for use as a Dict key.
+            // Note this differs from IEEE 754 `==` (NaN bit patterns compare equal here);
+            // arithmetic comparison via the Operator path uses IEEE 754 semantics.
+            (Object::Float64(a), Object::Float64(b)) => a.to_bits() == b.to_bits(),
             (Object::ConstString(a), Object::ConstString(b)) => a == b,
             (Object::String(a), Object::String(b)) => a == b,
             (Object::Array(a), Object::Array(b)) => {
@@ -254,6 +264,10 @@ impl Hash for Object {
             Object::UInt64(v) => {
                 2u8.hash(state);
                 v.hash(state);
+            }
+            Object::Float64(v) => {
+                15u8.hash(state);
+                v.to_bits().hash(state);
             }
             Object::ConstString(v) => {
                 3u8.hash(state);
@@ -353,6 +367,7 @@ impl Object {
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
+            Object::Float64(_) => TypeDecl::Float64,
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
                 if elements.is_empty() {
@@ -451,6 +466,20 @@ impl Object {
         }
     }
 
+    pub fn unwrap_float64(&self) -> f64 {
+        match self {
+            Object::Float64(v) => *v,
+            _ => panic!("unwrap_float64: expected float64 but {self:?}"),
+        }
+    }
+
+    pub fn try_unwrap_float64(&self) -> Result<f64, ObjectError> {
+        match self {
+            Object::Float64(v) => Ok(*v),
+            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Float64, found: self.get_type() }),
+        }
+    }
+
     pub fn unwrap_pointer(&self) -> usize {
         match self {
             Object::Pointer(v) => *v,
@@ -507,6 +536,16 @@ impl Object {
             Object::Bool(b) => b.to_string(),
             Object::Int64(v) => v.to_string(),
             Object::UInt64(v) => v.to_string(),
+            Object::Float64(v) => {
+                // Match Rust's default `{}` formatting except always show a
+                // decimal point so floats are visually distinct from ints
+                // (`1.0` not `1`).
+                if v.is_finite() && v.fract() == 0.0 {
+                    format!("{:.1}", v)
+                } else {
+                    v.to_string()
+                }
+            }
             Object::ConstString(sym) => {
                 string_interner.resolve(*sym).unwrap_or("").to_string()
             }
@@ -659,6 +698,10 @@ impl Object {
                 *self = Object::Null(TypeDecl::UInt64);
                 Ok(())
             }
+            (Object::Float64(_), Object::Null(_)) => {
+                *self = Object::Null(TypeDecl::Float64);
+                Ok(())
+            }
             (Object::ConstString(_), Object::Null(_)) => {
                 *self = Object::Null(TypeDecl::String);
                 Ok(())
@@ -691,6 +734,10 @@ impl Object {
                 Ok(())
             }
             (Object::UInt64(self_val), Object::UInt64(v)) => {
+                *self_val = *v;
+                Ok(())
+            }
+            (Object::Float64(self_val), Object::Float64(v)) => {
                 *self_val = *v;
                 Ok(())
             }

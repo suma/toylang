@@ -403,6 +403,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             // Both types are already concrete - no conversion needed
             (TypeDecl::UInt64, TypeDecl::UInt64) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Int64, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            (TypeDecl::Float64, TypeDecl::Float64) => Ok((TypeDecl::Float64, TypeDecl::Float64)),
             (TypeDecl::Bool, TypeDecl::Bool) => Ok((TypeDecl::Bool, TypeDecl::Bool)),
             (TypeDecl::String, TypeDecl::String) => Ok((TypeDecl::String, TypeDecl::String)),
 
@@ -411,6 +412,9 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::UInt64, TypeDecl::Number) => Ok((TypeDecl::UInt64, TypeDecl::UInt64)),
             (TypeDecl::Number, TypeDecl::Int64) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
             (TypeDecl::Int64, TypeDecl::Number) => Ok((TypeDecl::Int64, TypeDecl::Int64)),
+            // Number is integer-flavored; mixing with Float64 is rejected so users
+            // are forced to write `1.0f64` or cast explicitly. This avoids surprise
+            // when an integer literal silently becomes a float on the other side.
 
             // Two Number types - check if we have a context hint, otherwise default to UInt64
             (TypeDecl::Number, TypeDecl::Number) => {

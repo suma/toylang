@@ -127,6 +127,7 @@ pub enum Expr {
     False,
     Int64(i64),
     UInt64(u64),
+    Float64(f64),
     Number(DefaultSymbol),
     Identifier(DefaultSymbol),
     Null,

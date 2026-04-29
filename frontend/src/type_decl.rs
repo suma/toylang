@@ -6,6 +6,7 @@ pub enum TypeDecl {
     Unit,
     Int64,
     UInt64,
+    Float64,
     Bool,
     Identifier(DefaultSymbol),
     String,

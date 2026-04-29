@@ -59,6 +59,18 @@ impl ArithmeticOp {
             ArithmeticOp::Mod => l % r,
         }
     }
+
+    fn apply_f64(&self, l: f64, r: f64) -> f64 {
+        match self {
+            ArithmeticOp::Add => l + r,
+            ArithmeticOp::Sub => l - r,
+            ArithmeticOp::Mul => l * r,
+            ArithmeticOp::Div => l / r,
+            // f64::rem (Rust's `%` for floats) gives an IEEE-style remainder
+            // that matches the sign of the dividend.
+            ArithmeticOp::Mod => l % r,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -116,6 +128,18 @@ impl ComparisonOp {
         }
     }
 
+    fn apply_f64(&self, l: f64, r: f64) -> bool {
+        // Standard IEEE 754 ordering: NaN compares false against everything.
+        match self {
+            ComparisonOp::Eq => l == r,
+            ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r,
+            ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r,
+            ComparisonOp::Ge => l >= r,
+        }
+    }
+
     fn apply_string(&self, l: DefaultSymbol, r: DefaultSymbol) -> bool {
         match self {
             ComparisonOp::Eq => l == r,
@@ -134,6 +158,7 @@ impl EvaluationContext<'_> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Bool(op.apply_i64(*l, *r)),
             (Object::UInt64(l), Object::UInt64(r)) => Object::Bool(op.apply_u64(*l, *r)),
+            (Object::Float64(l), Object::Float64(r)) => Object::Bool(op.apply_f64(*l, *r)),
             (Object::Bool(l), Object::Bool(r)) => {
                 match op {
                     ComparisonOp::Eq => Object::Bool(l == r),
@@ -223,6 +248,7 @@ impl EvaluationContext<'_> {
         Ok(match (lhs, rhs) {
             (Object::Int64(l), Object::Int64(r)) => Object::Int64(op.apply_i64(*l, *r)),
             (Object::UInt64(l), Object::UInt64(r)) => Object::UInt64(op.apply_u64(*l, *r)),
+            (Object::Float64(l), Object::Float64(r)) => Object::Float64(op.apply_f64(*l, *r)),
             _ => return Err(InterpreterError::TypeError{
                 expected: lhs_ty,
                 found: rhs_ty,
@@ -261,10 +287,11 @@ impl EvaluationContext<'_> {
             // panicking behaviour can wrap their own check.
             UnaryOp::Negate => match &*operand_obj {
                 Object::Int64(v) => Object::Int64(v.wrapping_neg()),
+                Object::Float64(v) => Object::Float64(-*v),
                 _ => return Err(InterpreterError::TypeError{
                     expected: TypeDecl::Int64,
                     found: operand_obj.get_type(),
-                    message: format!("Unary minus requires i64, got {:?}", operand_obj)
+                    message: format!("Unary minus requires i64 or f64, got {:?}", operand_obj)
                 }),
             },
         };

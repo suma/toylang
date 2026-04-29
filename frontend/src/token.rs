@@ -35,6 +35,7 @@ pub enum Kind {
     Bool,
     U64,
     I64,
+    F64,
     USize,
     Str,
     Ptr,
@@ -95,6 +96,7 @@ pub enum Kind {
 
     Int64(i64),
     UInt64(u64),
+    Float64(f64),
     String(String),
     Integer(String),
 
@@ -115,7 +117,7 @@ impl Kind {
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
             Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct | 
             Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public | 
-            Kind::Val | Kind::Var | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Bool | Kind::U64 | Kind::I64 | Kind::USize |
+            Kind::Val | Kind::Var | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )
     }

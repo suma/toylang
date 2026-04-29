@@ -715,9 +715,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             (TypeDecl::Int64, TypeDecl::Int64) |
             (TypeDecl::UInt64, TypeDecl::UInt64) => Ok(target_type.clone()),
 
+            // f64 <-> integer casts. Floating-point ↔ integer truncates toward
+            // zero (matching Rust's `as`); out-of-range values saturate.
+            (TypeDecl::Int64, TypeDecl::Float64) |
+            (TypeDecl::UInt64, TypeDecl::Float64) |
+            (TypeDecl::Float64, TypeDecl::Int64) |
+            (TypeDecl::Float64, TypeDecl::UInt64) |
+            (TypeDecl::Float64, TypeDecl::Float64) => Ok(target_type.clone()),
+
             // Allow Number to specific numeric types
             (TypeDecl::Number, TypeDecl::Int64) |
-            (TypeDecl::Number, TypeDecl::UInt64) => Ok(target_type.clone()),
+            (TypeDecl::Number, TypeDecl::UInt64) |
+            (TypeDecl::Number, TypeDecl::Float64) => Ok(target_type.clone()),
 
             // Identity cast for other types
             (from, to) if from == to => Ok(target_type.clone()),

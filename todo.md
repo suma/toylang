@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+165. **f64 (浮動小数点数) サポート**: `TypeDecl::Float64`、`Kind::F64` / `Kind::Float64(f64)`、lexer に `1.5f64` / `42f64` パターン（タプルアクセス `t.0.1` との曖昧性回避のため `f64` サフィックス必須）、`Expr::Float64(f64)`、`Object::Float64(f64)`。算術 (`+ - * / %`)、比較 (IEEE 754 ordered)、unary minus、`as` による i64/u64 ↔ f64 変換、`__builtin_sizeof = 8` を実装。Hash/Eq/Ord は `to_bits()` でビット等価ベース（NaN を Dict キーに使えるように total order）、表示は `1.0` のように常に小数点付き。JIT も対応：`ScalarTy::F64` を追加し、`fadd/fsub/fmul/fdiv` と `fcmp` (Ordered)、`fneg`、`fcvt_from_sint/uint` および `fcvt_to_sint/uint_sat`（Rust の `as` と一致）、`jit_print_f64` / `jit_println_f64` ヘルパー、`main` の f64 戻り値を `Object::Float64` に詰め直し。f64 mod は cranelift にネイティブ命令が無いため eligibility で reject（silent fallback）。example: `float64.t` / `jit_float64.t`、tests: `language_core_tests` に 7 件、`jit_integration` に 2 件追加 (2026-04-28)
 164. `%` 剰余演算子と複合代入 (`+= -= *= /= %=`): lexer/token/AST に `IMod` および `PlusEqual` 系トークンを追加。parser の `parse_mul` で `%` を *,/ と同じ優先度で扱い、`parse_assign` 入口に複合代入 dispatch を追加。複合代入は `lhs op= rhs` を `lhs = lhs op rhs` に desugar (LHS は identifier / `FieldAccess` 対応、SliceAccess も既存 SliceAssign 経路で動く)。type_checker は既存の `IAdd | ISub | IDiv | IMul` ケースに `IMod` を merge。interpreter は `ArithmeticOp::Mod` を Rust の `%` で実装 (truncated remainder)。JIT は cranelift の `srem`/`urem` で実装。example: `modulo_compound.t`、tests: `language_core_tests` に 5 件追加 (2026-04-28)
 163. JIT タプル対応 (flat scalar tuples): `ParamTy::Tuple(Vec<ScalarTy>)` を導入、tuple 型の関数 param / return / val / var / TupleAccess / TupleLiteral RHS / tuple-returning call / tuple alias を JIT eligibility と codegen に追加。tuple param は要素ごとに cranelift param に分解、tuple return は multi-return、TupleAccess は要素 SSA Variable から `use_var`。`val (a, b) = expr` 分解は parser desugar (`val tmp = expr; val a = tmp.0; val b = tmp.1`) 経由で自動的に動く。tuple 引数は名前付き local 必須 (inline literal は不可)。Out of scope: ネストタプル、tuple-of-struct、main の tuple return。example: `jit_tuple.t`、tests: `jit_integration` に 2 件追加 (2026-04-27)
 162. ネストした val/var タプル分解: `parse_tuple_destructuring` を `DestructPat { Name | Tuple }` 木で再帰化、`emit_destructure` が深さに応じて `__tuple_tmp_N` を連鎖させる。outer `is_val/is_var` は leaf binding にのみ伝播し、内部 tmp は常に `val`。`val ((a, b), c) = ...` / `val ((a, b), (c, d)) = make()` / `val (((a, b), c), d) = ...` / `var ((a, b), c) = ...` + 再代入が動作。example: `tuple_destructure_nested.t`、tests: `collections_tuple_struct_tests` に 4 件追加 (2026-04-27)
@@ -86,6 +87,7 @@
 ### コア言語機能
 - 基本言語機能: if/else/elif、for、while、break/continue、return
 - 変数: val（不変）/var（可変）、コンテキストベース型推論
+- 数値型: u64 / i64 / f64（f64 リテラルは `1.5f64` / `42f64` のように `f64` サフィックス必須、タプルアクセスとの曖昧性回避）。`as` による i64/u64 ↔ f64 変換
 - 固定配列: 型推論対応、インデックス型推論、境界チェック
 - 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート

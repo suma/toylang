@@ -112,6 +112,18 @@ extern "C" fn jit_print_bool(v: u8) {
 extern "C" fn jit_println_bool(v: u8) {
     println!("{}", v != 0);
 }
+// f64 helpers go through the same display formatter as the tree-walking
+// interpreter so JIT and non-JIT runs produce byte-identical output.
+extern "C" fn jit_print_f64(v: f64) {
+    print!("{}", crate::object::Object::Float64(v).to_display_string(
+        &string_interner::DefaultStringInterner::new(),
+    ));
+}
+extern "C" fn jit_println_f64(v: f64) {
+    println!("{}", crate::object::Object::Float64(v).to_display_string(
+        &string_interner::DefaultStringInterner::new(),
+    ));
+}
 
 extern "C" fn jit_heap_alloc(size: u64) -> u64 {
     with_active_allocator(|a| a.alloc(size as usize) as u64).unwrap_or(0)
@@ -285,6 +297,8 @@ pub(crate) enum HelperKind {
     PrintlnU64,
     PrintBool,
     PrintlnBool,
+    PrintF64,
+    PrintlnF64,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -315,6 +329,8 @@ impl HelperKind {
             HelperKind::PrintlnU64 => "jit_println_u64",
             HelperKind::PrintBool => "jit_print_bool",
             HelperKind::PrintlnBool => "jit_println_bool",
+            HelperKind::PrintF64 => "jit_print_f64",
+            HelperKind::PrintlnF64 => "jit_println_f64",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -345,6 +361,8 @@ impl HelperKind {
             HelperKind::PrintlnU64 => jit_println_u64 as *const u8,
             HelperKind::PrintBool => jit_print_bool as *const u8,
             HelperKind::PrintlnBool => jit_println_bool as *const u8,
+            HelperKind::PrintF64 => jit_print_f64 as *const u8,
+            HelperKind::PrintlnF64 => jit_println_f64 as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -373,6 +391,7 @@ impl HelperKind {
             HelperKind::PrintI64 | HelperKind::PrintlnI64 => (vec![types::I64], None),
             HelperKind::PrintU64 | HelperKind::PrintlnU64 => (vec![types::I64], None),
             HelperKind::PrintBool | HelperKind::PrintlnBool => (vec![types::I8], None),
+            HelperKind::PrintF64 | HelperKind::PrintlnF64 => (vec![types::F64], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -396,13 +415,15 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 25] = [
+    pub(crate) const ALL: [HelperKind; 27] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
         HelperKind::PrintlnU64,
         HelperKind::PrintBool,
         HelperKind::PrintlnBool,
+        HelperKind::PrintF64,
+        HelperKind::PrintlnF64,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,
@@ -703,6 +724,10 @@ fn execute_cached(main_ptr: *const u8, main_ret: ScalarTy) -> RcObject {
             ScalarTy::U64 => {
                 let f: extern "C" fn() -> u64 = std::mem::transmute(main_ptr);
                 Object::UInt64(f())
+            }
+            ScalarTy::F64 => {
+                let f: extern "C" fn() -> f64 = std::mem::transmute(main_ptr);
+                Object::Float64(f())
             }
             ScalarTy::Bool => {
                 let f: extern "C" fn() -> u8 = std::mem::transmute(main_ptr);

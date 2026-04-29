@@ -58,6 +58,10 @@ impl<'a> Parser<'a> {
                 self.next();
                 Ok(TypeDecl::Int64)
             }
+            Some(Kind::F64) => {
+                self.next();
+                Ok(TypeDecl::Float64)
+            }
             Some(Kind::Ptr) => {
                 self.next();
                 Ok(TypeDecl::Ptr)

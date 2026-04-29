@@ -33,7 +33,7 @@ impl EvaluationContext<'_> {
             Expr::Unary(op, operand) => {
                 self.evaluate_unary(&op, &operand)
             }
-            Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) | Expr::True | Expr::False => {
+            Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::String(_) | Expr::True | Expr::False => {
                 self.evaluate_literal(&expr)
             }
             Expr::Number(_v) => {
@@ -297,9 +297,17 @@ impl EvaluationContext<'_> {
             (Object::Int64(v), TypeDecl::UInt64) => Object::UInt64(*v as u64),
             // u64 -> i64
             (Object::UInt64(v), TypeDecl::Int64) => Object::Int64(*v as i64),
+            // i64 / u64 -> f64
+            (Object::Int64(v), TypeDecl::Float64) => Object::Float64(*v as f64),
+            (Object::UInt64(v), TypeDecl::Float64) => Object::Float64(*v as f64),
+            // f64 -> i64 / u64 (Rust's `as`: truncation toward zero, saturation
+            // on out-of-range, NaN becomes 0).
+            (Object::Float64(v), TypeDecl::Int64) => Object::Int64(*v as i64),
+            (Object::Float64(v), TypeDecl::UInt64) => Object::UInt64(*v as u64),
             // Identity casts
             (Object::Int64(v), TypeDecl::Int64) => Object::Int64(*v),
             (Object::UInt64(v), TypeDecl::UInt64) => Object::UInt64(*v),
+            (Object::Float64(v), TypeDecl::Float64) => Object::Float64(*v),
             // Other cases that should not happen after type checking
             _ => {
                 return Err(InterpreterError::InternalError(format!(

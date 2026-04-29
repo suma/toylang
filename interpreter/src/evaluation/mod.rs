@@ -109,6 +109,7 @@ pub fn convert_object(e: &Expr) -> Result<Object, InterpreterError> {
         Expr::False => Ok(Object::Bool(false)),
         Expr::Int64(v) => Ok(Object::Int64(*v)),
         Expr::UInt64(v) => Ok(Object::UInt64(*v)),
+        Expr::Float64(v) => Ok(Object::Float64(*v)),
         Expr::String(v) => Ok(Object::ConstString(*v)),
         Expr::Number(_v) => {
             // Type-unspecified numbers should be resolved during type checking

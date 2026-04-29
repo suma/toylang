@@ -21,6 +21,7 @@ impl Acceptable for Expr {
             Expr::Call(fn_name, args) => visitor.visit_call(*fn_name, args),
             Expr::Int64(val) => visitor.visit_int64_literal(val),
             Expr::UInt64(val) => visitor.visit_uint64_literal(val),
+            Expr::Float64(val) => visitor.visit_float64_literal(val),
             Expr::Number(val) => visitor.visit_number_literal(*val),
             Expr::String(val) => visitor.visit_string_literal(*val),
             Expr::True | Expr::False => visitor.visit_boolean_literal(self),
@@ -210,6 +211,10 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_uint64_literal(&mut self, _value: &u64) -> Result<TypeDecl, TypeCheckError> {
         self.visit_uint64_literal(_value)
+    }
+
+    fn visit_float64_literal(&mut self, _value: &f64) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_float64_literal(_value)
     }
 
     fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {

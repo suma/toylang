@@ -37,6 +37,20 @@ pub fn assert_program_result_i64(source_code: &str, expected: i64) {
     assert_eq!(result.borrow().unwrap_int64(), expected);
 }
 
+/// Helper function to execute a program and assert the result is an f64 value.
+/// Uses bit-equality so the assertion is deterministic for tests that
+/// expect specific NaN/zero patterns.
+pub fn assert_program_result_f64(source_code: &str, expected: f64) {
+    let result = test_program(source_code)
+        .expect("Program execution failed");
+    let actual = result.borrow().unwrap_float64();
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "f64 mismatch: expected {expected}, got {actual}"
+    );
+}
+
 /// Helper function to execute a program and assert the result is a u64 array
 pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
     let result = test_program(source_code)
@@ -94,6 +108,7 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
         Object::Unit => "Unit",
         Object::Int64(_) => "Int64",
         Object::UInt64(_) => "UInt64",
+        Object::Float64(_) => "Float64",
         Object::Bool(_) => "Bool",
         Object::String(_) => "String",
         Object::ConstString(_) => "ConstString",

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use cranelift::codegen::ir::{condcodes::IntCC, types, AbiParam, FuncRef, InstBuilder, Signature};
+use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, AbiParam, FuncRef, InstBuilder, Signature};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
@@ -19,6 +19,7 @@ pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
         ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr | ScalarTy::Allocator => {
             Some(types::I64)
         }
+        ScalarTy::F64 => Some(types::F64),
         ScalarTy::Bool => Some(types::I8),
         ScalarTy::Unit => None,
     }
@@ -522,6 +523,7 @@ impl<'a, 'b> State<'a, 'b> {
         match expr {
             Expr::Int64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v))),
             Expr::UInt64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v as i64))),
+            Expr::Float64(v) => Ok(Some(self.builder.ins().f64const(v))),
             Expr::True => Ok(Some(self.builder.ins().iconst(types::I8, 1))),
             Expr::False => Ok(Some(self.builder.ins().iconst(types::I8, 0))),
             Expr::Identifier(sym) => {
@@ -539,6 +541,30 @@ impl<'a, 'b> State<'a, 'b> {
                 let lhs_ty = self.expr_type(&lhs_ref)?;
                 let l = self.gen_expr(&lhs_ref)?.ok_or_else(|| "missing lhs".to_string())?;
                 let r = self.gen_expr(&rhs_ref)?.ok_or_else(|| "missing rhs".to_string())?;
+                if lhs_ty == ScalarTy::F64 {
+                    // f64 takes a separate dispatch table because the cranelift
+                    // mnemonics (fadd/fsub/fmul/fdiv/fcmp) and ordered-vs-
+                    // unordered comparison flavour are distinct from the
+                    // integer path below. IMod / bitwise / shifts are filtered
+                    // out by eligibility before we reach codegen.
+                    let v = match op {
+                        Operator::IAdd => self.builder.ins().fadd(l, r),
+                        Operator::ISub => self.builder.ins().fsub(l, r),
+                        Operator::IMul => self.builder.ins().fmul(l, r),
+                        Operator::IDiv => self.builder.ins().fdiv(l, r),
+                        Operator::EQ => self.builder.ins().fcmp(FloatCC::Equal, l, r),
+                        Operator::NE => self.builder.ins().fcmp(FloatCC::NotEqual, l, r),
+                        // Use ordered (`Less{,OrEqual}Than`) comparisons so
+                        // any NaN operand evaluates to false, matching Rust's
+                        // PartialOrd semantics on f64.
+                        Operator::LT => self.builder.ins().fcmp(FloatCC::LessThan, l, r),
+                        Operator::LE => self.builder.ins().fcmp(FloatCC::LessThanOrEqual, l, r),
+                        Operator::GT => self.builder.ins().fcmp(FloatCC::GreaterThan, l, r),
+                        Operator::GE => self.builder.ins().fcmp(FloatCC::GreaterThanOrEqual, l, r),
+                        _ => return Err("unsupported f64 binary op in JIT".into()),
+                    };
+                    return Ok(Some(v));
+                }
                 let signed = matches!(lhs_ty, ScalarTy::I64);
                 let v = match op {
                     Operator::IAdd => self.builder.ins().iadd(l, r),
@@ -595,9 +621,16 @@ impl<'a, 'b> State<'a, 'b> {
                 Ok(Some(v))
             }
             Expr::Unary(op, operand) => {
+                let operand_ty = self.expr_type(&operand)?;
                 let v = self.gen_expr(&operand)?.ok_or_else(|| "missing operand".to_string())?;
                 let result = match op {
-                    UnaryOp::Negate => self.builder.ins().ineg(v),
+                    UnaryOp::Negate => {
+                        if operand_ty == ScalarTy::F64 {
+                            self.builder.ins().fneg(v)
+                        } else {
+                            self.builder.ins().ineg(v)
+                        }
+                    }
                     UnaryOp::BitwiseNot => self.builder.ins().bnot(v),
                     UnaryOp::LogicalNot => {
                         let one = self.builder.ins().iconst(types::I8, 1);
@@ -717,6 +750,8 @@ impl<'a, 'b> State<'a, 'b> {
                             (true, ScalarTy::U64) => HelperKind::PrintlnU64,
                             (false, ScalarTy::Bool) => HelperKind::PrintBool,
                             (true, ScalarTy::Bool) => HelperKind::PrintlnBool,
+                            (false, ScalarTy::F64) => HelperKind::PrintF64,
+                            (true, ScalarTy::F64) => HelperKind::PrintlnF64,
                             _ => return Err("print arg type unsupported in JIT".into()),
                         };
                         self.call_helper(kind, &[v])?;
@@ -844,12 +879,33 @@ impl<'a, 'b> State<'a, 'b> {
                     _ => Err("unsupported builtin in JIT".into()),
                 }
             }
-            Expr::Cast(inner, _target) => {
-                // Eligibility limits casts to i64 ↔ u64 (and identity for
-                // those two), all of which share cranelift's I64 backing
-                // storage. The cast is therefore a pure type-system
-                // reinterpretation with no instruction needed.
-                self.gen_expr(&inner)
+            Expr::Cast(inner, target) => {
+                // i64 ↔ u64 share cranelift's I64 backing storage so those
+                // casts are no-ops. f64 ↔ integer casts emit fcvt instructions
+                // (saturating toward zero, matching Rust's `as`).
+                let inner_ty = self.expr_type(&inner)?;
+                let target_ty = ScalarTy::from_type_decl(&target)
+                    .ok_or_else(|| "cast target type unsupported in JIT".to_string())?;
+                let v = self.gen_expr(&inner)?.ok_or_else(|| "missing cast operand".to_string())?;
+                let result = match (inner_ty, target_ty) {
+                    (ScalarTy::I64, ScalarTy::F64) => {
+                        self.builder.ins().fcvt_from_sint(types::F64, v)
+                    }
+                    (ScalarTy::U64, ScalarTy::F64) => {
+                        self.builder.ins().fcvt_from_uint(types::F64, v)
+                    }
+                    (ScalarTy::F64, ScalarTy::I64) => {
+                        // _sat: out-of-range / NaN saturate (NaN -> 0) so we
+                        // never trap, matching Rust's `as` since 1.45.
+                        self.builder.ins().fcvt_to_sint_sat(types::I64, v)
+                    }
+                    (ScalarTy::F64, ScalarTy::U64) => {
+                        self.builder.ins().fcvt_to_uint_sat(types::I64, v)
+                    }
+                    // i64 ↔ u64 (and identity casts) require no instruction.
+                    _ => v,
+                };
+                Ok(Some(result))
             }
             Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
                 // Resolve the callee's signature and reject struct-

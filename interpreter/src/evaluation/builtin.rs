@@ -13,7 +13,7 @@ use super::{EvaluationContext, EvaluationResult};
 /// stride should probe the largest variant.
 fn object_byte_size(value: &Object) -> Option<u64> {
     match value {
-        Object::Int64(_) | Object::UInt64(_) | Object::Pointer(_) => Some(8),
+        Object::Int64(_) | Object::UInt64(_) | Object::Float64(_) | Object::Pointer(_) => Some(8),
         Object::Bool(_) => Some(1),
         Object::Unit => Some(0),
         Object::Struct { fields, .. } => {

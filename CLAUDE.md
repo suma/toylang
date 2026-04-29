@@ -87,12 +87,13 @@ fn main() -> u64 {
 
 - Functions require explicit return types
 - Variables: `val` (immutable), `var` (mutable)
-- Types: `u64`, `i64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
+- Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
 - **Numeric literals**:
-  - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit)
+  - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit), `1.5f64` / `42f64` (IEEE 754 double)
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）
   - Without suffix: defaults to `u64`, or automatically determined by type inference
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
+  - **f64 リテラルは必ず `f64` サフィックスを付ける**: タプルアクセス `outer.0.1` のような構文との曖昧性を避けるため、`1.5` 単体は許可しない。整数 → f64 への暗黙変換も無いので、`1.0f64` または `1f64` と書く（必要なら `as f64` キャスト）
 - Control flow: `if/else`, `for i in start to end`, `while`, `break`, `continue`, `return`
 - **`else if` 構文は未サポート**: `if expr {} else if expr {}` は使用不可。代わりに `elif` キーワードを使用すること
   ```rust

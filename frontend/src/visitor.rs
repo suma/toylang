@@ -25,6 +25,7 @@ pub trait AstVisitor {
     fn visit_call(&mut self, fn_name: DefaultSymbol, args: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_int64_literal(&mut self, value: &i64) -> Result<TypeDecl, TypeCheckError>;
     fn visit_uint64_literal(&mut self, value: &u64) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_float64_literal(&mut self, value: &f64) -> Result<TypeDecl, TypeCheckError>;
     fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_string_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_boolean_literal(&mut self, value: &Expr) -> Result<TypeDecl, TypeCheckError>;

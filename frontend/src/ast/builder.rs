@@ -106,6 +106,12 @@ impl AstBuilder {
         expr_ref
     }
 
+    pub fn float64_expr(&mut self, value: f64, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Float64(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn bool_true_expr(&mut self, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::True);
         self.location_pool.add_expr_location(location);

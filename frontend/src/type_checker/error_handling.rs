@@ -184,6 +184,7 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Int64 => "i64".to_string(),
             TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Float64 => "f64".to_string(),
             TypeDecl::Bool => "bool".to_string(),
             TypeDecl::String => "str".to_string(),
             TypeDecl::Unit => "()".to_string(),

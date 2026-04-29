@@ -43,6 +43,7 @@ macro_rules! token {
 
 "u64"       return Ok(token!(self, Kind::U64));
 "i64"       return Ok(token!(self, Kind::I64));
+"f64"       return Ok(token!(self, Kind::F64));
 "str"       return Ok(token!(self, Kind::Str));
 "ptr"       return Ok(token!(self, Kind::Ptr));
 "usize"     return Ok(token!(self, Kind::USize));
@@ -93,6 +94,26 @@ macro_rules! token {
 "/"         return Ok(token!(self, Kind::IDiv));
 "%"         return Ok(token!(self, Kind::IMod));
 
+
+-?[0-9]+"."[0-9]+"f64"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<f64>() {
+                            Ok(value) => return Ok(token!(self, Kind::Float64(value))),
+                            Err(_) => return Err(Error::Unmatch),
+                        }
+                    }
+
+-?[0-9]+"f64"       {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<f64>() {
+                            Ok(value) => return Ok(token!(self, Kind::Float64(value))),
+                            Err(_) => return Err(Error::Unmatch),
+                        }
+                    }
 
 -?[0-9]+"i64"       {
                         let mut text = self.yytext();

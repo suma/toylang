@@ -12,6 +12,10 @@ impl<'a> LiteralTypeChecker for TypeCheckerVisitor<'a> {
         Ok(TypeDecl::UInt64)
     }
 
+    fn check_float64_literal(&mut self, _value: &f64) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Float64)
+    }
+
     fn check_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         let num_str = self.core.string_interner.resolve(value)
             .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;

@@ -100,11 +100,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             UnaryOp::Negate => {
-                // Only signed integers may be negated. Rejecting u64 avoids the
-                // silent-wraparound surprise `-(1u64) == 2^64 - 1`; users who
-                // really want the two's-complement representation can cast first.
+                // Only signed integers and f64 may be negated. Rejecting u64
+                // avoids the silent-wraparound surprise `-(1u64) == 2^64 - 1`;
+                // users who really want the two's-complement representation
+                // can cast first.
                 if resolved_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                } else if resolved_ty == TypeDecl::Float64 {
+                    TypeDecl::Float64
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("unary minus", resolved_ty.clone(), TypeDecl::Int64),
@@ -187,6 +190,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
+                    // f64 supports +, -, *, /, %. `%` follows Rust's `f64::rem`,
+                    // matching the IEEE 754 remainder via fmod-style truncation.
+                    TypeDecl::Float64
                 } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (&resolved_lhs_ty, &resolved_rhs_ty) {
                     // Allow arithmetic operations on generic types if they are the same parameter
                     if left_param == right_param {
@@ -207,6 +214,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
                 if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) &&
                    (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
+                    TypeDecl::Bool
+                } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
+                    // f64 comparisons use IEEE 754 semantics — NaN compares
+                    // false for ordering and equality, matching Rust's PartialOrd.
                     TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
                     TypeDecl::Bool
@@ -651,6 +662,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     pub fn visit_uint64_literal(&mut self, _value: &u64) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::UInt64)
+    }
+
+    pub fn visit_float64_literal(&mut self, _value: &f64) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Float64)
     }
 
     pub fn visit_number_literal(&mut self, _value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {

@@ -179,6 +179,105 @@ mod basic_execution {
         );
     }
 
+    // ----- f64 (Float64) tests -----
+
+    #[test]
+    fn test_f64_basic_arithmetic() {
+        common::assert_program_result_f64(
+            r"
+        fn main() -> f64 {
+            val a: f64 = 3.0f64
+            val b: f64 = 2.0f64
+            (a + b) * 2.0f64 - 1.0f64
+        }
+        ",
+            9.0,
+        );
+    }
+
+    #[test]
+    fn test_f64_division_and_modulo() {
+        common::assert_program_result_f64(
+            r"
+        fn main() -> f64 {
+            7.0f64 % 3.0f64
+        }
+        ",
+            1.0,
+        );
+    }
+
+    #[test]
+    fn test_f64_comparison_returns_bool() {
+        // The branch is selected when 1.5 < 2.0 holds, then we read
+        // back through an i64 channel so we exercise the full path.
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            val a: f64 = 1.5f64
+            val b: f64 = 2.0f64
+            if a < b { 1i64 } else { 0i64 }
+        }
+        ",
+            1,
+        );
+    }
+
+    #[test]
+    fn test_f64_unary_minus() {
+        common::assert_program_result_f64(
+            r"
+        fn main() -> f64 {
+            val x: f64 = 2.5f64
+            -x
+        }
+        ",
+            -2.5,
+        );
+    }
+
+    #[test]
+    fn test_f64_cast_round_trip() {
+        // 5 → 5.0 → 5 — exercises both conversion directions.
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            val i: i64 = 5i64
+            val f: f64 = i as f64
+            (f * 2.0f64) as i64
+        }
+        ",
+            10,
+        );
+    }
+
+    #[test]
+    fn test_f64_cast_truncation() {
+        // f64 → i64 truncates toward zero (matching Rust's `as`).
+        common::assert_program_result_i64(
+            r"
+        fn main() -> i64 {
+            val pi: f64 = 3.7f64
+            pi as i64
+        }
+        ",
+            3,
+        );
+    }
+
+    #[test]
+    fn test_f64_integer_suffix_literal() {
+        // `42f64` is shorthand for `42.0f64`; both produce the same value.
+        common::assert_program_result_f64(
+            r"
+        fn main() -> f64 {
+            42f64 + 0.5f64
+        }
+        ",
+            42.5,
+        );
+    }
+
     #[test]
     fn test_unary_minus_on_variable() {
         common::assert_program_result_i64(r"

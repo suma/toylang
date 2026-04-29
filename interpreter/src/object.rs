@@ -685,43 +685,13 @@ impl Object {
         let other_type = other_borrowed.get_type();
         
         match (&mut *self, &*other_borrowed) {
-            // All types allow null assignment
-            (Object::Bool(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Bool);
-                Ok(())
-            }
-            (Object::Int64(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Int64);
-                Ok(())
-            }
-            (Object::UInt64(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::UInt64);
-                Ok(())
-            }
-            (Object::Float64(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Float64);
-                Ok(())
-            }
-            (Object::ConstString(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::String);
-                Ok(())
-            }
-            (Object::String(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::String);
-                Ok(())
-            }
-            (Object::Array(_), Object::Null(_)) => {
-                // For arrays, we need to preserve the original array type
-                let original_type = self.get_type();
-                *self = Object::Null(original_type);
-                Ok(())
-            }
-            (Object::Struct { type_name, .. }, Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Struct(*type_name, vec![]));
-                Ok(())
-            }
-            (Object::Pointer(_), Object::Null(_)) => {
-                *self = Object::Null(TypeDecl::Ptr);
+            // Null assignment is allowed for any concrete value type. The
+            // resulting Null carries the original variable's type so later
+            // operations can still see what was lost (e.g. for diagnostics).
+            // Self being Null/Unit takes the catch-all `(Null, _) | (Unit, _)`
+            // arm below instead, which clones the rhs verbatim.
+            (s, Object::Null(_)) if !matches!(s, Object::Null(_) | Object::Unit) => {
+                *self = Object::Null(self_type);
                 Ok(())
             }
             // Same type assignments

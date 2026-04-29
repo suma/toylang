@@ -102,6 +102,10 @@ pub struct EvaluationContext<'a> {
     /// `INTERPRETER_CONTRACTS` at construction; `call.rs` consults
     /// `check_pre` / `check_post` to decide whether to evaluate each clause.
     pub(super) contract_mode: ContractMode,
+    /// Pre-interned symbol for the `result` keyword bound inside `ensures`
+    /// clauses. Cached at construction so contract evaluation doesn't
+    /// re-intern the same string on every call.
+    pub(super) result_symbol: DefaultSymbol,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -109,6 +113,7 @@ impl<'a> EvaluationContext<'a> {
         let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
         let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
         let allocator_stack: Vec<Rc<dyn Allocator>> = vec![global_allocator.clone()];
+        let result_symbol = string_interner.get_or_intern("result");
         Self {
             stmt_pool,
             expr_pool,
@@ -124,6 +129,7 @@ impl<'a> EvaluationContext<'a> {
             allocator_stack,
             enum_definitions: HashMap::new(),
             contract_mode: ContractMode::from_env(),
+            result_symbol,
         }
     }
 

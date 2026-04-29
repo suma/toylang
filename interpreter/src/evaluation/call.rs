@@ -102,8 +102,7 @@ impl EvaluationContext<'_> {
         if !self.contract_mode.check_post || method.ensures.is_empty() {
             return Ok(());
         }
-        let result_sym = self.string_interner.get_or_intern("result");
-        self.environment.set_val(result_sym, return_value);
+        self.environment.set_val(self.result_symbol, return_value);
         for (idx, cond) in method.ensures.iter().enumerate() {
             let cond_res = self.evaluate(cond)?;
             let cond_obj = self.unwrap_value(cond_res)?;
@@ -629,8 +628,7 @@ impl EvaluationContext<'_> {
         // type checker only allows `result` and parameters in postconditions.
         // Skipped under `INTERPRETER_CONTRACTS=pre|off`.
         if self.contract_mode.check_post && !function.ensures.is_empty() {
-            let result_sym = self.string_interner.get_or_intern("result");
-            self.environment.set_val(result_sym, return_value.clone());
+            self.environment.set_val(self.result_symbol, return_value.clone());
             for (idx, cond) in function.ensures.iter().enumerate() {
                 let cond_res = self.evaluate(cond)?;
                 let cond_obj = self.unwrap_value(cond_res)?;

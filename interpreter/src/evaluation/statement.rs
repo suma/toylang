@@ -28,7 +28,7 @@ impl EvaluationContext<'_> {
             self.environment.enter_block();
             self.environment.set_var(
                 identifier,
-                Rc::new(RefCell::new(create_object(current))),
+                create_object(current).into(),
                 VariableSetType::Insert,
                 self.string_interner,
             )?;
@@ -147,7 +147,7 @@ impl EvaluationContext<'_> {
     fn handle_val_declaration(&mut self, name: DefaultSymbol, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         let value = self.evaluate(expr);
         let value = try_value!(value);
-        self.environment.set_val(name, value);
+        self.environment.set_val(name, (value).into());
         Ok(EvaluationResult::None)
     }
 
@@ -160,7 +160,7 @@ impl EvaluationContext<'_> {
         } else {
             self.null_object.clone()
         };
-        self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
+        self.environment.set_var(name, (value).into(), VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }
 
@@ -367,8 +367,7 @@ impl EvaluationContext<'_> {
             return Err(InterpreterError::UndefinedVariable("bad assignment due to variable was not set".to_string()));
         }
         let existing_val = existing_val.unwrap();
-        let val = existing_val.borrow();
-        let val_ty = val.get_type();
+        let val_ty = existing_val.get_type();
         let rhs_ty = rhs_borrow.get_type();
 
         if val_ty != rhs_ty {
@@ -384,7 +383,7 @@ impl EvaluationContext<'_> {
             }
         }
 
-        self.environment.set_var(name, rhs.clone(), VariableSetType::Overwrite, self.string_interner)?;
+        self.environment.set_var(name, (rhs.clone()).into(), VariableSetType::Overwrite, self.string_interner)?;
         let cloned_value = rhs.borrow().clone();
         Ok(EvaluationResult::Value((cloned_value).into()))
     }
@@ -394,11 +393,11 @@ impl EvaluationContext<'_> {
     fn handle_identifier_expression(&mut self, symbol: DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
         let obj = self.environment.get_val(symbol);
         let obj_ref = obj.clone();
-        if obj.is_none() || obj.unwrap().borrow().is_null() {
+        if obj.is_none() || obj.unwrap().is_null() {
             let s = self.string_interner.resolve(symbol).unwrap_or("<NOT_FOUND>");
             return Err(InterpreterError::UndefinedVariable(format!("Identifier {s} is null")));
         }
-        Ok(EvaluationResult::Value(obj_ref.unwrap().into()))
+        Ok(EvaluationResult::Value(obj_ref.unwrap()))
     }
 
     /// Handles nested block expressions

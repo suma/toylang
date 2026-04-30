@@ -1,13 +1,11 @@
 use std::collections::HashMap;
-use std::cell::RefCell;
-use std::rc::Rc;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
-use crate::object::{Object, RcObject};
+use crate::value::Value;
 use crate::error::InterpreterError;
 
 #[derive(Debug, Clone)]
 pub struct VariableValue {
-    pub value: RcObject,
+    pub value: Value,
     pub mutable: bool,
 }
 
@@ -64,7 +62,7 @@ impl Environment {
         self.var.pop();
     }
 
-    pub fn set_val(&mut self, name: DefaultSymbol, value: RcObject) {
+    pub fn set_val(&mut self, name: DefaultSymbol, value: Value) {
         if let Some(last) = self.var.last_mut() {
             last.insert(name,
                         VariableValue{
@@ -74,7 +72,7 @@ impl Environment {
         }
     }
 
-    pub fn set_var(&mut self, name: DefaultSymbol, value: RcObject, set_type: VariableSetType, string_interner: &DefaultStringInterner) -> Result<(), InterpreterError> {
+    pub fn set_var(&mut self, name: DefaultSymbol, value: Value, set_type: VariableSetType, string_interner: &DefaultStringInterner) -> Result<(), InterpreterError> {
         let current = self.var.iter_mut().rfind(|v| v.contains_key(&name));
 
         if current.is_none() || set_type == VariableSetType::Insert {
@@ -98,7 +96,7 @@ impl Environment {
         Ok(())
     }
 
-    pub fn get_val(&self, name: DefaultSymbol) -> Option<Rc<RefCell<Object>>> {
+    pub fn get_val(&self, name: DefaultSymbol) -> Option<Value> {
         for v in self.var.iter().rev() {
             if let Some(val) = v.get(&name) {
                 return Some(val.value.clone());

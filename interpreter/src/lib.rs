@@ -414,7 +414,7 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
                 ));
             }
         };
-        eval.environment.set_val(c.name, value);
+        eval.environment.set_val(c.name, (value).into());
     }
 
     #[cfg(feature = "jit")]

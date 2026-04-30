@@ -21,10 +21,10 @@ impl EvaluationContext<'_> {
         for (param_symbol, _param_type) in &method.parameter {
             if param_index == 0 {
                 // First parameter is 'self' - bind the object
-                self.environment.set_val(*param_symbol, self_obj.clone());
+                self.environment.set_val(*param_symbol, (self_obj.clone().into()));
             } else if param_index - 1 < args.len() {
                 // Subsequent parameters are regular args
-                self.environment.set_val(*param_symbol, args[param_index - 1].clone());
+                self.environment.set_val(*param_symbol, (args[param_index - 1].clone().into()));
             }
             param_index += 1;
         }
@@ -112,7 +112,7 @@ impl EvaluationContext<'_> {
         if !self.contract_mode.check_post || clauses.is_empty() {
             return Ok(());
         }
-        self.environment.set_val(self.result_symbol, return_value);
+        self.environment.set_val(self.result_symbol, (return_value).into());
         for (idx, cond) in clauses.iter().enumerate() {
             let cond_res = self.evaluate(cond)?;
             let cond_obj = self.unwrap_value(cond_res)?;
@@ -147,7 +147,7 @@ impl EvaluationContext<'_> {
 
             let arg_index = if skip_self { param_index - 1 } else { param_index };
             if arg_index < args.len() {
-                self.environment.set_val(*param_symbol, args[arg_index].clone());
+                self.environment.set_val(*param_symbol, (args[arg_index].clone().into()));
             }
             param_index += 1;
         }
@@ -564,7 +564,7 @@ impl EvaluationContext<'_> {
                     return Err(e);
                 },
             };
-            self.environment.set_val(name, value);
+            self.environment.set_val(name, (value).into());
         }
 
         let res = self.evaluate_block(&block)?;
@@ -598,7 +598,7 @@ impl EvaluationContext<'_> {
         for (i, value) in args.iter().enumerate() {
             let name = function.parameter.get(i)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
-            self.environment.set_val(name, value.clone());
+            self.environment.set_val(name, (value.clone().into()));
         }
 
         // Pre-body `requires` checks. Shares the same helper as the method

@@ -328,7 +328,7 @@ impl EvaluationContext<'_> {
 
         // Look up variable in the specified module
         if let Some(variable_value) = self.environment.resolve_qualified_name(&module_path, variable_name) {
-            Some(variable_value.value.clone())
+            Some(variable_value.value.clone().into_rc())
         } else {
             None
         }
@@ -421,7 +421,7 @@ impl EvaluationContext<'_> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Name(sym) => {
-                self.environment.set_val(*sym, value.clone());
+                self.environment.set_val(*sym, (value.clone().into()));
                 Ok(true)
             }
             Pattern::Literal(literal_expr) => {

@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use cranelift::codegen::ir::{condcodes::IntCC, types, AbiParam, InstBuilder, Signature};
+use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, AbiParam, InstBuilder, Signature};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
@@ -124,6 +124,8 @@ struct CodegenSession {
     rt_println_bool: cranelift_module::FuncId,
     rt_print_str: cranelift_module::FuncId,
     rt_println_str: cranelift_module::FuncId,
+    rt_print_f64: cranelift_module::FuncId,
+    rt_println_f64: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -204,6 +206,11 @@ impl CodegenSession {
         let rt_print_str = declare_helper(&mut module, "toy_print_str", &ptr_sig)?;
         let rt_println_str = declare_helper(&mut module, "toy_println_str", &ptr_sig)?;
 
+        let mut f64_sig = Signature::new(call_conv);
+        f64_sig.params.push(AbiParam::new(types::F64));
+        let rt_print_f64 = declare_helper(&mut module, "toy_print_f64", &f64_sig)?;
+        let rt_println_f64 = declare_helper(&mut module, "toy_println_f64", &f64_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -217,6 +224,8 @@ impl CodegenSession {
             rt_println_bool,
             rt_print_str,
             rt_println_str,
+            rt_print_f64,
+            rt_println_f64,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
         })
@@ -229,7 +238,7 @@ impl CodegenSession {
     ) -> Result<(), String> {
         for (i, func) in ir_module.functions.iter().enumerate() {
             let id = FuncId(i as u32);
-            let sig = self.cranelift_signature(&func.params, func.return_type);
+            let sig = self.cranelift_signature(ir_module, &func.params, func.return_type);
             let linkage = match func.linkage {
                 Linkage::Export => CLinkage::Export,
                 Linkage::Local => CLinkage::Local,
@@ -338,18 +347,59 @@ impl CodegenSession {
         Ok(())
     }
 
-    fn cranelift_signature(&self, params: &[IrType], ret: IrType) -> Signature {
+    fn cranelift_signature(
+        &self,
+        ir_module: &IrModule,
+        params: &[IrType],
+        ret: IrType,
+    ) -> Signature {
         let call_conv = self.module.target_config().default_call_conv;
         let mut s = Signature::new(call_conv);
         for p in params {
-            if let Some(t) = ir_to_cranelift_ty(*p) {
-                s.params.push(AbiParam::new(t));
+            self.push_param(&mut s, ir_module, *p);
+        }
+        self.push_return(&mut s, ir_module, ret);
+        s
+    }
+
+    fn push_param(&self, sig: &mut Signature, ir_module: &IrModule, t: IrType) {
+        match t {
+            IrType::Struct(name) => {
+                // Expand the struct into one cranelift param per
+                // scalar field, in declaration order.
+                if let Some(def) = ir_module.struct_defs.get(&name) {
+                    for (_field_name, field_ty) in def {
+                        if let Some(ct) = ir_to_cranelift_ty(*field_ty) {
+                            sig.params.push(AbiParam::new(ct));
+                        }
+                    }
+                }
+            }
+            other => {
+                if let Some(ct) = ir_to_cranelift_ty(other) {
+                    sig.params.push(AbiParam::new(ct));
+                }
             }
         }
-        if let Some(t) = ir_to_cranelift_ty(ret) {
-            s.returns.push(AbiParam::new(t));
+    }
+
+    fn push_return(&self, sig: &mut Signature, ir_module: &IrModule, t: IrType) {
+        match t {
+            IrType::Struct(name) => {
+                if let Some(def) = ir_module.struct_defs.get(&name) {
+                    for (_field_name, field_ty) in def {
+                        if let Some(ct) = ir_to_cranelift_ty(*field_ty) {
+                            sig.returns.push(AbiParam::new(ct));
+                        }
+                    }
+                }
+            }
+            other => {
+                if let Some(ct) = ir_to_cranelift_ty(other) {
+                    sig.returns.push(AbiParam::new(ct));
+                }
+            }
         }
-        s
     }
 
     fn define_function(
@@ -363,7 +413,7 @@ impl CodegenSession {
             .get(&func_id)
             .ok_or_else(|| format!("function {} not declared", func.export_name))?;
         let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature(&func.params, func.return_type);
+        ctx.func.signature = self.cranelift_signature(ir_module, &func.params, func.return_type);
         // Pre-declare every same-module function as an import on this
         // function so `Call` lowering doesn't have to re-borrow the
         // module mid-emission.
@@ -403,7 +453,7 @@ impl CodegenSession {
     ) -> Result<String, String> {
         let func = ir_module.function(func_id);
         let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature(&func.params, func.return_type);
+        ctx.func.signature = self.cranelift_signature(ir_module, &func.params, func.return_type);
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
@@ -514,6 +564,8 @@ impl CodegenSession {
             println_bool: self.module.declare_func_in_func(self.rt_println_bool, func),
             print_str: self.module.declare_func_in_func(self.rt_print_str, func),
             println_str: self.module.declare_func_in_func(self.rt_println_str, func),
+            print_f64: self.module.declare_func_in_func(self.rt_print_f64, func),
+            println_f64: self.module.declare_func_in_func(self.rt_println_f64, func),
         }
     }
 }
@@ -533,13 +585,21 @@ struct RuntimeRefs {
     println_bool: cranelift_codegen::ir::FuncRef,
     print_str: cranelift_codegen::ir::FuncRef,
     println_str: cranelift_codegen::ir::FuncRef,
+    print_f64: cranelift_codegen::ir::FuncRef,
+    println_f64: cranelift_codegen::ir::FuncRef,
 }
 
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
     match t {
         IrType::I64 | IrType::U64 => Some(types::I64),
+        IrType::F64 => Some(types::F64),
         IrType::Bool => Some(types::I8),
         IrType::Unit => None,
+        // Struct types have no single cranelift representation — the
+        // codegen layer expands them into multiple AbiParams /
+        // returns at the function boundary instead. Callers that
+        // could see a struct here should branch on `is_struct()`.
+        IrType::Struct(_) => None,
     }
 }
 
@@ -618,14 +678,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
         }
         // Bind parameter locals to the Cranelift block param values.
+        // Struct params expand into multiple block params (one per
+        // scalar field), and lower.rs allocated the matching locals in
+        // the same order; that means a flat `block_params[i] →
+        // locals[i]` mapping is correct, regardless of how many of the
+        // params were structs.
         let block_params: Vec<Value> = self.builder.block_params(entry).to_vec();
-        for (i, _ty) in func.params.iter().enumerate() {
+        for (i, val) in block_params.iter().enumerate() {
             let var = self
                 .locals
                 .get(&(i as u32))
                 .copied()
                 .expect("param local not declared");
-            self.builder.def_var(var, block_params[i]);
+            self.builder.def_var(var, *val);
         }
 
         // 3. Walk the IR blocks in order, filling each with instructions
@@ -669,6 +734,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let v = match c {
                     Const::I64(n) => self.builder.ins().iconst(types::I64, *n),
                     Const::U64(n) => self.builder.ins().iconst(types::I64, *n as i64),
+                    Const::F64(n) => self.builder.ins().f64const(*n),
                     Const::Bool(b) => self.builder.ins().iconst(types::I8, *b as i64),
                 };
                 self.record_result(inst, v);
@@ -676,10 +742,44 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::BinOp { op, lhs, rhs } => {
                 let l = self.value(*lhs);
                 let r = self.value(*rhs);
-                // Decide signed-vs-unsigned dispatch from the IR-level
-                // type of the *result-producing* operand. For compares
-                // and arithmetic the operand types match; the type
-                // checker has already enforced that.
+                // Dispatch by operand type. F64 uses the float
+                // instruction set (fadd/fsub/fmul/fdiv/fcmp); integer
+                // ops further split signed vs unsigned for div/rem and
+                // ordered comparisons. The type checker has already
+                // enforced that both operands share a type, so we only
+                // need to look at the lhs.
+                let lhs_ty = self.value_ir_type(*lhs).unwrap_or(IrType::U64);
+                if lhs_ty.is_float() {
+                    let v = match op {
+                        BinOp::Add => self.builder.ins().fadd(l, r),
+                        BinOp::Sub => self.builder.ins().fsub(l, r),
+                        BinOp::Mul => self.builder.ins().fmul(l, r),
+                        BinOp::Div => self.builder.ins().fdiv(l, r),
+                        BinOp::Rem => {
+                            return Err(
+                                "compiler MVP does not support `%` on f64 (cranelift has no native fmod)"
+                                    .to_string(),
+                            );
+                        }
+                        BinOp::Eq => self.builder.ins().fcmp(FloatCC::Equal, l, r),
+                        BinOp::Ne => self.builder.ins().fcmp(FloatCC::NotEqual, l, r),
+                        BinOp::Lt => self.builder.ins().fcmp(FloatCC::LessThan, l, r),
+                        BinOp::Le => self.builder.ins().fcmp(FloatCC::LessThanOrEqual, l, r),
+                        BinOp::Gt => self.builder.ins().fcmp(FloatCC::GreaterThan, l, r),
+                        BinOp::Ge => self.builder.ins().fcmp(FloatCC::GreaterThanOrEqual, l, r),
+                        BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                        | BinOp::Shl
+                        | BinOp::Shr => {
+                            return Err(
+                                "bitwise / shift operators are not defined on f64".to_string(),
+                            );
+                        }
+                    };
+                    self.record_result(inst, v);
+                    return Ok(());
+                }
                 let signed = self.value_is_signed(*lhs);
                 let v = match op {
                     BinOp::Add => self.builder.ins().iadd(l, r),
@@ -745,14 +845,26 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
             InstKind::UnaryOp { op, operand } => {
                 let v = self.value(*operand);
+                let operand_ty = self.value_ir_type(*operand);
                 let result = match op {
-                    UnaryOp::Neg => self.builder.ins().ineg(v),
+                    UnaryOp::Neg => {
+                        if matches!(operand_ty, Some(IrType::F64)) {
+                            self.builder.ins().fneg(v)
+                        } else {
+                            self.builder.ins().ineg(v)
+                        }
+                    }
                     UnaryOp::BitNot => self.builder.ins().bnot(v),
                     UnaryOp::LogicalNot => {
                         let one = self.builder.ins().iconst(types::I8, 1);
                         self.builder.ins().bxor(v, one)
                     }
                 };
+                self.record_result(inst, result);
+            }
+            InstKind::Cast { value, from, to } => {
+                let v = self.value(*value);
+                let result = self.lower_cast(v, *from, *to)?;
                 self.record_result(inst, result);
             }
             InstKind::LoadLocal(local) => {
@@ -780,6 +892,30 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            InstKind::CallStruct { target, args, dests } => {
+                // Multi-result call: store result `i` into `dests[i]`.
+                // Each `dest` is a per-field local pre-allocated by
+                // lower.rs, so the def_var mapping into a cranelift
+                // Variable is straightforward.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: call returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len()
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
+                }
+            }
             InstKind::Print { value, value_ty, newline } => {
                 let v = self.value(*value);
                 let helper = match (value_ty, newline) {
@@ -787,11 +923,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::I64, true) => self.runtime.println_i64,
                     (IrType::U64, false) => self.runtime.print_u64,
                     (IrType::U64, true) => self.runtime.println_u64,
+                    (IrType::F64, false) => self.runtime.print_f64,
+                    (IrType::F64, true) => self.runtime.println_f64,
                     (IrType::Bool, false) => self.runtime.print_bool,
                     (IrType::Bool, true) => self.runtime.println_bool,
                     (IrType::Unit, _) => {
                         return Err(
                             "internal error: Print of Unit reached codegen".to_string(),
+                        );
+                    }
+                    (IrType::Struct(_), _) => {
+                        return Err(
+                            "internal error: Print of struct reached codegen (should be rejected at lower)"
+                                .to_string(),
                         );
                     }
                 };
@@ -816,12 +960,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
 
     fn lower_terminator(&mut self, term: &Terminator) -> Result<(), String> {
         match term {
-            Terminator::Return(Some(v)) => {
-                let v = self.value(*v);
-                self.builder.ins().return_(&[v]);
-            }
-            Terminator::Return(None) => {
-                self.builder.ins().return_(&[]);
+            Terminator::Return(values) => {
+                // Multi-value return for struct returns; single value
+                // for scalar; empty for Unit. The Vec already encodes
+                // all three cases.
+                let cl_values: Vec<Value> = values.iter().map(|v| self.value(*v)).collect();
+                self.builder.ins().return_(&cl_values);
             }
             Terminator::Jump(b) => {
                 let target = *self
@@ -889,21 +1033,52 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
     /// each result, so we re-derive it from the function rather than
     /// caching it separately here.
     fn value_is_signed(&self, v: ValueId) -> bool {
+        self.value_ir_type(v).map(|t| t.is_signed()).unwrap_or(false)
+    }
+
+    /// Look up the IR `Type` of a value by scanning the function's
+    /// instructions for the one that produced it. O(n) per lookup, but
+    /// our functions are small and this avoids carrying yet another
+    /// side table on `LowerCtx`.
+    fn value_ir_type(&self, v: ValueId) -> Option<IrType> {
         let func = self.ir_module.function(self.func_id);
         for blk in &func.blocks {
             for inst in &blk.instructions {
                 if let Some((vid, ty)) = inst.result {
                     if vid == v {
-                        return ty.is_signed();
+                        return Some(ty);
                     }
                 }
             }
         }
-        // Fallback: parameters are stored in locals 0..N; if `v` was
-        // produced by a LoadLocal of a parameter slot, look at the
-        // declared parameter type. This isn't normally hit because
-        // parameters flow through LoadLocal whose result is recorded in
-        // the loop above.
-        false
+        None
+    }
+
+    /// Translate an IR `Cast { from, to }` to the right cranelift
+    /// instruction. Same-rep integer pairs (i64 ↔ u64) are no-ops
+    /// because both share `types::I64` at the cranelift level. Bool
+    /// casts (which the type checker doesn't currently emit) are
+    /// rejected up front.
+    fn lower_cast(&mut self, v: Value, from: IrType, to: IrType) -> Result<Value, String> {
+        use IrType::*;
+        Ok(match (from, to) {
+            // Identity at the bit level: both are `I64`.
+            (I64, I64) | (U64, U64) | (I64, U64) | (U64, I64) => v,
+            (F64, F64) => v,
+            (Bool, Bool) => v,
+            // Integer → float.
+            (I64, F64) => self.builder.ins().fcvt_from_sint(types::F64, v),
+            (U64, F64) => self.builder.ins().fcvt_from_uint(types::F64, v),
+            // Float → integer; saturating to match Rust's `as` cast.
+            (F64, I64) => self.builder.ins().fcvt_to_sint_sat(types::I64, v),
+            (F64, U64) => self.builder.ins().fcvt_to_uint_sat(types::I64, v),
+            // Bool conversions and Unit aren't meaningful; reject.
+            _ => {
+                return Err(format!(
+                    "compiler MVP does not support `as` cast from {:?} to {:?}",
+                    from, to
+                ));
+            }
+        })
     }
 }

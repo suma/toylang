@@ -51,6 +51,12 @@ pub struct Module {
     /// declared, used by lowering when resolving call targets and by
     /// codegen when wiring same-module imports.
     pub function_index: HashMap<DefaultSymbol, FuncId>,
+    /// Struct definitions discovered at lowering time. Codegen reads
+    /// this to expand `Type::Struct(name)` into a flat list of scalar
+    /// fields when building cranelift signatures and entry-block params.
+    /// Field name is stored as a `String` to match the AST exactly;
+    /// codegen never has to cross-reference the interner for these.
+    pub struct_defs: HashMap<DefaultSymbol, Vec<(String, Type)>>,
 }
 
 impl Module {
@@ -165,23 +171,42 @@ impl Block {
 
 /// Subset of types the AOT compiler can lower today. Everything else is
 /// rejected at lowering entry with a clear error message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Type::Struct(name)` only appears in function signatures (params and
+/// return types). It is **not** a value-graph type: the SSA values
+/// produced by Instructions are always scalar primitives, even when
+/// the function takes / returns a struct. The codegen layer expands
+/// every struct boundary into a flat list of cranelift parameters /
+/// returns, one per scalar field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
     I64,
     U64,
+    F64,
     Bool,
     Unit,
+    Struct(DefaultSymbol),
 }
 
 impl Type {
     /// Whether values of this type are signed integers (controls the
-    /// signed-vs-unsigned dispatch on division, modulo, and comparison).
+    /// signed-vs-unsigned dispatch on division, modulo, and comparison
+    /// for integer ops). `F64` is **not** "signed" in this sense — it
+    /// dispatches to a separate float code path.
     pub fn is_signed(self) -> bool {
         matches!(self, Type::I64)
     }
 
+    pub fn is_float(self) -> bool {
+        matches!(self, Type::F64)
+    }
+
     pub fn produces_value(self) -> bool {
         !matches!(self, Type::Unit)
+    }
+
+    pub fn is_struct(self) -> bool {
+        matches!(self, Type::Struct(_))
     }
 }
 
@@ -203,6 +228,24 @@ pub enum InstKind {
     /// Direct call to a function known at module build time. The optional
     /// `result` is `Some` when the callee returns a value-producing type.
     Call { target: FuncId, args: Vec<ValueId> },
+    /// `expr as Target` — a numeric type conversion. The pair `(from,
+    /// to)` decides whether the codegen emits a no-op (i64↔u64), an
+    /// integer-to-float `fcvt_from_*`, a float-to-integer
+    /// `fcvt_to_*_sat`, or rejects the combination as unsupported.
+    Cast { value: ValueId, from: Type, to: Type },
+    /// Direct call to a struct-returning function. The cranelift call
+    /// returns one result per scalar field; codegen stores result `i`
+    /// into `dests[i]`. Modelled as a separate `InstKind` from `Call`
+    /// because the result shape (multi-local rather than single-value)
+    /// is fundamentally different — keeping them apart avoids forcing
+    /// every consumer to handle both cases.
+    CallStruct {
+        target: FuncId,
+        args: Vec<ValueId>,
+        /// One local per scalar field of the callee's return struct,
+        /// in declaration order.
+        dests: Vec<LocalId>,
+    },
     /// `print` / `println` of a primitive value. The codegen layer
     /// dispatches by `value_ty` to the corresponding `toy_print_*` /
     /// `toy_println_*` helper in the C runtime. Strings handled
@@ -220,6 +263,11 @@ pub enum InstKind {
 pub enum Const {
     I64(i64),
     U64(u64),
+    /// IEEE-754 double. Stored as the underlying `f64`; codegen emits
+    /// `f64const` directly. Bit-equality comparisons are deliberately
+    /// avoided in the IR layer — the type-checker has already enforced
+    /// shape, and codegen translates literally.
+    F64(f64),
     Bool(bool),
 }
 
@@ -228,6 +276,7 @@ impl Const {
         match self {
             Const::I64(_) => Type::I64,
             Const::U64(_) => Type::U64,
+            Const::F64(_) => Type::F64,
             Const::Bool(_) => Type::Bool,
         }
     }
@@ -280,7 +329,12 @@ pub enum UnaryOp {
 
 #[derive(Debug, Clone)]
 pub enum Terminator {
-    Return(Option<ValueId>),
+    /// `ret v0, v1, ...`. The vector length determines the shape:
+    /// `[]` for void / Unit, `[v]` for a scalar, `[v0, v1, ...]` for
+    /// a struct return (one entry per scalar field, in declaration
+    /// order). Codegen mirrors this by passing the values to the
+    /// cranelift `return_` instruction directly.
+    Return(Vec<ValueId>),
     Jump(BlockId),
     Branch { cond: ValueId, then_blk: BlockId, else_blk: BlockId },
     /// `panic("literal")` — diverges with the given message symbol. The
@@ -324,8 +378,13 @@ impl fmt::Display for Type {
         match self {
             Type::I64 => f.write_str("i64"),
             Type::U64 => f.write_str("u64"),
+            Type::F64 => f.write_str("f64"),
             Type::Bool => f.write_str("bool"),
             Type::Unit => f.write_str("unit"),
+            // The IR doesn't carry an interner, so render the raw
+            // symbol id. Pretty printing for human consumption goes
+            // through `Function::export_name` instead.
+            Type::Struct(sym) => write!(f, "struct#{}", sym.to_usize()),
         }
     }
 }
@@ -359,6 +418,7 @@ impl fmt::Display for Const {
         match self {
             Const::I64(v) => write!(f, "{v}i64"),
             Const::U64(v) => write!(f, "{v}u64"),
+            Const::F64(v) => write!(f, "{v}f64"),
             Const::Bool(true) => f.write_str("true"),
             Const::Bool(false) => f.write_str("false"),
         }
@@ -468,6 +528,16 @@ impl fmt::Display for DisplayInst<'_> {
                 let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
                 write!(f, "{prefix}call {target}({})", argstr.join(", "))
             }
+            InstKind::CallStruct { target, args, dests } => {
+                let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                let deststr: Vec<String> = dests.iter().map(|d| d.to_string()).collect();
+                write!(
+                    f,
+                    "call_struct {target}({}) -> [{}]",
+                    argstr.join(", "),
+                    deststr.join(", ")
+                )
+            }
             InstKind::Print { value, value_ty, newline } => {
                 let kw = if *newline { "println" } else { "print" };
                 write!(f, "{kw} {value}: {value_ty}")
@@ -476,6 +546,9 @@ impl fmt::Display for DisplayInst<'_> {
                 let kw = if *newline { "println_str" } else { "print_str" };
                 write!(f, "{kw} #{}", message.to_usize())
             }
+            InstKind::Cast { value, from, to } => {
+                write!(f, "{prefix}cast {value}: {from} -> {to}")
+            }
         }
     }
 }
@@ -483,8 +556,11 @@ impl fmt::Display for DisplayInst<'_> {
 impl fmt::Display for DisplayTerm<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 {
-            Terminator::Return(Some(v)) => write!(f, "ret {v}"),
-            Terminator::Return(None) => write!(f, "ret"),
+            Terminator::Return(values) if values.is_empty() => write!(f, "ret"),
+            Terminator::Return(values) => {
+                let vstr: Vec<String> = values.iter().map(|v| v.to_string()).collect();
+                write!(f, "ret {}", vstr.join(", "))
+            }
             Terminator::Jump(b) => write!(f, "jump {b}"),
             Terminator::Branch { cond, then_blk, else_blk } => {
                 write!(f, "br {cond}, {then_blk}, {else_blk}")

@@ -55,6 +55,10 @@ pub fn lower_program(
     // slots without ever needing a `Type::Struct` to flow through the
     // IR's value graph.
     let struct_defs = collect_struct_defs(program, interner)?;
+    // Hand a copy to the IR module so codegen can expand
+    // `Type::Struct(name)` into per-field cranelift params / returns
+    // without re-walking the AST.
+    module.struct_defs = struct_defs.clone();
 
     // First pass: declare every function so call sites (which may refer
     // to functions defined later in the file) can resolve to a `FuncId`
@@ -70,9 +74,9 @@ pub fn lower_program(
             .parameter
             .iter()
             .map(|(name, ty)| {
-                lower_scalar(ty).ok_or_else(|| {
+                lower_param_or_return_type(ty, &struct_defs).ok_or_else(|| {
                     format!(
-                        "compiler MVP only supports scalar parameters; `{}: {:?}` is not supported yet",
+                        "compiler MVP cannot lower parameter `{}: {:?}` yet",
                         interner.resolve(*name).unwrap_or("?"),
                         ty
                     )
@@ -80,9 +84,9 @@ pub fn lower_program(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let ret = match &func.return_type {
-            Some(ty) => lower_scalar(ty).ok_or_else(|| {
+            Some(ty) => lower_param_or_return_type(ty, &struct_defs).ok_or_else(|| {
                 format!(
-                    "compiler MVP only supports scalar return types; `{:?}` is not supported yet",
+                    "compiler MVP cannot lower return type `{:?}` yet",
                     ty
                 )
             })?,
@@ -171,8 +175,31 @@ fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
     match ty {
         TypeDecl::Int64 => Some(Type::I64),
         TypeDecl::UInt64 | TypeDecl::Number => Some(Type::U64),
+        TypeDecl::Float64 => Some(Type::F64),
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),
+        _ => None,
+    }
+}
+
+/// Like `lower_scalar` but additionally accepts `Type::Struct(name)` for
+/// known struct types. Used at function-signature boundaries (params
+/// and return type) where structs are now allowed; values inside the
+/// IR's value graph stay scalar.
+fn lower_param_or_return_type(ty: &TypeDecl, defs: &StructDefs) -> Option<Type> {
+    if let Some(t) = lower_scalar(ty) {
+        return Some(t);
+    }
+    match ty {
+        // The parser yields `Identifier(name)` for any user-defined
+        // type; the type-checker may later refine it. We accept the
+        // bare identifier shape if it names a known struct; the
+        // generic-parameterised `Struct(name, args)` form is also
+        // accepted with empty args (the only shape we support).
+        TypeDecl::Identifier(name) if defs.contains_key(name) => Some(Type::Struct(*name)),
+        TypeDecl::Struct(name, args) if args.is_empty() && defs.contains_key(name) => {
+            Some(Type::Struct(*name))
+        }
         _ => None,
     }
 }
@@ -202,6 +229,12 @@ struct FunctionLower<'a> {
     current_block: Option<BlockId>,
     /// Monotonic counter for `ValueId`s within this function.
     next_value: u32,
+    /// "Last struct value materialised at the IR level" — used by the
+    /// implicit-return path to pick up a struct literal or struct
+    /// binding that appeared in tail position. Cleared every time a
+    /// non-struct-producing expression is lowered, so it always
+    /// reflects the most recent candidate.
+    pending_struct_value: Option<Vec<FieldBinding>>,
 }
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
@@ -248,28 +281,63 @@ impl<'a> FunctionLower<'a> {
             loop_stack: Vec::new(),
             current_block: None,
             next_value: 0,
+            pending_struct_value: None,
         })
     }
 
     fn lower_body(&mut self, func: &frontend::ast::Function) -> Result<(), String> {
-        // Allocate one local slot per parameter and seed `bindings` so
-        // identifier references resolve via `LoadLocal`. We rely on the
-        // FuncId's recorded params being in declaration order.
-        let param_count = self.module.function(self.func_id).params.len();
+        // Allocate one local slot per scalar parameter (struct
+        // parameters expand into one local per field) and seed
+        // `bindings` so identifier references resolve via `LoadLocal`.
+        // The IR's `params` list and the cranelift block-param order
+        // must agree with this expansion; codegen mirrors the same
+        // walk to assign block params to locals.
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
         for (i, (name, _decl_ty)) in func.parameter.iter().enumerate() {
-            let local = self.module.function_mut(self.func_id).add_local(param_types[i]);
-            // Sanity check: parameter slots must be 0..N.
-            debug_assert_eq!(local.0 as usize, i);
-            self.bindings.insert(
-                *name,
-                Binding::Scalar {
-                    local,
-                    ty: param_types[i],
-                },
-            );
+            match param_types[i] {
+                Type::Struct(struct_name) => {
+                    let def = self
+                        .struct_defs
+                        .get(&struct_name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "internal error: missing struct definition for parameter `{}`",
+                                self.interner.resolve(*name).unwrap_or("?")
+                            )
+                        })?;
+                    let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
+                    for (field_name, field_ty) in &def {
+                        let local = self.module.function_mut(self.func_id).add_local(*field_ty);
+                        field_bindings.push(FieldBinding {
+                            name: field_name.clone(),
+                            local,
+                            ty: *field_ty,
+                        });
+                    }
+                    self.bindings.insert(
+                        *name,
+                        Binding::Struct {
+                            struct_name,
+                            fields: field_bindings,
+                        },
+                    );
+                }
+                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool) => {
+                    let local = self.module.function_mut(self.func_id).add_local(scalar);
+                    self.bindings.insert(
+                        *name,
+                        Binding::Scalar { local, ty: scalar },
+                    );
+                }
+                Type::Unit => {
+                    return Err(format!(
+                        "parameter `{}` cannot have type Unit",
+                        self.interner.resolve(*name).unwrap_or("?")
+                    ));
+                }
+            }
         }
-        let _ = param_count;
 
         // Create the entry block and switch into it.
         let entry = self.module.function_mut(self.func_id).add_block();
@@ -293,19 +361,64 @@ impl<'a> FunctionLower<'a> {
         // value-less `ret`.
         if self.current_block.is_some() {
             let ret_ty = self.module.function(self.func_id).return_type;
-            match (ret_ty, body_value) {
-                (Type::Unit, _) => self.terminate(Terminator::Return(None)),
-                (_, Some(v)) => self.terminate(Terminator::Return(Some(v))),
-                (_, None) => {
-                    return Err(
-                        "function falls through without producing a value of the declared return type"
-                            .to_string(),
-                    );
-                }
-            }
+            self.emit_implicit_return(ret_ty, body_value, &func.name)?;
         }
         Ok(())
     }
+
+    /// Emit the trailing-position return for the function body. Handles
+    /// scalar / Unit / struct returns; for struct returns we look up
+    /// the body's tail expression to expand it into per-field values.
+    fn emit_implicit_return(
+        &mut self,
+        ret_ty: Type,
+        body_value: Option<ValueId>,
+        fn_name: &DefaultSymbol,
+    ) -> Result<(), String> {
+        match (ret_ty, body_value) {
+            (Type::Unit, _) => {
+                self.terminate(Terminator::Return(vec![]));
+                Ok(())
+            }
+            (Type::Struct(_struct_name), _) => {
+                let _ = body_value;
+                // The body's tail expression should have left a
+                // struct value waiting in `pending_struct_value`:
+                // either a struct literal lowered into anonymous
+                // field locals, or an Identifier resolving to a
+                // struct binding whose fields we read here. The IR
+                // doesn't carry struct values through SSA, so this
+                // out-of-band channel is what bridges the gap.
+                let fields = self.pending_struct_value.take().ok_or_else(|| {
+                    format!(
+                        "function `{}` returns a struct but the body's tail did not produce one",
+                        self.interner.resolve(*fn_name).unwrap_or("?")
+                    )
+                })?;
+                let mut values = Vec::with_capacity(fields.len());
+                for fb in &fields {
+                    let v = self
+                        .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                        .expect("LoadLocal returns a value");
+                    values.push(v);
+                }
+                self.terminate(Terminator::Return(values));
+                Ok(())
+            }
+            (_, Some(v)) => {
+                self.terminate(Terminator::Return(vec![v]));
+                Ok(())
+            }
+            (_, None) => Err(
+                "function falls through without producing a value of the declared return type"
+                    .to_string(),
+            ),
+        }
+    }
+
+    // (Implicit struct returns flow through `pending_struct_value` set
+    // by `lower_struct_literal_tail` and the struct-binding identifier
+    // path; no scan-the-bindings fallback is necessary now.)
 
     // -- block / value bookkeeping -------------------------------------------------
 
@@ -401,20 +514,69 @@ impl<'a> FunctionLower<'a> {
                     Type::U64 => self
                         .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
                         .unwrap(),
+                    Type::F64 => self
+                        .emit(InstKind::Const(Const::F64(0.0)), Some(Type::F64))
+                        .unwrap(),
                     Type::Unit => return Ok(None),
+                    Type::Struct(_) => {
+                        return Err(format!(
+                            "var `{}` of struct type cannot be declared without an initializer",
+                            self.interner.resolve(name).unwrap_or("?")
+                        ));
+                    }
                 };
                 self.emit(InstKind::StoreLocal { dst: local, src: zero }, None);
                 Ok(None)
             }
             Stmt::Return(e) => {
+                let ret_ty = self.module.function(self.func_id).return_type;
+                // Struct returns: the rhs must be a bare identifier
+                // referring to a struct binding; expand into per-field
+                // loads. Scalar / Unit returns share the regular
+                // expression path.
+                if let (Type::Struct(struct_name), Some(er)) = (ret_ty, &e) {
+                    let rhs_expr = self
+                        .program
+                        .expression
+                        .get(er)
+                        .ok_or_else(|| "return rhs missing".to_string())?;
+                    let sym = match rhs_expr {
+                        Expr::Identifier(s) => s,
+                        _ => {
+                            return Err(
+                                "explicit `return` of a struct value must be a bare identifier in the compiler MVP"
+                                    .to_string(),
+                            );
+                        }
+                    };
+                    let fields = match self.bindings.get(&sym).cloned() {
+                        Some(Binding::Struct { struct_name: bn, fields }) if bn == struct_name => {
+                            fields
+                        }
+                        _ => {
+                            return Err(format!(
+                                "`{}` is not a struct binding of the expected return type",
+                                self.interner.resolve(sym).unwrap_or("?")
+                            ));
+                        }
+                    };
+                    let mut values = Vec::with_capacity(fields.len());
+                    for fb in &fields {
+                        let v = self
+                            .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    self.terminate(Terminator::Return(values));
+                    return Ok(None);
+                }
                 let val = match e {
                     Some(er) => self.lower_expr(&er)?,
                     None => None,
                 };
-                let ret_ty = self.module.function(self.func_id).return_type;
                 match (ret_ty, val) {
-                    (Type::Unit, _) => self.terminate(Terminator::Return(None)),
-                    (_, Some(v)) => self.terminate(Terminator::Return(Some(v))),
+                    (Type::Unit, _) => self.terminate(Terminator::Return(vec![])),
+                    (_, Some(v)) => self.terminate(Terminator::Return(vec![v])),
                     (_, None) => {
                         return Err("return without value in non-Unit function".to_string());
                     }
@@ -555,6 +717,60 @@ impl<'a> FunctionLower<'a> {
             }
             return Ok(None);
         }
+        // Struct-returning call RHS: `val p = make_point()`. Allocate
+        // a struct binding and use `CallStruct` so codegen can route
+        // the multi-return values into the per-field locals.
+        if let Expr::Call(fn_name, args_ref) = rhs {
+            if let Some(target_id) = self.module.function_index.get(&fn_name).copied() {
+                let target_ret = self.module.function(target_id).return_type;
+                if let Type::Struct(struct_name) = target_ret {
+                    let def = self
+                        .struct_defs
+                        .get(&struct_name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            format!(
+                                "internal error: missing struct definition for return of `{}`",
+                                self.interner.resolve(fn_name).unwrap_or("?")
+                            )
+                        })?;
+                    let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
+                    let mut dests: Vec<LocalId> = Vec::with_capacity(def.len());
+                    for (field_name, field_ty) in &def {
+                        let local = self.module.function_mut(self.func_id).add_local(*field_ty);
+                        field_bindings.push(FieldBinding {
+                            name: field_name.clone(),
+                            local,
+                            ty: *field_ty,
+                        });
+                        dests.push(local);
+                    }
+                    self.bindings.insert(
+                        name,
+                        Binding::Struct {
+                            struct_name,
+                            fields: field_bindings,
+                        },
+                    );
+                    // Lower the args separately so we can hand them to
+                    // `CallStruct` directly. The argument expressions
+                    // themselves are scalar (struct args resolve via
+                    // identifiers; cross-struct call args are handled by
+                    // the regular `lower_call` path below if they show up
+                    // in this position).
+                    let arg_values = self.lower_call_args(&args_ref)?;
+                    self.emit(
+                        InstKind::CallStruct {
+                            target: target_id,
+                            args: arg_values,
+                            dests,
+                        },
+                        None,
+                    );
+                    return Ok(None);
+                }
+            }
+        }
         // Scalar fallback (existing behaviour).
         let v = self
             .lower_expr(rhs_ref)?
@@ -567,6 +783,44 @@ impl<'a> FunctionLower<'a> {
             .insert(name, Binding::Scalar { local, ty: scalar });
         self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
         Ok(None)
+    }
+
+    /// Evaluate a call's argument list (`Expr::ExprList(items)`) into
+    /// a vector of `ValueId`s. Each argument is lowered through the
+    /// regular expression path. Struct-typed identifier arguments are
+    /// expanded into per-field values matching the callee signature.
+    fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
+        let args_expr = self
+            .program
+            .expression
+            .get(args_ref)
+            .ok_or_else(|| "call args missing".to_string())?;
+        let items: Vec<ExprRef> = match args_expr {
+            Expr::ExprList(items) => items,
+            _ => return Err("call arguments must be an ExprList".to_string()),
+        };
+        let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
+        for a in &items {
+            // Struct-typed identifier argument: expand into per-field
+            // values in declaration order. Anything else flows through
+            // `lower_expr`.
+            if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
+                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+                    for fb in &fields {
+                        let v = self
+                            .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    continue;
+                }
+            }
+            let v = self
+                .lower_expr(a)?
+                .ok_or_else(|| "call argument produced no value".to_string())?;
+            values.push(v);
+        }
+        Ok(values)
     }
 
     fn lower_for(
@@ -681,6 +935,7 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Int64(v) => Ok(self.emit(InstKind::Const(Const::I64(v)), Some(Type::I64))),
             Expr::UInt64(v) => Ok(self.emit(InstKind::Const(Const::U64(v)), Some(Type::U64))),
+            Expr::Float64(v) => Ok(self.emit(InstKind::Const(Const::F64(v)), Some(Type::F64))),
             Expr::Number(_) => Err(
                 "compiler MVP requires explicit numeric type annotations or suffixes".to_string(),
             ),
@@ -689,23 +944,37 @@ impl<'a> FunctionLower<'a> {
             Expr::Identifier(sym) => {
                 match self.bindings.get(&sym).cloned() {
                     Some(Binding::Scalar { local, ty }) => {
+                        self.pending_struct_value = None;
                         Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
                     }
-                    Some(Binding::Struct { .. }) => Err(format!(
-                        "compiler MVP cannot pass struct value `{}` as a scalar (e.g. as a function argument or return)",
-                        self.interner.resolve(sym).unwrap_or("?")
-                    )),
+                    Some(Binding::Struct { fields, .. }) => {
+                        // Tail-position use: stash the struct's field
+                        // list so `emit_implicit_return` can return it.
+                        // Non-tail uses (e.g. `5 + p`) will fail at
+                        // arithmetic lowering when no scalar value
+                        // materialises.
+                        self.pending_struct_value = Some(fields);
+                        Ok(None)
+                    }
                     None => Err(format!(
                         "undefined identifier `{}`",
                         self.interner.resolve(sym).unwrap_or("?")
                     )),
                 }
             }
-            Expr::FieldAccess(obj, field) => self.lower_field_access(&obj, field),
-            Expr::StructLiteral(_, _) => Err(
-                "compiler MVP requires struct literals to be the rhs of a `val` / `var` binding"
-                    .to_string(),
-            ),
+            Expr::FieldAccess(obj, field) => {
+                self.pending_struct_value = None;
+                self.lower_field_access(&obj, field)
+            }
+            Expr::StructLiteral(struct_name, fields) => {
+                // Tail-position struct literal: materialise each field
+                // into a fresh local and stash the resulting field
+                // binding list as the pending struct value. The IR
+                // never sees a struct value flow through SSA — the
+                // implicit-return path consumes the field locals
+                // directly.
+                self.lower_struct_literal_tail(struct_name, fields)
+            }
             Expr::Binary(op, lhs, rhs) => self.lower_binary(&op, &lhs, &rhs),
             Expr::Unary(op, operand) => self.lower_unary(&op, &operand),
             Expr::Assign(lhs, rhs) => self.lower_assign(&lhs, &rhs),
@@ -714,6 +983,7 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Call(fn_name, args_ref) => self.lower_call(fn_name, &args_ref),
             Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
+            Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other
@@ -814,6 +1084,43 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
+    /// Lower `expr as Target`. The pair `(from, to)` is recorded on
+    /// the IR `Cast` so codegen can pick the right cranelift
+    /// instruction. Unsupported pairs (e.g. struct casts) are rejected
+    /// here so the IR stays in scalar territory.
+    fn lower_cast(
+        &mut self,
+        inner: &ExprRef,
+        target_ty: &TypeDecl,
+    ) -> Result<Option<ValueId>, String> {
+        let to = lower_scalar(target_ty).ok_or_else(|| {
+            format!(
+                "compiler MVP only supports scalar `as` targets; `{:?}` is not supported yet",
+                target_ty
+            )
+        })?;
+        if matches!(to, Type::Unit) {
+            return Err("`as` cannot target Unit".to_string());
+        }
+        let from = self.value_scalar(inner).ok_or_else(|| {
+            "compiler MVP could not infer source scalar type for `as` cast".to_string()
+        })?;
+        if matches!(from, Type::Unit) {
+            return Err("`as` cannot convert from Unit".to_string());
+        }
+        // Same-type casts are accepted but do not need any value
+        // movement; we still emit a Cast instruction so callers see the
+        // expected `Some(value_id)` and downstream type inference
+        // remains stable.
+        let v = self
+            .lower_expr(inner)?
+            .ok_or_else(|| "`as` operand produced no value".to_string())?;
+        Ok(self.emit(
+            InstKind::Cast { value: v, from, to },
+            Some(to),
+        ))
+    }
+
     /// `panic` and `assert` only accept a string-literal message in this
     /// MVP, mirroring the JIT's eligibility check. Anything else (a
     /// dynamic concat, a const-binding, etc.) is rejected with an error
@@ -877,6 +1184,59 @@ impl<'a> FunctionLower<'a> {
             }
             _ => Err("assignment to non-identifier / non-field-access is not supported yet".into()),
         }
+    }
+
+    /// Lower a struct literal in expression position. The result
+    /// becomes the function's pending struct value; the implicit
+    /// return path picks it up. Non-return uses (e.g. `val p = ...`)
+    /// hit `lower_let` first and never reach here.
+    fn lower_struct_literal_tail(
+        &mut self,
+        struct_name: DefaultSymbol,
+        fields: Vec<(DefaultSymbol, ExprRef)>,
+    ) -> Result<Option<ValueId>, String> {
+        let def = self
+            .struct_defs
+            .get(&struct_name)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "unknown struct `{}` in literal",
+                    self.interner.resolve(struct_name).unwrap_or("?")
+                )
+            })?;
+        let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
+        for (field_name, field_ty) in &def {
+            let local = self.module.function_mut(self.func_id).add_local(*field_ty);
+            field_bindings.push(FieldBinding {
+                name: field_name.clone(),
+                local,
+                ty: *field_ty,
+            });
+        }
+        for (field_sym, value_ref) in &fields {
+            let field_str = self
+                .interner
+                .resolve(*field_sym)
+                .ok_or_else(|| "field name missing in interner".to_string())?;
+            let fb = field_bindings
+                .iter()
+                .find(|f| f.name == field_str)
+                .ok_or_else(|| {
+                    format!(
+                        "struct `{}` has no field `{}`",
+                        self.interner.resolve(struct_name).unwrap_or("?"),
+                        field_str
+                    )
+                })?;
+            let v = self
+                .lower_expr(value_ref)?
+                .ok_or_else(|| "struct field rhs produced no value".to_string())?;
+            let local = fb.local;
+            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+        }
+        self.pending_struct_value = Some(field_bindings);
+        Ok(None)
     }
 
     /// Read `obj.field` where `obj` resolves to a struct binding. We
@@ -1197,22 +1557,6 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
-        let args_expr = self
-            .program
-            .expression
-            .get(args_ref)
-            .ok_or_else(|| "call args missing".to_string())?;
-        let args: Vec<ExprRef> = match args_expr {
-            Expr::ExprList(items) => items,
-            _ => return Err("call arguments must be an ExprList".to_string()),
-        };
-        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
-        for a in &args {
-            let v = self
-                .lower_expr(a)?
-                .ok_or_else(|| "call argument produced no value".to_string())?;
-            arg_values.push(v);
-        }
         let target = *self
             .module
             .function_index
@@ -1224,6 +1568,15 @@ impl<'a> FunctionLower<'a> {
                 )
             })?;
         let ret_ty = self.module.function(target).return_type;
+        // Struct-returning calls in expression position aren't
+        // supported; the user must bind the result with `val x = ...`.
+        if matches!(ret_ty, Type::Struct(_)) {
+            return Err(format!(
+                "compiler MVP cannot use a struct-returning call (`{}`) in expression position; bind the result with `val`",
+                self.interner.resolve(fn_name).unwrap_or("?")
+            ));
+        }
+        let arg_values = self.lower_call_args(args_ref)?;
         let inst = InstKind::Call {
             target,
             args: arg_values,
@@ -1249,7 +1602,9 @@ impl<'a> FunctionLower<'a> {
         match e {
             Expr::Int64(_) => Some(Type::I64),
             Expr::UInt64(_) => Some(Type::U64),
+            Expr::Float64(_) => Some(Type::F64),
             Expr::True | Expr::False => Some(Type::Bool),
+            Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
                 _ => None,

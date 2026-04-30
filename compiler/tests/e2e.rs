@@ -458,6 +458,226 @@ fn struct_in_loop_accumulator() {
 }
 
 #[test]
+fn cast_i64_to_u64_identity() {
+    if skip_e2e() {
+        return;
+    }
+    // i64↔u64 share the same bit pattern. Casting -1i64 to u64 should
+    // surface the all-ones unsigned value modulo `& 0xff` truncation
+    // applied by the OS to exit codes.
+    let src = r#"
+        fn main() -> u64 {
+            val a: i64 = -1i64
+            val b: u64 = a as u64
+            b
+        }
+    "#;
+    let out = compile_and_capture(src, "cast_neg1");
+    // u64::MAX & 0xff == 0xff
+    assert_eq!(out.status.code(), Some(0xff));
+}
+
+#[test]
+fn cast_round_trip_through_f64() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val n: u64 = 42u64
+            val f: f64 = n as f64
+            val back: u64 = f as u64
+            back
+        }
+    "#;
+    let out = compile_and_capture(src, "cast_round");
+    assert_eq!(out.status.code(), Some(42));
+}
+
+#[test]
+fn cast_float_to_int_truncates() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val pi: f64 = 3.9f64
+            val i: u64 = pi as u64
+            i
+        }
+    "#;
+    let out = compile_and_capture(src, "cast_trunc");
+    // f→u uses cranelift's saturating truncation, matching Rust's `as`.
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[test]
+fn f64_arithmetic() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a: f64 = 1.5f64
+            val b: f64 = 2.5f64
+            val sum: f64 = a + b
+            print("a+b = ")
+            println(sum)
+            val prod: f64 = a * b
+            print("a*b = ")
+            println(prod)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "f64_arith");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "a+b = 4.0\na*b = 3.75\n"
+    );
+}
+
+#[test]
+fn f64_unary_neg_and_compare() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = 3.0f64
+            val y: f64 = -x
+            print("y = ")
+            println(y)
+            if y < 0.0f64 { 7u64 } else { 0u64 }
+        }
+    "#;
+    let out = compile_and_capture(src, "f64_neg");
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "y = -3.0\n");
+}
+
+#[test]
+fn f64_function_call() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn area(r: f64) -> f64 {
+            r * r * 3.14159f64
+        }
+        fn main() -> u64 {
+            val a: f64 = area(2.0f64)
+            print("area(2.0) = ")
+            println(a)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "f64_call");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 2*2*3.14159 = 12.56636. printf %g typically renders as "12.5664"
+    // but exact formatting varies; check the prefix.
+    assert!(
+        stdout.starts_with("area(2.0) = 12.566"),
+        "unexpected stdout: {stdout:?}"
+    );
+}
+
+#[test]
+fn struct_returned_from_function() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn make(x: i64, y: i64) -> Point {
+            Point { x: x, y: y }
+        }
+        fn main() -> u64 {
+            val p = make(3i64, 4i64)
+            print("p.x=")
+            println(p.x)
+            print("p.y=")
+            println(p.y)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_ret");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "p.x=3\np.y=4\n");
+}
+
+#[test]
+fn struct_passed_to_function() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn dist_sq(p: Point) -> i64 { p.x * p.x + p.y * p.y }
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            val d = dist_sq(p)
+            d as u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_param");
+    assert_eq!(out.status.code(), Some(25));
+}
+
+#[test]
+fn struct_boundary_round_trip() {
+    if skip_e2e() {
+        return;
+    }
+    // Struct flows in and out of functions; field arithmetic happens
+    // across calls. This exercises the multi-arg-multi-result codegen
+    // path end to end.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn add(a: Point, b: Point) -> Point {
+            Point { x: a.x + b.x, y: a.y + b.y }
+        }
+        fn main() -> u64 {
+            val p = Point { x: 10i64, y: 20i64 }
+            val q = Point { x: 1i64, y: 2i64 }
+            val sum = add(p, q)
+            print("sum.x=")
+            println(sum.x)
+            print("sum.y=")
+            println(sum.y)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_round");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "sum.x=11\nsum.y=22\n");
+}
+
+#[test]
+fn struct_explicit_return() {
+    if skip_e2e() {
+        return;
+    }
+    // `return p` where p is a struct binding should expand into a
+    // multi-value return.
+    let src = r#"
+        struct Pair { a: u64, b: u64 }
+        fn make(seed: u64) -> Pair {
+            val p = Pair { a: seed, b: seed + 1u64 }
+            return p
+        }
+        fn main() -> u64 {
+            val p = make(7u64)
+            p.a + p.b
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_explicit_ret");
+    // 7 + 8 = 15
+    assert_eq!(out.status.code(), Some(15));
+}
+
+#[test]
 fn emit_object_writes_o_file() {
     if skip_e2e() {
         return;

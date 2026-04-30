@@ -49,3 +49,26 @@ void toy_print_str(const char *s) {
 void toy_println_str(const char *s) {
     puts(s);
 }
+
+/* `%g` matches the interpreter's f64 display for typical values; the
+ * interpreter forces a decimal point for whole-number f64s, so we use
+ * `%.1f` style formatting when the value is integral. printf's `%g`
+ * drops the trailing `.0`, which would mismatch — pad with a check. */
+static void emit_f64(double v, int newline) {
+    if (v == (double) (long long) v) {
+        printf("%.1f", v);
+    } else {
+        printf("%g", v);
+    }
+    if (newline) {
+        putchar('\n');
+    }
+}
+
+void toy_print_f64(double v) {
+    emit_f64(v, 0);
+}
+
+void toy_println_f64(double v) {
+    emit_f64(v, 1);
+}

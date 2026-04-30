@@ -101,13 +101,16 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
-183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **2026-05-01: cast (`as`) / f64 / struct boundary crossing を追加** — IR に `Type::F64` / `Const::F64` / `InstKind::Cast { value, from, to }` / `InstKind::CallStruct { target, args, dests }` / `Module.struct_defs` を追加、`Terminator::Return` を `Vec<ValueId>` に変更（scalar / void / struct return を vec 長で表現）。lower で `Expr::Cast`、`Expr::Float64`、struct 引数 / 戻り値、`val x = struct_returning_call()` を扱う。tail-position の struct literal は `pending_struct_value` に貯めて implicit return が消費する設計（IR の SSA グラフに struct 値が流れない）。codegen で struct sig を per-field cranelift param / multi-return に展開、`Type::F64` 演算は cranelift の `fadd/fsub/fmul/fdiv/fcmp` + `fneg`、cast は `fcvt_from_sint/uint` / `fcvt_to_sint/uint_sat` で。runtime に `toy_print_f64` / `toy_println_f64`（`%g` / `%.1f` 切替）追加。e2e テスト 10 件追加（i64↔u64 cast、float-int round trip、float-int truncate、f64 算術 / unary neg / 関数呼び出し、struct return / param / round trip / 明示 return）。
 
    **現在の制約（2026-05-01 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
 
-   - **型**: `i64` / `u64` / `bool` / `Unit` と scalar フィールドのみの struct のみ。`f64` 未対応、`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
+   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit` と scalar フィールドのみの struct のみ。`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
    - **文字列**: 任意の文字列値（`val s = "foo"` 等）は未対応。文字列リテラルは `panic` / `assert` / `print` / `println` 引数としてのみ受理
-   - **キャスト**: `as` キャストは i64↔u64 含めて全面的に未対応（IR の lowering で `Expr::Cast` を扱わない）
+   - **キャスト**: `as` で i64↔u64（identity）と {i64,u64}↔f64 はサポート。bool との cast、Unit との cast は不可
+   - **f64 制約**: `%` (mod) は cranelift に native fmod が無いため reject
    - **コレクション**: tuple、配列、dict 全般未対応（リテラル / アクセス / 分解いずれも reject）
    - **enum / match**: `enum` 宣言と `match` 式いずれも未対応
    - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応
@@ -115,11 +118,12 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
    - **DbC**: `requires` / `ensures` 節は parse・型検査は通るが compiler では無視（lowering で見ていない、将来は `--release` 同等の gate 想定）
    - **generics**: 型パラメータを持つ関数 / struct はいずれも reject
    - **struct の制約**:
-     - 関数引数 / 戻り値として struct 値を渡せない（field を個別に渡す必要あり）
+     - 関数引数 / 戻り値として struct 値は渡せる（codegen が per-field 展開）
+     - struct-returning call は式位置で使えず、必ず `val x = ...` で受ける
      - struct binding 全体の再代入 (`q = p`) は不可（field 単位の代入のみ）
      - ネストしたフィールドアクセス (`a.b.c`) や非 scalar フィールドは未対応
      - struct を `print` / `println` に渡せない
-   - **print / println**: `i64` / `u64` / `bool` / 文字列リテラルのみ。struct / tuple 等は不可
+   - **print / println**: `i64` / `u64` / `f64` / `bool` / 文字列リテラルのみ。struct / tuple 等は不可
    - **panic / assert**: メッセージは文字列リテラル限定（const binding や concat 等は不可）
    - **その他**: 文字列ビルトインメソッド (`.len()` / `.concat()` 等)、associated function (`Foo::new()`)、メソッド呼び出し (`obj.method()`)、関数ポインタはいずれも未対応
    - **既知の挙動差**: compiler は `panic` / `print` / `println` を stdout に出力する。interpreter / JIT は `panic` を stderr に出す（libc `puts` 経由のシンプルな実装に揃えているため。出力方法を選べる仕組みは未着手）

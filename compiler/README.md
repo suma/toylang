@@ -8,13 +8,15 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 
 サポート:
 
-- 型: `i64`, `u64`, `bool`, `Unit`、scalar フィールドのみの struct
+- 型: `i64`, `u64`, `f64`, `bool`, `Unit`、scalar フィールドのみの struct
 - 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)
 - 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`
 - 同一プログラム内の関数呼び出し（`main` のみ C ABI でエクスポート、それ以外は `toy_<name>` プレフィックス）
+- **`as` キャスト**: `i64 ↔ u64`（identity）、`{i64, u64} ↔ f64`（cranelift の `fcvt_*_sat` で truncating saturation）。bool との cast や Unit との cast は不可
+- **`f64`**: 算術（`+ - * /`）、比較、unary `-`。`%` (mod) は cranelift に native fmod が無いため reject。print 用ヘルパー (`toy_print_f64` / `toy_println_f64`) は `%g` か `%.1f` で出力
 - **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装
-- **`print(x)` / `println(x)`**: `i64` / `u64` / `bool` / 文字列リテラルを受け取る。`compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）
-- **struct**: `struct Name { field: Type, ... }` 宣言、`Name { field: value, ... }` リテラル、`obj.field` 読み取り、`obj.field = value` 書き込み。**制約**: フィールドは scalar のみ、関数引数 / 戻り値として struct 値は渡せない（field を個別に渡す必要あり）、`struct.struct.field` のような chain 構造は未対応
+- **`print(x)` / `println(x)`**: `i64` / `u64` / `f64` / `bool` / 文字列リテラルを受け取る。`compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）
+- **struct**: `struct Name { field: Type, ... }` 宣言、`Name { field: value, ... }` リテラル、`obj.field` 読み取り、`obj.field = value` 書き込み、**関数引数として struct 値を渡せる**、**関数戻り値として struct 値を返せる**（codegen が境界で per-field cranelift param / multi-return に展開）。**制約**: フィールドは scalar のみ、struct binding 全体の再代入は不可、`struct.struct.field` のような chain 構造は未対応、struct-returning call を式位置で使えない（必ず `val` で受ける）
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）
 
@@ -24,10 +26,12 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - enum、match、trait
 - allocator、contracts (`requires` / `ensures`)
 - generics（型パラメータを持つ関数 / struct）
-- struct を関数引数 / 戻り値として渡す
+- struct を `print` / `println` に渡す
 - ネストしたフィールドアクセス（`a.b.c`）
+- struct binding 全体の再代入 (`q = p`)
+- `f64` の `%` (mod) — cranelift に native fmod が無い
+- bool との `as` キャスト、Unit との `as` キャスト
 - heap / pointer builtins
-- `i64` ↔ `u64` 以外の cast
 
 ## 使い方
 

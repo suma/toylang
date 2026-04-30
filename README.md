@@ -21,23 +21,27 @@ This project implements a statically-typed programming language with comprehensi
 ### Core Language Constructs
 - **Functions** with explicit return types: `fn fibonacci(n: u64) -> u64`
 - **Variables**: Immutable (`val`) and mutable (`var`) declarations
+- **Top-level constants**: `const PI: f64 = 3.14159f64` evaluated once at startup
 - **Control Flow**: `if/else/elif`, `for` loops with `break/continue`, `while` loops
-- **Types**: `u64`, `i64`, `str`, `bool`, `Dict`
+- **Types**: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `Dict`, tuples, fixed arrays
 
 ### Advanced Features
 - **Fixed Arrays**: `val arr: [i64; 5] = [1, 2, 3, 4, 5]` with type inference
-- **Dictionary Type**: `val dict: Dict = {key1: value1, key2: value2}` with Object key support
+- **Tuples**: `val (a, b) = (1u64, 2u64)` with destructuring (including nested patterns)
+- **Dictionary Type**: `dict{key1: value1, key2: value2}` with Object-keyable types
 - **Structures**: `struct Point { x: i64, y: i64 }` with method implementations
-- **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }` with `match` expressions that support tuple variants, binding patterns, and wildcards
-- **Generics**: Type-safe generic functions and structures with automatic type inference
-- **Design by Contract**: `requires` (preconditions) and `ensures` (postconditions) clauses on functions and methods, with `result` referring to the return value inside `ensures`
+- **Enums and Pattern Matching**: `enum Shape { Circle(i64), Rect(i64, i64), Point }` with tuple-variant binding, literal patterns, nested patterns, and per-arm `if` guards
+- **Generics with bounds**: `fn id<T>(x: T) -> T` and `fn run<A: Allocator>(a: A)`
+- **Design by Contract**: `requires` (preconditions) and `ensures` (postconditions) on functions and methods, with `result` for the return value. Runtime gating via `INTERPRETER_CONTRACTS=all|pre|post|off`
+- **Termination primitives**: `panic("msg")` and `assert(cond, "msg")` for explicit failure
+- **Allocator system**: `with allocator = arena { … }` lexically scoped allocator binding, `<A: Allocator>` bound, arena / fixed-buffer / global allocator builtins
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
-- **Unary Operators**: `-x` for signed integer negation, `!` / `~` for logical and bitwise not
+- **Unary Operators**: `-x` (signed int / `f64`), `!` (logical not), `~` (bitwise not)
 - **Resource Management**: Automatic destruction system with custom `__drop__` methods
-- **Comments**: Line comments with `#` symbol support
+- **Comments**: `# line` and `/* block */`
 - **No Semicolons**: Statements are separated by newlines, not semicolons
 - **Module System**: Go-style modules with `package`/`import` declarations
-- **Qualified Identifiers**: Rust-style `module::function` syntax for module access
+- **Qualified Identifiers**: Rust-style `module::function` syntax
 
 ### Type System
 - **Context-based Type Inference**: Automatic type resolution based on usage context
@@ -91,12 +95,23 @@ cd interpreter && cargo build --release
 # Execute a program file with interpreter
 cd interpreter && cargo run example/fib.t
 
-# Available example programs
-cargo run example/fibonacci_array.t    # Array-based fibonacci
-cargo run example/string_len_test.t    # String operations
-cargo run example/array_test.t         # Array manipulation
-cargo run example/test_qualified_identifier.t  # Module system with qualified identifiers
+# A few illustrative example programs
+cargo run example/fib.t                  # Recursive Fibonacci (process exit = result)
+cargo run example/contracts.t            # Design-by-Contract: requires / ensures / result
+cargo run example/const_decls.t          # Top-level const declarations
+cargo run example/panic.t                # panic("msg") explicit failure
+cargo run example/float64.t              # f64 arithmetic, casts, comparisons
+cargo run example/match_guard.t          # match with per-arm `if` guards
+cargo run example/allocator_basic.t      # `with allocator = arena { ... }`
+
+# Same fib.t with the cranelift JIT (default-on cargo feature)
+INTERPRETER_JIT=1 cargo run --release example/fib.t
+
+# Disable contract evaluation (D `-release` equivalent)
+INTERPRETER_CONTRACTS=off cargo run --release example/contracts.t
 ```
+
+For the full CLI / env-var reference see [`interpreter/README.md`](interpreter/README.md).
 
 ### Testing
 
@@ -317,6 +332,42 @@ fn main() -> u64 {
 }
 ```
 
+### Top-level Constants
+```rust
+# `const` declarations sit at file scope and are evaluated once at startup.
+# The type annotation is mandatory; initializers may reference earlier
+# consts but not later ones (no forward references).
+const PI: f64 = 3.14159f64
+const TWO_PI: f64 = PI + PI
+const MAX_RETRIES: u64 = 3u64
+
+fn area(r: f64) -> f64 { PI * r * r }
+```
+
+### Termination: panic and assert
+```rust
+# `panic("msg")` aborts the run with `panic: <msg>` on stderr and exit 1.
+# `assert(cond, "msg")` is sugar for `if !cond { panic(msg) }` and runs
+# the message lazily — only when the condition fails.
+fn divide(a: i64, b: i64) -> i64 {
+    assert(b != 0i64, "divide: divisor must be non-zero")
+    a / b
+}
+
+fn unreachable_path() -> i64 {
+    panic("not implemented")
+}
+```
+
+`panic` is also typed as `Unknown`, so it can sit in the diverging branch
+of an `if`-expression without forcing the whole expression to `Unit`:
+
+```rust
+fn safe_divide(a: i64, b: i64) -> i64 {
+    if b == 0i64 { panic("division by zero") } else { a / b }
+}
+```
+
 ### Design by Contract
 ```rust
 # `requires` runs at function entry; `ensures` runs at exit with `result`
@@ -406,12 +457,14 @@ The implementation includes comprehensive documentation, extensive testing, and 
 ## Technical Highlights
 
 - **Zero-cost Type Checking**: Type validation occurs before execution
-- **Generic Type System**: Full support for generic functions and structures with constraint-based type inference
-- **Unification Algorithm**: Sophisticated type parameter resolution from usage context
-- **Efficient Memory Management**: Minimal allocation overhead with pool-based design and automatic destruction
-- **Extensible Architecture**: Clean separation between frontend and backend components
-- **Production-quality Testing**: Comprehensive test suite with full pass rate
-- **Resource Management**: Automatic object destruction with custom `__drop__` method support
+- **Generic Type System**: Generic functions / structures / impls with constraint-based inference and `<A: Allocator>` bounds
+- **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md))
+- **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`JIT.md`](JIT.md))
+- **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
+- **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `__drop__` methods
+- **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 
-All major language features including a complete generics system are implemented and thoroughly tested, providing a solid foundation for both learning and practical use.
+All major language features are implemented and thoroughly tested. The
+canonical language reference is [`docs/language.md`](docs/language.md);
+this README is a high-level tour.

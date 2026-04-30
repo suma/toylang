@@ -85,6 +85,27 @@ pub enum Visibility {
 pub struct ImplBlock {
     pub target_type: String,
     pub methods: Vec<Rc<MethodFunction>>,
+    /// Some(name) when this block is `impl <Trait> for <Type>`,
+    /// None for inherent `impl <Type>`.
+    pub trait_name: Option<DefaultSymbol>,
+}
+
+/// A method signature appearing in a `trait` declaration. The body is absent;
+/// only the contract (parameters, return type, optional `requires` / `ensures`)
+/// participates in conformance checking. This intentionally mirrors the
+/// non-body portion of `MethodFunction` so registering a trait impl as an
+/// inherent method is straightforward.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraitMethodSignature {
+    pub node: Node,
+    pub name: DefaultSymbol,
+    pub generic_params: Vec<DefaultSymbol>,
+    pub generic_bounds: HashMap<DefaultSymbol, TypeDecl>,
+    pub parameter: ParameterList,
+    pub return_type: Option<TypeDecl>,
+    pub requires: Vec<ExprRef>,
+    pub ensures: Vec<ExprRef>,
+    pub has_self_param: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

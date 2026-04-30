@@ -391,7 +391,7 @@ fn find_method(
 ) -> Option<Rc<MethodFunction>> {
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
-        if let Some(Stmt::ImplBlock { target_type, methods }) = program.statement.get(&stmt_ref) {
+        if let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref) {
             if target_type == struct_name {
                 if let Some(m) = methods.iter().find(|m| m.name == method_name) {
                     return Some(m.clone());
@@ -411,7 +411,7 @@ fn collect_method_map(
         HashMap::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
-        if let Some(Stmt::ImplBlock { target_type, methods }) = program.statement.get(&stmt_ref) {
+        if let Some(Stmt::ImplBlock { target_type, methods, .. }) = program.statement.get(&stmt_ref) {
             for m in &methods {
                 out.insert((target_type, m.name), m.clone());
             }
@@ -1847,7 +1847,7 @@ fn check_stmt(
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
         // function so they don't affect us here.
-        Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } => false,
+        Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => false,
     }
 }
 

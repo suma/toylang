@@ -416,6 +416,78 @@ pub fn parse_impl_methods(parser: &mut Parser, methods: Vec<Rc<MethodFunction>>)
     parse_impl_methods_with_generic_context(parser, methods, &[], &std::collections::HashMap::new())
 }
 
+/// Parse the body of a `trait` declaration: a sequence of method
+/// signatures (no body block). Each signature is `fn name(params) -> RetTy`
+/// optionally followed by `requires` / `ensures` clauses. Methods are
+/// terminated by a newline; the loop ends at `}`. Generics on individual
+/// trait methods are accepted but their bounds are dropped (the initial
+/// trait feature implementation does not propagate them).
+pub fn parse_trait_method_signatures(
+    parser: &mut Parser,
+) -> ParserResult<Vec<TraitMethodSignature>> {
+    const MAX_METHODS: usize = 500;
+    let mut methods: Vec<TraitMethodSignature> = Vec::new();
+
+    loop {
+        parser.skip_newlines();
+
+        if parser.peek() == Some(&Kind::BraceClose) || methods.len() >= MAX_METHODS {
+            if methods.len() >= MAX_METHODS {
+                parser.collect_error(&format!("too many trait methods (max: {})", MAX_METHODS));
+            }
+            return Ok(methods);
+        }
+
+        match parser.peek() {
+            Some(Kind::Function) => {
+                let fn_start_pos = parser.peek_position_n(0).unwrap().start;
+                parser.next();
+                let method_name = match parser.peek() {
+                    Some(Kind::Identifier(s)) => {
+                        let s = s.to_string();
+                        parser.next();
+                        parser.string_interner.get_or_intern(s)
+                    }
+                    _ => {
+                        let location = parser.current_source_location();
+                        return Err(ParserError::generic_error(location, "expected method name in trait body".to_string()));
+                    }
+                };
+                // Per-method generics are accepted but dropped for now.
+                if parser.peek() == Some(&Kind::LT) {
+                    skip_until_matching_gt(parser);
+                }
+                parser.expect_err(&Kind::ParenOpen)?;
+                let (params, has_self) = parse_method_param_list_with_generic_context(parser, vec![], &[])?;
+                parser.expect_err(&Kind::ParenClose)?;
+
+                let mut ret_ty: Option<TypeDecl> = None;
+                if let Some(Kind::Arrow) = parser.peek() {
+                    parser.expect_err(&Kind::Arrow)?;
+                    ret_ty = Some(parser.parse_type_declaration()?);
+                }
+
+                let (requires, ensures) = parser.parse_contract_clauses()?;
+                let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range { start: 0, end: 0 }).end;
+
+                methods.push(TraitMethodSignature {
+                    node: Node::new(fn_start_pos, fn_end_pos),
+                    name: method_name,
+                    generic_params: vec![],
+                    generic_bounds: std::collections::HashMap::new(),
+                    parameter: params,
+                    return_type: ret_ty,
+                    requires,
+                    ensures,
+                    has_self_param: has_self,
+                });
+                parser.skip_newlines();
+            }
+            _ => return Ok(methods),
+        }
+    }
+}
+
 pub fn parse_impl_methods_with_generic_context(
     parser: &mut Parser,
     mut methods: Vec<Rc<MethodFunction>>,

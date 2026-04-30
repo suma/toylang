@@ -10,10 +10,25 @@ use crate::type_checker::traits::Acceptable;
 
 /// Implementation block type checking
 impl<'a> TypeCheckerVisitor<'a> {
-    /// Type check implementation blocks
-    pub fn visit_impl_block_impl(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check implementation blocks. `trait_name` is `Some(name)` when this
+    /// block is `impl <Trait> for <Type>` and `None` for an inherent impl. For
+    /// trait impls we additionally validate that every trait method is provided
+    /// with a matching signature and record the conformance in the context.
+    pub fn visit_impl_block_impl(
+        &mut self,
+        target_type: DefaultSymbol,
+        methods: &Vec<Rc<MethodFunction>>,
+        trait_name: Option<DefaultSymbol>,
+    ) -> Result<TypeDecl, TypeCheckError> {
         // target_type is already a symbol
         let struct_symbol = target_type;
+
+        // For `impl <Trait> for <Struct>`, validate that the trait exists
+        // and that this block satisfies every required method signature.
+        // Conformance is recorded in the context for use at call sites.
+        if let Some(trait_symbol) = trait_name {
+            self.check_trait_conformance(struct_symbol, trait_symbol, methods)?;
+        }
 
         // Set current impl target for Self resolution
         let old_impl_target = self.context.current_impl_target;

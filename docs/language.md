@@ -20,6 +20,7 @@ implementation-side details, see the companion documents:
 - [Statements](#statements)
 - [Functions](#functions)
 - [Structs and methods](#structs-and-methods)
+- [Traits](#traits)
 - [Enums and pattern matching](#enums-and-pattern-matching)
 - [Generics and bounds](#generics-and-bounds)
 - [Modules](#modules)
@@ -70,7 +71,7 @@ Reserved words, none of which can be used as identifiers:
 ```
 fn  val  var  const  return  break  continue
 if  elif  else  for  in  to  while
-class  struct  impl  enum  match  Self
+class  struct  trait  impl  enum  match  Self
 true  false  null
 pub  extern  package  import  as
 with  ambient
@@ -494,6 +495,75 @@ bag["x"] = 1i64     # calls __setitem__
 A struct can declare a `__drop__(self: Self)` method that runs at
 end-of-scope. The destructor mechanism is the same one the allocator
 system uses for arena cleanup.
+
+---
+
+## Traits
+
+A `trait` declares a set of method signatures that conforming structs
+must provide. Trait declarations have no method bodies; they record
+contracts only.
+
+```rust
+trait Greet {
+    fn greet(self: Self) -> str
+}
+```
+
+### Implementing a trait
+
+Use `impl <Trait> for <Struct> { ... }` to provide the bodies. Every
+trait method must appear with a matching signature; extra methods are
+allowed and become inherent methods on the struct as well.
+
+```rust
+struct Dog { name: str }
+
+impl Greet for Dog {
+    fn greet(self: Self) -> str { "Woof!" }
+}
+```
+
+`Self` in a trait signature resolves to the implementing struct, so a
+trait method declared as `fn m(self: Self) -> Self` is satisfied by an
+impl method written the same way.
+
+### Trait bounds on generics
+
+A type parameter can be bounded by a trait. Inside the function the
+bounded parameter supports the trait's methods; at the call site the
+type-checker verifies the supplied concrete type implements the trait.
+
+```rust
+fn announce<T: Greet>(x: T) -> str {
+    x.greet()
+}
+
+fn main() -> u64 {
+    val d = Dog { name: "Rex" }
+    announce(d)
+    0u64
+}
+```
+
+The bound chain is transparent: a caller's own `<U: Greet>` parameter
+satisfies `<T: Greet>` without further conversion.
+
+### Errors caught at type-check time
+
+- An `impl Trait for Type` block missing a method: `missing method 'm' required by trait`
+- A signature mismatch (parameter count, type, or return type): `parameter type mismatch` / `return type mismatch`
+- Calling a trait-bounded generic with a non-conforming struct: `bound violation: ... (struct 'X' does not implement trait 'T')`
+- Duplicate trait declaration or duplicate method name within a trait
+
+### Out of scope (initial implementation)
+
+- Generics on traits themselves (`trait Foo<T> { ... }`)
+- Default method bodies in traits
+- Multiple bounds (`<T: A + B>`)
+- Trait inheritance (`trait B: A`)
+- Dynamic dispatch via `dyn Trait` objects
+- Associated types
 
 ---
 

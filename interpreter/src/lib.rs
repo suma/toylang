@@ -109,13 +109,13 @@ fn setup_type_checker_with_modules<'a>(program: &'a mut Program, string_interner
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
-    impl_blocks: &[(DefaultSymbol, Vec<std::rc::Rc<MethodFunction>>)],
+    impl_blocks: &[(DefaultSymbol, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>)],
     formatter: &Option<ErrorFormatter>
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
-    for (target_type, methods) in impl_blocks {
-        if let Err(err) = tc.visit_impl_block(*target_type, methods) {
+    for (target_type, methods, trait_name) in impl_blocks {
+        if let Err(err) = tc.visit_impl_block(*target_type, methods, *trait_name) {
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
@@ -147,8 +147,8 @@ pub fn check_typing(
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
-                impl_blocks.push((*target_type, methods.clone()));
+            if let frontend::ast::Stmt::ImplBlock { target_type, methods, trait_name } = &stmt {
+                impl_blocks.push((*target_type, methods.clone(), *trait_name));
             }
         }
     }
@@ -180,7 +180,9 @@ pub fn check_typing(
             let should_visit = tc.core.stmt_pool.get(&stmt_ref)
                 .map(|s| matches!(
                     s,
-                    frontend::ast::Stmt::StructDecl { .. } | frontend::ast::Stmt::EnumDecl { .. }
+                    frontend::ast::Stmt::StructDecl { .. }
+                    | frontend::ast::Stmt::EnumDecl { .. }
+                    | frontend::ast::Stmt::TraitDecl { .. }
                 ))
                 .unwrap_or(false);
             if should_visit {
@@ -332,7 +334,7 @@ fn build_method_registry(
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, methods } = &stmt {
+            if let frontend::ast::Stmt::ImplBlock { target_type, methods, .. } = &stmt {
                 let struct_name_symbol = *target_type;
                 for method in methods {
                     let method_name_symbol = method.name;

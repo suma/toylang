@@ -73,9 +73,25 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Helper method to handle method calls on a specific type
     pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.resolve_symbol_name(*method);
-        
-        
-        
+
+        // Method call on a trait-bounded generic parameter, e.g. inside
+        // `fn f<T: MyTrait>(x: T) { x.foo() }`. Resolve `foo` through the
+        // trait's method signature table; `Self` in the return type is
+        // mapped back to the generic parameter so the caller sees the
+        // appropriate concrete type after monomorphization.
+        if let TypeDecl::Generic(t_sym) = obj_type {
+            if let Some(TypeDecl::Identifier(trait_sym)) = self.context.current_fn_generic_bounds.get(t_sym).cloned() {
+                if let Some(sig) = self.context.get_trait_method(trait_sym, *method).cloned() {
+                    let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
+                    let resolved = match ret {
+                        TypeDecl::Self_ => TypeDecl::Generic(*t_sym),
+                        other => other,
+                    };
+                    return Ok(resolved);
+                }
+            }
+        }
+
         // Check if this is a user-defined method for a struct
         if let TypeDecl::Struct(struct_name, type_params) = obj_type {
             let struct_name_str = self.resolve_symbol_name(*struct_name);

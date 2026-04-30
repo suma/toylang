@@ -121,7 +121,22 @@ fn main() -> u64 {
 - **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
 - **`assert(cond, "msg")` ビルトイン**: `cond` が false のときだけ `panic(msg)` する糖衣。`(bool, str) -> ()`。message は false 時にのみ評価される。JIT は `brif cond, cont, fail; fail: call jit_panic; trap` で lower（success path はオーバヘッド最小、failure path は panic と同じ helper）
-- **OOP・モジュール関連キーワード**: `class`, `struct`, `impl`, `Self`, `enum`, `match`
+- **OOP・モジュール関連キーワード**: `class`, `struct`, `trait`, `impl`, `Self`, `enum`, `match`
+- **`trait` 宣言と `impl <Trait> for <Type>`**: 共通インターフェースを定義する仕組み。
+  ```rust
+  trait Greet {
+      fn greet(self: Self) -> str
+  }
+  impl Greet for Dog {
+      fn greet(self: Self) -> str { "Woof!" }
+  }
+  fn announce<T: Greet>(x: T) -> str { x.greet() }
+  ```
+  - trait 本体には method の **シグネチャのみ**を書く（body 無し）。`requires` / `ensures` 節も書ける
+  - `impl <Trait> for <Type> { ... }` は body 付き method を提供。型チェッカーが trait のシグネチャと比較し、不足 method や型不一致を検出
+  - 型パラメータ bound `<T: SomeTrait>` を関数・struct・impl に書ける。呼び出し時に「実型がその trait を実装しているか」を検証
+  - 実装メソッドは inherent method としても登録されるので `value.trait_method()` 形式で直接呼べる
+  - **未対応（後続 phase）**: trait ジェネリクス（`trait Foo<T>`）、デフォルトメソッド、複数 bound（`<T: A + B>`）、trait 継承、`dyn Trait`、associated types
 - **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`

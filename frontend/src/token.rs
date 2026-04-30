@@ -17,6 +17,7 @@ pub enum Kind {
     Continue,
     Class,
     Struct,
+    Trait,
     Impl,
     Function,
     Return,
@@ -118,8 +119,8 @@ impl Kind {
     pub fn is_keyword(&self) -> bool {
         matches!(self, 
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
-            Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct | 
-            Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public | 
+            Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
+            Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
             Kind::Val | Kind::Var | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )

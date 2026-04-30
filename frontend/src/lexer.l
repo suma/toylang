@@ -24,6 +24,7 @@ macro_rules! token {
 
 "class"     return Ok(token!(self, Kind::Class));
 "struct"    return Ok(token!(self, Kind::Struct));
+"trait"     return Ok(token!(self, Kind::Trait));
 "impl"      return Ok(token!(self, Kind::Impl));
 "fn"        return Ok(token!(self, Kind::Function));
 "extern"    return Ok(token!(self, Kind::Extern));

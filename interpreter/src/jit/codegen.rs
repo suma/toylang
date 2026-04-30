@@ -1136,7 +1136,7 @@ impl<'a, 'b> State<'a, 'b> {
                     self.gen_for(var_name, &start, &end, &body)?;
                     last_value = None;
                 }
-                Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } => {
+                Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
                     return Err("decl inside JIT body".into());
                 }
             }

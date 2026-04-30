@@ -35,6 +35,7 @@ mod expression;
 mod statement;
 mod struct_literal;
 mod impl_block;
+mod trait_decl;
 mod collections;
 mod builtin;
 mod utility;

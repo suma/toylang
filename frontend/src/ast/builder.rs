@@ -352,7 +352,29 @@ impl AstBuilder {
     }
 
     pub fn impl_block_stmt(&mut self, target_type: DefaultSymbol, methods: Vec<Rc<MethodFunction>>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock { target_type, methods });
+        self.impl_block_stmt_with_trait(target_type, methods, None, location)
+    }
+
+    pub fn impl_block_stmt_with_trait(
+        &mut self,
+        target_type: DefaultSymbol,
+        methods: Vec<Rc<MethodFunction>>,
+        trait_name: Option<DefaultSymbol>,
+        location: Option<SourceLocation>,
+    ) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock { target_type, methods, trait_name });
+        self.location_pool.add_stmt_location(location);
+        stmt_ref
+    }
+
+    pub fn trait_decl_stmt(
+        &mut self,
+        name: DefaultSymbol,
+        methods: Vec<crate::ast::TraitMethodSignature>,
+        visibility: Visibility,
+        location: Option<SourceLocation>,
+    ) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::TraitDecl { name, methods, visibility });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }

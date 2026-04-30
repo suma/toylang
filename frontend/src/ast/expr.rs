@@ -1,7 +1,7 @@
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use std::rc::Rc;
 use crate::type_decl::TypeDecl;
-use super::{ExprRef, StmtRef, StructField, Visibility, MethodFunction};
+use super::{ExprRef, StmtRef, StructField, Visibility, MethodFunction, TraitMethodSignature};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SliceType {
@@ -66,6 +66,19 @@ pub enum Stmt {
     ImplBlock {
         target_type: DefaultSymbol,
         methods: Vec<Rc<MethodFunction>>,
+        /// `Some(trait_name)` for `impl <Trait> for <Type>`, `None` for an
+        /// inherent `impl <Type>`. Trait conformance is recorded by the
+        /// type-checker; runtime dispatch sees the methods either way.
+        trait_name: Option<DefaultSymbol>,
+    },
+    /// `trait Name { fn m(self: Self, ...) -> T; ... }` — declares a set of
+    /// method signatures that conforming structs must provide. Trait methods
+    /// have no body. Generics on the trait itself, default methods, and trait
+    /// inheritance are out of scope for the initial implementation.
+    TraitDecl {
+        name: DefaultSymbol,
+        methods: Vec<TraitMethodSignature>,
+        visibility: Visibility,
     },
     EnumDecl {
         name: DefaultSymbol,

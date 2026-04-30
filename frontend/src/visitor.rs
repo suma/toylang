@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef};
+use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef, TraitMethodSignature};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 use std::rc::Rc;
@@ -59,6 +59,7 @@ pub trait AstVisitor {
     fn visit_break(&mut self, ) -> Result<TypeDecl, TypeCheckError>;
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
 }

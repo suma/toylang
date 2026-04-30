@@ -275,14 +275,42 @@ impl<'a> Parser<'a> {
                     match self.peek() {
                         Some(Kind::Identifier(s)) => {
                             let s_copy = s.clone();
-                            let target_type_symbol = self.string_interner.get_or_intern(&s_copy);
+                            let first_ident_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
 
-                            // For now, we'll skip parsing generic arguments on the type (like Container<T>)
+                            // For now, we skip parsing generic arguments on
+                            // the (first) identifier — both inherent and
+                            // trait impls accept `Name<...>` after the name.
                             if self.peek() == Some(&Kind::LT) {
-                                // Skip generic arguments on target type for now
                                 self.skip_until_matching_gt();
                             }
+
+                            // `impl Trait for Type` — the `for` keyword is
+                            // contextually reused here. If present, the
+                            // identifier we just consumed was the trait name
+                            // and the next identifier is the target type.
+                            let (trait_name, target_type_symbol) = if matches!(self.peek(), Some(Kind::For)) {
+                                self.next(); // consume `for`
+                                let target_sym = match self.peek() {
+                                    Some(Kind::Identifier(name)) => {
+                                        let name_copy = name.clone();
+                                        let sym = self.string_interner.get_or_intern(&name_copy);
+                                        self.next();
+                                        if self.peek() == Some(&Kind::LT) {
+                                            self.skip_until_matching_gt();
+                                        }
+                                        sym
+                                    }
+                                    _ => {
+                                        self.collect_error("expected target type after `for` in impl-trait");
+                                        self.next();
+                                        continue;
+                                    }
+                                };
+                                (Some(first_ident_symbol), target_sym)
+                            } else {
+                                (None, first_ident_symbol)
+                            };
 
                             self.expect_err(&Kind::BraceOpen)?;
                             let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
@@ -290,11 +318,39 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(impl_end_pos);
 
-                            self.ast_builder.impl_block_stmt(target_type_symbol, methods, Some(location));
+                            self.ast_builder.impl_block_stmt_with_trait(target_type_symbol, methods, trait_name, Some(location));
                         }
                         _ => {
                             self.collect_error("expected type name for impl block");
                             self.next(); // Skip invalid token and continue
+                        }
+                    }
+                }
+                Some(Kind::Trait) => {
+                    let trait_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
+                    update_start_pos(trait_start_pos);
+                    self.next(); // consume `trait`
+                    match self.peek() {
+                        Some(Kind::Identifier(s)) => {
+                            let s_copy = s.clone();
+                            let trait_symbol = self.string_interner.get_or_intern(&s_copy);
+                            self.next();
+                            self.expect_err(&Kind::BraceOpen)?;
+                            let methods = super::stmt::parse_trait_method_signatures(self)?;
+                            self.expect_err(&Kind::BraceClose)?;
+                            let trait_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                            update_end_pos(trait_end_pos);
+                            self.ast_builder.trait_decl_stmt(
+                                trait_symbol,
+                                methods,
+                                visibility,
+                                Some(location),
+                            );
+                        }
+                        _ => {
+                            self.collect_error("expected trait name");
+                            self.next();
                         }
                     }
                 }

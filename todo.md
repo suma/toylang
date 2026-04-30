@@ -2,6 +2,7 @@
 
 ## 完了済み ✅
 
+184. **`trait` 宣言と `impl <Trait> for <Type>`**: 共通インターフェースの仕組みを追加。`trait Name { fn m(self: Self, ...) -> T; ... }` でシグネチャだけを宣言、`impl <Trait> for <Struct> { ... }` で body を提供。型チェッカーが trait のシグネチャと比較して欠落メソッド・型不一致を検出（`missing method` / `parameter type mismatch` / `return type mismatch`）。型パラメータ bound `<T: SomeTrait>` を関数・struct・impl に書け、呼出時に「実型がその trait を実装しているか」を `struct_trait_impls` で検証。`Self` は impl の対象 struct に解決される。impl-trait の method は同 struct の inherent method としても登録されるため、interpreter 側のメソッドディスパッチは無変更で動作。トークン `Kind::Trait`、AST `Stmt::TraitDecl` + `Stmt::ImplBlock.trait_name: Option<DefaultSymbol>`、新規 `frontend/src/type_checker/trait_decl.rs` で conformance check。tests: `interpreter/tests/trait_tests.rs` に 10 件追加（基本宣言・impl-method dispatch・bounded-generic dispatch・複数 struct 実装・missing method / signature mismatch / 未実装 struct の bound 違反 / 重複 trait / 重複 method）。example: `interpreter/example/trait_basic.t`。`docs/language.md` に新章 *Traits*、CLAUDE.md にもキーワード追加。out of scope（後続）: trait ジェネリクス・デフォルトメソッド・複数 bound・trait 継承・`dyn Trait`・associated types (2026-04-30)
 182. **Value/Reference 分離 Phase 5 後半 — variable assignment / 演算子 operand の Value 化**: `handle_variable_assignment` を Value-native に書き直し（`val.borrow()` 経由の Object クローンを Value::clone で置換、不要な `rhs_borrow` を排除）、`evaluate_binary` / `evaluate_unary` / 短絡論理演算子の operand 評価を `try_value!` (Rc allocate) → `try_value_v!` (Value 直) に置換、Phase 2 で残っていた `Value::from_rc(&lhs_val)` の中間変換を削除。`handle_val_declaration` / `handle_var_declaration` も同様。**Bench 結果 (Apple Silicon release)**:
 
 ```
@@ -121,6 +122,7 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 - 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
 - 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`
+- Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）
 - 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
 - Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Arena / FixedBuffer allocator
@@ -132,7 +134,7 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 - ジェネリック構造体: `struct Container<T>`、constraint-based型推論
 - ネストジェネリック: `Container<Container<T>>`（C++11スタイル`>>`分割）
 - Self キーワード: implブロック内での構造体参照
-- Trait bound: `<A: Allocator>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
+- Trait bound: `<A: Allocator>` および `<T: UserTrait>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
 
 ### モジュール・その他
 - Go-styleモジュールシステム: package/import/qualified name resolution

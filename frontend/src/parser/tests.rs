@@ -654,7 +654,7 @@ mod parser_tests {
             .expect("Should have impl block");
         
         match impl_stmt {
-            Stmt::ImplBlock { target_type, methods } => {
+            Stmt::ImplBlock { target_type, methods, .. } => {
                 let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
                 assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());
@@ -684,7 +684,7 @@ mod parser_tests {
             .expect("Should have impl block");
         
         match impl_stmt {
-            Stmt::ImplBlock { target_type, methods } => {
+            Stmt::ImplBlock { target_type, methods, .. } => {
                 let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
                 assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());
@@ -714,7 +714,7 @@ mod parser_tests {
             .expect("Should have impl block");
         
         match impl_stmt {
-            Stmt::ImplBlock { target_type, methods } => {
+            Stmt::ImplBlock { target_type, methods, .. } => {
                 let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
                 assert_eq!("Point", target_type_str);
                 assert_eq!(2, methods.len());
@@ -762,7 +762,7 @@ mod parser_tests {
         }
         
         match impl_stmt {
-            Stmt::ImplBlock { target_type, methods } => {
+            Stmt::ImplBlock { target_type, methods, .. } => {
                 let target_type_str = parser.get_string_interner().resolve(target_type).unwrap();
                 assert_eq!("Point", target_type_str);
                 assert_eq!(1, methods.len());

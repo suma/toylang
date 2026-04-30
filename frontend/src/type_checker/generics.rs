@@ -1,6 +1,7 @@
 use crate::ast::{ExprRef, Function, MethodFunction};
 use crate::type_checker::{TypeCheckError, TypeDecl, TypeCheckerVisitor};
 use crate::type_checker::context::StructDefinition;
+use crate::type_checker::error_handling::ErrorHandling;
 use string_interner::DefaultSymbol;
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -112,30 +113,65 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
             }
         }
 
-        // Enforce any declared bounds on generic parameters, e.g. `<A: Allocator>`.
-        // If the caller supplies a bounded generic of its own (`fn g<B: Allocator>(b: B) { f(b) }`),
-        // treat that as satisfying the bound — the bound chain is transparent.
+        // Enforce any declared bounds on generic parameters, e.g. `<A: Allocator>`
+        // or `<T: MyTrait>` where `MyTrait` is a user-defined trait.
+        // The bound chain is transparent: if the caller supplies a bounded
+        // generic of its own (`fn g<B: Allocator>(b: B) { f(b) }`), treat
+        // that as satisfying the same bound.
         for generic_param in &fun.generic_params {
             if let Some(bound) = fun.generic_bounds.get(generic_param) {
                 let inferred = match substitutions.get(generic_param) {
                     Some(ty) => ty,
                     None => continue,
                 };
-                let satisfies = match inferred {
-                    ty if ty == bound => true,
-                    TypeDecl::Generic(sym) => matches!(
+                // For user-defined traits, the bound parses as
+                // `TypeDecl::Identifier(trait_name)`. Conformance is checked
+                // by consulting `struct_trait_impls`. Built-in `Allocator`
+                // continues to use direct equality.
+                let bound_trait_sym = match bound {
+                    TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => Some(*sym),
+                    _ => None,
+                };
+                let satisfies = match (bound_trait_sym, inferred) {
+                    (Some(trait_sym), TypeDecl::Struct(struct_sym, _))
+                    | (Some(trait_sym), TypeDecl::Identifier(struct_sym)) => {
+                        self.context.struct_implements_trait(*struct_sym, trait_sym)
+                    }
+                    (Some(trait_sym), TypeDecl::Generic(sym)) => matches!(
                         self.context.current_fn_generic_bounds.get(sym),
-                        Some(caller_bound) if caller_bound == bound
+                        Some(TypeDecl::Identifier(b)) if *b == trait_sym
                     ),
-                    _ => false,
+                    _ => match inferred {
+                        ty if ty == bound => true,
+                        TypeDecl::Generic(sym) => matches!(
+                            self.context.current_fn_generic_bounds.get(sym),
+                            Some(caller_bound) if caller_bound == bound
+                        ),
+                        _ => false,
+                    },
                 };
                 if !satisfies {
                     self.pop_context();
                     let param_name = self.resolve_symbol_name(*generic_param);
                     let fn_name_str = self.resolve_symbol_name(fn_name);
+                    let bound_str = self.format_type_for_error(bound);
+                    let inferred_str = self.format_type_for_error(inferred);
+                    let note = if let Some(trait_sym) = bound_trait_sym {
+                        let trait_name = self.resolve_symbol_name(trait_sym);
+                        let inferred_struct = match inferred {
+                            TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) => Some(self.resolve_symbol_name(*s).to_string()),
+                            _ => None,
+                        };
+                        match inferred_struct {
+                            Some(s) => format!(" (struct `{}` does not implement trait `{}`)", s, trait_name),
+                            None => String::new(),
+                        }
+                    } else {
+                        String::new()
+                    };
                     return Err(TypeCheckError::generic_error(&format!(
-                        "Function '{}' generic parameter '{}' bound violation: expected {:?}, got {:?}",
-                        fn_name_str, param_name, bound, inferred
+                        "Function '{}' generic parameter '{}' bound violation: expected {}, got {}{}",
+                        fn_name_str, param_name, bound_str, inferred_str, note
                     )));
                 }
             }

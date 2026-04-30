@@ -107,6 +107,12 @@ impl EvaluationContext<'_> {
                     // Enum declarations are handled at compile time; nothing to do at runtime.
                     last = None;
                 }
+                Stmt::TraitDecl { .. } => {
+                    // Trait declarations are handled at compile time; their
+                    // method signatures live in the type checker context and
+                    // do not produce a runtime value.
+                    last = None;
+                }
                 Stmt::While(cond, body) => {
                     last = Some(self.handle_while_loop(&cond, &body)?);
                 }

@@ -223,7 +223,7 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone()
                 })
             }
-            Stmt::ImplBlock { target_type, methods } => {
+            Stmt::ImplBlock { target_type, methods, trait_name } => {
                 // MethodFunction symbols need remapping
                 let mut new_methods = Vec::new();
                 for method in methods {
@@ -232,7 +232,8 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Stmt::ImplBlock {
                     target_type: target_type.clone(),
-                    methods: new_methods
+                    methods: new_methods,
+                    trait_name: *trait_name,
                 })
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
@@ -240,6 +241,13 @@ impl<'a> AstIntegrationContext<'a> {
                     name: *name,
                     generic_params: generic_params.clone(),
                     variants: variants.clone(),
+                    visibility: visibility.clone(),
+                })
+            }
+            Stmt::TraitDecl { name, methods, visibility } => {
+                Ok(Stmt::TraitDecl {
+                    name: *name,
+                    methods: methods.clone(),
                     visibility: visibility.clone(),
                 })
             }

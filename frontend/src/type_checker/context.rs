@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
-use crate::ast::{Function, StructField, MethodFunction, Visibility, EnumVariantDef};
+use crate::ast::{Function, StructField, MethodFunction, Visibility, EnumVariantDef, TraitMethodSignature};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::error::TypeCheckError;
 use crate::type_checker::core::CoreReferences;
@@ -38,6 +38,12 @@ pub struct TypeCheckContext {
     // Generic parameter symbols declared by each generic enum, in order.
     // Missing entry means the enum is non-generic.
     pub enum_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    // Registered traits: name -> ordered method signatures.
+    pub traits: HashMap<DefaultSymbol, Vec<TraitMethodSignature>>,
+    // Trait conformance: struct symbol -> set of trait symbols it implements.
+    // Populated by `impl <Trait> for <Struct>` blocks once the conformance
+    // check succeeds. Used at call sites to verify generic-bound satisfaction.
+    pub struct_trait_impls: HashMap<DefaultSymbol, HashSet<DefaultSymbol>>,
 }
 
 impl TypeCheckContext {
@@ -55,7 +61,26 @@ impl TypeCheckContext {
             current_fn_generic_bounds: HashMap::new(),
             enum_definitions: HashMap::new(),
             enum_generic_params: HashMap::new(),
+            traits: HashMap::new(),
+            struct_trait_impls: HashMap::new(),
         }
+    }
+
+    /// Returns true when `struct_symbol` has been registered as conforming
+    /// to `trait_symbol` via an `impl <Trait> for <Type>` block.
+    pub fn struct_implements_trait(&self, struct_symbol: DefaultSymbol, trait_symbol: DefaultSymbol) -> bool {
+        self.struct_trait_impls
+            .get(&struct_symbol)
+            .map(|set| set.contains(&trait_symbol))
+            .unwrap_or(false)
+    }
+
+    pub fn is_trait(&self, name: DefaultSymbol) -> bool {
+        self.traits.contains_key(&name)
+    }
+
+    pub fn get_trait_method(&self, trait_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&TraitMethodSignature> {
+        self.traits.get(&trait_name)?.iter().find(|m| m.name == method_name)
     }
 
     pub fn set_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {

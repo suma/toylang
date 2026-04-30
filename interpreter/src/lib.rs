@@ -1,5 +1,6 @@
 pub mod environment;
 pub mod object;
+pub mod value;
 pub mod evaluation;
 pub mod error;
 pub mod error_formatter;

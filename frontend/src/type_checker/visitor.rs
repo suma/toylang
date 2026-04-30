@@ -211,6 +211,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::String],
                 return_type: TypeDecl::Unknown,
             },
+            // `assert(cond: bool, msg: str)` is a no-op when `cond` is true
+            // and panics with `msg` when it's false. The return is `Unit`
+            // (it has a normal value path) — no Unknown trick is needed.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Assert,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Bool, TypeDecl::String],
+                return_type: TypeDecl::Unit,
+            },
             // `__builtin_sizeof` takes a single probe value and returns the
             // byte size of its type as u64. The arg type is not constrained
             // at signature level — visit_builtin_call leaves type validation

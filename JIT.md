@@ -84,6 +84,7 @@ flat scalar `Tuple` *are* supported — see the dedicated subsections.)
 | `__builtin_ptr_read(p, off)` | only as the *direct* RHS of `val NAME: T = …`, `var NAME: T = …`, or `name = …` (the JIT needs a static expected type) |
 | `print(x) / println(x)` | scalar arg only; calls Rust `extern "C"` helpers (`jit_print_i64/u64/bool/f64` and `*_println_*`) |
 | `panic("literal")` | argument must be a parse-time `Expr::String(sym)`; codegen passes the symbol id as a u64 to `jit_panic`, which resolves it through a thread-local pointer to the program's `StringInterner` and `process::exit(1)`s. After the call, codegen emits `trap UserCode(1)` purely as a CFG terminator (always dead at runtime). Statement-position panics (`if cond { panic("…") }`) compile cleanly; expression-position panics (`if cond { panic("…") } else { value }`) silent-fall back today because `Panic` returns `ScalarTy::Unit` and the if-branches' types must match in eligibility. |
+| `assert(cond, "literal")` | message must be a string literal (same constraint as `panic`); the condition is any bool expression. Lowered to `brif cond, cont_blk, fail_blk; fail_blk: call jit_panic(msg_sym); trap UserCode(1); cont_blk: …` so the success path costs one branch and the failure path reuses the panic helper unchanged. |
 
 ### Statements
 
@@ -201,7 +202,7 @@ val total: u64 = with allocator = arena {
 }
 ```
 
-### Panic
+### Panic / assert
 
 `panic("literal")` lowers to a Rust host helper (`jit_panic`) plus a
 cranelift `trap UserCode(1)` terminator:
@@ -246,6 +247,26 @@ fn divide(a: i64, b: i64) -> i64 {
 ```
 
 JITs cleanly because both branches of the inner `if` are `Unit`.
+
+`assert(cond, "literal")` reuses the same `jit_panic` helper through
+a conditional branch:
+
+```text
+assert(b != 0i64, "divisor must be non-zero")
+↓ codegen
+  cond_v = ...                ; bool: b != 0
+  brif cond_v, cont, fail
+fail:
+  call jit_panic(<msg_sym>)
+  trap UserCode(1)
+cont:
+  ; control resumes here for the cond=true case
+```
+
+The condition is any bool expression. Only the message has the
+literal-only constraint; everything dynamic about the assertion goes
+through the cond. The success path adds exactly one branch
+instruction over straight-line code.
 
 ### Not supported (silent fallback)
 
@@ -358,6 +379,7 @@ the native code itself is faster.
 * `jit_tuple.t` — flat tuple param / return, destructure, and `TupleAccess` → exit 33
 * `jit_float64.t` — `f64` arithmetic, comparisons, casts, `println(f64)` → exit 7
 * `jit_panic.t` — `panic("literal")` lowered to `jit_panic` helper + `trap` terminator → exit 1 with `panic: division by zero` on stderr
+* `jit_assert.t` — `assert(cond, "literal")` with passing conditions → exit 7
 
 `interpreter/tests/jit_integration.rs` runs each of these (plus
 `example/fib.t`) under both modes and asserts exit code + stdout

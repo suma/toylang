@@ -92,6 +92,52 @@ fn float64_example_matches_between_modes() {
     assert_match("example/jit_float64.t");
 }
 
+#[test]
+fn assert_example_matches_between_modes() {
+    assert_match("example/jit_assert.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn assert_example_compiles_main_and_passes() {
+    let r = run("example/jit_assert.t", true, true);
+    assert_eq!(r.code, 7, "expected exit 7, stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled: main"),
+        "expected JIT compiled log; stderr: {}",
+        r.stderr
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn assert_failure_routes_through_jit_panic_helper() {
+    use std::fs;
+    let path = "tests/fixtures/assert_jit_fail.t";
+    fs::create_dir_all("tests/fixtures").unwrap();
+    fs::write(
+        path,
+        r#"fn main() -> i64 {
+    assert(1i64 == 2i64, "intentional jit failure")
+    0i64
+}
+"#,
+    )
+    .unwrap();
+    let r = run(path, true, true);
+    assert_eq!(r.code, 1);
+    assert!(
+        r.stderr.contains("panic: intentional jit failure"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("JIT compiled:"),
+        "expected JIT compiled log; stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn panic_example_compiles_and_aborts_via_helper() {

@@ -582,6 +582,55 @@ mod basic_execution {
         assert!(err.to_string().contains("panic: fatal"));
     }
 
+    // ----- assert builtin -----
+
+    #[test]
+    fn test_assert_passes_when_condition_true() {
+        common::assert_program_result_i64(
+            r#"
+        fn main() -> i64 {
+            assert(1i64 + 1i64 == 2i64, "math broken")
+            assert(2i64 > 1i64, "ordering broken")
+            42i64
+        }
+        "#,
+            42,
+        );
+    }
+
+    #[test]
+    fn test_assert_panics_when_condition_false() {
+        let source = r#"
+        fn main() -> i64 {
+            assert(1i64 == 2i64, "values differ")
+            0i64
+        }
+        "#;
+        let result = common::test_program(source);
+        let err = result.expect_err("expected assert failure");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("panic:") && msg.contains("values differ"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_assert_does_not_evaluate_message_on_success() {
+        // The message is only used when the condition fails; this test
+        // doesn't directly exercise that, but documents the expected
+        // shape — the success path returns Unit cleanly.
+        common::assert_program_result_u64(
+            r#"
+        fn main() -> u64 {
+            assert(true, "ok")
+            7u64
+        }
+        "#,
+            7,
+        );
+    }
+
     /// Regression: a `return` in a value-producing position used to escape
     /// the function as a "Propagate flow:" runtime error because the helper
     /// type `InterpreterError::PropagateFlow` was created at every

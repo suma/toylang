@@ -588,6 +588,32 @@ impl EvaluationContext<'_> {
                 Err(InterpreterError::Panic { message })
             }
 
+            BuiltinFunction::Assert => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "assert takes 2 arguments (cond, msg)".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                // Evaluate the condition first; only build the message
+                // string when it actually fails so the happy path stays
+                // cheap. The type checker guarantees `bool` and `str`.
+                let cond_val = self.evaluate(&args[0])?;
+                let cond_val = try_value!(Ok(cond_val));
+                let passed = cond_val
+                    .borrow()
+                    .try_unwrap_bool()
+                    .map_err(InterpreterError::ObjectError)?;
+                if passed {
+                    return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))));
+                }
+                let msg_val = self.evaluate(&args[1])?;
+                let msg_val = try_value!(Ok(msg_val));
+                let message = msg_val.borrow().to_display_string(&self.string_interner);
+                Err(InterpreterError::Panic { message })
+            }
+
             BuiltinFunction::Print | BuiltinFunction::Println => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

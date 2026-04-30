@@ -723,7 +723,8 @@ These are user-facing names without the `__builtin_` prefix.
 ### Termination
 
 ```rust
-panic(message: str)   # aborts the run with `panic: <message>`
+panic(message: str)              # aborts the run with `panic: <message>`
+assert(cond: bool, message: str) # panics with `message` when `cond` is false
 ```
 
 `panic` evaluates its argument, prints `panic: <message>` to stderr,
@@ -747,8 +748,19 @@ fn unimplemented() -> i64 { panic("not implemented") }
 ```
 
 `panic` cannot be caught from user code in this iteration; the run
-stops immediately. There is no `assert` builtin yet — until one
-exists, `if !cond { panic("...") }` is the idiomatic equivalent.
+stops immediately.
+
+`assert(cond, msg)` is sugar for `if !cond { panic(msg) }` with a
+clearer call-site reading. The condition is evaluated first; the
+message expression is only evaluated when the condition fails. Type
+signature: `(bool, str) -> ()`.
+
+```rust
+fn divmod(a: i64, b: i64) -> (i64, i64) {
+    assert(b != 0i64, "divmod: divisor must be non-zero")
+    (a / b, a % b)
+}
+```
 
 ### Type introspection
 
@@ -885,9 +897,10 @@ These are real today; some appear in `todo.md` as planned work.
   write `1.5f64`.
 - **No labelled break / continue** — only the innermost loop is
   affected.
-- **No `assert` builtin** — `panic("msg")` exists, but a structured
-  `assert(cond, "msg")` is not yet provided. `if !cond { panic("...") }`
-  works in the meantime.
+- **No release-mode gate for `panic` / `assert`** — both always
+  evaluate. A future env-var (analogous to `INTERPRETER_CONTRACTS`
+  for DbC clauses) could disable them in production builds, but
+  isn't implemented yet.
 - **No string interpolation, raw strings, multi-line strings**.
 - **Modules resolve only on the local filesystem** under
   `modules/<name>/<name>.t`.

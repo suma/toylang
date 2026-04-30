@@ -764,6 +764,50 @@ impl<'a, 'b> State<'a, 'b> {
                         self.terminated = true;
                         Ok(None)
                     }
+                    BuiltinFunction::Assert => {
+                        // Lowered as: if cond { /* no-op */ } else { panic }
+                        //
+                        //   brif cond, cont, fail
+                        //   fail:  call jit_panic(msg_sym); trap
+                        //   cont:  ; control resumes here
+                        //
+                        // The fail block reuses the same helper as
+                        // `panic("literal")`, so there's only one place
+                        // that formats the diagnostic and exits.
+                        if args.len() != 2 {
+                            return Err("assert requires 2 arguments".into());
+                        }
+                        let msg_arg = self.program.expression.get(&args[1])
+                            .ok_or_else(|| "assert msg arg missing".to_string())?;
+                        let msg_sym = match msg_arg {
+                            Expr::String(s) => s,
+                            _ => return Err(
+                                "assert msg must be a string literal in JIT".into()
+                            ),
+                        };
+
+                        let cond_v = self.gen_expr(&args[0])?
+                            .ok_or_else(|| "assert cond produced no value".to_string())?;
+
+                        let fail_blk = self.builder.create_block();
+                        let cont_blk = self.builder.create_block();
+                        self.brif(cond_v, cont_blk, fail_blk);
+
+                        // Failure path: emit panic call + trap.
+                        self.switch_to(fail_blk);
+                        let sym_u64 = msg_sym.to_usize() as u64;
+                        let sym_v = self.builder.ins().iconst(types::I64, sym_u64 as i64);
+                        self.call_helper(HelperKind::Panic, &[sym_v])?;
+                        self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+                        // Mark fail_blk as terminated; we do NOT propagate
+                        // that to the surrounding state because control
+                        // continues from cont_blk.
+
+                        // Switch back to the success path so subsequent
+                        // expressions in the surrounding block carry on.
+                        self.switch_to(cont_blk);
+                        Ok(None)
+                    }
                     BuiltinFunction::Print | BuiltinFunction::Println => {
                         let arg_ref = args
                             .first()

@@ -193,6 +193,12 @@ pub enum BuiltinFunction {
     // value positions like `if c { 5i64 } else { panic("bad") }`.
     Panic,
 
+    // Conditional abort. `assert(cond: bool, msg: str)` panics with `msg`
+    // when `cond` is false and is a no-op otherwise; the return type is
+    // Unit. Sugar for `if !cond { panic(msg) }` but with a clearer
+    // intent at call sites and a single point to disable in the future.
+    Assert,
+
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
 }
@@ -226,6 +232,7 @@ pub struct BuiltinFunctionSymbols {
 
     // Termination
     pub panic: DefaultSymbol,
+    pub assert: DefaultSymbol,
 
     // Type introspection
     pub sizeof: DefaultSymbol,
@@ -253,6 +260,7 @@ impl BuiltinFunctionSymbols {
             print: interner.get_or_intern("print"),
             println: interner.get_or_intern("println"),
             panic: interner.get_or_intern("panic"),
+            assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
         }
     }
@@ -274,6 +282,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.print { Some(BuiltinFunction::Print) }
         else if symbol == self.println { Some(BuiltinFunction::Println) }
         else if symbol == self.panic { Some(BuiltinFunction::Panic) }
+        else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
         else { None }
     }

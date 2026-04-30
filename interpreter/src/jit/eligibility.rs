@@ -2279,6 +2279,36 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Unit)
                 }
+                BuiltinFunction::Assert => {
+                    // `assert(cond, "literal")` — same constraint on the
+                    // message as `panic` (literal only). The condition is a
+                    // regular bool expression and is checked recursively.
+                    if args.len() != 2 {
+                        note(reject_reason, || {
+                            "assert takes 2 arguments (cond, msg)".to_string()
+                        });
+                        return None;
+                    }
+                    let cond_ty = check_expr(
+                        program, &args[0], locals, struct_locals, tuple_locals,
+                        substitutions, struct_layouts, callees, ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if cond_ty != ScalarTy::Bool {
+                        note(reject_reason, || {
+                            "assert condition must be bool".to_string()
+                        });
+                        return None;
+                    }
+                    let msg_arg = program.expression.get(&args[1])?;
+                    if !matches!(msg_arg, Expr::String(_)) {
+                        note(reject_reason, || {
+                            "assert message must be a string literal in JIT".to_string()
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Unit)
+                }
                 BuiltinFunction::Print | BuiltinFunction::Println => {
                     if args.len() != 1 {
                         return None;

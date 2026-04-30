@@ -203,6 +203,17 @@ pub enum InstKind {
     /// Direct call to a function known at module build time. The optional
     /// `result` is `Some` when the callee returns a value-producing type.
     Call { target: FuncId, args: Vec<ValueId> },
+    /// `print` / `println` of a primitive value. The codegen layer
+    /// dispatches by `value_ty` to the corresponding `toy_print_*` /
+    /// `toy_println_*` helper in the C runtime. Strings handled
+    /// separately via `PrintStr` so the message can ride a static
+    /// data segment without requiring a `Type::Str` to flow through
+    /// the value graph.
+    Print { value: ValueId, value_ty: Type, newline: bool },
+    /// `print("literal")` / `println("literal")`. The string is laid
+    /// out in `.rodata` by codegen and the helper is `toy_print_str` /
+    /// `toy_println_str`.
+    PrintStr { message: DefaultSymbol, newline: bool },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -456,6 +467,14 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::Call { target, args } => {
                 let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
                 write!(f, "{prefix}call {target}({})", argstr.join(", "))
+            }
+            InstKind::Print { value, value_ty, newline } => {
+                let kw = if *newline { "println" } else { "print" };
+                write!(f, "{kw} {value}: {value_ty}")
+            }
+            InstKind::PrintStr { message, newline } => {
+                let kw = if *newline { "println_str" } else { "print_str" };
+                write!(f, "{kw} #{}", message.to_usize())
             }
         }
     }

@@ -8,19 +8,25 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 
 サポート:
 
-- 型: `i64`, `u64`, `bool`, `Unit`
+- 型: `i64`, `u64`, `bool`, `Unit`、scalar フィールドのみの struct
 - 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)
 - 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`
 - 同一プログラム内の関数呼び出し（`main` のみ C ABI でエクスポート、それ以外は `toy_<name>` プレフィックス）
-- **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装。**注意**: interpreter / JIT は `stderr` に出力するが、compiler は `stdout` に出力する（既知の挙動差）
+- **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装
+- **`print(x)` / `println(x)`**: `i64` / `u64` / `bool` / 文字列リテラルを受け取る。`compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）
+- **struct**: `struct Name { field: Type, ... }` 宣言、`Name { field: value, ... }` リテラル、`obj.field` 読み取り、`obj.field = value` 書き込み。**制約**: フィールドは scalar のみ、関数引数 / 戻り値として struct 値は渡せない（field を個別に渡す必要あり）、`struct.struct.field` のような chain 構造は未対応
+
+**注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）
 
 未対応（明確なエラーで reject される）:
 
-- 文字列の値（リテラルは `panic` / `assert` のメッセージとしてのみ）、struct、tuple、配列、dict
+- 任意の文字列値（リテラルのみ可）、tuple、配列、dict
 - enum、match、trait
 - allocator、contracts (`requires` / `ensures`)
 - generics（型パラメータを持つ関数 / struct）
-- `print`、`println`、heap / pointer builtins
+- struct を関数引数 / 戻り値として渡す
+- ネストしたフィールドアクセス（`a.b.c`）
+- heap / pointer builtins
 - `i64` ↔ `u64` 以外の cast
 
 ## 使い方

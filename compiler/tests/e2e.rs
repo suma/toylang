@@ -275,6 +275,189 @@ fn panic_in_else_branch_compiles() {
 }
 
 #[test]
+fn println_string_literal() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            println("hello, world")
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_str");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello, world\n");
+}
+
+#[test]
+fn print_without_newline() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            print("foo")
+            print("bar")
+            println("!")
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_concat");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "foobar!\n");
+}
+
+#[test]
+fn println_numeric_values() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            println(42u64)
+            println(-13i64)
+            println(0u64)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_nums");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "42\n-13\n0\n"
+    );
+}
+
+#[test]
+fn println_bool_values() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            println(true)
+            println(false)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_bool");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "true\nfalse\n");
+}
+
+#[test]
+fn print_inside_loop() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            for i in 0u64..3u64 {
+                print("i=")
+                println(i)
+            }
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_loop");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "i=0\ni=1\ni=2\n"
+    );
+}
+
+#[test]
+fn struct_literal_and_field_read() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            print("x=")
+            println(p.x)
+            print("y=")
+            println(p.y)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_read");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "x=3\ny=4\n");
+}
+
+#[test]
+fn struct_field_write() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Counter { n: u64, label: bool }
+
+        fn main() -> u64 {
+            var c = Counter { n: 0u64, label: false }
+            c.n = c.n + 5u64
+            c.label = true
+            print("n=")
+            println(c.n)
+            print("label=")
+            println(c.label)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_write");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "n=5\nlabel=true\n"
+    );
+}
+
+#[test]
+fn struct_field_in_arithmetic() {
+    if skip_e2e() {
+        return;
+    }
+    // Treat struct fields as ordinary lvalues / rvalues in expressions.
+    let src = r#"
+        struct Pair { a: u64, b: u64 }
+
+        fn main() -> u64 {
+            val p = Pair { a: 7u64, b: 6u64 }
+            val sum = p.a + p.b
+            sum
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_arith");
+    assert_eq!(out.status.code(), Some(13));
+}
+
+#[test]
+fn struct_in_loop_accumulator() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Acc { total: u64 }
+
+        fn main() -> u64 {
+            var a = Acc { total: 0u64 }
+            for i in 1u64..5u64 {
+                a.total = a.total + i
+            }
+            a.total
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_loop");
+    // 1+2+3+4 = 10
+    assert_eq!(out.status.code(), Some(10));
+}
+
+#[test]
 fn emit_object_writes_o_file() {
     if skip_e2e() {
         return;

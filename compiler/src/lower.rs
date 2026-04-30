@@ -45,6 +45,17 @@ pub fn lower_program(
     interner: &DefaultStringInterner,
 ) -> Result<Module, String> {
     let mut module = Module::new();
+
+    // Collect struct definitions before lowering any function bodies.
+    // The compiler MVP supports only struct fields whose declared types
+    // are scalars (`i64`, `u64`, `bool`); nested / generic struct fields
+    // are deferred. Each struct is decomposed into a list of (field,
+    // scalar) pairs and recorded by symbol so the body lowering can
+    // expand `Point { x: 1, y: 2 }` and `p.x` into per-field local
+    // slots without ever needing a `Type::Struct` to flow through the
+    // IR's value graph.
+    let struct_defs = collect_struct_defs(program, interner)?;
+
     // First pass: declare every function so call sites (which may refer
     // to functions defined later in the file) can resolve to a `FuncId`
     // during the body lowering pass.
@@ -98,10 +109,62 @@ pub fn lower_program(
             .function_index
             .get(&func.name)
             .expect("declared in pass 1");
-        let mut builder = FunctionLower::new(&mut module, func_id, program, interner)?;
+        let mut builder =
+            FunctionLower::new(&mut module, func_id, program, interner, &struct_defs)?;
         builder.lower_body(&func)?;
     }
     Ok(module)
+}
+
+/// `struct Name { f1: T1, f2: T2, ... }` declarations, indexed by symbol.
+/// Field names stay as `String` because the AST stores them that way; the
+/// lowering pass compares them against the `DefaultSymbol`-resolved name
+/// at field-access sites.
+type StructDefs = HashMap<DefaultSymbol, Vec<(String, Type)>>;
+
+fn collect_struct_defs(
+    program: &Program,
+    interner: &DefaultStringInterner,
+) -> Result<StructDefs, String> {
+    use frontend::ast::{Stmt, StmtRef};
+    let mut defs: StructDefs = HashMap::new();
+    let stmt_count = program.statement.len();
+    for i in 0..stmt_count {
+        let stmt_ref = StmtRef(i as u32);
+        let stmt = match program.statement.get(&stmt_ref) {
+            Some(s) => s,
+            None => continue,
+        };
+        if let Stmt::StructDecl { name, generic_params, fields, .. } = stmt {
+            if !generic_params.is_empty() {
+                return Err(format!(
+                    "compiler MVP cannot lower generic struct `{}` yet",
+                    interner.resolve(name).unwrap_or("?")
+                ));
+            }
+            let mut field_tys: Vec<(String, Type)> = Vec::with_capacity(fields.len());
+            for f in &fields {
+                let scalar = lower_scalar(&f.type_decl).ok_or_else(|| {
+                    format!(
+                        "compiler MVP only supports scalar struct fields; `{}.{}: {:?}` is not supported yet",
+                        interner.resolve(name).unwrap_or("?"),
+                        f.name,
+                        f.type_decl
+                    )
+                })?;
+                if matches!(scalar, Type::Unit) {
+                    return Err(format!(
+                        "struct field `{}.{}` cannot have type Unit",
+                        interner.resolve(name).unwrap_or("?"),
+                        f.name
+                    ));
+                }
+                field_tys.push((f.name.clone(), scalar));
+            }
+            defs.insert(name, field_tys);
+        }
+    }
+    Ok(defs)
 }
 
 fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
@@ -124,8 +187,10 @@ struct FunctionLower<'a> {
     func_id: FuncId,
     program: &'a Program,
     interner: &'a DefaultStringInterner,
-    /// Toylang binding name → (storage slot, type).
-    bindings: HashMap<DefaultSymbol, (LocalId, Type)>,
+    /// Per-program struct definitions. Read-only here.
+    struct_defs: &'a StructDefs,
+    /// Toylang binding name → storage shape.
+    bindings: HashMap<DefaultSymbol, Binding>,
     /// (continue, break) target blocks for `break` and `continue` inside
     /// the innermost loop.
     loop_stack: Vec<(BlockId, BlockId)>,
@@ -139,18 +204,46 @@ struct FunctionLower<'a> {
     next_value: u32,
 }
 
+/// Storage shape for a single binding (`val` / `var` / parameter / `for`
+/// induction variable). Scalar bindings live in one local; struct
+/// bindings expand into one local per field. The lowering pass selects
+/// which form to allocate based on the expression's static type.
+#[derive(Debug, Clone)]
+enum Binding {
+    Scalar { local: LocalId, ty: Type },
+    Struct {
+        /// Kept for diagnostics — field-access errors can mention the
+        /// struct's name without a separate symbol-resolution step.
+        #[allow(dead_code)]
+        struct_name: DefaultSymbol,
+        fields: Vec<FieldBinding>,
+    },
+}
+
+/// One field of a `Binding::Struct`. `name` matches `StructField.name`
+/// exactly so we can compare against the interner-resolved field name
+/// at access sites without re-interning.
+#[derive(Debug, Clone)]
+struct FieldBinding {
+    name: String,
+    local: LocalId,
+    ty: Type,
+}
+
 impl<'a> FunctionLower<'a> {
     fn new(
         module: &'a mut Module,
         func_id: FuncId,
         program: &'a Program,
         interner: &'a DefaultStringInterner,
+        struct_defs: &'a StructDefs,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
             func_id,
             program,
             interner,
+            struct_defs,
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
             current_block: None,
@@ -168,7 +261,13 @@ impl<'a> FunctionLower<'a> {
             let local = self.module.function_mut(self.func_id).add_local(param_types[i]);
             // Sanity check: parameter slots must be 0..N.
             debug_assert_eq!(local.0 as usize, i);
-            self.bindings.insert(*name, (local, param_types[i]));
+            self.bindings.insert(
+                *name,
+                Binding::Scalar {
+                    local,
+                    ty: param_types[i],
+                },
+            );
         }
         let _ = param_count;
 
@@ -275,16 +374,7 @@ impl<'a> FunctionLower<'a> {
         match stmt {
             Stmt::Expression(e) => self.lower_expr(&e),
             Stmt::Val(name, _ty, e) | Stmt::Var(name, _ty, Some(e)) => {
-                let v = self
-                    .lower_expr(&e)?
-                    .ok_or_else(|| "val/var rhs produced no value".to_string())?;
-                let scalar = self
-                    .value_scalar(&e)
-                    .ok_or_else(|| "could not infer scalar type for val/var rhs".to_string())?;
-                let local = self.module.function_mut(self.func_id).add_local(scalar);
-                self.bindings.insert(name, (local, scalar));
-                self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-                Ok(None)
+                self.lower_let(name, &e)
             }
             Stmt::Var(name, ty, None) => {
                 let scalar = ty
@@ -297,7 +387,8 @@ impl<'a> FunctionLower<'a> {
                         )
                     })?;
                 let local = self.module.function_mut(self.func_id).add_local(scalar);
-                self.bindings.insert(name, (local, scalar));
+                self.bindings
+                    .insert(name, Binding::Scalar { local, ty: scalar });
                 // Initialise to zero / false so reads before assignment
                 // are still well-defined.
                 let zero = match scalar {
@@ -348,11 +439,14 @@ impl<'a> FunctionLower<'a> {
             }
             Stmt::While(cond, body) => self.lower_while(&cond, &body),
             Stmt::For(var_name, start, end, body) => self.lower_for(var_name, &start, &end, &body),
-            Stmt::StructDecl { .. }
-            | Stmt::ImplBlock { .. }
-            | Stmt::EnumDecl { .. }
-            | Stmt::TraitDecl { .. } => Err(
-                "compiler MVP cannot lower struct/impl/enum/trait declarations yet".to_string(),
+            // Struct declarations are picked up by `collect_struct_defs`
+            // before any function body is lowered; their presence inside
+            // a function body (which the parser doesn't actually allow)
+            // would be a no-op here. The same goes for trait / enum /
+            // impl declarations until those features land in codegen.
+            Stmt::StructDecl { .. } => Ok(None),
+            Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => Err(
+                "compiler MVP cannot lower impl / enum / trait declarations yet".to_string(),
             ),
         }
     }
@@ -386,6 +480,95 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
+    /// Centralised val/var-with-rhs handling. Picks the binding shape
+    /// from the rhs expression: a struct literal allocates a struct
+    /// binding (one local per field); anything else allocates a single
+    /// scalar local. Anything more exotic (e.g. assigning a struct
+    /// value returned from a function) is rejected for the MVP.
+    fn lower_let(
+        &mut self,
+        name: DefaultSymbol,
+        rhs_ref: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        let rhs = self
+            .program
+            .expression
+            .get(rhs_ref)
+            .ok_or_else(|| "let rhs missing".to_string())?;
+        // Struct-literal RHS: allocate one local per field, evaluate
+        // each field, store into the matching slot. The IR layer never
+        // sees a struct value — we decompose at the lowering boundary.
+        if let Expr::StructLiteral(struct_name, fields) = rhs {
+            let def = self
+                .struct_defs
+                .get(&struct_name)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "unknown struct `{}` in literal",
+                        self.interner.resolve(struct_name).unwrap_or("?")
+                    )
+                })?;
+            // Build the binding's field list in declaration order so
+            // every field has a well-known position; we then patch up
+            // each entry's value below.
+            let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
+            for (field_name, field_ty) in &def {
+                let local = self.module.function_mut(self.func_id).add_local(*field_ty);
+                field_bindings.push(FieldBinding {
+                    name: field_name.clone(),
+                    local,
+                    ty: *field_ty,
+                });
+            }
+            // Insert the binding before evaluating field rhs expressions
+            // so a recursive struct literal that references the same
+            // name (currently unsupported, but defensive) doesn't see a
+            // missing binding.
+            self.bindings.insert(
+                name,
+                Binding::Struct {
+                    struct_name,
+                    fields: field_bindings.clone(),
+                },
+            );
+            for (field_sym, value_ref) in &fields {
+                let field_str = self
+                    .interner
+                    .resolve(*field_sym)
+                    .ok_or_else(|| "field name missing in interner".to_string())?;
+                let fb = field_bindings
+                    .iter()
+                    .find(|f| f.name == field_str)
+                    .ok_or_else(|| {
+                        format!(
+                            "struct `{}` has no field `{}`",
+                            self.interner.resolve(struct_name).unwrap_or("?"),
+                            field_str
+                        )
+                    })?;
+                let v = self
+                    .lower_expr(value_ref)?
+                    .ok_or_else(|| "struct field rhs produced no value".to_string())?;
+                let local = fb.local;
+                self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+            }
+            return Ok(None);
+        }
+        // Scalar fallback (existing behaviour).
+        let v = self
+            .lower_expr(rhs_ref)?
+            .ok_or_else(|| "val/var rhs produced no value".to_string())?;
+        let scalar = self
+            .value_scalar(rhs_ref)
+            .ok_or_else(|| "could not infer scalar type for val/var rhs".to_string())?;
+        let local = self.module.function_mut(self.func_id).add_local(scalar);
+        self.bindings
+            .insert(name, Binding::Scalar { local, ty: scalar });
+        self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+        Ok(None)
+    }
+
     fn lower_for(
         &mut self,
         var_name: DefaultSymbol,
@@ -401,7 +584,8 @@ impl<'a> FunctionLower<'a> {
             .lower_expr(end)?
             .ok_or_else(|| "for end produced no value".to_string())?;
         let local = self.module.function_mut(self.func_id).add_local(scalar);
-        self.bindings.insert(var_name, (local, scalar));
+        self.bindings
+            .insert(var_name, Binding::Scalar { local, ty: scalar });
         // Stash the upper bound in its own local so the header block can
         // reload it on each iteration without having to thread it through
         // a block parameter.
@@ -503,12 +687,25 @@ impl<'a> FunctionLower<'a> {
             Expr::True => Ok(self.emit(InstKind::Const(Const::Bool(true)), Some(Type::Bool))),
             Expr::False => Ok(self.emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))),
             Expr::Identifier(sym) => {
-                let (local, ty) = *self
-                    .bindings
-                    .get(&sym)
-                    .ok_or_else(|| format!("undefined identifier `{}`", self.interner.resolve(sym).unwrap_or("?")))?;
-                Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+                match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Scalar { local, ty }) => {
+                        Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+                    }
+                    Some(Binding::Struct { .. }) => Err(format!(
+                        "compiler MVP cannot pass struct value `{}` as a scalar (e.g. as a function argument or return)",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    )),
+                    None => Err(format!(
+                        "undefined identifier `{}`",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    )),
+                }
             }
+            Expr::FieldAccess(obj, field) => self.lower_field_access(&obj, field),
+            Expr::StructLiteral(_, _) => Err(
+                "compiler MVP requires struct literals to be the rhs of a `val` / `var` binding"
+                    .to_string(),
+            ),
             Expr::Binary(op, lhs, rhs) => self.lower_binary(&op, &lhs, &rhs),
             Expr::Unary(op, operand) => self.lower_unary(&op, &operand),
             Expr::Assign(lhs, rhs) => self.lower_assign(&lhs, &rhs),
@@ -565,11 +762,56 @@ impl<'a> FunctionLower<'a> {
                 self.switch_to(pass);
                 Ok(None)
             }
+            BuiltinFunction::Print => self.lower_print(args, false),
+            BuiltinFunction::Println => self.lower_print(args, true),
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",
                 other
             )),
         }
+    }
+
+    /// `print(x)` and `println(x)` accept a primitive scalar value or a
+    /// string literal. Other shapes (struct, tuple, etc.) are deferred
+    /// to a later phase along with the rest of the language surface.
+    fn lower_print(
+        &mut self,
+        args: &Vec<ExprRef>,
+        newline: bool,
+    ) -> Result<Option<ValueId>, String> {
+        if args.len() != 1 {
+            let kw = if newline { "println" } else { "print" };
+            return Err(format!("{kw} expects 1 argument, got {}", args.len()));
+        }
+        // Special-case string-literal arguments before evaluating the
+        // expression so we route them through the dedicated `PrintStr`
+        // instruction (avoiding a `Type::Str` value flow).
+        if let Some(Expr::String(sym)) = self.program.expression.get(&args[0]) {
+            self.emit(InstKind::PrintStr { message: sym, newline }, None);
+            return Ok(None);
+        }
+        let value_ty = self.value_scalar(&args[0]).ok_or_else(|| {
+            let kw = if newline { "println" } else { "print" };
+            format!(
+                "{kw} accepts only scalar values (i64 / u64 / bool) or string literals in this compiler MVP"
+            )
+        })?;
+        if matches!(value_ty, Type::Unit) {
+            let kw = if newline { "println" } else { "print" };
+            return Err(format!("{kw} cannot print a Unit value"));
+        }
+        let v = self
+            .lower_expr(&args[0])?
+            .ok_or_else(|| "print argument produced no value".to_string())?;
+        self.emit(
+            InstKind::Print {
+                value: v,
+                value_ty,
+                newline,
+            },
+            None,
+        );
+        Ok(None)
     }
 
     /// `panic` and `assert` only accept a string-literal message in this
@@ -595,24 +837,123 @@ impl<'a> FunctionLower<'a> {
         lhs: &ExprRef,
         rhs: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
-        let rhs_val = self
-            .lower_expr(rhs)?
-            .ok_or_else(|| "assignment rhs produced no value".to_string())?;
         let lhs_expr = self
             .program
             .expression
             .get(lhs)
             .ok_or_else(|| "assign lhs missing".to_string())?;
-        let name = match lhs_expr {
-            Expr::Identifier(sym) => sym,
-            _ => return Err("assignment to non-identifier is not supported yet".into()),
-        };
-        let (local, _ty) = *self
+        match lhs_expr {
+            Expr::Identifier(sym) => {
+                let rhs_val = self
+                    .lower_expr(rhs)?
+                    .ok_or_else(|| "assignment rhs produced no value".to_string())?;
+                let local = match self.bindings.get(&sym) {
+                    Some(Binding::Scalar { local, .. }) => *local,
+                    Some(Binding::Struct { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign a struct binding `{}` whole (assign individual fields instead)",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                    None => {
+                        return Err(format!(
+                            "undefined identifier `{}`",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
+                Ok(None)
+            }
+            Expr::FieldAccess(obj, field) => {
+                // `obj.field = rhs`. Resolve obj statically to a struct
+                // binding, then store rhs into that field's local.
+                let local = self.resolve_field_local(&obj, field)?;
+                let rhs_val = self
+                    .lower_expr(rhs)?
+                    .ok_or_else(|| "field assignment rhs produced no value".to_string())?;
+                self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
+                Ok(None)
+            }
+            _ => Err("assignment to non-identifier / non-field-access is not supported yet".into()),
+        }
+    }
+
+    /// Read `obj.field` where `obj` resolves to a struct binding. We
+    /// only accept `obj` shaped as `Identifier(sym)` so the lookup is
+    /// purely static — chained field access (`a.b.c`) and field access
+    /// on a function return value are rejected for the MVP.
+    fn lower_field_access(
+        &mut self,
+        obj: &ExprRef,
+        field: DefaultSymbol,
+    ) -> Result<Option<ValueId>, String> {
+        let local = self.resolve_field_local(obj, field)?;
+        let ty = self
             .bindings
-            .get(&name)
-            .ok_or_else(|| format!("undefined identifier `{}`", self.interner.resolve(name).unwrap_or("?")))?;
-        self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
-        Ok(None)
+            .values()
+            .find_map(|b| match b {
+                Binding::Struct { fields, .. } => fields
+                    .iter()
+                    .find(|f| f.local == local)
+                    .map(|f| f.ty),
+                _ => None,
+            })
+            .expect("field binding type lookup");
+        Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+    }
+
+    /// Resolve the LocalId backing `obj.field` where `obj` is required
+    /// to be a bare identifier referring to a struct binding. Used by
+    /// both reads and writes.
+    fn resolve_field_local(
+        &self,
+        obj: &ExprRef,
+        field: DefaultSymbol,
+    ) -> Result<LocalId, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "field-access object missing".to_string())?;
+        let obj_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP only supports field access on a bare identifier".to_string(),
+                );
+            }
+        };
+        let binding = self.bindings.get(&obj_sym).ok_or_else(|| {
+            format!(
+                "undefined identifier `{}`",
+                self.interner.resolve(obj_sym).unwrap_or("?")
+            )
+        })?;
+        let fields = match binding {
+            Binding::Struct { fields, .. } => fields,
+            Binding::Scalar { .. } => {
+                return Err(format!(
+                    "`{}` is not a struct value",
+                    self.interner.resolve(obj_sym).unwrap_or("?")
+                ));
+            }
+        };
+        let field_str = self
+            .interner
+            .resolve(field)
+            .ok_or_else(|| "field name missing in interner".to_string())?;
+        let fb = fields
+            .iter()
+            .find(|f| f.name == field_str)
+            .ok_or_else(|| {
+                format!(
+                    "struct `{}` has no field `{}`",
+                    self.interner.resolve(obj_sym).unwrap_or("?"),
+                    field_str
+                )
+            })?;
+        Ok(fb.local)
     }
 
     fn lower_binary(
@@ -909,7 +1250,26 @@ impl<'a> FunctionLower<'a> {
             Expr::Int64(_) => Some(Type::I64),
             Expr::UInt64(_) => Some(Type::U64),
             Expr::True | Expr::False => Some(Type::Bool),
-            Expr::Identifier(sym) => self.bindings.get(&sym).map(|(_, t)| *t),
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Scalar { ty, .. }) => Some(*ty),
+                _ => None,
+            },
+            Expr::FieldAccess(obj, field) => {
+                // Mirror `lower_field_access`'s lookup: resolve to the
+                // field's stored type. This lets `val z = p.x` pick up
+                // the right scalar type when allocating `z`'s local.
+                let obj_expr = self.program.expression.get(&obj)?;
+                let obj_sym = match obj_expr {
+                    Expr::Identifier(s) => s,
+                    _ => return None,
+                };
+                let fields = match self.bindings.get(&obj_sym)? {
+                    Binding::Struct { fields, .. } => fields,
+                    _ => return None,
+                };
+                let field_str = self.interner.resolve(field)?;
+                fields.iter().find(|f| f.name == field_str).map(|f| f.ty)
+            }
             Expr::Binary(op, lhs, _rhs) => match op {
                 Operator::EQ
                 | Operator::NE

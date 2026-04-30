@@ -101,7 +101,30 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
-183. **コンパイラの作成（MVP + IR + panic/assert 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **現在の制約（2026-05-01 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
+
+   - **型**: `i64` / `u64` / `bool` / `Unit` と scalar フィールドのみの struct のみ。`f64` 未対応、`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
+   - **文字列**: 任意の文字列値（`val s = "foo"` 等）は未対応。文字列リテラルは `panic` / `assert` / `print` / `println` 引数としてのみ受理
+   - **キャスト**: `as` キャストは i64↔u64 含めて全面的に未対応（IR の lowering で `Expr::Cast` を扱わない）
+   - **コレクション**: tuple、配列、dict 全般未対応（リテラル / アクセス / 分解いずれも reject）
+   - **enum / match**: `enum` 宣言と `match` 式いずれも未対応
+   - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応
+   - **allocator**: `with allocator = ...`、`<A: Allocator>` bound、heap / pointer builtins (`__builtin_heap_alloc` 系) すべて未対応
+   - **DbC**: `requires` / `ensures` 節は parse・型検査は通るが compiler では無視（lowering で見ていない、将来は `--release` 同等の gate 想定）
+   - **generics**: 型パラメータを持つ関数 / struct はいずれも reject
+   - **struct の制約**:
+     - 関数引数 / 戻り値として struct 値を渡せない（field を個別に渡す必要あり）
+     - struct binding 全体の再代入 (`q = p`) は不可（field 単位の代入のみ）
+     - ネストしたフィールドアクセス (`a.b.c`) や非 scalar フィールドは未対応
+     - struct を `print` / `println` に渡せない
+   - **print / println**: `i64` / `u64` / `bool` / 文字列リテラルのみ。struct / tuple 等は不可
+   - **panic / assert**: メッセージは文字列リテラル限定（const binding や concat 等は不可）
+   - **その他**: 文字列ビルトインメソッド (`.len()` / `.concat()` 等)、associated function (`Foo::new()`)、メソッド呼び出し (`obj.method()`)、関数ポインタはいずれも未対応
+   - **既知の挙動差**: compiler は `panic` / `print` / `println` を stdout に出力する。interpreter / JIT は `panic` を stderr に出す（libc `puts` 経由のシンプルな実装に揃えているため。出力方法を選べる仕組みは未着手）
+
+   **2026-05-01: print/println と struct を compiler で対応** — `compiler/runtime/toylang_rt.c` に `toy_print_*` / `toy_println_*`（i64 / u64 / bool / str 各 8 関数）を新設、driver が `cc` で同時にコンパイル＋リンク（macOS aarch64 の variadic ABI 問題を回避）。IR に `InstKind::Print { value, value_ty, newline }` と `InstKind::PrintStr { message, newline }` を追加、lower.rs で `BuiltinCall(Print/Println, args)` を引数の static type で振り分け（文字列リテラルは PrintStr 経路）。codegen で 8 つのランタイムヘルパーを `Linkage::Import` で extern 宣言、unique 文字列リテラルを `.rodata` の DataDescription に展開。struct: `lower.rs` の `Binding` を `Scalar` / `Struct { fields: Vec<FieldBinding> }` enum に拡張、struct 定義は `collect_struct_defs` で program 走査時に収集（フィールドは scalar のみ）。`Expr::StructLiteral` / `Expr::FieldAccess` / `Expr::Assign(FieldAccess, _)` を lowering で扱い、struct 値は IR レイヤを通さず field ごとに LocalId へ展開（codegen は変更なし）。e2e テスト 9 件追加（println string / numeric / bool / 改行なし print / loop 内 print / struct literal / field write / field 算術 / loop 蓄積）。**制約**: struct は関数引数/戻り値として渡せず、ネストフィールドアクセス未対応。**既知挙動差**: panic / print / println は stdout に出力。
 
    **2026-05-01: panic / assert を compiler で対応 + 3 経路一致テスト追加** — `Terminator::Panic { message: DefaultSymbol }` を IR に追加、`lower.rs` で `BuiltinCall(Panic, args)` と `BuiltinCall(Assert, args)` を検出して lower（assert は `Branch` + 失敗 block の `Panic`）。`codegen.rs` で各 unique panic message に `cranelift_module::DataDescription` で `.rodata` エントリ確保（"panic: <msg>\0"）、`puts` / `exit` を `Linkage::Import` で extern 宣言、Panic terminator は `puts(addr); exit(1); trap` で lower。stdout 経由（interpreter は stderr）の差分は MVP の既知の挙動差として README 記載。e2e テスト 4 件追加（panic 出力、assert 通過、assert 失敗、`if c { panic } else { v }` の式位置 panic）。`compiler/tests/consistency.rs` を新規追加: interpreter（lib API）と compiler（subprocess）で 10 件のプログラム（リテラル / 算術 / signed / fib / for-sum / while-break / elif / 短絡 / nested calls / bool 戻り値）を 3 経路一致のうち 2 経路で同 exit code を保証（JIT 一致は `interpreter/tests/jit_integration.rs` で既存検証）。
 

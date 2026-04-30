@@ -113,9 +113,24 @@ struct CodegenSession {
     /// branch-free.
     libc_puts: cranelift_module::FuncId,
     libc_exit: cranelift_module::FuncId,
-    /// `Const`-message symbol → data id of the `.rodata` blob carrying
-    /// the C-string for that message.
+    /// Helpers shipped in `compiler/runtime/toylang_rt.c`. The driver
+    /// compiles that file and links it next to the toylang object;
+    /// these FuncIds are how codegen reaches them.
+    rt_print_i64: cranelift_module::FuncId,
+    rt_println_i64: cranelift_module::FuncId,
+    rt_print_u64: cranelift_module::FuncId,
+    rt_println_u64: cranelift_module::FuncId,
+    rt_print_bool: cranelift_module::FuncId,
+    rt_println_bool: cranelift_module::FuncId,
+    rt_print_str: cranelift_module::FuncId,
+    rt_println_str: cranelift_module::FuncId,
+    /// `panic`-message symbol → data id of `.rodata` blob holding
+    /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
+    /// `print`/`println` string-literal symbol → data id holding
+    /// `"<msg>\0"`. The literal is unprefixed because the user is
+    /// already supplying the exact bytes they want printed.
+    print_strings: HashMap<DefaultSymbol, DataId>,
 }
 
 impl CodegenSession {
@@ -163,12 +178,47 @@ impl CodegenSession {
             .declare_function("exit", CLinkage::Import, &exit_sig)
             .map_err(|e| format!("declare exit: {e}"))?;
 
+        // Declare the `toy_*` runtime helpers up front. Each takes a
+        // single value matching its C prototype: i64/u64/bool/(char*).
+        // bool is `uint8_t` on the C side, mapped to cranelift `I8`.
+        let mut int_sig = Signature::new(call_conv);
+        int_sig.params.push(AbiParam::new(types::I64));
+        let mut bool_sig = Signature::new(call_conv);
+        bool_sig.params.push(AbiParam::new(types::I8));
+        let mut ptr_sig = Signature::new(call_conv);
+        ptr_sig.params.push(AbiParam::new(types::I64));
+
+        let declare_helper =
+            |module: &mut ObjectModule, name: &str, sig: &Signature| -> Result<cranelift_module::FuncId, String> {
+                module
+                    .declare_function(name, CLinkage::Import, sig)
+                    .map_err(|e| format!("declare {name}: {e}"))
+            };
+
+        let rt_print_i64 = declare_helper(&mut module, "toy_print_i64", &int_sig)?;
+        let rt_println_i64 = declare_helper(&mut module, "toy_println_i64", &int_sig)?;
+        let rt_print_u64 = declare_helper(&mut module, "toy_print_u64", &int_sig)?;
+        let rt_println_u64 = declare_helper(&mut module, "toy_println_u64", &int_sig)?;
+        let rt_print_bool = declare_helper(&mut module, "toy_print_bool", &bool_sig)?;
+        let rt_println_bool = declare_helper(&mut module, "toy_println_bool", &bool_sig)?;
+        let rt_print_str = declare_helper(&mut module, "toy_print_str", &ptr_sig)?;
+        let rt_println_str = declare_helper(&mut module, "toy_println_str", &ptr_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
             libc_puts,
             libc_exit,
+            rt_print_i64,
+            rt_println_i64,
+            rt_print_u64,
+            rt_println_u64,
+            rt_print_bool,
+            rt_println_bool,
+            rt_print_str,
+            rt_println_str,
             panic_strings: HashMap::new(),
+            print_strings: HashMap::new(),
         })
     }
 
@@ -192,21 +242,63 @@ impl CodegenSession {
         }
 
         // Walk every block in every function and reserve a `.rodata`
-        // entry for each unique panic-message symbol. We collect the
-        // distinct symbols first so the interner is borrowed once per
-        // string, not once per panic site.
-        let mut needed: std::collections::HashSet<DefaultSymbol> =
+        // entry for each unique string symbol the codegen will need.
+        // Panic and print strings are stored separately because the
+        // panic blob is prefixed with `"panic: "` to match the
+        // interpreter's display format, while print strings ride
+        // verbatim.
+        let mut panic_needed: std::collections::HashSet<DefaultSymbol> =
+            std::collections::HashSet::new();
+        let mut print_needed: std::collections::HashSet<DefaultSymbol> =
             std::collections::HashSet::new();
         for func in &ir_module.functions {
             for blk in &func.blocks {
                 if let Some(Terminator::Panic { message }) = &blk.terminator {
-                    needed.insert(*message);
+                    panic_needed.insert(*message);
+                }
+                for inst in &blk.instructions {
+                    if let InstKind::PrintStr { message, .. } = &inst.kind {
+                        print_needed.insert(*message);
+                    }
                 }
             }
         }
-        for sym in needed {
+        for sym in panic_needed {
             self.declare_panic_string(sym, interner)?;
         }
+        for sym in print_needed {
+            self.declare_print_string(sym, interner)?;
+        }
+        Ok(())
+    }
+
+    /// Reserve a `.rodata` entry for a single print/println string-literal
+    /// symbol. Bytes are exactly the user's literal plus a trailing NUL;
+    /// the runtime helper handles the newline based on which entry point
+    /// was called (`toy_print_str` vs `toy_println_str`).
+    fn declare_print_string(
+        &mut self,
+        sym: DefaultSymbol,
+        interner: &DefaultStringInterner,
+    ) -> Result<(), String> {
+        if self.print_strings.contains_key(&sym) {
+            return Ok(());
+        }
+        let msg = interner.resolve(sym).unwrap_or("");
+        let mut bytes = Vec::with_capacity(msg.len() + 1);
+        bytes.extend_from_slice(msg.as_bytes());
+        bytes.push(0);
+        let name = format!("toy_print_str_{}", sym.to_usize());
+        let data_id = self
+            .module
+            .declare_data(&name, CLinkage::Local, false, false)
+            .map_err(|e| format!("declare data {name}: {e}"))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| format!("define data {name}: {e}"))?;
+        self.print_strings.insert(sym, data_id);
         Ok(())
     }
 
@@ -277,8 +369,8 @@ impl CodegenSession {
         // module mid-emission.
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
-        let puts_ref = self.module.declare_func_in_func(self.libc_puts, &mut ctx.func);
-        let exit_ref = self.module.declare_func_in_func(self.libc_exit, &mut ctx.func);
+        let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
+        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let result = (|| -> Result<(), String> {
@@ -288,8 +380,8 @@ impl CodegenSession {
                 func_id,
                 &imports,
                 &panic_imports,
-                puts_ref,
-                exit_ref,
+                &print_imports,
+                &runtime_refs,
             );
             ctxt.lower()
         })();
@@ -314,8 +406,8 @@ impl CodegenSession {
         ctx.func.signature = self.cranelift_signature(&func.params, func.return_type);
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
-        let puts_ref = self.module.declare_func_in_func(self.libc_puts, &mut ctx.func);
-        let exit_ref = self.module.declare_func_in_func(self.libc_exit, &mut ctx.func);
+        let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
+        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
         let result = (|| -> Result<(), String> {
@@ -325,8 +417,8 @@ impl CodegenSession {
                 func_id,
                 &imports,
                 &panic_imports,
-                puts_ref,
-                exit_ref,
+                &print_imports,
+                &runtime_refs,
             );
             ctxt.lower()
         })();
@@ -368,7 +460,7 @@ impl CodegenSession {
                 }
                 let data_id = match self.panic_strings.get(message).copied() {
                     Some(id) => id,
-                    None => continue, // declare_all should have inserted it; skip defensively
+                    None => continue,
                 };
                 let gv = self.module.declare_data_in_func(data_id, func);
                 imports.insert(*message, gv);
@@ -376,6 +468,71 @@ impl CodegenSession {
         }
         imports
     }
+
+    /// Same idea as `declare_panic_imports`, but for `PrintStr` instructions.
+    fn declare_print_imports(
+        &mut self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> {
+        let mut imports: HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue> =
+            HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                if let InstKind::PrintStr { message, .. } = &inst.kind {
+                    if imports.contains_key(message) {
+                        continue;
+                    }
+                    let data_id = match self.print_strings.get(message).copied() {
+                        Some(id) => id,
+                        None => continue,
+                    };
+                    let gv = self.module.declare_data_in_func(data_id, func);
+                    imports.insert(*message, gv);
+                }
+            }
+        }
+        imports
+    }
+
+    /// Bundle every helper FuncRef in one struct so the LowerCtx
+    /// constructor doesn't need a long parameter list.
+    fn declare_runtime_refs(
+        &mut self,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> RuntimeRefs {
+        RuntimeRefs {
+            puts: self.module.declare_func_in_func(self.libc_puts, func),
+            exit: self.module.declare_func_in_func(self.libc_exit, func),
+            print_i64: self.module.declare_func_in_func(self.rt_print_i64, func),
+            println_i64: self.module.declare_func_in_func(self.rt_println_i64, func),
+            print_u64: self.module.declare_func_in_func(self.rt_print_u64, func),
+            println_u64: self.module.declare_func_in_func(self.rt_println_u64, func),
+            print_bool: self.module.declare_func_in_func(self.rt_print_bool, func),
+            println_bool: self.module.declare_func_in_func(self.rt_println_bool, func),
+            print_str: self.module.declare_func_in_func(self.rt_print_str, func),
+            println_str: self.module.declare_func_in_func(self.rt_println_str, func),
+        }
+    }
+}
+
+/// Pre-declared cranelift FuncRefs for the libc and runtime helpers
+/// codegen needs while lowering a single function. Built once per
+/// function definition by `CodegenSession::declare_runtime_refs` and
+/// borrowed by `LowerCtx`.
+struct RuntimeRefs {
+    puts: cranelift_codegen::ir::FuncRef,
+    exit: cranelift_codegen::ir::FuncRef,
+    print_i64: cranelift_codegen::ir::FuncRef,
+    println_i64: cranelift_codegen::ir::FuncRef,
+    print_u64: cranelift_codegen::ir::FuncRef,
+    println_u64: cranelift_codegen::ir::FuncRef,
+    print_bool: cranelift_codegen::ir::FuncRef,
+    println_bool: cranelift_codegen::ir::FuncRef,
+    print_str: cranelift_codegen::ir::FuncRef,
+    println_str: cranelift_codegen::ir::FuncRef,
 }
 
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
@@ -404,8 +561,9 @@ struct LowerCtx<'a, 'b> {
     /// Pre-declared global-value handles for each panic-message symbol
     /// reachable from this function. Filled in by `declare_panic_imports`.
     panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
-    puts_ref: cranelift_codegen::ir::FuncRef,
-    exit_ref: cranelift_codegen::ir::FuncRef,
+    /// Same idea, for `print`/`println` string-literal arguments.
+    print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+    runtime: &'a RuntimeRefs,
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
     values: HashMap<u32, Value>,
@@ -418,8 +576,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         func_id: FuncId,
         imports: &'a HashMap<FuncId, cranelift_codegen::ir::FuncRef>,
         panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
-        puts_ref: cranelift_codegen::ir::FuncRef,
-        exit_ref: cranelift_codegen::ir::FuncRef,
+        print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+        runtime: &'a RuntimeRefs,
     ) -> Self {
         Self {
             builder,
@@ -427,8 +585,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             func_id,
             imports,
             panic_imports,
-            puts_ref,
-            exit_ref,
+            print_imports,
+            runtime,
             block_map: HashMap::new(),
             locals: HashMap::new(),
             values: HashMap::new(),
@@ -622,6 +780,36 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            InstKind::Print { value, value_ty, newline } => {
+                let v = self.value(*value);
+                let helper = match (value_ty, newline) {
+                    (IrType::I64, false) => self.runtime.print_i64,
+                    (IrType::I64, true) => self.runtime.println_i64,
+                    (IrType::U64, false) => self.runtime.print_u64,
+                    (IrType::U64, true) => self.runtime.println_u64,
+                    (IrType::Bool, false) => self.runtime.print_bool,
+                    (IrType::Bool, true) => self.runtime.println_bool,
+                    (IrType::Unit, _) => {
+                        return Err(
+                            "internal error: Print of Unit reached codegen".to_string(),
+                        );
+                    }
+                };
+                self.builder.ins().call(helper, &[v]);
+            }
+            InstKind::PrintStr { message, newline } => {
+                let gv = *self
+                    .print_imports
+                    .get(message)
+                    .ok_or_else(|| format!("missing print import for #{}", message.to_usize()))?;
+                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                let helper = if *newline {
+                    self.runtime.println_str
+                } else {
+                    self.runtime.print_str
+                };
+                self.builder.ins().call(helper, &[addr]);
+            }
         }
         Ok(())
     }
@@ -660,9 +848,9 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .get(message)
                     .ok_or_else(|| format!("missing panic import for #{}", message.to_usize()))?;
                 let addr = self.builder.ins().symbol_value(types::I64, gv);
-                self.builder.ins().call(self.puts_ref, &[addr]);
+                self.builder.ins().call(self.runtime.puts, &[addr]);
                 let one = self.builder.ins().iconst(types::I32, 1);
-                self.builder.ins().call(self.exit_ref, &[one]);
+                self.builder.ins().call(self.runtime.exit, &[one]);
                 self.builder
                     .ins()
                     .trap(cranelift_codegen::ir::TrapCode::user(1).unwrap());

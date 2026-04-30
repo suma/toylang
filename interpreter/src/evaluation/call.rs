@@ -223,14 +223,17 @@ impl EvaluationContext<'_> {
                         );
                     }
 
-                    // Evaluate arguments once and perform type checking
-                    let mut evaluated_args = Vec::new();
+                    // Evaluate arguments once and perform type checking. Phase 5:
+                    // collect as `Value` rather than `RcObject` so primitive
+                    // arguments stay inline through the call boundary.
+                    use crate::try_value_v;
+                    let mut evaluated_args: Vec<crate::value::Value> = Vec::new();
                     let is_generic_function = !func.generic_params.is_empty();
 
                     for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
-                        let arg_result = self.evaluate(arg_expr)?;
-                        let arg_value = try_value!(Ok(arg_result));
-                        let actual_type = arg_value.borrow().get_type();
+                        let arg_result = self.evaluate(arg_expr);
+                        let arg_value = try_value_v!(arg_result);
+                        let actual_type = arg_value.get_type();
 
                         // Skip type checking for generic functions since type checking was already done
                         if !is_generic_function && !actual_type.is_equivalent(expected_type) {
@@ -582,8 +585,10 @@ impl EvaluationContext<'_> {
         }
     }
 
-    /// Evaluates function with pre-evaluated argument values (used when type checking has already been done)
-    pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[RcObject]) -> Result<RcObject, InterpreterError> {
+    /// Evaluates function with pre-evaluated argument values (used when type checking has already been done).
+    /// Phase 5: takes `&[Value]` and returns `Value` so primitive arguments
+    /// and return values stay inline through the call boundary.
+    pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[crate::value::Value]) -> Result<crate::value::Value, InterpreterError> {
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
                 match self.expr_pool.get(&e) {
@@ -598,7 +603,7 @@ impl EvaluationContext<'_> {
         for (i, value) in args.iter().enumerate() {
             let name = function.parameter.get(i)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
-            self.environment.set_val(name, (value.clone().into()));
+            self.environment.set_val(name, value.clone());
         }
 
         // Pre-body `requires` checks. Shares the same helper as the method
@@ -611,19 +616,20 @@ impl EvaluationContext<'_> {
 
         let res = self.evaluate_block(&block)?;
 
-        let return_value: RcObject = if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
-            Rc::new(RefCell::new(Object::Unit))
+        let return_value: crate::value::Value = if function.return_type.as_ref().is_none_or(|t| *t == TypeDecl::Unit) {
+            crate::value::Value::Unit
         } else {
             match res {
-                EvaluationResult::Value(v) => v.into_rc(),
-                EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
-                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
+                EvaluationResult::Value(v) => v,
+                EvaluationResult::Return(None) => crate::value::Value::Unit,
+                EvaluationResult::Return(v) => v.unwrap_or_else(crate::value::Value::null_unknown),
+                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => crate::value::Value::Unit,
             }
         };
 
         // Post-body `ensures` checks with `result` bound to the return value.
-        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone()) {
+        // The contract helper still takes `RcObject`; bridge the value once.
+        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone_to_rc()) {
             self.environment.exit_block();
             return Err(e);
         }
@@ -642,9 +648,10 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         // Look for the method in the function map first
         if let Some(method_func) = self.function.get(&method_name).cloned() {
-            // This is a regular function, call it directly
-            let mut method_args = vec![object];
-            method_args.extend_from_slice(args);
+            // This is a regular function, call it directly. Convert
+            // legacy `RcObject` arguments to `Value` at the boundary.
+            let mut method_args: Vec<crate::value::Value> = vec![object.into()];
+            method_args.extend(args.iter().cloned().map(Into::into));
             let result = self.evaluate_function_with_values(method_func, &method_args)?;
             return Ok(EvaluationResult::Value(result.into()));
         }
@@ -678,8 +685,10 @@ impl EvaluationContext<'_> {
     ) -> Result<EvaluationResult, InterpreterError> {
         // Look for the associated function in the function map first (as a regular function)
         if let Some(func) = self.function.get(&function_name).cloned() {
-            // This is a regular function, call it directly without self
-            let result = self.evaluate_function_with_values(func, args)?;
+            // This is a regular function, call it directly without self.
+            // Bridge `RcObject` args to `Value` at the boundary.
+            let value_args: Vec<crate::value::Value> = args.iter().cloned().map(Into::into).collect();
+            let result = self.evaluate_function_with_values(func, &value_args)?;
             return Ok(EvaluationResult::Value(result.into()));
         }
 

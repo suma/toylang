@@ -5,6 +5,7 @@ use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 use crate::object::{Object, ObjectKey, RcObject};
+use crate::value::Value;
 use crate::error::InterpreterError;
 use crate::try_value;
 use super::{convert_object, EvaluationContext, EvaluationResult};
@@ -149,18 +150,25 @@ impl EvaluationContext<'_> {
 
     /// Evaluates if-elif-else control structure
     pub(super) fn evaluate_if_elif_else(&mut self, cond: &ExprRef, then: &ExprRef, elif_pairs: &[(ExprRef, ExprRef)], _else: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        // Evaluate if condition
+        // Evaluate if condition. We expect a `Bool` primitive — the type
+        // checker has already enforced this — so we work directly on the
+        // inline `Value` and skip the `Rc::clone` + `borrow()` round-trip.
+        use crate::try_value_v;
         let cond = self.evaluate(cond);
-        let cond = try_value!(cond);
-        let cond = cond.borrow();
-        if cond.get_type() != TypeDecl::Bool {
-            return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: cond.get_type(), message: "evaluate: Bad types for if condition".to_string()});
-        }
+        let cond_v = try_value_v!(cond);
+        let cond_bool = match &cond_v {
+            Value::Bool(b) => *b,
+            other => return Err(InterpreterError::TypeError {
+                expected: TypeDecl::Bool,
+                found: other.get_type(),
+                message: "evaluate: Bad types for if condition".to_string(),
+            }),
+        };
 
         let mut selected_block = None;
 
         // Check if condition
-        if cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+        if cond_bool {
             let then_expr = self.expr_pool.get(&then)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid then block reference".to_string()))?;
             if !then_expr.is_block() {
@@ -171,13 +179,17 @@ impl EvaluationContext<'_> {
             // Check elif conditions
             for (elif_cond, elif_block) in elif_pairs {
                 let elif_cond = self.evaluate(elif_cond);
-                let elif_cond = try_value!(elif_cond);
-                let elif_cond = elif_cond.borrow();
-                if elif_cond.get_type() != TypeDecl::Bool {
-                    return Err(InterpreterError::TypeError{expected: TypeDecl::Bool, found: elif_cond.get_type(), message: "evaluate: Bad types for elif condition".to_string()});
-                }
+                let elif_cond_v = try_value_v!(elif_cond);
+                let elif_bool = match &elif_cond_v {
+                    Value::Bool(b) => *b,
+                    other => return Err(InterpreterError::TypeError {
+                        expected: TypeDecl::Bool,
+                        found: other.get_type(),
+                        message: "evaluate: Bad types for elif condition".to_string(),
+                    }),
+                };
 
-                if elif_cond.try_unwrap_bool().map_err(InterpreterError::ObjectError)? {
+                if elif_bool {
                     let elif_expr = self.expr_pool.get(&elif_block)
                         .ok_or_else(|| InterpreterError::InternalError("Invalid elif block reference".to_string()))?;
                     if !elif_expr.is_block() {

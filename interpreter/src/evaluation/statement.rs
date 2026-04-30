@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
@@ -26,9 +24,12 @@ impl EvaluationContext<'_> {
 
         while current < end {
             self.environment.enter_block();
+            // Phase 5: bypass the `Object → Value` conversion by lifting
+            // the primitive directly into a `Value` variant.
+            let iter_value: crate::value::Value = create_object(current).into();
             self.environment.set_var(
                 identifier,
-                create_object(current).into(),
+                iter_value,
                 VariableSetType::Insert,
                 self.string_interner,
             )?;
@@ -180,10 +181,11 @@ impl EvaluationContext<'_> {
 
     /// Handles while loop execution
     fn handle_while_loop(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        use crate::try_value_v;
         loop {
-            let cond_result = self.evaluate(cond)?;
-            let cond_value = try_value!(Ok(cond_result));
-            let cond_bool = cond_value.borrow().try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
+            let cond_result = self.evaluate(cond);
+            let cond_value = try_value_v!(cond_result);
+            let cond_bool = cond_value.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
 
             if !cond_bool {
                 break;
@@ -213,12 +215,13 @@ impl EvaluationContext<'_> {
 
     /// Handles for loop execution
     fn handle_for_loop(&mut self, identifier: DefaultSymbol, start: &ExprRef, end: &ExprRef, block: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        use crate::try_value_v;
         let start = self.evaluate(start);
-        let start = try_value!(start);
+        let start_v = try_value_v!(start);
         let end = self.evaluate(end);
-        let end = try_value!(end);
-        let start_ty = start.borrow().get_type();
-        let end_ty = end.borrow().get_type();
+        let end_v = try_value_v!(end);
+        let start_ty = start_v.get_type();
+        let end_ty = end_v.get_type();
 
         if start_ty != end_ty {
             return Err(InterpreterError::TypeError {
@@ -233,13 +236,13 @@ impl EvaluationContext<'_> {
         if let Expr::Block(statements) = block {
             match start_ty {
                 TypeDecl::UInt64 => {
-                    let start_val = start.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                    let end_val = end.borrow().try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
+                    let start_val = start_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
+                    let end_val = end_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
                     self.execute_for_loop(identifier, start_val, end_val, &statements, Object::UInt64)
                 }
                 TypeDecl::Int64 => {
-                    let start_val = start.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                    let end_val = end.borrow().try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
+                    let start_val = start_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
+                    let end_val = end_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
                     self.execute_for_loop(identifier, start_val, end_val, &statements, Object::Int64)
                 }
                 _ => {

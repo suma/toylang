@@ -272,13 +272,16 @@ impl EvaluationContext<'_> {
 
         match &*obj_borrowed {
             Object::Struct { fields, .. } => {
-                let field_name = self.string_interner.resolve(*field)
-                    .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?;
-
-                fields.get(field_name)
+                fields.get(field)
                     .cloned()
                     .map(EvaluationResult::Value)
-                    .ok_or_else(|| InterpreterError::InternalError(format!("Field '{field_name}' not found")))
+                    .ok_or_else(|| {
+                        let field_name = self
+                            .string_interner
+                            .resolve(*field)
+                            .unwrap_or("<unknown>");
+                        InterpreterError::InternalError(format!("Field '{field_name}' not found"))
+                    })
             }
             _ => Err(InterpreterError::InternalError(format!("Cannot access field on non-struct object: {obj_borrowed:?}")))
         }
@@ -454,8 +457,10 @@ impl EvaluationContext<'_> {
 
     /// Evaluates struct literal expressions
     pub(super) fn evaluate_struct_literal(&mut self, struct_name: &DefaultSymbol, fields: &[(DefaultSymbol, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
-        // Create a struct instance
-        let mut field_values = HashMap::new();
+        // Create a struct instance. Field keys flow through unchanged as
+        // interned `DefaultSymbol`s — there is no need to resolve to a
+        // textual name during construction.
+        let mut field_values: HashMap<DefaultSymbol, RcObject> = HashMap::new();
 
         for (field_name, field_expr) in fields {
             // Handle null expressions specially in struct literals
@@ -473,8 +478,7 @@ impl EvaluationContext<'_> {
                 }
             };
 
-            let field_name_str = self.string_interner.resolve(*field_name).unwrap_or("unknown").to_string();
-            field_values.insert(field_name_str, field_value);
+            field_values.insert(*field_name, field_value);
         }
 
         let struct_obj = Object::Struct {

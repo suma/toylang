@@ -10,7 +10,6 @@ use crate::heap::Allocator;
 pub enum ObjectError {
     TypeMismatch { expected: TypeDecl, found: TypeDecl },
     UnexpectedType(TypeDecl),
-    FieldNotFound { struct_type: String, field_name: String },
     IndexOutOfBounds { index: usize, length: usize },
     NullDereference,
     InvalidOperation { operation: String, object_type: TypeDecl },
@@ -27,7 +26,13 @@ pub enum Object {
     Array(Box<Vec<RcObject>>),
     Struct {
         type_name: DefaultSymbol,
-        fields: Box<HashMap<String, RcObject>>,
+        // Field keys are interned symbols rather than `String` so lookups
+        // and equality reduce to integer compares — every struct field
+        // access at runtime would otherwise allocate / borrow a String
+        // just to hash. Resolve through the active `DefaultStringInterner`
+        // when a human-readable form is needed (display, hash sort key,
+        // error messages).
+        fields: Box<HashMap<DefaultSymbol, RcObject>>,
     },
     Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
     Tuple(Box<Vec<RcObject>>),  // Tuple type - ordered collection of heterogeneous types
@@ -288,7 +293,11 @@ impl Hash for Object {
                 6u8.hash(state);
                 type_name.hash(state);
                 fields.len().hash(state);
-                // Sort keys for consistent hashing
+                // Sort by the symbol's numeric id for a stable hashing
+                // order. The textual ordering would be nicer for debug
+                // output but it isn't worth resolving each symbol just
+                // to hash, since `Hash` is also computed off the same
+                // numeric id.
                 let mut sorted_fields: Vec<_> = fields.iter().collect();
                 sorted_fields.sort_by_key(|(k, _)| *k);
                 for (k, v) in sorted_fields {
@@ -584,7 +593,10 @@ impl Object {
             Object::Struct { type_name, fields } => {
                 let type_name_str = string_interner.resolve(*type_name).unwrap_or("<struct>");
                 let mut parts: Vec<String> = fields.iter()
-                    .map(|(k, v)| format!("{}: {}", k, v.borrow().to_display_string(string_interner)))
+                    .map(|(k, v)| {
+                        let name = string_interner.resolve(*k).unwrap_or("<field>");
+                        format!("{}: {}", name, v.borrow().to_display_string(string_interner))
+                    })
                     .collect();
                 parts.sort();
                 format!("{} {{ {} }}", type_name_str, parts.join(", "))
@@ -737,11 +749,11 @@ impl Object {
                 self_val.extend(v.iter().cloned());
                 Ok(())
             }
-            (Object::Struct { type_name: self_type, fields: self_fields }, 
+            (Object::Struct { type_name: self_type, fields: self_fields },
              Object::Struct { type_name: other_type, fields: other_fields }) => {
                 if self_type == other_type {
                     self_fields.clear();
-                    self_fields.extend(other_fields.iter().map(|(k, v)| (k.clone(), v.clone())));
+                    self_fields.extend(other_fields.iter().map(|(k, v)| (*k, v.clone())));
                     Ok(())
                 } else {
                     Err(ObjectError::TypeMismatch { 
@@ -763,36 +775,6 @@ impl Object {
             _ => Err(ObjectError::TypeMismatch { 
                 expected: self_type, 
                 found: other_type 
-            }),
-        }
-    }
-
-    pub fn get_field(&self, field_name: &str) -> Result<RcObject, ObjectError> {
-        match self {
-            Object::Struct { fields, type_name } => {
-                fields.get(field_name)
-                    .cloned()
-                    .ok_or_else(|| ObjectError::FieldNotFound { 
-                        struct_type: format!("struct_{type_name:?}"), 
-                        field_name: field_name.to_string() 
-                    })
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "field_access".to_string(), 
-                object_type: self.get_type() 
-            }),
-        }
-    }
-
-    pub fn set_field(&mut self, field_name: &str, value: RcObject) -> Result<(), ObjectError> {
-        match self {
-            Object::Struct { fields, .. } => {
-                fields.insert(field_name.to_string(), value);
-                Ok(())
-            }
-            _ => Err(ObjectError::InvalidOperation { 
-                operation: "field_assignment".to_string(), 
-                object_type: self.get_type() 
             }),
         }
     }
@@ -1001,11 +983,15 @@ mod display_tests {
     fn display_struct_is_deterministic() {
         let mut interner = DefaultStringInterner::new();
         let type_name = interner.get_or_intern("Point");
+        let x_sym = interner.get_or_intern("x");
+        let y_sym = interner.get_or_intern("y");
         let mut fields = HashMap::new();
-        fields.insert("x".to_string(), make_rc(Object::UInt64(3)));
-        fields.insert("y".to_string(), make_rc(Object::UInt64(4)));
+        fields.insert(x_sym, make_rc(Object::UInt64(3)));
+        fields.insert(y_sym, make_rc(Object::UInt64(4)));
         let pt = Object::Struct { type_name, fields: Box::new(fields) };
-        // Fields are sorted by name for deterministic output.
+        // Fields are sorted by resolved name for deterministic output;
+        // the symbols `x` and `y` are interned in the same interner that
+        // `to_display_string` consults.
         assert_eq!(pt.to_display_string(&interner), "Point { x: 3, y: 4 }");
     }
 }

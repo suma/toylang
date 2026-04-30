@@ -316,20 +316,20 @@ impl EvaluationContext<'_> {
             }
         };
 
-        let field_name = self.string_interner.resolve(field)
-            .ok_or_else(|| InterpreterError::InternalError("Field name not found in string interner".to_string()))?
-            .to_string();
-
         {
             let mut obj_borrowed = obj_val.borrow_mut();
             match &mut *obj_borrowed {
                 Object::Struct { fields, .. } => {
-                    if !fields.contains_key(&field_name) {
+                    if !fields.contains_key(&field) {
+                        let field_name = self
+                            .string_interner
+                            .resolve(field)
+                            .unwrap_or("<unknown>");
                         return Err(InterpreterError::InternalError(format!(
                             "Cannot assign to unknown field '{}'", field_name
                         )));
                     }
-                    fields.insert(field_name, new_value.clone());
+                    fields.insert(field, new_value.clone());
                 }
                 other => {
                     return Err(InterpreterError::InternalError(format!(

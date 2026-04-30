@@ -637,12 +637,16 @@ mod destruction {
         // Clear any previous destruction logs
         clear_destruction_log();
 
-        // Create a struct object
+        // Create a struct object. Field keys are arbitrary distinct
+        // symbols — these tests only care about destruction ordering,
+        // not about resolving the names back to text.
         let type_name = DefaultSymbol::try_from_usize(1).unwrap();
+        let x_sym = DefaultSymbol::try_from_usize(2).unwrap();
+        let y_sym = DefaultSymbol::try_from_usize(3).unwrap();
         let struct_obj = {
             let mut fields = HashMap::new();
-            fields.insert("x".to_string(), Rc::new(RefCell::new(Object::Int64(42))));
-            fields.insert("y".to_string(), Rc::new(RefCell::new(Object::Int64(24))));
+            fields.insert(x_sym, Rc::new(RefCell::new(Object::Int64(42))));
+            fields.insert(y_sym, Rc::new(RefCell::new(Object::Int64(24))));
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields),
@@ -800,9 +804,10 @@ mod destruction {
         let shared_value = Rc::new(RefCell::new(Object::Int64(100)));
 
         // Create two structs sharing the same field value (wrapped in Rc<RefCell<>>)
+        let shared_sym = DefaultSymbol::try_from_usize(2).unwrap();
         let struct1 = {
             let mut fields1 = HashMap::new();
-            fields1.insert("shared".to_string(), shared_value.clone());
+            fields1.insert(shared_sym, shared_value.clone());
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields1),
@@ -811,7 +816,7 @@ mod destruction {
 
         let struct2 = {
             let mut fields2 = HashMap::new();
-            fields2.insert("shared".to_string(), shared_value.clone());
+            fields2.insert(shared_sym, shared_value.clone());
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields2),
@@ -857,8 +862,9 @@ mod destruction {
                 Rc::new(RefCell::new(Object::String("inner".to_string()))),
             ];
 
+            let data_sym = DefaultSymbol::try_from_usize(2).unwrap();
             let mut fields = HashMap::new();
-            fields.insert("data".to_string(), Rc::new(RefCell::new(Object::Array(Box::new(inner_array)))));
+            fields.insert(data_sym, Rc::new(RefCell::new(Object::Array(Box::new(inner_array)))));
 
             let _complex_struct = Rc::new(RefCell::new(Object::Struct {
                 type_name,

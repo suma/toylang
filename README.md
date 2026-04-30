@@ -14,7 +14,8 @@ A complete programming language implementation featuring a frontend library and 
 This project implements a statically-typed programming language with comprehensive type checking, automatic type inference, and modern language features. The implementation is split into three main components:
 
 - **Frontend Library**: Shared parser, AST, and type checker with automatic lexer generation
-- **Interpreter**: Tree-walking interpreter with comprehensive test suite and performance optimizations
+- **Interpreter**: Tree-walking interpreter with optional Cranelift JIT and a comprehensive test suite
+- **Compiler**: AOT compiler that lowers numeric programs to a native executable via Cranelift Object (MVP — see [`compiler/README.md`](compiler/README.md))
 
 ## Language Features
 

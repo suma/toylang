@@ -101,6 +101,48 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
+183. **コンパイラの作成（MVP + IR + panic/assert 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **2026-05-01: panic / assert を compiler で対応 + 3 経路一致テスト追加** — `Terminator::Panic { message: DefaultSymbol }` を IR に追加、`lower.rs` で `BuiltinCall(Panic, args)` と `BuiltinCall(Assert, args)` を検出して lower（assert は `Branch` + 失敗 block の `Panic`）。`codegen.rs` で各 unique panic message に `cranelift_module::DataDescription` で `.rodata` エントリ確保（"panic: <msg>\0"）、`puts` / `exit` を `Linkage::Import` で extern 宣言、Panic terminator は `puts(addr); exit(1); trap` で lower。stdout 経由（interpreter は stderr）の差分は MVP の既知の挙動差として README 記載。e2e テスト 4 件追加（panic 出力、assert 通過、assert 失敗、`if c { panic } else { v }` の式位置 panic）。`compiler/tests/consistency.rs` を新規追加: interpreter（lib API）と compiler（subprocess）で 10 件のプログラム（リテラル / 算術 / signed / fib / for-sum / while-break / elif / 短絡 / nested calls / bool 戻り値）を 3 経路一致のうち 2 経路で同 exit code を保証（JIT 一致は `interpreter/tests/jit_integration.rs` で既存検証）。
+
+   **2026-05-01: 中間 IR レイヤを導入** — `compiler/src/ir.rs` に `Module` / `Function` / `Block` / `Instruction` / `Terminator` / `Type` / `ValueId` / `LocalId` / `BlockId` / `FuncId` を定義（`toy` プレフィックス無し）、`Display` で `--emit=ir` 用の textual format を提供。`compiler/src/lower.rs` で AST → IR の lowering pass を実装、`compiler/src/codegen.rs` を IR → Cranelift IR + `.o` 出力に再構成。値モデルは「型付き local slot + 関数ローカル SSA 値」（`val` / `var` / 引数は LocalId 経由で `LoadLocal` / `StoreLocal`、SSA 構築は Cranelift の `FunctionBuilder` に委譲）。CLI に `--emit=clif` 追加（Cranelift IR の textual dump）、既存の `--emit=ir` は新 IR を表示するように切替。e2e テスト 10 件 green（既存 9 件 + `--emit=clif` 検証 1 件）。`AllocatorBinding` の配線は次の段階で IR の `InstKind` に追加予定。
+
+   **2026-05-01: Phase B の MVP 着手完了**。`compiler/` クレートを新設、`compiler input.t -o output` で `.o` を出して `cc` でリンク → 実行ファイルを生成する経路が動作。`--emit=ir|obj|clif|exe`（default exe）対応、CLI / lib API 両用。サポート: `i64` / `u64` / `bool` / `Unit` のみ、リテラル / 算術 / 比較 / 短絡論理 / unary / val/var / assignment / if-elif-else / while / for-range / break / continue / return / 同一プログラム内の関数呼出。未対応で次のフェーズに送り（rejected with clear error）: 文字列・struct・tuple・配列・dict・enum・trait・allocator・contracts・generics・panic/assert・print/println・heap builtins・i64↔u64 以外の cast。残り計画は元の Phase A〜E に従って継続。現状は AST → tree-walking interpreter（+ オプトイン Cranelift JIT）のみで、IR レイヤと実行可能ファイル出力経路は存在しない。`compiler/` クレートを新設し、frontend（parser / type_checker）を共有しつつ独自の codegen パイプラインを構築する。
+
+   **Phase A: IR の新設**
+   - 中間表現 `toy_ir`（仮称）の定義: SSA ベース、関数 / 基本ブロック / 命令の最小構成
+   - 値表現は scalar / struct / tuple / enum を一級で扱う型付き SSA（cranelift IR にそのまま下ろせる粒度）
+   - alloc site ごとに `AllocatorBinding::{Static(id), Generic(type_param), Ambient, Local(var_id)}` を付与（`ALLOCATOR_PLAN.md` Phase 3 の設計に従う）
+   - AST → IR の lowering パス（型チェック後に走る、frontend と compiler の境界に置く）
+   - `with` ブロックの allocator 式が compile-time 定数かを判定し、内部の `Ambient` を `Static` に置換する定数伝搬パス
+   - JIT 側も将来的に同 IR を共有できるよう、IR は backend 非依存の表現に保つ（短期的には JIT は AST 直 codegen のまま、共有は後続フェーズで検討）
+
+   **Phase B: バックエンドと実行ファイル生成**
+   - バックエンド候補: **Cranelift Object**（既存 JIT との API 共有が容易・推奨）/ LLVM（最適化と互換性）/ 独自（学習目的）
+   - 第一候補は `cranelift-object` で `.o` を出力 → system linker で実行ファイル
+   - Windows / macOS / Linux のリンカ駆動とトリプル差異を吸収する thin layer
+   - `compiler` CLI: `compiler input.t -o output` で実行ファイルを生成、`--emit=ir` / `--emit=obj` / `--emit=asm` で中間生成物も観察可能に
+
+   **Phase C: 呼び出し規約とランタイム**
+   - 案A（隠しパラメータ）: 全関数のシグネチャに `&dyn Allocator` を暗黙追加。`with` は呼び出し時に引数を差し替える
+   - 案C（単相化）: `#[specialize_allocator]` 属性 / コンパイル時定数 allocator 経路は allocator 型ごとに複製
+   - ランタイムを C ABI の `.o`（または静的ライブラリ）として提供: `HeapManager` / `GlobalAllocator` / `ArenaAllocator` / `FixedBufferAllocator` / `panic` helper / `process::exit` / I/O builtins (`print` / `println`) / 文字列メソッド
+   - 文字列リテラルとシンボルテーブルを `.rodata` に埋め込む経路（JIT の `JIT_STRING_INTERNER` を参考に）
+   - `main` 関数の数値戻り値をプロセス終了コードに（interpreter / JIT と同じセマンティクス）
+
+   **Phase D: 機能網羅とテスト**
+   - サポート対象: i64 / u64 / f64 / bool / str / ptr / 固定配列 / tuple / struct / enum + match / generic（単相化）/ Allocator system / DbC（`requires` / `ensures`）/ panic / assert
+   - エンドツーエンドテスト: interpreter / JIT / コンパイラの 3 経路で同一プログラムが同一の exit code + stdout を返すことを検証する `e2e_consistency_tests`
+   - 既存の `interpreter/example/*.t` を全てコンパイルして実行できることをゴールに
+   - `INTERPRETER_CONTRACTS=off` 相当の release 切替を `--release` フラグで提供
+
+   **Phase E: 最適化**
+   - 定数伝搬で `Static` 結合された allocator の vtable 呼び出しを devirtualize
+   - インライン化による alloc 呼び出しの完全消去（arena 等）
+   - hot path で vtable オーバーヘッドゼロになることを benchmark で確認
+   - generic 単相化と code size のトレードオフを measure
+
+   実装規模の目安: Phase A〜D を MVP として通すだけでも数セッション〜週単位。`#121` の Phase 4 native codegen は本タスクの一部として吸収される。
 
 ## 検討中の機能
 

@@ -1,0 +1,25 @@
+[package]
+name = "compiler"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "AOT compiler that lowers toylang to a native executable via Cranelift Object"
+
+[[bin]]
+name = "compiler"
+path = "src/main.rs"
+
+[dependencies]
+frontend = { path = "../frontend" }
+compiler_core = { path = "../compiler_core" }
+interpreter = { path = "../interpreter", default-features = false }
+string-interner.workspace = true
+
+cranelift = "0.131"
+cranelift-codegen = "0.131"
+cranelift-frontend = "0.131"
+cranelift-module = "0.131"
+cranelift-object = "0.131"
+cranelift-native = "0.131"
+target-lexicon = "0.13"

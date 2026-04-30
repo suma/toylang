@@ -2,8 +2,9 @@
 resolver = "3"
 members = [
     "frontend",
-    "interpreter", 
+    "interpreter",
     "compiler_core",
+    "compiler",
 ]
 
 [workspace.dependencies]

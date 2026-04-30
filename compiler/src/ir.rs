@@ -1,0 +1,481 @@
+//! Mid-level intermediate representation for the AOT compiler.
+//!
+//! ## Why an IR layer
+//!
+//! The original `codegen.rs` walked the AST and emitted Cranelift IR in one
+//! pass. That worked while the supported feature surface was tiny, but it
+//! conflated three concerns: shaping the program for codegen, dealing with
+//! Cranelift's specific API, and managing per-function bookkeeping. As the
+//! roadmap (`todo.md` #183) calls for `AllocatorBinding`, constant
+//! propagation passes, and eventually devirtualization, lumping all of that
+//! into a single AST-walker would not scale.
+//!
+//! This IR sits between the AST and Cranelift. Lowering passes and
+//! analyses live on this representation (see `lower.rs` for AST → IR and
+//! `codegen.rs` for IR → Cranelift). Cranelift remains the backend, but
+//! the moments where we *think about toylang semantics* are confined to
+//! this layer.
+//!
+//! ## Shape
+//!
+//! - **Storage model**: typed local slots (one entry per `val` / `var`
+//!   binding, plus the function's parameters). Locals are read and written
+//!   by `LoadLocal` / `StoreLocal` instructions. Conversion to SSA happens
+//!   inside Cranelift via `def_var` / `use_var`, so we don't have to do
+//!   phi-node construction here. This matches the front-end's mental
+//!   model of named bindings and keeps the IR easy to print.
+//! - **Values**: each instruction may produce a fresh `ValueId`. Values
+//!   are local to the function and have a known `Type`. They flow as
+//!   operands of subsequent instructions and as branch / return arguments.
+//! - **Control flow**: each `Function` is a list of `Block`s ending in a
+//!   `Terminator`. There are no implicit fall-throughs.
+//!
+//! ## Future work hooks
+//!
+//! - `AllocatorBinding` is reserved on instructions that allocate (none
+//!   exist yet at this scale), to be filled in when Phase A wires the
+//!   allocator system through codegen.
+//! - `Type` only carries scalars today; struct / tuple / enum entries
+//!   will be added when those land in codegen.
+
+use std::collections::HashMap;
+use std::fmt;
+
+use string_interner::{DefaultSymbol, Symbol};
+
+/// Top-level container. One IR module corresponds to one toylang program.
+#[derive(Debug, Default)]
+pub struct Module {
+    pub functions: Vec<Function>,
+    /// `name -> index into functions`. Populated as functions are
+    /// declared, used by lowering when resolving call targets and by
+    /// codegen when wiring same-module imports.
+    pub function_index: HashMap<DefaultSymbol, FuncId>,
+}
+
+impl Module {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn declare_function(
+        &mut self,
+        symbol: DefaultSymbol,
+        export_name: String,
+        linkage: Linkage,
+        params: Vec<Type>,
+        return_type: Type,
+    ) -> FuncId {
+        let id = FuncId(self.functions.len() as u32);
+        self.functions.push(Function {
+            symbol,
+            export_name,
+            linkage,
+            params,
+            return_type,
+            locals: Vec::new(),
+            blocks: Vec::new(),
+            entry: BlockId(0),
+        });
+        self.function_index.insert(symbol, id);
+        id
+    }
+
+    pub fn function(&self, id: FuncId) -> &Function {
+        &self.functions[id.0 as usize]
+    }
+
+    pub fn function_mut(&mut self, id: FuncId) -> &mut Function {
+        &mut self.functions[id.0 as usize]
+    }
+}
+
+#[derive(Debug)]
+pub struct Function {
+    /// The interned name from the source program (used for diagnostics).
+    pub symbol: DefaultSymbol,
+    /// The mangled C-ABI name we will export. `main` is left unprefixed
+    /// so the system runtime invokes it as the entry point; everything
+    /// else gets a `toy_` prefix to avoid colliding with libc symbols.
+    pub export_name: String,
+    pub linkage: Linkage,
+    /// Parameter types in declaration order. The corresponding `LocalId`s
+    /// are `LocalId(0)..LocalId(params.len())`.
+    pub params: Vec<Type>,
+    pub return_type: Type,
+    /// Typed local slots. Indices `0..params.len()` are the parameters;
+    /// later indices are the `val` / `var` bindings introduced by the
+    /// function body. Locals are mutable cells in this IR; SSA construction
+    /// is left to the backend.
+    pub locals: Vec<Type>,
+    pub blocks: Vec<Block>,
+    pub entry: BlockId,
+}
+
+impl Function {
+    pub fn add_local(&mut self, ty: Type) -> LocalId {
+        let id = LocalId(self.locals.len() as u32);
+        self.locals.push(ty);
+        id
+    }
+
+    pub fn add_block(&mut self) -> BlockId {
+        let id = BlockId(self.blocks.len() as u32);
+        self.blocks.push(Block {
+            id,
+            instructions: Vec::new(),
+            terminator: None,
+        });
+        id
+    }
+
+    pub fn block_mut(&mut self, id: BlockId) -> &mut Block {
+        &mut self.blocks[id.0 as usize]
+    }
+
+    pub fn block(&self, id: BlockId) -> &Block {
+        &self.blocks[id.0 as usize]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Linkage {
+    /// Visible to the linker; reserved for `main` so the C runtime can
+    /// find the entry point.
+    Export,
+    /// Internal symbol; gets the `toy_` prefix so multiple compiled
+    /// programs can be linked together without symbol collisions.
+    Local,
+}
+
+#[derive(Debug)]
+pub struct Block {
+    pub id: BlockId,
+    pub instructions: Vec<Instruction>,
+    /// `None` while the block is being built; set to `Some` exactly once
+    /// when the block is closed. The lowering pass enforces that.
+    pub terminator: Option<Terminator>,
+}
+
+impl Block {
+    pub fn is_terminated(&self) -> bool {
+        self.terminator.is_some()
+    }
+}
+
+/// Subset of types the AOT compiler can lower today. Everything else is
+/// rejected at lowering entry with a clear error message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Type {
+    I64,
+    U64,
+    Bool,
+    Unit,
+}
+
+impl Type {
+    /// Whether values of this type are signed integers (controls the
+    /// signed-vs-unsigned dispatch on division, modulo, and comparison).
+    pub fn is_signed(self) -> bool {
+        matches!(self, Type::I64)
+    }
+
+    pub fn produces_value(self) -> bool {
+        !matches!(self, Type::Unit)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Instruction {
+    /// `Some` when the instruction defines a fresh value; `None` for
+    /// "void" instructions (e.g. `StoreLocal`).
+    pub result: Option<(ValueId, Type)>,
+    pub kind: InstKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum InstKind {
+    Const(Const),
+    BinOp { op: BinOp, lhs: ValueId, rhs: ValueId },
+    UnaryOp { op: UnaryOp, operand: ValueId },
+    LoadLocal(LocalId),
+    StoreLocal { dst: LocalId, src: ValueId },
+    /// Direct call to a function known at module build time. The optional
+    /// `result` is `Some` when the callee returns a value-producing type.
+    Call { target: FuncId, args: Vec<ValueId> },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Const {
+    I64(i64),
+    U64(u64),
+    Bool(bool),
+}
+
+impl Const {
+    pub fn ty(self) -> Type {
+        match self {
+            Const::I64(_) => Type::I64,
+            Const::U64(_) => Type::U64,
+            Const::Bool(_) => Type::Bool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinOp {
+    // Integer arithmetic. Division and modulo dispatch to signed or
+    // unsigned variants based on the operand type during codegen.
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+
+    // Comparisons. Always produce a `bool`.
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    // Bitwise.
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+}
+
+impl BinOp {
+    pub fn produces_bool(self) -> bool {
+        matches!(
+            self,
+            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    /// Two's complement integer negation.
+    Neg,
+    /// Bitwise complement on integer values.
+    BitNot,
+    /// Logical NOT on `bool`. Lowered to `xor 1` in the backend.
+    LogicalNot,
+}
+
+#[derive(Debug, Clone)]
+pub enum Terminator {
+    Return(Option<ValueId>),
+    Jump(BlockId),
+    Branch { cond: ValueId, then_blk: BlockId, else_blk: BlockId },
+    /// `panic("literal")` — diverges with the given message symbol. The
+    /// codegen layer materialises the message in the object's data
+    /// segment, calls `puts` to print it, and `exit(1)` to terminate.
+    /// `assert(cond, "msg")` is lowered to a `Branch` followed by a
+    /// `Panic` block.
+    Panic { message: DefaultSymbol },
+    /// Generic divergence — not currently emitted by lowering, but kept
+    /// as a fall-through for future codegen needs (e.g. the unreachable
+    /// arm of a fully-covered match).
+    Unreachable,
+}
+
+// -------------------------------------------------------------------------
+// IDs. Each is a transparent newtype around a `u32`. They are deliberately
+// distinct types so the type system catches mix-ups (e.g. passing a Block
+// where a Local was expected).
+// -------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ValueId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LocalId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BlockId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FuncId(pub u32);
+
+// -------------------------------------------------------------------------
+// Display: a textual format that can be diffed in tests and shown via
+// `--emit=ir`. Intentionally simple — keys / values are plain ASCII so
+// snapshot tests don't have to wrestle with Unicode normalisation.
+// -------------------------------------------------------------------------
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::I64 => f.write_str("i64"),
+            Type::U64 => f.write_str("u64"),
+            Type::Bool => f.write_str("bool"),
+            Type::Unit => f.write_str("unit"),
+        }
+    }
+}
+
+impl fmt::Display for ValueId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%v{}", self.0)
+    }
+}
+
+impl fmt::Display for LocalId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "@l{}", self.0)
+    }
+}
+
+impl fmt::Display for BlockId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "bb{}", self.0)
+    }
+}
+
+impl fmt::Display for FuncId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fn#{}", self.0)
+    }
+}
+
+impl fmt::Display for Const {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Const::I64(v) => write!(f, "{v}i64"),
+            Const::U64(v) => write!(f, "{v}u64"),
+            Const::Bool(true) => f.write_str("true"),
+            Const::Bool(false) => f.write_str("false"),
+        }
+    }
+}
+
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            BinOp::Add => "add",
+            BinOp::Sub => "sub",
+            BinOp::Mul => "mul",
+            BinOp::Div => "div",
+            BinOp::Rem => "rem",
+            BinOp::Eq => "eq",
+            BinOp::Ne => "ne",
+            BinOp::Lt => "lt",
+            BinOp::Le => "le",
+            BinOp::Gt => "gt",
+            BinOp::Ge => "ge",
+            BinOp::BitAnd => "band",
+            BinOp::BitOr => "bor",
+            BinOp::BitXor => "bxor",
+            BinOp::Shl => "shl",
+            BinOp::Shr => "shr",
+        })
+    }
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            UnaryOp::Neg => "neg",
+            UnaryOp::BitNot => "bnot",
+            UnaryOp::LogicalNot => "lnot",
+        })
+    }
+}
+
+impl fmt::Display for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for func in &self.functions {
+            writeln!(f, "{func}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Function {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let linkage = match self.linkage {
+            Linkage::Export => "export",
+            Linkage::Local => "local",
+        };
+        let params: Vec<String> = self
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, t)| format!("{}: {}", LocalId(i as u32), t))
+            .collect();
+        writeln!(
+            f,
+            "{} function {}({}) -> {} {{",
+            linkage,
+            self.export_name,
+            params.join(", "),
+            self.return_type
+        )?;
+        // Print non-parameter locals so readers can distinguish parameter
+        // slots from body-introduced bindings at a glance.
+        if self.locals.len() > self.params.len() {
+            writeln!(f, "  locals:")?;
+            for (i, ty) in self.locals.iter().enumerate().skip(self.params.len()) {
+                writeln!(f, "    {}: {}", LocalId(i as u32), ty)?;
+            }
+        }
+        for blk in &self.blocks {
+            writeln!(f, "  {}:", blk.id)?;
+            for inst in &blk.instructions {
+                writeln!(f, "    {}", DisplayInst(inst))?;
+            }
+            match &blk.terminator {
+                Some(t) => writeln!(f, "    {}", DisplayTerm(t))?,
+                None => writeln!(f, "    ; <unterminated>")?,
+            }
+        }
+        writeln!(f, "}}")
+    }
+}
+
+struct DisplayInst<'a>(&'a Instruction);
+struct DisplayTerm<'a>(&'a Terminator);
+
+impl fmt::Display for DisplayInst<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let prefix = match self.0.result {
+            Some((v, t)) => format!("{v}: {t} = "),
+            None => String::new(),
+        };
+        match &self.0.kind {
+            InstKind::Const(c) => write!(f, "{prefix}const {c}"),
+            InstKind::BinOp { op, lhs, rhs } => write!(f, "{prefix}{op} {lhs}, {rhs}"),
+            InstKind::UnaryOp { op, operand } => write!(f, "{prefix}{op} {operand}"),
+            InstKind::LoadLocal(l) => write!(f, "{prefix}load {l}"),
+            InstKind::StoreLocal { dst, src } => write!(f, "store {dst}, {src}"),
+            InstKind::Call { target, args } => {
+                let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                write!(f, "{prefix}call {target}({})", argstr.join(", "))
+            }
+        }
+    }
+}
+
+impl fmt::Display for DisplayTerm<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            Terminator::Return(Some(v)) => write!(f, "ret {v}"),
+            Terminator::Return(None) => write!(f, "ret"),
+            Terminator::Jump(b) => write!(f, "jump {b}"),
+            Terminator::Branch { cond, then_blk, else_blk } => {
+                write!(f, "br {cond}, {then_blk}, {else_blk}")
+            }
+            // String content is interned; we display the symbol id
+            // because the IR doesn't carry an interner reference. The
+            // codegen pass reaches into the program's interner anyway,
+            // so this is mostly cosmetic.
+            Terminator::Panic { message } => write!(f, "panic #{}", message.to_usize()),
+            Terminator::Unreachable => write!(f, "unreachable"),
+        }
+    }
+}

@@ -839,6 +839,14 @@ run (the equivalent of D's `-release`):
 
 Unrecognised values print a warning and fall back to `all`.
 
+> **Operational guidance.** Keep `INTERPRETER_CONTRACTS=all` in
+> production unless a clause has measurable performance cost. Disabling
+> contracts (`pre` / `post` / `off`) is the very condition that tends
+> to let latent bugs survive into release — the same reason D's
+> `-release` flag is widely discouraged. The knob exists for hot-path
+> benchmarks and other performance-sensitive runs; treat any other use
+> as a deliberate, narrowly-scoped exception.
+
 ### Out of scope (planned)
 
 - `old(...)` for snapshotting pre-state in `ensures`
@@ -897,10 +905,14 @@ These are real today; some appear in `todo.md` as planned work.
   write `1.5f64`.
 - **No labelled break / continue** — only the innermost loop is
   affected.
-- **No release-mode gate for `panic` / `assert`** — both always
-  evaluate. A future env-var (analogous to `INTERPRETER_CONTRACTS`
-  for DbC clauses) could disable them in production builds, but
-  isn't implemented yet.
+- **`panic` / `assert` are always active by design** — there is no
+  env-var to disable them in release builds. Stripping assertions in
+  production is the failure mode D's `-release` flag is criticised
+  for; this language deliberately keeps them on so that invariant
+  violations surface the same way regardless of build profile. (The
+  `INTERPRETER_CONTRACTS` gate exists only because contract clauses
+  can carry non-trivial cost; even there, `all` is the recommended
+  setting — see "Operational guidance" above.)
 - **No string interpolation, raw strings, multi-line strings**.
 - **Modules resolve only on the local filesystem** under
   `modules/<name>/<name>.t`.

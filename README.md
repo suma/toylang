@@ -406,6 +406,14 @@ Unrecognised values print a warning to stderr and fall back to `all`
 so a typo can't silently disable contracts. The mode is read once at
 startup and cached on the evaluation context.
 
+**Recommended setting: `all` (the default).** Disabling contracts in
+release is the very pattern D's `-release` flag is criticised for —
+invariants that fired in development go silent in production. Reach
+for `pre` / `post` / `off` only for hot-path benchmarks where a
+clause has measurable cost. The `panic` and `assert` builtins
+intentionally have no analogous gate; both are always active so
+safety checks behave identically across build profiles.
+
 ### Module System
 ```rust
 # math.t (in modules/math/math.t)

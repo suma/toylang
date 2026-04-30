@@ -50,6 +50,13 @@ $ INTERPRETER_CONTRACTS=pre cargo run --release example/contracts.t
 $ INTERPRETER_CONTRACTS=off cargo run --release example/contracts.t
 ```
 
+> **Recommended setting: `all` (the default).** Disabling contracts
+> can let invariant violations slip into release the same way D's
+> `-release` flag does. Reach for `pre` / `post` / `off` only when a
+> specific clause has measurable cost on a hot path. The `panic` and
+> `assert` builtins have no analogous gate by design — they are always
+> active so safety checks behave identically across build profiles.
+
 ## Build features
 
 Set in `Cargo.toml`. Toggle with `--features` / `--no-default-features`.

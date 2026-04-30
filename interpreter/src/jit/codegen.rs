@@ -21,7 +21,10 @@ pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
         }
         ScalarTy::F64 => Some(types::F64),
         ScalarTy::Bool => Some(types::I8),
-        ScalarTy::Unit => None,
+        // Unit and Never both produce no IR value: Unit because there's
+        // nothing to materialise; Never because the expression diverges
+        // before any value can be observed.
+        ScalarTy::Unit | ScalarTy::Never => None,
     }
 }
 
@@ -1151,7 +1154,21 @@ impl<'a, 'b> State<'a, 'b> {
         elif_pairs: &[(ExprRef, ExprRef)],
         else_block: ExprRef,
     ) -> Result<Option<Value>, String> {
-        let result_ty = self.expr_type(&then_block)?;
+        // Walk every branch's static type and unify, so an
+        // expression-position panic (whose branch types as `Never`) does
+        // not force the if's result type. If all branches diverge, the
+        // unified type is `Never` and `cont` carries no block param —
+        // every branch will mark `terminated` and skip the jump.
+        let mut result_ty = self.expr_type(&then_block)?;
+        for (_, body) in elif_pairs.iter() {
+            let bt = self.expr_type(body)?;
+            result_ty = ScalarTy::unify_branch(result_ty, bt)
+                .ok_or_else(|| "if branch types disagree".to_string())?;
+        }
+        let else_ty = self.expr_type(&else_block)?;
+        result_ty = ScalarTy::unify_branch(result_ty, else_ty)
+            .ok_or_else(|| "if branch types disagree".to_string())?;
+
         let cont = self.builder.create_block();
         let result_param = match ir_type(result_ty) {
             Some(t) => Some(self.builder.append_block_param(cont, t)),

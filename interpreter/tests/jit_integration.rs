@@ -206,6 +206,36 @@ fn main() -> i64 { panic(ERR) }
 
 #[cfg(feature = "jit")]
 #[test]
+fn panic_in_expression_position_compiles_via_never_unify() {
+    // The then-branch of `if b == 0 { panic(...) } else { a / b }` is
+    // typed as `Never` in JIT eligibility; unification with the else
+    // branch's I64 lets the if-expression carry I64 to a `val q: i64`.
+    // Codegen marks the then-branch as terminated (via trap) so only
+    // the else branch jumps to cont, keeping the verifier happy.
+    let ok = run("example/jit_panic_expr.t", true, true);
+    assert_eq!(ok.code, 5, "expected divide(10,2)==5, stderr: {}", ok.stderr);
+    assert!(
+        ok.stderr.contains("JIT compiled:") && ok.stderr.contains("divide"),
+        "expected divide to JIT-compile in expression-position panic; stderr: {}",
+        ok.stderr
+    );
+
+    let fail = run("example/jit_panic_expr_fail.t", true, true);
+    assert_eq!(fail.code, 1);
+    assert!(
+        fail.stderr.contains("panic: division by zero"),
+        "stderr: {}",
+        fail.stderr
+    );
+    assert!(
+        fail.stderr.contains("JIT compiled:") && fail.stderr.contains("divide"),
+        "expected divide to JIT-compile on failure path; stderr: {}",
+        fail.stderr
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
 fn float64_example_compiles_main() {
     let r = run("example/jit_float64.t", true, true);
     assert_eq!(r.code, 7);

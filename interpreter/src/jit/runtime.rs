@@ -806,6 +806,16 @@ fn execute_cached(
                 // process exit code; reject this in build_cache_entry.
                 unreachable!("main returning Allocator should be rejected")
             }
+            ScalarTy::Never => {
+                // A `main` whose body unconditionally diverges (panics)
+                // never returns a value. The trap inside `jit_panic`
+                // exits the process before reaching this dispatch, so
+                // landing here would mean the function body falsely
+                // claimed it diverges.
+                let f: extern "C" fn() = std::mem::transmute(main_ptr);
+                f();
+                unreachable!("Never-returning main reached the dispatch return path")
+            }
         }
     };
 

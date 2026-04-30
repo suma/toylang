@@ -38,9 +38,28 @@ pub enum ScalarTy {
     /// allocator registry; `with allocator = expr { … }` pushes / pops
     /// the corresponding allocator on the active stack.
     Allocator,
+    /// Bottom type for diverging expressions (currently only `panic`).
+    /// Compatible with any other `ScalarTy` in branch unification, since
+    /// a diverging branch never produces a value at runtime. No
+    /// `TypeDecl` maps to `Never`; it arises only from `panic` returning
+    /// from `check_expr`.
+    Never,
 }
 
 impl ScalarTy {
+    /// Branch-type unification used by `if-elif-else`. `Never` acts as a
+    /// wildcard so `if cond { panic("...") } else { 5i64 }` types as I64
+    /// (the panicking branch never produces a value at runtime, so the
+    /// other branch determines the if-expression's value type). Returns
+    /// `None` when two concrete types disagree.
+    pub fn unify_branch(a: ScalarTy, b: ScalarTy) -> Option<ScalarTy> {
+        match (a, b) {
+            (ScalarTy::Never, t) | (t, ScalarTy::Never) => Some(t),
+            (x, y) if x == y => Some(x),
+            _ => None,
+        }
+    }
+
     pub fn from_type_decl(td: &TypeDecl) -> Option<Self> {
         match td {
             TypeDecl::Int64 => Some(ScalarTy::I64),
@@ -1657,7 +1676,13 @@ fn check_stmt(
             if declared != val_ty {
                 return false;
             }
-            if declared == ScalarTy::Unit {
+            // Reject Unit and Never RHS: there is no value to bind, and
+            // recording `Never` in `locals` would poison subsequent
+            // expressions that read `name`. `val x = panic(...)` is the
+            // typical Never case — silent-fallback is fine since the
+            // expression does the same observable thing in the
+            // interpreter.
+            if matches!(declared, ScalarTy::Unit | ScalarTy::Never) {
                 return false;
             }
             locals.insert(name, declared);
@@ -1767,7 +1792,7 @@ fn check_stmt(
                     return false;
                 }
             }
-            if declared == ScalarTy::Unit {
+            if matches!(declared, ScalarTy::Unit | ScalarTy::Never) {
                 return false;
             }
             locals.insert(name, declared);
@@ -1977,27 +2002,21 @@ pub(crate) fn check_expr(
             if ct != ScalarTy::Bool {
                 return None;
             }
+            // Unify each branch's type via `ScalarTy::unify_branch`, which
+            // treats `Never` (panic / divergence) as a wildcard — so
+            // `if cond { panic("...") } else { 5i64 }` types as I64.
             let then_ty = check_expr(program, &if_block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let mut unified = then_ty;
             for (ec, eb) in &elif_pairs {
                 let et = check_expr(program, ec, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
                 let bt = check_expr(program, eb, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                if bt != then_ty {
-                    return None;
-                }
+                unified = ScalarTy::unify_branch(unified, bt)?;
             }
             let else_ty = check_expr(program, &else_block, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-            // Allow if-without-else: the parser inserts an empty Block whose
-            // type is Unit. Permit it only when both branches are Unit.
-            if else_ty == then_ty {
-                Some(then_ty)
-            } else if then_ty == ScalarTy::Unit && else_ty == ScalarTy::Unit {
-                Some(ScalarTy::Unit)
-            } else {
-                None
-            }
+            ScalarTy::unify_branch(unified, else_ty)
         }
         Expr::Assign(lhs, rhs) => {
             // Two assignment shapes are supported:
@@ -2266,6 +2285,12 @@ pub(crate) fn check_expr(
                     // to `jit_panic`. Anything dynamic (a const, a runtime
                     // str, etc.) falls back to the interpreter where the
                     // value is already a real Object::ConstString / String.
+                    //
+                    // Returns `Never` (the bottom type) so that an
+                    // expression-position panic — e.g. the then-branch of
+                    // `if cond { panic("...") } else { 5i64 }` — unifies
+                    // with the other branch's value type instead of
+                    // forcing the if-expression to be Unit.
                     if args.len() != 1 {
                         note(reject_reason, || "panic takes 1 argument".to_string());
                         return None;
@@ -2277,7 +2302,7 @@ pub(crate) fn check_expr(
                         });
                         return None;
                     }
-                    Some(ScalarTy::Unit)
+                    Some(ScalarTy::Never)
                 }
                 BuiltinFunction::Assert => {
                     // `assert(cond, "literal")` — same constraint on the

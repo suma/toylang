@@ -83,7 +83,7 @@ flat scalar `Tuple` *are* supported — see the dedicated subsections.)
 | `__builtin_ptr_write(p, off, value)` | helper picked from the value's static type |
 | `__builtin_ptr_read(p, off)` | only as the *direct* RHS of `val NAME: T = …`, `var NAME: T = …`, or `name = …` (the JIT needs a static expected type) |
 | `print(x) / println(x)` | scalar arg only; calls Rust `extern "C"` helpers (`jit_print_i64/u64/bool/f64` and `*_println_*`) |
-| `panic("literal")` | argument must be a parse-time `Expr::String(sym)`; codegen passes the symbol id as a u64 to `jit_panic`, which resolves it through a thread-local pointer to the program's `StringInterner` and `process::exit(1)`s. After the call, codegen emits `trap UserCode(1)` purely as a CFG terminator (always dead at runtime). Statement-position panics (`if cond { panic("…") }`) compile cleanly; expression-position panics (`if cond { panic("…") } else { value }`) silent-fall back today because `Panic` returns `ScalarTy::Unit` and the if-branches' types must match in eligibility. |
+| `panic("literal")` | argument must be a parse-time `Expr::String(sym)`; codegen passes the symbol id as a u64 to `jit_panic`, which resolves it through a thread-local pointer to the program's `StringInterner` and `process::exit(1)`s. After the call, codegen emits `trap UserCode(1)` purely as a CFG terminator (always dead at runtime). The eligibility return type is `ScalarTy::Never`, which `unify_branch` treats as a wildcard, so both statement-position panics (`if cond { panic("…") }`) **and** expression-position panics (`if cond { panic("…") } else { value }`) compile — the panicking branch's `trap` keeps it from reaching the cont block, leaving the value-producing branch as the sole predecessor of the merged result. |
 | `assert(cond, "literal")` | message must be a string literal (same constraint as `panic`); the condition is any bool expression. Lowered to `brif cond, cont_blk, fail_blk; fail_blk: call jit_panic(msg_sym); trap UserCode(1); cont_blk: …` so the success path costs one branch and the failure path reuses the panic helper unchanged. |
 
 ### Statements
@@ -232,21 +232,22 @@ the DWARF-unwind / signal-handler infrastructure WebAssembly engines
 typically need for traps.
 
 The argument must be a parse-time `Expr::String(sym)`; `panic(SOME_CONST)`
-or `panic(some_str_var)` falls back. The JIT also rejects panic in
-expression position (`if cond { panic("…") } else { 5i64 }`) because
-the if-elif-else eligibility requires sibling branches to agree on a
-`ScalarTy` and panic returns `Unit` while the other branch is `i64`. A
-future `ScalarTy::Never` variant would lift this. The
-*statement-position* form
+or `panic(some_str_var)` falls back. Expression-position panic also
+JITs:
 
 ```rust
 fn divide(a: i64, b: i64) -> i64 {
-    if b == 0i64 { panic("division by zero") }
-    a / b
+    val q: i64 = if b == 0i64 { panic("division by zero") } else { a / b }
+    q
 }
 ```
 
-JITs cleanly because both branches of the inner `if` are `Unit`.
+The panicking branch types as `ScalarTy::Never` — the bottom type that
+unifies with any sibling type via `ScalarTy::unify_branch` — so the
+if-expression takes the value branch's type (`i64` here). Codegen
+marks the panic block as `terminated`, so it never jumps to the
+merged cont block; only the value-producing branch supplies the
+block param, and the cranelift verifier sees a single predecessor.
 
 `assert(cond, "literal")` reuses the same `jit_panic` helper through
 a conditional branch:
@@ -283,10 +284,6 @@ instruction over straight-line code.
   e.g. `panic(SOME_CONST)` or `panic(some_str_var)`. The JIT's helper
   receives a `DefaultSymbol`'s u32 representation as a u64 immediate,
   which is only known at codegen time for inline literals.
-* `panic(...)` in expression position — `if cond { panic("…") } else
-  { 5i64 }` is rejected because eligibility requires both branches to
-  agree on a `ScalarTy`. The statement-position form (`if cond
-  { panic("…") }` followed by other statements) JITs cleanly.
 * Functions that reference a top-level `const`. The constant is bound
   in the interpreter's environment at startup; the JIT eligibility
   walker has no view of it and rejects the unresolved identifier,
@@ -399,6 +396,3 @@ Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 * Lowering simple `requires` / `ensures` predicates to cranelift IR
   so contract-bearing numeric kernels can JIT (currently any contract
   forces fallback).
-* Expression-position panic (`if cond { panic("…") } else { value }`)
-  via a `ScalarTy::Never` variant that unifies with any sibling type
-  in if-elif-else eligibility.

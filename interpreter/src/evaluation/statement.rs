@@ -146,22 +146,24 @@ impl EvaluationContext<'_> {
     /// `Ok(Return(...))` so the enclosing function returns correctly —
     /// previously this would surface as a stray "Propagate flow:" error.
     fn handle_val_declaration(&mut self, name: DefaultSymbol, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        use crate::try_value_v;
         let value = self.evaluate(expr);
-        let value = try_value!(value);
-        self.environment.set_val(name, (value).into());
+        let value = try_value_v!(value);
+        self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
     }
 
     /// Handles var (mutable variable) declarations. Same flow-propagation
     /// convention as `handle_val_declaration`.
     fn handle_var_declaration(&mut self, name: DefaultSymbol, expr: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
-        let value = if let Some(e) = expr {
+        use crate::try_value_v;
+        let value: crate::value::Value = if let Some(e) = expr {
             let res = self.evaluate(e);
-            try_value!(res)
+            try_value_v!(res)
         } else {
-            self.null_object.clone()
+            self.null_object.clone().into()
         };
-        self.environment.set_var(name, (value).into(), VariableSetType::Insert, self.string_interner)?;
+        self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }
 
@@ -348,21 +350,24 @@ impl EvaluationContext<'_> {
 
     /// Handles variable assignment
     fn handle_variable_assignment(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        use crate::try_value_v;
         // Handle null expressions specially in variable assignments
         let expr = self.expr_pool.get(&rhs)
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
 
-        let rhs = match expr {
+        let rhs_v: crate::value::Value = match expr {
             Expr::Null => {
-                // Use pre-created null object for variable assignments
-                self.null_object.clone()
+                // Pre-created null object for variable assignments. The
+                // shared cell is wrapped via `From<RcObject>` so primitives
+                // get lifted out, but here it carries `Object::Null(_)` so
+                // it stays as `Value::Heap` — same semantics as before.
+                self.null_object.clone().into()
             }
             _ => {
                 let rhs = self.evaluate(rhs);
-                try_value!(rhs)
+                try_value_v!(rhs)
             }
         };
-        let rhs_borrow = rhs.borrow();
 
         // type check
         let existing_val = self.environment.get_val(name);
@@ -371,13 +376,11 @@ impl EvaluationContext<'_> {
         }
         let existing_val = existing_val.unwrap();
         let val_ty = existing_val.get_type();
-        let rhs_ty = rhs_borrow.get_type();
+        let rhs_ty = rhs_v.get_type();
 
         if val_ty != rhs_ty {
             // Allow null assignment to any type
-            if matches!(rhs_ty, TypeDecl::Unknown) {
-                // Allow null assignment
-            } else {
+            if !matches!(rhs_ty, TypeDecl::Unknown) {
                 return Err(InterpreterError::TypeError {
                     expected: val_ty,
                     found: rhs_ty,
@@ -386,9 +389,8 @@ impl EvaluationContext<'_> {
             }
         }
 
-        self.environment.set_var(name, (rhs.clone()).into(), VariableSetType::Overwrite, self.string_interner)?;
-        let cloned_value = rhs.borrow().clone();
-        Ok(EvaluationResult::Value((cloned_value).into()))
+        self.environment.set_var(name, rhs_v.clone(), VariableSetType::Overwrite, self.string_interner)?;
+        Ok(EvaluationResult::Value(rhs_v))
     }
 
 

@@ -2,6 +2,19 @@
 
 ## 完了済み ✅
 
+182. **Value/Reference 分離 Phase 5 後半 — variable assignment / 演算子 operand の Value 化**: `handle_variable_assignment` を Value-native に書き直し（`val.borrow()` 経由の Object クローンを Value::clone で置換、不要な `rhs_borrow` を排除）、`evaluate_binary` / `evaluate_unary` / 短絡論理演算子の operand 評価を `try_value!` (Rc allocate) → `try_value_v!` (Value 直) に置換、Phase 2 で残っていた `Value::from_rc(&lhs_val)` の中間変換を削除。`handle_val_declaration` / `handle_var_declaration` も同様。**Bench 結果 (Apple Silicon release)**:
+
+```
+                          Pre-Phase1   Post-Phase4   Post-Phase5(全)   vs Pre-P1
+fibonacci_recursive       130 µs       150 µs        120 µs            -8% 高速
+for_loop_sum              314 µs       349 µs        275 µs            -12% 高速
+complex_expressions       35 µs        36 µs         34 µs             -3% 高速
+type_inference_heavy      27 µs        27 µs         27 µs             parity
+variable_scopes           65 µs        69 µs         63 µs             -3% 高速
+parsing_only              34 µs        34 µs         36 µs             +6% (noise)
+```
+
+最も hot な fibonacci/for_loop で **pre-Phase1 を 8〜12% 上回る** 性能を達成。当初の目論み「primitive 値の Rc 排除で 10〜30% 改善」がようやく現実化。残るは literal eval / array slice / dict 等の cold path だが、計測可能な hot path はほぼカバー済み。tests: 492 件すべて pass (2026-04-30)
 181. **Value/Reference 分離 Phase 5 — hot path consumer の Value-native 化（前半）**: `evaluate_function_with_values` のシグネチャを `args: &[RcObject] → &[Value]`、戻り値 `RcObject → Value` に変更。`evaluate_function_call` の引数評価を `try_value_v!` ベースに、`Vec<Value>` で受け取る。`evaluate_if_elif_else` の cond 評価を Value 直 match、`handle_while_loop` / `handle_for_loop` の cond / start / end も Value 経由。`execute_for_loop` 内のイテレータ束縛も Value 直接。`call_struct_method` / `call_associated_function` は legacy `RcObject` 引数を境界で `.into()`。Bench 改善 (Apple Silicon release): fibonacci_recursive 150→136µs (-9%)、for_loop_sum 349→337µs (-3%)、complex_expressions 36→34µs (-5%)、variable_scopes 69→66µs (-4%)。Pre-Phase1 (dd9ff33) 比では fibonacci +5% / for_loop +7% / complex_expressions -3% / type_inference -3% / parsing -3% — 一部 hot path で改善、残るは Phase 5 後半 (literal eval / member access / arithmetic operand 等) で更に migration が必要。tests: 492 件すべて pass (2026-04-30)
 180. **Value/Reference 分離 Phase 4 — Environment を Value に**: `VariableValue.value: RcObject` → `Value`、`Environment::set_val` / `set_var` / `get_val` のシグネチャを Value 化。これにより val/var 宣言時の `Rc::new(RefCell::new(...))` 構築が primitive で消える（inline 値そのまま格納）、Identifier 参照時の `Rc::clone` も `Value::clone()` （primitive は cheap copy、Heap は Rc::clone）に置換。call.rs / statement.rs / expression.rs / lib.rs の全 set_val/set_var/get_val callsite に `.into()` 変換を挿入し、From<Object> / From<RcObject> for Value 経由で自動変換。`handle_identifier_expression` から `.borrow().is_null()` を `Value::is_null()` に直接置換、`handle_assignment` の type-check ブランチも Value 直アクセスに。tests: 492 件すべて pass (2026-04-30)
 179. **Value/Reference 分離 Phase 3 — `EvaluationResult` を Value に**: `EvaluationResult::Value(Rc<RefCell<Object>>)` → `Value(Value)`、同様に `Return(Option<RcObject>)` → `Return(Option<Value>)`。`try_value!` macro はバックエンド互換性のため `v.into_rc()` で内部変換、つまり既存 consumer サイト（`val.borrow()` パターン）は無変更で動作。新規 hot path 用に `try_value_v!` macro を提供（`Value` を直接返す）。全 ~30 箇所の `EvaluationResult::Value(rc)` 構築サイトに `.into()` 追加（`From<Object>` / `From<RcObject>` for Value 経由）、`Rc::new(RefCell::new(obj))` パターンは `obj.into()` に書き換え。`evaluate_function_with_values` / `evaluate_method` の Variant ↔ RcObject 変換も整理。`Object` enum 自体はまだ primitive variants を持っており、Phase 4 以降で内部表現の最適化を進める基盤。tests: 492 件すべて pass (2026-04-30)

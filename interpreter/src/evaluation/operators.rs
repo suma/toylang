@@ -326,9 +326,9 @@ impl EvaluationContext<'_> {
     }
 
     pub fn evaluate_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        use crate::try_value_v;
         let operand_result = self.evaluate(operand);
-        let operand_val = try_value!(operand_result);
-        let operand_v = Value::from_rc(&operand_val);
+        let operand_v = try_value_v!(operand_result);
 
         let result_v = match op {
             UnaryOp::BitwiseNot => match &operand_v {
@@ -375,12 +375,11 @@ impl EvaluationContext<'_> {
         // Lift each operand to `Value` once at entry. Primitive
         // operands (the bulk of arithmetic / comparison work) stay
         // inline thereafter — no `RefCell` borrow per binary op.
+        use crate::try_value_v;
         let lhs_result = self.evaluate(lhs);
         let rhs_result = self.evaluate(rhs);
-        let lhs_val = try_value!(lhs_result);
-        let rhs_val = try_value!(rhs_result);
-        let lhs_v = Value::from_rc(&lhs_val);
-        let rhs_v = Value::from_rc(&rhs_val);
+        let lhs_v = try_value_v!(lhs_result);
+        let rhs_v = try_value_v!(rhs_result);
 
         let result_v = match op {
             Operator::IAdd => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Add)?,
@@ -580,32 +579,26 @@ impl EvaluationContext<'_> {
 
     // Short-circuit evaluation for logical AND
     pub fn evaluate_logical_and_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let lhs_result = self.evaluate(lhs);
-        let lhs_val = try_value!(lhs_result);
-        let lhs_v = Value::from_rc(&lhs_val);
+        use crate::try_value_v;
+        let lhs_v = try_value_v!(self.evaluate(lhs));
         let lhs_bool = lhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         if !lhs_bool {
             return Ok(EvaluationResult::Value(Value::Bool(false)));
         }
-        let rhs_result = self.evaluate(rhs);
-        let rhs_val = try_value!(rhs_result);
-        let rhs_v = Value::from_rc(&rhs_val);
+        let rhs_v = try_value_v!(self.evaluate(rhs));
         let rhs_bool = rhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         Ok(EvaluationResult::Value(Value::Bool(rhs_bool)))
     }
 
     // Short-circuit evaluation for logical OR
     pub fn evaluate_logical_or_short_circuit(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let lhs_result = self.evaluate(lhs);
-        let lhs_val = try_value!(lhs_result);
-        let lhs_v = Value::from_rc(&lhs_val);
+        use crate::try_value_v;
+        let lhs_v = try_value_v!(self.evaluate(lhs));
         let lhs_bool = lhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         if lhs_bool {
             return Ok(EvaluationResult::Value(Value::Bool(true)));
         }
-        let rhs_result = self.evaluate(rhs);
-        let rhs_val = try_value!(rhs_result);
-        let rhs_v = Value::from_rc(&rhs_val);
+        let rhs_v = try_value_v!(self.evaluate(rhs));
         let rhs_bool = rhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         Ok(EvaluationResult::Value(Value::Bool(rhs_bool)))
     }

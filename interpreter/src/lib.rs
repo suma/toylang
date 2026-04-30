@@ -400,7 +400,7 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     for c in &program.consts {
         let value_result = eval.evaluate(&c.value);
         let value = match value_result {
-            Ok(crate::evaluation::EvaluationResult::Value(v)) => v,
+            Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
             Ok(_) => {
                 return Err(format!(
                     "Const initializer for `{}` produced a non-value result",

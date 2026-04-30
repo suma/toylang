@@ -5,6 +5,7 @@ use frontend::ast::*;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::environment::Environment;
 use crate::object::{Object, RcObject};
+use crate::value::Value;
 use crate::error::InterpreterError;
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
@@ -67,9 +68,15 @@ impl ContractMode {
 #[derive(Debug)]
 pub enum EvaluationResult {
     None,
-    Value(Rc<RefCell<Object>>),
-    Return(Option<Rc<RefCell<Object>>>),
-    Break,  // We assume break and continue are used with a label
+    /// Phase 3: carry a `Value`. Primitive variants stay inline; heap
+    /// values keep their existing shared `Rc<RefCell<HeapObject>>`
+    /// cell so mutation and aliasing semantics are unchanged.
+    Value(Value),
+    /// Function return propagation. `None` means a bare `return`
+    /// without a value (Unit return); `Some(Value)` carries the
+    /// returned value back through the call boundary.
+    Return(Option<Value>),
+    Break,
     Continue,
 }
 
@@ -169,7 +176,7 @@ impl<'a> EvaluationContext<'a> {
         result: EvaluationResult,
     ) -> Result<Rc<RefCell<Object>>, InterpreterError> {
         match result {
-            EvaluationResult::Value(v) => Ok(v),
+            EvaluationResult::Value(v) => Ok(v.into_rc()),
             EvaluationResult::Return(_)
             | EvaluationResult::Break
             | EvaluationResult::Continue
@@ -195,12 +202,43 @@ impl<'a> EvaluationContext<'a> {
 /// `return Ok(flow)` cleanly. For functions returning
 /// `Result<RcObject, InterpreterError>` (function-call boundaries,
 /// contract evaluation), handle flow inline instead.
+/// Bridging variant — extract the inner `Value` and immediately
+/// convert it to a legacy `Rc<RefCell<Object>>`. Existing consumer
+/// code that does `val.borrow()` keeps working unchanged. The cost
+/// is one `Rc` allocation per primitive (matching the pre-Phase 3
+/// behaviour). Hot paths can opt into `try_value_v!` to skip this
+/// allocation.
 #[macro_export]
 macro_rules! try_value {
     ($result:expr) => {
         match $result {
+            Ok($crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
+            Ok($crate::evaluation::EvaluationResult::Return(opt)) => {
+                return Ok($crate::evaluation::EvaluationResult::Return(opt));
+            }
+            Ok(flow @ $crate::evaluation::EvaluationResult::Break) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Continue) => return Ok(flow),
+            Ok($crate::evaluation::EvaluationResult::None) => {
+                return Err($crate::error::InterpreterError::InternalError(
+                    "unexpected None evaluation result".to_string(),
+                ));
+            }
+            Err(e) => return Err(e),
+        }
+    };
+}
+
+/// Phase 3 variant of `try_value!`: extract the primitive-friendly
+/// `Value` directly. Use this in hot paths that benefit from inline
+/// primitives.
+#[macro_export]
+macro_rules! try_value_v {
+    ($result:expr) => {
+        match $result {
             Ok($crate::evaluation::EvaluationResult::Value(v)) => v,
-            Ok(flow @ $crate::evaluation::EvaluationResult::Return(_)) => return Ok(flow),
+            Ok($crate::evaluation::EvaluationResult::Return(opt)) => {
+                return Ok($crate::evaluation::EvaluationResult::Return(opt));
+            }
             Ok(flow @ $crate::evaluation::EvaluationResult::Break) => return Ok(flow),
             Ok(flow @ $crate::evaluation::EvaluationResult::Continue) => return Ok(flow),
             Ok($crate::evaluation::EvaluationResult::None) => {

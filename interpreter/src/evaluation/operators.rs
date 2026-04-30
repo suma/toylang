@@ -361,7 +361,7 @@ impl EvaluationContext<'_> {
             },
         };
 
-        Ok(EvaluationResult::Value(result_v.into_rc()))
+        Ok(EvaluationResult::Value(result_v))
     }
 
     pub fn evaluate_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
@@ -402,7 +402,7 @@ impl EvaluationContext<'_> {
             Operator::LogicalAnd | Operator::LogicalOr => unreachable!("Should be handled above"),
         };
 
-        Ok(EvaluationResult::Value(result_v.into_rc()))
+        Ok(EvaluationResult::Value(result_v))
     }
 
     pub fn evaluate_add(&self, lhs: &Object, rhs: &Object) -> Result<Object, InterpreterError> {
@@ -585,13 +585,13 @@ impl EvaluationContext<'_> {
         let lhs_v = Value::from_rc(&lhs_val);
         let lhs_bool = lhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         if !lhs_bool {
-            return Ok(EvaluationResult::Value(Value::Bool(false).into_rc()));
+            return Ok(EvaluationResult::Value(Value::Bool(false)));
         }
         let rhs_result = self.evaluate(rhs);
         let rhs_val = try_value!(rhs_result);
         let rhs_v = Value::from_rc(&rhs_val);
         let rhs_bool = rhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
-        Ok(EvaluationResult::Value(Value::Bool(rhs_bool).into_rc()))
+        Ok(EvaluationResult::Value(Value::Bool(rhs_bool)))
     }
 
     // Short-circuit evaluation for logical OR
@@ -601,12 +601,12 @@ impl EvaluationContext<'_> {
         let lhs_v = Value::from_rc(&lhs_val);
         let lhs_bool = lhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
         if lhs_bool {
-            return Ok(EvaluationResult::Value(Value::Bool(true).into_rc()));
+            return Ok(EvaluationResult::Value(Value::Bool(true)));
         }
         let rhs_result = self.evaluate(rhs);
         let rhs_val = try_value!(rhs_result);
         let rhs_v = Value::from_rc(&rhs_val);
         let rhs_bool = rhs_v.try_unwrap_bool().map_err(InterpreterError::ObjectError)?;
-        Ok(EvaluationResult::Value(Value::Bool(rhs_bool).into_rc()))
+        Ok(EvaluationResult::Value(Value::Bool(rhs_bool)))
     }
 }

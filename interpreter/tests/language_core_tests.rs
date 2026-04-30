@@ -63,7 +63,7 @@ mod basic_execution {
             Err(e) => panic!("Evaluation failed: {e:?}"),
         };
 
-        assert_eq!(result.borrow().unwrap_int64(), 42);
+        assert_eq!(result.try_unwrap_int64().unwrap(), 42);
     }
 
     #[test]

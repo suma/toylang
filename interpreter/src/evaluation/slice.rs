@@ -140,12 +140,12 @@ impl EvaluationContext<'_> {
                                 size: array_len
                             });
                         }
-                        Ok(EvaluationResult::Value(elements[start_idx].clone()))
+                        Ok(EvaluationResult::Value(elements[start_idx].clone().into()))
                     }
                     SliceType::RangeSlice => {
                         // Range slice: arr[start..end] returns array
                         let slice_elements = elements[start_idx..end_idx].to_vec();
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+                        Ok(EvaluationResult::Value(Object::Array(Box::new(slice_elements)).into()))
                     }
                 }
             }
@@ -303,11 +303,11 @@ impl EvaluationContext<'_> {
                             size: array_len
                         });
                     }
-                    Ok(EvaluationResult::Value(elements[start_idx].clone()))
+                    Ok(EvaluationResult::Value(elements[start_idx].clone().into()))
                 } else {
                     // Range slice: arr[start..end] returns array
                     let slice_elements = elements[start_idx..end_idx].to_vec();
-                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(slice_elements))))))
+                    Ok(EvaluationResult::Value(Object::Array(Box::new(slice_elements)).into()))
                 }
             }
             Object::Dict(dict) => {
@@ -325,7 +325,7 @@ impl EvaluationContext<'_> {
 
                         dict.get(&object_key)
                             .cloned()
-                            .map(EvaluationResult::Value)
+                            .map(|rc| EvaluationResult::Value(rc.into()))
                             .ok_or_else(|| InterpreterError::InternalError(format!("Key not found: {:?}", object_key)))
                     } else {
                         Err(InterpreterError::InternalError("Dictionary access requires key index".to_string()))
@@ -418,7 +418,7 @@ impl EvaluationContext<'_> {
                         let mut obj_borrowed = object_obj.borrow_mut();
                         if let Object::Array(elements) = &mut *obj_borrowed {
                             elements[resolved_idx] = value_obj.clone();
-                            Ok(EvaluationResult::Value(value_obj))
+                            Ok(EvaluationResult::Value(value_obj.into()))
                         } else {
                             Err(InterpreterError::InternalError("Expected array for slice assignment".to_string()))
                         }
@@ -447,7 +447,7 @@ impl EvaluationContext<'_> {
                         let mut obj_borrowed = object_obj.borrow_mut();
                         if let Object::Dict(dict) = &mut *obj_borrowed {
                             dict.insert(object_key, value_obj.clone());
-                            Ok(EvaluationResult::Value(value_obj))
+                            Ok(EvaluationResult::Value(value_obj.into()))
                         } else {
                             Err(InterpreterError::InternalError("Expected dict for assignment".to_string()))
                         }
@@ -481,7 +481,7 @@ impl EvaluationContext<'_> {
                         self.call_struct_method(object_obj, setitem_method, &args, &struct_name_str)?;
 
                         // Return the assigned value
-                        Ok(EvaluationResult::Value(value_obj))
+                        Ok(EvaluationResult::Value(value_obj.into()))
                     } else {
                         Err(InterpreterError::InternalError("Struct assignment requires index".to_string()))
                     }
@@ -510,7 +510,7 @@ impl EvaluationContext<'_> {
                     let args = vec![start_obj, end_obj, value_obj.clone()];
                     self.call_struct_method(object_obj, setslice_method, &args, &struct_name_str)?;
 
-                    Ok(EvaluationResult::Value(value_obj))
+                    Ok(EvaluationResult::Value(value_obj.into()))
                 }
             }
             _ => {

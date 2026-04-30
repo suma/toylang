@@ -44,14 +44,14 @@ impl EvaluationContext<'_> {
         // anyway, but we don't want to mask the original error).
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone()) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc()) {
                     self.environment.exit_block();
                     return Err(e);
                 }
                 Ok(EvaluationResult::Value(v))
             }
             Ok(EvaluationResult::Return(v)) => {
-                let ret = v.clone().unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
+                let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret) {
                     self.environment.exit_block();
                     return Err(e);
@@ -164,14 +164,14 @@ impl EvaluationContext<'_> {
 
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone()) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc()) {
                     self.environment.exit_block();
                     return Err(e);
                 }
                 Ok(EvaluationResult::Value(v))
             }
             Ok(EvaluationResult::Return(v)) => {
-                let ret = v.clone().unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
+                let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
                 if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret) {
                     self.environment.exit_block();
                     return Err(e);
@@ -246,7 +246,7 @@ impl EvaluationContext<'_> {
                     }
 
                     // Call function with pre-evaluated arguments
-                    Ok(EvaluationResult::Value(self.evaluate_function_with_values(func, &evaluated_args)?))
+                    Ok(EvaluationResult::Value(self.evaluate_function_with_values(func, &evaluated_args)?.into()))
                 }
                 _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
             }
@@ -261,7 +261,7 @@ impl EvaluationContext<'_> {
         // First check if this is a module qualified name (e.g., math.add)
         if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(&obj) {
             if let Some(module_value) = self.resolve_module_qualified_name(module_name, *field) {
-                return Ok(EvaluationResult::Value(module_value));
+                return Ok(EvaluationResult::Value(module_value.into()));
             }
         }
 
@@ -274,7 +274,7 @@ impl EvaluationContext<'_> {
             Object::Struct { fields, .. } => {
                 fields.get(field)
                     .cloned()
-                    .map(EvaluationResult::Value)
+                    .map(|rc| EvaluationResult::Value(rc.into()))
                     .ok_or_else(|| {
                         let field_name = self
                             .string_interner
@@ -303,7 +303,7 @@ impl EvaluationContext<'_> {
                 )));
             }
             let is_null = obj_borrowed.is_null();
-            return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(is_null)))));
+            return Ok(EvaluationResult::Value((Object::Bool(is_null)).into()));
         }
 
         match &*obj_borrowed {
@@ -323,7 +323,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let len = string_value.len() as u64;
 
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
+                        Ok(EvaluationResult::Value((Object::UInt64(len)).into()))
                     }
                     "contains" => {
                         if args.len() != 1 {
@@ -341,7 +341,7 @@ impl EvaluationContext<'_> {
                         let arg_string = arg_borrowed.to_string_value(&self.string_interner);
 
                         let contains = string_value.contains(&arg_string);
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(contains)))))
+                        Ok(EvaluationResult::Value((Object::Bool(contains)).into()))
                     }
                     "concat" => {
                         if args.len() != 1 {
@@ -360,7 +360,7 @@ impl EvaluationContext<'_> {
 
                         let concatenated = format!("{}{}", string_value, arg_string);
                         // Return as dynamic String, not interned - this is the key improvement
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(concatenated)))))
+                        Ok(EvaluationResult::Value((Object::String(concatenated)).into()))
                     }
                     "trim" => {
                         if !args.is_empty() {
@@ -373,7 +373,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let trimmed = string_value.trim().to_string();
                         // Return as dynamic String, not interned
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(trimmed)))))
+                        Ok(EvaluationResult::Value((Object::String(trimmed)).into()))
                     }
                     "to_upper" => {
                         if !args.is_empty() {
@@ -386,7 +386,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let upper = string_value.to_uppercase();
                         // Return as dynamic String, not interned
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(upper)))))
+                        Ok(EvaluationResult::Value((Object::String(upper)).into()))
                     }
                     "to_lower" => {
                         if !args.is_empty() {
@@ -399,7 +399,7 @@ impl EvaluationContext<'_> {
                         let string_value = obj_borrowed.to_string_value(&self.string_interner);
                         let lower = string_value.to_lowercase();
                         // Return as dynamic String, not interned
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(lower)))))
+                        Ok(EvaluationResult::Value((Object::String(lower)).into()))
                     }
                     _ => {
                         Err(InterpreterError::InternalError(format!(
@@ -420,7 +420,7 @@ impl EvaluationContext<'_> {
                             )));
                         }
                         let len = elements.len() as u64;
-                        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(len)))))
+                        Ok(EvaluationResult::Value((Object::UInt64(len)).into()))
                     }
                     _ => {
                         Err(InterpreterError::InternalError(format!(
@@ -486,7 +486,7 @@ impl EvaluationContext<'_> {
             fields: Box::new(field_values),
         };
 
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(struct_obj))))
+        Ok(EvaluationResult::Value((struct_obj).into()))
     }
 
     /// Evaluates associated function calls (like Container::new)
@@ -507,7 +507,7 @@ impl EvaluationContext<'_> {
                     variant_name: *function_name,
                     values: arg_values,
                 };
-                return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+                return Ok(EvaluationResult::Value((obj).into()));
             }
         }
 
@@ -548,11 +548,11 @@ impl EvaluationContext<'_> {
         for (i, arg) in args.iter().enumerate() {
             let name = function.parameter.get(i)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
-            let value = match self.evaluate(arg) {
-                Ok(EvaluationResult::Value(v)) => v,
+            let value: RcObject = match self.evaluate(arg) {
+                Ok(EvaluationResult::Value(v)) => v.into_rc(),
                 Ok(EvaluationResult::Return(v)) => {
                     self.environment.exit_block();
-                    return Ok(v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))));
+                    return Ok(v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))));
                 },
                 Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => {
                     self.environment.exit_block();
@@ -574,9 +574,9 @@ impl EvaluationContext<'_> {
             Ok(Rc::new(RefCell::new(Object::Unit)))
         } else {
             Ok(match res {
-                EvaluationResult::Value(v) => v,
+                EvaluationResult::Value(v) => v.into_rc(),
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
+                EvaluationResult::Return(v) => v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }
@@ -615,9 +615,9 @@ impl EvaluationContext<'_> {
             Rc::new(RefCell::new(Object::Unit))
         } else {
             match res {
-                EvaluationResult::Value(v) => v,
+                EvaluationResult::Value(v) => v.into_rc(),
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
-                EvaluationResult::Return(v) => v.unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
+                EvaluationResult::Return(v) => v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
                 EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             }
         };
@@ -646,7 +646,7 @@ impl EvaluationContext<'_> {
             let mut method_args = vec![object];
             method_args.extend_from_slice(args);
             let result = self.evaluate_function_with_values(method_func, &method_args)?;
-            return Ok(EvaluationResult::Value(result));
+            return Ok(EvaluationResult::Value(result.into()));
         }
 
         // Look for struct method
@@ -680,7 +680,7 @@ impl EvaluationContext<'_> {
         if let Some(func) = self.function.get(&function_name).cloned() {
             // This is a regular function, call it directly without self
             let result = self.evaluate_function_with_values(func, args)?;
-            return Ok(EvaluationResult::Value(result));
+            return Ok(EvaluationResult::Value(result.into()));
         }
 
         // Look for associated function in struct methods (but call without self)

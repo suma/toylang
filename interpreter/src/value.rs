@@ -236,6 +236,38 @@ impl Value {
     }
 }
 
+/// Convert an owned `Object` into a `Value`, lifting primitives out
+/// of any subsequent heap cell. Construction sites that previously
+/// wrote `Rc::new(RefCell::new(obj))` switch to `Value::from(obj)` to
+/// keep primitives off the heap.
+/// Convert a legacy `Rc<RefCell<Object>>` into a `Value`. Lifts
+/// primitives out of the heap cell; keeps the existing cell for
+/// composites. This is the inverse of `Value::into_rc`.
+impl From<RcObject> for Value {
+    fn from(rc: RcObject) -> Self {
+        Value::from_rc(&rc)
+    }
+}
+
+impl From<Object> for Value {
+    fn from(obj: Object) -> Self {
+        // `Object` implements `Drop`, so we can't move primitive
+        // payloads out by destructuring. Inspect by reference and
+        // copy the small-value payload manually.
+        match &obj {
+            Object::Bool(b) => Value::Bool(*b),
+            Object::Int64(v) => Value::Int64(*v),
+            Object::UInt64(v) => Value::UInt64(*v),
+            Object::Float64(v) => Value::Float64(*v),
+            Object::ConstString(sym) => Value::ConstString(*sym),
+            Object::Pointer(addr) => Value::Pointer(*addr),
+            Object::Null(td) => Value::Null(td.clone()),
+            Object::Unit => Value::Unit,
+            _ => Value::Heap(Rc::new(RefCell::new(obj))),
+        }
+    }
+}
+
 fn is_primitive_variant(obj: &Object) -> bool {
     matches!(
         obj,

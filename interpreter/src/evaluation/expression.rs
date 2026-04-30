@@ -44,7 +44,7 @@ impl EvaluationContext<'_> {
             Expr::Identifier(s) => {
                 let val = self.environment.get_val(s)
                     .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {s:?}")))?;
-                Ok(EvaluationResult::Value(val))
+                Ok(EvaluationResult::Value(val.into()))
             }
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
                 self.evaluate_if_elif_else(&cond, &then, &elif_pairs, &_else)
@@ -106,7 +106,7 @@ impl EvaluationContext<'_> {
                 let end_val = self.evaluate(&end);
                 let end_val = try_value!(end_val);
                 let obj = Object::Range { start: start_val, end: end_val };
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
+                Ok(EvaluationResult::Value((obj).into()))
             }
             Expr::With(allocator, body) => {
                 // Evaluate the allocator expression. The type checker already ensures
@@ -144,7 +144,7 @@ impl EvaluationContext<'_> {
     /// Evaluates literal values (Int64, UInt64, String, True, False)
     pub(super) fn evaluate_literal(&self, expr: &Expr) -> Result<EvaluationResult, InterpreterError> {
         let obj = convert_object(expr)?;
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
+        Ok(EvaluationResult::Value((obj).into()))
     }
 
     /// Evaluates if-elif-else control structure
@@ -224,7 +224,7 @@ impl EvaluationContext<'_> {
             let obj = try_value!(Ok(value));
             array_objects.push(obj);
         }
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(array_objects))))))
+        Ok(EvaluationResult::Value(Object::Array(Box::new(array_objects)).into()))
     }
 
     pub(super) fn evaluate_dict_literal(&mut self, entries: &[(ExprRef, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
@@ -247,7 +247,7 @@ impl EvaluationContext<'_> {
         }
 
         let dict_obj = Object::Dict(Box::new(dict));
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(dict_obj))))
+        Ok(EvaluationResult::Value((dict_obj).into()))
     }
 
     pub(super) fn evaluate_tuple_literal(&mut self, elements: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
@@ -260,7 +260,7 @@ impl EvaluationContext<'_> {
         }
 
         let tuple_obj = Object::Tuple(Box::new(tuple_elements));
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(tuple_obj))))
+        Ok(EvaluationResult::Value((tuple_obj).into()))
     }
 
     pub(super) fn evaluate_tuple_access(&mut self, tuple: &ExprRef, index: usize) -> Result<EvaluationResult, InterpreterError> {
@@ -276,7 +276,7 @@ impl EvaluationContext<'_> {
                         size: elements.len()
                     });
                 }
-                Ok(EvaluationResult::Value(Rc::clone(&elements[index])))
+                Ok(EvaluationResult::Value(Rc::clone(&elements[index]).into()))
             }
             _ => {
                 Err(InterpreterError::InternalError(format!(
@@ -318,7 +318,7 @@ impl EvaluationContext<'_> {
             }
         };
 
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(result))))
+        Ok(EvaluationResult::Value((result).into()))
     }
 
     /// Resolve module qualified name (e.g., math.add -> module [math], variable add)
@@ -352,7 +352,7 @@ impl EvaluationContext<'_> {
                             variant_name: path[1],
                             values: Vec::new(),
                         };
-                        return Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))));
+                        return Ok(EvaluationResult::Value((obj).into()));
                     }
                 }
             }
@@ -363,7 +363,7 @@ impl EvaluationContext<'_> {
         if let Some(last_symbol) = path.last() {
             // Try to look up the qualified name in the environment
             if let Some(val) = self.environment.get_val(*last_symbol) {
-                Ok(EvaluationResult::Value(val))
+                Ok(EvaluationResult::Value(val.into()))
             } else {
                 Err(InterpreterError::UndefinedVariable(format!("Qualified identifier not found: {:?}", path)))
             }

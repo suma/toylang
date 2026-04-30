@@ -51,7 +51,7 @@ impl EvaluationContext<'_> {
             current = current + one;
         }
 
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::null_unknown()))))
+        Ok(EvaluationResult::Value((Object::null_unknown()).into()))
     }
 
     pub fn evaluate_block(&mut self, statements: &[StmtRef] ) -> Result<EvaluationResult, InterpreterError> {
@@ -115,7 +115,7 @@ impl EvaluationContext<'_> {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
                         EvaluationResult::Break => return Ok(EvaluationResult::Break),
                         EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
-                        _ => last = Some(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit)))),
+                        _ => last = Some(EvaluationResult::Value((Object::Unit).into())),
                     }
                 }
                 Stmt::Expression(expr) => {
@@ -208,7 +208,7 @@ impl EvaluationContext<'_> {
                 return Err(InterpreterError::InternalError("While body is not a block".to_string()));
             }
         }
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+        Ok(EvaluationResult::Value((Object::Unit).into()))
     }
 
     /// Handles for loop execution
@@ -265,7 +265,7 @@ impl EvaluationContext<'_> {
             }
             Expr::Int64(_) | Expr::UInt64(_) | Expr::String(_) => {
                 let obj = convert_object(&e)?;
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(obj))))
+                Ok(EvaluationResult::Value((obj).into()))
             }
             Expr::Identifier(s) => {
                 self.handle_identifier_expression(s)
@@ -340,7 +340,7 @@ impl EvaluationContext<'_> {
         }
 
         let cloned_value = new_value.borrow().clone();
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(cloned_value))))
+        Ok(EvaluationResult::Value((cloned_value).into()))
     }
 
     /// Handles variable assignment
@@ -386,7 +386,7 @@ impl EvaluationContext<'_> {
 
         self.environment.set_var(name, rhs.clone(), VariableSetType::Overwrite, self.string_interner)?;
         let cloned_value = rhs.borrow().clone();
-        Ok(EvaluationResult::Value(Rc::new(RefCell::new(cloned_value))))
+        Ok(EvaluationResult::Value((cloned_value).into()))
     }
 
 
@@ -398,7 +398,7 @@ impl EvaluationContext<'_> {
             let s = self.string_interner.resolve(symbol).unwrap_or("<NOT_FOUND>");
             return Err(InterpreterError::UndefinedVariable(format!("Identifier {s} is null")));
         }
-        Ok(EvaluationResult::Value(obj_ref.unwrap()))
+        Ok(EvaluationResult::Value(obj_ref.unwrap().into()))
     }
 
     /// Handles nested block expressions

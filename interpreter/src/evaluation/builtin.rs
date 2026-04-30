@@ -73,7 +73,7 @@ impl EvaluationContext<'_> {
                     });
                 }
                 let is_null = receiver.borrow().is_null();
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(is_null)))))
+                Ok(EvaluationResult::Value((Object::Bool(is_null)).into()))
             }
 
             BuiltinMethod::StrLen => {
@@ -87,7 +87,7 @@ impl EvaluationContext<'_> {
 
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let length = string_value.len() as u64;
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(length)))))
+                Ok(EvaluationResult::Value((Object::UInt64(length)).into()))
             }
 
             BuiltinMethod::StrConcat => {
@@ -107,7 +107,7 @@ impl EvaluationContext<'_> {
 
                 let concatenated = format!("{}{}", string_value, arg_string);
                 // Return as dynamic String, not interned - this is the key improvement
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(concatenated)))))
+                Ok(EvaluationResult::Value((Object::String(concatenated)).into()))
             }
 
             BuiltinMethod::StrSubstring => {
@@ -138,7 +138,7 @@ impl EvaluationContext<'_> {
 
                 let substring = string_value[start..end].to_string();
                 // Return as dynamic String, not interned
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(substring)))))
+                Ok(EvaluationResult::Value((Object::String(substring)).into()))
             }
 
             BuiltinMethod::StrContains => {
@@ -163,7 +163,7 @@ impl EvaluationContext<'_> {
                     .to_string();
 
                 let contains = string_value.contains(&arg_string);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(contains)))))
+                Ok(EvaluationResult::Value((Object::Bool(contains)).into()))
             }
 
             BuiltinMethod::StrTrim => {
@@ -178,7 +178,7 @@ impl EvaluationContext<'_> {
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let trimmed = string_value.trim().to_string();
                 // Return as dynamic String, not interned
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(trimmed)))))
+                Ok(EvaluationResult::Value((Object::String(trimmed)).into()))
             }
 
             BuiltinMethod::StrToUpper => {
@@ -193,7 +193,7 @@ impl EvaluationContext<'_> {
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let upper = string_value.to_uppercase();
                 // Return as dynamic String, not interned
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(upper)))))
+                Ok(EvaluationResult::Value((Object::String(upper)).into()))
             }
 
             BuiltinMethod::StrToLower => {
@@ -208,7 +208,7 @@ impl EvaluationContext<'_> {
                 let string_value = receiver.borrow().to_string_value(&self.string_interner);
                 let lower = string_value.to_lowercase();
                 // Return as dynamic String, not interned
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::String(lower)))))
+                Ok(EvaluationResult::Value((Object::String(lower)).into()))
             }
 
             BuiltinMethod::StrSplit => {
@@ -233,7 +233,7 @@ impl EvaluationContext<'_> {
                     })
                     .collect();
 
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Array(Box::new(parts))))))
+                Ok(EvaluationResult::Value(Object::Array(Box::new(parts)).into()))
             }
         }
     }
@@ -264,7 +264,7 @@ impl EvaluationContext<'_> {
                     .expect("allocator_stack must always contain the global allocator")
                     .clone();
                 let addr = allocator.alloc(size as usize);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(addr)))))
+                Ok(EvaluationResult::Value((Object::Pointer(addr)).into()))
             }
 
             BuiltinFunction::HeapFree => {
@@ -286,7 +286,7 @@ impl EvaluationContext<'_> {
                     .expect("allocator_stack must always contain the global allocator")
                     .clone();
                 allocator.free(addr);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                Ok(EvaluationResult::Value((Object::Unit).into()))
             }
 
             BuiltinFunction::HeapRealloc => {
@@ -313,7 +313,7 @@ impl EvaluationContext<'_> {
                     .expect("allocator_stack must always contain the global allocator")
                     .clone();
                 let new_addr = allocator.realloc(old_addr, new_size as usize);
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Pointer(new_addr)))))
+                Ok(EvaluationResult::Value((Object::Pointer(new_addr)).into()))
             }
 
             // Pointer operations
@@ -341,10 +341,10 @@ impl EvaluationContext<'_> {
                 // Fall back to the byte-level u64 read so the classic
                 // List<u64> path keeps working.
                 if let Some(value) = self.heap_manager.borrow().typed_read(addr, offset as usize) {
-                    return Ok(EvaluationResult::Value(value));
+                    return Ok(EvaluationResult::Value(value.into()));
                 }
                 match self.heap_manager.borrow().read_u64(addr, offset as usize) {
-                    Some(value) => Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(value))))),
+                    Some(value) => Ok(EvaluationResult::Value((Object::UInt64(value)).into())),
                     None => Err(InterpreterError::InternalError("Invalid memory access in ptr_read".to_string())),
                 }
             }
@@ -388,7 +388,7 @@ impl EvaluationContext<'_> {
                 if matches!(value_type, TypeDecl::UInt64) && !bytes_written {
                     return Err(InterpreterError::InternalError("Invalid memory access in ptr_write".to_string()));
                 }
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                Ok(EvaluationResult::Value((Object::Unit).into()))
             }
 
             BuiltinFunction::PtrIsNull => {
@@ -404,7 +404,7 @@ impl EvaluationContext<'_> {
                 let ptr_obj = try_value!(Ok(ptr_result));
                 let addr = ptr_obj.borrow().try_unwrap_pointer()
                     .map_err(|_| InterpreterError::InternalError("ptr_is_null expects pointer".to_string()))?;
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Bool(addr == 0)))))
+                Ok(EvaluationResult::Value((Object::Bool(addr == 0)).into()))
             }
 
             // Memory operations
@@ -433,7 +433,7 @@ impl EvaluationContext<'_> {
                     .map_err(|_| InterpreterError::InternalError("mem_copy expects u64 size as third argument".to_string()))?;
 
                 if self.heap_manager.borrow_mut().copy_memory(src_addr, dest_addr, size as usize) {
-                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                    Ok(EvaluationResult::Value((Object::Unit).into()))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_copy".to_string()))
                 }
@@ -464,7 +464,7 @@ impl EvaluationContext<'_> {
                     .map_err(|_| InterpreterError::InternalError("mem_move expects u64 size as third argument".to_string()))?;
 
                 if self.heap_manager.borrow_mut().move_memory(src_addr, dest_addr, size as usize) {
-                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                    Ok(EvaluationResult::Value((Object::Unit).into()))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_move".to_string()))
                 }
@@ -495,7 +495,7 @@ impl EvaluationContext<'_> {
                     .map_err(|_| InterpreterError::InternalError("mem_set expects u64 size as third argument".to_string()))?;
 
                 if self.heap_manager.borrow_mut().set_memory(addr, value as u8, size as usize) {
-                    Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                    Ok(EvaluationResult::Value((Object::Unit).into()))
                 } else {
                     Err(InterpreterError::InternalError("Invalid memory access in mem_set".to_string()))
                 }
@@ -515,7 +515,7 @@ impl EvaluationContext<'_> {
                     .last()
                     .expect("allocator_stack must always contain the global allocator")
                     .clone();
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Allocator(top)))))
+                Ok(EvaluationResult::Value((Object::Allocator(top)).into()))
             }
 
             BuiltinFunction::DefaultAllocator => {
@@ -526,9 +526,7 @@ impl EvaluationContext<'_> {
                         found: args.len(),
                     });
                 }
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
-                    Object::Allocator(self.global_allocator.clone()),
-                ))))
+                Ok(EvaluationResult::Value(Object::Allocator(self.global_allocator.clone()).into()))
             }
 
             BuiltinFunction::ArenaAllocator => {
@@ -544,9 +542,7 @@ impl EvaluationContext<'_> {
                 let arena: Rc<dyn crate::heap::Allocator> = Rc::new(
                     crate::heap::ArenaAllocator::new(self.heap_manager.clone()),
                 );
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
-                    Object::Allocator(arena),
-                ))))
+                Ok(EvaluationResult::Value(Object::Allocator(arena).into()))
             }
 
             BuiltinFunction::SizeOf => {
@@ -567,7 +563,7 @@ impl EvaluationContext<'_> {
                         value.borrow()
                     ))
                 })?;
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::UInt64(size)))))
+                Ok(EvaluationResult::Value((Object::UInt64(size)).into()))
             }
 
             BuiltinFunction::Panic => {
@@ -606,7 +602,7 @@ impl EvaluationContext<'_> {
                     .try_unwrap_bool()
                     .map_err(InterpreterError::ObjectError)?;
                 if passed {
-                    return Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))));
+                    return Ok(EvaluationResult::Value((Object::Unit).into()));
                 }
                 let msg_val = self.evaluate(&args[1])?;
                 let msg_val = try_value!(Ok(msg_val));
@@ -633,7 +629,7 @@ impl EvaluationContext<'_> {
                 } else {
                     print!("{}", rendered);
                 }
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(Object::Unit))))
+                Ok(EvaluationResult::Value((Object::Unit).into()))
             }
 
             BuiltinFunction::FixedBufferAllocator => {
@@ -653,9 +649,7 @@ impl EvaluationContext<'_> {
                 let allocator: Rc<dyn crate::heap::Allocator> = Rc::new(
                     crate::heap::FixedBufferAllocator::new(self.heap_manager.clone(), capacity as usize),
                 );
-                Ok(EvaluationResult::Value(Rc::new(RefCell::new(
-                    Object::Allocator(allocator),
-                ))))
+                Ok(EvaluationResult::Value(Object::Allocator(allocator).into()))
             }
         }
     }

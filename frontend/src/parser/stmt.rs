@@ -526,27 +526,43 @@ pub fn parse_impl_methods_with_generic_context(
                         let s = s.to_string();
                         parser.next();
                         let method_name = parser.string_interner.get_or_intern(s);
-                        
-                        // Parse optional method generic parameters: fn name<T>
-                        let method_generic_params: Vec<string_interner::DefaultSymbol> = if parser.peek() == Some(&Kind::LT) {
-                            // For now, methods inherit generic parameters from impl block
-                            // In full implementation, methods can have their own generics too
-                            skip_until_matching_gt(parser);
-                            vec![]
+
+                        // Parse optional method generic parameters: fn name<T, U>.
+                        // Independent from the impl block's generic params; the
+                        // two are merged into `combined_generic_params` below
+                        // so the type-checker / monomorphisation pass sees the
+                        // full set when binding bodies.
+                        let (method_only_params, method_only_bounds) = if parser.peek()
+                            == Some(&Kind::LT)
+                        {
+                            parser.parse_generic_params()?
                         } else {
-                            vec![]
+                            (Vec::new(), std::collections::HashMap::new())
                         };
-                        
+
+                        // Parameter / return-type parsing must see both the
+                        // impl-level params AND the method-only params as
+                        // generics, otherwise method-only `U` parses as a
+                        // bare Identifier and downstream type-checking can't
+                        // tell it from a struct name.
+                        let mut combined_generic_params: Vec<string_interner::DefaultSymbol> =
+                            generic_params.to_vec();
+                        combined_generic_params.extend(method_only_params.iter().copied());
+
                         parser.expect_err(&Kind::ParenOpen)?;
-                        let (params, has_self) = parse_method_param_list_with_generic_context(parser, vec![], generic_params)?;
+                        let (params, has_self) = parse_method_param_list_with_generic_context(
+                            parser,
+                            vec![],
+                            &combined_generic_params,
+                        )?;
                         parser.expect_err(&Kind::ParenClose)?;
-                        
+
                         let mut ret_ty: Option<TypeDecl> = None;
                         match parser.peek() {
                             Some(Kind::Arrow) => {
                                 parser.expect_err(&Kind::Arrow)?;
-                                // Use generic context-aware type parsing
-                                let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> = generic_params.iter().cloned().collect();
+                                let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
+                                    combined_generic_params.iter().cloned().collect();
                                 ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
                             }
                             _ => (),
@@ -556,17 +572,18 @@ pub fn parse_impl_methods_with_generic_context(
                         let block = super::expr::parse_block(parser)?;
                         let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
 
-                        // Combine impl-level and method-level generic parameters
-                        let mut combined_generic_params = generic_params.to_vec();
-                        combined_generic_params.extend(method_generic_params);
+                        // Method-level bounds layer on top of the impl-level
+                        // bounds; method bounds win on conflict.
+                        let mut merged_bounds = generic_bounds.clone();
+                        for (k, v) in &method_only_bounds {
+                            merged_bounds.insert(*k, v.clone());
+                        }
 
                         methods.push(Rc::new(MethodFunction {
                             node: Node::new(fn_start_pos, fn_end_pos),
                             name: method_name,
                             generic_params: combined_generic_params,
-                            // Methods inherit the impl-level bounds. Method-level
-                            // bounds will merge here once they are supported.
-                            generic_bounds: generic_bounds.clone(),
+                            generic_bounds: merged_bounds,
                             parameter: params,
                             return_type: ret_ty,
                             requires,

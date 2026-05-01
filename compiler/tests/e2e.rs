@@ -674,6 +674,60 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn method_only_generic_param() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase X: `fn pick<U>(self, a: U, b: U) -> U` — method has its
+    // own generic param U, independent of the (non-generic) struct
+    // Box. The frontend parser now actually parses `<U>` and the
+    // type checker substitutes U from arg types. The compiler's
+    // `instantiate_generic_method_with_args` infers U from arg
+    // types at the call site.
+    let src = r#"
+        struct Box { tag: i64 }
+        impl Box {
+            fn pick<U>(self: Self, a: U, b: U) -> U {
+                if self.tag == 0i64 { a } else { b }
+            }
+        }
+        fn main() -> u64 {
+            val b = Box { tag: 0i64 }
+            val r: i64 = b.pick(7i64, 13i64)
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_only_gen"), 7);
+}
+
+#[test]
+fn method_only_generic_param_multi_inst() {
+    if skip_e2e() {
+        return;
+    }
+    // The same `pick<U>` instantiated for U=i64, u64, bool — each
+    // gets its own monomorphised FuncId via the
+    // `(target, method, type_args)` cache key.
+    let src = r#"
+        struct Box { tag: i64 }
+        impl Box {
+            fn pick<U>(self: Self, a: U, b: U) -> U {
+                if self.tag == 0i64 { a } else { b }
+            }
+        }
+        fn main() -> u64 {
+            val b = Box { tag: 0i64 }
+            val r1: i64 = b.pick(7i64, 13i64)
+            val r2: u64 = b.pick(100u64, 200u64)
+            val r3: bool = b.pick(true, false)
+            val flag: u64 = if r3 { 1u64 } else { 0u64 }
+            (r1 as u64) + r2 + flag
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_only_gen_multi"), 108);
+}
+
+#[test]
 fn val_rhs_struct_returning_method() {
     if skip_e2e() {
         return;

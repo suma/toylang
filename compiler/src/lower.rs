@@ -2402,7 +2402,7 @@ impl<'a> FunctionLower<'a> {
         // branches below for plain function calls.
         if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
             if let Some((target_id, recv_binding)) =
-                self.resolve_method_target(&recv, method_sym)?
+                self.resolve_method_target(&recv, method_sym, &method_args)?
             {
                 let target_ret = self.module.function(target_id).return_type;
                 if matches!(
@@ -6838,48 +6838,84 @@ impl<'a> FunctionLower<'a> {
     }
 
     /// Materialise (or fetch) the FuncId for a generic-method
-    /// instance. The substitution comes positionally from the
-    /// receiver's struct `type_args` (the `impl<T>` params line up
-    /// with the struct's params by convention). If a matching
-    /// instance is already in `method_instances`, reuse it; otherwise
-    /// declare a fresh `FuncId` with the substituted signature and
-    /// push a body-lowering job onto `pending_method_work`.
-    fn instantiate_generic_method(
+    /// instance. Handles two flavours uniformly: impl-level generic
+    /// params (covered by the receiver's `struct_def.type_args`,
+    /// e.g. `impl<T> Cell<T> { fn get(self) -> T }`) and
+    /// method-only generic params beyond the impl's count
+    /// (`impl Box { fn pick<U>(self, a: U, b: U) -> U }`),
+    /// inferred from the call site's argument types.
+    fn instantiate_generic_method_with_args(
         &mut self,
         target_sym: DefaultSymbol,
         method_sym: DefaultSymbol,
         template: &frontend::ast::MethodFunction,
         recv_struct_id: StructId,
+        arg_refs: &[ExprRef],
     ) -> Result<FuncId, String> {
         let recv_type_args =
             self.module.struct_def(recv_struct_id).type_args.clone();
-        if template.generic_params.len() != recv_type_args.len() {
+        let impl_param_count = recv_type_args.len();
+        if template.generic_params.len() < impl_param_count {
             return Err(format!(
-                "compiler MVP: generic method `{}::{}` has {} generic params but receiver supplies {} type args",
+                "compiler MVP: generic method `{}::{}` has fewer generic params than receiver type_args",
                 self.interner.resolve(target_sym).unwrap_or("?"),
                 self.interner.resolve(method_sym).unwrap_or("?"),
-                template.generic_params.len(),
-                recv_type_args.len(),
             ));
         }
+        // Build subst: impl-level params come from receiver, then
+        // walk method args to infer method-only params.
+        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+        for (i, p) in template.generic_params.iter().enumerate() {
+            if let Some(ty) = recv_type_args.get(i).copied() {
+                subst.insert(*p, ty);
+            }
+        }
+        let method_only_params: Vec<DefaultSymbol> = template
+            .generic_params
+            .iter()
+            .skip(impl_param_count)
+            .copied()
+            .collect();
+        if !method_only_params.is_empty() {
+            // Method param[0] is `self`; call args[i] corresponds to
+            // method param[i+1]. Walk each pair, looking for
+            // `Generic(P)` slots that match a method-only param.
+            for (i, arg_ref) in arg_refs.iter().enumerate() {
+                let param_idx = i + 1;
+                let declared = match template.parameter.get(param_idx) {
+                    Some((_, t)) => t.clone(),
+                    None => continue,
+                };
+                let arg_ty = match self.value_scalar(arg_ref) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                self.bind_method_only_param(&declared, arg_ty, &method_only_params, &mut subst);
+            }
+            for p in &method_only_params {
+                if !subst.contains_key(p) {
+                    return Err(format!(
+                        "compiler MVP: could not infer method-only generic param `{}` for `{}::{}`",
+                        self.interner.resolve(*p).unwrap_or("?"),
+                        self.interner.resolve(target_sym).unwrap_or("?"),
+                        self.interner.resolve(method_sym).unwrap_or("?"),
+                    ));
+                }
+            }
+        }
+        let inst_args: Vec<Type> = template
+            .generic_params
+            .iter()
+            .filter_map(|p| subst.get(p).copied())
+            .collect();
         if let Some(id) = self
             .method_instances
-            .get(&(target_sym, method_sym, recv_type_args.clone()))
+            .get(&(target_sym, method_sym, inst_args.clone()))
             .copied()
         {
             return Ok(id);
         }
-        let subst: HashMap<DefaultSymbol, Type> = template
-            .generic_params
-            .iter()
-            .copied()
-            .zip(recv_type_args.iter().copied())
-            .collect();
-        // Build the substituted signature. `Self` resolves directly
-        // to the receiver's `Type::Struct(recv_struct_id)`; generic
-        // param references go through `subst`. We bypass the
-        // TypeDecl-roundtrip path for these because the receiver's
-        // struct is already interned in the IR.
+        // Build the substituted signature.
         let self_type = Type::Struct(recv_struct_id);
         let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
         for (pname, pty) in &template.parameter {
@@ -6907,7 +6943,7 @@ impl<'a> FunctionLower<'a> {
         };
         let target_str = self.interner.resolve(target_sym).unwrap_or("?");
         let method_str = self.interner.resolve(method_sym).unwrap_or("?");
-        let arg_str = recv_type_args
+        let arg_str = inst_args
             .iter()
             .map(|t| format!("{:?}", t))
             .collect::<Vec<_>>()
@@ -6917,7 +6953,7 @@ impl<'a> FunctionLower<'a> {
             .module
             .declare_function_anon(export_name, Linkage::Local, params, ret);
         self.method_instances
-            .insert((target_sym, method_sym, recv_type_args), func_id);
+            .insert((target_sym, method_sym, inst_args), func_id);
         self.pending_method_work.push(PendingMethodInstance {
             func_id,
             target_sym,
@@ -6925,6 +6961,25 @@ impl<'a> FunctionLower<'a> {
             subst,
         });
         Ok(func_id)
+    }
+
+    /// Walk `declared` against `arg_ty`, binding any
+    /// `Generic(P)` (or `Identifier(P)` defensive) entries in
+    /// `params` to the runtime type. Recurses through Struct/Enum
+    /// type-args and Tuple elements.
+    fn bind_method_only_param(
+        &self,
+        declared: &TypeDecl,
+        arg_ty: Type,
+        params: &[DefaultSymbol],
+        subst: &mut HashMap<DefaultSymbol, Type>,
+    ) {
+        match declared {
+            TypeDecl::Generic(p) | TypeDecl::Identifier(p) if params.contains(p) => {
+                subst.entry(*p).or_insert(arg_ty);
+            }
+            _ => {}
+        }
     }
 
     /// Lower `arr[index]`. Phase S only handles single-element
@@ -7077,17 +7132,18 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    /// Resolve `obj.method` to a `(FuncId, receiver Binding)` pair
-    /// without lowering anything. Used by paths (val rhs, print
-    /// argument, future expression-position consumers) that need to
-    /// know the target's signature before deciding what call shape
-    /// to emit. Returns `Ok(None)` when the receiver isn't a
-    /// struct/enum binding (so callers can fall back to the regular
-    /// `lower_method_call` error path).
+    /// Resolve `obj.method(args)` to a `(FuncId, receiver Binding)`
+    /// pair without lowering the call itself. Used by paths (val
+    /// rhs, print argument, future expression-position consumers)
+    /// that need to know the target's signature before deciding
+    /// what call shape to emit. Args are needed because generic
+    /// methods with method-only generic params infer those from
+    /// the call's argument types.
     fn resolve_method_target(
         &mut self,
         obj: &ExprRef,
         method: DefaultSymbol,
+        args: &[ExprRef],
     ) -> Result<Option<(FuncId, Binding)>, String> {
         let obj_expr = self
             .program
@@ -7119,11 +7175,16 @@ impl<'a> FunctionLower<'a> {
                 Binding::Struct { struct_id, .. } => *struct_id,
                 _ => return Ok(None),
             };
-            let id = self.instantiate_generic_method(
+            // Always go through the args-aware path so method-only
+            // generic params can be inferred when present. With
+            // empty args the inference loop is a no-op and the
+            // behaviour matches the impl-only-generic case.
+            let id = self.instantiate_generic_method_with_args(
                 target_sym,
                 method,
                 &template,
                 recv_struct_id,
+                args,
             )?;
             return Ok(Some((id, binding)));
         }
@@ -7199,11 +7260,12 @@ impl<'a> FunctionLower<'a> {
                     ));
                 }
             };
-            self.instantiate_generic_method(
+            self.instantiate_generic_method_with_args(
                 target_sym,
                 method,
                 &template,
                 recv_struct_id,
+                args,
             )?
         } else {
             return Err(format!(
@@ -7449,14 +7511,14 @@ impl<'a> FunctionLower<'a> {
                     _ => None,
                 }
             }
-            Expr::MethodCall(obj, method, _) => {
+            Expr::MethodCall(obj, method, args) => {
                 // Resolve receiver via the binding table; pull its
                 // struct/enum symbol; look up the method's return
                 // type via the registry so val annotations can rely
                 // on the inferred scalar. Generic methods get their
                 // return type via the template + receiver type_args
-                // (lifted to a static lookup so we don't trigger
-                // monomorphisation just to peek at the type).
+                // (impl-level) plus arg-type inference for any
+                // method-only generic params.
                 let obj_expr = self.program.expression.get(&obj)?;
                 let recv_sym = match obj_expr {
                     Expr::Identifier(s) => s,
@@ -7481,13 +7543,39 @@ impl<'a> FunctionLower<'a> {
                 {
                     let recv_type_args =
                         self.module.struct_def(struct_id).type_args.clone();
-                    if template.generic_params.len() == recv_type_args.len() {
-                        let subst: HashMap<DefaultSymbol, Type> = template
+                    if template.generic_params.len() >= recv_type_args.len() {
+                        let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
+                        for (i, p) in template.generic_params.iter().enumerate() {
+                            if let Some(t) = recv_type_args.get(i).copied() {
+                                subst.insert(*p, t);
+                            }
+                        }
+                        // Method-only params: try to peek arg types
+                        // and bind anything in the method's param
+                        // type_decls. Falls back gracefully if any
+                        // arg's type can't be peeked (returns None).
+                        let method_only_params: Vec<DefaultSymbol> = template
                             .generic_params
                             .iter()
+                            .skip(recv_type_args.len())
                             .copied()
-                            .zip(recv_type_args.iter().copied())
                             .collect();
+                        if !method_only_params.is_empty() {
+                            for (i, arg_ref) in args.iter().enumerate() {
+                                let param_idx = i + 1;
+                                if let Some((_, decl)) = template.parameter.get(param_idx) {
+                                    if let Some(arg_ty) = self.value_scalar(arg_ref) {
+                                        if let TypeDecl::Generic(p) | TypeDecl::Identifier(p)
+                                            = decl
+                                        {
+                                            if method_only_params.contains(p) {
+                                                subst.entry(*p).or_insert(arg_ty);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if let Some(ret) = &template.return_type {
                             return self.peek_method_return_type(ret, &subst, struct_id);
                         }

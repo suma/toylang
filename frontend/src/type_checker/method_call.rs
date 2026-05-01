@@ -14,6 +14,48 @@ use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 use crate::type_checker::generics::GenericTypeChecking;
 use crate::type_checker::method::MethodProcessing;
 
+/// Walk a declared `TypeDecl` against the actual `arg_ty`, populating
+/// `out` with `Generic(P) -> ConcreteType` mappings whenever a generic
+/// param `P` (one of `params`) appears in `declared`. Recurses through
+/// `Struct(_, args)` / `Enum(_, args)` / `Tuple(_)` so nested generic
+/// positions resolve too. Skips conflicting bindings — the caller is
+/// trusted to only feed compatible (declared, arg) pairs.
+fn collect_substitution(
+    declared: &TypeDecl,
+    arg_ty: &TypeDecl,
+    params: &[DefaultSymbol],
+    out: &mut HashMap<DefaultSymbol, TypeDecl>,
+) {
+    match declared {
+        TypeDecl::Generic(p) if params.contains(p) => {
+            out.entry(*p).or_insert_with(|| arg_ty.clone());
+        }
+        TypeDecl::Identifier(p) if params.contains(p) => {
+            // Method-only params can sometimes still appear as
+            // Identifier (defensive — the parser flow normally lifts
+            // them to Generic via the generic_context).
+            out.entry(*p).or_insert_with(|| arg_ty.clone());
+        }
+        TypeDecl::Struct(_, decl_args) | TypeDecl::Enum(_, decl_args) => {
+            let arg_args = match arg_ty {
+                TypeDecl::Struct(_, a) | TypeDecl::Enum(_, a) => a.clone(),
+                _ => return,
+            };
+            for (d, a) in decl_args.iter().zip(arg_args.iter()) {
+                collect_substitution(d, a, params, out);
+            }
+        }
+        TypeDecl::Tuple(decl_elems) => {
+            if let TypeDecl::Tuple(arg_elems) = arg_ty {
+                for (d, a) in decl_elems.iter().zip(arg_elems.iter()) {
+                    collect_substitution(d, a, params, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 impl<'a> TypeCheckerVisitor<'a> {
     /// Type check method calls - implementation used by type_checker.rs
     pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
@@ -139,10 +181,39 @@ impl<'a> TypeCheckerVisitor<'a> {
                     )));
                 }
             } else {
-                // Handle non-generic struct method call
-                if let Some(method_return_type) = self.context.get_method_return_type(&struct_name_str, &method_name, &self.core.string_interner) {
-                    // Resolve `Self` and bare `Identifier(name)` to the concrete
-                    // struct type so chained method calls find the next method.
+                // Handle non-generic struct method call. Method-only
+                // generic params (`fn pick<U>(...)`) need substitution
+                // from the actual argument types — pull the method
+                // function and infer.
+                if let Some(method_func) =
+                    self.context.get_struct_method(*struct_name, *method).cloned()
+                {
+                    let method_return_type = method_func
+                        .return_type
+                        .clone()
+                        .unwrap_or(TypeDecl::Unit);
+                    let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
+                        HashMap::new();
+                    if !method_func.generic_params.is_empty() {
+                        // Visit each call argument and bind any
+                        // matching `Generic(P)` slot in the method's
+                        // declared params to the runtime arg type.
+                        // Skip the first parameter (self).
+                        for (i, arg_ref) in args.iter().enumerate() {
+                            let param_idx = i + 1;
+                            if let Some((_, declared_ty)) =
+                                method_func.parameter.get(param_idx)
+                            {
+                                let arg_ty = self.visit_expr(arg_ref)?;
+                                collect_substitution(
+                                    declared_ty,
+                                    &arg_ty,
+                                    &method_func.generic_params,
+                                    &mut substitutions,
+                                );
+                            }
+                        }
+                    }
                     let resolved = match method_return_type {
                         TypeDecl::Self_ => TypeDecl::Struct(*struct_name, vec![]),
                         TypeDecl::Identifier(name)
@@ -150,7 +221,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                         {
                             TypeDecl::Struct(name, vec![])
                         }
-                        other => other,
+                        TypeDecl::Generic(p) => {
+                            substitutions.get(&p).cloned().unwrap_or(TypeDecl::Generic(p))
+                        }
+                        other => other.substitute_generics(&substitutions),
                     };
                     return Ok(resolved);
                 }

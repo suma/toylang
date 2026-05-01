@@ -34,7 +34,7 @@ use string_interner::DefaultSymbol;
 
 use super::bindings::Binding;
 use super::templates::{instantiate_enum, instantiate_struct};
-use super::types::{intern_tuple, lower_scalar};
+use super::types::lower_scalar;
 use super::{FunctionLower, PendingGenericInstance};
 use crate::ir::{FuncId, InstKind, Linkage, Type, ValueId};
 

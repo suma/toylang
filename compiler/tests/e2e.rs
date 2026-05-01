@@ -586,6 +586,94 @@ fn f64_function_call() {
 }
 
 #[test]
+fn inherent_method_call_on_struct() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase R1: `obj.method()` resolves through the per-impl
+    // method registry. The receiver is flattened into per-field
+    // scalars and prepended to the call's arg list, mirroring
+    // `flatten_struct_locals` for any other struct argument.
+    let src = r#"
+        struct Counter { n: i64 }
+        impl Counter {
+            fn add(self: Self, x: i64) -> i64 {
+                self.n + x
+            }
+            fn double(self: Self) -> i64 {
+                self.n * 2i64
+            }
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 5i64 }
+            val a: i64 = c.add(3i64)
+            val b: i64 = c.double()
+            (a + b) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_inherent"), 18);
+}
+
+#[test]
+fn trait_impl_method_dispatch() {
+    if skip_e2e() {
+        return;
+    }
+    // `impl <Trait> for <Type>` adds methods to the same registry
+    // as inherent impls; the call site doesn't care about trait
+    // membership.
+    let src = r#"
+        trait Greet {
+            fn greet(self: Self) -> i64
+        }
+        struct Dog { id: i64 }
+        impl Greet for Dog {
+            fn greet(self: Self) -> i64 {
+                self.id + 100i64
+            }
+        }
+        fn main() -> u64 {
+            val d = Dog { id: 7i64 }
+            val r: i64 = d.greet()
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_trait_impl"), 107);
+}
+
+#[test]
+fn trait_bound_generic_method_call() {
+    if skip_e2e() {
+        return;
+    }
+    // `<T: Greet>` instantiation (Phase L) feeds the concrete
+    // struct symbol into the receiver's binding. The method-call
+    // lowering then resolves `(Dog, greet)` against the registry
+    // — no trait-specific runtime dispatch is needed because
+    // monomorphisation has already pinned the type.
+    let src = r#"
+        trait Greet {
+            fn greet(self: Self) -> i64
+        }
+        struct Dog { id: i64 }
+        impl Greet for Dog {
+            fn greet(self: Self) -> i64 {
+                self.id + 100i64
+            }
+        }
+        fn announce<T: Greet>(x: T) -> i64 {
+            x.greet()
+        }
+        fn main() -> u64 {
+            val d = Dog { id: 7i64 }
+            val r: i64 = announce(d)
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_trait_generic"), 107);
+}
+
+#[test]
 fn struct_returned_from_function() {
     if skip_e2e() {
         return;

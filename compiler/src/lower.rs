@@ -91,6 +91,13 @@ pub fn lower_program(
     let mut generic_funcs: HashMap<DefaultSymbol, Rc<frontend::ast::Function>> =
         HashMap::new();
 
+    // Inherent / trait methods. Pre-scan all `impl` blocks (Phase R1
+    // accepts only non-generic methods on non-generic structs) and
+    // build (target_struct_symbol, method_name) → MethodFunction so
+    // call-site lookup (`p.sum()` style) can resolve and the second
+    // declaration pass below can mint a FuncId per method.
+    let method_registry: MethodRegistry = collect_method_decls(program)?;
+
     // First pass: declare every non-generic function so call sites
     // (which may refer to functions defined later in the file) can
     // resolve to a `FuncId` during the body lowering pass. Generic
@@ -129,6 +136,87 @@ pub fn lower_program(
         module.declare_function(func.name, export_name, linkage, params, ret);
     }
 
+    // Declare each inherent method as a regular IR function. The
+    // method's first parameter is `self: Self`; we resolve `Self` to
+    // the impl's target struct type. Phase R1 keeps this simple:
+    // non-generic structs only, all params/return scalar or struct.
+    let mut method_func_ids: HashMap<(DefaultSymbol, DefaultSymbol), FuncId> = HashMap::new();
+    for ((target_sym, method_sym), method) in method_registry.iter() {
+        if !method.generic_params.is_empty() {
+            return Err(format!(
+                "compiler MVP cannot lower generic methods yet: `{}::{}`",
+                interner.resolve(*target_sym).unwrap_or("?"),
+                interner.resolve(*method_sym).unwrap_or("?"),
+            ));
+        }
+        let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
+        for (pname, pty) in &method.parameter {
+            // `self: Self` — substitute Self for the impl's target.
+            // The parser emits `TypeDecl::Self_` for the literal
+            // `Self` keyword.
+            let resolved = match pty {
+                TypeDecl::Self_ => TypeDecl::Identifier(*target_sym),
+                TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
+                    TypeDecl::Identifier(*target_sym)
+                }
+                other => other.clone(),
+            };
+            let lowered = lower_param_or_return_type(
+                &resolved,
+                &struct_defs,
+                &enum_defs,
+                &mut module,
+                interner,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP cannot lower method parameter `{}: {:?}` yet",
+                    interner.resolve(*pname).unwrap_or("?"),
+                    pty
+                )
+            })?;
+            params.push(lowered);
+        }
+        let ret = match &method.return_type {
+            Some(ty) => {
+                let resolved = match ty {
+                    TypeDecl::Self_ => TypeDecl::Identifier(*target_sym),
+                    TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
+                        TypeDecl::Identifier(*target_sym)
+                    }
+                    other => other.clone(),
+                };
+                lower_param_or_return_type(
+                    &resolved,
+                    &struct_defs,
+                    &enum_defs,
+                    &mut module,
+                    interner,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower method return type `{:?}` yet",
+                        ty
+                    )
+                })?
+            }
+            None => Type::Unit,
+        };
+        let target_str = interner.resolve(*target_sym).unwrap_or("?");
+        let method_str = interner.resolve(*method_sym).unwrap_or("?");
+        let export_name = format!("toy_{}__{}", target_str, method_str);
+        // Mint a synthetic symbol for the (struct, method) pair so it
+        // shares the per-function tables (function_index, function map).
+        // We don't go through `function_index` to avoid colliding with
+        // a top-level function of the same bare method name; instead
+        // method_func_ids holds the FuncId.
+        let mangled_sym = method.name; // we'll key the lookup via (target, method) instead
+        let _ = mangled_sym;
+        let func_id =
+            module.declare_function_anon(export_name, Linkage::Local, params, ret);
+        method_func_ids.insert((*target_sym, *method_sym), func_id);
+    }
+
     // Second pass: lower each non-generic body. Generic instantiations
     // happen lazily as call sites discover them; the work queue keeps
     // them coming until everything reachable is monomorphised.
@@ -159,8 +247,36 @@ pub fn lower_program(
             &const_values,
             contract_msgs,
             release,
+            &method_registry,
+            &method_func_ids,
         )?;
         builder.lower_body(&func)?;
+    }
+
+    // Lower each inherent method body. We share the same
+    // `FunctionLower` driver as plain functions; the method-flavour
+    // entry just substitutes `Self` in the parameter list before
+    // delegating.
+    for ((target_sym, method_sym), method) in method_registry.iter() {
+        let func_id = method_func_ids[&(*target_sym, *method_sym)];
+        let mut builder = FunctionLower::new(
+            &mut module,
+            func_id,
+            program,
+            interner,
+            &struct_defs,
+            &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            HashMap::new(),
+            &const_values,
+            contract_msgs,
+            release,
+            &method_registry,
+            &method_func_ids,
+        )?;
+        builder.lower_method_body(method, *target_sym)?;
     }
 
     // Drain the queue: each entry pairs an already-declared `FuncId`
@@ -191,6 +307,8 @@ pub fn lower_program(
             &const_values,
             contract_msgs,
             release,
+            &method_registry,
+            &method_func_ids,
         )?;
         builder.lower_body(&template)?;
     }
@@ -200,6 +318,48 @@ pub fn lower_program(
 /// Side tables threaded through generic-function lowering.
 type GenericFuncs = HashMap<DefaultSymbol, Rc<frontend::ast::Function>>;
 type GenericInstances = HashMap<(DefaultSymbol, Vec<Type>), FuncId>;
+
+/// `(target_struct_symbol, method_name)` → method definition. Built
+/// from every `impl <Type> { ... }` and `impl <Trait> for <Type> { ... }`
+/// block in the program. Methods are reachable via a call site like
+/// `p.sum()` once the receiver's struct symbol is known.
+type MethodRegistry = HashMap<
+    (DefaultSymbol, DefaultSymbol),
+    Rc<frontend::ast::MethodFunction>,
+>;
+
+/// Walk the program for impl blocks and collect every method into a
+/// flat (target, method) map. Trait conformance is irrelevant at
+/// this layer — Phase R1 only cares that the method exists for a
+/// given target type. Phase R2 will reuse the same registry for
+/// trait dispatch.
+fn collect_method_decls(program: &Program) -> Result<MethodRegistry, String> {
+    use frontend::ast::{Stmt, StmtRef};
+    let mut registry: MethodRegistry = HashMap::new();
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        let stmt = match program.statement.get(&stmt_ref) {
+            Some(s) => s,
+            None => continue,
+        };
+        if let Stmt::ImplBlock { target_type, methods, .. } = stmt {
+            for m in &methods {
+                if registry
+                    .insert((target_type, m.name), Rc::clone(&m))
+                    .is_some()
+                {
+                    // Duplicate (target, method) — frontend type checker
+                    // already rejects this; defensive guard so we don't
+                    // silently drop one impl.
+                    return Err(format!(
+                        "duplicate method definition in impl blocks for the same type"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(registry)
+}
 
 /// One queued generic-function instantiation: the freshly-declared
 /// `FuncId`, the template name, and the type substitution that
@@ -996,6 +1156,13 @@ struct FunctionLower<'a> {
     /// binding that appeared in tail position. Cleared every time a
     /// non-struct-producing expression is lowered, so it always
     /// reflects the most recent candidate.
+    /// Inherent / trait method registry — same shape used in
+    /// `lower_program` to declare each method's `FuncId`. Borrowed
+    /// at call sites so `p.sum()` can resolve to the right method.
+    method_registry: &'a MethodRegistry,
+    /// `(target_struct_symbol, method_name)` → `FuncId`. The lookup
+    /// table for method calls; pairs with `method_registry`.
+    method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
     pending_struct_value: Option<Vec<FieldBinding>>,
     /// Sibling channel for tuple-returning function bodies whose tail
     /// expression is a tuple literal or tuple-bound identifier. Used
@@ -1224,6 +1391,8 @@ impl<'a> FunctionLower<'a> {
         const_values: &'a ConstValues,
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
+        method_registry: &'a MethodRegistry,
+        method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -1248,7 +1417,58 @@ impl<'a> FunctionLower<'a> {
             generic_instances,
             pending_generic_work,
             type_subst,
+            method_registry,
+            method_func_ids,
         })
+    }
+
+    /// Method-flavoured entry to body lowering. Methods share
+    /// `MethodFunction`'s field shape (params, return, requires,
+    /// ensures, code) with `Function` but live in a parallel AST
+    /// type. We adapt to the existing `lower_body` machinery by
+    /// extracting the bits it needs, then reusing the same
+    /// parameter-binding / contract / body code path.
+    fn lower_method_body(
+        &mut self,
+        method: &frontend::ast::MethodFunction,
+        target_struct: DefaultSymbol,
+    ) -> Result<(), String> {
+        // Substitute `Self` in parameter types so the binder treats
+        // `self: Self` as `self: <TargetStruct>`. We don't mutate the
+        // original AST — instead we build a parallel `parameter` list
+        // with the substitution applied for the binding pass below.
+        let parameter: Vec<(DefaultSymbol, TypeDecl)> = method
+            .parameter
+            .iter()
+            .map(|(n, t)| {
+                let resolved = match t {
+                    TypeDecl::Self_ => TypeDecl::Identifier(target_struct),
+                    TypeDecl::Identifier(sym)
+                        if self.interner.resolve(*sym) == Some("Self") =>
+                    {
+                        TypeDecl::Identifier(target_struct)
+                    }
+                    other => other.clone(),
+                };
+                (*n, resolved)
+            })
+            .collect();
+        // Build a synthetic Function-shaped value and delegate. We
+        // keep `name` / `generic_*` / `visibility` empty since
+        // lower_body only reads parameter / requires / ensures / code.
+        let synthetic = frontend::ast::Function {
+            node: method.node.clone(),
+            name: method.name,
+            generic_params: method.generic_params.clone(),
+            generic_bounds: method.generic_bounds.clone(),
+            parameter,
+            return_type: method.return_type.clone(),
+            requires: method.requires.clone(),
+            ensures: method.ensures.clone(),
+            code: method.code,
+            visibility: method.visibility.clone(),
+        };
+        self.lower_body(&synthetic)
     }
 
     fn lower_body(&mut self, func: &frontend::ast::Function) -> Result<(), String> {
@@ -2405,6 +2625,7 @@ impl<'a> FunctionLower<'a> {
             Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
+            Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other
@@ -6026,6 +6247,142 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Lower an `obj.method(args)` expression. Phase R1 dispatch is
+    /// purely static: we resolve the receiver's struct (or enum)
+    /// symbol, look up the method via the registry built in
+    /// `lower_program`, and emit a regular `Call` with the
+    /// receiver's leaf scalars prepended to the call's arg values.
+    fn lower_method_call(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        // Step 1: resolve the receiver. Phase R1 supports an
+        // identifier bound to a struct only.
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "method-call receiver missing".to_string())?;
+        let recv_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(format!(
+                    "compiler MVP only supports method calls on a bare identifier (got {:?})",
+                    obj_expr
+                ));
+            }
+        };
+        let binding = self
+            .bindings
+            .get(&recv_sym)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "undefined receiver `{}` for method call",
+                    self.interner.resolve(recv_sym).unwrap_or("?")
+                )
+            })?;
+        let target_sym = match &binding {
+            Binding::Struct { struct_id, .. } => {
+                self.module.struct_def(*struct_id).base_name
+            }
+            Binding::Enum(storage) => {
+                self.module.enum_def(storage.enum_id).base_name
+            }
+            _ => {
+                return Err(format!(
+                    "compiler MVP requires the method receiver `{}` to be a struct or enum binding",
+                    self.interner.resolve(recv_sym).unwrap_or("?")
+                ));
+            }
+        };
+        // Step 2: resolve the method's FuncId.
+        let target = *self
+            .method_func_ids
+            .get(&(target_sym, method))
+            .ok_or_else(|| {
+                format!(
+                    "no method `{}::{}` is defined",
+                    self.interner.resolve(target_sym).unwrap_or("?"),
+                    self.interner.resolve(method).unwrap_or("?"),
+                )
+            })?;
+        let _ = self.method_registry; // referenced for documentation
+
+        let ret_ty = self.module.function(target).return_type;
+        if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Err(format!(
+                "compiler MVP cannot use a compound-returning method (`{}::{}`) in expression position; bind the result with `val`",
+                self.interner.resolve(target_sym).unwrap_or("?"),
+                self.interner.resolve(method).unwrap_or("?"),
+            ));
+        }
+        // Step 3: build the call args. Receiver first (expanded into
+        // leaf scalars for struct / tuple / enum), then the regular
+        // method arguments via the existing per-arg lowering helper.
+        let mut values: Vec<ValueId> = Vec::new();
+        match &binding {
+            Binding::Struct { fields, .. } => {
+                let leaves = Self::flatten_struct_locals(fields);
+                for (local, ty) in &leaves {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    values.push(v);
+                }
+            }
+            Binding::Enum(storage) => {
+                let storage = storage.clone();
+                let vs = self.load_enum_locals(&storage);
+                values.extend(vs);
+            }
+            _ => unreachable!("receiver shape already validated"),
+        }
+        for a in args {
+            // Reuse the per-arg expansion that supports struct /
+            // tuple / enum identifiers, just inlined for a single
+            // argument so we don't have to fabricate an ExprList.
+            if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
+                if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
+                    for (local, ty) in Self::flatten_struct_locals(&fields) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    continue;
+                }
+                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                    for (local, ty) in flatten_tuple_element_locals(&elements) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    continue;
+                }
+                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                    let vs = self.load_enum_locals(&storage);
+                    values.extend(vs);
+                    continue;
+                }
+            }
+            let v = self
+                .lower_expr(a)?
+                .ok_or_else(|| "method argument produced no value".to_string())?;
+            values.push(v);
+        }
+        let inst = InstKind::Call { target, args: values };
+        let result_ty = if ret_ty.produces_value() {
+            Some(ret_ty)
+        } else {
+            None
+        };
+        Ok(self.emit(inst, result_ty))
+    }
+
     fn lower_call(
         &mut self,
         fn_name: DefaultSymbol,
@@ -6172,6 +6529,28 @@ impl<'a> FunctionLower<'a> {
                 .function_index
                 .get(&fn_name)
                 .map(|id| self.module.function(*id).return_type),
+            Expr::MethodCall(obj, method, _) => {
+                // Resolve receiver via the binding table; pull its
+                // struct/enum symbol; look up the method's return
+                // type via the registry so val annotations can rely
+                // on the inferred scalar.
+                let obj_expr = self.program.expression.get(&obj)?;
+                let recv_sym = match obj_expr {
+                    Expr::Identifier(s) => s,
+                    _ => return None,
+                };
+                let target_sym = match self.bindings.get(&recv_sym)? {
+                    Binding::Struct { struct_id, .. } => {
+                        self.module.struct_def(*struct_id).base_name
+                    }
+                    Binding::Enum(storage) => {
+                        self.module.enum_def(storage.enum_id).base_name
+                    }
+                    _ => return None,
+                };
+                let func_id = *self.method_func_ids.get(&(target_sym, method))?;
+                Some(self.module.function(func_id).return_type)
+            }
             _ => None,
         }
     }

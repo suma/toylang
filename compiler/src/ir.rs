@@ -145,6 +145,35 @@ impl Module {
         id
     }
 
+    /// Same as `declare_function` but does not register the symbol in
+    /// `function_index`. Used for methods (resolved via a side
+    /// `(struct, method)` table) and for monomorphised generic
+    /// instances (resolved via `(name, type_args)`), so the bare
+    /// symbol can stay reserved for top-level functions of the same
+    /// name without clashing.
+    pub fn declare_function_anon(
+        &mut self,
+        export_name: String,
+        linkage: Linkage,
+        params: Vec<Type>,
+        return_type: Type,
+    ) -> FuncId {
+        let id = FuncId(self.functions.len() as u32);
+        // Use a placeholder symbol slot — never looked up by symbol.
+        let symbol = DefaultSymbol::try_from_usize(0).unwrap();
+        self.functions.push(Function {
+            symbol,
+            export_name,
+            linkage,
+            params,
+            return_type,
+            locals: Vec::new(),
+            blocks: Vec::new(),
+            entry: BlockId(0),
+        });
+        id
+    }
+
     pub fn function(&self, id: FuncId) -> &Function {
         &self.functions[id.0 as usize]
     }

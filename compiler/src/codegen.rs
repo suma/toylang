@@ -696,11 +696,24 @@ fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types
             }
             out
         }
-        // Enums are intentionally not part of the function-boundary
-        // flattening in this MVP. Lowering rejects enum-typed
-        // parameters / returns up front; reaching this arm signals a
-        // missing check.
-        IrType::Enum(_) => Vec::new(),
+        // An enum value at the function boundary lays out as
+        // [tag, variant0_payload..., variant1_payload..., ...] in
+        // canonical declaration order. The same flattening drives
+        // both signature construction and the call-site dest list,
+        // so caller and callee always agree on which slot is which.
+        IrType::Enum(name) => {
+            let mut out = Vec::new();
+            // Tag: U64 in the IR, I64 in cranelift terms.
+            out.push(types::I64);
+            if let Some(def) = ir_module.enum_defs.get(&name) {
+                for variant in &def.variants {
+                    for ty in &variant.payload_types {
+                        out.extend(flatten_struct_to_cranelift_tys(ir_module, *ty));
+                    }
+                }
+            }
+            out
+        }
         other => ir_to_cranelift_ty(other).into_iter().collect(),
     }
 }
@@ -1038,6 +1051,30 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 if results.len() != dests.len() {
                     return Err(format!(
                         "internal error: tuple call returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len()
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
+                }
+            }
+            InstKind::CallEnum { target, args, dests } => {
+                // Same shape as CallStruct / CallTuple. The cranelift
+                // signature was built with one return per enum slot
+                // (tag + every variant's payloads in declaration
+                // order); `dests` mirrors that order.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: enum call returned {} value(s), expected {}",
                         results.len(),
                         dests.len()
                     ));

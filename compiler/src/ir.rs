@@ -303,6 +303,21 @@ pub enum InstKind {
         /// One local per tuple element, in declaration order.
         dests: Vec<LocalId>,
     },
+    /// Same shape as `CallStruct` but for enum-returning functions.
+    /// Codegen lays the multi-return out as
+    /// `[tag, variant0_payload0, variant0_payload1, ..., variantN_payloadM]`
+    /// in canonical declaration order — the caller's per-variant
+    /// payload locals must be allocated in the same order so the
+    /// flat `dests[i]` mapping is stable across the function
+    /// boundary.
+    CallEnum {
+        target: FuncId,
+        args: Vec<ValueId>,
+        /// One local per cranelift result slot in canonical order:
+        /// `dests[0]` is the tag local; subsequent entries cover
+        /// each variant's payloads in declaration order.
+        dests: Vec<LocalId>,
+    },
     /// `print` / `println` of a primitive value. The codegen layer
     /// dispatches by `value_ty` to the corresponding `toy_print_*` /
     /// `toy_println_*` helper in the C runtime. Strings handled
@@ -614,6 +629,16 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(
                     f,
                     "call_tuple {target}({}) -> [{}]",
+                    argstr.join(", "),
+                    deststr.join(", ")
+                )
+            }
+            InstKind::CallEnum { target, args, dests } => {
+                let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                let deststr: Vec<String> = dests.iter().map(|d| d.to_string()).collect();
+                write!(
+                    f,
+                    "call_enum {target}({}) -> [{}]",
                     argstr.join(", "),
                     deststr.join(", ")
                 )

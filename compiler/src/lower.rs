@@ -93,7 +93,7 @@ pub fn lower_program(
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
-            let lowered = lower_param_or_return_type(ty, &struct_defs, &mut module).ok_or_else(|| {
+            let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module).ok_or_else(|| {
                 format!(
                     "compiler MVP cannot lower parameter `{}: {:?}` yet",
                     interner.resolve(*name).unwrap_or("?"),
@@ -103,7 +103,7 @@ pub fn lower_program(
             params.push(lowered);
         }
         let ret = match &func.return_type {
-            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &mut module).ok_or_else(
+            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module).ok_or_else(
                 || format!("compiler MVP cannot lower return type `{:?}` yet", ty),
             )?,
             None => Type::Unit,
@@ -391,7 +391,8 @@ fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
 /// inside the IR's value graph stay scalar.
 fn lower_param_or_return_type(
     ty: &TypeDecl,
-    defs: &StructDefs,
+    struct_defs: &StructDefs,
+    enum_defs: &EnumDefs,
     module: &mut Module,
 ) -> Option<Type> {
     if let Some(t) = lower_scalar(ty) {
@@ -400,13 +401,14 @@ fn lower_param_or_return_type(
     match ty {
         // The parser yields `Identifier(name)` for any user-defined
         // type; the type-checker may later refine it. We accept the
-        // bare identifier shape if it names a known struct; the
-        // generic-parameterised `Struct(name, args)` form is also
+        // bare identifier shape if it names a known struct or enum;
+        // the generic-parameterised `Struct(name, args)` form is also
         // accepted with empty args (the only shape we support).
-        TypeDecl::Identifier(name) if defs.contains_key(name) => Some(Type::Struct(*name)),
-        TypeDecl::Struct(name, args) if args.is_empty() && defs.contains_key(name) => {
+        TypeDecl::Identifier(name) if struct_defs.contains_key(name) => Some(Type::Struct(*name)),
+        TypeDecl::Struct(name, args) if args.is_empty() && struct_defs.contains_key(name) => {
             Some(Type::Struct(*name))
         }
+        TypeDecl::Identifier(name) if enum_defs.contains_key(name) => Some(Type::Enum(*name)),
         TypeDecl::Tuple(elements) => {
             // Lower each element to a scalar IR type. We don't allow
             // nested tuples / struct-of-tuple at the boundary yet —
@@ -504,6 +506,13 @@ struct FunctionLower<'a> {
     /// expression is a tuple literal or tuple-bound identifier. Used
     /// only by `emit_implicit_return` for `Type::Tuple` returns.
     pending_tuple_value: Option<Vec<TupleElementBinding>>,
+    /// Sibling channel for enum-returning function bodies whose tail
+    /// expression resolves to an enum binding (or a binding produced
+    /// by a tail-position `Enum::Variant(args)`). Captures the
+    /// `tag_local` plus per-variant payload local table that
+    /// `emit_implicit_return` will read out into the multi-value
+    /// `Return`.
+    pending_enum_value: Option<(LocalId, Vec<Vec<(LocalId, Type)>>)>,
 }
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
@@ -626,6 +635,7 @@ impl<'a> FunctionLower<'a> {
             next_value: 0,
             pending_struct_value: None,
             pending_tuple_value: None,
+            pending_enum_value: None,
         })
     }
 
@@ -656,6 +666,18 @@ impl<'a> FunctionLower<'a> {
                         Binding::Tuple { elements: element_bindings },
                     );
                 }
+                Type::Enum(enum_name) => {
+                    let (tag_local, payload_locals) =
+                        self.allocate_enum_storage(enum_name)?;
+                    self.bindings.insert(
+                        *name,
+                        Binding::Enum {
+                            enum_name,
+                            tag_local,
+                            payload_locals,
+                        },
+                    );
+                }
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     self.bindings.insert(
@@ -666,13 +688,6 @@ impl<'a> FunctionLower<'a> {
                 Type::Unit => {
                     return Err(format!(
                         "parameter `{}` cannot have type Unit",
-                        self.interner.resolve(*name).unwrap_or("?")
-                    ));
-                }
-                Type::Enum(_) => {
-                    return Err(format!(
-                        "parameter `{}` is an enum value; the compiler MVP does not yet \
-                         support passing enum values across function boundaries",
                         self.interner.resolve(*name).unwrap_or("?")
                     ));
                 }
@@ -780,6 +795,24 @@ impl<'a> FunctionLower<'a> {
                 // ensures reference individual fields of `result`, so
                 // a single representative value is enough — and most
                 // contracts focus on scalar return values anyway.
+                self.emit_ensures_checks(&values)?;
+                self.terminate(Terminator::Return(values));
+                Ok(())
+            }
+            (Type::Enum(_), _) => {
+                let _ = body_value;
+                let (tag_local, payload_locals) =
+                    self.pending_enum_value.take().ok_or_else(|| {
+                        format!(
+                            "function `{}` returns an enum but the body's tail did not produce one",
+                            self.interner.resolve(*fn_name).unwrap_or("?")
+                        )
+                    })?;
+                let values = self.load_enum_locals(tag_local, &payload_locals);
+                // Like struct returns, bind `result` to the first
+                // value (the tag) for ensures evaluation. ensures
+                // can't dispatch on variants in this MVP anyway, so
+                // tag-as-result is good enough.
                 self.emit_ensures_checks(&values)?;
                 self.terminate(Terminator::Return(values));
                 Ok(())
@@ -1095,6 +1128,43 @@ impl<'a> FunctionLower<'a> {
                     self.terminate(Terminator::Return(values));
                     return Ok(None);
                 }
+                // Enum returns: rhs must be a bare identifier of an
+                // Enum binding for the matching enum (or a tail-form
+                // construction we route through the implicit-return
+                // helper). Same pattern as struct/tuple — explicit
+                // `return Enum::Variant(args)` is handled via
+                // lower_expr setting pending_enum_value below.
+                if let (Type::Enum(enum_name), Some(er)) = (ret_ty, &e) {
+                    let rhs_expr = self
+                        .program
+                        .expression
+                        .get(er)
+                        .ok_or_else(|| "return rhs missing".to_string())?;
+                    if let Expr::Identifier(sym) = rhs_expr {
+                        let (tag_local, payload_locals) =
+                            match self.bindings.get(&sym).cloned() {
+                                Some(Binding::Enum {
+                                    enum_name: bn,
+                                    tag_local,
+                                    payload_locals,
+                                }) if bn == enum_name => (tag_local, payload_locals),
+                                _ => {
+                                    return Err(format!(
+                                        "`{}` is not an enum binding of the expected return type",
+                                        self.interner.resolve(sym).unwrap_or("?")
+                                    ));
+                                }
+                            };
+                        let values = self.load_enum_locals(tag_local, &payload_locals);
+                        self.emit_ensures_checks(&values)?;
+                        self.terminate(Terminator::Return(values));
+                        return Ok(None);
+                    }
+                    return Err(
+                        "explicit `return` of an enum value must be a bare identifier in the compiler MVP"
+                            .to_string(),
+                    );
+                }
                 let val = match e {
                     Some(er) => self.lower_expr(&er)?,
                     None => None,
@@ -1349,6 +1419,35 @@ impl<'a> FunctionLower<'a> {
                     );
                     return Ok(None);
                 }
+                if let Type::Enum(enum_name) = target_ret {
+                    // Enum-returning call: pre-allocate the binding's
+                    // tag + per-variant payload locals; flatten them
+                    // into the CallEnum dest list (tag first, then
+                    // each variant's payloads in declaration order)
+                    // so codegen can route the multi-return slots
+                    // straight into our locals.
+                    let (tag_local, payload_locals) =
+                        self.allocate_enum_storage(enum_name)?;
+                    let dests = Self::flatten_enum_dests(tag_local, &payload_locals);
+                    self.bindings.insert(
+                        name,
+                        Binding::Enum {
+                            enum_name,
+                            tag_local,
+                            payload_locals,
+                        },
+                    );
+                    let arg_values = self.lower_call_args(&args_ref)?;
+                    self.emit(
+                        InstKind::CallEnum {
+                            target: target_id,
+                            args: arg_values,
+                            dests,
+                        },
+                        None,
+                    );
+                    return Ok(None);
+                }
             }
         }
         // Struct-returning call RHS: `val p = make_point()`. Allocate
@@ -1456,6 +1555,20 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
+                    continue;
+                }
+                if let Some(Binding::Enum {
+                    tag_local,
+                    payload_locals,
+                    ..
+                }) = self.bindings.get(&sym).cloned()
+                {
+                    // Enum-typed identifier argument: same shape as
+                    // the function-boundary flattening — tag first,
+                    // then variant 0's payload locals, then variant
+                    // 1's, etc., all in declaration order.
+                    let vs = self.load_enum_locals(tag_local, &payload_locals);
+                    values.extend(vs);
                     continue;
                 }
             }
@@ -1609,17 +1722,22 @@ impl<'a> FunctionLower<'a> {
                         self.pending_tuple_value = Some(elements);
                         Ok(None)
                     }
-                    Some(Binding::Enum { .. }) => {
-                        // Enum identifiers are only legal as a `match`
-                        // scrutinee in this MVP; there is no scalar
-                        // value to flow into a wider expression yet
-                        // (no enum function-boundary crossing, no
-                        // `print(enum)`).
-                        Err(format!(
-                            "compiler MVP cannot use enum value `{}` as an expression \
-                             outside `match`; assign it to a binding and `match` on it",
-                            self.interner.resolve(sym).unwrap_or("?")
-                        ))
+                    Some(Binding::Enum {
+                        tag_local,
+                        payload_locals,
+                        ..
+                    }) => {
+                        // Tail-position use: stash the enum's
+                        // (tag_local, payload_locals) so
+                        // `emit_implicit_return` can flatten them into
+                        // a multi-value Return for an enum-returning
+                        // function. Other uses (passing to a function,
+                        // explicit Return) handle the binding via a
+                        // direct lookup of `bindings`, so the channel
+                        // is purely for the tail-implicit-return path.
+                        self.pending_enum_value =
+                            Some((tag_local, payload_locals));
+                        Ok(None)
                     }
                     None => {
                         // Fall back to top-level `const` lookup. This
@@ -1894,20 +2012,23 @@ impl<'a> FunctionLower<'a> {
         self.emit(InstKind::PrintRaw { text, newline }, None);
     }
 
-    /// Allocate the storage for an enum binding (one tag local + one
-    /// payload local per element across **all** variants), then
-    /// initialise the tag to `variant_idx` and the chosen variant's
-    /// payload slots from `args`. Other variants' payload slots stay
-    /// uninitialised — the match lowering only ever loads them after
-    /// confirming the tag dispatch, so an uninit read can't escape.
-    fn bind_enum(
+    /// Allocate the locals that back an enum value: one `tag_local`
+    /// (always U64) plus one local per payload element across **all**
+    /// variants in declaration order. The exact same walk also
+    /// drives `flatten_struct_to_cranelift_tys` for `Type::Enum`, so
+    /// the function-boundary slot order matches local order one for
+    /// one — that's what makes `block_params[i] -> locals[i]` work
+    /// for enum parameters in codegen.
+    fn allocate_enum_storage(
         &mut self,
-        binding_name: DefaultSymbol,
         enum_name: DefaultSymbol,
-        enum_def: &EnumDef,
-        variant_idx: usize,
-        args: &[ExprRef],
-    ) -> Result<(), String> {
+    ) -> Result<(LocalId, Vec<Vec<(LocalId, Type)>>), String> {
+        let enum_def = self.enum_defs.get(&enum_name).cloned().ok_or_else(|| {
+            format!(
+                "internal error: enum `{}` not in defs",
+                self.interner.resolve(enum_name).unwrap_or("?")
+            )
+        })?;
         let tag_local = self
             .module
             .function_mut(self.func_id)
@@ -1923,6 +2044,25 @@ impl<'a> FunctionLower<'a> {
             }
             payload_locals.push(per_variant);
         }
+        Ok((tag_local, payload_locals))
+    }
+
+    /// Allocate the storage for an enum binding (one tag local + one
+    /// payload local per element across **all** variants), then
+    /// initialise the tag to `variant_idx` and the chosen variant's
+    /// payload slots from `args`. Other variants' payload slots stay
+    /// uninitialised — the match lowering only ever loads them after
+    /// confirming the tag dispatch, so an uninit read can't escape.
+    fn bind_enum(
+        &mut self,
+        binding_name: DefaultSymbol,
+        enum_name: DefaultSymbol,
+        enum_def: &EnumDef,
+        variant_idx: usize,
+        args: &[ExprRef],
+    ) -> Result<(), String> {
+        let _ = enum_def;
+        let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
         self.bindings.insert(
             binding_name,
             Binding::Enum {
@@ -1956,6 +2096,52 @@ impl<'a> FunctionLower<'a> {
             self.emit(InstKind::StoreLocal { dst, src: v }, None);
         }
         Ok(())
+    }
+
+    /// Read every local that backs an enum binding into a flat
+    /// vector of values, suitable as the operand list for a
+    /// multi-value `Return`, a `CallEnum` argument expansion, etc.
+    /// Order matches `allocate_enum_storage` and
+    /// `flatten_struct_to_cranelift_tys` so the boundary stays
+    /// consistent. Caller still has the binding's per-variant local
+    /// table, so we take it as a parameter rather than re-deriving.
+    fn load_enum_locals(
+        &mut self,
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Vec<ValueId> {
+        let mut out = Vec::new();
+        let v = self
+            .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        out.push(v);
+        for variant in payload_locals {
+            for (local, ty) in variant {
+                let v = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .expect("LoadLocal returns a value");
+                out.push(v);
+            }
+        }
+        out
+    }
+
+    /// Flatten the per-variant payload local table back into a
+    /// single dest list for `CallEnum` (tag first, then variant 0's
+    /// payload locals, then variant 1's, ...). Same canonical order
+    /// as `load_enum_locals`.
+    fn flatten_enum_dests(
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Vec<LocalId> {
+        let mut out = Vec::new();
+        out.push(tag_local);
+        for variant in payload_locals {
+            for (local, _ty) in variant {
+                out.push(*local);
+            }
+        }
+        out
     }
 
     /// Lower `expr as Target`. The pair `(from, to)` is recorded on
@@ -3136,6 +3322,12 @@ impl<'a> FunctionLower<'a> {
         if matches!(ret_ty, Type::Tuple(_)) {
             return Err(format!(
                 "compiler MVP cannot use a tuple-returning call (`{}`) in expression position; bind the result with `val`",
+                self.interner.resolve(fn_name).unwrap_or("?")
+            ));
+        }
+        if matches!(ret_ty, Type::Enum(_)) {
+            return Err(format!(
+                "compiler MVP cannot use an enum-returning call (`{}`) in expression position; bind the result with `val`",
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }

@@ -1671,6 +1671,139 @@ fn match_arm_guard_on_scalar() {
 }
 
 #[test]
+fn enum_passed_to_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Call site builds an enum, callee receives it as a Type::Enum
+    // parameter and matches on it. Caller's per-variant payload
+    // locals expand into one cranelift block param per slot in
+    // canonical declaration order, and the callee's allocated locals
+    // mirror that order so the boundary is consistent.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn area(s: Shape) -> i64 {
+            match s {
+                Shape::Circle(r) => r * r * 3i64,
+                Shape::Rect(w, h) => w * h,
+                Shape::Point => 0i64,
+            }
+        }
+        fn main() -> u64 {
+            val s = Shape::Rect(3i64, 7i64)
+            val a: i64 = area(s)
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_arg_rect"), 21);
+}
+
+#[test]
+fn enum_unit_variant_passed_to_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Same boundary path but with a unit variant — payload locals
+    // for non-chosen variants stay uninit, only the tag matters.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn label(s: Shape) -> u64 {
+            match s {
+                Shape::Circle(_) => 1u64,
+                Shape::Rect(_, _) => 2u64,
+                Shape::Point => 3u64,
+            }
+        }
+        fn main() -> u64 {
+            val s = Shape::Point
+            label(s)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_arg_unit"), 3);
+}
+
+#[test]
+fn enum_passed_through_two_functions() {
+    if skip_e2e() {
+        return;
+    }
+    // Two-hop pass: caller -> outer -> inner. Verifies the boundary
+    // expansion / re-pack works when a function both receives and
+    // forwards an enum value.
+    let src = r#"
+        enum Pick {
+            A(i64),
+            B,
+        }
+        fn inner(p: Pick) -> i64 {
+            match p {
+                Pick::A(n) => n,
+                Pick::B => 0i64,
+            }
+        }
+        fn outer(p: Pick) -> i64 {
+            inner(p)
+        }
+        fn main() -> u64 {
+            val p = Pick::A(42i64)
+            val r: i64 = outer(p)
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_arg_two_hops"), 42);
+}
+
+#[test]
+fn enum_passed_after_construction_in_each_branch() {
+    if skip_e2e() {
+        return;
+    }
+    // The compiler MVP doesn't yet allow enum construction at
+    // expression positions other than the immediate rhs of `val` /
+    // `var`, so we have to construct + pass on each branch instead
+    // of doing `val p = if ... { Pick::Zero } else { ... }`.
+    let src = r#"
+        enum Pick {
+            Zero,
+            One,
+            Many(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Zero => 0u64,
+                Pick::One => 1u64,
+                Pick::Many(n) => n,
+            }
+        }
+        fn classify(n: u64) -> u64 {
+            if n == 0u64 {
+                val p = Pick::Zero
+                weight(p)
+            } elif n == 1u64 {
+                val p = Pick::One
+                weight(p)
+            } else {
+                val p = Pick::Many(n)
+                weight(p)
+            }
+        }
+        fn main() -> u64 {
+            classify(0u64) + classify(1u64) + classify(7u64)
+        }
+    "#;
+    // 0 + 1 + 7 = 8
+    assert_eq!(compile_and_run(src, "enum_via_branch_pass"), 8);
+}
+
+#[test]
 fn match_arm_guard_falls_to_next_when_false() {
     if skip_e2e() {
         return;

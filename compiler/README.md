@@ -26,7 +26,8 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
   - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
   - **variant サブパターン**: `Name(sym)` で payload を fresh scalar local に bind、`_` で discard、`Literal` で payload にリテラル等価チェック追加（`Shape::Circle(0i64) => ...` のように）
   - **guard**: `Pat if cond => body` をサポート。bindings は guard 評価時にスコープ内
-  - **制約**: ジェネリック enum、ネストした enum サブパターン (`Some(Some(x))`)、enum を関数引数 / 戻り値 / `print` に使う、enum 全体の再代入、enum 構築を `if` 等の式戻り値に使う、`f64` / 構造体 / tuple / 別 enum payload — すべて未対応
+  - **関数境界 (Phase B)**: enum を関数引数として受け取れる（`fn area(s: Shape) -> i64`）。codegen が `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param に展開し、callee の per-variant payload locals が同順で allocate されるので boundary が一致。enum を関数戻り値として返す lowering / codegen も実装済み（`CallEnum` 経由 + 多値 Return）だが、frontend の type-checker が `-> Shape` 形式の非ジェネリック enum 戻り型を `Identifier` と `Enum(name, [])` の不一致として reject するため、現状は実用パスとしては不可（generic enum で `-> Option<i64>` のように書く必要があるが、generic enum は別途未対応）
+  - **制約**: ジェネリック enum、ネストした enum サブパターン (`Some(Some(x))`)、enum を `print` に使う、enum 全体の再代入、enum 構築を `if` 等の式戻り値に使う、`f64` / 構造体 / tuple / 別 enum payload — すべて未対応
   - **スコープ**: 全 arm の body は同じ scalar 型を返す必要あり
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）

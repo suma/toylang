@@ -1947,6 +1947,147 @@ fn enum_passed_through_two_functions() {
 }
 
 #[test]
+fn enum_construction_in_if_branches() {
+    if skip_e2e() {
+        return;
+    }
+    // The if-chain itself produces an enum value: each branch ends
+    // in a different variant of the same enum, and the resulting
+    // binding holds whichever branch ran.
+    let src = r#"
+        enum Pick {
+            Zero,
+            One,
+            Many(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Zero => 0u64,
+                Pick::One => 1u64,
+                Pick::Many(n) => n,
+            }
+        }
+        fn classify(n: u64) -> u64 {
+            val p = if n == 0u64 {
+                Pick::Zero
+            } elif n == 1u64 {
+                Pick::One
+            } else {
+                Pick::Many(n)
+            }
+            weight(p)
+        }
+        fn main() -> u64 {
+            classify(0u64) + classify(1u64) + classify(7u64)
+        }
+    "#;
+    // 0 + 1 + 7 = 8
+    assert_eq!(compile_and_run(src, "enum_in_if_branches"), 8);
+}
+
+#[test]
+fn enum_construction_in_match_arms() {
+    if skip_e2e() {
+        return;
+    }
+    // Symmetric: a match expression whose arms return enum values
+    // also flows through the composite-target lowering.
+    let src = r#"
+        enum Pick {
+            Zero,
+            Big(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Zero => 0u64,
+                Pick::Big(n) => n,
+            }
+        }
+        fn main() -> u64 {
+            val n = 5u64
+            val p = match n {
+                0u64 => Pick::Zero,
+                _ => Pick::Big(n),
+            }
+            weight(p)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_in_match_arms"), 5);
+}
+
+#[test]
+fn enum_construction_in_nested_if() {
+    if skip_e2e() {
+        return;
+    }
+    // Nested if-chain: outer branches contain inner branches, all
+    // of which still end in enum constructors of the same enum.
+    let src = r#"
+        enum Pick {
+            Tiny(u64),
+            Big(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Tiny(n) => n,
+                Pick::Big(n) => n * 100u64,
+            }
+        }
+        fn main() -> u64 {
+            val n = 7u64
+            val p = if n < 10u64 {
+                if n < 5u64 {
+                    Pick::Tiny(n)
+                } else {
+                    Pick::Tiny(n + 1u64)
+                }
+            } else {
+                Pick::Big(n)
+            }
+            weight(p)
+        }
+    "#;
+    // n=7, < 10 yes, < 5 no → Tiny(8) → 8
+    assert_eq!(compile_and_run(src, "enum_in_nested_if"), 8);
+}
+
+#[test]
+fn enum_branch_with_existing_binding() {
+    if skip_e2e() {
+        return;
+    }
+    // One branch produces a brand-new variant via construction; the
+    // other forwards an existing enum binding. Both should land in
+    // the same shared target.
+    let src = r#"
+        enum Pick {
+            Default,
+            Custom(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Default => 42u64,
+                Pick::Custom(n) => n,
+            }
+        }
+        fn pick_for(n: u64) -> u64 {
+            val fallback = Pick::Default
+            val p = if n == 0u64 {
+                fallback
+            } else {
+                Pick::Custom(n)
+            }
+            weight(p)
+        }
+        fn main() -> u64 {
+            pick_for(0u64) + pick_for(11u64)
+        }
+    "#;
+    // 42 + 11 = 53
+    assert_eq!(compile_and_run(src, "enum_branch_existing_binding"), 53);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

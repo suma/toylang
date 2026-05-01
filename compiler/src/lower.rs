@@ -1371,6 +1371,25 @@ impl<'a> FunctionLower<'a> {
                 return Ok(None);
             }
         }
+        // Composite enum-producing RHS: `if`-chain / `match` / block
+        // whose every branch ends in an enum construction or an enum
+        // binding identifier of the same enum. Pre-allocate the
+        // shared target locals once and have each branch write into
+        // them; cranelift's `def_var` walk turns the per-branch
+        // writes into proper SSA at the merge.
+        if let Some(enum_name) = self.detect_enum_result(rhs_ref) {
+            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
+            self.bindings.insert(
+                name,
+                Binding::Enum {
+                    enum_name,
+                    tag_local,
+                    payload_locals: payload_locals.clone(),
+                },
+            );
+            self.lower_into_enum_target(rhs_ref, enum_name, tag_local, &payload_locals)?;
+            return Ok(None);
+        }
         // Struct-literal RHS: allocate one local per field (recursing
         // into nested struct fields), evaluate each field expression,
         // store into the matching local. The IR layer never sees a
@@ -2314,6 +2333,568 @@ impl<'a> FunctionLower<'a> {
         out
     }
 
+    /// Detect whether an expression evaluates to a value of some
+    /// **known enum type**, walking through if-chains, match arms, and
+    /// `{ ...; tail }` blocks. Returns the enum's symbol when every
+    /// branch / arm / tail produces the same enum, otherwise `None`.
+    /// This is the gate that picks the composite enum-result lowering
+    /// path in `lower_let`; we only commit to the parallel
+    /// `lower_into_enum_target` walk when we know all sub-trees end
+    /// in enum producers.
+    fn detect_enum_result(&self, expr_ref: &ExprRef) -> Option<DefaultSymbol> {
+        let expr = self.program.expression.get(expr_ref)?;
+        match expr {
+            Expr::QualifiedIdentifier(path)
+                if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
+            {
+                Some(path[0])
+            }
+            Expr::AssociatedFunctionCall(en, _, _) if self.enum_defs.contains_key(&en) => {
+                Some(en)
+            }
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Enum { enum_name, .. }) => Some(*enum_name),
+                _ => None,
+            },
+            Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
+                let then_en = self.detect_enum_result(&then_body)?;
+                for (_, body) in &elif_pairs {
+                    if self.detect_enum_result(body)? != then_en {
+                        return None;
+                    }
+                }
+                if self.detect_enum_result(&else_body)? != then_en {
+                    return None;
+                }
+                Some(then_en)
+            }
+            Expr::Match(_, arms) => {
+                let first_en = arms.iter().find_map(|a| self.detect_enum_result(&a.body))?;
+                for arm in &arms {
+                    if self.detect_enum_result(&arm.body)? != first_en {
+                        return None;
+                    }
+                }
+                Some(first_en)
+            }
+            Expr::Block(stmts) => {
+                let last = stmts.last()?;
+                let stmt = self.program.statement.get(last)?;
+                if let Stmt::Expression(e) = stmt {
+                    self.detect_enum_result(&e)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Lower an expression whose result is an enum value of
+    /// `enum_name`, writing the chosen variant into the supplied
+    /// `tag_local` + `payload_locals` instead of allocating fresh
+    /// storage. Mirrors `lower_let`'s direct-construction paths but
+    /// re-uses the caller-provided locals. For composite expressions
+    /// (if-chains, match, blocks), each branch's tail recurses into
+    /// the same target so all paths converge on the same locals —
+    /// cranelift's SSA construction takes care of the merge.
+    fn lower_into_enum_target(
+        &mut self,
+        expr_ref: &ExprRef,
+        enum_name: DefaultSymbol,
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "enum-target expression missing".to_string())?;
+        match expr {
+            Expr::QualifiedIdentifier(path) if path.len() == 2 => {
+                let enum_def = self.enum_defs.get(&path[0]).cloned().ok_or_else(|| {
+                    format!(
+                        "`{}` is not a known enum",
+                        self.interner.resolve(path[0]).unwrap_or("?")
+                    )
+                })?;
+                if path[0] != enum_name {
+                    return Err(format!(
+                        "branch produces enum `{}` but the surrounding binding expects `{}`",
+                        self.interner.resolve(path[0]).unwrap_or("?"),
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                    ));
+                }
+                let variant_idx = enum_def
+                    .variants
+                    .iter()
+                    .position(|v| v.name == path[1])
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown enum variant `{}::{}`",
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(path[1]).unwrap_or("?"),
+                        )
+                    })?;
+                if !enum_def.variants[variant_idx].payload_types.is_empty() {
+                    return Err(format!(
+                        "enum variant `{}::{}` is a tuple variant; supply its arguments \
+                         via `{}::{}(...)`",
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(path[1]).unwrap_or("?"),
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(path[1]).unwrap_or("?"),
+                    ));
+                }
+                self.write_enum_into_target(variant_idx, &[], tag_local, payload_locals)?;
+                Ok(())
+            }
+            Expr::AssociatedFunctionCall(en, var, args) => {
+                let enum_def = self.enum_defs.get(&en).cloned().ok_or_else(|| {
+                    format!(
+                        "`{}` is not a known enum",
+                        self.interner.resolve(en).unwrap_or("?")
+                    )
+                })?;
+                if en != enum_name {
+                    return Err(format!(
+                        "branch produces enum `{}` but the surrounding binding expects `{}`",
+                        self.interner.resolve(en).unwrap_or("?"),
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                    ));
+                }
+                let variant_idx = enum_def
+                    .variants
+                    .iter()
+                    .position(|v| v.name == var)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown enum variant `{}::{}`",
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(var).unwrap_or("?"),
+                        )
+                    })?;
+                let expected = enum_def.variants[variant_idx].payload_types.len();
+                if args.len() != expected {
+                    return Err(format!(
+                        "enum variant `{}::{}` expects {} payload value(s), got {}",
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(var).unwrap_or("?"),
+                        expected,
+                        args.len(),
+                    ));
+                }
+                self.write_enum_into_target(variant_idx, &args, tag_local, payload_locals)?;
+                Ok(())
+            }
+            Expr::Identifier(sym) => {
+                let (src_tag, src_payloads) = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Enum {
+                        enum_name: src_en,
+                        tag_local,
+                        payload_locals,
+                    }) if src_en == enum_name => (tag_local, payload_locals),
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not an enum binding of the expected type",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                self.copy_enum_into_target(
+                    src_tag,
+                    &src_payloads,
+                    tag_local,
+                    payload_locals,
+                );
+                Ok(())
+            }
+            Expr::Block(stmts) => {
+                let stmts = stmts.clone();
+                if stmts.is_empty() {
+                    return Err("empty block cannot produce an enum value".to_string());
+                }
+                for (i, stmt_ref) in stmts.iter().enumerate() {
+                    let is_last = i + 1 == stmts.len();
+                    let stmt = self
+                        .program
+                        .statement
+                        .get(stmt_ref)
+                        .ok_or_else(|| "missing block stmt".to_string())?;
+                    if is_last {
+                        if let Stmt::Expression(e) = stmt {
+                            return self.lower_into_enum_target(
+                                &e,
+                                enum_name,
+                                tag_local,
+                                payload_locals,
+                            );
+                        }
+                    }
+                    let _ = self.lower_stmt(stmt_ref)?;
+                }
+                Err("block has no enum-producing tail expression".to_string())
+            }
+            Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => {
+                self.lower_if_chain_into_enum(
+                    &cond,
+                    &then_body,
+                    &elif_pairs,
+                    &else_body,
+                    enum_name,
+                    tag_local,
+                    payload_locals,
+                )
+            }
+            Expr::Match(scrutinee, arms) => self.lower_match_into_enum(
+                &scrutinee,
+                &arms,
+                enum_name,
+                tag_local,
+                payload_locals,
+            ),
+            other => Err(format!(
+                "compiler MVP cannot lower `{:?}` as an enum-producing expression in this position",
+                other
+            )),
+        }
+    }
+
+    /// Common store: write the variant tag and (optionally) evaluate
+    /// + store the payload args into the target's per-variant slots.
+    fn write_enum_into_target(
+        &mut self,
+        variant_idx: usize,
+        args: &[ExprRef],
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Result<(), String> {
+        let tag_v = self
+            .emit(
+                InstKind::Const(Const::U64(variant_idx as u64)),
+                Some(Type::U64),
+            )
+            .expect("Const returns a value");
+        self.emit(
+            InstKind::StoreLocal {
+                dst: tag_local,
+                src: tag_v,
+            },
+            None,
+        );
+        for (i, arg_ref) in args.iter().enumerate() {
+            let v = self
+                .lower_expr(arg_ref)?
+                .ok_or_else(|| format!("enum payload arg #{i} produced no value"))?;
+            let (dst, _) = payload_locals[variant_idx][i];
+            self.emit(InstKind::StoreLocal { dst, src: v }, None);
+        }
+        Ok(())
+    }
+
+    /// Copy every local backing a source enum binding into the
+    /// target's matching slot. Used when a branch's tail is a bare
+    /// identifier referring to an existing enum binding.
+    fn copy_enum_into_target(
+        &mut self,
+        src_tag: LocalId,
+        src_payloads: &[Vec<(LocalId, Type)>],
+        dst_tag: LocalId,
+        dst_payloads: &[Vec<(LocalId, Type)>],
+    ) {
+        let v = self
+            .emit(InstKind::LoadLocal(src_tag), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        self.emit(
+            InstKind::StoreLocal {
+                dst: dst_tag,
+                src: v,
+            },
+            None,
+        );
+        for (variant_idx, variant_slots) in src_payloads.iter().enumerate() {
+            for (i, (src_local, ty)) in variant_slots.iter().enumerate() {
+                let v = self
+                    .emit(InstKind::LoadLocal(*src_local), Some(*ty))
+                    .expect("LoadLocal returns a value");
+                let (dst_local, _) = dst_payloads[variant_idx][i];
+                self.emit(
+                    InstKind::StoreLocal {
+                        dst: dst_local,
+                        src: v,
+                    },
+                    None,
+                );
+            }
+        }
+    }
+
+    /// Mirror of `lower_if_chain` for an enum-producing if-chain.
+    /// Each branch's body lowers via `lower_into_enum_target` so all
+    /// paths converge on the same target locals. There is no separate
+    /// merge-block result load — the binding's locals already hold
+    /// the merged value once cranelift seals the merge.
+    fn lower_if_chain_into_enum(
+        &mut self,
+        cond: &ExprRef,
+        then_body: &ExprRef,
+        elif_pairs: &Vec<(ExprRef, ExprRef)>,
+        else_body: &ExprRef,
+        enum_name: DefaultSymbol,
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Result<(), String> {
+        let merge = self.fresh_block();
+        let mut cond_blocks: Vec<BlockId> = Vec::with_capacity(elif_pairs.len());
+        for _ in 0..elif_pairs.len() {
+            cond_blocks.push(self.fresh_block());
+        }
+        let then_blk = self.fresh_block();
+        let else_blk = self.fresh_block();
+
+        let c = self
+            .lower_expr(cond)?
+            .ok_or_else(|| "if condition produced no value".to_string())?;
+        let next_after_cond = if !cond_blocks.is_empty() {
+            cond_blocks[0]
+        } else {
+            else_blk
+        };
+        self.terminate(Terminator::Branch {
+            cond: c,
+            then_blk,
+            else_blk: next_after_cond,
+        });
+
+        // then
+        self.switch_to(then_blk);
+        self.lower_into_enum_target(then_body, enum_name, tag_local, payload_locals)?;
+        if !self.is_unreachable() {
+            self.terminate(Terminator::Jump(merge));
+        }
+        // each elif
+        for (i, (elif_cond, elif_body)) in elif_pairs.iter().enumerate() {
+            let cond_blk = cond_blocks[i];
+            self.switch_to(cond_blk);
+            let body_blk = self.fresh_block();
+            let next = if i + 1 < cond_blocks.len() {
+                cond_blocks[i + 1]
+            } else {
+                else_blk
+            };
+            let c = self
+                .lower_expr(elif_cond)?
+                .ok_or_else(|| "elif condition produced no value".to_string())?;
+            self.terminate(Terminator::Branch {
+                cond: c,
+                then_blk: body_blk,
+                else_blk: next,
+            });
+            self.switch_to(body_blk);
+            self.lower_into_enum_target(elif_body, enum_name, tag_local, payload_locals)?;
+            if !self.is_unreachable() {
+                self.terminate(Terminator::Jump(merge));
+            }
+        }
+        // else
+        self.switch_to(else_blk);
+        self.lower_into_enum_target(else_body, enum_name, tag_local, payload_locals)?;
+        if !self.is_unreachable() {
+            self.terminate(Terminator::Jump(merge));
+        }
+        self.switch_to(merge);
+        Ok(())
+    }
+
+    /// Mirror of `lower_match` for an enum-producing match. Uses the
+    /// existing pattern-matching helpers but writes each arm's
+    /// tail-position enum into the supplied target rather than
+    /// merging through a scalar result_local. Restrictions match the
+    /// scalar `lower_match`: enum-binding scrutinee with EnumVariant
+    /// patterns, scalar scrutinee with literal patterns, and so on.
+    fn lower_match_into_enum(
+        &mut self,
+        scrutinee: &ExprRef,
+        arms: &Vec<MatchArm>,
+        enum_name: DefaultSymbol,
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+    ) -> Result<(), String> {
+        let scrut = self.classify_match_scrutinee(scrutinee)?;
+        let merge = self.fresh_block();
+        for arm in arms.iter() {
+            let saved_bindings = self.bindings.clone();
+            let next_blk = self.fresh_block();
+            // Pattern-match dispatch — same shape as lower_match's
+            // first phase. We can't easily share code without a
+            // bigger refactor, so we mirror it here for clarity.
+            match &arm.pattern {
+                Pattern::Wildcard => {}
+                Pattern::Literal(lit_ref) => {
+                    let (scrut_v, scrut_ty) = match &scrut {
+                        MatchScrutinee::Scalar { value, ty } => (*value, *ty),
+                        MatchScrutinee::Enum { .. } => {
+                            return Err(
+                                "literal pattern is only valid against a scalar scrutinee"
+                                    .to_string(),
+                            );
+                        }
+                    };
+                    self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
+                }
+                Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
+                    let (scrut_enum, scrut_tag, scrut_payloads) = match &scrut {
+                        MatchScrutinee::Enum {
+                            enum_name,
+                            tag_local,
+                            payload_locals,
+                        } => (*enum_name, *tag_local, payload_locals.clone()),
+                        MatchScrutinee::Scalar { .. } => {
+                            return Err(
+                                "enum-variant pattern is only valid against an enum scrutinee"
+                                    .to_string(),
+                            );
+                        }
+                    };
+                    if *p_enum != scrut_enum {
+                        return Err(format!(
+                            "match arm pattern enum `{}` does not match scrutinee enum `{}`",
+                            self.interner.resolve(*p_enum).unwrap_or("?"),
+                            self.interner.resolve(scrut_enum).unwrap_or("?"),
+                        ));
+                    }
+                    let scrut_def =
+                        self.enum_defs.get(&scrut_enum).cloned().ok_or_else(|| {
+                            format!(
+                                "internal error: enum `{}` not in defs at match site",
+                                self.interner.resolve(scrut_enum).unwrap_or("?")
+                            )
+                        })?;
+                    let variant_idx = scrut_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name == *p_variant)
+                        .ok_or_else(|| {
+                            format!(
+                                "match arm references unknown variant `{}::{}`",
+                                self.interner.resolve(scrut_enum).unwrap_or("?"),
+                                self.interner.resolve(*p_variant).unwrap_or("?"),
+                            )
+                        })?;
+                    if sub_patterns.len()
+                        != scrut_def.variants[variant_idx].payload_types.len()
+                    {
+                        return Err(format!(
+                            "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
+                            self.interner.resolve(scrut_enum).unwrap_or("?"),
+                            self.interner.resolve(*p_variant).unwrap_or("?"),
+                            sub_patterns.len(),
+                            scrut_def.variants[variant_idx].payload_types.len(),
+                        ));
+                    }
+                    let tag_v = self
+                        .emit(InstKind::LoadLocal(scrut_tag), Some(Type::U64))
+                        .expect("LoadLocal returns a value");
+                    let want = self
+                        .emit(
+                            InstKind::Const(Const::U64(variant_idx as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value");
+                    let tag_eq = self
+                        .emit(
+                            InstKind::BinOp {
+                                op: BinOp::Eq,
+                                lhs: tag_v,
+                                rhs: want,
+                            },
+                            Some(Type::Bool),
+                        )
+                        .expect("Eq returns a value");
+                    let after_tag = self.fresh_block();
+                    self.terminate(Terminator::Branch {
+                        cond: tag_eq,
+                        then_blk: after_tag,
+                        else_blk: next_blk,
+                    });
+                    self.switch_to(after_tag);
+                    for (i, sp) in sub_patterns.iter().enumerate() {
+                        if let Pattern::Literal(lit_ref) = sp {
+                            let (src_local, src_ty) = scrut_payloads[variant_idx][i];
+                            let pv = self
+                                .emit(InstKind::LoadLocal(src_local), Some(src_ty))
+                                .expect("LoadLocal returns a value");
+                            self.emit_literal_eq_branch(lit_ref, pv, src_ty, next_blk)?;
+                        }
+                    }
+                    for (i, sp) in sub_patterns.iter().enumerate() {
+                        match sp {
+                            Pattern::Name(sym) => {
+                                let (src_local, src_ty) = scrut_payloads[variant_idx][i];
+                                let v = self
+                                    .emit(InstKind::LoadLocal(src_local), Some(src_ty))
+                                    .expect("LoadLocal returns a value");
+                                let dst = self
+                                    .module
+                                    .function_mut(self.func_id)
+                                    .add_local(src_ty);
+                                self.emit(
+                                    InstKind::StoreLocal { dst, src: v },
+                                    None,
+                                );
+                                self.bindings.insert(
+                                    *sym,
+                                    Binding::Scalar { local: dst, ty: src_ty },
+                                );
+                            }
+                            Pattern::Wildcard | Pattern::Literal(_) => {}
+                            other => {
+                                return Err(format!(
+                                    "compiler MVP only supports `Name`, `_`, and \
+                                     literal sub-patterns inside enum variants, got {other:?}"
+                                ));
+                            }
+                        }
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "compiler MVP `match` arms must be enum-variant, literal, or \
+                         `_` patterns, got {other:?}"
+                    ));
+                }
+            }
+            if let Some(guard_ref) = &arm.guard {
+                let body_blk = self.fresh_block();
+                let gv = self
+                    .lower_expr(guard_ref)?
+                    .ok_or_else(|| "match guard produced no value".to_string())?;
+                self.terminate(Terminator::Branch {
+                    cond: gv,
+                    then_blk: body_blk,
+                    else_blk: next_blk,
+                });
+                self.switch_to(body_blk);
+            }
+            self.lower_into_enum_target(&arm.body, enum_name, tag_local, payload_locals)?;
+            if !self.is_unreachable() {
+                self.terminate(Terminator::Jump(merge));
+            }
+            self.bindings = saved_bindings;
+            self.switch_to(next_blk);
+        }
+        // Trailing fallthrough is an exhaustiveness hole — same
+        // treatment as scalar `lower_match`: panic so the runtime
+        // gets a clear signal if the type-checker missed a case.
+        if !self.is_unreachable() {
+            self.terminate(Terminator::Panic {
+                message: self.contract_msgs.requires_violation,
+            });
+        }
+        self.switch_to(merge);
+        Ok(())
+    }
+
     /// Lower `expr as Target`. The pair `(from, to)` is recorded on
     /// the IR `Cast` so codegen can pick the right cranelift
     /// instruction. Unsupported pairs (e.g. struct casts) are rejected
@@ -3135,11 +3716,19 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<Option<ValueId>, String> {
         let scrut = self.classify_match_scrutinee(scrutinee)?;
         // Pick the result type by scanning every arm body for the
-        // first non-divergent scalar — same trick as `lower_if_chain`.
-        let result_ty = arms
-            .iter()
-            .find_map(|a| self.value_scalar(&a.body))
-            .unwrap_or(Type::Unit);
+        // first non-divergent scalar — same trick as `lower_if_chain`,
+        // but with arm-pattern-aware inference so a body that's just
+        // a `Name` sub-pattern (e.g. `Pick::A(n) => n`) still resolves
+        // to the payload's declared type. Without this, the simplest
+        // "extract the payload" matches would degrade to `Unit` and
+        // silently produce no value.
+        let mut result_ty = Type::Unit;
+        for arm in arms.iter() {
+            if let Some(ty) = self.arm_body_type(&scrut, arm) {
+                result_ty = ty;
+                break;
+            }
+        }
         let result_local = if result_ty.produces_value() {
             Some(self.module.function_mut(self.func_id).add_local(result_ty))
         } else {
@@ -3349,6 +3938,64 @@ impl<'a> FunctionLower<'a> {
             Ok(self.emit(InstKind::LoadLocal(local), Some(result_ty)))
         } else {
             Ok(None)
+        }
+    }
+
+    /// Best-effort body-type inference for one match arm, with
+    /// pattern-introduced bindings temporarily applied so
+    /// `value_scalar` can resolve identifier references that the
+    /// arm's `Name` sub-patterns would bring into scope. Restores
+    /// the binding map before returning.
+    fn arm_body_type(
+        &mut self,
+        scrut: &MatchScrutinee,
+        arm: &MatchArm,
+    ) -> Option<Type> {
+        let saved = self.bindings.clone();
+        self.apply_arm_pattern_bindings_for_inference(scrut, &arm.pattern);
+        let ty = self.value_scalar(&arm.body);
+        self.bindings = saved;
+        ty
+    }
+
+    /// Insert dummy `Scalar` bindings into `self.bindings` for every
+    /// `Name` sub-pattern an arm pattern would introduce, using the
+    /// scrutinee's payload local table as the source of truth for
+    /// type / local. Used only by `arm_body_type` — the caller is
+    /// expected to snapshot and restore.
+    fn apply_arm_pattern_bindings_for_inference(
+        &mut self,
+        scrut: &MatchScrutinee,
+        pattern: &Pattern,
+    ) {
+        if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern {
+            if let MatchScrutinee::Enum {
+                enum_name,
+                payload_locals,
+                ..
+            } = scrut
+            {
+                if let Some(enum_def) = self.enum_defs.get(enum_name).cloned() {
+                    if let Some(variant_idx) =
+                        enum_def.variants.iter().position(|v| v.name == *variant_sym)
+                    {
+                        if variant_idx < payload_locals.len() {
+                            for (i, sp) in sub_patterns.iter().enumerate() {
+                                if let Pattern::Name(sym) = sp {
+                                    if i < payload_locals[variant_idx].len() {
+                                        let (local, ty) =
+                                            payload_locals[variant_idx][i];
+                                        self.bindings.insert(
+                                            *sym,
+                                            Binding::Scalar { local, ty },
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

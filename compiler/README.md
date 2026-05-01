@@ -28,7 +28,8 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
   - **guard**: `Pat if cond => body` をサポート。bindings は guard 評価時にスコープ内
   - **関数境界 (Phase B)**: enum を関数引数として受け取れる（`fn area(s: Shape) -> i64`）。codegen が `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param に展開し、callee の per-variant payload locals が同順で allocate されるので boundary が一致。enum を関数戻り値として返す lowering / codegen も実装済み（`CallEnum` 経由 + 多値 Return）だが、frontend の type-checker が `-> Shape` 形式の非ジェネリック enum 戻り型を `Identifier` と `Enum(name, [])` の不一致として reject するため、現状は実用パスとしては不可（generic enum で `-> Option<i64>` のように書く必要があるが、generic enum は別途未対応）
   - **`print` / `println`**: enum binding（`val` / `var` 由来 または関数引数）を受け取って interpreter と同形式に出力（unit variant: `Color::Red`、tuple variant: `Shape::Circle(5)` / `Shape::Rect(3, 7)`）。runtime tag dispatch で variant ごとの分岐を brif chain で生成。enum リテラル直接（`println(Enum::Variant(args))`）は不可、`val` で受ける必要あり
-  - **制約**: ジェネリック enum、ネストした enum サブパターン (`Some(Some(x))`)、enum 全体の再代入、enum 構築を `if` 等の式戻り値に使う、`f64` / 構造体 / tuple / 別 enum payload — 未対応
+  - **enum 構築を `if` / `match` 等の式位置で (Phase D)**: `val s = if cond { Pick::A(n) } elif ... { Pick::B } else { Pick::C(m) }` や `val s = match n { 0u64 => Pick::Zero, _ => Pick::Big(n) }` のように、複数分岐の各 tail で enum を構築するパターンを受理。`detect_enum_result` で全分岐が同じ enum を返すか静的に判定し、`lower_into_enum_target` 経由で各分岐が同じ tag/payload locals に書き込む（cranelift の `def_var` walk で merge 時に SSA 化）。ネストした if-chain、`match` arm の guard、blocks (`{ stmt; tail }`) も再帰で動作。tail 位置で既存の enum binding identifier を返すケースも copy 経路で動作
+  - **制約**: ジェネリック enum、ネストした enum サブパターン (`Some(Some(x))`)、enum 全体の再代入、`f64` / 構造体 / tuple / 別 enum payload — 未対応
   - **スコープ**: 全 arm の body は同じ scalar 型を返す必要あり
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）

@@ -2975,6 +2975,214 @@ impl<'a> FunctionLower<'a> {
                     self.emit_print_enum(&storage, newline)?;
                     return Ok(None);
                 }
+                Expr::Call(fn_name, args_ref)
+                    if self
+                        .module
+                        .function_index
+                        .get(&fn_name)
+                        .map(|id| {
+                            let ret = self.module.function(*id).return_type;
+                            matches!(ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_))
+                        })
+                        .unwrap_or(false) =>
+                {
+                    // Compound-returning function call. Allocate a
+                    // scratch binding to receive the result via the
+                    // matching CallStruct / CallTuple / CallEnum
+                    // (same shape `lower_let` uses), then dispatch
+                    // to the corresponding `emit_print_*` helper.
+                    let target_id = *self.module.function_index.get(&fn_name).unwrap();
+                    let target_ret = self.module.function(target_id).return_type;
+                    let arg_values = self.lower_call_args(&args_ref)?;
+                    match target_ret {
+                        Type::Struct(struct_id) => {
+                            let fields = self.allocate_struct_fields(struct_id);
+                            let dests: Vec<LocalId> =
+                                Self::flatten_struct_locals(&fields)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.emit(
+                                InstKind::CallStruct {
+                                    target: target_id,
+                                    args: arg_values,
+                                    dests,
+                                },
+                                None,
+                            );
+                            self.emit_print_struct(struct_id, &fields, newline);
+                        }
+                        Type::Tuple(tuple_id) => {
+                            let elements = self.allocate_tuple_elements(tuple_id)?;
+                            let dests: Vec<LocalId> =
+                                flatten_tuple_element_locals(&elements)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.emit(
+                                InstKind::CallTuple {
+                                    target: target_id,
+                                    args: arg_values,
+                                    dests,
+                                },
+                                None,
+                            );
+                            self.emit_print_tuple(&elements, newline);
+                        }
+                        Type::Enum(enum_id) => {
+                            let storage = self.allocate_enum_storage(enum_id);
+                            let dests = Self::flatten_enum_dests(&storage);
+                            self.emit(
+                                InstKind::CallEnum {
+                                    target: target_id,
+                                    args: arg_values,
+                                    dests,
+                                },
+                                None,
+                            );
+                            self.emit_print_enum(&storage, newline)?;
+                        }
+                        _ => unreachable!("guard ensured compound return"),
+                    }
+                    return Ok(None);
+                }
+                Expr::MethodCall(recv, method_sym, method_args) => {
+                    // Try the compound-returning method path. If the
+                    // receiver / method resolves and the return type
+                    // is compound, route through the matching
+                    // `emit_print_*` after a CallStruct/Tuple/Enum
+                    // into a scratch binding. Falls through to the
+                    // generic value_scalar+Print path otherwise (so
+                    // scalar-returning methods still work).
+                    let recv_expr =
+                        self.program.expression.get(&recv).ok_or_else(|| {
+                            "method-call receiver missing".to_string()
+                        })?;
+                    let recv_sym = match recv_expr {
+                        Expr::Identifier(s) => Some(s),
+                        _ => None,
+                    };
+                    if let Some(rs) = recv_sym {
+                        if let Some(binding) = self.bindings.get(&rs).cloned() {
+                            let target_sym_opt = match &binding {
+                                Binding::Struct { struct_id, .. } => Some(
+                                    self.module.struct_def(*struct_id).base_name,
+                                ),
+                                Binding::Enum(storage) => Some(
+                                    self.module.enum_def(storage.enum_id).base_name,
+                                ),
+                                _ => None,
+                            };
+                            if let Some(target_sym) = target_sym_opt {
+                                let target_id = self
+                                    .method_func_ids
+                                    .get(&(target_sym, method_sym))
+                                    .copied();
+                                if let Some(target_id) = target_id {
+                                    let target_ret =
+                                        self.module.function(target_id).return_type;
+                                    if matches!(
+                                        target_ret,
+                                        Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
+                                    ) {
+                                        // Build call args: receiver leaf scalars first.
+                                        let mut all_args: Vec<ValueId> = Vec::new();
+                                        match &binding {
+                                            Binding::Struct { fields, .. } => {
+                                                for (local, ty) in
+                                                    Self::flatten_struct_locals(fields)
+                                                {
+                                                    let v = self
+                                                        .emit(
+                                                            InstKind::LoadLocal(local),
+                                                            Some(ty),
+                                                        )
+                                                        .expect("LoadLocal returns");
+                                                    all_args.push(v);
+                                                }
+                                            }
+                                            Binding::Enum(storage) => {
+                                                let storage = storage.clone();
+                                                let vs = self.load_enum_locals(&storage);
+                                                all_args.extend(vs);
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                        for a in &method_args {
+                                            let v = self.lower_expr(a)?.ok_or_else(
+                                                || {
+                                                    "method argument produced no value"
+                                                        .to_string()
+                                                },
+                                            )?;
+                                            all_args.push(v);
+                                        }
+                                        match target_ret {
+                                            Type::Struct(struct_id) => {
+                                                let fields =
+                                                    self.allocate_struct_fields(struct_id);
+                                                let dests: Vec<LocalId> =
+                                                    Self::flatten_struct_locals(&fields)
+                                                        .into_iter()
+                                                        .map(|(l, _)| l)
+                                                        .collect();
+                                                self.emit(
+                                                    InstKind::CallStruct {
+                                                        target: target_id,
+                                                        args: all_args,
+                                                        dests,
+                                                    },
+                                                    None,
+                                                );
+                                                self.emit_print_struct(
+                                                    struct_id, &fields, newline,
+                                                );
+                                            }
+                                            Type::Tuple(tuple_id) => {
+                                                let elements =
+                                                    self.allocate_tuple_elements(tuple_id)?;
+                                                let dests: Vec<LocalId> =
+                                                    flatten_tuple_element_locals(&elements)
+                                                        .into_iter()
+                                                        .map(|(l, _)| l)
+                                                        .collect();
+                                                self.emit(
+                                                    InstKind::CallTuple {
+                                                        target: target_id,
+                                                        args: all_args,
+                                                        dests,
+                                                    },
+                                                    None,
+                                                );
+                                                self.emit_print_tuple(
+                                                    &elements, newline,
+                                                );
+                                            }
+                                            Type::Enum(enum_id) => {
+                                                let storage =
+                                                    self.allocate_enum_storage(enum_id);
+                                                let dests =
+                                                    Self::flatten_enum_dests(&storage);
+                                                self.emit(
+                                                    InstKind::CallEnum {
+                                                        target: target_id,
+                                                        args: all_args,
+                                                        dests,
+                                                    },
+                                                    None,
+                                                );
+                                                self.emit_print_enum(&storage, newline)?;
+                                            }
+                                            _ => unreachable!(),
+                                        }
+                                        return Ok(None);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let _ = method_args;
+                }
                 Expr::AssociatedFunctionCall(enum_name, variant_name, ctor_args)
                     if self.enum_defs.contains_key(&enum_name) =>
                 {

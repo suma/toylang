@@ -674,6 +674,96 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn print_struct_returning_call_directly() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase U: `println(make_point())` no longer requires a
+    // val round-trip. The print path detects a Call returning a
+    // compound type, allocates a scratch binding, emits the
+    // matching CallStruct/Tuple/Enum, and dispatches to the
+    // existing `emit_print_*` helper.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn make_point() -> Point { Point { x: 3i64, y: 4i64 } }
+        fn main() -> u64 {
+            println(make_point())
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_struct_call");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Point { x: 3, y: 4 }\n",
+    );
+}
+
+#[test]
+fn print_tuple_returning_call_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn make_pair() -> (i64, i64) { (10i64, 20i64) }
+        fn main() -> u64 {
+            println(make_pair())
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_tuple_call");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "(10, 20)\n");
+}
+
+#[test]
+fn print_enum_returning_call_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape { Circle(i64), Square(i64, i64) }
+        fn make_shape() -> Shape { Shape::Square(7i64, 13i64) }
+        fn main() -> u64 {
+            println(make_shape())
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_enum_call");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Shape::Square(7, 13)\n",
+    );
+}
+
+#[test]
+fn print_method_returning_struct_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        impl Point {
+            fn doubled(self: Self) -> Point {
+                Point { x: self.x * 2i64, y: self.y * 2i64 }
+            }
+        }
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            println(p.doubled())
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_method_struct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Point { x: 6, y: 8 }\n",
+    );
+}
+
+#[test]
 fn string_value_binding_and_print() {
     if skip_e2e() {
         return;

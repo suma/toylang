@@ -22,6 +22,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
 - **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
 - **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
+- **compound-returning call の直接 print (Phase U)**: `println(make_point())` / `println(p.doubled())` のように、struct / tuple / enum を返す関数 / メソッド呼び出しを print 引数として直接書ける。print path は callee の戻り型に応じて scratch binding を allocate し、`CallStruct` / `CallTuple` / `CallEnum` で受けてから既存の `emit_print_*` ヘルパに routed
 - **str 値 (Phase T)**: `str` を val/var、関数引数 / 戻り値、struct field、tuple element に持てる。runtime 表現は `.rodata` 上の null-terminated バイト列のポインタ (`Type::Str` = i64 ポインタ)。リテラルは `InstKind::ConstStr` で `symbol_value` 経由で address を materialize、関数 boundary も同じく i64 1 個分の slot で渡す。`println(s)` は `value_ty == Type::Str` で `toy_println_str` ヘルパに dispatch。**制約**: 文字列同士の連結 / 比較 / `.len()` などのメソッドは未対応 (interpreter 側のみ)
 - **配列 (Phase S)**: `[a, b, c]` リテラルと `arr[const_idx]` の read / write をサポート。Binding::Array が要素ごとの per-index local を保持し、定数 index はその local への直接 LoadLocal / StoreLocal にフォールド。print 出力は `[1, 2, 3]` 形式 (interpreter 一致)。**制約**: 要素は scalar (i64/u64/f64/bool) のみ、index は const literal または top-level const のみ (runtime index と range slicing は未対応 — `stack_addr` ベースの buffer 表現が必要)
 - **method dispatch (Phase R)**: `impl <Type> { ... }` の inherent method、`impl <Trait> for <Type>` の trait conformance method、`fn f<T: Trait>(x: T) { x.method() }` の bound 経由 generic 呼び出しすべて対応。impl ブロックを pre-scan して `(target_struct_symbol, method_name) → MethodFunction` の registry を構築、各メソッドを mangled name `toy_<Type>__<method>` で declare。`Self` は impl 対象に substitute。call site は receiver 識別子を struct/enum binding に解決し、`(target, method)` で `FuncId` を引いて receiver の leaf scalar 列を call args の先頭に prepend。Phase L (generic monomorphisation) と組み合わせることで trait dispatch も静的に解決される (vtable 不要)。**Phase R3** で `impl<T> Cell<T> { fn get(self: Self) -> T }` のような generic method も lazy monomorphisation 対応 (call site で receiver の type_args から impl の generic param を bind して fresh `FuncId` を declare、queue で body lowering)。**制約**: dynamic `dyn Trait` は未対応
@@ -51,7 +52,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - (廃止) trait — **Phase R 以降**: inherent method, `impl <Trait> for <Type>` 経由のメソッド呼び出し、`<T: Greet>` bound 経由の generic method 呼び出しすべて対応 (monomorphisation 経由)。`dyn Trait` の動的 dispatch は対象外
 - allocator
 - (廃止) generics（→ struct / enum / 関数とも対応済）
-- 関数戻り値の compound 値を直接 `print` / `println` する（`val` で受ければ可。**Phase P 以降**: struct / tuple / enum リテラルは直接 `print` できる）
+- (廃止) 関数戻り値 / メソッド戻り値の compound 値を直接 `print` / `println` する — **Phase U 以降**: `println(make_point())` / `println(p.doubled())` のように直接呼べる
 - struct / tuple binding 全体の再代入
 - (廃止) ネストした tuple 要素 / tuple-of-struct / struct-of-tuple — **Phase Q 以降すべて対応**
 - 文字列 const、複雑な const 初期化式（リテラル / 単純算術 fold のみ）

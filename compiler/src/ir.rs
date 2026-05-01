@@ -32,9 +32,16 @@
 //!
 //! ## Future work hooks
 //!
-//! - `AllocatorBinding` is reserved on instructions that allocate (none
-//!   exist yet at this scale), to be filled in when Phase A wires the
-//!   allocator system through codegen.
+//! - `AllocatorBinding` (defined below) is the IR-level annotation
+//!   that future heap-alloc instructions (`__builtin_heap_alloc` /
+//!   `_realloc` / `_free` / `_ptr_read` / `_ptr_write`) will carry.
+//!   It tells the backend whether the alloc site dispatches through
+//!   a compile-time-known allocator (`Static`), a generic `A:
+//!   Allocator` parameter (`Generic`), the runtime active-allocator
+//!   stack (`Ambient`), or a value held in a local variable
+//!   (`Local`). The compiler currently doesn't lower those builtins
+//!   yet, but the binding exists today so the lowerer and codegen
+//!   share a stable interface for the moment they land.
 //! - `Type` only carries scalars today; struct / tuple / enum entries
 //!   will be added when those land in codegen.
 
@@ -409,6 +416,66 @@ impl Type {
 
     pub fn is_enum(self) -> bool {
         matches!(self, Type::Enum(_))
+    }
+}
+
+/// Identifies an allocator handle that a heap-related instruction
+/// dispatches through. Future `__builtin_heap_alloc` /
+/// `__builtin_heap_realloc` / `__builtin_heap_free` /
+/// `__builtin_ptr_read` / `__builtin_ptr_write` lowering will attach
+/// one of these to each call site so codegen can pick between static
+/// (devirtualised) and dynamic dispatch without re-running the
+/// type-checker.
+///
+/// The four variants line up 1:1 with the design in
+/// `ALLOCATOR_PLAN.md` ("IR レベルでの表現"):
+///
+/// - `Static(allocator_id)` — the allocator is a compile-time
+///   constant (typically created by `__builtin_default_allocator()`
+///   or a `__builtin_arena_allocator()` initialiser visible at the
+///   call site). Codegen can emit a direct call to that allocator's
+///   `alloc` / `free` entry, bypassing any vtable.
+/// - `Generic(type_param)` — the allocator type is a function /
+///   struct generic parameter `<A: Allocator>`. Each monomorphised
+///   instance fixes `type_param` to a concrete handle, after which
+///   the binding behaves like `Static`.
+/// - `Ambient` — the allocator is whatever is on top of the runtime
+///   active-allocator stack (set by the enclosing `with allocator =
+///   …` block, or the global default). The interpreter and the JIT
+///   already implement this; native codegen will need a vtable call.
+/// - `Local(local_id)` — the allocator handle is held in a function
+///   local (e.g. `val a = __builtin_arena_allocator(); …`). Codegen
+///   loads the handle and dispatches through its vtable.
+///
+/// `LocalId` is encoded as a `u32` rather than a wrapper newtype so
+/// the variant survives a future `LocalId` representation change
+/// without an API break — there's no requirement that the binding
+/// stay in sync with the function's local table outside of
+/// lowering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllocatorBinding {
+    /// Compile-time-known allocator. The `u32` is a stable id minted
+    /// by the lowering pass (typically `0` for the global default).
+    Static(u32),
+    /// Generic allocator parameter. The `DefaultSymbol` is the type
+    /// parameter name (`A` etc.) so monomorphisation can substitute.
+    Generic(DefaultSymbol),
+    /// Dispatch through the runtime active-allocator stack.
+    Ambient,
+    /// Read the allocator handle from this local before dispatching.
+    Local(u32),
+}
+
+impl fmt::Display for AllocatorBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AllocatorBinding::Static(id) => write!(f, "alloc=static({id})"),
+            AllocatorBinding::Generic(sym) => {
+                write!(f, "alloc=generic({})", sym.to_usize())
+            }
+            AllocatorBinding::Ambient => write!(f, "alloc=ambient"),
+            AllocatorBinding::Local(id) => write!(f, "alloc=local({id})"),
+        }
     }
 }
 
@@ -881,5 +948,52 @@ impl fmt::Display for DisplayTerm<'_> {
             Terminator::Panic { message } => write!(f, "panic #{}", message.to_usize()),
             Terminator::Unreachable => write!(f, "unreachable"),
         }
+    }
+}
+
+#[cfg(test)]
+mod allocator_binding_tests {
+    use super::AllocatorBinding;
+    use string_interner::DefaultSymbol;
+
+    #[test]
+    fn display_static_includes_id() {
+        let b = AllocatorBinding::Static(7);
+        assert_eq!(format!("{b}"), "alloc=static(7)");
+    }
+
+    #[test]
+    fn display_ambient_is_keyword() {
+        let b = AllocatorBinding::Ambient;
+        assert_eq!(format!("{b}"), "alloc=ambient");
+    }
+
+    #[test]
+    fn display_local_includes_id() {
+        let b = AllocatorBinding::Local(42);
+        assert_eq!(format!("{b}"), "alloc=local(42)");
+    }
+
+    #[test]
+    fn display_generic_uses_symbol_id() {
+        // Symbol(0) is the smallest legal `DefaultSymbol`. Any non-
+        // panic conversion is fine for a Display test.
+        use string_interner::Symbol;
+        let sym: DefaultSymbol = Symbol::try_from_usize(0).unwrap();
+        let b = AllocatorBinding::Generic(sym);
+        assert_eq!(format!("{b}"), "alloc=generic(0)");
+    }
+
+    #[test]
+    fn equality_matches_variant_and_payload() {
+        assert_eq!(
+            AllocatorBinding::Static(0),
+            AllocatorBinding::Static(0),
+        );
+        assert_ne!(
+            AllocatorBinding::Static(0),
+            AllocatorBinding::Static(1),
+        );
+        assert_ne!(AllocatorBinding::Ambient, AllocatorBinding::Static(0));
     }
 }

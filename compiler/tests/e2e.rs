@@ -1002,6 +1002,98 @@ fn nested_struct_passed_through_function() {
 }
 
 #[test]
+fn tuple_returned_from_function() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn make_pair(a: u64, b: u64) -> (u64, u64) {
+            (a, b)
+        }
+        fn main() -> u64 {
+            val pair = make_pair(10u64, 20u64)
+            print("pair.0=")
+            println(pair.0)
+            print("pair.1=")
+            println(pair.1)
+            pair.0 + pair.1
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_ret");
+    assert_eq!(out.status.code(), Some(30));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "pair.0=10\npair.1=20\n");
+}
+
+#[test]
+fn tuple_passed_to_function() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn sum(p: (u64, u64)) -> u64 { p.0 + p.1 }
+        fn main() -> u64 {
+            val pair = (4u64, 5u64)
+            sum(pair)
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_param");
+    assert_eq!(out.status.code(), Some(9));
+}
+
+#[test]
+fn tuple_round_trip_through_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Tuple flows in and out of the same function — exercises both
+    // multi-arg and multi-result codegen paths in one shot.
+    let src = r#"
+        fn swap(p: (u64, u64)) -> (u64, u64) {
+            (p.1, p.0)
+        }
+        fn main() -> u64 {
+            val orig = (3u64, 8u64)
+            val swapped = swap(orig)
+            print("0=")
+            println(swapped.0)
+            print("1=")
+            println(swapped.1)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_round");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "0=8\n1=3\n");
+}
+
+#[test]
+fn tuple_returning_call_into_destructure() {
+    if skip_e2e() {
+        return;
+    }
+    // The parser desugars `val (a, b) = f()` into
+    // `val tmp = f(); val a = tmp.0; val b = tmp.1`. The compiler's
+    // tuple-returning-call path produces the tmp binding, then the
+    // existing tuple-element accesses pick up `a` and `b`.
+    let src = r#"
+        fn make() -> (i64, u64) {
+            (-7i64, 42u64)
+        }
+        fn main() -> u64 {
+            val (a, b) = make()
+            print("a=")
+            println(a)
+            print("b=")
+            println(b)
+            b
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_destruct_call");
+    assert_eq!(out.status.code(), Some(42));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a=-7\nb=42\n");
+}
+
+#[test]
 fn emit_object_writes_o_file() {
     if skip_e2e() {
         return;

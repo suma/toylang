@@ -570,19 +570,20 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         IrType::F64 => Some(types::F64),
         IrType::Bool => Some(types::I8),
         IrType::Unit => None,
-        // Struct types have no single cranelift representation — the
-        // codegen layer expands them into multiple AbiParams /
+        // Compound types have no single cranelift representation —
+        // the codegen layer expands them into multiple AbiParams /
         // returns at the function boundary instead. Callers that
-        // could see a struct here should branch on `is_struct()`.
-        IrType::Struct(_) => None,
+        // could see one of these should branch on `is_struct()` /
+        // `is_tuple()` first.
+        IrType::Struct(_) | IrType::Tuple(_) => None,
     }
 }
 
 /// Recursively flatten an IR type into the sequence of cranelift
 /// types its representation occupies at the function boundary.
-/// Scalars yield one entry; struct types yield one entry per leaf
-/// scalar field, recursing through nested struct fields. Unit
-/// yields nothing (no cranelift slot).
+/// Scalars yield one entry; struct / tuple types yield one entry
+/// per leaf scalar element, recursing through nested compound
+/// fields. Unit yields nothing (no cranelift slot).
 fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
     match t {
         IrType::Struct(name) => {
@@ -590,6 +591,15 @@ fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types
             if let Some(def) = ir_module.struct_defs.get(&name) {
                 for (_field_name, field_ty) in def {
                     out.extend(flatten_struct_to_cranelift_tys(ir_module, *field_ty));
+                }
+            }
+            out
+        }
+        IrType::Tuple(id) => {
+            let mut out = Vec::new();
+            if let Some(def) = ir_module.tuple_defs.get(id.0 as usize) {
+                for elem_ty in def {
+                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *elem_ty));
                 }
             }
             out
@@ -911,6 +921,30 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.builder.def_var(var, *val);
                 }
             }
+            InstKind::CallTuple { target, args, dests } => {
+                // Same shape as CallStruct, just for tuple returns.
+                // The cranelift call signature was already built with
+                // one return per tuple element, so the multi-result
+                // walk works identically.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: tuple call returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len()
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
+                }
+            }
             InstKind::Print { value, value_ty, newline } => {
                 let v = self.value(*value);
                 let helper = match (value_ty, newline) {
@@ -930,6 +964,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::Struct(_), _) => {
                         return Err(
                             "internal error: Print of struct reached codegen (should be rejected at lower)"
+                                .to_string(),
+                        );
+                    }
+                    (IrType::Tuple(_), _) => {
+                        return Err(
+                            "internal error: Print of tuple reached codegen (should be rejected at lower)"
                                 .to_string(),
                         );
                     }

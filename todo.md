@@ -101,7 +101,9 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
-183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC + --release + nested fields 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC + --release + nested fields + tuple boundary 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **2026-05-01: tuple cross-boundary を追加** — `TupleId(u32)` newtype と `Type::Tuple(TupleId)` を IR に追加、`Module.tuple_defs: Vec<Vec<Type>>` で tuple shape を intern（linear-search dedup）。`InstKind::CallTuple { target, args, dests }` を `CallStruct` と並列で追加。`lower_param_or_return_type` が `TypeDecl::Tuple(elements)` を受理（scalar element 限定）し `intern_tuple` で TupleId を取得。`allocate_tuple_elements` で tuple param を per-element local に展開、`lower_tuple_literal_tail` で tail-position tuple literal を `pending_tuple_value` に貯めて implicit return が消費。`lower_let` の Call 検知が `CallTuple` も emit、explicit `return p` が tuple binding 経由 / tuple literal 経由で expand。codegen の `flatten_struct_to_cranelift_tys` を `Type::Tuple` も再帰展開するよう拡張、`InstKind::CallTuple` を multi-result call として lower。e2e テスト 4 件追加（tuple return / tuple param / round trip / call-into-destructure）、計 49 テスト全 green。
 
    **2026-05-01: --release ゲート と ネストした struct field を追加** — `CompilerOptions.release: bool` を追加、`--release` 指定で `lower.rs` が requires/ensures 検査を一切 emit しない（interpreter の `INTERPRETER_CONTRACTS=off` と同等）。ネストした struct: `FieldBinding` を `{ name, shape: FieldShape }` に refactor、`FieldShape` enum で `Scalar { local, ty }` と `Struct { struct_name, fields }` を表現。`collect_struct_defs` は struct field type も accept、`allocate_struct_fields` ヘルパーで再帰的に local 展開、`store_struct_literal_fields` ヘルパーで入れ子リテラル `Outer { inner: Inner { x: 1 } }` を再帰 store。`a.b.c` chain access は `resolve_field_chain` で walk、`FieldChainResult::Scalar` / `Struct` を返す。codegen の `flatten_struct_to_cranelift_tys` で nested struct param/return を leaf scalar まで再帰展開。e2e テスト 3 件追加（release skip 検証 / nested field read+write / nested struct param）、計 45 テスト全 green。
 
@@ -115,7 +117,7 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
    - **文字列**: 任意の文字列値（`val s = "foo"` 等）は未対応。文字列リテラルは `panic` / `assert` / `print` / `println` 引数としてのみ受理
    - **キャスト**: `as` で i64↔u64（identity）と {i64,u64}↔f64 はサポート。bool との cast、Unit との cast は不可
    - **f64 制約**: `%` (mod) は cranelift に native fmod が無いため reject
-   - **tuple**: 局所バインディング・要素アクセス・要素書き込み・分解はサポート。関数引数 / 戻り値として tuple は渡せない、ネストした tuple は未対応
+   - **tuple**: 局所バインディング・要素アクセス・要素書き込み・分解、関数引数 / 戻り値として tuple 値を渡せる（codegen が per-element 展開）、tuple-returning call も `val (a, b) = f()` で受けられる。ネストした tuple は未対応
    - **コレクション**: 配列、dict 全般未対応（リテラル / アクセス いずれも reject）
    - **enum / match**: `enum` 宣言と `match` 式いずれも未対応
    - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応

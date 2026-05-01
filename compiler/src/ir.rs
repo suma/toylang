@@ -57,6 +57,10 @@ pub struct Module {
     /// Field name is stored as a `String` to match the AST exactly;
     /// codegen never has to cross-reference the interner for these.
     pub struct_defs: HashMap<DefaultSymbol, Vec<(String, Type)>>,
+    /// Tuple shapes that appear in function signatures. Tuples are
+    /// structural (no name), so we intern each unique element-type
+    /// list and reference it by `TupleId`. Indexed by `TupleId.0`.
+    pub tuple_defs: Vec<Vec<Type>>,
 }
 
 impl Module {
@@ -186,6 +190,10 @@ pub enum Type {
     Bool,
     Unit,
     Struct(DefaultSymbol),
+    /// Structural tuple shape interned in `Module.tuple_defs`. Like
+    /// `Struct`, only valid in function signatures — IR values stay
+    /// scalar.
+    Tuple(TupleId),
 }
 
 impl Type {
@@ -207,6 +215,10 @@ impl Type {
 
     pub fn is_struct(self) -> bool {
         matches!(self, Type::Struct(_))
+    }
+
+    pub fn is_tuple(self) -> bool {
+        matches!(self, Type::Tuple(_))
     }
 }
 
@@ -244,6 +256,17 @@ pub enum InstKind {
         args: Vec<ValueId>,
         /// One local per scalar field of the callee's return struct,
         /// in declaration order.
+        dests: Vec<LocalId>,
+    },
+    /// Same shape as `CallStruct` but for tuple-returning functions.
+    /// Kept separate because the lowering picks one or the other
+    /// based on the callee's return type, and conflating the two
+    /// would force every consumer to discriminate on `Type::Struct`
+    /// vs `Type::Tuple` of the callee's signature.
+    CallTuple {
+        target: FuncId,
+        args: Vec<ValueId>,
+        /// One local per tuple element, in declaration order.
         dests: Vec<LocalId>,
     },
     /// `print` / `println` of a primitive value. The codegen layer
@@ -367,6 +390,9 @@ pub struct BlockId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FuncId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TupleId(pub u32);
+
 // -------------------------------------------------------------------------
 // Display: a textual format that can be diffed in tests and shown via
 // `--emit=ir`. Intentionally simple — keys / values are plain ASCII so
@@ -385,6 +411,7 @@ impl fmt::Display for Type {
             // symbol id. Pretty printing for human consumption goes
             // through `Function::export_name` instead.
             Type::Struct(sym) => write!(f, "struct#{}", sym.to_usize()),
+            Type::Tuple(id) => write!(f, "tuple#{}", id.0),
         }
     }
 }
@@ -534,6 +561,16 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(
                     f,
                     "call_struct {target}({}) -> [{}]",
+                    argstr.join(", "),
+                    deststr.join(", ")
+                )
+            }
+            InstKind::CallTuple { target, args, dests } => {
+                let argstr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                let deststr: Vec<String> = dests.iter().map(|d| d.to_string()).collect();
+                write!(
+                    f,
+                    "call_tuple {target}({}) -> [{}]",
                     argstr.join(", "),
                     deststr.join(", ")
                 )

@@ -80,26 +80,21 @@ pub fn lower_program(
                 interner.resolve(func.name).unwrap_or("?")
             ));
         }
-        let params = func
-            .parameter
-            .iter()
-            .map(|(name, ty)| {
-                lower_param_or_return_type(ty, &struct_defs).ok_or_else(|| {
-                    format!(
-                        "compiler MVP cannot lower parameter `{}: {:?}` yet",
-                        interner.resolve(*name).unwrap_or("?"),
-                        ty
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let ret = match &func.return_type {
-            Some(ty) => lower_param_or_return_type(ty, &struct_defs).ok_or_else(|| {
+        let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
+        for (name, ty) in &func.parameter {
+            let lowered = lower_param_or_return_type(ty, &struct_defs, &mut module).ok_or_else(|| {
                 format!(
-                    "compiler MVP cannot lower return type `{:?}` yet",
+                    "compiler MVP cannot lower parameter `{}: {:?}` yet",
+                    interner.resolve(*name).unwrap_or("?"),
                     ty
                 )
-            })?,
+            })?;
+            params.push(lowered);
+        }
+        let ret = match &func.return_type {
+            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &mut module).ok_or_else(
+                || format!("compiler MVP cannot lower return type `{:?}` yet", ty),
+            )?,
             None => Type::Unit,
         };
         let raw_name = interner.resolve(func.name).unwrap_or("anon");
@@ -321,11 +316,16 @@ fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
     }
 }
 
-/// Like `lower_scalar` but additionally accepts `Type::Struct(name)` for
-/// known struct types. Used at function-signature boundaries (params
-/// and return type) where structs are now allowed; values inside the
-/// IR's value graph stay scalar.
-fn lower_param_or_return_type(ty: &TypeDecl, defs: &StructDefs) -> Option<Type> {
+/// Like `lower_scalar` but additionally accepts `Type::Struct(name)`
+/// and `Type::Tuple(id)` for known struct types and structural tuples
+/// respectively. Used at function-signature boundaries (params and
+/// return type) where these compound shapes are now allowed; values
+/// inside the IR's value graph stay scalar.
+fn lower_param_or_return_type(
+    ty: &TypeDecl,
+    defs: &StructDefs,
+    module: &mut Module,
+) -> Option<Type> {
     if let Some(t) = lower_scalar(ty) {
         return Some(t);
     }
@@ -339,8 +339,39 @@ fn lower_param_or_return_type(ty: &TypeDecl, defs: &StructDefs) -> Option<Type> 
         TypeDecl::Struct(name, args) if args.is_empty() && defs.contains_key(name) => {
             Some(Type::Struct(*name))
         }
+        TypeDecl::Tuple(elements) => {
+            // Lower each element to a scalar IR type. We don't allow
+            // nested tuples / struct-of-tuple at the boundary yet —
+            // every element must be a scalar that crosses the ABI as
+            // one cranelift param.
+            let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
+            for e in elements {
+                let s = lower_scalar(e)?;
+                if matches!(s, Type::Unit) {
+                    return None;
+                }
+                lowered.push(s);
+            }
+            let id = intern_tuple(module, lowered);
+            Some(Type::Tuple(id))
+        }
         _ => None,
     }
+}
+
+/// Intern a tuple shape in the module's `tuple_defs` registry.
+/// Linear-search dedup is fine because tuple shapes are sparse (one
+/// per unique signature element list), and the IR is built once per
+/// compile.
+fn intern_tuple(module: &mut Module, elements: Vec<Type>) -> crate::ir::TupleId {
+    for (i, existing) in module.tuple_defs.iter().enumerate() {
+        if *existing == elements {
+            return crate::ir::TupleId(i as u32);
+        }
+    }
+    let id = crate::ir::TupleId(module.tuple_defs.len() as u32);
+    module.tuple_defs.push(elements);
+    id
 }
 
 // ---------------------------------------------------------------------------
@@ -397,6 +428,10 @@ struct FunctionLower<'a> {
     /// non-struct-producing expression is lowered, so it always
     /// reflects the most recent candidate.
     pending_struct_value: Option<Vec<FieldBinding>>,
+    /// Sibling channel for tuple-returning function bodies whose tail
+    /// expression is a tuple literal or tuple-bound identifier. Used
+    /// only by `emit_implicit_return` for `Type::Tuple` returns.
+    pending_tuple_value: Option<Vec<TupleElementBinding>>,
 }
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
@@ -491,6 +526,7 @@ impl<'a> FunctionLower<'a> {
             current_block: None,
             next_value: 0,
             pending_struct_value: None,
+            pending_tuple_value: None,
         })
     }
 
@@ -512,6 +548,13 @@ impl<'a> FunctionLower<'a> {
                             struct_name,
                             fields: field_bindings,
                         },
+                    );
+                }
+                Type::Tuple(tuple_id) => {
+                    let element_bindings = self.allocate_tuple_elements(tuple_id)?;
+                    self.bindings.insert(
+                        *name,
+                        Binding::Tuple { elements: element_bindings },
                     );
                 }
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool) => {
@@ -582,6 +625,25 @@ impl<'a> FunctionLower<'a> {
             (Type::Unit, _) => {
                 self.emit_ensures_checks(&[])?;
                 self.terminate(Terminator::Return(vec![]));
+                Ok(())
+            }
+            (Type::Tuple(_tuple_id), _) => {
+                let _ = body_value;
+                let elements = self.pending_tuple_value.take().ok_or_else(|| {
+                    format!(
+                        "function `{}` returns a tuple but the body's tail did not produce one",
+                        self.interner.resolve(*fn_name).unwrap_or("?")
+                    )
+                })?;
+                let mut values = Vec::with_capacity(elements.len());
+                for el in &elements {
+                    let v = self
+                        .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                        .expect("LoadLocal returns a value");
+                    values.push(v);
+                }
+                self.emit_ensures_checks(&values)?;
+                self.terminate(Terminator::Return(values));
                 Ok(())
             }
             (Type::Struct(_struct_name), _) => {
@@ -810,12 +872,75 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(name).unwrap_or("?")
                         ));
                     }
+                    Type::Tuple(_) => {
+                        return Err(format!(
+                            "var `{}` of tuple type cannot be declared without an initializer",
+                            self.interner.resolve(name).unwrap_or("?")
+                        ));
+                    }
                 };
                 self.emit(InstKind::StoreLocal { dst: local, src: zero }, None);
                 Ok(None)
             }
             Stmt::Return(e) => {
                 let ret_ty = self.module.function(self.func_id).return_type;
+                // Tuple returns: the rhs must be a bare identifier
+                // referring to a tuple binding (or a tuple literal we
+                // route through the tail-position path). Expand into
+                // per-element loads either way.
+                if let (Type::Tuple(_), Some(er)) = (ret_ty, &e) {
+                    let rhs_expr = self
+                        .program
+                        .expression
+                        .get(er)
+                        .ok_or_else(|| "return rhs missing".to_string())?;
+                    if let Expr::Identifier(sym) = rhs_expr {
+                        let elements = match self.bindings.get(&sym).cloned() {
+                            Some(Binding::Tuple { elements }) => elements,
+                            _ => {
+                                return Err(format!(
+                                    "`{}` is not a tuple binding of the expected return type",
+                                    self.interner.resolve(sym).unwrap_or("?")
+                                ));
+                            }
+                        };
+                        let mut values = Vec::with_capacity(elements.len());
+                        for el in &elements {
+                            let v = self
+                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .expect("LoadLocal returns a value");
+                            values.push(v);
+                        }
+                        self.emit_ensures_checks(&values)?;
+                        self.terminate(Terminator::Return(values));
+                        return Ok(None);
+                    }
+                    // Tuple literal in explicit return: lower it
+                    // through the tail-position helper, then emit
+                    // the actual return reading the just-set pending
+                    // values back out.
+                    if let Expr::TupleLiteral(_) = rhs_expr {
+                        let _ = self.lower_expr(er)?;
+                        let elements = self.pending_tuple_value.take().ok_or_else(|| {
+                            "tuple literal in explicit return produced no pending value"
+                                .to_string()
+                        })?;
+                        let mut values = Vec::with_capacity(elements.len());
+                        for el in &elements {
+                            let v = self
+                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .expect("LoadLocal returns a value");
+                            values.push(v);
+                        }
+                        self.emit_ensures_checks(&values)?;
+                        self.terminate(Terminator::Return(values));
+                        return Ok(None);
+                    }
+                    return Err(
+                        "explicit `return` of a tuple value must be a bare identifier or tuple literal in the compiler MVP"
+                            .to_string(),
+                    );
+                }
                 // Struct returns: the rhs must be a bare identifier
                 // referring to a struct binding; expand into per-field
                 // loads. Scalar / Unit returns share the regular
@@ -1022,6 +1147,36 @@ impl<'a> FunctionLower<'a> {
             self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
             return Ok(None);
         }
+        // Tuple-returning call RHS: `val pair = make_pair()`. Same
+        // shape as struct-returning calls, just routed through
+        // CallTuple. Detect early so the parser-desugared
+        // `val (a, b) = make_pair()` (which becomes
+        // `val tmp = make_pair(); val a = tmp.0; val b = tmp.1`) is
+        // also handled here without special-casing destructuring.
+        if let Expr::Call(fn_name, args_ref) = rhs.clone() {
+            if let Some(target_id) = self.module.function_index.get(&fn_name).copied() {
+                let target_ret = self.module.function(target_id).return_type;
+                if let Type::Tuple(tuple_id) = target_ret {
+                    let element_bindings = self.allocate_tuple_elements(tuple_id)?;
+                    let dests: Vec<LocalId> =
+                        element_bindings.iter().map(|e| e.local).collect();
+                    self.bindings.insert(
+                        name,
+                        Binding::Tuple { elements: element_bindings },
+                    );
+                    let arg_values = self.lower_call_args(&args_ref)?;
+                    self.emit(
+                        InstKind::CallTuple {
+                            target: target_id,
+                            args: arg_values,
+                            dests,
+                        },
+                        None,
+                    );
+                    return Ok(None);
+                }
+            }
+        }
         // Struct-returning call RHS: `val p = make_point()`. Allocate
         // a struct binding and use `CallStruct` so codegen can route
         // the multi-return values into the per-field locals.
@@ -1113,6 +1268,17 @@ impl<'a> FunctionLower<'a> {
                     for (local, ty) in &leaves {
                         let v = self
                             .emit(InstKind::LoadLocal(*local), Some(*ty))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                    }
+                    continue;
+                }
+                if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
+                    // Tuple-typed identifier argument: expand into
+                    // one value per element, in declaration order.
+                    for el in &elements {
+                        let v = self
+                            .emit(InstKind::LoadLocal(el.local), Some(el.ty))
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
@@ -1260,11 +1426,15 @@ impl<'a> FunctionLower<'a> {
                         self.pending_struct_value = Some(fields);
                         Ok(None)
                     }
-                    Some(Binding::Tuple { .. }) => Err(format!(
-                        "compiler MVP cannot use tuple binding `{}` as a value here (only `{}.N` element access is supported)",
-                        self.interner.resolve(sym).unwrap_or("?"),
-                        self.interner.resolve(sym).unwrap_or("?"),
-                    )),
+                    Some(Binding::Tuple { elements }) => {
+                        // Tail-position use: stash the elements list
+                        // so `emit_implicit_return` can pull element
+                        // values out for a tuple-returning function.
+                        // Non-tail uses fall through to errors when a
+                        // scalar value is later required.
+                        self.pending_tuple_value = Some(elements);
+                        Ok(None)
+                    }
                     None => {
                         // Fall back to top-level `const` lookup. This
                         // mirrors what the type-checker does: a name
@@ -1290,10 +1460,16 @@ impl<'a> FunctionLower<'a> {
                 self.pending_struct_value = None;
                 self.lower_tuple_access(&tuple, index)
             }
-            Expr::TupleLiteral(_) => Err(
-                "compiler MVP requires tuple literals to be the rhs of a `val` / `var` binding"
-                    .to_string(),
-            ),
+            Expr::TupleLiteral(elems) => {
+                // Tail-position tuple literal — materialise each
+                // element into a fresh local and stash the resulting
+                // element list as the pending tuple value. The IR
+                // never sees a tuple value flow through SSA — the
+                // implicit-return path consumes the element locals
+                // directly. Non-tail uses (e.g. arithmetic on the
+                // result) hit the value-required check downstream.
+                self.lower_tuple_literal_tail(elems)
+            }
             Expr::StructLiteral(struct_name, fields) => {
                 // Tail-position struct literal: materialise each field
                 // into a fresh local and stash the resulting field
@@ -1639,6 +1815,32 @@ impl<'a> FunctionLower<'a> {
         Ok(out)
     }
 
+    /// Tuple counterpart to `allocate_struct_fields`. Allocates one
+    /// local per tuple element and returns the matching binding list
+    /// in declaration order. Tuple elements are scalars in this MVP
+    /// (no nested tuples / struct elements at the boundary).
+    fn allocate_tuple_elements(
+        &mut self,
+        tuple_id: crate::ir::TupleId,
+    ) -> Result<Vec<TupleElementBinding>, String> {
+        let elements = self
+            .module
+            .tuple_defs
+            .get(tuple_id.0 as usize)
+            .cloned()
+            .ok_or_else(|| format!("internal error: missing tuple def for {tuple_id:?}"))?;
+        let mut out: Vec<TupleElementBinding> = Vec::with_capacity(elements.len());
+        for (i, ty) in elements.iter().enumerate() {
+            let local = self.module.function_mut(self.func_id).add_local(*ty);
+            out.push(TupleElementBinding {
+                index: i,
+                local,
+                ty: *ty,
+            });
+        }
+        Ok(out)
+    }
+
     /// Flatten a `FieldBinding` tree into a sequential list of
     /// (LocalId, Type) entries, in declaration order. Mirrors the
     /// flat scalar walk codegen does over `Module.struct_defs` so
@@ -1714,6 +1916,43 @@ impl<'a> FunctionLower<'a> {
         let field_bindings = self.allocate_struct_fields(struct_name)?;
         self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
         self.pending_struct_value = Some(field_bindings);
+        Ok(None)
+    }
+
+    /// Tuple-literal counterpart to `lower_struct_literal_tail`.
+    /// Allocates one local per element (inferring the element's
+    /// scalar type from the rhs expression), stores each value, and
+    /// stashes the element list as the pending tuple value.
+    fn lower_tuple_literal_tail(
+        &mut self,
+        elems: Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        let mut element_bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+        for (i, e) in elems.iter().enumerate() {
+            let ty = self
+                .value_scalar(e)
+                .ok_or_else(|| format!("tuple element #{i} has no inferable scalar type"))?;
+            if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Unit) {
+                return Err(format!(
+                    "compiler MVP only supports scalar tuple elements; element #{i} is {ty:?}"
+                ));
+            }
+            let local = self.module.function_mut(self.func_id).add_local(ty);
+            element_bindings.push(TupleElementBinding { index: i, local, ty });
+        }
+        for (i, e) in elems.iter().enumerate() {
+            let v = self
+                .lower_expr(e)?
+                .ok_or_else(|| format!("tuple element #{i} produced no value"))?;
+            self.emit(
+                InstKind::StoreLocal {
+                    dst: element_bindings[i].local,
+                    src: v,
+                },
+                None,
+            );
+        }
+        self.pending_tuple_value = Some(element_bindings);
         Ok(None)
     }
 
@@ -2161,6 +2400,12 @@ impl<'a> FunctionLower<'a> {
         if matches!(ret_ty, Type::Struct(_)) {
             return Err(format!(
                 "compiler MVP cannot use a struct-returning call (`{}`) in expression position; bind the result with `val`",
+                self.interner.resolve(fn_name).unwrap_or("?")
+            ));
+        }
+        if matches!(ret_ty, Type::Tuple(_)) {
+            return Err(format!(
+                "compiler MVP cannot use a tuple-returning call (`{}`) in expression position; bind the result with `val`",
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }

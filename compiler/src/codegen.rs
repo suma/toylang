@@ -678,12 +678,11 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
 /// fields. Unit yields nothing (no cranelift slot).
 fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
     match t {
-        IrType::Struct(name) => {
+        IrType::Struct(id) => {
             let mut out = Vec::new();
-            if let Some(def) = ir_module.struct_defs.get(&name) {
-                for (_field_name, field_ty) in def {
-                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *field_ty));
-                }
+            let def = ir_module.struct_def(id);
+            for (_field_name, field_ty) in &def.fields {
+                out.extend(flatten_struct_to_cranelift_tys(ir_module, *field_ty));
             }
             out
         }

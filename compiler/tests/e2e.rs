@@ -2504,6 +2504,86 @@ fn enum_var_reassignment() {
 }
 
 #[test]
+fn generic_struct_simple() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Cell<T> {
+            data: T,
+        }
+        fn unwrap(c: Cell<u64>) -> u64 {
+            c.data
+        }
+        fn main() -> u64 {
+            val c: Cell<u64> = Cell { data: 42u64 }
+            unwrap(c)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_struct_simple"), 42);
+}
+
+#[test]
+fn generic_struct_two_instantiations() {
+    if skip_e2e() {
+        return;
+    }
+    // `Cell<u64>` and `Cell<i64>` get distinct StructIds and don't
+    // collide; field-access lowering picks the right monomorphisation
+    // through the binding's `struct_id`.
+    let src = r#"
+        struct Cell<T> {
+            data: T,
+        }
+        fn unwrap_u(c: Cell<u64>) -> u64 { c.data }
+        fn unwrap_i(c: Cell<i64>) -> i64 { c.data }
+        fn main() -> u64 {
+            val a: Cell<u64> = Cell { data: 7u64 }
+            val b: Cell<i64> = Cell { data: 5i64 }
+            unwrap_u(a) + (unwrap_i(b) as u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_struct_two_inst"), 12);
+}
+
+#[test]
+fn generic_struct_returned_from_function() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Cell<T> { data: T }
+        fn make() -> Cell<u64> {
+            val c: Cell<u64> = Cell { data: 7u64 }
+            c
+        }
+        fn main() -> u64 {
+            val r = make()
+            r.data
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_struct_return"), 7);
+}
+
+#[test]
+fn generic_struct_two_type_params() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Pair<A, B> {
+            first: A,
+            second: B,
+        }
+        fn main() -> u64 {
+            val p: Pair<u64, bool> = Pair { first: 99u64, second: true }
+            if p.second { p.first } else { 0u64 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_struct_two_params"), 99);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

@@ -36,7 +36,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::{
     BinOp, Block, BlockId, Const, EnumId, EnumVariant, FuncId, InstKind, Instruction,
-    Linkage, LocalId, Module, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
+    Linkage, LocalId, Module, StructId, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
 };
 
 /// Run the AST → IR pass and return the freshly-built module. Returns the
@@ -59,11 +59,10 @@ pub fn lower_program(
     // expand `Point { x: 1, y: 2 }` and `p.x` into per-field local
     // slots without ever needing a `Type::Struct` to flow through the
     // IR's value graph.
+    // Struct templates stay in the lowering pass; the IR module's
+    // `struct_defs` Vec is populated lazily by `instantiate_struct`
+    // each time a concrete `(base_name, type_args)` is seen.
     let struct_defs = collect_struct_defs(program, interner)?;
-    // Hand a copy to the IR module so codegen can expand
-    // `Type::Struct(name)` into per-field cranelift params / returns
-    // without re-walking the AST.
-    module.struct_defs = struct_defs.clone();
 
     // Same idea for enums. Each enum decl maps to an ordered list of
     // variants (variant index = canonical tag value). Generic enums
@@ -246,7 +245,7 @@ fn const_fold_binop(op: frontend::ast::Operator, l: Const, r: Const) -> Option<C
 /// Field names stay as `String` because the AST stores them that way; the
 /// lowering pass compares them against the `DefaultSymbol`-resolved name
 /// at field-access sites.
-type StructDefs = HashMap<DefaultSymbol, Vec<(String, Type)>>;
+type StructDefs = HashMap<DefaultSymbol, StructTemplate>;
 
 /// Per-program enum templates, indexed by base name. Each template
 /// retains the AST shape (`generic_params` + `variants` with
@@ -446,11 +445,22 @@ fn substitute_payload_type(
     }
 }
 
+/// Per-program struct templates, indexed by base name. Each template
+/// keeps the AST `TypeDecl` field shapes verbatim so generic params
+/// can be substituted at instantiation time. Non-generic structs sit
+/// in the same table with empty `generic_params`.
+#[derive(Debug, Clone)]
+struct StructTemplate {
+    generic_params: Vec<DefaultSymbol>,
+    fields: Vec<(String, TypeDecl)>,
+}
+
 fn collect_struct_defs(
     program: &Program,
     interner: &DefaultStringInterner,
 ) -> Result<StructDefs, String> {
     use frontend::ast::{Stmt, StmtRef};
+    let _ = interner;
     let mut defs: StructDefs = HashMap::new();
     let stmt_count = program.statement.len();
     for i in 0..stmt_count {
@@ -460,59 +470,148 @@ fn collect_struct_defs(
             None => continue,
         };
         if let Stmt::StructDecl { name, generic_params, fields, .. } = stmt {
-            if !generic_params.is_empty() {
-                return Err(format!(
-                    "compiler MVP cannot lower generic struct `{}` yet",
-                    interner.resolve(name).unwrap_or("?")
-                ));
-            }
-            let mut field_tys: Vec<(String, Type)> = Vec::with_capacity(fields.len());
-            for f in &fields {
-                // Resolve the field's declared type. Scalars and known
-                // struct names are accepted; everything else (tuples,
-                // enums, generics, etc.) is rejected with a clear
-                // error. Note: struct field types may reference other
-                // structs declared earlier or later in the program;
-                // we look up by name once all declarations are visible.
-                let ty = resolve_field_type(&f.type_decl, &defs).ok_or_else(|| {
-                    format!(
-                        "compiler MVP cannot lower struct field `{}.{}: {:?}`",
-                        interner.resolve(name).unwrap_or("?"),
-                        f.name,
-                        f.type_decl
-                    )
-                })?;
-                if matches!(ty, Type::Unit) {
-                    return Err(format!(
-                        "struct field `{}.{}` cannot have type Unit",
-                        interner.resolve(name).unwrap_or("?"),
-                        f.name
-                    ));
-                }
-                field_tys.push((f.name.clone(), ty));
-            }
-            defs.insert(name, field_tys);
+            // Templates keep the AST `TypeDecl` field shape
+            // verbatim — substitution happens at instantiation time.
+            let template_fields: Vec<(String, TypeDecl)> = fields
+                .iter()
+                .map(|f| (f.name.clone(), f.type_decl.clone()))
+                .collect();
+            defs.insert(
+                name,
+                StructTemplate {
+                    generic_params: generic_params.clone(),
+                    fields: template_fields,
+                },
+            );
         }
     }
     Ok(defs)
 }
 
-/// Resolve a field's declared type. Scalar types and previously-declared
-/// structs (by name) are accepted; everything else is rejected. Two
-/// passes are not needed because `collect_struct_defs` walks the
-/// program in order and structs that appear later are still recognised
-/// by their identifier — we just verify the symbol resolves to a
-/// known struct in `defs`. To handle forward references in field
-/// types, callers should be willing to re-walk the program; the
-/// existing tests only use already-declared types.
-fn resolve_field_type(ty: &TypeDecl, defs: &StructDefs) -> Option<Type> {
+/// Substitute the template's generic parameters with `type_args` and
+/// intern the resulting concrete struct in the IR module. Same shape
+/// as `instantiate_enum`.
+fn instantiate_struct(
+    module: &mut Module,
+    templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+) -> Result<StructId, String> {
+    let template = templates.get(&base_name).ok_or_else(|| {
+        format!(
+            "internal error: no struct template for `{}`",
+            interner.resolve(base_name).unwrap_or("?")
+        )
+    })?;
+    if template.generic_params.len() != type_args.len() {
+        return Err(format!(
+            "struct `{}` expects {} type argument(s), got {}",
+            interner.resolve(base_name).unwrap_or("?"),
+            template.generic_params.len(),
+            type_args.len(),
+        ));
+    }
+    if let Some(id) = module
+        .struct_index
+        .get(&(base_name, type_args.clone()))
+        .copied()
+    {
+        return Ok(id);
+    }
+    let template = template.clone();
+    let subst: HashMap<DefaultSymbol, Type> = template
+        .generic_params
+        .iter()
+        .copied()
+        .zip(type_args.iter().copied())
+        .collect();
+    let mut concrete_fields: Vec<(String, Type)> = Vec::with_capacity(template.fields.len());
+    for (fname, ftype) in &template.fields {
+        let lowered =
+            substitute_field_type(ftype, &subst, module, templates, enum_templates, interner)
+                .ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower struct field `{}.{}: {:?}`",
+                        interner.resolve(base_name).unwrap_or("?"),
+                        fname,
+                        ftype,
+                    )
+                })?;
+        if matches!(lowered, Type::Unit) {
+            return Err(format!(
+                "struct field `{}.{}` cannot have type Unit",
+                interner.resolve(base_name).unwrap_or("?"),
+                fname
+            ));
+        }
+        concrete_fields.push((fname.clone(), lowered));
+    }
+    Ok(module.intern_struct(base_name, type_args, concrete_fields))
+}
+
+/// Recursively lower a struct field's declared type, applying the
+/// active generic substitution. Recurses through nested generic
+/// struct types so `Cell<Cell<i64>>` resolves all the way down.
+fn substitute_field_type(
+    ty: &TypeDecl,
+    subst: &HashMap<DefaultSymbol, Type>,
+    module: &mut Module,
+    templates: &StructDefs,
+    enum_templates: &EnumDefs,
+    interner: &DefaultStringInterner,
+) -> Option<Type> {
     if let Some(s) = lower_scalar(ty) {
         return Some(s);
     }
     match ty {
-        TypeDecl::Identifier(name) if defs.contains_key(name) => Some(Type::Struct(*name)),
-        TypeDecl::Struct(name, args) if args.is_empty() && defs.contains_key(name) => {
-            Some(Type::Struct(*name))
+        TypeDecl::Generic(name) => subst.get(name).copied(),
+        TypeDecl::Identifier(name) => {
+            if let Some(t) = subst.get(name).copied() {
+                return Some(t);
+            }
+            if templates.contains_key(name) {
+                instantiate_struct(
+                    module,
+                    templates,
+                    enum_templates,
+                    *name,
+                    Vec::new(),
+                    interner,
+                )
+                .ok()
+                .map(Type::Struct)
+            } else if enum_templates.contains_key(name) {
+                instantiate_enum(module, enum_templates, *name, Vec::new(), interner)
+                    .ok()
+                    .map(Type::Enum)
+            } else {
+                None
+            }
+        }
+        TypeDecl::Struct(name, args) if templates.contains_key(name) => {
+            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                concrete.push(substitute_field_type(
+                    a,
+                    subst,
+                    module,
+                    templates,
+                    enum_templates,
+                    interner,
+                )?);
+            }
+            instantiate_struct(
+                module,
+                templates,
+                enum_templates,
+                *name,
+                concrete,
+                interner,
+            )
+            .ok()
+            .map(Type::Struct)
         }
         _ => None,
     }
@@ -550,9 +649,35 @@ fn lower_param_or_return_type(
         // bare identifier shape if it names a known struct or enum;
         // the generic-parameterised `Struct(name, args)` form is also
         // accepted with empty args (the only shape we support).
-        TypeDecl::Identifier(name) if struct_defs.contains_key(name) => Some(Type::Struct(*name)),
+        // Non-generic struct reference. Instantiate with no type
+        // args (the template's `generic_params` must also be empty
+        // for this to succeed).
+        TypeDecl::Identifier(name) if struct_defs.contains_key(name) => {
+            instantiate_struct(module, struct_defs, enum_defs, *name, Vec::new(), interner)
+                .ok()
+                .map(Type::Struct)
+        }
         TypeDecl::Struct(name, args) if args.is_empty() && struct_defs.contains_key(name) => {
-            Some(Type::Struct(*name))
+            instantiate_struct(module, struct_defs, enum_defs, *name, Vec::new(), interner)
+                .ok()
+                .map(Type::Struct)
+        }
+        // Generic struct instantiation: `Cell<i64>` arrives as
+        // `Struct(name, [args])`. Lower each arg, then instantiate.
+        TypeDecl::Struct(name, args)
+            if !args.is_empty() && struct_defs.contains_key(name) =>
+        {
+            let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                let l = lower_scalar(a)?;
+                if matches!(l, Type::Unit) {
+                    return None;
+                }
+                lowered_args.push(l);
+            }
+            instantiate_struct(module, struct_defs, enum_defs, *name, lowered_args, interner)
+                .ok()
+                .map(Type::Struct)
         }
         // Non-generic enum reference. Instantiate with no type args
         // (the template's `generic_params` must also be empty for
@@ -711,10 +836,11 @@ struct FunctionLower<'a> {
 enum Binding {
     Scalar { local: LocalId, ty: Type },
     Struct {
-        /// Kept for diagnostics — field-access errors can mention the
-        /// struct's name without a separate symbol-resolution step.
-        #[allow(dead_code)]
-        struct_name: DefaultSymbol,
+        /// Identifies the monomorphised struct instance this binding
+        /// belongs to. Codegen uses it to look up the field type list
+        /// when flattening at function boundaries; lowering uses it to
+        /// validate explicit-return / re-binding compatibility.
+        struct_id: StructId,
         fields: Vec<FieldBinding>,
     },
     /// Tuple bindings expand into one local per element, indexed
@@ -795,8 +921,7 @@ struct FieldBinding {
 enum FieldShape {
     Scalar { local: LocalId, ty: Type },
     Struct {
-        #[allow(dead_code)]
-        struct_name: DefaultSymbol,
+        struct_id: StructId,
         fields: Vec<FieldBinding>,
     },
 }
@@ -845,12 +970,12 @@ impl<'a> FunctionLower<'a> {
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
         for (i, (name, _decl_ty)) in func.parameter.iter().enumerate() {
             match param_types[i] {
-                Type::Struct(struct_name) => {
-                    let field_bindings = self.allocate_struct_fields(struct_name)?;
+                Type::Struct(struct_id) => {
+                    let field_bindings = self.allocate_struct_fields(struct_id);
                     self.bindings.insert(
                         *name,
                         Binding::Struct {
-                            struct_name,
+                            struct_id,
                             fields: field_bindings,
                         },
                     );
@@ -1295,7 +1420,7 @@ impl<'a> FunctionLower<'a> {
                 // referring to a struct binding; expand into per-field
                 // loads. Scalar / Unit returns share the regular
                 // expression path.
-                if let (Type::Struct(struct_name), Some(er)) = (ret_ty, &e) {
+                if let (Type::Struct(ret_struct_id), Some(er)) = (ret_ty, &e) {
                     let rhs_expr = self
                         .program
                         .expression
@@ -1311,7 +1436,7 @@ impl<'a> FunctionLower<'a> {
                         }
                     };
                     let fields = match self.bindings.get(&sym).cloned() {
-                        Some(Binding::Struct { struct_name: bn, fields }) if bn == struct_name => {
+                        Some(Binding::Struct { struct_id: bn, fields }) if bn == ret_struct_id => {
                             fields
                         }
                         _ => {
@@ -1600,7 +1725,12 @@ impl<'a> FunctionLower<'a> {
         // store into the matching local. The IR layer never sees a
         // struct value — we decompose at the lowering boundary.
         if let Expr::StructLiteral(struct_name, fields) = rhs {
-            let field_bindings = self.allocate_struct_fields(struct_name)?;
+            // Resolve to the right monomorphised instance. Generic
+            // structs need an annotation to pick T; non-generic
+            // ones short-circuit to a single instance.
+            let struct_id =
+                self.resolve_struct_instance(struct_name, annotation)?;
+            let field_bindings = self.allocate_struct_fields(struct_id);
             // Insert the binding before evaluating field rhs
             // expressions so an inner literal that walks back to the
             // same name (currently unsupported but defensive) doesn't
@@ -1608,11 +1738,11 @@ impl<'a> FunctionLower<'a> {
             self.bindings.insert(
                 name,
                 Binding::Struct {
-                    struct_name,
+                    struct_id,
                     fields: field_bindings.clone(),
                 },
             );
-            self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
+            self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
             return Ok(None);
         }
         // Tuple-returning call RHS: `val pair = make_pair()`. Same
@@ -1673,19 +1803,8 @@ impl<'a> FunctionLower<'a> {
         if let Expr::Call(fn_name, args_ref) = rhs {
             if let Some(target_id) = self.module.function_index.get(&fn_name).copied() {
                 let target_ret = self.module.function(target_id).return_type;
-                if let Type::Struct(struct_name) = target_ret {
-                    let def = self
-                        .struct_defs
-                        .get(&struct_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "internal error: missing struct definition for return of `{}`",
-                                self.interner.resolve(fn_name).unwrap_or("?")
-                            )
-                        })?;
-                    let _ = def;
-                    let field_bindings = self.allocate_struct_fields(struct_name)?;
+                if let Type::Struct(struct_id) = target_ret {
+                    let field_bindings = self.allocate_struct_fields(struct_id);
                     // CallStruct dests are the leaf scalar locals in
                     // declaration order — exactly what the cranelift
                     // multi-result call gives us back.
@@ -1696,7 +1815,7 @@ impl<'a> FunctionLower<'a> {
                     self.bindings.insert(
                         name,
                         Binding::Struct {
-                            struct_name,
+                            struct_id,
                             fields: field_bindings,
                         },
                     );
@@ -2092,8 +2211,8 @@ impl<'a> FunctionLower<'a> {
         if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0]) {
             if let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
-                    Binding::Struct { struct_name, fields } => {
-                        self.emit_print_struct(struct_name, &fields, newline);
+                    Binding::Struct { struct_id, fields } => {
+                        self.emit_print_struct(struct_id, &fields, newline);
                         return Ok(None);
                     }
                     Binding::Tuple { elements } => {
@@ -2143,11 +2262,12 @@ impl<'a> FunctionLower<'a> {
     /// choice.
     fn emit_print_struct(
         &mut self,
-        struct_name: DefaultSymbol,
+        struct_id: StructId,
         fields: &[FieldBinding],
         newline: bool,
     ) {
-        let header = self.interner.resolve(struct_name).unwrap_or("?");
+        let base_name = self.module.struct_def(struct_id).base_name;
+        let header = self.interner.resolve(base_name).unwrap_or("?");
         // Match the interpreter's display: type name + space + `{ ` + sorted
         // fields + ` }`. Empty structs collapse to `Name {  }` with two
         // spaces (matches `format!("{} {{ {} }}", ...)` on an empty
@@ -2175,10 +2295,10 @@ impl<'a> FunctionLower<'a> {
                     );
                 }
                 FieldShape::Struct {
-                    struct_name: nested_name,
+                    struct_id: nested_id,
                     fields: nested,
                 } => {
-                    self.emit_print_struct(*nested_name, nested, false);
+                    self.emit_print_struct(*nested_id, nested, false);
                 }
             }
         }
@@ -2395,6 +2515,70 @@ impl<'a> FunctionLower<'a> {
     /// instance; for generic enums the annotation must supply
     /// concrete type arguments. Returns an error if the enum is
     /// generic and we have no annotation hint.
+    /// Pick the right `StructId` for a `base_name` + optional val/var
+    /// type annotation. Same shape as `resolve_enum_instance`.
+    fn resolve_struct_instance(
+        &mut self,
+        base_name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+    ) -> Result<StructId, String> {
+        let template = self.struct_defs.get(&base_name).ok_or_else(|| {
+            format!(
+                "internal error: no struct template for `{}`",
+                self.interner.resolve(base_name).unwrap_or("?")
+            )
+        })?;
+        if template.generic_params.is_empty() {
+            return instantiate_struct(
+                self.module,
+                self.struct_defs,
+                self.enum_defs,
+                base_name,
+                Vec::new(),
+                self.interner,
+            );
+        }
+        let type_args = self
+            .extract_struct_type_args(base_name, annotation)
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP needs an explicit type annotation to instantiate generic \
+                     struct `{}` (e.g. `val x: {}<i64> = ...`)",
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                )
+            })?;
+        instantiate_struct(
+            self.module,
+            self.struct_defs,
+            self.enum_defs,
+            base_name,
+            type_args,
+            self.interner,
+        )
+    }
+
+    /// Pull a `Vec<Type>` of concrete type args from a val/var
+    /// annotation that names this struct. Mirrors
+    /// `extract_enum_type_args`.
+    fn extract_struct_type_args(
+        &mut self,
+        base_name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+    ) -> Option<Vec<Type>> {
+        let anno = annotation?;
+        let args = match anno {
+            TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
+            TypeDecl::Identifier(name) if *name == base_name => Vec::new(),
+            _ => return None,
+        };
+        let mut out: Vec<Type> = Vec::with_capacity(args.len());
+        for a in &args {
+            out.push(self.lower_type_arg(a)?);
+        }
+        Some(out)
+    }
+
     fn resolve_enum_instance(
         &mut self,
         base_name: DefaultSymbol,
@@ -3318,10 +3502,11 @@ impl<'a> FunctionLower<'a> {
     /// the inner's per-field locals.
     fn store_struct_literal_fields(
         &mut self,
-        struct_name: DefaultSymbol,
+        struct_id: StructId,
         field_bindings: &[FieldBinding],
         literal_fields: &[(DefaultSymbol, ExprRef)],
     ) -> Result<(), String> {
+        let outer_base = self.module.struct_def(struct_id).base_name;
         for (field_sym, value_ref) in literal_fields {
             let field_str = self
                 .interner
@@ -3334,7 +3519,7 @@ impl<'a> FunctionLower<'a> {
                 .ok_or_else(|| {
                     format!(
                         "struct `{}` has no field `{}`",
-                        self.interner.resolve(struct_name).unwrap_or("?"),
+                        self.interner.resolve(outer_base).unwrap_or("?"),
                         field_str
                     )
                 })?
@@ -3346,7 +3531,7 @@ impl<'a> FunctionLower<'a> {
                         .ok_or_else(|| "struct field rhs produced no value".to_string())?;
                     self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
                 }
-                FieldShape::Struct { struct_name: inner_name, fields: inner_fields } => {
+                FieldShape::Struct { struct_id: inner_id, fields: inner_fields } => {
                     // Field type is itself a struct; the rhs must be
                     // a struct literal of the matching shape.
                     let inner_expr = self
@@ -3359,13 +3544,13 @@ impl<'a> FunctionLower<'a> {
                         _ => {
                             return Err(format!(
                                 "compiler MVP requires struct field `{}.{}` to be initialised by a struct literal",
-                                self.interner.resolve(struct_name).unwrap_or("?"),
+                                self.interner.resolve(outer_base).unwrap_or("?"),
                                 field_str
                             ));
                         }
                     };
                     self.store_struct_literal_fields(
-                        inner_name,
+                        inner_id,
                         &inner_fields,
                         &inner_literal,
                     )?;
@@ -3382,27 +3567,15 @@ impl<'a> FunctionLower<'a> {
     /// function entry, struct-returning call destinations, the
     /// pending-struct-value channel for tail-position struct
     /// literals).
-    fn allocate_struct_fields(
-        &mut self,
-        struct_name: DefaultSymbol,
-    ) -> Result<Vec<FieldBinding>, String> {
-        let def = self
-            .struct_defs
-            .get(&struct_name)
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "internal error: missing struct definition for `{}`",
-                    self.interner.resolve(struct_name).unwrap_or("?")
-                )
-            })?;
-        let mut out: Vec<FieldBinding> = Vec::with_capacity(def.len());
-        for (field_name, field_ty) in &def {
+    fn allocate_struct_fields(&mut self, struct_id: StructId) -> Vec<FieldBinding> {
+        let def = self.module.struct_def(struct_id).clone();
+        let mut out: Vec<FieldBinding> = Vec::with_capacity(def.fields.len());
+        for (field_name, field_ty) in &def.fields {
             let shape = match *field_ty {
                 Type::Struct(inner) => {
-                    let sub = self.allocate_struct_fields(inner)?;
+                    let sub = self.allocate_struct_fields(inner);
                     FieldShape::Struct {
-                        struct_name: inner,
+                        struct_id: inner,
                         fields: sub,
                     }
                 }
@@ -3416,7 +3589,7 @@ impl<'a> FunctionLower<'a> {
                 shape,
             });
         }
-        Ok(out)
+        out
     }
 
     /// Tuple counterpart to `allocate_struct_fields`. Allocates one
@@ -3517,8 +3690,26 @@ impl<'a> FunctionLower<'a> {
         struct_name: DefaultSymbol,
         fields: Vec<(DefaultSymbol, ExprRef)>,
     ) -> Result<Option<ValueId>, String> {
-        let field_bindings = self.allocate_struct_fields(struct_name)?;
-        self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
+        // The function's return type tells us which monomorphisation
+        // to use; for non-generic structs the annotation isn't
+        // needed (instantiate with no args).
+        let ret_ty = self.module.function(self.func_id).return_type;
+        let struct_id = if let Type::Struct(id) = ret_ty {
+            // Verify the literal's name matches the return enum.
+            if self.module.struct_def(id).base_name != struct_name {
+                return Err(format!(
+                    "tail-position struct literal `{}` does not match function return type `{}`",
+                    self.interner.resolve(struct_name).unwrap_or("?"),
+                    self.interner.resolve(self.module.struct_def(id).base_name).unwrap_or("?"),
+                ));
+            }
+            id
+        } else {
+            // Fall back to non-generic instantiation.
+            self.resolve_struct_instance(struct_name, None)?
+        };
+        let field_bindings = self.allocate_struct_fields(struct_id);
+        self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
         self.pending_struct_value = Some(field_bindings);
         Ok(None)
     }

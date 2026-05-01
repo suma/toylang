@@ -51,12 +51,19 @@ pub struct Module {
     /// declared, used by lowering when resolving call targets and by
     /// codegen when wiring same-module imports.
     pub function_index: HashMap<DefaultSymbol, FuncId>,
-    /// Struct definitions discovered at lowering time. Codegen reads
-    /// this to expand `Type::Struct(name)` into a flat list of scalar
-    /// fields when building cranelift signatures and entry-block params.
-    /// Field name is stored as a `String` to match the AST exactly;
-    /// codegen never has to cross-reference the interner for these.
-    pub struct_defs: HashMap<DefaultSymbol, Vec<(String, Type)>>,
+    /// Concrete struct instances. Each entry is one fully-monomorphised
+    /// struct: a non-generic struct has exactly one entry; a generic
+    /// struct `Cell<T>` has one entry per concrete `T` it's
+    /// instantiated with. Indexed by `StructId.0`. Codegen reads
+    /// `fields` to expand `Type::Struct(id)` into a flat list of
+    /// scalar slots when building cranelift signatures and entry-
+    /// block params.
+    pub struct_defs: Vec<StructDef>,
+    /// `(base_name, type_args)` → `StructId`. Lets the lowering pass
+    /// dedup repeated instantiations so `Cell<i64>` always maps to
+    /// the same entry. `type_args` is an empty vec for non-generic
+    /// structs.
+    pub struct_index: HashMap<(DefaultSymbol, Vec<Type>), StructId>,
     /// Tuple shapes that appear in function signatures. Tuples are
     /// structural (no name), so we intern each unique element-type
     /// list and reference it by `TupleId`. Indexed by `TupleId.0`.
@@ -72,6 +79,17 @@ pub struct Module {
     /// the same entry. `type_args` is an empty vec for non-generic
     /// enums.
     pub enum_index: HashMap<(DefaultSymbol, Vec<Type>), EnumId>,
+}
+
+/// One struct's full shape — fields keep their declared order
+/// (mattering both for codegen flattening and for the interpreter-
+/// matching alphabetical sort at print time, which lowering applies
+/// later). `Type::Struct(id)` indexes into `Module.struct_defs`.
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub base_name: DefaultSymbol,
+    pub type_args: Vec<Type>,
+    pub fields: Vec<(String, Type)>,
 }
 
 /// One enum's full shape — used by lowering to look up tag values and
@@ -137,6 +155,33 @@ impl Module {
 
     pub fn enum_def(&self, id: EnumId) -> &EnumDef {
         &self.enum_defs[id.0 as usize]
+    }
+
+    pub fn struct_def(&self, id: StructId) -> &StructDef {
+        &self.struct_defs[id.0 as usize]
+    }
+
+    /// Mint a fresh `StructId` for `(base_name, type_args, fields)`,
+    /// or return the existing one if this combination has already
+    /// been instantiated. Mirrors `intern_enum`'s shape.
+    pub fn intern_struct(
+        &mut self,
+        base_name: DefaultSymbol,
+        type_args: Vec<Type>,
+        fields: Vec<(String, Type)>,
+    ) -> StructId {
+        let key = (base_name, type_args.clone());
+        if let Some(existing) = self.struct_index.get(&key) {
+            return *existing;
+        }
+        let id = StructId(self.struct_defs.len() as u32);
+        self.struct_defs.push(StructDef {
+            base_name,
+            type_args,
+            fields,
+        });
+        self.struct_index.insert(key, id);
+        id
     }
 
     /// Mint a fresh `EnumId` for `(base_name, type_args, variants)`,
@@ -255,7 +300,7 @@ pub enum Type {
     F64,
     Bool,
     Unit,
-    Struct(DefaultSymbol),
+    Struct(StructId),
     /// Structural tuple shape interned in `Module.tuple_defs`. Like
     /// `Struct`, only valid in function signatures — IR values stay
     /// scalar.
@@ -496,6 +541,9 @@ pub struct TupleId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EnumId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StructId(pub u32);
+
 // -------------------------------------------------------------------------
 // Display: a textual format that can be diffed in tests and shown via
 // `--emit=ir`. Intentionally simple — keys / values are plain ASCII so
@@ -513,7 +561,7 @@ impl fmt::Display for Type {
             // The IR doesn't carry an interner, so render the raw
             // symbol id. Pretty printing for human consumption goes
             // through `Function::export_name` instead.
-            Type::Struct(sym) => write!(f, "struct#{}", sym.to_usize()),
+            Type::Struct(id) => write!(f, "struct#{}", id.0),
             Type::Tuple(id) => write!(f, "tuple#{}", id.0),
             Type::Enum(id) => write!(f, "enum#{}", id.0),
         }

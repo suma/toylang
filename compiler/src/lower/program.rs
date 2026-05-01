@@ -233,7 +233,6 @@ pub fn lower_program(
             &generic_funcs,
             &mut generic_instances,
             &mut pending_generic_work,
-            HashMap::new(),
             &const_values,
             contract_msgs,
             release,
@@ -266,7 +265,6 @@ pub fn lower_program(
             &generic_funcs,
             &mut generic_instances,
             &mut pending_generic_work,
-            HashMap::new(),
             &const_values,
             contract_msgs,
             release,
@@ -307,7 +305,6 @@ pub fn lower_program(
                 &generic_funcs,
                 &mut generic_instances,
                 &mut pending_generic_work,
-                work.subst,
                 &const_values,
                 contract_msgs,
                 release,
@@ -341,7 +338,6 @@ pub fn lower_program(
                 &generic_funcs,
                 &mut generic_instances,
                 &mut pending_generic_work,
-                work.subst,
                 &const_values,
                 contract_msgs,
                 release,
@@ -365,13 +361,14 @@ pub(super) type GenericFuncs = HashMap<DefaultSymbol, Rc<frontend::ast::Function
 pub(super) type GenericInstances = HashMap<(DefaultSymbol, Vec<Type>), FuncId>;
 
 /// One queued generic-function instantiation: the freshly-declared
-/// `FuncId`, the template name, and the type substitution that
-/// produced the concrete signature. The body is lowered later from
-/// the template AST (held in `GenericFuncs`) with `subst` active.
+/// `FuncId` and the template name. The body is lowered later from the
+/// template AST (held in `GenericFuncs`); the body trusts the
+/// pre-substituted parameter / return types stored on the FuncId and
+/// the type-checker's annotations on each binding, so no separate
+/// `subst` table needs to flow with the queue entry.
 pub(super) struct PendingGenericInstance {
     pub(super) func_id: FuncId,
     pub(super) template_name: DefaultSymbol,
-    pub(super) subst: HashMap<DefaultSymbol, Type>,
 }
 
 impl<'a> FunctionLower<'a> {
@@ -385,7 +382,6 @@ impl<'a> FunctionLower<'a> {
         generic_funcs: &'a GenericFuncs,
         generic_instances: &'a mut GenericInstances,
         pending_generic_work: &'a mut Vec<PendingGenericInstance>,
-        type_subst: HashMap<DefaultSymbol, Type>,
         const_values: &'a ConstValues,
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
@@ -417,7 +413,6 @@ impl<'a> FunctionLower<'a> {
             generic_funcs,
             generic_instances,
             pending_generic_work,
-            type_subst,
             method_registry,
             method_func_ids,
             generic_methods,

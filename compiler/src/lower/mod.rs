@@ -188,10 +188,6 @@ struct FunctionLower<'a> {
     /// drains this after the non-generic pass; new entries can be
     /// added by an instantiation discovering a further generic call.
     pending_generic_work: &'a mut Vec<PendingGenericInstance>,
-    /// Active type-parameter substitution while lowering a generic
-    /// instance. Empty for non-generic functions; for instances it
-    /// maps `T` -> the concrete IR `Type` chosen at the call site.
-    type_subst: HashMap<DefaultSymbol, Type>,
 }
 
 impl<'a> FunctionLower<'a> {

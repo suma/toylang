@@ -202,7 +202,6 @@ impl<'a> FunctionLower<'a> {
             func_id,
             target_sym,
             method_sym,
-            subst,
         });
         Ok(func_id)
     }

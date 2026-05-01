@@ -216,7 +216,6 @@ impl<'a> FunctionLower<'a> {
         self.pending_generic_work.push(PendingGenericInstance {
             func_id,
             template_name,
-            subst,
         });
         Ok(func_id)
     }

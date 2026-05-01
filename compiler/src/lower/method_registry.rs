@@ -32,14 +32,14 @@ pub(super) type MethodInstances =
     HashMap<(DefaultSymbol, DefaultSymbol, Vec<Type>), FuncId>;
 
 /// Queued generic-method body lowering. Holds the freshly declared
-/// `FuncId`, the `(target, method)` pair to look up the template,
-/// and the substitution that picked the concrete signature.
+/// `FuncId` plus the `(target, method)` pair to look up the template.
+/// The body is lowered against the pre-substituted FuncId signature, so
+/// no separate substitution table needs to ride along with the queue.
 #[derive(Debug, Clone)]
 pub(super) struct PendingMethodInstance {
     pub(super) func_id: FuncId,
     pub(super) target_sym: DefaultSymbol,
     pub(super) method_sym: DefaultSymbol,
-    pub(super) subst: HashMap<DefaultSymbol, Type>,
 }
 
 /// Walk the program for impl blocks and collect every method into a

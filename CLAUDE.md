@@ -39,6 +39,20 @@ cd interpreter && cargo run example/fib.t
 
 ### Testing
 
+**推奨**: `cargo nextest` を使用する。並列実行で速く、出力もパッケージ・テストごとに整理される。
+
+```bash
+# Run all tests across the workspace with nextest (preferred)
+cargo nextest run
+
+# Filter by package / test name
+cargo nextest run -p compiler
+cargo nextest run -p interpreter proptest
+cargo nextest run -E 'test(=basic_arithmetic)'
+```
+
+`cargo test` も引き続き使用可能 (doc-tests は nextest が実行しないので必要なときは併用):
+
 ```bash
 # Run all tests in interpreter (includes property-based tests)
 cd interpreter && cargo test

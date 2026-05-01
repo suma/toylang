@@ -1671,6 +1671,191 @@ fn match_arm_guard_on_scalar() {
 }
 
 #[test]
+fn println_enum_unit_variant() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Color {
+            Red,
+            Green,
+            Blue,
+        }
+        fn main() -> u64 {
+            val c = Color::Green
+            println(c)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_unit");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Color::Green\n");
+}
+
+#[test]
+fn println_enum_tuple_variant_one_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Point,
+        }
+        fn main() -> u64 {
+            val s = Shape::Circle(5i64)
+            println(s)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_one_payload");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Shape::Circle(5)\n");
+}
+
+#[test]
+fn println_enum_tuple_variant_multi_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn main() -> u64 {
+            val s = Shape::Rect(3i64, 7i64)
+            println(s)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_multi_payload");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Shape::Rect(3, 7)\n");
+}
+
+#[test]
+fn println_enum_with_bool_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Maybe {
+            Yes(bool),
+            No,
+        }
+        fn main() -> u64 {
+            val m = Maybe::Yes(true)
+            println(m)
+            val n = Maybe::No
+            println(n)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_bool");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Maybe::Yes(true)\nMaybe::No\n",
+    );
+}
+
+#[test]
+fn println_enum_dispatches_at_runtime() {
+    if skip_e2e() {
+        return;
+    }
+    // Multiple variants reached through different runtime paths
+    // exercise the per-variant body blocks. Output order should be
+    // Circle, Rect, Point — matching the construction order, not
+    // declaration order.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn main() -> u64 {
+            for i in 0u64..3u64 {
+                if i == 0u64 {
+                    val s = Shape::Circle(7i64)
+                    println(s)
+                } elif i == 1u64 {
+                    val s = Shape::Rect(2i64, 4i64)
+                    println(s)
+                } else {
+                    val s = Shape::Point
+                    println(s)
+                }
+            }
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_runtime_dispatch");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Shape::Circle(7)\nShape::Rect(2, 4)\nShape::Point\n",
+    );
+}
+
+#[test]
+fn print_enum_no_trailing_newline() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Tag {
+            A,
+            B(u64),
+        }
+        fn main() -> u64 {
+            val a = Tag::A
+            print(a)
+            print(" / ")
+            val b = Tag::B(99u64)
+            println(b)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_enum_no_nl");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Tag::A / Tag::B(99)\n",
+    );
+}
+
+#[test]
+fn println_enum_from_function_parameter() {
+    if skip_e2e() {
+        return;
+    }
+    // Print an enum that arrived as a parameter — verifies the
+    // boundary's per-variant payload locals can drive the same
+    // runtime tag-dispatch print as a locally-bound enum.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn show(s: Shape) {
+            println(s)
+        }
+        fn main() -> u64 {
+            val s = Shape::Rect(11i64, 22i64)
+            show(s)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_enum_from_param");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "Shape::Rect(11, 22)\n");
+}
+
+#[test]
 fn enum_passed_to_function() {
     if skip_e2e() {
         return;

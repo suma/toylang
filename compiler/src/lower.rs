@@ -1894,11 +1894,18 @@ impl<'a> FunctionLower<'a> {
                         return Ok(None);
                     }
                     Binding::Scalar { .. } => {}
-                    Binding::Enum { .. } => {
-                        let kw = if newline { "println" } else { "print" };
-                        return Err(format!(
-                            "{kw} cannot accept an enum value in this compiler MVP"
-                        ));
+                    Binding::Enum {
+                        enum_name,
+                        tag_local,
+                        payload_locals,
+                    } => {
+                        self.emit_print_enum(
+                            enum_name,
+                            tag_local,
+                            &payload_locals,
+                            newline,
+                        )?;
+                        return Ok(None);
                     }
                 }
             }
@@ -2010,6 +2017,169 @@ impl<'a> FunctionLower<'a> {
 
     fn emit_print_raw_text(&mut self, text: String, newline: bool) {
         self.emit(InstKind::PrintRaw { text, newline }, None);
+    }
+
+    /// Emit the `Enum::Variant` / `Enum::Variant(p0, p1, ...)` rendering
+    /// for an enum binding, matching `Object::to_display_string` in
+    /// the interpreter. Tag dispatch happens at runtime via a brif
+    /// chain (the last variant is the unconditional fallback so we
+    /// only emit `n - 1` comparisons). Each per-variant block writes
+    /// its own fragments and then jumps to a single merge block where
+    /// the print sequence ends.
+    fn emit_print_enum(
+        &mut self,
+        enum_name: DefaultSymbol,
+        tag_local: LocalId,
+        payload_locals: &[Vec<(LocalId, Type)>],
+        newline: bool,
+    ) -> Result<(), String> {
+        let enum_def = self.enum_defs.get(&enum_name).cloned().ok_or_else(|| {
+            format!(
+                "internal error: enum `{}` not in defs at print site",
+                self.interner.resolve(enum_name).unwrap_or("?")
+            )
+        })?;
+        let enum_str = self
+            .interner
+            .resolve(enum_name)
+            .unwrap_or("?")
+            .to_string();
+        let n_variants = enum_def.variants.len();
+        if n_variants == 0 {
+            // No variants — this enum can never be constructed, so
+            // there's nothing sensible to print. Treat as a no-op
+            // rather than crashing.
+            return Ok(());
+        }
+        let merge = self.fresh_block();
+        let tag_v = self
+            .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        for (idx, variant) in enum_def.variants.iter().enumerate() {
+            let variant_str = self
+                .interner
+                .resolve(variant.name)
+                .unwrap_or("?")
+                .to_string();
+            let payload_types = variant.payload_types.clone();
+            let body_blk = self.fresh_block();
+            if idx + 1 < n_variants {
+                let next = self.fresh_block();
+                let want = self
+                    .emit(
+                        InstKind::Const(Const::U64(idx as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                let cond = self
+                    .emit(
+                        InstKind::BinOp {
+                            op: BinOp::Eq,
+                            lhs: tag_v,
+                            rhs: want,
+                        },
+                        Some(Type::Bool),
+                    )
+                    .expect("Eq returns a value");
+                self.terminate(Terminator::Branch {
+                    cond,
+                    then_blk: body_blk,
+                    else_blk: next,
+                });
+                self.switch_to(body_blk);
+                self.emit_print_enum_variant_body(
+                    &enum_str,
+                    &variant_str,
+                    &payload_types,
+                    &payload_locals[idx],
+                    newline,
+                );
+                self.terminate(Terminator::Jump(merge));
+                self.switch_to(next);
+            } else {
+                // Last variant: unconditional fallthrough. The
+                // type-checker has already verified that `tag_v`
+                // can only hold one of the known indices, so no
+                // panic block is needed here.
+                self.terminate(Terminator::Jump(body_blk));
+                self.switch_to(body_blk);
+                self.emit_print_enum_variant_body(
+                    &enum_str,
+                    &variant_str,
+                    &payload_types,
+                    &payload_locals[idx],
+                    newline,
+                );
+                self.terminate(Terminator::Jump(merge));
+            }
+        }
+        self.switch_to(merge);
+        Ok(())
+    }
+
+    /// Emit the body of one enum variant's print path — the literal
+    /// `EnumName::VariantName` plus, for tuple variants, a parenthesised
+    /// comma-separated list of payload values. The `newline` flag rides
+    /// the *last* fragment so `print` and `println` differ only in one
+    /// helper choice (matches the struct / tuple print pattern).
+    fn emit_print_enum_variant_body(
+        &mut self,
+        enum_str: &str,
+        variant_str: &str,
+        payload_types: &[Type],
+        payload_slots: &[(LocalId, Type)],
+        newline: bool,
+    ) {
+        let header = format!("{enum_str}::{variant_str}");
+        let unit = payload_types.is_empty();
+        // For unit variants, the variant header is the only thing we
+        // emit — apply the trailing newline directly to it.
+        self.emit(
+            InstKind::PrintRaw {
+                text: header,
+                newline: unit && newline,
+            },
+            None,
+        );
+        if unit {
+            return;
+        }
+        self.emit(
+            InstKind::PrintRaw {
+                text: "(".to_string(),
+                newline: false,
+            },
+            None,
+        );
+        for (i, (local, ty)) in payload_slots.iter().enumerate() {
+            if i > 0 {
+                self.emit(
+                    InstKind::PrintRaw {
+                        text: ", ".to_string(),
+                        newline: false,
+                    },
+                    None,
+                );
+            }
+            let v = self
+                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                .expect("LoadLocal returns a value");
+            self.emit(
+                InstKind::Print {
+                    value: v,
+                    value_ty: *ty,
+                    newline: false,
+                },
+                None,
+            );
+        }
+        self.emit(
+            InstKind::PrintRaw {
+                text: ")".to_string(),
+                newline,
+            },
+            None,
+        );
     }
 
     /// Allocate the locals that back an enum value: one `tag_local`

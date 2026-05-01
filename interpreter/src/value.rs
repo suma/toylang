@@ -330,6 +330,7 @@ mod tests {
         let obj = Rc::new(RefCell::new(Object::Struct {
             type_name,
             fields: Box::new(fields),
+            type_args: Vec::new(),
         }));
         // Two `Value::from_rc` calls on the same `RcObject` should
         // share the inner cell — that's the whole point of `Heap`.

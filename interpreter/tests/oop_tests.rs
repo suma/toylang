@@ -650,6 +650,7 @@ mod destruction {
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields),
+                type_args: Vec::new(),
             }))
         };
 
@@ -811,6 +812,7 @@ mod destruction {
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields1),
+                type_args: Vec::new(),
             }))
         };
 
@@ -820,6 +822,7 @@ mod destruction {
             Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields2),
+                type_args: Vec::new(),
             }))
         };
 
@@ -869,6 +872,7 @@ mod destruction {
             let _complex_struct = Rc::new(RefCell::new(Object::Struct {
                 type_name,
                 fields: Box::new(fields),
+                type_args: Vec::new(),
             }));
             // All nested objects should be properly destroyed
 

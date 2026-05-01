@@ -33,6 +33,13 @@ pub enum Object {
         // when a human-readable form is needed (display, hash sort key,
         // error messages).
         fields: Box<HashMap<DefaultSymbol, RcObject>>,
+        // Generic type arguments derived at construction time from the
+        // runtime field values. Empty for non-generic structs and for
+        // generic structs whose params can't be inferred from any field
+        // (rare — usually at least one field shape carries the param).
+        // Used by `to_display_string` so output matches the compiler's
+        // monomorphised header (`Y<i64> { b: 2 }`).
+        type_args: Vec<TypeDecl>,
     },
     Dict(Box<HashMap<ObjectKey, RcObject>>),  // Using ObjectKey for flexible key types
     Tuple(Box<Vec<RcObject>>),  // Tuple type - ordered collection of heterogeneous types
@@ -49,6 +56,10 @@ pub enum Object {
         variant_name: DefaultSymbol,
         // Tuple-variant payload values. Empty for unit variants.
         values: Vec<RcObject>,
+        // Generic type arguments derived at construction time from the
+        // payload value types (or from the val/var annotation when a
+        // unit variant has no payload). Empty for non-generic enums.
+        type_args: Vec<TypeDecl>,
     },
     // Half-open integer range produced by `start..end`.
     Range {
@@ -218,8 +229,8 @@ impl PartialEq for Object {
                 a.len() == b.len() && 
                 a.iter().zip(b.iter()).all(|(x, y)| x.borrow().eq(&*y.borrow()))
             }
-            (Object::Struct { type_name: name_a, fields: fields_a }, 
-             Object::Struct { type_name: name_b, fields: fields_b }) => {
+            (Object::Struct { type_name: name_a, fields: fields_a, .. },
+             Object::Struct { type_name: name_b, fields: fields_b, .. }) => {
                 name_a == name_b && 
                 fields_a.len() == fields_b.len() &&
                 fields_a.iter().all(|(k, v)| {
@@ -240,8 +251,8 @@ impl PartialEq for Object {
             (Object::Null(_), Object::Null(_)) => true,
             (Object::Unit, Object::Unit) => true,
             (Object::Allocator(a), Object::Allocator(b)) => Rc::ptr_eq(a, b),
-            (Object::EnumVariant { enum_name: e1, variant_name: v1, values: vs1 },
-             Object::EnumVariant { enum_name: e2, variant_name: v2, values: vs2 }) => {
+            (Object::EnumVariant { enum_name: e1, variant_name: v1, values: vs1, .. },
+             Object::EnumVariant { enum_name: e2, variant_name: v2, values: vs2, .. }) => {
                 e1 == e2 && v1 == v2 && vs1.len() == vs2.len()
                     && vs1.iter().zip(vs2.iter()).all(|(a, b)| a.borrow().eq(&*b.borrow()))
             }
@@ -289,7 +300,7 @@ impl Hash for Object {
                     item.borrow().hash(state);
                 }
             }
-            Object::Struct { type_name, fields } => {
+            Object::Struct { type_name, fields, .. } => {
                 6u8.hash(state);
                 type_name.hash(state);
                 fields.len().hash(state);
@@ -340,7 +351,7 @@ impl Hash for Object {
                 // Hash by Rc pointer identity to match `PartialEq::eq`'s ptr_eq.
                 (Rc::as_ptr(rc) as *const () as usize).hash(state);
             }
-            Object::EnumVariant { enum_name, variant_name, values } => {
+            Object::EnumVariant { enum_name, variant_name, values, .. } => {
                 13u8.hash(state);
                 enum_name.hash(state);
                 variant_name.hash(state);
@@ -355,6 +366,64 @@ impl Hash for Object {
                 end.borrow().hash(state);
             }
         }
+    }
+}
+
+/// Format a generic type header (`Name` or `Name<T1, T2>`) for the
+/// display path. Mirrors the compiler's `format_struct_header` /
+/// `format_enum_header` so `println` output matches across backends
+/// (`Y<i64> { b: 2 }`, `Option<i64>::Some(5)`).
+fn format_type_header(
+    base: &str,
+    type_args: &[TypeDecl],
+    string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>,
+) -> String {
+    if type_args.is_empty() {
+        return base.to_string();
+    }
+    let parts: Vec<String> = type_args
+        .iter()
+        .map(|t| format_type_decl_for_display(t, string_interner))
+        .collect();
+    format!("{}<{}>", base, parts.join(", "))
+}
+
+/// Render a `TypeDecl` for the display path. Recurses into generic
+/// instantiations so `Option<Cell<i64>>` prints with the inner args
+/// expanded. Falls back to a debug-style fragment for shapes we
+/// don't normally surface in display.
+fn format_type_decl_for_display(
+    ty: &TypeDecl,
+    string_interner: &string_interner::StringInterner<string_interner::DefaultBackend>,
+) -> String {
+    match ty {
+        TypeDecl::Int64 => "i64".to_string(),
+        TypeDecl::UInt64 => "u64".to_string(),
+        TypeDecl::Float64 => "f64".to_string(),
+        TypeDecl::Bool => "bool".to_string(),
+        TypeDecl::String => "str".to_string(),
+        TypeDecl::Unit => "()".to_string(),
+        TypeDecl::Ptr => "ptr".to_string(),
+        TypeDecl::Identifier(sym) => string_interner
+            .resolve(*sym)
+            .unwrap_or("?")
+            .to_string(),
+        TypeDecl::Struct(name, args) | TypeDecl::Enum(name, args) => {
+            let base = string_interner.resolve(*name).unwrap_or("?");
+            format_type_header(base, args, string_interner)
+        }
+        TypeDecl::Tuple(elems) => {
+            let parts: Vec<String> = elems
+                .iter()
+                .map(|e| format_type_decl_for_display(e, string_interner))
+                .collect();
+            format!("({})", parts.join(", "))
+        }
+        TypeDecl::Generic(sym) => string_interner
+            .resolve(*sym)
+            .unwrap_or("?")
+            .to_string(),
+        other => format!("{:?}", other),
     }
 }
 
@@ -590,8 +659,9 @@ impl Object {
                 parts.sort();
                 format!("{{{}}}", parts.join(", "))
             }
-            Object::Struct { type_name, fields } => {
+            Object::Struct { type_name, fields, type_args } => {
                 let type_name_str = string_interner.resolve(*type_name).unwrap_or("<struct>");
+                let header = format_type_header(type_name_str, type_args, string_interner);
                 let mut parts: Vec<String> = fields.iter()
                     .map(|(k, v)| {
                         let name = string_interner.resolve(*k).unwrap_or("<field>");
@@ -599,7 +669,7 @@ impl Object {
                     })
                     .collect();
                 parts.sort();
-                format!("{} {{ {} }}", type_name_str, parts.join(", "))
+                format!("{} {{ {} }}", header, parts.join(", "))
             }
             Object::Range { start, end } => {
                 return format!(
@@ -608,16 +678,17 @@ impl Object {
                     end.borrow().to_display_string(string_interner),
                 );
             }
-            Object::EnumVariant { enum_name, variant_name, values } => {
+            Object::EnumVariant { enum_name, variant_name, values, type_args } => {
                 let enum_str = string_interner.resolve(*enum_name).unwrap_or("<enum>");
+                let header = format_type_header(enum_str, type_args, string_interner);
                 let variant_str = string_interner.resolve(*variant_name).unwrap_or("<variant>");
                 if !values.is_empty() {
                     let parts: Vec<String> = values.iter()
                         .map(|v| v.borrow().to_display_string(string_interner))
                         .collect();
-                    return format!("{}::{}({})", enum_str, variant_str, parts.join(", "));
+                    return format!("{}::{}({})", header, variant_str, parts.join(", "));
                 }
-                format!("{}::{}", enum_str, variant_str)
+                format!("{}::{}", header, variant_str)
             }
         }
     }
@@ -749,8 +820,8 @@ impl Object {
                 self_val.extend(v.iter().cloned());
                 Ok(())
             }
-            (Object::Struct { type_name: self_type, fields: self_fields },
-             Object::Struct { type_name: other_type, fields: other_fields }) => {
+            (Object::Struct { type_name: self_type, fields: self_fields, .. },
+             Object::Struct { type_name: other_type, fields: other_fields, .. }) => {
                 if self_type == other_type {
                     self_fields.clear();
                     self_fields.extend(other_fields.iter().map(|(k, v)| (*k, v.clone())));
@@ -848,7 +919,7 @@ impl Drop for Object {
             // `#[allow(unused_variables)]` keeps the patterns expressive
             // without flipping every binding to `_name`.
             #[allow(unused_variables)]
-            Object::Struct { type_name, fields: _ } => {
+            Object::Struct { type_name, fields: _, type_args: _ } => {
                 destruction_log!(format!("Destructing struct_{:?}", type_name));
                 // Custom `__drop__` (if any) should be invoked before
                 // destruction via the ExplicitDestructor trait. Field
@@ -988,7 +1059,11 @@ mod display_tests {
         let mut fields = HashMap::new();
         fields.insert(x_sym, make_rc(Object::UInt64(3)));
         fields.insert(y_sym, make_rc(Object::UInt64(4)));
-        let pt = Object::Struct { type_name, fields: Box::new(fields) };
+        let pt = Object::Struct {
+            type_name,
+            fields: Box::new(fields),
+            type_args: Vec::new(),
+        };
         // Fields are sorted by resolved name for deterministic output;
         // the symbols `x` and `y` are interned in the same interner that
         // `to_display_string` consults.

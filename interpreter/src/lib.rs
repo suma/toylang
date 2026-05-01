@@ -383,15 +383,43 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     
     register_methods(&mut eval, method_registry);
 
-    // Register enum declarations so runtime lookup of `Enum::Variant` paths
-    // works. We only need the variant name and payload arity at runtime.
+    // Register enum and struct declarations so runtime lookup of
+    // `Enum::Variant` paths works and so `Object::{Struct,EnumVariant}`
+    // can derive `type_args` from runtime values for display.
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
-        if let Some(frontend::ast::Stmt::EnumDecl { name, variants, .. }) = program.statement.get(&stmt_ref) {
-            let variant_info: Vec<(DefaultSymbol, usize)> = variants.iter()
-                .map(|v| (v.name, v.payload_types.len()))
-                .collect();
-            eval.register_enum(name, variant_info);
+        match program.statement.get(&stmt_ref) {
+            Some(frontend::ast::Stmt::EnumDecl { name, variants, generic_params, .. }) => {
+                let entry = crate::evaluation::EnumRegistryEntry {
+                    generic_params: generic_params.clone(),
+                    variants: variants
+                        .iter()
+                        .map(|v| crate::evaluation::EnumRegistryVariant {
+                            name: v.name,
+                            payload_types: v.payload_types.clone(),
+                        })
+                        .collect(),
+                };
+                eval.register_enum(name, entry);
+            }
+            Some(frontend::ast::Stmt::StructDecl { name, fields, generic_params, .. }) => {
+                // Field names are stored as `String` in the AST; intern
+                // them via the eval's interner so the registry keys
+                // match what `evaluate_struct_literal` builds.
+                let field_entries: Vec<(DefaultSymbol, frontend::type_decl::TypeDecl)> = fields
+                    .iter()
+                    .map(|f| {
+                        let sym = eval.string_interner.get_or_intern(&f.name);
+                        (sym, f.type_decl.clone())
+                    })
+                    .collect();
+                let entry = crate::evaluation::StructRegistryEntry {
+                    generic_params: generic_params.clone(),
+                    fields: field_entries,
+                };
+                eval.register_struct(name, entry);
+            }
+            _ => {}
         }
     }
 

@@ -5,7 +5,36 @@ use crate::environment::VariableSetType;
 use crate::object::Object;
 use crate::error::InterpreterError;
 use crate::try_value;
+use crate::value::Value;
 use super::{convert_object, EvaluationContext, EvaluationResult};
+
+/// Apply the val/var annotation to fill in `type_args` on a generic
+/// struct / enum value when the construction itself couldn't infer
+/// them (e.g. unit enum variant `Option::None`). The runtime never
+/// changes the underlying object's identity — it just patches the
+/// `type_args` slot via a single `RefMut` borrow.
+fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Value {
+    let Some(anno) = annotation else { return value; };
+    let args: Vec<TypeDecl> = match anno {
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => args.clone(),
+        _ => return value,
+    };
+    if args.is_empty() {
+        return value;
+    }
+    if let Value::Heap(rc) = &value {
+        let mut borrow = rc.borrow_mut();
+        match &mut *borrow {
+            Object::Struct { type_args, .. } | Object::EnumVariant { type_args, .. } => {
+                if type_args.is_empty() {
+                    *type_args = args;
+                }
+            }
+            _ => {}
+        }
+    }
+    value
+}
 
 impl EvaluationContext<'_> {
     pub(super) fn execute_for_loop<T>(
@@ -67,19 +96,19 @@ impl EvaluationContext<'_> {
 
         for stmt in statements {
             match stmt {
-                Stmt::Val(name, _, e) => {
+                Stmt::Val(name, annotation, e) => {
                     // val/var declarations don't themselves produce a value, but
                     // the rhs may propagate control flow (e.g. `val x = return ...`)
                     // which we must surface to the enclosing function/loop.
-                    match self.handle_val_declaration(name, &e)? {
+                    match self.handle_val_declaration(name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
                                 | EvaluationResult::Break
                                 | EvaluationResult::Continue) => return Ok(flow),
                         _ => last = None,
                     }
                 }
-                Stmt::Var(name, _, e) => {
-                    match self.handle_var_declaration(name, &e)? {
+                Stmt::Var(name, annotation, e) => {
+                    match self.handle_var_declaration(name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
                                 | EvaluationResult::Break
                                 | EvaluationResult::Continue) => return Ok(flow),
@@ -151,17 +180,28 @@ impl EvaluationContext<'_> {
     /// `val x = if cond { return 100 } else { 5 }`) is propagated as
     /// `Ok(Return(...))` so the enclosing function returns correctly —
     /// previously this would surface as a stray "Propagate flow:" error.
-    fn handle_val_declaration(&mut self, name: DefaultSymbol, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+    fn handle_val_declaration(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&frontend::type_decl::TypeDecl>,
+        expr: &ExprRef,
+    ) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         let value = self.evaluate(expr);
         let value = try_value_v!(value);
+        let value = apply_annotation_type_args(value, annotation);
         self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
     }
 
     /// Handles var (mutable variable) declarations. Same flow-propagation
     /// convention as `handle_val_declaration`.
-    fn handle_var_declaration(&mut self, name: DefaultSymbol, expr: &Option<ExprRef>) -> Result<EvaluationResult, InterpreterError> {
+    fn handle_var_declaration(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&frontend::type_decl::TypeDecl>,
+        expr: &Option<ExprRef>,
+    ) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         let value: crate::value::Value = if let Some(e) = expr {
             let res = self.evaluate(e);
@@ -169,6 +209,7 @@ impl EvaluationContext<'_> {
         } else {
             self.null_object.clone().into()
         };
+        let value = apply_annotation_type_args(value, annotation);
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }

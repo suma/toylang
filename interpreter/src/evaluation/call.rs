@@ -7,7 +7,98 @@ use string_interner::DefaultSymbol;
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use crate::try_value;
-use super::{EvaluationContext, EvaluationResult};
+use super::{EnumRegistryEntry, EnumRegistryVariant, EvaluationContext, EvaluationResult, StructRegistryEntry};
+use std::collections::HashMap as HashMapStd;
+
+/// Walk the struct field type-decls looking for `Generic(P)`
+/// occurrences and bind each generic parameter to the runtime
+/// type of the matching field. Returns `type_args` in the order
+/// declared by `entry.generic_params`. Falls back to an empty
+/// vector when no generic parameter binding can be derived (e.g.
+/// non-generic struct, or generic param appearing only in nested
+/// positions we don't drill into).
+fn derive_struct_type_args(
+    entry: &StructRegistryEntry,
+    field_values: &std::collections::HashMap<DefaultSymbol, RcObject>,
+) -> Vec<TypeDecl> {
+    if entry.generic_params.is_empty() {
+        return Vec::new();
+    }
+    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    for (field_name, field_ty) in &entry.fields {
+        if let Some(value) = field_values.get(field_name) {
+            collect_generic_bindings(field_ty, &value.borrow(), &mut bindings);
+        }
+    }
+    entry
+        .generic_params
+        .iter()
+        .map(|p| bindings.get(p).cloned().unwrap_or(TypeDecl::Unknown))
+        .collect()
+}
+
+/// Variant counterpart to `derive_struct_type_args`. Walks the
+/// variant payload type list against the constructed argument
+/// values to derive each generic parameter binding.
+fn derive_enum_type_args(
+    entry: &EnumRegistryEntry,
+    variant: &EnumRegistryVariant,
+    arg_values: &[RcObject],
+) -> Vec<TypeDecl> {
+    if entry.generic_params.is_empty() {
+        return Vec::new();
+    }
+    let mut bindings: HashMapStd<DefaultSymbol, TypeDecl> = HashMapStd::new();
+    for (declared, value) in variant.payload_types.iter().zip(arg_values.iter()) {
+        collect_generic_bindings(declared, &value.borrow(), &mut bindings);
+    }
+    entry
+        .generic_params
+        .iter()
+        .map(|p| bindings.get(p).cloned().unwrap_or(TypeDecl::Unknown))
+        .collect()
+}
+
+/// Recursively match a declared `TypeDecl` against the actual
+/// runtime value to populate `bindings` with `Generic(P) -> Type`
+/// pairs. Handles the common cases (`T`, `Cell<T>`, `(T, U)`) so
+/// generic struct / enum / tuple instantiations infer correctly
+/// without re-running the type-checker.
+fn collect_generic_bindings(
+    declared: &TypeDecl,
+    value: &Object,
+    bindings: &mut HashMapStd<DefaultSymbol, TypeDecl>,
+) {
+    match declared {
+        TypeDecl::Generic(sym) => {
+            let runtime_ty = value.get_type();
+            bindings.entry(*sym).or_insert(runtime_ty);
+        }
+        TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
+            // Pull the value's own type-arg vector if it has one.
+            // Recurse element-wise so `Cell<T>` against a
+            // `Cell<i64>` value resolves T = i64.
+            let runtime_args = match value {
+                Object::Struct { type_args, .. } => type_args.clone(),
+                Object::EnumVariant { type_args, .. } => type_args.clone(),
+                _ => Vec::new(),
+            };
+            for (decl_arg, runtime_arg) in args.iter().zip(runtime_args.iter()) {
+                if let TypeDecl::Generic(sym) = decl_arg {
+                    bindings.entry(*sym).or_insert(runtime_arg.clone());
+                }
+            }
+        }
+        TypeDecl::Tuple(decl_elems) => {
+            if let Object::Tuple(value_elems) = value {
+                for (decl, val) in decl_elems.iter().zip(value_elems.iter()) {
+                    collect_generic_bindings(decl, &val.borrow(), bindings);
+                }
+            }
+        }
+        _ => {}
+    }
+}
 
 impl EvaluationContext<'_> {
     pub(super) fn call_method(&mut self, method: Rc<MethodFunction>, self_obj: RcObject, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
@@ -484,9 +575,15 @@ impl EvaluationContext<'_> {
             field_values.insert(*field_name, field_value);
         }
 
+        let type_args = self
+            .struct_definitions
+            .get(struct_name)
+            .map(|entry| derive_struct_type_args(entry, &field_values))
+            .unwrap_or_default();
         let struct_obj = Object::Struct {
             type_name: *struct_name,
             fields: Box::new(field_values),
+            type_args,
         };
 
         Ok(EvaluationResult::Value((struct_obj).into()))
@@ -497,18 +594,24 @@ impl EvaluationContext<'_> {
         // Enum tuple-variant construction: `Enum::Variant(args)` shares parse
         // structure with associated function calls. Intercept it here before
         // falling through to struct method dispatch.
-        if let Some(variants) = self.enum_definitions.get(struct_name).cloned() {
-            if variants.iter().any(|(name, _)| name == function_name) {
+        if let Some(entry) = self.enum_definitions.get(struct_name).cloned() {
+            if let Some(variant) = entry.variants.iter().find(|v| v.name == *function_name) {
                 let mut arg_values = Vec::new();
                 for arg_expr in args {
                     let arg_value = self.evaluate(arg_expr)?;
                     let arg_obj = try_value!(Ok(arg_value));
                     arg_values.push(arg_obj);
                 }
+                let type_args = derive_enum_type_args(
+                    &entry,
+                    variant,
+                    &arg_values,
+                );
                 let obj = Object::EnumVariant {
                     enum_name: *struct_name,
                     variant_name: *function_name,
                     values: arg_values,
+                    type_args,
                 };
                 return Ok(EvaluationResult::Value((obj).into()));
             }

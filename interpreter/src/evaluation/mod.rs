@@ -2,12 +2,37 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::environment::Environment;
 use crate::object::{Object, RcObject};
 use crate::value::Value;
 use crate::error::InterpreterError;
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
+
+/// Per-enum entry registered with the evaluation context. Carries
+/// enough info both for variant lookup at construction sites and for
+/// deriving `type_args` on the resulting `Object::EnumVariant`.
+#[derive(Debug, Clone)]
+pub struct EnumRegistryEntry {
+    pub generic_params: Vec<DefaultSymbol>,
+    pub variants: Vec<EnumRegistryVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumRegistryVariant {
+    pub name: DefaultSymbol,
+    pub payload_types: Vec<TypeDecl>,
+}
+
+/// Per-struct entry registered with the evaluation context. Used
+/// only for deriving `type_args` on `Object::Struct` so generic
+/// instances print like the compiler.
+#[derive(Debug, Clone)]
+pub struct StructRegistryEntry {
+    pub generic_params: Vec<DefaultSymbol>,
+    pub fields: Vec<(DefaultSymbol, TypeDecl)>,
+}
 
 mod operators;
 mod expression;
@@ -101,10 +126,17 @@ pub struct EvaluationContext<'a> {
     // pushes on entry and pops on exit. `allocator_stack.last()` is always
     // non-None because the global allocator sits at the bottom.
     pub(super) allocator_stack: Vec<Rc<dyn Allocator>>,
-    // Registered enum types: enum_name -> ordered variant definitions. Each
-    // variant records the payload arity so the interpreter can pull the
-    // right number of argument values when building an EnumVariant object.
-    pub(super) enum_definitions: HashMap<DefaultSymbol, Vec<(DefaultSymbol, usize)>>,
+    // Registered enum types: enum_name -> entry. The entry records the
+    // generic parameter symbols (empty for non-generic enums) and the
+    // ordered variant definitions (variant name + payload type list).
+    // Used both for variant lookup at construction sites and for
+    // deriving `type_args` on `Object::EnumVariant` for display.
+    pub(super) enum_definitions: HashMap<DefaultSymbol, EnumRegistryEntry>,
+    // Registered struct types: struct_name -> entry. Same shape as
+    // `enum_definitions` — used purely for deriving `type_args` on
+    // `Object::Struct` so generic instances print like the compiler
+    // (`Y<i64> { b: 2 }`).
+    pub(super) struct_definitions: HashMap<DefaultSymbol, StructRegistryEntry>,
     /// Runtime gate for Design-by-Contract evaluation. Read once from
     /// `INTERPRETER_CONTRACTS` at construction; `call.rs` consults
     /// `check_pre` / `check_post` to decide whether to evaluate each clause.
@@ -135,6 +167,7 @@ impl<'a> EvaluationContext<'a> {
             global_allocator,
             allocator_stack,
             enum_definitions: HashMap::new(),
+            struct_definitions: HashMap::new(),
             contract_mode: ContractMode::from_env(),
             result_symbol,
         }
@@ -147,8 +180,16 @@ impl<'a> EvaluationContext<'a> {
         self.contract_mode = mode;
     }
 
-    pub fn register_enum(&mut self, name: DefaultSymbol, variants: Vec<(DefaultSymbol, usize)>) {
-        self.enum_definitions.insert(name, variants);
+    pub fn register_enum(&mut self, name: DefaultSymbol, entry: EnumRegistryEntry) {
+        self.enum_definitions.insert(name, entry);
+    }
+
+    pub fn register_struct(
+        &mut self,
+        name: DefaultSymbol,
+        entry: StructRegistryEntry,
+    ) {
+        self.struct_definitions.insert(name, entry);
     }
 
     pub fn register_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {

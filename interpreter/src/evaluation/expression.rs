@@ -356,13 +356,17 @@ impl EvaluationContext<'_> {
         // EnumVariant. Tuple variants use `Enum::Variant(args)` and flow
         // through evaluate_associated_function_call instead.
         if path.len() == 2 {
-            if let Some(variants) = self.enum_definitions.get(&path[0]) {
-                if let Some((_, arity)) = variants.iter().find(|(n, _)| *n == path[1]) {
-                    if *arity == 0 {
+            if let Some(entry) = self.enum_definitions.get(&path[0]) {
+                if let Some(variant) = entry.variants.iter().find(|v| v.name == path[1]) {
+                    if variant.payload_types.is_empty() {
+                        // Unit variants of generic enums leave type_args
+                        // empty (no payload to infer from); the val/var
+                        // annotation path could fill it in later.
                         let obj = Object::EnumVariant {
                             enum_name: path[0],
                             variant_name: path[1],
                             values: Vec::new(),
+                            type_args: Vec::new(),
                         };
                         return Ok(EvaluationResult::Value((obj).into()));
                     }
@@ -447,7 +451,7 @@ impl EvaluationContext<'_> {
             }
             Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
                 let (enum_name, variant_name, values) = match &*value.borrow() {
-                    Object::EnumVariant { enum_name, variant_name, values } => {
+                    Object::EnumVariant { enum_name, variant_name, values, .. } => {
                         (*enum_name, *variant_name, values.clone())
                     }
                     _ => return Ok(false),

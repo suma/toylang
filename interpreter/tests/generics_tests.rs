@@ -5,6 +5,114 @@ mod common;
 // Generics Tests - Consolidated from 8 generic_struct_*.rs files
 // =====================================================================
 
+// Generic-print parity tests: the interpreter's `to_display_string`
+// should now include type-argument lists on generic struct/enum
+// instances, matching the compiler's output.
+mod generic_display {
+    use crate::common::test_program;
+    use interpreter::object::Object;
+
+    #[test]
+    fn struct_value_carries_inferred_type_args() {
+        let src = r#"
+            struct Y<T> { b: T }
+            fn main() -> u64 {
+                val y = Y { b: 2i64 }
+                y.b as u64
+            }
+        "#;
+        // The function returns y.b, but the struct is bound at a
+        // val site that assembles type_args from the field rhs.
+        // We re-evaluate the program with a tail returning the
+        // struct itself to inspect Object::Struct.type_args
+        // directly via the display string.
+        let display_src = r#"
+            struct Y<T> { b: T }
+            fn main() -> str {
+                val y = Y { b: 2i64 }
+                "Y<i64> { b: 2 }"
+            }
+        "#;
+        // We don't have a direct stdout-capture helper here;
+        // assert via the explicit string echoing pattern that
+        // both branches return the same string when display is
+        // implemented correctly.
+        let _ = (src, display_src);
+        // Direct assertion: build the value, check its display.
+        let res = test_program(r#"
+            struct Y<T> { b: T }
+            fn make() -> Y<i64> { Y { b: 2i64 } }
+            fn main() -> u64 {
+                val y = make()
+                y.b as u64
+            }
+        "#).expect("interpreter execute");
+        assert_eq!(res.borrow().unwrap_uint64(), 2);
+
+        // Build a separate program that just constructs a value
+        // and then inspect the runtime object via test_program's
+        // env. This relies on Object::Struct{type_args} being
+        // populated; we'll inspect via `test_program` returning a
+        // struct as the program's result.
+        let res2 = test_program(r#"
+            struct Y<T> { b: T }
+            fn main() -> Y<i64> { Y { b: 2i64 } }
+        "#).expect("execute generic struct main");
+        let borrow = res2.borrow();
+        match &*borrow {
+            Object::Struct { type_args, .. } => {
+                assert!(!type_args.is_empty(), "type_args should be populated for generic struct value");
+                // First type arg should be Int64 inferred from `b: 2i64`.
+                use frontend::type_decl::TypeDecl;
+                assert!(matches!(type_args[0], TypeDecl::Int64));
+            }
+            other => panic!("Expected Struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn enum_value_carries_inferred_type_args() {
+        let res = test_program(r#"
+            enum Option<T> { None, Some(T) }
+            fn main() -> Option<i64> {
+                Option::Some(5i64)
+            }
+        "#).expect("execute generic enum main");
+        let borrow = res.borrow();
+        match &*borrow {
+            Object::EnumVariant { type_args, .. } => {
+                assert!(!type_args.is_empty(), "type_args should be populated for generic enum value");
+                use frontend::type_decl::TypeDecl;
+                assert!(matches!(type_args[0], TypeDecl::Int64));
+            }
+            other => panic!("Expected EnumVariant, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unit_variant_picks_up_annotation_type_args() {
+        // Option::None has no payload to infer from, but the
+        // val/var annotation `Option<i64>` should fill type_args
+        // via apply_annotation_type_args at the val handler.
+        let res = test_program(r#"
+            enum Option<T> { None, Some(T) }
+            fn main() -> Option<i64> {
+                val n: Option<i64> = Option::None
+                n
+            }
+        "#).expect("execute unit-variant main");
+        let borrow = res.borrow();
+        match &*borrow {
+            Object::EnumVariant { type_args, .. } => {
+                assert!(!type_args.is_empty(), "annotation should populate type_args even for unit variant");
+                use frontend::type_decl::TypeDecl;
+                assert!(matches!(type_args[0], TypeDecl::Int64));
+            }
+            other => panic!("Expected EnumVariant, got {:?}", other),
+        }
+    }
+}
+
 // =====================================================================
 // Module: basic - Core generic struct tests (from generic_struct_tests.rs)
 // =====================================================================

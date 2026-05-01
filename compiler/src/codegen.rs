@@ -278,6 +278,9 @@ impl CodegenSession {
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
                         print_needed.insert(*message);
                     }
+                    if let InstKind::ConstStr { message } = &inst.kind {
+                        print_needed.insert(*message);
+                    }
                 }
             }
         }
@@ -594,17 +597,20 @@ impl CodegenSession {
         let ir_func = ir_module.function(func_id);
         for blk in &ir_func.blocks {
             for inst in &blk.instructions {
-                if let InstKind::PrintStr { message, .. } = &inst.kind {
-                    if imports.contains_key(message) {
-                        continue;
-                    }
-                    let data_id = match self.print_strings.get(message).copied() {
-                        Some(id) => id,
-                        None => continue,
-                    };
-                    let gv = self.module.declare_data_in_func(data_id, func);
-                    imports.insert(*message, gv);
+                let message = match &inst.kind {
+                    InstKind::PrintStr { message, .. } => *message,
+                    InstKind::ConstStr { message } => *message,
+                    _ => continue,
+                };
+                if imports.contains_key(&message) {
+                    continue;
                 }
+                let data_id = match self.print_strings.get(&message).copied() {
+                    Some(id) => id,
+                    None => continue,
+                };
+                let gv = self.module.declare_data_in_func(data_id, func);
+                imports.insert(message, gv);
             }
         }
         imports
@@ -668,6 +674,9 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         // never reach the cranelift function boundary in this MVP.
         // Asking for an "enum cranelift type" is a bug in the caller.
         IrType::Enum(_) => None,
+        // String values are pointer-sized opaque handles. The actual
+        // bytes live in `.rodata`; the IR carries the address as i64.
+        IrType::Str => Some(types::I64),
     }
 }
 
@@ -1093,6 +1102,8 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::F64, true) => self.runtime.println_f64,
                     (IrType::Bool, false) => self.runtime.print_bool,
                     (IrType::Bool, true) => self.runtime.println_bool,
+                    (IrType::Str, false) => self.runtime.print_str,
+                    (IrType::Str, true) => self.runtime.println_str,
                     (IrType::Unit, _) => {
                         return Err(
                             "internal error: Print of Unit reached codegen".to_string(),
@@ -1131,6 +1142,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.runtime.print_str
                 };
                 self.builder.ins().call(helper, &[addr]);
+            }
+            InstKind::ConstStr { message } => {
+                let gv = *self
+                    .print_imports
+                    .get(message)
+                    .ok_or_else(|| {
+                        format!("missing print import for #{}", message.to_usize())
+                    })?;
+                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, addr);
+                }
             }
             InstKind::PrintRaw { text, newline } => {
                 let key = text.as_bytes();

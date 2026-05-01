@@ -341,6 +341,12 @@ pub enum Type {
     /// instance: a non-generic enum gets a single id, a generic enum
     /// gets one id per concrete type-argument tuple.
     Enum(EnumId),
+    /// Pointer-sized handle to a static string blob. The IR keeps
+    /// strings as opaque pointer values (no length, no ownership);
+    /// codegen lays each string literal out in `.rodata` and emits
+    /// a `symbol_value` to materialise the address. Phase T accepts
+    /// strings at function boundaries and val/var bindings.
+    Str,
 }
 
 impl Type {
@@ -446,6 +452,13 @@ pub enum InstKind {
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
     PrintStr { message: DefaultSymbol, newline: bool },
+    /// Materialise the address of a static string blob as a
+    /// `Type::Str` value. Used when a string literal appears in
+    /// value position (`val s = "hello"`, `f("hello")`); the
+    /// codegen layer reuses the same `.rodata` placement and
+    /// `print_imports` map as `PrintStr` — only the helper called
+    /// at the use site differs.
+    ConstStr { message: DefaultSymbol },
     /// Codegen-synthesised string emission (no source-program symbol
     /// behind it). Used when lowering `print` / `println` of struct or
     /// tuple values: punctuation, field names, and brackets are
@@ -593,6 +606,7 @@ impl fmt::Display for Type {
             Type::Struct(id) => write!(f, "struct#{}", id.0),
             Type::Tuple(id) => write!(f, "tuple#{}", id.0),
             Type::Enum(id) => write!(f, "enum#{}", id.0),
+            Type::Str => f.write_str("str"),
         }
     }
 }
@@ -773,6 +787,9 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::PrintStr { message, newline } => {
                 let kw = if *newline { "println_str" } else { "print_str" };
                 write!(f, "{kw} #{}", message.to_usize())
+            }
+            InstKind::ConstStr { message } => {
+                write!(f, "{prefix}const_str #{}", message.to_usize())
             }
             InstKind::PrintRaw { text, newline } => {
                 let kw = if *newline { "println_raw" } else { "print_raw" };

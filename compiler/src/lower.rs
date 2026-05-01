@@ -1045,6 +1045,7 @@ fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         TypeDecl::Float64 => Some(Type::F64),
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),
+        TypeDecl::String => Some(Type::Str),
         _ => None,
     }
 }
@@ -1605,7 +1606,7 @@ impl<'a> FunctionLower<'a> {
                     self.bindings
                         .insert(*name, Binding::Enum(storage));
                 }
-                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool) => {
+                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     self.bindings.insert(
                         *name,
@@ -1964,6 +1965,12 @@ impl<'a> FunctionLower<'a> {
                     Type::Enum(_) => {
                         return Err(format!(
                             "var `{}` of enum type cannot be declared without an initializer",
+                            self.interner.resolve(name).unwrap_or("?")
+                        ));
+                    }
+                    Type::Str => {
+                        return Err(format!(
+                            "var `{}` of str type cannot be declared without an initializer",
                             self.interner.resolve(name).unwrap_or("?")
                         ));
                     }
@@ -2674,6 +2681,13 @@ impl<'a> FunctionLower<'a> {
             ),
             Expr::True => Ok(self.emit(InstKind::Const(Const::Bool(true)), Some(Type::Bool))),
             Expr::False => Ok(self.emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))),
+            Expr::String(sym) => {
+                // String literals in value position emit `ConstStr`,
+                // which materialises a pointer-sized handle to the
+                // shared `.rodata` blob (the same one `PrintStr` uses
+                // for `print("literal")`).
+                Ok(self.emit(InstKind::ConstStr { message: sym }, Some(Type::Str)))
+            }
             Expr::Identifier(sym) => {
                 match self.bindings.get(&sym).cloned() {
                     Some(Binding::Scalar { local, ty }) => {
@@ -3218,6 +3232,7 @@ impl<'a> FunctionLower<'a> {
                     .unwrap_or_default();
                 format!("({})", parts.join(", "))
             }
+            Type::Str => "str".to_string(),
         }
     }
 
@@ -6960,6 +6975,7 @@ impl<'a> FunctionLower<'a> {
             Expr::Int64(_) => Some(Type::I64),
             Expr::UInt64(_) => Some(Type::U64),
             Expr::Float64(_) => Some(Type::F64),
+            Expr::String(_) => Some(Type::Str),
             Expr::True | Expr::False => Some(Type::Bool),
             Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {

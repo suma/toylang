@@ -674,6 +674,91 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn string_value_binding_and_print() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase T: `str` is a pointer-sized handle to a static blob.
+    // `val s = "hello"` lowers via `InstKind::ConstStr` (sharing
+    // the `.rodata` placement with `PrintStr`), then `println(s)`
+    // dispatches to `toy_println_str` because `value_ty == Type::Str`.
+    let src = r#"
+        fn main() -> u64 {
+            val s = "hello"
+            println(s)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "string_var");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn string_function_argument() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn greet(s: str) -> u64 {
+            println(s)
+            0u64
+        }
+        fn main() -> u64 {
+            greet("hello")
+        }
+    "#;
+    let out = compile_and_capture(src, "string_arg");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "hello\n");
+}
+
+#[test]
+fn string_function_return() {
+    if skip_e2e() {
+        return;
+    }
+    // Two branches both produce `Type::Str` values; the function
+    // boundary carries a single i64 (the pointer).
+    let src = r#"
+        fn pick(b: bool) -> str {
+            if b { "yes" } else { "no" }
+        }
+        fn main() -> u64 {
+            val s: str = pick(true)
+            println(s)
+            val t: str = pick(false)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "string_ret");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "yes\nno\n");
+}
+
+#[test]
+fn string_in_struct_field() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Greeting { msg: str, count: u64 }
+        fn main() -> u64 {
+            val g = Greeting { msg: "hello world", count: 3u64 }
+            println(g)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "string_struct_field");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Greeting { count: 3, msg: hello world }\n",
+    );
+}
+
+#[test]
 fn array_literal_and_index_read() {
     if skip_e2e() {
         return;

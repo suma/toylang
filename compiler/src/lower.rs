@@ -27,13 +27,16 @@
 
 use std::collections::HashMap;
 
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{
+    BuiltinFunction, Expr, ExprRef, MatchArm, Operator, Pattern, Program, Stmt, StmtRef,
+    UnaryOp,
+};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::{
-    BinOp, Block, BlockId, Const, FuncId, InstKind, Instruction, Linkage, LocalId,
-    Module, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
+    BinOp, Block, BlockId, Const, EnumDef, EnumVariant, FuncId, InstKind, Instruction,
+    Linkage, LocalId, Module, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
 };
 
 /// Run the AST → IR pass and return the freshly-built module. Returns the
@@ -61,6 +64,14 @@ pub fn lower_program(
     // `Type::Struct(name)` into per-field cranelift params / returns
     // without re-walking the AST.
     module.struct_defs = struct_defs.clone();
+
+    // Same idea for enums. Each enum decl maps to an ordered list of
+    // variants (variant index = canonical tag value). Generic enums
+    // and enums whose payloads contain anything other than i64 / u64
+    // / bool are rejected at this stage so body lowering can rely on
+    // the stored shape unconditionally.
+    let enum_defs = collect_enum_defs(program, interner)?;
+    module.enum_defs = enum_defs.clone();
 
     // Compile-time evaluate every top-level `const`. The compiler MVP
     // accepts literal initialisers and references to earlier consts;
@@ -124,6 +135,7 @@ pub fn lower_program(
             program,
             interner,
             &struct_defs,
+            &enum_defs,
             &const_values,
             contract_msgs,
             release,
@@ -232,6 +244,62 @@ fn const_fold_binop(op: frontend::ast::Operator, l: Const, r: Const) -> Option<C
 /// lowering pass compares them against the `DefaultSymbol`-resolved name
 /// at field-access sites.
 type StructDefs = HashMap<DefaultSymbol, Vec<(String, Type)>>;
+type EnumDefs = HashMap<DefaultSymbol, EnumDef>;
+
+fn collect_enum_defs(
+    program: &Program,
+    interner: &DefaultStringInterner,
+) -> Result<EnumDefs, String> {
+    use frontend::ast::Stmt as AstStmt;
+    let mut defs: EnumDefs = HashMap::new();
+    let stmt_count = program.statement.len();
+    for i in 0..stmt_count {
+        let stmt_ref = StmtRef(i as u32);
+        let stmt = match program.statement.get(&stmt_ref) {
+            Some(s) => s,
+            None => continue,
+        };
+        if let AstStmt::EnumDecl { name, generic_params, variants, .. } = stmt {
+            if !generic_params.is_empty() {
+                return Err(format!(
+                    "compiler MVP cannot lower generic enum `{}` yet",
+                    interner.resolve(name).unwrap_or("?")
+                ));
+            }
+            let mut ir_variants: Vec<EnumVariant> = Vec::with_capacity(variants.len());
+            for v in &variants {
+                let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
+                for pt in &v.payload_types {
+                    let lowered = lower_scalar(pt).ok_or_else(|| {
+                        format!(
+                            "enum `{}::{}` has unsupported payload type `{:?}` \
+                             (compiler MVP only accepts i64 / u64 / bool)",
+                            interner.resolve(name).unwrap_or("?"),
+                            interner.resolve(v.name).unwrap_or("?"),
+                            pt,
+                        )
+                    })?;
+                    if !matches!(lowered, Type::I64 | Type::U64 | Type::Bool) {
+                        return Err(format!(
+                            "enum `{}::{}` has unsupported payload type `{lowered}` \
+                             (compiler MVP only accepts i64 / u64 / bool — f64 / Unit / \
+                             struct / tuple / enum payloads are deferred)",
+                            interner.resolve(name).unwrap_or("?"),
+                            interner.resolve(v.name).unwrap_or("?"),
+                        ));
+                    }
+                    payload_types.push(lowered);
+                }
+                ir_variants.push(EnumVariant {
+                    name: v.name,
+                    payload_types,
+                });
+            }
+            defs.insert(name, EnumDef { variants: ir_variants });
+        }
+    }
+    Ok(defs)
+}
 
 fn collect_struct_defs(
     program: &Program,
@@ -386,6 +454,10 @@ struct FunctionLower<'a> {
     interner: &'a DefaultStringInterner,
     /// Per-program struct definitions. Read-only here.
     struct_defs: &'a StructDefs,
+    /// Per-program enum definitions. Used by enum-construction sites
+    /// (`Enum::Variant` / `Enum::Variant(args)`) and by `match` arms
+    /// to look up variant tags and payload types.
+    enum_defs: &'a EnumDefs,
     /// Top-level `const` values, keyed by name. An identifier in
     /// expression position falls back to this table when no local
     /// binding shadows the name.
@@ -455,6 +527,18 @@ enum Binding {
     /// (params / returns) are deferred so the IR stays scalar at
     /// boundaries.
     Tuple { elements: Vec<TupleElementBinding> },
+    /// Enum bindings expand into a tag local plus per-variant payload
+    /// locals. `tag_local` carries the variant index (0-based); for
+    /// each variant `payload_locals[variant_idx]` holds one local per
+    /// payload element in declaration order. Bindings for unit
+    /// variants have an empty per-variant slice. Enums currently live
+    /// only as locals — function-boundary crossing is deferred along
+    /// the same lines as the compiler's first struct cut.
+    Enum {
+        enum_name: DefaultSymbol,
+        tag_local: LocalId,
+        payload_locals: Vec<Vec<(LocalId, Type)>>,
+    },
 }
 
 /// One element of a `Binding::Tuple`. `index` is the element's
@@ -506,6 +590,7 @@ impl<'a> FunctionLower<'a> {
         program: &'a Program,
         interner: &'a DefaultStringInterner,
         struct_defs: &'a StructDefs,
+        enum_defs: &'a EnumDefs,
         const_values: &'a ConstValues,
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
@@ -516,6 +601,7 @@ impl<'a> FunctionLower<'a> {
             program,
             interner,
             struct_defs,
+            enum_defs,
             const_values,
             contract_msgs,
             release,
@@ -567,6 +653,13 @@ impl<'a> FunctionLower<'a> {
                 Type::Unit => {
                     return Err(format!(
                         "parameter `{}` cannot have type Unit",
+                        self.interner.resolve(*name).unwrap_or("?")
+                    ));
+                }
+                Type::Enum(_) => {
+                    return Err(format!(
+                        "parameter `{}` is an enum value; the compiler MVP does not yet \
+                         support passing enum values across function boundaries",
                         self.interner.resolve(*name).unwrap_or("?")
                     ));
                 }
@@ -878,6 +971,12 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(name).unwrap_or("?")
                         ));
                     }
+                    Type::Enum(_) => {
+                        return Err(format!(
+                            "var `{}` of enum type cannot be declared without an initializer",
+                            self.interner.resolve(name).unwrap_or("?")
+                        ));
+                    }
                 };
                 self.emit(InstKind::StoreLocal { dst: local, src: zero }, None);
                 Ok(None)
@@ -1126,6 +1225,68 @@ impl<'a> FunctionLower<'a> {
                 );
             }
             return Ok(None);
+        }
+        // Enum-construction RHS. `Enum::Variant` (unit) parses as a
+        // `QualifiedIdentifier(vec![enum, variant])`; `Enum::Variant(args)`
+        // parses as `AssociatedFunctionCall(enum, variant, args)`.
+        // Either way the lowering allocates an `Enum` binding (tag local
+        // + per-variant payload locals) and stores the chosen tag plus
+        // the supplied arguments in this variant's payload slots.
+        if let Expr::QualifiedIdentifier(path) = rhs.clone() {
+            if path.len() == 2 {
+                if let Some(enum_def) = self.enum_defs.get(&path[0]).cloned() {
+                    let variant_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name == path[1])
+                        .ok_or_else(|| {
+                            format!(
+                                "unknown enum variant `{}::{}`",
+                                self.interner.resolve(path[0]).unwrap_or("?"),
+                                self.interner.resolve(path[1]).unwrap_or("?"),
+                            )
+                        })?;
+                    if !enum_def.variants[variant_idx].payload_types.is_empty() {
+                        return Err(format!(
+                            "enum variant `{}::{}` is a tuple variant; supply its arguments \
+                             via `{}::{}(...)`",
+                            self.interner.resolve(path[0]).unwrap_or("?"),
+                            self.interner.resolve(path[1]).unwrap_or("?"),
+                            self.interner.resolve(path[0]).unwrap_or("?"),
+                            self.interner.resolve(path[1]).unwrap_or("?"),
+                        ));
+                    }
+                    self.bind_enum(name, path[0], &enum_def, variant_idx, &[])?;
+                    return Ok(None);
+                }
+            }
+        }
+        if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone() {
+            if let Some(enum_def) = self.enum_defs.get(&enum_name).cloned() {
+                let variant_idx = enum_def
+                    .variants
+                    .iter()
+                    .position(|v| v.name == variant_name)
+                    .ok_or_else(|| {
+                        format!(
+                            "unknown enum variant `{}::{}`",
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(variant_name).unwrap_or("?"),
+                        )
+                    })?;
+                let expected = enum_def.variants[variant_idx].payload_types.len();
+                if args.len() != expected {
+                    return Err(format!(
+                        "enum variant `{}::{}` expects {} payload value(s), got {}",
+                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(variant_name).unwrap_or("?"),
+                        expected,
+                        args.len(),
+                    ));
+                }
+                self.bind_enum(name, enum_name, &enum_def, variant_idx, &args)?;
+                return Ok(None);
+            }
         }
         // Struct-literal RHS: allocate one local per field (recursing
         // into nested struct fields), evaluate each field expression,
@@ -1435,6 +1596,18 @@ impl<'a> FunctionLower<'a> {
                         self.pending_tuple_value = Some(elements);
                         Ok(None)
                     }
+                    Some(Binding::Enum { .. }) => {
+                        // Enum identifiers are only legal as a `match`
+                        // scrutinee in this MVP; there is no scalar
+                        // value to flow into a wider expression yet
+                        // (no enum function-boundary crossing, no
+                        // `print(enum)`).
+                        Err(format!(
+                            "compiler MVP cannot use enum value `{}` as an expression \
+                             outside `match`; assign it to a binding and `match` on it",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ))
+                    }
                     None => {
                         // Fall back to top-level `const` lookup. This
                         // mirrors what the type-checker does: a name
@@ -1488,6 +1661,7 @@ impl<'a> FunctionLower<'a> {
             Expr::Call(fn_name, args_ref) => self.lower_call(fn_name, &args_ref),
             Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
+            Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other
@@ -1589,6 +1763,12 @@ impl<'a> FunctionLower<'a> {
                         return Ok(None);
                     }
                     Binding::Scalar { .. } => {}
+                    Binding::Enum { .. } => {
+                        let kw = if newline { "println" } else { "print" };
+                        return Err(format!(
+                            "{kw} cannot accept an enum value in this compiler MVP"
+                        ));
+                    }
                 }
             }
         }
@@ -1701,6 +1881,70 @@ impl<'a> FunctionLower<'a> {
         self.emit(InstKind::PrintRaw { text, newline }, None);
     }
 
+    /// Allocate the storage for an enum binding (one tag local + one
+    /// payload local per element across **all** variants), then
+    /// initialise the tag to `variant_idx` and the chosen variant's
+    /// payload slots from `args`. Other variants' payload slots stay
+    /// uninitialised — the match lowering only ever loads them after
+    /// confirming the tag dispatch, so an uninit read can't escape.
+    fn bind_enum(
+        &mut self,
+        binding_name: DefaultSymbol,
+        enum_name: DefaultSymbol,
+        enum_def: &EnumDef,
+        variant_idx: usize,
+        args: &[ExprRef],
+    ) -> Result<(), String> {
+        let tag_local = self
+            .module
+            .function_mut(self.func_id)
+            .add_local(Type::U64);
+        let mut payload_locals: Vec<Vec<(LocalId, Type)>> =
+            Vec::with_capacity(enum_def.variants.len());
+        for variant in &enum_def.variants {
+            let mut per_variant: Vec<(LocalId, Type)> =
+                Vec::with_capacity(variant.payload_types.len());
+            for ty in &variant.payload_types {
+                let local = self.module.function_mut(self.func_id).add_local(*ty);
+                per_variant.push((local, *ty));
+            }
+            payload_locals.push(per_variant);
+        }
+        self.bindings.insert(
+            binding_name,
+            Binding::Enum {
+                enum_name,
+                tag_local,
+                payload_locals: payload_locals.clone(),
+            },
+        );
+        // Store the tag.
+        let tag_v = self
+            .emit(
+                InstKind::Const(Const::U64(variant_idx as u64)),
+                Some(Type::U64),
+            )
+            .expect("Const returns a value");
+        self.emit(
+            InstKind::StoreLocal {
+                dst: tag_local,
+                src: tag_v,
+            },
+            None,
+        );
+        // Evaluate and store each payload arg into the chosen
+        // variant's slots. Type-checker has already verified arg
+        // types match the variant's declaration, so we trust them.
+        for (i, arg_ref) in args.iter().enumerate() {
+            let v = self
+                .lower_expr(arg_ref)?
+                .ok_or_else(|| format!("enum payload arg #{i} produced no value"))?;
+            let (dst, _) = payload_locals[variant_idx][i];
+            self.emit(InstKind::StoreLocal { dst, src: v }, None);
+        }
+        Ok(())
+    }
+
     /// Lower `expr as Target`. The pair `(from, to)` is recorded on
     /// the IR `Cast` so codegen can pick the right cranelift
     /// instruction. Unsupported pairs (e.g. struct casts) are rejected
@@ -1783,6 +2027,12 @@ impl<'a> FunctionLower<'a> {
                         return Err(format!(
                             "compiler MVP cannot reassign a tuple binding `{}` whole (assign individual elements via `{}.N = ...`)",
                             self.interner.resolve(sym).unwrap_or("?"),
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                    Some(Binding::Enum { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign an enum binding `{}` whole",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }
@@ -2134,6 +2384,10 @@ impl<'a> FunctionLower<'a> {
                 }),
                 Some(Binding::Tuple { .. }) => Err(format!(
                     "compiler MVP cannot use tuple `{}` in a field-access chain",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
+                Some(Binding::Enum { .. }) => Err(format!(
+                    "compiler MVP cannot use enum `{}` in a field-access chain",
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
                 None => Err(format!(
@@ -2492,6 +2746,246 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Lower `match scrutinee { arm, ... }`. Compiler MVP scope:
+    /// - Scrutinee must be a bare identifier of an `Enum` binding —
+    ///   we don't materialise enum values from arbitrary expressions.
+    /// - Patterns are `EnumVariant(enum_sym, variant_sym, sub_patterns)`
+    ///   or `Wildcard`. Sub-patterns must be `Name(sym)` (binds the
+    ///   payload at that position to a fresh scalar local) or
+    ///   `Wildcard` (discard). Nested enum/tuple patterns, literal
+    ///   patterns, and guards are deferred.
+    /// - Arms must agree on their result type (same as `if` chain).
+    ///
+    /// Lowering shape mirrors `lower_if_chain`: a fresh local holds
+    /// the merged result and each arm jumps to a single merge block
+    /// after writing into it. Tag dispatch is a brif chain rather
+    /// than `br_table` for now — straightforward to swap later, and
+    /// match arms tend to be small in practice.
+    fn lower_match(
+        &mut self,
+        scrutinee: &ExprRef,
+        arms: &Vec<MatchArm>,
+    ) -> Result<Option<ValueId>, String> {
+        let scrut_expr = self
+            .program
+            .expression
+            .get(scrutinee)
+            .ok_or_else(|| "match scrutinee missing".to_string())?;
+        let scrut_sym = match scrut_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP requires `match` scrutinee to be a bare identifier \
+                     bound to an enum value"
+                        .to_string(),
+                );
+            }
+        };
+        let (enum_name, tag_local, payload_locals) = match self.bindings.get(&scrut_sym).cloned() {
+            Some(Binding::Enum {
+                enum_name,
+                tag_local,
+                payload_locals,
+            }) => (enum_name, tag_local, payload_locals),
+            _ => {
+                return Err(format!(
+                    "compiler MVP requires `match` scrutinee `{}` to be an enum binding",
+                    self.interner.resolve(scrut_sym).unwrap_or("?")
+                ));
+            }
+        };
+        let enum_def = self
+            .enum_defs
+            .get(&enum_name)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "internal error: enum `{}` not in defs at match site",
+                    self.interner.resolve(enum_name).unwrap_or("?")
+                )
+            })?;
+        // Pick the result type by scanning every arm body for the
+        // first non-divergent scalar — same trick as `lower_if_chain`.
+        let result_ty = arms
+            .iter()
+            .find_map(|a| self.value_scalar(&a.body))
+            .unwrap_or(Type::Unit);
+        let result_local = if result_ty.produces_value() {
+            Some(self.module.function_mut(self.func_id).add_local(result_ty))
+        } else {
+            None
+        };
+        let merge = self.fresh_block();
+        // For each arm, emit a comparison block (except the wildcard,
+        // which jumps unconditionally) and a body block.
+        for (arm_idx, arm) in arms.iter().enumerate() {
+            if arm.guard.is_some() {
+                return Err(
+                    "compiler MVP does not yet support `match` arm guards".to_string(),
+                );
+            }
+            let body_blk = self.fresh_block();
+            let next = if arm_idx + 1 < arms.len() {
+                self.fresh_block()
+            } else {
+                // After the last arm there is no fallthrough block —
+                // a wildcard / exhaustive set covers every value.
+                // Allocate one anyway so we have somewhere to land if
+                // the type-checker missed the case (the body just
+                // panics in that path).
+                self.fresh_block()
+            };
+            match &arm.pattern {
+                Pattern::Wildcard => {
+                    // No tag check; fall straight through to body.
+                    self.terminate(Terminator::Jump(body_blk));
+                }
+                Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
+                    if *p_enum != enum_name {
+                        return Err(format!(
+                            "match arm pattern enum `{}` does not match scrutinee enum `{}`",
+                            self.interner.resolve(*p_enum).unwrap_or("?"),
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                        ));
+                    }
+                    let variant_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name == *p_variant)
+                        .ok_or_else(|| {
+                            format!(
+                                "match arm references unknown variant `{}::{}`",
+                                self.interner.resolve(enum_name).unwrap_or("?"),
+                                self.interner.resolve(*p_variant).unwrap_or("?"),
+                            )
+                        })?;
+                    if sub_patterns.len()
+                        != enum_def.variants[variant_idx].payload_types.len()
+                    {
+                        return Err(format!(
+                            "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(*p_variant).unwrap_or("?"),
+                            sub_patterns.len(),
+                            enum_def.variants[variant_idx].payload_types.len(),
+                        ));
+                    }
+                    // Compare scrutinee tag to this variant's index.
+                    let tag_v = self
+                        .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
+                        .expect("LoadLocal returns a value");
+                    let want = self
+                        .emit(
+                            InstKind::Const(Const::U64(variant_idx as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value");
+                    let cond = self
+                        .emit(
+                            InstKind::BinOp {
+                                op: BinOp::Eq,
+                                lhs: tag_v,
+                                rhs: want,
+                            },
+                            Some(Type::Bool),
+                        )
+                        .expect("Eq returns a value");
+                    self.terminate(Terminator::Branch {
+                        cond,
+                        then_blk: body_blk,
+                        else_blk: next,
+                    });
+                    // Inside the body block: bind each Name sub-pattern
+                    // to a fresh scalar local loaded from this
+                    // variant's payload slot.
+                    self.switch_to(body_blk);
+                    for (i, sp) in sub_patterns.iter().enumerate() {
+                        match sp {
+                            Pattern::Name(sym) => {
+                                let (src_local, src_ty) = payload_locals[variant_idx][i];
+                                let v = self
+                                    .emit(InstKind::LoadLocal(src_local), Some(src_ty))
+                                    .expect("LoadLocal returns a value");
+                                let dst = self
+                                    .module
+                                    .function_mut(self.func_id)
+                                    .add_local(src_ty);
+                                self.emit(
+                                    InstKind::StoreLocal { dst, src: v },
+                                    None,
+                                );
+                                self.bindings.insert(
+                                    *sym,
+                                    Binding::Scalar { local: dst, ty: src_ty },
+                                );
+                            }
+                            Pattern::Wildcard => {
+                                // Discard. No binding to introduce.
+                            }
+                            other => {
+                                return Err(format!(
+                                    "compiler MVP only supports `Name` and `_` \
+                                     sub-patterns inside enum variants, got {other:?}"
+                                ));
+                            }
+                        }
+                    }
+                    let body_v = self.lower_expr(&arm.body)?;
+                    if !self.is_unreachable() {
+                        if let (Some(local), Some(v)) = (result_local, body_v) {
+                            self.emit(
+                                InstKind::StoreLocal { dst: local, src: v },
+                                None,
+                            );
+                        }
+                        self.terminate(Terminator::Jump(merge));
+                    }
+                    // Continue building from the `next` block (the
+                    // mismatch path for this arm).
+                    self.switch_to(next);
+                    continue;
+                }
+                other => {
+                    return Err(format!(
+                        "compiler MVP `match` arms must be enum-variant patterns or `_`, got {other:?}"
+                    ));
+                }
+            }
+            // Common tail for the wildcard arm: lower body, jump to merge.
+            self.switch_to(body_blk);
+            let body_v = self.lower_expr(&arm.body)?;
+            if !self.is_unreachable() {
+                if let (Some(local), Some(v)) = (result_local, body_v) {
+                    self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                }
+                self.terminate(Terminator::Jump(merge));
+            }
+            self.switch_to(next);
+        }
+        // After the last arm we are sitting in the trailing fallthrough
+        // block. The type-checker has already verified exhaustiveness
+        // (wildcard or variant set), so this block is unreachable in
+        // well-typed programs — terminate it with a panic so cranelift
+        // sees a real terminator and the runtime gets a clear message
+        // if exhaustiveness ever drifts.
+        if !self.is_unreachable() {
+            // Reuse the requires-violation symbol so we don't have to
+            // intern a new string here. The message is "panic: requires
+            // violation"; not the prettiest for a missing-arm case but
+            // it's accurate ("the match's exhaustiveness contract was
+            // violated") and avoids touching the contract symbol set.
+            self.terminate(Terminator::Panic {
+                message: self.contract_msgs.requires_violation,
+            });
+        }
+        self.switch_to(merge);
+        if let Some(local) = result_local {
+            Ok(self.emit(InstKind::LoadLocal(local), Some(result_ty)))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn lower_call(
         &mut self,
         fn_name: DefaultSymbol,
@@ -2610,6 +3104,7 @@ impl<'a> FunctionLower<'a> {
                 None
             }
             Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
+            Expr::Match(_, arms) => arms.iter().find_map(|a| self.value_scalar(&a.body)),
             Expr::Call(fn_name, _) => self
                 .module
                 .function_index

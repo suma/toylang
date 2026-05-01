@@ -61,6 +61,31 @@ pub struct Module {
     /// structural (no name), so we intern each unique element-type
     /// list and reference it by `TupleId`. Indexed by `TupleId.0`.
     pub tuple_defs: Vec<Vec<Type>>,
+    /// Enum definitions discovered at lowering time. The variant order
+    /// in the value vector is canonical: the first variant has tag
+    /// value `0`, the second `1`, etc. Lowering compiles
+    /// `Enum::Variant` and `Enum::Variant(args)` against this order.
+    pub enum_defs: HashMap<DefaultSymbol, EnumDef>,
+}
+
+/// One enum's full shape — used by lowering to look up tag values and
+/// payload types when compiling construction sites and match arms.
+/// `Type::Enum(name)` only carries the enum name; the lowering layer
+/// reads the variant list from here.
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: DefaultSymbol,
+    /// Payload types in declaration order. An empty vec is a unit
+    /// variant. Compiler MVP restricts payload elements to `I64` /
+    /// `U64` / `Bool` — `F64` (and compound types) are deferred so
+    /// the per-variant payload locals can stay in their natural
+    /// cranelift type without bitcasts.
+    pub payload_types: Vec<Type>,
 }
 
 impl Module {
@@ -194,6 +219,11 @@ pub enum Type {
     /// `Struct`, only valid in function signatures — IR values stay
     /// scalar.
     Tuple(TupleId),
+    /// User-declared enum. Like `Struct`, an enum value is never a
+    /// single SSA value — lowering decomposes it into a tag local
+    /// plus per-variant payload locals. `Type::Enum` may appear in
+    /// `Local` slots but not (in this MVP) in function signatures.
+    Enum(DefaultSymbol),
 }
 
 impl Type {
@@ -219,6 +249,10 @@ impl Type {
 
     pub fn is_tuple(self) -> bool {
         matches!(self, Type::Tuple(_))
+    }
+
+    pub fn is_enum(self) -> bool {
+        matches!(self, Type::Enum(_))
     }
 }
 
@@ -420,6 +454,7 @@ impl fmt::Display for Type {
             // through `Function::export_name` instead.
             Type::Struct(sym) => write!(f, "struct#{}", sym.to_usize()),
             Type::Tuple(id) => write!(f, "tuple#{}", id.0),
+            Type::Enum(sym) => write!(f, "enum#{}", sym.to_usize()),
         }
     }
 }

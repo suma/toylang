@@ -664,6 +664,10 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         // could see one of these should branch on `is_struct()` /
         // `is_tuple()` first.
         IrType::Struct(_) | IrType::Tuple(_) => None,
+        // Enum values stay inside the IR's local-slot universe — they
+        // never reach the cranelift function boundary in this MVP.
+        // Asking for an "enum cranelift type" is a bug in the caller.
+        IrType::Enum(_) => None,
     }
 }
 
@@ -692,6 +696,11 @@ fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types
             }
             out
         }
+        // Enums are intentionally not part of the function-boundary
+        // flattening in this MVP. Lowering rejects enum-typed
+        // parameters / returns up front; reaching this arm signals a
+        // missing check.
+        IrType::Enum(_) => Vec::new(),
         other => ir_to_cranelift_ty(other).into_iter().collect(),
     }
 }
@@ -1063,6 +1072,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::Tuple(_), _) => {
                         return Err(
                             "internal error: Print of tuple reached codegen (should be rejected at lower)"
+                                .to_string(),
+                        );
+                    }
+                    (IrType::Enum(_), _) => {
+                        return Err(
+                            "internal error: Print of enum reached codegen (should be rejected at lower)"
                                 .to_string(),
                         );
                     }

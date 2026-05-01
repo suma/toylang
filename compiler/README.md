@@ -21,13 +21,15 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
 - **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
 - **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
+- **enum + match (Phase A1)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `bool` のみ受理。パターンは `Enum::Variant` / `Enum::Variant(name, _, ...)` / `_` のみで、`Name` サブパターンは payload を fresh scalar local に bind、`_` は discard。**制約**: ジェネリック enum、ネストパターン (`Some(Some(x))`)、リテラルパターン、guard、match の scrutinee に式を直接書く（identifier の binding に限定）、enum を関数引数 / 戻り値 / `print` に使う、enum 全体の再代入、enum 構築を `if` の戻り値に使う、`f64` payload — すべて未対応で次フェーズ送り。スコープ: `match` の result 型は全 arm で一致する scalar 型である必要あり
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）
 
 未対応（明確なエラーで reject される）:
 
 - 任意の文字列値（リテラルのみ可）、配列、dict
-- enum、match、trait
+- ジェネリック enum (`enum Option<T> { ... }`)、ネストパターン、リテラルパターン、match guard、enum 関数境界、enum を `if` 等の式戻り値で構築、enum payload に `f64` / 構造体 / tuple / 別 enum
+- trait
 - allocator
 - generics（型パラメータを持つ関数 / struct）
 - struct / tuple リテラルや関数戻り値を直接 `print` / `println` する（`val` で受ければ可）

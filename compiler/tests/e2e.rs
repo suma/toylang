@@ -1320,6 +1320,183 @@ fn println_tuple_pair_mixed_types() {
 }
 
 #[test]
+fn enum_unit_variant_match() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Color {
+            Red,
+            Green,
+            Blue,
+        }
+        fn main() -> u64 {
+            val c = Color::Green
+            match c {
+                Color::Red => 11u64,
+                Color::Green => 22u64,
+                Color::Blue => 33u64,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_unit"), 22);
+}
+
+#[test]
+fn enum_tuple_variant_with_one_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Point,
+        }
+        fn main() -> u64 {
+            val s = Shape::Circle(7i64)
+            val a: i64 = match s {
+                Shape::Circle(r) => r * 2i64,
+                Shape::Point => 0i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_one_payload"), 14);
+}
+
+#[test]
+fn enum_tuple_variant_with_multi_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn main() -> u64 {
+            val s = Shape::Rect(3i64, 7i64)
+            val a: i64 = match s {
+                Shape::Circle(r) => r,
+                Shape::Rect(w, h) => w * h,
+                Shape::Point => 0i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_multi_payload"), 21);
+}
+
+#[test]
+fn enum_match_with_wildcard() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn main() -> u64 {
+            val s = Shape::Point
+            val a: i64 = match s {
+                Shape::Circle(r) => r,
+                _ => 99i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_wildcard"), 99);
+}
+
+#[test]
+fn enum_match_discards_payload_with_underscore() {
+    if skip_e2e() {
+        return;
+    }
+    // Sub-pattern `_` discards the payload at that position. Useful when
+    // we care which variant we have but not what's inside.
+    let src = r#"
+        enum Pair {
+            One(u64),
+            Two(u64, u64),
+        }
+        fn main() -> u64 {
+            val p = Pair::Two(5u64, 6u64)
+            match p {
+                Pair::One(_) => 0u64,
+                Pair::Two(_, b) => b,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_discard_underscore"), 6);
+}
+
+#[test]
+fn enum_with_bool_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Maybe {
+            Yes(bool),
+            No,
+        }
+        fn main() -> u64 {
+            val m = Maybe::Yes(true)
+            match m {
+                Maybe::Yes(b) => if b { 1u64 } else { 2u64 },
+                Maybe::No => 99u64,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_bool_payload"), 1);
+}
+
+#[test]
+fn enum_match_used_inside_loop() {
+    if skip_e2e() {
+        return;
+    }
+    // Verify match works inside a loop body. We build the enum value
+    // ahead of the match each iteration (the compiler MVP only allows
+    // enum construction as the immediate rhs of `val` / `var`, so we
+    // can't put the construction inside an `if` branch yet).
+    let src = r#"
+        enum Pick {
+            Even,
+            Odd,
+        }
+        fn payoff(n: u64) -> u64 {
+            if n % 2u64 == 0u64 {
+                val p = Pick::Even
+                match p {
+                    Pick::Even => 10u64,
+                    Pick::Odd => 1u64,
+                }
+            } else {
+                val p = Pick::Odd
+                match p {
+                    Pick::Even => 10u64,
+                    Pick::Odd => 1u64,
+                }
+            }
+        }
+        fn main() -> u64 {
+            var sum = 0u64
+            for i in 0u64..5u64 {
+                sum = sum + payoff(i)
+            }
+            sum
+        }
+    "#;
+    // 0->Even=10, 1->Odd=1, 2->Even=10, 3->Odd=1, 4->Even=10 => 32
+    assert_eq!(compile_and_run(src, "enum_in_loop"), 32);
+}
+
+#[test]
 fn println_tuple_singleton() {
     if skip_e2e() {
         return;

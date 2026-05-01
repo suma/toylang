@@ -22,7 +22,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
 - **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
 - **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
-- **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum / struct を受理。
+- **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum / struct / tuple を受理。
   - **トップレベルパターン**: `Enum::Variant(...)` / `Wildcard (_)` / `Literal(...)`（scalar scrutinee に対してのみ）
   - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
   - **variant サブパターン**: `Name(sym)` で payload を fresh scalar local に bind、`_` で discard、`Literal` で payload にリテラル等価チェック追加（`Shape::Circle(0i64) => ...` のように）
@@ -33,7 +33,8 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
   - **`print` / `println`**: enum binding（`val` / `var` 由来 または関数引数）を受け取って interpreter と同形式に出力（unit variant: `Color::Red`、tuple variant: `Shape::Circle(5)` / `Shape::Rect(3, 7)`）。runtime tag dispatch で variant ごとの分岐を brif chain で生成。enum リテラル直接（`println(Enum::Variant(args))`）は不可、`val` で受ける必要あり
   - **enum 構築を `if` / `match` 等の式位置で (Phase D)**: `val s = if cond { Pick::A(n) } elif ... { Pick::B } else { Pick::C(m) }` や `val s = match n { 0u64 => Pick::Zero, _ => Pick::Big(n) }` のように、複数分岐の各 tail で enum を構築するパターンを受理。`detect_enum_result` で全分岐が同じ enum を返すか静的に判定し、`lower_into_enum_target` 経由で各分岐が同じ tag/payload locals に書き込む（cranelift の `def_var` walk で merge 時に SSA 化）。ネストした if-chain、`match` arm の guard、blocks (`{ stmt; tail }`) も再帰で動作。tail 位置で既存の enum binding identifier を返すケースも copy 経路で動作
   - **enum 再代入 (Phase I)**: `var p = Pick::A(5u64); p = Pick::B; p = Pick::C(7u64)` のように enum binding 全体の再代入が可能（既存の tag/payload locals に書き込む、cranelift の def_var が再 binding 担当）
-  - **制約**: `f64` / 構造体 / tuple payload — 未対応
+  - **tuple payload (Phase O)**: `enum Pair { Both((i64, i64)), None }` のように tuple 値を payload に取れる。`PayloadSlot::Tuple { tuple_id, elements }` で per-element local を保持し、`emit_print_tuple` 経由で `Pair::Both((3, 4))` のように出力。`Option<(i64, i64)>` のような generic 経由も `substitute_payload_type` の Tuple アームで処理。要素は scalar (i64/u64/f64/bool) のみ
+  - **制約**: tuple 要素にネストした compound (struct / 別 tuple / enum) は不可
   - **スコープ**: 全 arm の body は同じ scalar 型を返す必要あり
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）
@@ -41,7 +42,6 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 未対応（明確なエラーで reject される）:
 
 - 任意の文字列値（リテラルのみ可）、配列、dict
-- enum payload に tuple
 - trait
 - allocator
 - (廃止) generics（→ struct / enum / 関数とも対応済）

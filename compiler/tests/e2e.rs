@@ -2889,6 +2889,86 @@ fn generic_enum_with_struct_payload() {
 }
 
 #[test]
+fn enum_with_tuple_payload() {
+    if skip_e2e() {
+        return;
+    }
+    // `Pair::Both((i64, i64))` — enum payload is a tuple. The slot
+    // allocates one local per element; construction stores from a
+    // tuple literal; match binds via deep copy and exposes a regular
+    // tuple binding (`p.0`, `p.1`).
+    let src = r#"
+        enum Pair {
+            Both((i64, i64)),
+            None,
+        }
+        fn sum(p: Pair) -> i64 {
+            match p {
+                Pair::Both(t) => t.0 + t.1,
+                Pair::None => 0i64,
+            }
+        }
+        fn main() -> u64 {
+            val t = (3i64, 4i64)
+            val p = Pair::Both(t)
+            val s: i64 = sum(p)
+            s as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_tuple_payload"), 7);
+}
+
+#[test]
+fn enum_with_tuple_payload_println() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Pair {
+            Both((i64, i64)),
+            None,
+        }
+        fn main() -> u64 {
+            val t = (3i64, 4i64)
+            val p = Pair::Both(t)
+            println(p)
+            val n = Pair::None
+            println(n)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "enum_tuple_payload_println");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Pair::Both((3, 4))\nPair::None\n",
+    );
+}
+
+#[test]
+fn generic_enum_with_tuple_payload() {
+    if skip_e2e() {
+        return;
+    }
+    // `Option<(i64, i64)>` — generic enum's T resolves to a tuple
+    // shape. substitute_payload_type lowers each element through the
+    // same substitution path and interns the resulting tuple.
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        fn main() -> u64 {
+            val t = (10i64, 20i64)
+            val o: Option<(i64, i64)> = Option::Some(t)
+            val r: i64 = match o {
+                Option::Some(p) => p.0 + p.1,
+                Option::None => 0i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_enum_tuple_payload"), 30);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

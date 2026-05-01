@@ -458,6 +458,7 @@ fn is_supported_enum_payload(t: Type) -> bool {
             | Type::Bool
             | Type::Enum(_)
             | Type::Struct(_)
+            | Type::Tuple(_)
     )
 }
 
@@ -577,6 +578,34 @@ fn substitute_payload_type(
             )
             .ok()
             .map(Type::Enum)
+        }
+        TypeDecl::Tuple(elements) => {
+            // Lower each element through the same substitution path
+            // (so `(T, i64)` resolves under a `T -> i64` binding) and
+            // intern the resulting concrete tuple shape. Element
+            // types must be scalar — Phase O accepts only scalar
+            // tuple elements as enum payloads, mirroring the
+            // function-boundary tuple restriction.
+            let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
+            for e in elements {
+                let t = substitute_payload_type(
+                    e,
+                    subst,
+                    module,
+                    enum_templates,
+                    struct_templates,
+                    interner,
+                )?;
+                if !matches!(
+                    t,
+                    Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                ) {
+                    return None;
+                }
+                lowered.push(t);
+            }
+            let id = intern_tuple(module, lowered);
+            Some(Type::Tuple(id))
         }
         _ => None,
     }
@@ -1035,6 +1064,15 @@ enum PayloadSlot {
     Struct {
         struct_id: StructId,
         fields: Vec<FieldBinding>,
+    },
+    /// Tuple-typed payload. Stores the same `TupleElementBinding`
+    /// list that `Binding::Tuple` uses, so the existing tuple helper
+    /// `emit_print_tuple` works unchanged. Phase O accepts tuple
+    /// payloads with all-scalar elements (mirroring the boundary
+    /// restriction in `lower_param_or_return_type`).
+    Tuple {
+        tuple_id: crate::ir::TupleId,
+        elements: Vec<TupleElementBinding>,
     },
 }
 
@@ -2729,6 +2767,10 @@ impl<'a> FunctionLower<'a> {
                     let fields = fields.clone();
                     self.emit_print_struct(*struct_id, &fields, false);
                 }
+                PayloadSlot::Tuple { elements, .. } => {
+                    let elements = elements.clone();
+                    self.emit_print_tuple(&elements, false);
+                }
             }
             let _ = last_idx;
         }
@@ -3045,6 +3087,26 @@ impl<'a> FunctionLower<'a> {
                 .ok()
                 .map(Type::Struct)
             }
+            TypeDecl::Tuple(elements) => {
+                // `Option<(i64, i64)>` arrives as
+                // `Enum("Option", [Tuple([I64, I64])])`. Lower each
+                // element to a scalar Type and intern the tuple
+                // shape so type-arg substitution can refer back to
+                // the same `Type::Tuple(id)`.
+                let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let t = self.lower_type_arg(e)?;
+                    if !matches!(
+                        t,
+                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                    ) {
+                        return None;
+                    }
+                    lowered.push(t);
+                }
+                let id = intern_tuple(self.module, lowered);
+                Some(Type::Tuple(id))
+            }
             _ => None,
         }
     }
@@ -3085,6 +3147,24 @@ impl<'a> FunctionLower<'a> {
             Type::Struct(struct_id) => {
                 let fields = self.allocate_struct_fields(struct_id);
                 PayloadSlot::Struct { struct_id, fields }
+            }
+            Type::Tuple(tuple_id) => {
+                let element_types = self
+                    .module
+                    .tuple_defs
+                    .get(tuple_id.0 as usize)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut elements: Vec<TupleElementBinding> =
+                    Vec::with_capacity(element_types.len());
+                for (i, et) in element_types.into_iter().enumerate() {
+                    let local = self
+                        .module
+                        .function_mut(self.func_id)
+                        .add_local(et);
+                    elements.push(TupleElementBinding { index: i, local, ty: et });
+                }
+                PayloadSlot::Tuple { tuple_id, elements }
             }
             _ => {
                 let local = self.module.function_mut(self.func_id).add_local(ty);
@@ -3156,6 +3236,12 @@ impl<'a> FunctionLower<'a> {
                 } => {
                     self.lower_into_struct_slot(arg_ref, slot_struct_id, &slot_fields)?;
                 }
+                PayloadSlot::Tuple {
+                    tuple_id: slot_tuple_id,
+                    elements: slot_elements,
+                } => {
+                    self.lower_into_tuple_slot(arg_ref, slot_tuple_id, &slot_elements)?;
+                }
             }
         }
         Ok(())
@@ -3198,6 +3284,14 @@ impl<'a> FunctionLower<'a> {
                             out.push(v);
                         }
                     }
+                    PayloadSlot::Tuple { elements, .. } => {
+                        for el in elements {
+                            let v = self
+                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .expect("LoadLocal returns a value");
+                            out.push(v);
+                        }
+                    }
                 }
             }
         }
@@ -3222,6 +3316,11 @@ impl<'a> FunctionLower<'a> {
                     PayloadSlot::Struct { fields, .. } => {
                         for (local, _) in Self::flatten_struct_locals(fields) {
                             out.push(local);
+                        }
+                    }
+                    PayloadSlot::Tuple { elements, .. } => {
+                        for el in elements {
+                            out.push(el.local);
                         }
                     }
                 }
@@ -3500,6 +3599,14 @@ impl<'a> FunctionLower<'a> {
                         let df = df.clone();
                         self.copy_struct_fields(&sf, &df);
                     }
+                    (
+                        PayloadSlot::Tuple { elements: se, .. },
+                        PayloadSlot::Tuple { elements: de, .. },
+                    ) => {
+                        let se = se.clone();
+                        let de = de.clone();
+                        self.copy_tuple_elements(&se, &de);
+                    }
                     _ => unreachable!("payload slot shape mismatch"),
                 }
             }
@@ -3587,6 +3694,99 @@ impl<'a> FunctionLower<'a> {
             }
             other => Err(format!(
                 "compiler MVP cannot lower `{:?}` as a struct-typed enum payload",
+                other
+            )),
+        }
+    }
+
+    /// Element-wise copy between two tuple slot bindings. The shape
+    /// match is checked by the caller (we always pair slots from the
+    /// same enum-storage tree, so element types and counts agree).
+    fn copy_tuple_elements(
+        &mut self,
+        src: &[TupleElementBinding],
+        dst: &[TupleElementBinding],
+    ) {
+        for (s, d) in src.iter().zip(dst.iter()) {
+            let v = self
+                .emit(InstKind::LoadLocal(s.local), Some(s.ty))
+                .expect("LoadLocal returns a value");
+            self.emit(InstKind::StoreLocal { dst: d.local, src: v }, None);
+        }
+    }
+
+    /// Lower an expression whose result is a tuple value into the
+    /// supplied target element bindings (the slot of an enum payload).
+    /// Accepts a tuple literal of the matching shape, or a bare
+    /// identifier referring to an existing tuple binding (deep-copied
+    /// via `copy_tuple_elements`).
+    fn lower_into_tuple_slot(
+        &mut self,
+        expr_ref: &ExprRef,
+        target_tuple_id: crate::ir::TupleId,
+        target_elements: &[TupleElementBinding],
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "tuple-target expression missing".to_string())?;
+        match expr {
+            Expr::TupleLiteral(elems) => {
+                if elems.len() != target_elements.len() {
+                    return Err(format!(
+                        "tuple payload expects {} elements, got {}",
+                        target_elements.len(),
+                        elems.len()
+                    ));
+                }
+                for (i, e) in elems.iter().enumerate() {
+                    let v = self
+                        .lower_expr(e)?
+                        .ok_or_else(|| {
+                            format!("tuple element #{i} produced no value")
+                        })?;
+                    self.emit(
+                        InstKind::StoreLocal {
+                            dst: target_elements[i].local,
+                            src: v,
+                        },
+                        None,
+                    );
+                }
+                let _ = target_tuple_id;
+                Ok(())
+            }
+            Expr::Identifier(sym) => {
+                let src_elements = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Tuple { elements }) => elements,
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not a tuple binding of the expected payload type",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                if src_elements.len() != target_elements.len() {
+                    return Err(format!(
+                        "tuple payload shape mismatch: expected {} elements, got {}",
+                        target_elements.len(),
+                        src_elements.len()
+                    ));
+                }
+                for (s, d) in src_elements.iter().zip(target_elements.iter()) {
+                    if s.ty != d.ty {
+                        return Err(format!(
+                            "tuple payload element type mismatch: expected {:?}, got {:?}",
+                            d.ty, s.ty
+                        ));
+                    }
+                }
+                self.copy_tuple_elements(&src_elements, target_elements);
+                Ok(())
+            }
+            other => Err(format!(
+                "compiler MVP cannot lower `{:?}` as a tuple-typed enum payload",
                 other
             )),
         }
@@ -4820,7 +5020,9 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         self.emit_literal_eq_branch(lit_ref, pv, ty, next_blk)?;
                     }
-                    PayloadSlot::Enum(_) | PayloadSlot::Struct { .. } => {
+                    PayloadSlot::Enum(_)
+                    | PayloadSlot::Struct { .. }
+                    | PayloadSlot::Tuple { .. } => {
                         return Err(
                             "literal sub-pattern is only valid against a scalar payload"
                                 .to_string(),
@@ -4837,7 +5039,9 @@ impl<'a> FunctionLower<'a> {
                             next_blk,
                         )?;
                     }
-                    PayloadSlot::Scalar { .. } | PayloadSlot::Struct { .. } => {
+                    PayloadSlot::Scalar { .. }
+                    | PayloadSlot::Struct { .. }
+                    | PayloadSlot::Tuple { .. } => {
                         return Err(
                             "nested enum-variant sub-pattern requires an enum-typed payload"
                                 .to_string(),
@@ -4887,6 +5091,34 @@ impl<'a> FunctionLower<'a> {
                                 struct_id,
                                 fields: dst_fields,
                             },
+                        );
+                    }
+                    PayloadSlot::Tuple {
+                        elements: src_elements,
+                        ..
+                    } => {
+                        // Same shape for tuple payloads: fresh per-
+                        // element locals + element-wise copy. The new
+                        // binding is reachable as a regular tuple
+                        // binding, supporting `t.0` access in arm
+                        // bodies.
+                        let mut dst_elements: Vec<TupleElementBinding> =
+                            Vec::with_capacity(src_elements.len());
+                        for el in &src_elements {
+                            let local = self
+                                .module
+                                .function_mut(self.func_id)
+                                .add_local(el.ty);
+                            dst_elements.push(TupleElementBinding {
+                                index: el.index,
+                                local,
+                                ty: el.ty,
+                            });
+                        }
+                        self.copy_tuple_elements(&src_elements, &dst_elements);
+                        self.bindings.insert(
+                            *sym,
+                            Binding::Tuple { elements: dst_elements },
                         );
                     }
                 },

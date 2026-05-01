@@ -336,6 +336,13 @@ fn instantiate_enum(
     if let Some(id) = module.enum_index.get(&(base_name, type_args.clone())).copied() {
         return Ok(id);
     }
+    // Reserve an EnumId before recursing so a payload that refers
+    // back to the same enum (forbidden today, but defensive) doesn't
+    // loop forever. We can't intern with empty variants directly
+    // because intern_enum takes the full shape — instead we hold
+    // off interning until the variant build is complete and rely
+    // on the simple "no self-recursion in templates" invariant.
+    let template = template.clone();
     // Build a substitution map and produce the concrete variant list.
     let subst: HashMap<DefaultSymbol, Type> = template
         .generic_params
@@ -347,20 +354,23 @@ fn instantiate_enum(
     for v in &template.variants {
         let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
         for pt in &v.payload_types {
-            let lowered = substitute_payload_type(pt, &subst).ok_or_else(|| {
-                format!(
-                    "enum `{}::{}` has unsupported payload type `{:?}` \
-                     (compiler MVP only accepts i64 / u64 / bool, or a generic \
-                     parameter substituted with one of those)",
-                    interner.resolve(base_name).unwrap_or("?"),
-                    interner.resolve(v.name).unwrap_or("?"),
-                    pt,
-                )
-            })?;
-            if !matches!(lowered, Type::I64 | Type::U64 | Type::Bool) {
+            let lowered =
+                substitute_payload_type(pt, &subst, module, templates, interner).ok_or_else(
+                    || {
+                        format!(
+                            "enum `{}::{}` has unsupported payload type `{:?}` \
+                             (compiler MVP accepts i64 / u64 / bool, or another \
+                             enum substituted from a generic parameter)",
+                            interner.resolve(base_name).unwrap_or("?"),
+                            interner.resolve(v.name).unwrap_or("?"),
+                            pt,
+                        )
+                    },
+                )?;
+            if !is_supported_enum_payload(lowered) {
                 return Err(format!(
                     "enum `{}::{}` has unsupported payload type `{lowered}` \
-                     (compiler MVP only accepts i64 / u64 / bool)",
+                     (compiler MVP only accepts i64 / u64 / bool / nested enum)",
                     interner.resolve(base_name).unwrap_or("?"),
                     interner.resolve(v.name).unwrap_or("?"),
                 ));
@@ -375,20 +385,63 @@ fn instantiate_enum(
     Ok(module.intern_enum(base_name, type_args, ir_variants))
 }
 
+fn is_supported_enum_payload(t: Type) -> bool {
+    matches!(t, Type::I64 | Type::U64 | Type::Bool | Type::Enum(_))
+}
+
 /// Lower an enum payload `TypeDecl`, applying any active generic
-/// substitution. Returns `None` for shapes the compiler doesn't yet
-/// accept inside an enum payload (compound types, free generics with
-/// no binding in `subst`, etc.).
+/// substitution. Recursively instantiates nested generic enums so
+/// `Option<Option<i64>>` resolves all the way down. Returns `None`
+/// for shapes the compiler doesn't yet accept (struct / tuple /
+/// f64 / free generics with no binding in `subst`).
 fn substitute_payload_type(
     pt: &TypeDecl,
     subst: &HashMap<DefaultSymbol, Type>,
+    module: &mut Module,
+    templates: &EnumDefs,
+    interner: &DefaultStringInterner,
 ) -> Option<Type> {
     if let Some(t) = lower_scalar(pt) {
         return Some(t);
     }
     match pt {
         TypeDecl::Generic(name) => subst.get(name).copied(),
-        TypeDecl::Identifier(name) => subst.get(name).copied(),
+        TypeDecl::Identifier(name) => {
+            if let Some(t) = subst.get(name).copied() {
+                return Some(t);
+            }
+            // A bare `Identifier(name)` may also reference another
+            // non-generic enum directly — instantiate with no args.
+            if templates.contains_key(name) {
+                instantiate_enum(module, templates, *name, Vec::new(), interner)
+                    .ok()
+                    .map(Type::Enum)
+            } else {
+                None
+            }
+        }
+        TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
+            if !args.is_empty() && templates.contains_key(name) =>
+        {
+            // Substitute each type arg through the active map first
+            // (so `Option<T>` inside `Box<T>`'s payload resolves T)
+            // then instantiate the inner enum.
+            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                let t = substitute_payload_type(a, subst, module, templates, interner)?;
+                concrete.push(t);
+            }
+            instantiate_enum(module, templates, *name, concrete, interner)
+                .ok()
+                .map(Type::Enum)
+        }
+        TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
+            if args.is_empty() && templates.contains_key(name) =>
+        {
+            instantiate_enum(module, templates, *name, Vec::new(), interner)
+                .ok()
+                .map(Type::Enum)
+        }
         _ => None,
     }
 }
@@ -646,7 +699,7 @@ struct FunctionLower<'a> {
     /// `tag_local` plus per-variant payload local table that
     /// `emit_implicit_return` will read out into the multi-value
     /// `Return`.
-    pending_enum_value: Option<(LocalId, Vec<Vec<(LocalId, Type)>>)>,
+    pending_enum_value: Option<EnumStorage>,
 }
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
@@ -670,18 +723,31 @@ enum Binding {
     /// (params / returns) are deferred so the IR stays scalar at
     /// boundaries.
     Tuple { elements: Vec<TupleElementBinding> },
-    /// Enum bindings expand into a tag local plus per-variant payload
-    /// locals. `tag_local` carries the variant index (0-based); for
-    /// each variant `payload_locals[variant_idx]` holds one local per
-    /// payload element in declaration order. Bindings for unit
-    /// variants have an empty per-variant slice. The `EnumId`
-    /// identifies which monomorphised instance this binding belongs
-    /// to — a generic `Option<T>` has one `EnumId` per concrete `T`.
-    Enum {
-        enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: Vec<Vec<(LocalId, Type)>>,
-    },
+    /// Enum bindings carry an `EnumStorage` tree: a tag local plus
+    /// per-variant payload slots. Each slot can itself be a nested
+    /// `EnumStorage` (for enum-typed payloads like `Option<Option<T>>`),
+    /// which is what makes nested enum sub-patterns lower correctly.
+    Enum(EnumStorage),
+}
+
+/// Storage tree for one enum value in IR. `tag_local` holds the
+/// 0-based variant index; `payloads[variant_idx]` is one slot per
+/// declared payload of that variant. Slots are recursive — a
+/// scalar payload uses a single `LocalId`, an enum payload nests
+/// another `EnumStorage`. The same shape drives function-boundary
+/// flattening (codegen recurses through `Type::Enum` in
+/// `flatten_struct_to_cranelift_tys`), so the order is canonical.
+#[derive(Debug, Clone)]
+struct EnumStorage {
+    enum_id: EnumId,
+    tag_local: LocalId,
+    payloads: Vec<Vec<PayloadSlot>>,
+}
+
+#[derive(Debug, Clone)]
+enum PayloadSlot {
+    Scalar { local: LocalId, ty: Type },
+    Enum(Box<EnumStorage>),
 }
 
 /// One element of a `Binding::Tuple`. `index` is the element's
@@ -709,11 +775,7 @@ enum FieldChainResult {
 /// scrutinee expression once and pin the result for arm comparisons.
 #[derive(Debug, Clone)]
 enum MatchScrutinee {
-    Enum {
-        enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: Vec<Vec<(LocalId, Type)>>,
-    },
+    Enum(EnumStorage),
     Scalar { value: ValueId, ty: Type },
 }
 
@@ -801,16 +863,9 @@ impl<'a> FunctionLower<'a> {
                     );
                 }
                 Type::Enum(enum_id) => {
-                    let (tag_local, payload_locals) =
-                        self.allocate_enum_storage(enum_id);
-                    self.bindings.insert(
-                        *name,
-                        Binding::Enum {
-                            enum_id,
-                            tag_local,
-                            payload_locals,
-                        },
-                    );
+                    let storage = self.allocate_enum_storage(enum_id);
+                    self.bindings
+                        .insert(*name, Binding::Enum(storage));
                 }
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
@@ -866,9 +921,9 @@ impl<'a> FunctionLower<'a> {
         // { ... }`). The implicit-return path then reads from the
         // pending channel.
         let body_value = if let Type::Enum(enum_id) = ret_ty {
-            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
-            self.pending_enum_value = Some((tag_local, payload_locals.clone()));
-            self.lower_into_enum_target(&body_expr, enum_id, tag_local, &payload_locals)?;
+            let storage = self.allocate_enum_storage(enum_id);
+            self.pending_enum_value = Some(storage.clone());
+            self.lower_into_enum_storage(&body_expr, &storage)?;
             None
         } else {
             self.lower_expr(&body_expr)?
@@ -952,14 +1007,13 @@ impl<'a> FunctionLower<'a> {
             }
             (Type::Enum(_), _) => {
                 let _ = body_value;
-                let (tag_local, payload_locals) =
-                    self.pending_enum_value.take().ok_or_else(|| {
-                        format!(
-                            "function `{}` returns an enum but the body's tail did not produce one",
-                            self.interner.resolve(*fn_name).unwrap_or("?")
-                        )
-                    })?;
-                let values = self.load_enum_locals(tag_local, &payload_locals);
+                let storage = self.pending_enum_value.take().ok_or_else(|| {
+                    format!(
+                        "function `{}` returns an enum but the body's tail did not produce one",
+                        self.interner.resolve(*fn_name).unwrap_or("?")
+                    )
+                })?;
+                let values = self.load_enum_locals(&storage);
                 // Like struct returns, bind `result` to the first
                 // value (the tag) for ensures evaluation. ensures
                 // can't dispatch on variants in this MVP anyway, so
@@ -1292,21 +1346,16 @@ impl<'a> FunctionLower<'a> {
                         .get(er)
                         .ok_or_else(|| "return rhs missing".to_string())?;
                     if let Expr::Identifier(sym) = rhs_expr {
-                        let (tag_local, payload_locals) =
-                            match self.bindings.get(&sym).cloned() {
-                                Some(Binding::Enum {
-                                    enum_id: bn,
-                                    tag_local,
-                                    payload_locals,
-                                }) if bn == ret_enum_id => (tag_local, payload_locals),
-                                _ => {
-                                    return Err(format!(
-                                        "`{}` is not an enum binding of the expected return type",
-                                        self.interner.resolve(sym).unwrap_or("?")
-                                    ));
-                                }
-                            };
-                        let values = self.load_enum_locals(tag_local, &payload_locals);
+                        let storage = match self.bindings.get(&sym).cloned() {
+                            Some(Binding::Enum(s)) if s.enum_id == ret_enum_id => s,
+                            _ => {
+                                return Err(format!(
+                                    "`{}` is not an enum binding of the expected return type",
+                                    self.interner.resolve(sym).unwrap_or("?")
+                                ));
+                            }
+                        };
+                        let values = self.load_enum_locals(&storage);
                         self.emit_ensures_checks(&values)?;
                         self.terminate(Terminator::Return(values));
                         return Ok(None);
@@ -1540,16 +1589,10 @@ impl<'a> FunctionLower<'a> {
         // writes into proper SSA at the merge.
         if let Some(base_name) = self.detect_enum_result(rhs_ref) {
             let enum_id = self.resolve_enum_instance(base_name, annotation)?;
-            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
-            self.bindings.insert(
-                name,
-                Binding::Enum {
-                    enum_id,
-                    tag_local,
-                    payload_locals: payload_locals.clone(),
-                },
-            );
-            self.lower_into_enum_target(rhs_ref, enum_id, tag_local, &payload_locals)?;
+            let storage = self.allocate_enum_storage(enum_id);
+            self.bindings
+                .insert(name, Binding::Enum(storage.clone()));
+            self.lower_into_enum_storage(rhs_ref, &storage)?;
             return Ok(None);
         }
         // Struct-literal RHS: allocate one local per field (recursing
@@ -1602,22 +1645,15 @@ impl<'a> FunctionLower<'a> {
                 }
                 if let Type::Enum(enum_id) = target_ret {
                     // Enum-returning call: pre-allocate the binding's
-                    // tag + per-variant payload locals; flatten them
-                    // into the CallEnum dest list (tag first, then
-                    // each variant's payloads in declaration order)
-                    // so codegen can route the multi-return slots
-                    // straight into our locals.
-                    let (tag_local, payload_locals) =
-                        self.allocate_enum_storage(enum_id);
-                    let dests = Self::flatten_enum_dests(tag_local, &payload_locals);
-                    self.bindings.insert(
-                        name,
-                        Binding::Enum {
-                            enum_id,
-                            tag_local,
-                            payload_locals,
-                        },
-                    );
+                    // storage tree, flatten it into the CallEnum dest
+                    // list (tag first, then each variant's payloads
+                    // in declaration order, recursing through nested
+                    // enum slots). Codegen then routes the multi-
+                    // return slots straight into our locals.
+                    let storage = self.allocate_enum_storage(enum_id);
+                    let dests = Self::flatten_enum_dests(&storage);
+                    self.bindings
+                        .insert(name, Binding::Enum(storage));
                     let arg_values = self.lower_call_args(&args_ref)?;
                     self.emit(
                         InstKind::CallEnum {
@@ -1738,17 +1774,12 @@ impl<'a> FunctionLower<'a> {
                     }
                     continue;
                 }
-                if let Some(Binding::Enum {
-                    tag_local,
-                    payload_locals,
-                    ..
-                }) = self.bindings.get(&sym).cloned()
-                {
+                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
                     // Enum-typed identifier argument: same shape as
                     // the function-boundary flattening — tag first,
-                    // then variant 0's payload locals, then variant
-                    // 1's, etc., all in declaration order.
-                    let vs = self.load_enum_locals(tag_local, &payload_locals);
+                    // then each variant's payloads in declaration
+                    // order, recursing through nested enum slots.
+                    let vs = self.load_enum_locals(&storage);
                     values.extend(vs);
                     continue;
                 }
@@ -1903,21 +1934,16 @@ impl<'a> FunctionLower<'a> {
                         self.pending_tuple_value = Some(elements);
                         Ok(None)
                     }
-                    Some(Binding::Enum {
-                        tag_local,
-                        payload_locals,
-                        ..
-                    }) => {
-                        // Tail-position use: stash the enum's
-                        // (tag_local, payload_locals) so
-                        // `emit_implicit_return` can flatten them into
-                        // a multi-value Return for an enum-returning
-                        // function. Other uses (passing to a function,
-                        // explicit Return) handle the binding via a
-                        // direct lookup of `bindings`, so the channel
-                        // is purely for the tail-implicit-return path.
-                        self.pending_enum_value =
-                            Some((tag_local, payload_locals));
+                    Some(Binding::Enum(storage)) => {
+                        // Tail-position use: stash the enum storage
+                        // so `emit_implicit_return` can flatten it
+                        // into a multi-value Return for an enum-
+                        // returning function. Other uses (passing to
+                        // a function, explicit Return) handle the
+                        // binding via a direct lookup, so the
+                        // channel is purely for the tail-implicit-
+                        // return path.
+                        self.pending_enum_value = Some(storage);
                         Ok(None)
                     }
                     None => {
@@ -2075,17 +2101,8 @@ impl<'a> FunctionLower<'a> {
                         return Ok(None);
                     }
                     Binding::Scalar { .. } => {}
-                    Binding::Enum {
-                        enum_id,
-                        tag_local,
-                        payload_locals,
-                    } => {
-                        self.emit_print_enum(
-                            enum_id,
-                            tag_local,
-                            &payload_locals,
-                            newline,
-                        )?;
+                    Binding::Enum(storage) => {
+                        self.emit_print_enum(&storage, newline)?;
                         return Ok(None);
                     }
                 }
@@ -2209,12 +2226,10 @@ impl<'a> FunctionLower<'a> {
     /// the print sequence ends.
     fn emit_print_enum(
         &mut self,
-        enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
+        storage: &EnumStorage,
         newline: bool,
     ) -> Result<(), String> {
-        let enum_def = self.module.enum_def(enum_id).clone();
+        let enum_def = self.module.enum_def(storage.enum_id).clone();
         let enum_str = self
             .interner
             .resolve(enum_def.base_name)
@@ -2229,7 +2244,7 @@ impl<'a> FunctionLower<'a> {
         }
         let merge = self.fresh_block();
         let tag_v = self
-            .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
+            .emit(InstKind::LoadLocal(storage.tag_local), Some(Type::U64))
             .expect("LoadLocal returns a value");
         for (idx, variant) in enum_def.variants.iter().enumerate() {
             let variant_str = self
@@ -2237,8 +2252,8 @@ impl<'a> FunctionLower<'a> {
                 .resolve(variant.name)
                 .unwrap_or("?")
                 .to_string();
-            let payload_types = variant.payload_types.clone();
             let body_blk = self.fresh_block();
+            let slots = storage.payloads[idx].clone();
             if idx + 1 < n_variants {
                 let next = self.fresh_block();
                 let want = self
@@ -2266,10 +2281,9 @@ impl<'a> FunctionLower<'a> {
                 self.emit_print_enum_variant_body(
                     &enum_str,
                     &variant_str,
-                    &payload_types,
-                    &payload_locals[idx],
+                    &slots,
                     newline,
-                );
+                )?;
                 self.terminate(Terminator::Jump(merge));
                 self.switch_to(next);
             } else {
@@ -2282,10 +2296,9 @@ impl<'a> FunctionLower<'a> {
                 self.emit_print_enum_variant_body(
                     &enum_str,
                     &variant_str,
-                    &payload_types,
-                    &payload_locals[idx],
+                    &slots,
                     newline,
-                );
+                )?;
                 self.terminate(Terminator::Jump(merge));
             }
         }
@@ -2298,16 +2311,17 @@ impl<'a> FunctionLower<'a> {
     /// comma-separated list of payload values. The `newline` flag rides
     /// the *last* fragment so `print` and `println` differ only in one
     /// helper choice (matches the struct / tuple print pattern).
+    /// Recurses into nested enum payloads so `Some(Some(5))` prints
+    /// the inner value through the same dispatch.
     fn emit_print_enum_variant_body(
         &mut self,
         enum_str: &str,
         variant_str: &str,
-        payload_types: &[Type],
-        payload_slots: &[(LocalId, Type)],
+        payload_slots: &[PayloadSlot],
         newline: bool,
-    ) {
+    ) -> Result<(), String> {
         let header = format!("{enum_str}::{variant_str}");
-        let unit = payload_types.is_empty();
+        let unit = payload_slots.is_empty();
         // For unit variants, the variant header is the only thing we
         // emit — apply the trailing newline directly to it.
         self.emit(
@@ -2318,7 +2332,7 @@ impl<'a> FunctionLower<'a> {
             None,
         );
         if unit {
-            return;
+            return Ok(());
         }
         self.emit(
             InstKind::PrintRaw {
@@ -2327,7 +2341,8 @@ impl<'a> FunctionLower<'a> {
             },
             None,
         );
-        for (i, (local, ty)) in payload_slots.iter().enumerate() {
+        let last_idx = payload_slots.len() - 1;
+        for (i, slot) in payload_slots.iter().enumerate() {
             if i > 0 {
                 self.emit(
                     InstKind::PrintRaw {
@@ -2337,17 +2352,26 @@ impl<'a> FunctionLower<'a> {
                     None,
                 );
             }
-            let v = self
-                .emit(InstKind::LoadLocal(*local), Some(*ty))
-                .expect("LoadLocal returns a value");
-            self.emit(
-                InstKind::Print {
-                    value: v,
-                    value_ty: *ty,
-                    newline: false,
-                },
-                None,
-            );
+            match slot {
+                PayloadSlot::Scalar { local, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(
+                        InstKind::Print {
+                            value: v,
+                            value_ty: *ty,
+                            newline: false,
+                        },
+                        None,
+                    );
+                }
+                PayloadSlot::Enum(inner) => {
+                    let inner = (**inner).clone();
+                    self.emit_print_enum(&inner, false)?;
+                }
+            }
+            let _ = last_idx;
         }
         self.emit(
             InstKind::PrintRaw {
@@ -2356,6 +2380,7 @@ impl<'a> FunctionLower<'a> {
             },
             None,
         );
+        Ok(())
     }
 
     /// Allocate the locals that back an enum value: one `tag_local`
@@ -2508,44 +2533,99 @@ impl<'a> FunctionLower<'a> {
     /// struct pre-typecheck). Returns `None` if the annotation
     /// doesn't name `base_name` or carries no usable args.
     fn extract_enum_type_args(
-        &self,
+        &mut self,
         base_name: DefaultSymbol,
         annotation: Option<&TypeDecl>,
     ) -> Option<Vec<Type>> {
         let anno = annotation?;
         let args = match anno {
-            TypeDecl::Enum(name, args) if *name == base_name => args,
-            TypeDecl::Struct(name, args) if *name == base_name => args,
+            TypeDecl::Enum(name, args) if *name == base_name => args.clone(),
+            TypeDecl::Struct(name, args) if *name == base_name => args.clone(),
             _ => return None,
         };
         let mut out: Vec<Type> = Vec::with_capacity(args.len());
-        for a in args {
-            out.push(lower_scalar(a)?);
+        for a in &args {
+            out.push(self.lower_type_arg(a)?);
         }
         Some(out)
     }
 
-    fn allocate_enum_storage(
-        &mut self,
-        enum_id: EnumId,
-    ) -> (LocalId, Vec<Vec<(LocalId, Type)>>) {
+    /// Lower one type-argument-position TypeDecl to an IR Type.
+    /// Accepts scalars and (recursively) other enum instantiations
+    /// — that's what allows nested annotations like
+    /// `Option<Option<i64>>` to thread through the whole tree.
+    fn lower_type_arg(&mut self, t: &TypeDecl) -> Option<Type> {
+        if let Some(s) = lower_scalar(t) {
+            return Some(s);
+        }
+        match t {
+            TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
+                if self.enum_defs.contains_key(name) =>
+            {
+                let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+                for a in args {
+                    concrete.push(self.lower_type_arg(a)?);
+                }
+                instantiate_enum(
+                    self.module,
+                    self.enum_defs,
+                    *name,
+                    concrete,
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Enum)
+            }
+            TypeDecl::Identifier(name) if self.enum_defs.contains_key(name) => {
+                instantiate_enum(
+                    self.module,
+                    self.enum_defs,
+                    *name,
+                    Vec::new(),
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Enum)
+            }
+            _ => None,
+        }
+    }
+
+    fn allocate_enum_storage(&mut self, enum_id: EnumId) -> EnumStorage {
         let enum_def = self.module.enum_def(enum_id).clone();
         let tag_local = self
             .module
             .function_mut(self.func_id)
             .add_local(Type::U64);
-        let mut payload_locals: Vec<Vec<(LocalId, Type)>> =
+        let mut payloads: Vec<Vec<PayloadSlot>> =
             Vec::with_capacity(enum_def.variants.len());
         for variant in &enum_def.variants {
-            let mut per_variant: Vec<(LocalId, Type)> =
+            let mut per_variant: Vec<PayloadSlot> =
                 Vec::with_capacity(variant.payload_types.len());
             for ty in &variant.payload_types {
-                let local = self.module.function_mut(self.func_id).add_local(*ty);
-                per_variant.push((local, *ty));
+                per_variant.push(self.allocate_payload_slot(*ty));
             }
-            payload_locals.push(per_variant);
+            payloads.push(per_variant);
         }
-        (tag_local, payload_locals)
+        EnumStorage {
+            enum_id,
+            tag_local,
+            payloads,
+        }
+    }
+
+    /// Allocate one payload slot of the given type. Scalar types
+    /// occupy a single local; enum types recursively allocate a full
+    /// nested `EnumStorage`. The function-boundary flattening in
+    /// codegen mirrors the same recursion via
+    /// `flatten_struct_to_cranelift_tys`.
+    fn allocate_payload_slot(&mut self, ty: Type) -> PayloadSlot {
+        if let Type::Enum(inner_id) = ty {
+            PayloadSlot::Enum(Box::new(self.allocate_enum_storage(inner_id)))
+        } else {
+            let local = self.module.function_mut(self.func_id).add_local(ty);
+            PayloadSlot::Scalar { local, ty }
+        }
     }
 
     /// Allocate the storage for an enum binding (one tag local + one
@@ -2561,21 +2641,25 @@ impl<'a> FunctionLower<'a> {
         variant_idx: usize,
         args: &[ExprRef],
     ) -> Result<(), String> {
-        let payload_locals_for_variant = {
-            let def = self.module.enum_def(enum_id);
-            def.variants[variant_idx].payload_types.len()
-        };
-        let _ = payload_locals_for_variant;
-        let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
-        self.bindings.insert(
-            binding_name,
-            Binding::Enum {
-                enum_id,
-                tag_local,
-                payload_locals: payload_locals.clone(),
-            },
-        );
-        // Store the tag.
+        let storage = self.allocate_enum_storage(enum_id);
+        self.bindings
+            .insert(binding_name, Binding::Enum(storage.clone()));
+        self.write_variant_into_storage(&storage, variant_idx, args)?;
+        Ok(())
+    }
+
+    /// Store `variant_idx` into the storage's tag local, then
+    /// evaluate each payload arg and store it into the matching
+    /// slot. For enum-typed payloads, the arg is also expected to
+    /// be an enum producer (literal, identifier, or composite); we
+    /// recurse into `lower_into_enum_target` to write the nested
+    /// EnumStorage. Other variants' slots stay uninit.
+    fn write_variant_into_storage(
+        &mut self,
+        storage: &EnumStorage,
+        variant_idx: usize,
+        args: &[ExprRef],
+    ) -> Result<(), String> {
         let tag_v = self
             .emit(
                 InstKind::Const(Const::U64(variant_idx as u64)),
@@ -2584,68 +2668,80 @@ impl<'a> FunctionLower<'a> {
             .expect("Const returns a value");
         self.emit(
             InstKind::StoreLocal {
-                dst: tag_local,
+                dst: storage.tag_local,
                 src: tag_v,
             },
             None,
         );
-        // Evaluate and store each payload arg into the chosen
-        // variant's slots. Type-checker has already verified arg
-        // types match the variant's declaration, so we trust them.
         for (i, arg_ref) in args.iter().enumerate() {
-            let v = self
-                .lower_expr(arg_ref)?
-                .ok_or_else(|| format!("enum payload arg #{i} produced no value"))?;
-            let (dst, _) = payload_locals[variant_idx][i];
-            self.emit(InstKind::StoreLocal { dst, src: v }, None);
+            let slot = storage.payloads[variant_idx][i].clone();
+            match slot {
+                PayloadSlot::Scalar { local, .. } => {
+                    let v = self.lower_expr(arg_ref)?.ok_or_else(|| {
+                        format!("enum payload arg #{i} produced no value")
+                    })?;
+                    self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                }
+                PayloadSlot::Enum(inner_storage) => {
+                    self.lower_into_enum_storage(arg_ref, &inner_storage)?;
+                }
+            }
         }
         Ok(())
     }
 
     /// Read every local that backs an enum binding into a flat
     /// vector of values, suitable as the operand list for a
-    /// multi-value `Return`, a `CallEnum` argument expansion, etc.
-    /// Order matches `allocate_enum_storage` and
-    /// `flatten_struct_to_cranelift_tys` so the boundary stays
-    /// consistent. Caller still has the binding's per-variant local
-    /// table, so we take it as a parameter rather than re-deriving.
-    fn load_enum_locals(
-        &mut self,
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
-    ) -> Vec<ValueId> {
+    /// multi-value `Return` or a `CallEnum` argument expansion.
+    /// Recurses through nested `Enum` payload slots so the order
+    /// matches `flatten_struct_to_cranelift_tys` exactly.
+    fn load_enum_locals(&mut self, storage: &EnumStorage) -> Vec<ValueId> {
         let mut out = Vec::new();
-        let v = self
-            .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
-            .expect("LoadLocal returns a value");
-        out.push(v);
-        for variant in payload_locals {
-            for (local, ty) in variant {
-                let v = self
-                    .emit(InstKind::LoadLocal(*local), Some(*ty))
-                    .expect("LoadLocal returns a value");
-                out.push(v);
-            }
-        }
+        self.load_enum_locals_into(storage, &mut out);
         out
     }
 
-    /// Flatten the per-variant payload local table back into a
-    /// single dest list for `CallEnum` (tag first, then variant 0's
-    /// payload locals, then variant 1's, ...). Same canonical order
-    /// as `load_enum_locals`.
-    fn flatten_enum_dests(
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
-    ) -> Vec<LocalId> {
-        let mut out = Vec::new();
-        out.push(tag_local);
-        for variant in payload_locals {
-            for (local, _ty) in variant {
-                out.push(*local);
+    fn load_enum_locals_into(&mut self, storage: &EnumStorage, out: &mut Vec<ValueId>) {
+        let tag_v = self
+            .emit(InstKind::LoadLocal(storage.tag_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        out.push(tag_v);
+        for variant in &storage.payloads {
+            for slot in variant {
+                match slot {
+                    PayloadSlot::Scalar { local, ty } => {
+                        let v = self
+                            .emit(InstKind::LoadLocal(*local), Some(*ty))
+                            .expect("LoadLocal returns a value");
+                        out.push(v);
+                    }
+                    PayloadSlot::Enum(inner) => {
+                        self.load_enum_locals_into(inner, out);
+                    }
+                }
             }
         }
+    }
+
+    /// Flatten an EnumStorage into the dest list for `CallEnum`
+    /// (tag first, then each variant's payloads in declaration
+    /// order, recursing through nested enums).
+    fn flatten_enum_dests(storage: &EnumStorage) -> Vec<LocalId> {
+        let mut out = Vec::new();
+        Self::flatten_enum_dests_into(storage, &mut out);
         out
+    }
+
+    fn flatten_enum_dests_into(storage: &EnumStorage, out: &mut Vec<LocalId>) {
+        out.push(storage.tag_local);
+        for variant in &storage.payloads {
+            for slot in variant {
+                match slot {
+                    PayloadSlot::Scalar { local, .. } => out.push(*local),
+                    PayloadSlot::Enum(inner) => Self::flatten_enum_dests_into(inner, out),
+                }
+            }
+        }
     }
 
     /// Detect whether an expression evaluates to a value of some
@@ -2668,8 +2764,8 @@ impl<'a> FunctionLower<'a> {
                 Some(en)
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
-                Some(Binding::Enum { enum_id, .. }) => {
-                    Some(self.module.enum_def(*enum_id).base_name)
+                Some(Binding::Enum(storage)) => {
+                    Some(self.module.enum_def(storage.enum_id).base_name)
                 }
                 _ => None,
             },
@@ -2715,13 +2811,12 @@ impl<'a> FunctionLower<'a> {
     /// (if-chains, match, blocks), each branch's tail recurses into
     /// the same target so all paths converge on the same locals —
     /// cranelift's SSA construction takes care of the merge.
-    fn lower_into_enum_target(
+    fn lower_into_enum_storage(
         &mut self,
         expr_ref: &ExprRef,
-        target_enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
+        target: &EnumStorage,
     ) -> Result<(), String> {
+        let target_enum_id = target.enum_id;
         let expected_base = self.module.enum_def(target_enum_id).base_name;
         let expr = self
             .program
@@ -2759,7 +2854,7 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(path[1]).unwrap_or("?"),
                     ));
                 }
-                self.write_enum_into_target(variant_idx, &[], tag_local, payload_locals)?;
+                self.write_variant_into_storage(target, variant_idx, &[])?;
                 Ok(())
             }
             Expr::AssociatedFunctionCall(en, var, args) => {
@@ -2792,16 +2887,12 @@ impl<'a> FunctionLower<'a> {
                         args.len(),
                     ));
                 }
-                self.write_enum_into_target(variant_idx, &args, tag_local, payload_locals)?;
+                self.write_variant_into_storage(target, variant_idx, &args)?;
                 Ok(())
             }
             Expr::Identifier(sym) => {
-                let (src_tag, src_payloads) = match self.bindings.get(&sym).cloned() {
-                    Some(Binding::Enum {
-                        enum_id: src_id,
-                        tag_local,
-                        payload_locals,
-                    }) if src_id == target_enum_id => (tag_local, payload_locals),
+                let src = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Enum(s)) if s.enum_id == target_enum_id => s,
                     _ => {
                         return Err(format!(
                             "`{}` is not an enum binding of the expected type",
@@ -2809,12 +2900,7 @@ impl<'a> FunctionLower<'a> {
                         ));
                     }
                 };
-                self.copy_enum_into_target(
-                    src_tag,
-                    &src_payloads,
-                    tag_local,
-                    payload_locals,
-                );
+                self.copy_enum_storage(&src, target);
                 Ok(())
             }
             Expr::Block(stmts) => {
@@ -2831,36 +2917,18 @@ impl<'a> FunctionLower<'a> {
                         .ok_or_else(|| "missing block stmt".to_string())?;
                     if is_last {
                         if let Stmt::Expression(e) = stmt {
-                            return self.lower_into_enum_target(
-                                &e,
-                                target_enum_id,
-                                tag_local,
-                                payload_locals,
-                            );
+                            return self.lower_into_enum_storage(&e, target);
                         }
                     }
                     let _ = self.lower_stmt(stmt_ref)?;
                 }
                 Err("block has no enum-producing tail expression".to_string())
             }
-            Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => {
-                self.lower_if_chain_into_enum(
-                    &cond,
-                    &then_body,
-                    &elif_pairs,
-                    &else_body,
-                    target_enum_id,
-                    tag_local,
-                    payload_locals,
-                )
+            Expr::IfElifElse(cond, then_body, elif_pairs, else_body) => self
+                .lower_if_chain_into_enum(&cond, &then_body, &elif_pairs, &else_body, target),
+            Expr::Match(scrutinee, arms) => {
+                self.lower_match_into_enum(&scrutinee, &arms, target)
             }
-            Expr::Match(scrutinee, arms) => self.lower_match_into_enum(
-                &scrutinee,
-                &arms,
-                target_enum_id,
-                tag_local,
-                payload_locals,
-            ),
             other => Err(format!(
                 "compiler MVP cannot lower `{:?}` as an enum-producing expression in this position",
                 other
@@ -2870,6 +2938,8 @@ impl<'a> FunctionLower<'a> {
 
     /// Common store: write the variant tag and (optionally) evaluate
     /// + store the payload args into the target's per-variant slots.
+    /// (deprecated — kept temporarily during the refactor)
+    #[allow(dead_code)]
     fn write_enum_into_target(
         &mut self,
         variant_idx: usize,
@@ -2901,38 +2971,44 @@ impl<'a> FunctionLower<'a> {
     }
 
     /// Copy every local backing a source enum binding into the
-    /// target's matching slot. Used when a branch's tail is a bare
-    /// identifier referring to an existing enum binding.
-    fn copy_enum_into_target(
-        &mut self,
-        src_tag: LocalId,
-        src_payloads: &[Vec<(LocalId, Type)>],
-        dst_tag: LocalId,
-        dst_payloads: &[Vec<(LocalId, Type)>],
-    ) {
+    /// target's matching slot. Recurses through nested enum payloads
+    /// so a `val a = b` between two `Option<Option<T>>` bindings
+    /// duplicates the full storage tree.
+    fn copy_enum_storage(&mut self, src: &EnumStorage, dst: &EnumStorage) {
+        debug_assert_eq!(src.enum_id, dst.enum_id);
         let v = self
-            .emit(InstKind::LoadLocal(src_tag), Some(Type::U64))
+            .emit(InstKind::LoadLocal(src.tag_local), Some(Type::U64))
             .expect("LoadLocal returns a value");
         self.emit(
             InstKind::StoreLocal {
-                dst: dst_tag,
+                dst: dst.tag_local,
                 src: v,
             },
             None,
         );
-        for (variant_idx, variant_slots) in src_payloads.iter().enumerate() {
-            for (i, (src_local, ty)) in variant_slots.iter().enumerate() {
-                let v = self
-                    .emit(InstKind::LoadLocal(*src_local), Some(*ty))
-                    .expect("LoadLocal returns a value");
-                let (dst_local, _) = dst_payloads[variant_idx][i];
-                self.emit(
-                    InstKind::StoreLocal {
-                        dst: dst_local,
-                        src: v,
-                    },
-                    None,
-                );
+        for (variant_idx, variant_slots) in src.payloads.iter().enumerate() {
+            for (i, src_slot) in variant_slots.iter().enumerate() {
+                let dst_slot = &dst.payloads[variant_idx][i];
+                match (src_slot, dst_slot) {
+                    (
+                        PayloadSlot::Scalar { local: sl, ty },
+                        PayloadSlot::Scalar { local: dl, .. },
+                    ) => {
+                        let v = self
+                            .emit(InstKind::LoadLocal(*sl), Some(*ty))
+                            .expect("LoadLocal returns a value");
+                        self.emit(
+                            InstKind::StoreLocal { dst: *dl, src: v },
+                            None,
+                        );
+                    }
+                    (PayloadSlot::Enum(s), PayloadSlot::Enum(d)) => {
+                        let s = (**s).clone();
+                        let d = (**d).clone();
+                        self.copy_enum_storage(&s, &d);
+                    }
+                    _ => unreachable!("payload slot shape mismatch"),
+                }
             }
         }
     }
@@ -2948,9 +3024,7 @@ impl<'a> FunctionLower<'a> {
         then_body: &ExprRef,
         elif_pairs: &Vec<(ExprRef, ExprRef)>,
         else_body: &ExprRef,
-        target_enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
+        target: &EnumStorage,
     ) -> Result<(), String> {
         let merge = self.fresh_block();
         let mut cond_blocks: Vec<BlockId> = Vec::with_capacity(elif_pairs.len());
@@ -2976,7 +3050,7 @@ impl<'a> FunctionLower<'a> {
 
         // then
         self.switch_to(then_blk);
-        self.lower_into_enum_target(then_body, target_enum_id, tag_local, payload_locals)?;
+        self.lower_into_enum_storage(then_body, target)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -2999,14 +3073,14 @@ impl<'a> FunctionLower<'a> {
                 else_blk: next,
             });
             self.switch_to(body_blk);
-            self.lower_into_enum_target(elif_body, target_enum_id, tag_local, payload_locals)?;
+            self.lower_into_enum_storage(elif_body, target)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
         }
         // else
         self.switch_to(else_blk);
-        self.lower_into_enum_target(else_body, target_enum_id, tag_local, payload_locals)?;
+        self.lower_into_enum_storage(else_body, target)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -3024,9 +3098,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         scrutinee: &ExprRef,
         arms: &Vec<MatchArm>,
-        target_enum_id: EnumId,
-        tag_local: LocalId,
-        payload_locals: &[Vec<(LocalId, Type)>],
+        target: &EnumStorage,
     ) -> Result<(), String> {
         let scrut = self.classify_match_scrutinee(scrutinee)?;
         let merge = self.fresh_block();
@@ -3051,12 +3123,8 @@ impl<'a> FunctionLower<'a> {
                     self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
                 }
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let (scrut_enum_id, scrut_tag, scrut_payloads) = match &scrut {
-                        MatchScrutinee::Enum {
-                            enum_id,
-                            tag_local,
-                            payload_locals,
-                        } => (*enum_id, *tag_local, payload_locals.clone()),
+                    let scrut_storage = match &scrut {
+                        MatchScrutinee::Enum(s) => s.clone(),
                         MatchScrutinee::Scalar { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
@@ -3064,100 +3132,13 @@ impl<'a> FunctionLower<'a> {
                             );
                         }
                     };
-                    let scrut_def = self.module.enum_def(scrut_enum_id).clone();
-                    if *p_enum != scrut_def.base_name {
-                        return Err(format!(
-                            "match arm pattern enum `{}` does not match scrutinee enum `{}`",
-                            self.interner.resolve(*p_enum).unwrap_or("?"),
-                            self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
-                        ));
-                    }
-                    let variant_idx = scrut_def
-                        .variants
-                        .iter()
-                        .position(|v| v.name == *p_variant)
-                        .ok_or_else(|| {
-                            format!(
-                                "match arm references unknown variant `{}::{}`",
-                                self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
-                                self.interner.resolve(*p_variant).unwrap_or("?"),
-                            )
-                        })?;
-                    if sub_patterns.len()
-                        != scrut_def.variants[variant_idx].payload_types.len()
-                    {
-                        return Err(format!(
-                            "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
-                            self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
-                            self.interner.resolve(*p_variant).unwrap_or("?"),
-                            sub_patterns.len(),
-                            scrut_def.variants[variant_idx].payload_types.len(),
-                        ));
-                    }
-                    let tag_v = self
-                        .emit(InstKind::LoadLocal(scrut_tag), Some(Type::U64))
-                        .expect("LoadLocal returns a value");
-                    let want = self
-                        .emit(
-                            InstKind::Const(Const::U64(variant_idx as u64)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    let tag_eq = self
-                        .emit(
-                            InstKind::BinOp {
-                                op: BinOp::Eq,
-                                lhs: tag_v,
-                                rhs: want,
-                            },
-                            Some(Type::Bool),
-                        )
-                        .expect("Eq returns a value");
-                    let after_tag = self.fresh_block();
-                    self.terminate(Terminator::Branch {
-                        cond: tag_eq,
-                        then_blk: after_tag,
-                        else_blk: next_blk,
-                    });
-                    self.switch_to(after_tag);
-                    for (i, sp) in sub_patterns.iter().enumerate() {
-                        if let Pattern::Literal(lit_ref) = sp {
-                            let (src_local, src_ty) = scrut_payloads[variant_idx][i];
-                            let pv = self
-                                .emit(InstKind::LoadLocal(src_local), Some(src_ty))
-                                .expect("LoadLocal returns a value");
-                            self.emit_literal_eq_branch(lit_ref, pv, src_ty, next_blk)?;
-                        }
-                    }
-                    for (i, sp) in sub_patterns.iter().enumerate() {
-                        match sp {
-                            Pattern::Name(sym) => {
-                                let (src_local, src_ty) = scrut_payloads[variant_idx][i];
-                                let v = self
-                                    .emit(InstKind::LoadLocal(src_local), Some(src_ty))
-                                    .expect("LoadLocal returns a value");
-                                let dst = self
-                                    .module
-                                    .function_mut(self.func_id)
-                                    .add_local(src_ty);
-                                self.emit(
-                                    InstKind::StoreLocal { dst, src: v },
-                                    None,
-                                );
-                                self.bindings.insert(
-                                    *sym,
-                                    Binding::Scalar { local: dst, ty: src_ty },
-                                );
-                            }
-                            Pattern::Wildcard | Pattern::Literal(_) => {}
-                            other => {
-                                return Err(format!(
-                                    "compiler MVP only supports `Name`, `_`, and \
-                                     literal sub-patterns inside enum variants, got {other:?}"
-                                ));
-                            }
-                        }
-                    }
+                    self.dispatch_enum_variant_pattern(
+                        &scrut_storage,
+                        *p_enum,
+                        *p_variant,
+                        sub_patterns,
+                        next_blk,
+                    )?;
                 }
                 other => {
                     return Err(format!(
@@ -3178,7 +3159,7 @@ impl<'a> FunctionLower<'a> {
                 });
                 self.switch_to(body_blk);
             }
-            self.lower_into_enum_target(&arm.body, target_enum_id, tag_local, payload_locals)?;
+            self.lower_into_enum_storage(&arm.body, target)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
@@ -4066,12 +4047,8 @@ impl<'a> FunctionLower<'a> {
                     self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
                 }
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let (scrut_enum_id, tag_local, payload_locals) = match &scrut {
-                        MatchScrutinee::Enum {
-                            enum_id,
-                            tag_local,
-                            payload_locals,
-                        } => (*enum_id, *tag_local, payload_locals.clone()),
+                    let scrut_storage = match &scrut {
+                        MatchScrutinee::Enum(s) => s.clone(),
                         MatchScrutinee::Scalar { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
@@ -4079,110 +4056,13 @@ impl<'a> FunctionLower<'a> {
                             );
                         }
                     };
-                    let enum_def = self.module.enum_def(scrut_enum_id).clone();
-                    let enum_name = enum_def.base_name;
-                    if *p_enum != enum_name {
-                        return Err(format!(
-                            "match arm pattern enum `{}` does not match scrutinee enum `{}`",
-                            self.interner.resolve(*p_enum).unwrap_or("?"),
-                            self.interner.resolve(enum_name).unwrap_or("?"),
-                        ));
-                    }
-                    let variant_idx = enum_def
-                        .variants
-                        .iter()
-                        .position(|v| v.name == *p_variant)
-                        .ok_or_else(|| {
-                            format!(
-                                "match arm references unknown variant `{}::{}`",
-                                self.interner.resolve(enum_name).unwrap_or("?"),
-                                self.interner.resolve(*p_variant).unwrap_or("?"),
-                            )
-                        })?;
-                    if sub_patterns.len()
-                        != enum_def.variants[variant_idx].payload_types.len()
-                    {
-                        return Err(format!(
-                            "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
-                            self.interner.resolve(enum_name).unwrap_or("?"),
-                            self.interner.resolve(*p_variant).unwrap_or("?"),
-                            sub_patterns.len(),
-                            enum_def.variants[variant_idx].payload_types.len(),
-                        ));
-                    }
-                    // Tag dispatch.
-                    let tag_v = self
-                        .emit(InstKind::LoadLocal(tag_local), Some(Type::U64))
-                        .expect("LoadLocal returns a value");
-                    let want = self
-                        .emit(
-                            InstKind::Const(Const::U64(variant_idx as u64)),
-                            Some(Type::U64),
-                        )
-                        .expect("Const returns a value");
-                    let tag_eq = self
-                        .emit(
-                            InstKind::BinOp {
-                                op: BinOp::Eq,
-                                lhs: tag_v,
-                                rhs: want,
-                            },
-                            Some(Type::Bool),
-                        )
-                        .expect("Eq returns a value");
-                    let after_tag = self.fresh_block();
-                    self.terminate(Terminator::Branch {
-                        cond: tag_eq,
-                        then_blk: after_tag,
-                        else_blk: next_blk,
-                    });
-                    self.switch_to(after_tag);
-                    // Sub-pattern literal checks before bindings: an
-                    // earlier mismatch should not introduce stray
-                    // bindings into the body block.
-                    for (i, sp) in sub_patterns.iter().enumerate() {
-                        if let Pattern::Literal(lit_ref) = sp {
-                            let (src_local, src_ty) = payload_locals[variant_idx][i];
-                            let pv = self
-                                .emit(InstKind::LoadLocal(src_local), Some(src_ty))
-                                .expect("LoadLocal returns a value");
-                            self.emit_literal_eq_branch(lit_ref, pv, src_ty, next_blk)?;
-                        }
-                    }
-                    // Sub-pattern bindings.
-                    for (i, sp) in sub_patterns.iter().enumerate() {
-                        match sp {
-                            Pattern::Name(sym) => {
-                                let (src_local, src_ty) = payload_locals[variant_idx][i];
-                                let v = self
-                                    .emit(InstKind::LoadLocal(src_local), Some(src_ty))
-                                    .expect("LoadLocal returns a value");
-                                let dst = self
-                                    .module
-                                    .function_mut(self.func_id)
-                                    .add_local(src_ty);
-                                self.emit(
-                                    InstKind::StoreLocal { dst, src: v },
-                                    None,
-                                );
-                                self.bindings.insert(
-                                    *sym,
-                                    Binding::Scalar { local: dst, ty: src_ty },
-                                );
-                            }
-                            Pattern::Wildcard | Pattern::Literal(_) => {
-                                // Wildcard discards; literals were
-                                // already consumed by the equality
-                                // branch above.
-                            }
-                            other => {
-                                return Err(format!(
-                                    "compiler MVP only supports `Name`, `_`, and \
-                                     literal sub-patterns inside enum variants, got {other:?}"
-                                ));
-                            }
-                        }
-                    }
+                    self.dispatch_enum_variant_pattern(
+                        &scrut_storage,
+                        *p_enum,
+                        *p_variant,
+                        sub_patterns,
+                        next_blk,
+                    )?;
                 }
                 other => {
                     return Err(format!(
@@ -4261,31 +4141,188 @@ impl<'a> FunctionLower<'a> {
     /// scrutinee's payload local table as the source of truth for
     /// type / local. Used only by `arm_body_type` — the caller is
     /// expected to snapshot and restore.
+    /// Lower the pattern dispatch for one `EnumVariant` arm: tag
+    /// equality check, optional literal sub-pattern checks, and
+    /// payload bindings (Name and nested EnumVariant). Mismatch on
+    /// any check branches to `next_blk`. After this returns, the
+    /// current block is the block where the arm body should be
+    /// lowered (with all `Name` bindings introduced into
+    /// `self.bindings`). For the recursive case (nested
+    /// `EnumVariant` sub-pattern), the inner call further branches
+    /// on the inner storage's tag.
+    fn dispatch_enum_variant_pattern(
+        &mut self,
+        scrut_storage: &EnumStorage,
+        p_enum: DefaultSymbol,
+        p_variant: DefaultSymbol,
+        sub_patterns: &Vec<Pattern>,
+        next_blk: BlockId,
+    ) -> Result<(), String> {
+        let scrut_def = self.module.enum_def(scrut_storage.enum_id).clone();
+        if p_enum != scrut_def.base_name {
+            return Err(format!(
+                "match arm pattern enum `{}` does not match scrutinee enum `{}`",
+                self.interner.resolve(p_enum).unwrap_or("?"),
+                self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
+            ));
+        }
+        let variant_idx = scrut_def
+            .variants
+            .iter()
+            .position(|v| v.name == p_variant)
+            .ok_or_else(|| {
+                format!(
+                    "match arm references unknown variant `{}::{}`",
+                    self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
+                    self.interner.resolve(p_variant).unwrap_or("?"),
+                )
+            })?;
+        if sub_patterns.len() != scrut_def.variants[variant_idx].payload_types.len() {
+            return Err(format!(
+                "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
+                self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
+                self.interner.resolve(p_variant).unwrap_or("?"),
+                sub_patterns.len(),
+                scrut_def.variants[variant_idx].payload_types.len(),
+            ));
+        }
+        // Tag dispatch.
+        let tag_v = self
+            .emit(InstKind::LoadLocal(scrut_storage.tag_local), Some(Type::U64))
+            .expect("LoadLocal returns a value");
+        let want = self
+            .emit(
+                InstKind::Const(Const::U64(variant_idx as u64)),
+                Some(Type::U64),
+            )
+            .expect("Const returns a value");
+        let tag_eq = self
+            .emit(
+                InstKind::BinOp {
+                    op: BinOp::Eq,
+                    lhs: tag_v,
+                    rhs: want,
+                },
+                Some(Type::Bool),
+            )
+            .expect("Eq returns a value");
+        let after_tag = self.fresh_block();
+        self.terminate(Terminator::Branch {
+            cond: tag_eq,
+            then_blk: after_tag,
+            else_blk: next_blk,
+        });
+        self.switch_to(after_tag);
+        // Sub-pattern checks (literal equality + nested EnumVariant
+        // tag checks). Done before bindings so a failed check
+        // doesn't leave stray bindings in scope.
+        for (i, sp) in sub_patterns.iter().enumerate() {
+            let slot = scrut_storage.payloads[variant_idx][i].clone();
+            match sp {
+                Pattern::Literal(lit_ref) => match slot {
+                    PayloadSlot::Scalar { local, ty } => {
+                        let pv = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        self.emit_literal_eq_branch(lit_ref, pv, ty, next_blk)?;
+                    }
+                    PayloadSlot::Enum(_) => {
+                        return Err(
+                            "literal sub-pattern is only valid against a scalar payload"
+                                .to_string(),
+                        );
+                    }
+                },
+                Pattern::EnumVariant(inner_enum, inner_variant, inner_subs) => match slot {
+                    PayloadSlot::Enum(inner_storage) => {
+                        self.dispatch_enum_variant_pattern(
+                            &inner_storage,
+                            *inner_enum,
+                            *inner_variant,
+                            inner_subs,
+                            next_blk,
+                        )?;
+                    }
+                    PayloadSlot::Scalar { .. } => {
+                        return Err(
+                            "nested enum-variant sub-pattern requires an enum-typed payload"
+                                .to_string(),
+                        );
+                    }
+                },
+                _ => {}
+            }
+        }
+        // Sub-pattern bindings.
+        for (i, sp) in sub_patterns.iter().enumerate() {
+            let slot = scrut_storage.payloads[variant_idx][i].clone();
+            match sp {
+                Pattern::Name(sym) => match slot {
+                    PayloadSlot::Scalar { local, ty } => {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value");
+                        let dst = self
+                            .module
+                            .function_mut(self.func_id)
+                            .add_local(ty);
+                        self.emit(InstKind::StoreLocal { dst, src: v }, None);
+                        self.bindings
+                            .insert(*sym, Binding::Scalar { local: dst, ty });
+                    }
+                    PayloadSlot::Enum(inner_storage) => {
+                        // Bind the name to a fresh EnumStorage that's
+                        // a deep copy of the matched payload.
+                        let inner = (*inner_storage).clone();
+                        let copy = self.allocate_enum_storage(inner.enum_id);
+                        self.copy_enum_storage(&inner, &copy);
+                        self.bindings.insert(*sym, Binding::Enum(copy));
+                    }
+                },
+                Pattern::Wildcard | Pattern::Literal(_) | Pattern::EnumVariant(..) => {
+                    // Wildcard discards; literals were checked
+                    // above; nested EnumVariant patterns introduced
+                    // their own bindings via the recursive call.
+                }
+                other => {
+                    return Err(format!(
+                        "compiler MVP only supports `Name`, `_`, literal, and \
+                         nested `EnumVariant` sub-patterns inside enum variants, got {other:?}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn apply_arm_pattern_bindings_for_inference(
         &mut self,
         scrut: &MatchScrutinee,
         pattern: &Pattern,
     ) {
         if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern {
-            if let MatchScrutinee::Enum {
-                enum_id,
-                payload_locals,
-                ..
-            } = scrut
-            {
-                let enum_def = self.module.enum_def(*enum_id).clone();
+            if let MatchScrutinee::Enum(storage) = scrut {
+                let enum_def = self.module.enum_def(storage.enum_id).clone();
                 if let Some(variant_idx) =
                     enum_def.variants.iter().position(|v| v.name == *variant_sym)
                 {
-                    if variant_idx < payload_locals.len() {
+                    if variant_idx < storage.payloads.len() {
                         for (i, sp) in sub_patterns.iter().enumerate() {
                             if let Pattern::Name(sym) = sp {
-                                if i < payload_locals[variant_idx].len() {
-                                    let (local, ty) = payload_locals[variant_idx][i];
-                                    self.bindings.insert(
-                                        *sym,
-                                        Binding::Scalar { local, ty },
-                                    );
+                                if let Some(slot) =
+                                    storage.payloads[variant_idx].get(i)
+                                {
+                                    if let PayloadSlot::Scalar { local, ty } = slot {
+                                        self.bindings.insert(
+                                            *sym,
+                                            Binding::Scalar { local: *local, ty: *ty },
+                                        );
+                                    }
+                                    // Enum-typed Name bindings would
+                                    // require allocating a fresh
+                                    // EnumStorage for inference, which
+                                    // value_scalar can't see anyway —
+                                    // skip.
                                 }
                             }
                         }
@@ -4317,16 +4354,8 @@ impl<'a> FunctionLower<'a> {
         if let Expr::Identifier(sym) = scrut_expr {
             if let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
-                    Binding::Enum {
-                        enum_id,
-                        tag_local,
-                        payload_locals,
-                    } => {
-                        return Ok(MatchScrutinee::Enum {
-                            enum_id,
-                            tag_local,
-                            payload_locals,
-                        });
+                    Binding::Enum(storage) => {
+                        return Ok(MatchScrutinee::Enum(storage));
                     }
                     Binding::Scalar { local, ty } => {
                         let v = self

@@ -2366,6 +2366,108 @@ fn generic_enum_two_instantiations_dont_collide() {
 }
 
 #[test]
+fn nested_enum_payload_construction_and_match() {
+    if skip_e2e() {
+        return;
+    }
+    // `Option<Option<i64>>`: the outer Some's payload is itself an
+    // enum value. Storage tree nests; nested `Some(Some(v))`
+    // sub-pattern threads through both tag dispatches.
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn main() -> u64 {
+            val x: Option<Option<i64>> = Option::Some(Option::Some(42i64))
+            val r: i64 = match x {
+                Option::Some(Option::Some(v)) => v,
+                Option::Some(Option::None) => -1i64,
+                Option::None => -2i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "nested_enum_match"), 42);
+}
+
+#[test]
+fn nested_enum_payload_inner_none_branch() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn main() -> u64 {
+            val x: Option<Option<i64>> = Option::Some(Option::None)
+            val r: i64 = match x {
+                Option::Some(Option::Some(v)) => v,
+                Option::Some(Option::None) => 7i64,
+                Option::None => -2i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "nested_enum_inner_none"), 7);
+}
+
+#[test]
+fn nested_enum_outer_none_branch() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn main() -> u64 {
+            val x: Option<Option<i64>> = Option::None
+            val r: i64 = match x {
+                Option::Some(Option::Some(v)) => v,
+                Option::Some(Option::None) => -1i64,
+                Option::None => 11i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "nested_enum_outer_none"), 11);
+}
+
+#[test]
+fn nested_enum_println_recurses() {
+    if skip_e2e() {
+        return;
+    }
+    // print/println recurses through nested enum payload, matching
+    // the interpreter's `Object::to_display_string`.
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn main() -> u64 {
+            val x: Option<Option<i64>> = Option::Some(Option::Some(7i64))
+            println(x)
+            val y: Option<Option<i64>> = Option::Some(Option::None)
+            println(y)
+            val z: Option<Option<i64>> = Option::None
+            println(z)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "nested_enum_println");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Option::Some(Option::Some(7))\nOption::Some(Option::None)\nOption::None\n",
+    );
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

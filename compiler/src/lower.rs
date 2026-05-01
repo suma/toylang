@@ -35,7 +35,7 @@ use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::{
-    BinOp, Block, BlockId, Const, EnumDef, EnumVariant, FuncId, InstKind, Instruction,
+    BinOp, Block, BlockId, Const, EnumId, EnumVariant, FuncId, InstKind, Instruction,
     Linkage, LocalId, Module, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
 };
 
@@ -70,8 +70,11 @@ pub fn lower_program(
     // and enums whose payloads contain anything other than i64 / u64
     // / bool are rejected at this stage so body lowering can rely on
     // the stored shape unconditionally.
+    // Enum templates stay in the lowering pass — they hold AST-shape
+    // payload TypeDecls that get monomorphised by `instantiate_enum`
+    // at each (base_name, type_args) usage site. The IR module's
+    // `enum_defs` Vec is populated by those instantiation calls.
     let enum_defs = collect_enum_defs(program, interner)?;
-    module.enum_defs = enum_defs.clone();
 
     // Compile-time evaluate every top-level `const`. The compiler MVP
     // accepts literal initialisers and references to earlier consts;
@@ -93,7 +96,7 @@ pub fn lower_program(
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
-            let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module).ok_or_else(|| {
+            let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
                 format!(
                     "compiler MVP cannot lower parameter `{}: {:?}` yet",
                     interner.resolve(*name).unwrap_or("?"),
@@ -103,7 +106,7 @@ pub fn lower_program(
             params.push(lowered);
         }
         let ret = match &func.return_type {
-            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module).ok_or_else(
+            Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
                 || format!("compiler MVP cannot lower return type `{:?}` yet", ty),
             )?,
             None => Type::Unit,
@@ -244,13 +247,33 @@ fn const_fold_binop(op: frontend::ast::Operator, l: Const, r: Const) -> Option<C
 /// lowering pass compares them against the `DefaultSymbol`-resolved name
 /// at field-access sites.
 type StructDefs = HashMap<DefaultSymbol, Vec<(String, Type)>>;
-type EnumDefs = HashMap<DefaultSymbol, EnumDef>;
+
+/// Per-program enum templates, indexed by base name. Each template
+/// retains the AST shape (`generic_params` + `variants` with
+/// `TypeDecl` payloads) so the lowering pass can substitute concrete
+/// type arguments at instantiation time. Non-generic enums sit in
+/// the same table with an empty `generic_params` vec — instantiation
+/// then collapses to a single shape.
+#[derive(Debug, Clone)]
+struct EnumTemplate {
+    generic_params: Vec<DefaultSymbol>,
+    variants: Vec<EnumTemplateVariant>,
+}
+
+#[derive(Debug, Clone)]
+struct EnumTemplateVariant {
+    name: DefaultSymbol,
+    payload_types: Vec<TypeDecl>,
+}
+
+type EnumDefs = HashMap<DefaultSymbol, EnumTemplate>;
 
 fn collect_enum_defs(
     program: &Program,
     interner: &DefaultStringInterner,
 ) -> Result<EnumDefs, String> {
     use frontend::ast::Stmt as AstStmt;
+    let _ = interner;
     let mut defs: EnumDefs = HashMap::new();
     let stmt_count = program.statement.len();
     for i in 0..stmt_count {
@@ -260,45 +283,114 @@ fn collect_enum_defs(
             None => continue,
         };
         if let AstStmt::EnumDecl { name, generic_params, variants, .. } = stmt {
-            if !generic_params.is_empty() {
-                return Err(format!(
-                    "compiler MVP cannot lower generic enum `{}` yet",
-                    interner.resolve(name).unwrap_or("?")
-                ));
-            }
-            let mut ir_variants: Vec<EnumVariant> = Vec::with_capacity(variants.len());
-            for v in &variants {
-                let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
-                for pt in &v.payload_types {
-                    let lowered = lower_scalar(pt).ok_or_else(|| {
-                        format!(
-                            "enum `{}::{}` has unsupported payload type `{:?}` \
-                             (compiler MVP only accepts i64 / u64 / bool)",
-                            interner.resolve(name).unwrap_or("?"),
-                            interner.resolve(v.name).unwrap_or("?"),
-                            pt,
-                        )
-                    })?;
-                    if !matches!(lowered, Type::I64 | Type::U64 | Type::Bool) {
-                        return Err(format!(
-                            "enum `{}::{}` has unsupported payload type `{lowered}` \
-                             (compiler MVP only accepts i64 / u64 / bool — f64 / Unit / \
-                             struct / tuple / enum payloads are deferred)",
-                            interner.resolve(name).unwrap_or("?"),
-                            interner.resolve(v.name).unwrap_or("?"),
-                        ));
-                    }
-                    payload_types.push(lowered);
-                }
-                ir_variants.push(EnumVariant {
+            // Templates keep the AST `TypeDecl` payload shape verbatim
+            // — substitution happens at instantiation time. We don't
+            // try to validate payload types up front because, for
+            // generic enums, a `TypeDecl::Generic(T)` won't lower
+            // until `T` is bound to a concrete type.
+            let template_variants: Vec<EnumTemplateVariant> = variants
+                .iter()
+                .map(|v| EnumTemplateVariant {
                     name: v.name,
-                    payload_types,
-                });
-            }
-            defs.insert(name, EnumDef { variants: ir_variants });
+                    payload_types: v.payload_types.clone(),
+                })
+                .collect();
+            defs.insert(
+                name,
+                EnumTemplate {
+                    generic_params: generic_params.clone(),
+                    variants: template_variants,
+                },
+            );
         }
     }
     Ok(defs)
+}
+
+/// Substitute the template's generic parameters with `type_args` and
+/// intern (or re-use) the resulting concrete enum in the IR module.
+/// Non-generic enums short-circuit to a single instance shared
+/// across the whole program; generic enums get one instance per
+/// distinct concrete arg tuple. Returns the canonical `EnumId`.
+fn instantiate_enum(
+    module: &mut Module,
+    templates: &EnumDefs,
+    base_name: DefaultSymbol,
+    type_args: Vec<Type>,
+    interner: &DefaultStringInterner,
+) -> Result<EnumId, String> {
+    let template = templates.get(&base_name).ok_or_else(|| {
+        format!(
+            "internal error: no enum template for `{}`",
+            interner.resolve(base_name).unwrap_or("?")
+        )
+    })?;
+    if template.generic_params.len() != type_args.len() {
+        return Err(format!(
+            "enum `{}` expects {} type argument(s), got {}",
+            interner.resolve(base_name).unwrap_or("?"),
+            template.generic_params.len(),
+            type_args.len(),
+        ));
+    }
+    if let Some(id) = module.enum_index.get(&(base_name, type_args.clone())).copied() {
+        return Ok(id);
+    }
+    // Build a substitution map and produce the concrete variant list.
+    let subst: HashMap<DefaultSymbol, Type> = template
+        .generic_params
+        .iter()
+        .copied()
+        .zip(type_args.iter().copied())
+        .collect();
+    let mut ir_variants: Vec<EnumVariant> = Vec::with_capacity(template.variants.len());
+    for v in &template.variants {
+        let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
+        for pt in &v.payload_types {
+            let lowered = substitute_payload_type(pt, &subst).ok_or_else(|| {
+                format!(
+                    "enum `{}::{}` has unsupported payload type `{:?}` \
+                     (compiler MVP only accepts i64 / u64 / bool, or a generic \
+                     parameter substituted with one of those)",
+                    interner.resolve(base_name).unwrap_or("?"),
+                    interner.resolve(v.name).unwrap_or("?"),
+                    pt,
+                )
+            })?;
+            if !matches!(lowered, Type::I64 | Type::U64 | Type::Bool) {
+                return Err(format!(
+                    "enum `{}::{}` has unsupported payload type `{lowered}` \
+                     (compiler MVP only accepts i64 / u64 / bool)",
+                    interner.resolve(base_name).unwrap_or("?"),
+                    interner.resolve(v.name).unwrap_or("?"),
+                ));
+            }
+            payload_types.push(lowered);
+        }
+        ir_variants.push(EnumVariant {
+            name: v.name,
+            payload_types,
+        });
+    }
+    Ok(module.intern_enum(base_name, type_args, ir_variants))
+}
+
+/// Lower an enum payload `TypeDecl`, applying any active generic
+/// substitution. Returns `None` for shapes the compiler doesn't yet
+/// accept inside an enum payload (compound types, free generics with
+/// no binding in `subst`, etc.).
+fn substitute_payload_type(
+    pt: &TypeDecl,
+    subst: &HashMap<DefaultSymbol, Type>,
+) -> Option<Type> {
+    if let Some(t) = lower_scalar(pt) {
+        return Some(t);
+    }
+    match pt {
+        TypeDecl::Generic(name) => subst.get(name).copied(),
+        TypeDecl::Identifier(name) => subst.get(name).copied(),
+        _ => None,
+    }
 }
 
 fn collect_struct_defs(
@@ -394,6 +486,7 @@ fn lower_param_or_return_type(
     struct_defs: &StructDefs,
     enum_defs: &EnumDefs,
     module: &mut Module,
+    interner: &DefaultStringInterner,
 ) -> Option<Type> {
     if let Some(t) = lower_scalar(ty) {
         return Some(t);
@@ -408,7 +501,48 @@ fn lower_param_or_return_type(
         TypeDecl::Struct(name, args) if args.is_empty() && struct_defs.contains_key(name) => {
             Some(Type::Struct(*name))
         }
-        TypeDecl::Identifier(name) if enum_defs.contains_key(name) => Some(Type::Enum(*name)),
+        // Non-generic enum reference. Instantiate with no type args
+        // (the template's `generic_params` must also be empty for
+        // this to succeed).
+        TypeDecl::Identifier(name) if enum_defs.contains_key(name) => {
+            instantiate_enum(module, enum_defs, *name, Vec::new(), interner)
+                .ok()
+                .map(Type::Enum)
+        }
+        // Generic enum instantiation: `Option<i64>` arrives as
+        // either `Enum(name, [args])` or, for some annotation paths,
+        // `Struct(name, [args])` (the parser uses Struct for any
+        // `Name<...>` since it can't distinguish struct vs enum
+        // pre-typecheck). Both shapes route to the enum monomorphiser
+        // when `name` resolves to a known enum.
+        TypeDecl::Enum(name, args) if enum_defs.contains_key(name) => {
+            let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                let l = lower_scalar(a)?;
+                if matches!(l, Type::Unit) {
+                    return None;
+                }
+                lowered_args.push(l);
+            }
+            instantiate_enum(module, enum_defs, *name, lowered_args, interner)
+                .ok()
+                .map(Type::Enum)
+        }
+        TypeDecl::Struct(name, args)
+            if !args.is_empty() && enum_defs.contains_key(name) =>
+        {
+            let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                let l = lower_scalar(a)?;
+                if matches!(l, Type::Unit) {
+                    return None;
+                }
+                lowered_args.push(l);
+            }
+            instantiate_enum(module, enum_defs, *name, lowered_args, interner)
+                .ok()
+                .map(Type::Enum)
+        }
         TypeDecl::Tuple(elements) => {
             // Lower each element to a scalar IR type. We don't allow
             // nested tuples / struct-of-tuple at the boundary yet —
@@ -540,11 +674,11 @@ enum Binding {
     /// locals. `tag_local` carries the variant index (0-based); for
     /// each variant `payload_locals[variant_idx]` holds one local per
     /// payload element in declaration order. Bindings for unit
-    /// variants have an empty per-variant slice. Enums currently live
-    /// only as locals — function-boundary crossing is deferred along
-    /// the same lines as the compiler's first struct cut.
+    /// variants have an empty per-variant slice. The `EnumId`
+    /// identifies which monomorphised instance this binding belongs
+    /// to — a generic `Option<T>` has one `EnumId` per concrete `T`.
     Enum {
-        enum_name: DefaultSymbol,
+        enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: Vec<Vec<(LocalId, Type)>>,
     },
@@ -576,7 +710,7 @@ enum FieldChainResult {
 #[derive(Debug, Clone)]
 enum MatchScrutinee {
     Enum {
-        enum_name: DefaultSymbol,
+        enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: Vec<Vec<(LocalId, Type)>>,
     },
@@ -666,13 +800,13 @@ impl<'a> FunctionLower<'a> {
                         Binding::Tuple { elements: element_bindings },
                     );
                 }
-                Type::Enum(enum_name) => {
+                Type::Enum(enum_id) => {
                     let (tag_local, payload_locals) =
-                        self.allocate_enum_storage(enum_name)?;
+                        self.allocate_enum_storage(enum_id);
                     self.bindings.insert(
                         *name,
                         Binding::Enum {
-                            enum_name,
+                            enum_id,
                             tag_local,
                             payload_locals,
                         },
@@ -731,10 +865,10 @@ impl<'a> FunctionLower<'a> {
         // same approach that powers `val s = if ... { Enum::A } else
         // { ... }`). The implicit-return path then reads from the
         // pending channel.
-        let body_value = if let Type::Enum(enum_name) = ret_ty {
-            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
+        let body_value = if let Type::Enum(enum_id) = ret_ty {
+            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
             self.pending_enum_value = Some((tag_local, payload_locals.clone()));
-            self.lower_into_enum_target(&body_expr, enum_name, tag_local, &payload_locals)?;
+            self.lower_into_enum_target(&body_expr, enum_id, tag_local, &payload_locals)?;
             None
         } else {
             self.lower_expr(&body_expr)?
@@ -990,8 +1124,8 @@ impl<'a> FunctionLower<'a> {
         }
         match stmt {
             Stmt::Expression(e) => self.lower_expr(&e),
-            Stmt::Val(name, _ty, e) | Stmt::Var(name, _ty, Some(e)) => {
-                self.lower_let(name, &e)
+            Stmt::Val(name, ty, e) | Stmt::Var(name, ty, Some(e)) => {
+                self.lower_let(name, ty.as_ref(), &e)
             }
             Stmt::Var(name, ty, None) => {
                 let scalar = ty
@@ -1151,7 +1285,7 @@ impl<'a> FunctionLower<'a> {
                 // helper). Same pattern as struct/tuple — explicit
                 // `return Enum::Variant(args)` is handled via
                 // lower_expr setting pending_enum_value below.
-                if let (Type::Enum(enum_name), Some(er)) = (ret_ty, &e) {
+                if let (Type::Enum(ret_enum_id), Some(er)) = (ret_ty, &e) {
                     let rhs_expr = self
                         .program
                         .expression
@@ -1161,10 +1295,10 @@ impl<'a> FunctionLower<'a> {
                         let (tag_local, payload_locals) =
                             match self.bindings.get(&sym).cloned() {
                                 Some(Binding::Enum {
-                                    enum_name: bn,
+                                    enum_id: bn,
                                     tag_local,
                                     payload_locals,
-                                }) if bn == enum_name => (tag_local, payload_locals),
+                                }) if bn == ret_enum_id => (tag_local, payload_locals),
                                 _ => {
                                     return Err(format!(
                                         "`{}` is not an enum binding of the expected return type",
@@ -1268,6 +1402,7 @@ impl<'a> FunctionLower<'a> {
     fn lower_let(
         &mut self,
         name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
         rhs_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
         let rhs = self
@@ -1334,7 +1469,9 @@ impl<'a> FunctionLower<'a> {
         // the supplied arguments in this variant's payload slots.
         if let Expr::QualifiedIdentifier(path) = rhs.clone() {
             if path.len() == 2 {
-                if let Some(enum_def) = self.enum_defs.get(&path[0]).cloned() {
+                if self.enum_defs.contains_key(&path[0]) {
+                    let enum_id = self.resolve_enum_instance(path[0], annotation)?;
+                    let enum_def = self.module.enum_def(enum_id).clone();
                     let variant_idx = enum_def
                         .variants
                         .iter()
@@ -1356,13 +1493,20 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(path[1]).unwrap_or("?"),
                         ));
                     }
-                    self.bind_enum(name, path[0], &enum_def, variant_idx, &[])?;
+                    self.bind_enum(name, enum_id, variant_idx, &[])?;
                     return Ok(None);
                 }
             }
         }
         if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone() {
-            if let Some(enum_def) = self.enum_defs.get(&enum_name).cloned() {
+            if self.enum_defs.contains_key(&enum_name) {
+                let enum_id = self.resolve_enum_instance_with_args(
+                    enum_name,
+                    variant_name,
+                    &args,
+                    annotation,
+                )?;
+                let enum_def = self.module.enum_def(enum_id).clone();
                 let variant_idx = enum_def
                     .variants
                     .iter()
@@ -1384,7 +1528,7 @@ impl<'a> FunctionLower<'a> {
                         args.len(),
                     ));
                 }
-                self.bind_enum(name, enum_name, &enum_def, variant_idx, &args)?;
+                self.bind_enum(name, enum_id, variant_idx, &args)?;
                 return Ok(None);
             }
         }
@@ -1394,17 +1538,18 @@ impl<'a> FunctionLower<'a> {
         // shared target locals once and have each branch write into
         // them; cranelift's `def_var` walk turns the per-branch
         // writes into proper SSA at the merge.
-        if let Some(enum_name) = self.detect_enum_result(rhs_ref) {
-            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
+        if let Some(base_name) = self.detect_enum_result(rhs_ref) {
+            let enum_id = self.resolve_enum_instance(base_name, annotation)?;
+            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
             self.bindings.insert(
                 name,
                 Binding::Enum {
-                    enum_name,
+                    enum_id,
                     tag_local,
                     payload_locals: payload_locals.clone(),
                 },
             );
-            self.lower_into_enum_target(rhs_ref, enum_name, tag_local, &payload_locals)?;
+            self.lower_into_enum_target(rhs_ref, enum_id, tag_local, &payload_locals)?;
             return Ok(None);
         }
         // Struct-literal RHS: allocate one local per field (recursing
@@ -1455,7 +1600,7 @@ impl<'a> FunctionLower<'a> {
                     );
                     return Ok(None);
                 }
-                if let Type::Enum(enum_name) = target_ret {
+                if let Type::Enum(enum_id) = target_ret {
                     // Enum-returning call: pre-allocate the binding's
                     // tag + per-variant payload locals; flatten them
                     // into the CallEnum dest list (tag first, then
@@ -1463,12 +1608,12 @@ impl<'a> FunctionLower<'a> {
                     // so codegen can route the multi-return slots
                     // straight into our locals.
                     let (tag_local, payload_locals) =
-                        self.allocate_enum_storage(enum_name)?;
+                        self.allocate_enum_storage(enum_id);
                     let dests = Self::flatten_enum_dests(tag_local, &payload_locals);
                     self.bindings.insert(
                         name,
                         Binding::Enum {
-                            enum_name,
+                            enum_id,
                             tag_local,
                             payload_locals,
                         },
@@ -1931,12 +2076,12 @@ impl<'a> FunctionLower<'a> {
                     }
                     Binding::Scalar { .. } => {}
                     Binding::Enum {
-                        enum_name,
+                        enum_id,
                         tag_local,
                         payload_locals,
                     } => {
                         self.emit_print_enum(
-                            enum_name,
+                            enum_id,
                             tag_local,
                             &payload_locals,
                             newline,
@@ -2064,20 +2209,15 @@ impl<'a> FunctionLower<'a> {
     /// the print sequence ends.
     fn emit_print_enum(
         &mut self,
-        enum_name: DefaultSymbol,
+        enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: &[Vec<(LocalId, Type)>],
         newline: bool,
     ) -> Result<(), String> {
-        let enum_def = self.enum_defs.get(&enum_name).cloned().ok_or_else(|| {
-            format!(
-                "internal error: enum `{}` not in defs at print site",
-                self.interner.resolve(enum_name).unwrap_or("?")
-            )
-        })?;
+        let enum_def = self.module.enum_def(enum_id).clone();
         let enum_str = self
             .interner
-            .resolve(enum_name)
+            .resolve(enum_def.base_name)
             .unwrap_or("?")
             .to_string();
         let n_variants = enum_def.variants.len();
@@ -2225,16 +2365,171 @@ impl<'a> FunctionLower<'a> {
     /// the function-boundary slot order matches local order one for
     /// one — that's what makes `block_params[i] -> locals[i]` work
     /// for enum parameters in codegen.
-    fn allocate_enum_storage(
+    /// Pick the right `EnumId` for a `base_name` + optional val/var
+    /// type annotation. Non-generic enums always have a single
+    /// instance; for generic enums the annotation must supply
+    /// concrete type arguments. Returns an error if the enum is
+    /// generic and we have no annotation hint.
+    fn resolve_enum_instance(
         &mut self,
-        enum_name: DefaultSymbol,
-    ) -> Result<(LocalId, Vec<Vec<(LocalId, Type)>>), String> {
-        let enum_def = self.enum_defs.get(&enum_name).cloned().ok_or_else(|| {
+        base_name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+    ) -> Result<EnumId, String> {
+        let template = self.enum_defs.get(&base_name).ok_or_else(|| {
             format!(
-                "internal error: enum `{}` not in defs",
-                self.interner.resolve(enum_name).unwrap_or("?")
+                "internal error: no enum template for `{}`",
+                self.interner.resolve(base_name).unwrap_or("?")
             )
         })?;
+        if template.generic_params.is_empty() {
+            return instantiate_enum(
+                self.module,
+                self.enum_defs,
+                base_name,
+                Vec::new(),
+                self.interner,
+            );
+        }
+        let type_args = self
+            .extract_enum_type_args(base_name, annotation)
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP needs an explicit type annotation to instantiate generic \
+                     enum `{}` (e.g. `val x: {}<i64> = ...`)",
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                )
+            })?;
+        instantiate_enum(
+            self.module,
+            self.enum_defs,
+            base_name,
+            type_args,
+            self.interner,
+        )
+    }
+
+    /// Same idea as `resolve_enum_instance`, but a tuple-variant
+    /// construction site can also infer the type arguments from its
+    /// payload values when no annotation is supplied. We only
+    /// substitute the *first* generic param this way (`Option<T>`-style
+    /// enums are by far the common case); enums with multiple type
+    /// params still need an annotation.
+    fn resolve_enum_instance_with_args(
+        &mut self,
+        base_name: DefaultSymbol,
+        variant_name: DefaultSymbol,
+        args: &[ExprRef],
+        annotation: Option<&TypeDecl>,
+    ) -> Result<EnumId, String> {
+        let template = self
+            .enum_defs
+            .get(&base_name)
+            .ok_or_else(|| {
+                format!(
+                    "internal error: no enum template for `{}`",
+                    self.interner.resolve(base_name).unwrap_or("?")
+                )
+            })?
+            .clone();
+        if template.generic_params.is_empty() {
+            return instantiate_enum(
+                self.module,
+                self.enum_defs,
+                base_name,
+                Vec::new(),
+                self.interner,
+            );
+        }
+        if let Some(args_from_anno) = self.extract_enum_type_args(base_name, annotation) {
+            return instantiate_enum(
+                self.module,
+                self.enum_defs,
+                base_name,
+                args_from_anno,
+                self.interner,
+            );
+        }
+        // Try inferring from argument types. Look up the chosen
+        // variant's template payload pattern and match generic
+        // parameters against the actual arg scalar types.
+        let variant = template
+            .variants
+            .iter()
+            .find(|v| v.name == variant_name)
+            .ok_or_else(|| {
+                format!(
+                    "unknown enum variant `{}::{}`",
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                    self.interner.resolve(variant_name).unwrap_or("?"),
+                )
+            })?;
+        let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::new();
+        for (pt, arg) in variant.payload_types.iter().zip(args.iter()) {
+            let generic = match pt {
+                TypeDecl::Generic(g) => Some(*g),
+                TypeDecl::Identifier(g) if template.generic_params.contains(g) => Some(*g),
+                _ => None,
+            };
+            if let Some(g) = generic {
+                if let Some(ty) = self.value_scalar(arg) {
+                    inferred.entry(g).or_insert(ty);
+                }
+            }
+        }
+        let type_args: Option<Vec<Type>> = template
+            .generic_params
+            .iter()
+            .map(|p| inferred.get(p).copied())
+            .collect();
+        let type_args = type_args.ok_or_else(|| {
+            format!(
+                "cannot infer type arguments for generic enum `{}::{}`; add an explicit \
+                 type annotation (e.g. `val x: {}<i64> = ...`)",
+                self.interner.resolve(base_name).unwrap_or("?"),
+                self.interner.resolve(variant_name).unwrap_or("?"),
+                self.interner.resolve(base_name).unwrap_or("?"),
+            )
+        })?;
+        instantiate_enum(
+            self.module,
+            self.enum_defs,
+            base_name,
+            type_args,
+            self.interner,
+        )
+    }
+
+    /// Pull a `Vec<Type>` of concrete type arguments out of a val /
+    /// var annotation that names this enum. Accepts both
+    /// `TypeDecl::Enum(name, args)` and the parser's
+    /// `TypeDecl::Struct(name, args)` form (the parser uses Struct
+    /// for any `Name<...>` annotation since it can't tell enum from
+    /// struct pre-typecheck). Returns `None` if the annotation
+    /// doesn't name `base_name` or carries no usable args.
+    fn extract_enum_type_args(
+        &self,
+        base_name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+    ) -> Option<Vec<Type>> {
+        let anno = annotation?;
+        let args = match anno {
+            TypeDecl::Enum(name, args) if *name == base_name => args,
+            TypeDecl::Struct(name, args) if *name == base_name => args,
+            _ => return None,
+        };
+        let mut out: Vec<Type> = Vec::with_capacity(args.len());
+        for a in args {
+            out.push(lower_scalar(a)?);
+        }
+        Some(out)
+    }
+
+    fn allocate_enum_storage(
+        &mut self,
+        enum_id: EnumId,
+    ) -> (LocalId, Vec<Vec<(LocalId, Type)>>) {
+        let enum_def = self.module.enum_def(enum_id).clone();
         let tag_local = self
             .module
             .function_mut(self.func_id)
@@ -2250,7 +2545,7 @@ impl<'a> FunctionLower<'a> {
             }
             payload_locals.push(per_variant);
         }
-        Ok((tag_local, payload_locals))
+        (tag_local, payload_locals)
     }
 
     /// Allocate the storage for an enum binding (one tag local + one
@@ -2262,17 +2557,20 @@ impl<'a> FunctionLower<'a> {
     fn bind_enum(
         &mut self,
         binding_name: DefaultSymbol,
-        enum_name: DefaultSymbol,
-        enum_def: &EnumDef,
+        enum_id: EnumId,
         variant_idx: usize,
         args: &[ExprRef],
     ) -> Result<(), String> {
-        let _ = enum_def;
-        let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
+        let payload_locals_for_variant = {
+            let def = self.module.enum_def(enum_id);
+            def.variants[variant_idx].payload_types.len()
+        };
+        let _ = payload_locals_for_variant;
+        let (tag_local, payload_locals) = self.allocate_enum_storage(enum_id);
         self.bindings.insert(
             binding_name,
             Binding::Enum {
-                enum_name,
+                enum_id,
                 tag_local,
                 payload_locals: payload_locals.clone(),
             },
@@ -2370,7 +2668,9 @@ impl<'a> FunctionLower<'a> {
                 Some(en)
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
-                Some(Binding::Enum { enum_name, .. }) => Some(*enum_name),
+                Some(Binding::Enum { enum_id, .. }) => {
+                    Some(self.module.enum_def(*enum_id).base_name)
+                }
                 _ => None,
             },
             Expr::IfElifElse(_, then_body, elif_pairs, else_body) => {
@@ -2418,10 +2718,11 @@ impl<'a> FunctionLower<'a> {
     fn lower_into_enum_target(
         &mut self,
         expr_ref: &ExprRef,
-        enum_name: DefaultSymbol,
+        target_enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: &[Vec<(LocalId, Type)>],
     ) -> Result<(), String> {
+        let expected_base = self.module.enum_def(target_enum_id).base_name;
         let expr = self
             .program
             .expression
@@ -2429,19 +2730,14 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "enum-target expression missing".to_string())?;
         match expr {
             Expr::QualifiedIdentifier(path) if path.len() == 2 => {
-                let enum_def = self.enum_defs.get(&path[0]).cloned().ok_or_else(|| {
-                    format!(
-                        "`{}` is not a known enum",
-                        self.interner.resolve(path[0]).unwrap_or("?")
-                    )
-                })?;
-                if path[0] != enum_name {
+                if path[0] != expected_base {
                     return Err(format!(
                         "branch produces enum `{}` but the surrounding binding expects `{}`",
                         self.interner.resolve(path[0]).unwrap_or("?"),
-                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
+                let enum_def = self.module.enum_def(target_enum_id).clone();
                 let variant_idx = enum_def
                     .variants
                     .iter()
@@ -2449,7 +2745,7 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| {
                         format!(
                             "unknown enum variant `{}::{}`",
-                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(expected_base).unwrap_or("?"),
                             self.interner.resolve(path[1]).unwrap_or("?"),
                         )
                     })?;
@@ -2457,9 +2753,9 @@ impl<'a> FunctionLower<'a> {
                     return Err(format!(
                         "enum variant `{}::{}` is a tuple variant; supply its arguments \
                          via `{}::{}(...)`",
-                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
                         self.interner.resolve(path[1]).unwrap_or("?"),
-                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
                         self.interner.resolve(path[1]).unwrap_or("?"),
                     ));
                 }
@@ -2467,19 +2763,14 @@ impl<'a> FunctionLower<'a> {
                 Ok(())
             }
             Expr::AssociatedFunctionCall(en, var, args) => {
-                let enum_def = self.enum_defs.get(&en).cloned().ok_or_else(|| {
-                    format!(
-                        "`{}` is not a known enum",
-                        self.interner.resolve(en).unwrap_or("?")
-                    )
-                })?;
-                if en != enum_name {
+                if en != expected_base {
                     return Err(format!(
                         "branch produces enum `{}` but the surrounding binding expects `{}`",
                         self.interner.resolve(en).unwrap_or("?"),
-                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
                     ));
                 }
+                let enum_def = self.module.enum_def(target_enum_id).clone();
                 let variant_idx = enum_def
                     .variants
                     .iter()
@@ -2487,7 +2778,7 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| {
                         format!(
                             "unknown enum variant `{}::{}`",
-                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(expected_base).unwrap_or("?"),
                             self.interner.resolve(var).unwrap_or("?"),
                         )
                     })?;
@@ -2495,7 +2786,7 @@ impl<'a> FunctionLower<'a> {
                 if args.len() != expected {
                     return Err(format!(
                         "enum variant `{}::{}` expects {} payload value(s), got {}",
-                        self.interner.resolve(enum_name).unwrap_or("?"),
+                        self.interner.resolve(expected_base).unwrap_or("?"),
                         self.interner.resolve(var).unwrap_or("?"),
                         expected,
                         args.len(),
@@ -2507,10 +2798,10 @@ impl<'a> FunctionLower<'a> {
             Expr::Identifier(sym) => {
                 let (src_tag, src_payloads) = match self.bindings.get(&sym).cloned() {
                     Some(Binding::Enum {
-                        enum_name: src_en,
+                        enum_id: src_id,
                         tag_local,
                         payload_locals,
-                    }) if src_en == enum_name => (tag_local, payload_locals),
+                    }) if src_id == target_enum_id => (tag_local, payload_locals),
                     _ => {
                         return Err(format!(
                             "`{}` is not an enum binding of the expected type",
@@ -2542,7 +2833,7 @@ impl<'a> FunctionLower<'a> {
                         if let Stmt::Expression(e) = stmt {
                             return self.lower_into_enum_target(
                                 &e,
-                                enum_name,
+                                target_enum_id,
                                 tag_local,
                                 payload_locals,
                             );
@@ -2558,7 +2849,7 @@ impl<'a> FunctionLower<'a> {
                     &then_body,
                     &elif_pairs,
                     &else_body,
-                    enum_name,
+                    target_enum_id,
                     tag_local,
                     payload_locals,
                 )
@@ -2566,7 +2857,7 @@ impl<'a> FunctionLower<'a> {
             Expr::Match(scrutinee, arms) => self.lower_match_into_enum(
                 &scrutinee,
                 &arms,
-                enum_name,
+                target_enum_id,
                 tag_local,
                 payload_locals,
             ),
@@ -2657,7 +2948,7 @@ impl<'a> FunctionLower<'a> {
         then_body: &ExprRef,
         elif_pairs: &Vec<(ExprRef, ExprRef)>,
         else_body: &ExprRef,
-        enum_name: DefaultSymbol,
+        target_enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: &[Vec<(LocalId, Type)>],
     ) -> Result<(), String> {
@@ -2685,7 +2976,7 @@ impl<'a> FunctionLower<'a> {
 
         // then
         self.switch_to(then_blk);
-        self.lower_into_enum_target(then_body, enum_name, tag_local, payload_locals)?;
+        self.lower_into_enum_target(then_body, target_enum_id, tag_local, payload_locals)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -2708,14 +2999,14 @@ impl<'a> FunctionLower<'a> {
                 else_blk: next,
             });
             self.switch_to(body_blk);
-            self.lower_into_enum_target(elif_body, enum_name, tag_local, payload_locals)?;
+            self.lower_into_enum_target(elif_body, target_enum_id, tag_local, payload_locals)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
         }
         // else
         self.switch_to(else_blk);
-        self.lower_into_enum_target(else_body, enum_name, tag_local, payload_locals)?;
+        self.lower_into_enum_target(else_body, target_enum_id, tag_local, payload_locals)?;
         if !self.is_unreachable() {
             self.terminate(Terminator::Jump(merge));
         }
@@ -2733,7 +3024,7 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         scrutinee: &ExprRef,
         arms: &Vec<MatchArm>,
-        enum_name: DefaultSymbol,
+        target_enum_id: EnumId,
         tag_local: LocalId,
         payload_locals: &[Vec<(LocalId, Type)>],
     ) -> Result<(), String> {
@@ -2760,12 +3051,12 @@ impl<'a> FunctionLower<'a> {
                     self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
                 }
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let (scrut_enum, scrut_tag, scrut_payloads) = match &scrut {
+                    let (scrut_enum_id, scrut_tag, scrut_payloads) = match &scrut {
                         MatchScrutinee::Enum {
-                            enum_name,
+                            enum_id,
                             tag_local,
                             payload_locals,
-                        } => (*enum_name, *tag_local, payload_locals.clone()),
+                        } => (*enum_id, *tag_local, payload_locals.clone()),
                         MatchScrutinee::Scalar { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
@@ -2773,20 +3064,14 @@ impl<'a> FunctionLower<'a> {
                             );
                         }
                     };
-                    if *p_enum != scrut_enum {
+                    let scrut_def = self.module.enum_def(scrut_enum_id).clone();
+                    if *p_enum != scrut_def.base_name {
                         return Err(format!(
                             "match arm pattern enum `{}` does not match scrutinee enum `{}`",
                             self.interner.resolve(*p_enum).unwrap_or("?"),
-                            self.interner.resolve(scrut_enum).unwrap_or("?"),
+                            self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
                         ));
                     }
-                    let scrut_def =
-                        self.enum_defs.get(&scrut_enum).cloned().ok_or_else(|| {
-                            format!(
-                                "internal error: enum `{}` not in defs at match site",
-                                self.interner.resolve(scrut_enum).unwrap_or("?")
-                            )
-                        })?;
                     let variant_idx = scrut_def
                         .variants
                         .iter()
@@ -2794,7 +3079,7 @@ impl<'a> FunctionLower<'a> {
                         .ok_or_else(|| {
                             format!(
                                 "match arm references unknown variant `{}::{}`",
-                                self.interner.resolve(scrut_enum).unwrap_or("?"),
+                                self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
                                 self.interner.resolve(*p_variant).unwrap_or("?"),
                             )
                         })?;
@@ -2803,7 +3088,7 @@ impl<'a> FunctionLower<'a> {
                     {
                         return Err(format!(
                             "match arm for `{}::{}` has {} sub-pattern(s), expected {}",
-                            self.interner.resolve(scrut_enum).unwrap_or("?"),
+                            self.interner.resolve(scrut_def.base_name).unwrap_or("?"),
                             self.interner.resolve(*p_variant).unwrap_or("?"),
                             sub_patterns.len(),
                             scrut_def.variants[variant_idx].payload_types.len(),
@@ -2893,7 +3178,7 @@ impl<'a> FunctionLower<'a> {
                 });
                 self.switch_to(body_blk);
             }
-            self.lower_into_enum_target(&arm.body, enum_name, tag_local, payload_locals)?;
+            self.lower_into_enum_target(&arm.body, target_enum_id, tag_local, payload_locals)?;
             if !self.is_unreachable() {
                 self.terminate(Terminator::Jump(merge));
             }
@@ -3781,12 +4066,12 @@ impl<'a> FunctionLower<'a> {
                     self.emit_literal_eq_branch(lit_ref, scrut_v, scrut_ty, next_blk)?;
                 }
                 Pattern::EnumVariant(p_enum, p_variant, sub_patterns) => {
-                    let (enum_name, tag_local, payload_locals) = match &scrut {
+                    let (scrut_enum_id, tag_local, payload_locals) = match &scrut {
                         MatchScrutinee::Enum {
-                            enum_name,
+                            enum_id,
                             tag_local,
                             payload_locals,
-                        } => (*enum_name, *tag_local, payload_locals.clone()),
+                        } => (*enum_id, *tag_local, payload_locals.clone()),
                         MatchScrutinee::Scalar { .. } => {
                             return Err(
                                 "enum-variant pattern is only valid against an enum scrutinee"
@@ -3794,6 +4079,8 @@ impl<'a> FunctionLower<'a> {
                             );
                         }
                     };
+                    let enum_def = self.module.enum_def(scrut_enum_id).clone();
+                    let enum_name = enum_def.base_name;
                     if *p_enum != enum_name {
                         return Err(format!(
                             "match arm pattern enum `{}` does not match scrutinee enum `{}`",
@@ -3801,12 +4088,6 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(enum_name).unwrap_or("?"),
                         ));
                     }
-                    let enum_def = self.enum_defs.get(&enum_name).cloned().ok_or_else(|| {
-                        format!(
-                            "internal error: enum `{}` not in defs at match site",
-                            self.interner.resolve(enum_name).unwrap_or("?")
-                        )
-                    })?;
                     let variant_idx = enum_def
                         .variants
                         .iter()
@@ -3987,26 +4268,24 @@ impl<'a> FunctionLower<'a> {
     ) {
         if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern {
             if let MatchScrutinee::Enum {
-                enum_name,
+                enum_id,
                 payload_locals,
                 ..
             } = scrut
             {
-                if let Some(enum_def) = self.enum_defs.get(enum_name).cloned() {
-                    if let Some(variant_idx) =
-                        enum_def.variants.iter().position(|v| v.name == *variant_sym)
-                    {
-                        if variant_idx < payload_locals.len() {
-                            for (i, sp) in sub_patterns.iter().enumerate() {
-                                if let Pattern::Name(sym) = sp {
-                                    if i < payload_locals[variant_idx].len() {
-                                        let (local, ty) =
-                                            payload_locals[variant_idx][i];
-                                        self.bindings.insert(
-                                            *sym,
-                                            Binding::Scalar { local, ty },
-                                        );
-                                    }
+                let enum_def = self.module.enum_def(*enum_id).clone();
+                if let Some(variant_idx) =
+                    enum_def.variants.iter().position(|v| v.name == *variant_sym)
+                {
+                    if variant_idx < payload_locals.len() {
+                        for (i, sp) in sub_patterns.iter().enumerate() {
+                            if let Pattern::Name(sym) = sp {
+                                if i < payload_locals[variant_idx].len() {
+                                    let (local, ty) = payload_locals[variant_idx][i];
+                                    self.bindings.insert(
+                                        *sym,
+                                        Binding::Scalar { local, ty },
+                                    );
                                 }
                             }
                         }
@@ -4039,12 +4318,12 @@ impl<'a> FunctionLower<'a> {
             if let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
                     Binding::Enum {
-                        enum_name,
+                        enum_id,
                         tag_local,
                         payload_locals,
                     } => {
                         return Ok(MatchScrutinee::Enum {
-                            enum_name,
+                            enum_id,
                             tag_local,
                             payload_locals,
                         });

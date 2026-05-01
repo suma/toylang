@@ -26,7 +26,8 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
   - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
   - **variant サブパターン**: `Name(sym)` で payload を fresh scalar local に bind、`_` で discard、`Literal` で payload にリテラル等価チェック追加（`Shape::Circle(0i64) => ...` のように）
   - **guard**: `Pat if cond => body` をサポート。bindings は guard 評価時にスコープ内
-  - **関数境界 (Phase B + E)**: enum を関数引数 / 戻り値の双方で受け取り / 返せる（`fn area(s: Shape) -> i64`、`fn make() -> Shape { ... }`）。codegen が `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param / 多値 Return に展開し、caller / callee の per-variant payload locals が同順で allocate されるので boundary が一致。enum 戻り型の関数 body は tail が if-chain / match / 単一の `Enum::Variant(args)` 構築 / 既存 enum binding の identifier いずれでも OK（`lower_body` が target locals を pre-allocate して `lower_into_enum_target` 経由で書き込む）。frontend type-checker の return-type 比較も `Identifier <-> Enum(name, [])` を unify するよう拡張済み
+  - **関数境界 (Phase B + E)**: enum を関数引数 / 戻り値の双方で受け取り / 返せる（`fn area(s: Shape) -> i64`、`fn make() -> Shape { ... }`）。codegen が `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param / 多値 Return に展開し、caller / callee の per-variant payload locals が同順で allocate されるので boundary が一致。enum 戻り型の関数 body は tail が if-chain / match / 単一の `Enum::Variant(args)` 構築 / 既存 enum binding の identifier いずれでも OK（`lower_body` が target locals を pre-allocate して `lower_into_enum_target` 経由で書き込む）。frontend type-checker の return-type 比較も `Identifier <-> Enum(name, [])` および `Struct(name, args) <-> Enum(name, args)` を unify するよう拡張済み
+  - **ジェネリック enum (Phase F)**: `enum Option<T> { None, Some(T) }` を宣言可能。各使用サイト（型注釈、関数引数 / 戻り値、`val x: Option<i64> = ...`）で型引数を取り出してモノモル化（`(base_name, type_args) → EnumId` の dedup）。型引数は (1) val/var の型注釈、(2) 関数 param / return 型から決定、(3) `Option::Some(42i64)` のように tuple variant の引数型から推論（型注釈なしのケース）。`Option<i64>` と `Option<u64>` は別の `EnumId` として管理されるので衝突しない。**制約**: `f64` は引き続き payload 不可、ジェネリックパラメータは i64/u64/bool に解決されるもののみ、ネストしたジェネリック (`Option<Option<i64>>`) は未対応
   - **`print` / `println`**: enum binding（`val` / `var` 由来 または関数引数）を受け取って interpreter と同形式に出力（unit variant: `Color::Red`、tuple variant: `Shape::Circle(5)` / `Shape::Rect(3, 7)`）。runtime tag dispatch で variant ごとの分岐を brif chain で生成。enum リテラル直接（`println(Enum::Variant(args))`）は不可、`val` で受ける必要あり
   - **enum 構築を `if` / `match` 等の式位置で (Phase D)**: `val s = if cond { Pick::A(n) } elif ... { Pick::B } else { Pick::C(m) }` や `val s = match n { 0u64 => Pick::Zero, _ => Pick::Big(n) }` のように、複数分岐の各 tail で enum を構築するパターンを受理。`detect_enum_result` で全分岐が同じ enum を返すか静的に判定し、`lower_into_enum_target` 経由で各分岐が同じ tag/payload locals に書き込む（cranelift の `def_var` walk で merge 時に SSA 化）。ネストした if-chain、`match` arm の guard、blocks (`{ stmt; tail }`) も再帰で動作。tail 位置で既存の enum binding identifier を返すケースも copy 経路で動作
   - **制約**: ジェネリック enum、ネストした enum サブパターン (`Some(Some(x))`)、enum 全体の再代入、`f64` / 構造体 / tuple / 別 enum payload — 未対応
@@ -37,7 +38,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 未対応（明確なエラーで reject される）:
 
 - 任意の文字列値（リテラルのみ可）、配列、dict
-- ジェネリック enum (`enum Option<T> { ... }`)、ネストした enum サブパターン (`Some(Some(x))`)、enum 関数境界、enum を `if` 等の式戻り値で構築、enum payload に `f64` / 構造体 / tuple / 別 enum
+- ネストした enum サブパターン (`Some(Some(x))`)、enum payload に `f64` / 構造体 / tuple / 別 enum、ネストしたジェネリック (`Option<Option<i64>>`)
 - trait
 - allocator
 - generics（型パラメータを持つ関数 / struct）

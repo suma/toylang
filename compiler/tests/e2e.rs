@@ -2221,6 +2221,151 @@ fn enum_returned_via_tail_constructor() {
 }
 
 #[test]
+fn generic_enum_option_with_explicit_annotation() {
+    if skip_e2e() {
+        return;
+    }
+    // Annotation `val a: Option<i64> = ...` drives the
+    // monomorphisation; both branches go through the same
+    // Option<i64> instance.
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn unwrap_or(o: Option<i64>, default: i64) -> i64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => default,
+            }
+        }
+        fn main() -> u64 {
+            val a: Option<i64> = Option::Some(100i64)
+            val b: Option<i64> = Option::None
+            val r: i64 = unwrap_or(a, 1i64) + unwrap_or(b, 2i64)
+            r as u64
+        }
+    "#;
+    // 100 + 2 = 102
+    assert_eq!(compile_and_run(src, "generic_enum_option"), 102);
+}
+
+#[test]
+fn generic_enum_option_with_u64_payload() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn unwrap_or(o: Option<u64>, default: u64) -> u64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => default,
+            }
+        }
+        fn main() -> u64 {
+            val a: Option<u64> = Option::Some(7u64)
+            unwrap_or(a, 99u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_enum_option_u64"), 7);
+}
+
+#[test]
+fn generic_enum_inferred_from_argument() {
+    if skip_e2e() {
+        return;
+    }
+    // No explicit annotation on the val — the compiler infers `T`
+    // from the constructor argument type.
+    let src = r#"
+        enum Box<T> {
+            Put(T),
+        }
+        fn main() -> u64 {
+            val b = Box::Put(42u64)
+            match b {
+                Box::Put(v) => v,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_enum_infer"), 42);
+}
+
+#[test]
+fn generic_enum_returned_from_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Function returns Option<u64>; caller monomorphises through
+    // the function's return type.
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn divide(a: u64, b: u64) -> Option<u64> {
+            if b == 0u64 {
+                Option::None
+            } else {
+                Option::Some(a / b)
+            }
+        }
+        fn unwrap_or(o: Option<u64>, default: u64) -> u64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => default,
+            }
+        }
+        fn main() -> u64 {
+            val a = divide(20u64, 4u64)
+            val b = divide(20u64, 0u64)
+            unwrap_or(a, 99u64) + unwrap_or(b, 7u64)
+        }
+    "#;
+    // 5 + 7 = 12
+    assert_eq!(compile_and_run(src, "generic_enum_return"), 12);
+}
+
+#[test]
+fn generic_enum_two_instantiations_dont_collide() {
+    if skip_e2e() {
+        return;
+    }
+    // Same template `Option<T>` instantiated twice with different
+    // type args; the monomorphiser interns each (base, args) once
+    // and keeps them distinct.
+    let src = r#"
+        enum Option<T> {
+            None,
+            Some(T),
+        }
+        fn unwrap_i64(o: Option<i64>) -> i64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+        }
+        fn unwrap_u64(o: Option<u64>) -> u64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => 0u64,
+            }
+        }
+        fn main() -> u64 {
+            val a: Option<i64> = Option::Some(7i64)
+            val b: Option<u64> = Option::Some(11u64)
+            (unwrap_i64(a) as u64) + unwrap_u64(b)
+        }
+    "#;
+    // 7 + 11 = 18
+    assert_eq!(compile_and_run(src, "generic_enum_two_inst"), 18);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

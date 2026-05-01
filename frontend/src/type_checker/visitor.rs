@@ -446,6 +446,22 @@ impl<'a> TypeCheckerVisitor<'a> {
                             | (TypeDecl::Identifier(b), TypeDecl::Enum(a, params_a)) => {
                                 a == b && params_a.is_empty()
                             }
+                            // Generic enum return types: the parser
+                            // produces `Struct(name, args)` for any
+                            // `Name<T, ...>` annotation since it
+                            // can't tell enum from struct
+                            // pre-typecheck. The inferred body type
+                            // is `Enum(name, args)`. Unify them when
+                            // names + arg lists match — same
+                            // treatment as `is_equivalent` does for
+                            // call argument checks.
+                            (TypeDecl::Struct(a, params_a), TypeDecl::Enum(b, params_b))
+                            | (TypeDecl::Enum(b, params_b), TypeDecl::Struct(a, params_a)) => {
+                                a == b
+                                    && (params_a.is_empty()
+                                        || params_b.is_empty()
+                                        || params_a == params_b)
+                            }
                             _ => false,
                         }
                     }

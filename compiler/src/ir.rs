@@ -61,19 +61,30 @@ pub struct Module {
     /// structural (no name), so we intern each unique element-type
     /// list and reference it by `TupleId`. Indexed by `TupleId.0`.
     pub tuple_defs: Vec<Vec<Type>>,
-    /// Enum definitions discovered at lowering time. The variant order
-    /// in the value vector is canonical: the first variant has tag
-    /// value `0`, the second `1`, etc. Lowering compiles
-    /// `Enum::Variant` and `Enum::Variant(args)` against this order.
-    pub enum_defs: HashMap<DefaultSymbol, EnumDef>,
+    /// Concrete enum instances. Each entry is one fully-monomorphised
+    /// enum: a non-generic enum has exactly one entry; a generic enum
+    /// `Option<T>` has one entry per concrete `T` it's instantiated
+    /// with (`Option<i64>`, `Option<u64>`, ...). Indexed by `EnumId.0`.
+    /// Lookup by `(base_name, type_args)` goes through `enum_index`.
+    pub enum_defs: Vec<EnumDef>,
+    /// `(base_name, type_args)` → `EnumId`. Lets the lowering pass
+    /// dedup repeated instantiations so `Option<i64>` always maps to
+    /// the same entry. `type_args` is an empty vec for non-generic
+    /// enums.
+    pub enum_index: HashMap<(DefaultSymbol, Vec<Type>), EnumId>,
 }
 
 /// One enum's full shape — used by lowering to look up tag values and
 /// payload types when compiling construction sites and match arms.
-/// `Type::Enum(name)` only carries the enum name; the lowering layer
-/// reads the variant list from here.
+/// `Type::Enum(id)` indexes into `Module.enum_defs`; the def carries
+/// its `base_name` (the user-written enum name, used for diagnostics
+/// and for matching `Enum::Variant` patterns against the scrutinee)
+/// and `type_args` (the concrete type arguments substituted into each
+/// variant's payload — empty for non-generic enums).
 #[derive(Debug, Clone)]
 pub struct EnumDef {
+    pub base_name: DefaultSymbol,
+    pub type_args: Vec<Type>,
     pub variants: Vec<EnumVariant>,
 }
 
@@ -122,6 +133,36 @@ impl Module {
 
     pub fn function_mut(&mut self, id: FuncId) -> &mut Function {
         &mut self.functions[id.0 as usize]
+    }
+
+    pub fn enum_def(&self, id: EnumId) -> &EnumDef {
+        &self.enum_defs[id.0 as usize]
+    }
+
+    /// Mint a fresh `EnumId` for `(base_name, type_args, variants)`,
+    /// or return the existing one if this combination has already
+    /// been instantiated. The caller is responsible for substituting
+    /// any generic-payload references in `variants` against
+    /// `type_args` before calling — the IR layer just stores what it
+    /// receives.
+    pub fn intern_enum(
+        &mut self,
+        base_name: DefaultSymbol,
+        type_args: Vec<Type>,
+        variants: Vec<EnumVariant>,
+    ) -> EnumId {
+        let key = (base_name, type_args.clone());
+        if let Some(existing) = self.enum_index.get(&key) {
+            return *existing;
+        }
+        let id = EnumId(self.enum_defs.len() as u32);
+        self.enum_defs.push(EnumDef {
+            base_name,
+            type_args,
+            variants,
+        });
+        self.enum_index.insert(key, id);
+        id
     }
 }
 
@@ -221,9 +262,11 @@ pub enum Type {
     Tuple(TupleId),
     /// User-declared enum. Like `Struct`, an enum value is never a
     /// single SSA value — lowering decomposes it into a tag local
-    /// plus per-variant payload locals. `Type::Enum` may appear in
-    /// `Local` slots but not (in this MVP) in function signatures.
-    Enum(DefaultSymbol),
+    /// plus per-variant payload locals. The `EnumId` indexes into
+    /// `Module.enum_defs`, where each entry is one fully-monomorphised
+    /// instance: a non-generic enum gets a single id, a generic enum
+    /// gets one id per concrete type-argument tuple.
+    Enum(EnumId),
 }
 
 impl Type {
@@ -450,6 +493,9 @@ pub struct FuncId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TupleId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumId(pub u32);
+
 // -------------------------------------------------------------------------
 // Display: a textual format that can be diffed in tests and shown via
 // `--emit=ir`. Intentionally simple — keys / values are plain ASCII so
@@ -469,7 +515,7 @@ impl fmt::Display for Type {
             // through `Function::export_name` instead.
             Type::Struct(sym) => write!(f, "struct#{}", sym.to_usize()),
             Type::Tuple(id) => write!(f, "tuple#{}", id.0),
-            Type::Enum(sym) => write!(f, "enum#{}", sym.to_usize()),
+            Type::Enum(id) => write!(f, "enum#{}", id.0),
         }
     }
 }

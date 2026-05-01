@@ -701,15 +701,14 @@ fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types
         // canonical declaration order. The same flattening drives
         // both signature construction and the call-site dest list,
         // so caller and callee always agree on which slot is which.
-        IrType::Enum(name) => {
+        IrType::Enum(id) => {
             let mut out = Vec::new();
             // Tag: U64 in the IR, I64 in cranelift terms.
             out.push(types::I64);
-            if let Some(def) = ir_module.enum_defs.get(&name) {
-                for variant in &def.variants {
-                    for ty in &variant.payload_types {
-                        out.extend(flatten_struct_to_cranelift_tys(ir_module, *ty));
-                    }
+            let def = ir_module.enum_def(id);
+            for variant in &def.variants {
+                for ty in &variant.payload_types {
+                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *ty));
                 }
             }
             out

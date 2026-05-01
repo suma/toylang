@@ -43,6 +43,7 @@ use crate::ir::{
 pub fn lower_program(
     program: &Program,
     interner: &DefaultStringInterner,
+    contract_msgs: &crate::ContractMessages,
 ) -> Result<Module, String> {
     let mut module = Module::new();
 
@@ -59,6 +60,14 @@ pub fn lower_program(
     // `Type::Struct(name)` into per-field cranelift params / returns
     // without re-walking the AST.
     module.struct_defs = struct_defs.clone();
+
+    // Compile-time evaluate every top-level `const`. The compiler MVP
+    // accepts literal initialisers and references to earlier consts;
+    // anything else (function calls, complex expressions) is rejected
+    // with a clear message. Each evaluated value is stashed in a map
+    // that function-body lowering consults when it sees an Identifier
+    // referring to a const symbol.
+    let const_values = evaluate_consts(program, interner)?;
 
     // First pass: declare every function so call sites (which may refer
     // to functions defined later in the file) can resolve to a `FuncId`
@@ -113,11 +122,112 @@ pub fn lower_program(
             .function_index
             .get(&func.name)
             .expect("declared in pass 1");
-        let mut builder =
-            FunctionLower::new(&mut module, func_id, program, interner, &struct_defs)?;
+        let mut builder = FunctionLower::new(
+            &mut module,
+            func_id,
+            program,
+            interner,
+            &struct_defs,
+            &const_values,
+            contract_msgs,
+        )?;
         builder.lower_body(&func)?;
     }
     Ok(module)
+}
+
+/// Compile-time-evaluated values for each top-level `const`. Only
+/// literal initialisers (`Int64`, `UInt64`, `Float64`, bool) and
+/// references to earlier consts are supported — anything else is
+/// rejected before lowering, mirroring the rest of the compiler MVP.
+type ConstValues = HashMap<DefaultSymbol, Const>;
+
+fn evaluate_consts(
+    program: &Program,
+    interner: &DefaultStringInterner,
+) -> Result<ConstValues, String> {
+    let mut values: ConstValues = HashMap::new();
+    for c in &program.consts {
+        let v = eval_const_expr(&c.value, program, &values, interner).ok_or_else(|| {
+            format!(
+                "compiler MVP cannot evaluate the initialiser for `const {}`: only literal values and references to earlier consts are supported",
+                interner.resolve(c.name).unwrap_or("?")
+            )
+        })?;
+        // The type-checker has already validated the declared type
+        // against the initialiser; we don't re-check here.
+        values.insert(c.name, v);
+    }
+    Ok(values)
+}
+
+fn eval_const_expr(
+    expr_ref: &frontend::ast::ExprRef,
+    program: &Program,
+    values: &ConstValues,
+    interner: &DefaultStringInterner,
+) -> Option<Const> {
+    let _ = interner;
+    match program.expression.get(expr_ref)? {
+        Expr::Int64(v) => Some(Const::I64(v)),
+        Expr::UInt64(v) => Some(Const::U64(v)),
+        Expr::Float64(v) => Some(Const::F64(v)),
+        Expr::True => Some(Const::Bool(true)),
+        Expr::False => Some(Const::Bool(false)),
+        Expr::Identifier(sym) => values.get(&sym).copied(),
+        // Fold simple arithmetic / comparison so initialisers like
+        // `const TWO_PI: f64 = PI + PI` work. The fold is total in
+        // the sense that any operand that fails to evaluate here
+        // bubbles a `None` up, which the caller turns into a compile
+        // error. We don't try to constant-fold every operator that
+        // might appear — only the ones we've seen come up in the
+        // existing toylang examples (arithmetic and unary minus).
+        Expr::Binary(op, lhs, rhs) => {
+            let l = eval_const_expr(&lhs, program, values, interner)?;
+            let r = eval_const_expr(&rhs, program, values, interner)?;
+            const_fold_binop(op, l, r)
+        }
+        Expr::Unary(op, operand) => {
+            let v = eval_const_expr(&operand, program, values, interner)?;
+            match (op, v) {
+                (frontend::ast::UnaryOp::Negate, Const::I64(n)) => Some(Const::I64(-n)),
+                (frontend::ast::UnaryOp::Negate, Const::F64(n)) => Some(Const::F64(-n)),
+                (frontend::ast::UnaryOp::LogicalNot, Const::Bool(b)) => Some(Const::Bool(!b)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn const_fold_binop(op: frontend::ast::Operator, l: Const, r: Const) -> Option<Const> {
+    use frontend::ast::Operator;
+    match (l, r) {
+        (Const::I64(a), Const::I64(b)) => match op {
+            Operator::IAdd => Some(Const::I64(a.wrapping_add(b))),
+            Operator::ISub => Some(Const::I64(a.wrapping_sub(b))),
+            Operator::IMul => Some(Const::I64(a.wrapping_mul(b))),
+            Operator::IDiv if b != 0 => Some(Const::I64(a.wrapping_div(b))),
+            Operator::IMod if b != 0 => Some(Const::I64(a.wrapping_rem(b))),
+            _ => None,
+        },
+        (Const::U64(a), Const::U64(b)) => match op {
+            Operator::IAdd => Some(Const::U64(a.wrapping_add(b))),
+            Operator::ISub => Some(Const::U64(a.wrapping_sub(b))),
+            Operator::IMul => Some(Const::U64(a.wrapping_mul(b))),
+            Operator::IDiv if b != 0 => Some(Const::U64(a.wrapping_div(b))),
+            Operator::IMod if b != 0 => Some(Const::U64(a.wrapping_rem(b))),
+            _ => None,
+        },
+        (Const::F64(a), Const::F64(b)) => match op {
+            Operator::IAdd => Some(Const::F64(a + b)),
+            Operator::ISub => Some(Const::F64(a - b)),
+            Operator::IMul => Some(Const::F64(a * b)),
+            Operator::IDiv => Some(Const::F64(a / b)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// `struct Name { f1: T1, f2: T2, ... }` declarations, indexed by symbol.
@@ -216,6 +326,25 @@ struct FunctionLower<'a> {
     interner: &'a DefaultStringInterner,
     /// Per-program struct definitions. Read-only here.
     struct_defs: &'a StructDefs,
+    /// Top-level `const` values, keyed by name. An identifier in
+    /// expression position falls back to this table when no local
+    /// binding shadows the name.
+    const_values: &'a ConstValues,
+    /// Pre-interned panic messages for contract violations. Set once
+    /// per `lower_program` call.
+    contract_msgs: &'a crate::ContractMessages,
+    /// `ensures` clauses on the function currently being lowered.
+    /// Each Return site (explicit or implicit) emits these checks
+    /// before the actual return so a violated postcondition aborts
+    /// with the same exit code as a `panic`. A copy of the AST refs
+    /// is held so we don't have to re-fetch from `program.function`
+    /// on every Return.
+    ensures: Vec<ExprRef>,
+    /// `result` symbol — used to bind the return value during
+    /// ensures evaluation. The interpreter / type-checker rely on the
+    /// same name. We resolve it lazily because the symbol may not
+    /// exist in the interner if no source program ever used it.
+    result_sym: Option<DefaultSymbol>,
     /// Toylang binding name → storage shape.
     bindings: HashMap<DefaultSymbol, Binding>,
     /// (continue, break) target blocks for `break` and `continue` inside
@@ -239,8 +368,9 @@ struct FunctionLower<'a> {
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
 /// induction variable). Scalar bindings live in one local; struct
-/// bindings expand into one local per field. The lowering pass selects
-/// which form to allocate based on the expression's static type.
+/// bindings expand into one local per field; tuple bindings expand
+/// into one local per element. The lowering pass selects which form
+/// to allocate based on the expression's static type.
 #[derive(Debug, Clone)]
 enum Binding {
     Scalar { local: LocalId, ty: Type },
@@ -251,6 +381,22 @@ enum Binding {
         struct_name: DefaultSymbol,
         fields: Vec<FieldBinding>,
     },
+    /// Tuple bindings expand into one local per element, indexed
+    /// positionally rather than by name. The compiler MVP supports
+    /// tuples only as **local** bindings; cross-function tuple values
+    /// (params / returns) are deferred so the IR stays scalar at
+    /// boundaries.
+    Tuple { elements: Vec<TupleElementBinding> },
+}
+
+/// One element of a `Binding::Tuple`. `index` is the element's
+/// positional index used by `t.0` / `t.1` access; we keep it
+/// explicit for diagnostics rather than relying on `Vec` order.
+#[derive(Debug, Clone)]
+struct TupleElementBinding {
+    index: usize,
+    local: LocalId,
+    ty: Type,
 }
 
 /// One field of a `Binding::Struct`. `name` matches `StructField.name`
@@ -270,6 +416,8 @@ impl<'a> FunctionLower<'a> {
         program: &'a Program,
         interner: &'a DefaultStringInterner,
         struct_defs: &'a StructDefs,
+        const_values: &'a ConstValues,
+        contract_msgs: &'a crate::ContractMessages,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -277,6 +425,10 @@ impl<'a> FunctionLower<'a> {
             program,
             interner,
             struct_defs,
+            const_values,
+            contract_msgs,
+            ensures: Vec::new(),
+            result_sym: interner.get("result"),
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
             current_block: None,
@@ -344,6 +496,15 @@ impl<'a> FunctionLower<'a> {
         self.module.function_mut(self.func_id).entry = entry;
         self.current_block = Some(entry);
 
+        // Emit `requires` checks at function entry. Each predicate
+        // is evaluated; if false the function aborts via the same
+        // panic infrastructure `panic("...")` uses, so the exit code
+        // and (terse) message stay consistent across compiler / JIT
+        // / interpreter.
+        self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
+        // Stash `ensures` so every Return site can consult them.
+        self.ensures = func.ensures.clone();
+
         // Function bodies are wrapped in a single Stmt::Expression(block).
         let stmt = self
             .program
@@ -377,6 +538,7 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<(), String> {
         match (ret_ty, body_value) {
             (Type::Unit, _) => {
+                self.emit_ensures_checks(&[])?;
                 self.terminate(Terminator::Return(vec![]));
                 Ok(())
             }
@@ -402,10 +564,17 @@ impl<'a> FunctionLower<'a> {
                         .expect("LoadLocal returns a value");
                     values.push(v);
                 }
+                // Struct returns: bind `result` to the first field
+                // for ensures evaluation. The current MVP doesn't let
+                // ensures reference individual fields of `result`, so
+                // a single representative value is enough — and most
+                // contracts focus on scalar return values anyway.
+                self.emit_ensures_checks(&values)?;
                 self.terminate(Terminator::Return(values));
                 Ok(())
             }
             (_, Some(v)) => {
+                self.emit_ensures_checks(&[v])?;
                 self.terminate(Terminator::Return(vec![v]));
                 Ok(())
             }
@@ -414,6 +583,80 @@ impl<'a> FunctionLower<'a> {
                     .to_string(),
             ),
         }
+    }
+
+    /// Emit a sequence of contract-clause checks: each predicate must
+    /// evaluate to `true`; on false we branch to a fresh panic block
+    /// with the supplied message symbol. `requires` and `ensures`
+    /// share this helper because the only thing that differs is
+    /// which message to attach.
+    fn emit_contract_checks(
+        &mut self,
+        clauses: &[ExprRef],
+        message: DefaultSymbol,
+    ) -> Result<(), String> {
+        for clause in clauses {
+            let cond = self
+                .lower_expr(clause)?
+                .ok_or_else(|| "contract clause produced no value".to_string())?;
+            let pass = self.fresh_block();
+            let fail = self.fresh_block();
+            self.terminate(Terminator::Branch {
+                cond,
+                then_blk: pass,
+                else_blk: fail,
+            });
+            self.switch_to(fail);
+            self.terminate(Terminator::Panic { message });
+            self.switch_to(pass);
+        }
+        Ok(())
+    }
+
+    /// Emit the function's stashed `ensures` checks at a return
+    /// site. `result_values` is what the function is about to return
+    /// (empty for void, one entry for scalar, N for struct); we bind
+    /// `result` (if the symbol exists in the interner) to the first
+    /// scalar value so simple postconditions like `ensures result > 0`
+    /// can reference it.
+    fn emit_ensures_checks(&mut self, result_values: &[ValueId]) -> Result<(), String> {
+        if self.ensures.is_empty() {
+            return Ok(());
+        }
+        // Bind `result` to a fresh local pointing at the first
+        // returned value. We do this before every ensures emission
+        // so each clause sees the same value. If the body never
+        // mentions `result`, the binding is harmless dead code.
+        if let (Some(result_sym), Some(first)) = (self.result_sym, result_values.first().copied()) {
+            // Recover the value's IR type from the function's
+            // value-table-via-instructions scan; codegen does the
+            // same trick. Falls back to U64 for safety.
+            let ty = self.value_ir_type_for(first).unwrap_or(Type::U64);
+            let local = self.module.function_mut(self.func_id).add_local(ty);
+            self.emit(InstKind::StoreLocal { dst: local, src: first }, None);
+            self.bindings.insert(result_sym, Binding::Scalar { local, ty });
+        }
+        let clauses: Vec<ExprRef> = self.ensures.clone();
+        let message = self.contract_msgs.ensures_violation;
+        self.emit_contract_checks(&clauses, message)?;
+        Ok(())
+    }
+
+    /// Cheap O(n) lookup mirroring codegen's `value_ir_type` — finds
+    /// the IR type of a previously-emitted ValueId by scanning the
+    /// current function's instructions.
+    fn value_ir_type_for(&self, v: ValueId) -> Option<Type> {
+        let func = self.module.function(self.func_id);
+        for blk in &func.blocks {
+            for inst in &blk.instructions {
+                if let Some((vid, ty)) = inst.result {
+                    if vid == v {
+                        return Some(ty);
+                    }
+                }
+            }
+        }
+        None
     }
 
     // (Implicit struct returns flow through `pending_struct_value` set
@@ -567,6 +810,7 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
+                    self.emit_ensures_checks(&values)?;
                     self.terminate(Terminator::Return(values));
                     return Ok(None);
                 }
@@ -575,8 +819,14 @@ impl<'a> FunctionLower<'a> {
                     None => None,
                 };
                 match (ret_ty, val) {
-                    (Type::Unit, _) => self.terminate(Terminator::Return(vec![])),
-                    (_, Some(v)) => self.terminate(Terminator::Return(vec![v])),
+                    (Type::Unit, _) => {
+                        self.emit_ensures_checks(&[])?;
+                        self.terminate(Terminator::Return(vec![]));
+                    }
+                    (_, Some(v)) => {
+                        self.emit_ensures_checks(&[v])?;
+                        self.terminate(Terminator::Return(vec![v]));
+                    }
                     (_, None) => {
                         return Err("return without value in non-Unit function".to_string());
                     }
@@ -657,6 +907,57 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(rhs_ref)
             .ok_or_else(|| "let rhs missing".to_string())?;
+        // Tuple-literal RHS: allocate one local per element. Like
+        // structs, tuples never flow through the IR's value graph;
+        // the only way to consume one is via `t.N` element access on a
+        // bound name. The parser desugars `val (a, b) = e` into
+        // `val tmp = e; val a = tmp.0; val b = tmp.1`, so this branch
+        // also handles destructuring.
+        if let Expr::TupleLiteral(elems) = rhs.clone() {
+            let mut bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+            // Pre-allocate locals so element-rhs evaluation order
+            // doesn't matter even if we add cross-element references
+            // later. We don't have an obvious authoritative type for
+            // each element until we evaluate it; use `value_scalar`
+            // as a best effort, falling back to U64 for ambiguous
+            // numeric literals.
+            for (i, elem_ref) in elems.iter().enumerate() {
+                let elem_ty = self
+                    .value_scalar(elem_ref)
+                    .ok_or_else(|| {
+                        format!(
+                            "compiler MVP could not infer scalar type for tuple element #{i}"
+                        )
+                    })?;
+                if matches!(elem_ty, Type::Struct(_)) {
+                    return Err(
+                        "compiler MVP cannot lower tuple of struct yet".to_string(),
+                    );
+                }
+                let local = self.module.function_mut(self.func_id).add_local(elem_ty);
+                bindings.push(TupleElementBinding { index: i, local, ty: elem_ty });
+            }
+            self.bindings.insert(
+                name,
+                Binding::Tuple {
+                    elements: bindings.clone(),
+                },
+            );
+            // Evaluate and store each element's value.
+            for (i, elem_ref) in elems.iter().enumerate() {
+                let v = self
+                    .lower_expr(elem_ref)?
+                    .ok_or_else(|| format!("tuple element #{i} produced no value"))?;
+                self.emit(
+                    InstKind::StoreLocal {
+                        dst: bindings[i].local,
+                        src: v,
+                    },
+                    None,
+                );
+            }
+            return Ok(None);
+        }
         // Struct-literal RHS: allocate one local per field, evaluate
         // each field, store into the matching slot. The IR layer never
         // sees a struct value — we decompose at the lowering boundary.
@@ -956,16 +1257,40 @@ impl<'a> FunctionLower<'a> {
                         self.pending_struct_value = Some(fields);
                         Ok(None)
                     }
-                    None => Err(format!(
-                        "undefined identifier `{}`",
-                        self.interner.resolve(sym).unwrap_or("?")
+                    Some(Binding::Tuple { .. }) => Err(format!(
+                        "compiler MVP cannot use tuple binding `{}` as a value here (only `{}.N` element access is supported)",
+                        self.interner.resolve(sym).unwrap_or("?"),
+                        self.interner.resolve(sym).unwrap_or("?"),
                     )),
+                    None => {
+                        // Fall back to top-level `const` lookup. This
+                        // mirrors what the type-checker does: a name
+                        // that wasn't introduced by a local binding
+                        // can still resolve to a global const value.
+                        if let Some(c) = self.const_values.get(&sym).copied() {
+                            self.pending_struct_value = None;
+                            let ty = c.ty();
+                            return Ok(self.emit(InstKind::Const(c), Some(ty)));
+                        }
+                        Err(format!(
+                            "undefined identifier `{}`",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ))
+                    }
                 }
             }
             Expr::FieldAccess(obj, field) => {
                 self.pending_struct_value = None;
                 self.lower_field_access(&obj, field)
             }
+            Expr::TupleAccess(tuple, index) => {
+                self.pending_struct_value = None;
+                self.lower_tuple_access(&tuple, index)
+            }
+            Expr::TupleLiteral(_) => Err(
+                "compiler MVP requires tuple literals to be the rhs of a `val` / `var` binding"
+                    .to_string(),
+            ),
             Expr::StructLiteral(struct_name, fields) => {
                 // Tail-position struct literal: materialise each field
                 // into a fresh local and stash the resulting field
@@ -1162,6 +1487,13 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }
+                    Some(Binding::Tuple { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign a tuple binding `{}` whole (assign individual elements via `{}.N = ...`)",
+                            self.interner.resolve(sym).unwrap_or("?"),
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
                     None => {
                         return Err(format!(
                             "undefined identifier `{}`",
@@ -1169,6 +1501,16 @@ impl<'a> FunctionLower<'a> {
                         ));
                     }
                 };
+                self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
+                Ok(None)
+            }
+            Expr::TupleAccess(tuple, index) => {
+                // `t.N = rhs`. Resolve to the tuple element local
+                // and store. Mirrors struct field assignment.
+                let local = self.resolve_tuple_element_local(&tuple, index)?;
+                let rhs_val = self
+                    .lower_expr(rhs)?
+                    .ok_or_else(|| "tuple-element assignment rhs produced no value".to_string())?;
                 self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
                 Ok(None)
             }
@@ -1184,6 +1526,52 @@ impl<'a> FunctionLower<'a> {
             }
             _ => Err("assignment to non-identifier / non-field-access is not supported yet".into()),
         }
+    }
+
+    /// Read `t.N` where `t` resolves to a tuple binding. Like field
+    /// access on a struct, the obj must be a bare identifier so the
+    /// lookup is purely static.
+    fn lower_tuple_access(
+        &mut self,
+        obj: &ExprRef,
+        index: usize,
+    ) -> Result<Option<ValueId>, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "tuple-access object missing".to_string())?;
+        let obj_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP only supports tuple access on a bare identifier".to_string(),
+                );
+            }
+        };
+        let elements = match self.bindings.get(&obj_sym).cloned() {
+            Some(Binding::Tuple { elements }) => elements,
+            Some(_) => {
+                return Err(format!(
+                    "`{}` is not a tuple value",
+                    self.interner.resolve(obj_sym).unwrap_or("?")
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "undefined identifier `{}`",
+                    self.interner.resolve(obj_sym).unwrap_or("?")
+                ));
+            }
+        };
+        let elem = elements.iter().find(|e| e.index == index).ok_or_else(|| {
+            format!(
+                "tuple `{}` has no element at index {}",
+                self.interner.resolve(obj_sym).unwrap_or("?"),
+                index
+            )
+        })?;
+        Ok(self.emit(InstKind::LoadLocal(elem.local), Some(elem.ty)))
     }
 
     /// Lower a struct literal in expression position. The result
@@ -1263,6 +1651,52 @@ impl<'a> FunctionLower<'a> {
         Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
     }
 
+    /// Resolve the LocalId backing `obj.N` where `obj` is required to
+    /// be a bare identifier referring to a tuple binding. Used by
+    /// element-write lowering. The read side has its own helper because
+    /// it returns the type alongside the local for the LoadLocal
+    /// instruction's result type.
+    fn resolve_tuple_element_local(
+        &self,
+        obj: &ExprRef,
+        index: usize,
+    ) -> Result<LocalId, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "tuple-access object missing".to_string())?;
+        let obj_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP only supports tuple-element assignment on a bare identifier"
+                        .to_string(),
+                );
+            }
+        };
+        let elements = match self.bindings.get(&obj_sym) {
+            Some(Binding::Tuple { elements }) => elements,
+            _ => {
+                return Err(format!(
+                    "`{}` is not a tuple value",
+                    self.interner.resolve(obj_sym).unwrap_or("?")
+                ));
+            }
+        };
+        elements
+            .iter()
+            .find(|e| e.index == index)
+            .map(|e| e.local)
+            .ok_or_else(|| {
+                format!(
+                    "tuple `{}` has no element at index {}",
+                    self.interner.resolve(obj_sym).unwrap_or("?"),
+                    index
+                )
+            })
+    }
+
     /// Resolve the LocalId backing `obj.field` where `obj` is required
     /// to be a bare identifier referring to a struct binding. Used by
     /// both reads and writes.
@@ -1292,7 +1726,7 @@ impl<'a> FunctionLower<'a> {
         })?;
         let fields = match binding {
             Binding::Struct { fields, .. } => fields,
-            Binding::Scalar { .. } => {
+            Binding::Scalar { .. } | Binding::Tuple { .. } => {
                 return Err(format!(
                     "`{}` is not a struct value",
                     self.interner.resolve(obj_sym).unwrap_or("?")
@@ -1607,7 +2041,8 @@ impl<'a> FunctionLower<'a> {
             Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
-                _ => None,
+                Some(_) => None,
+                None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             Expr::FieldAccess(obj, field) => {
                 // Mirror `lower_field_access`'s lookup: resolve to the
@@ -1624,6 +2059,21 @@ impl<'a> FunctionLower<'a> {
                 };
                 let field_str = self.interner.resolve(field)?;
                 fields.iter().find(|f| f.name == field_str).map(|f| f.ty)
+            }
+            Expr::TupleAccess(tuple, index) => {
+                // Same idea for tuple element access: pull the type
+                // out of the tuple binding without needing to lower
+                // the whole expression.
+                let obj_expr = self.program.expression.get(&tuple)?;
+                let obj_sym = match obj_expr {
+                    Expr::Identifier(s) => s,
+                    _ => return None,
+                };
+                let elements = match self.bindings.get(&obj_sym)? {
+                    Binding::Tuple { elements } => elements,
+                    _ => return None,
+                };
+                elements.iter().find(|e| e.index == index).map(|e| e.ty)
             }
             Expr::Binary(op, lhs, _rhs) => match op {
                 Operator::EQ

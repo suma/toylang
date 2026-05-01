@@ -30,7 +30,7 @@ use crate::ir::{
     Type as IrType, UnaryOp, ValueId,
 };
 use crate::lower;
-use crate::CompilerOptions;
+use crate::{CompilerOptions, ContractMessages};
 
 /// Lower the program (AST → IR → Cranelift) and emit a relocatable object
 /// file. Returns the raw bytes; callers decide whether to write them out
@@ -38,9 +38,10 @@ use crate::CompilerOptions;
 pub fn emit_object(
     program: &Program,
     interner: &DefaultStringInterner,
+    contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<Vec<u8>, String> {
-    let ir_module = lower::lower_program(program, interner)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
     let module = build_object_module(&ir_module, interner, options)?;
     let product = module.finish();
     product
@@ -52,9 +53,10 @@ pub fn emit_object(
 pub fn emit_ir_text(
     program: &Program,
     interner: &DefaultStringInterner,
+    contract_msgs: &ContractMessages,
     _options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
     Ok(format!("{ir_module}"))
 }
 
@@ -63,9 +65,10 @@ pub fn emit_ir_text(
 pub fn emit_clif_text(
     program: &Program,
     interner: &DefaultStringInterner,
+    contract_msgs: &ContractMessages,
     _options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
     let mut session = CodegenSession::new()?;
     session.declare_all(&ir_module, interner)?;
     let mut out = String::new();

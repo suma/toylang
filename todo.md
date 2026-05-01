@@ -101,21 +101,25 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
-183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **2026-05-01: tuple / top-level const / DbC を追加** — tuple は struct と同じ「per-element ローカル展開」パターンで `Binding::Tuple { elements }` を新設、`Expr::TupleLiteral` を val rhs として allocate、`Expr::TupleAccess` の読み書きを実装。tuple は局所バインディング限定（関数引数 / 戻り値は未対応）、`val (a, b) = (x, y)` のパーサ desugar が自然に動く。const は `evaluate_consts` で program.consts を compile-time fold（リテラル + 既存 const 参照 + arithmetic）し、Identifier 解決時に local binding が無ければ const テーブルにフォールバック。DbC は `lib.rs::ContractMessages` で "requires violation" / "ensures violation" を pre-intern して `&mut interner` 問題を回避、`emit_contract_checks` で各 clause を bool 評価 → 失敗時 `Terminator::Panic` に分岐、`requires` は entry で / `ensures` は全 Return 直前で発火。`ensures` の `result` は scalar 戻り値（struct は first field）に bind。e2e テスト 9 件追加（tuple 4 + const 2 + DbC 3）、計 42 テスト全 green。
 
    **2026-05-01: cast (`as`) / f64 / struct boundary crossing を追加** — IR に `Type::F64` / `Const::F64` / `InstKind::Cast { value, from, to }` / `InstKind::CallStruct { target, args, dests }` / `Module.struct_defs` を追加、`Terminator::Return` を `Vec<ValueId>` に変更（scalar / void / struct return を vec 長で表現）。lower で `Expr::Cast`、`Expr::Float64`、struct 引数 / 戻り値、`val x = struct_returning_call()` を扱う。tail-position の struct literal は `pending_struct_value` に貯めて implicit return が消費する設計（IR の SSA グラフに struct 値が流れない）。codegen で struct sig を per-field cranelift param / multi-return に展開、`Type::F64` 演算は cranelift の `fadd/fsub/fmul/fdiv/fcmp` + `fneg`、cast は `fcvt_from_sint/uint` / `fcvt_to_sint/uint_sat` で。runtime に `toy_print_f64` / `toy_println_f64`（`%g` / `%.1f` 切替）追加。e2e テスト 10 件追加（i64↔u64 cast、float-int round trip、float-int truncate、f64 算術 / unary neg / 関数呼び出し、struct return / param / round trip / 明示 return）。
 
    **現在の制約（2026-05-01 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
 
-   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit` と scalar フィールドのみの struct のみ。`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
+   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit`、scalar フィールドのみの struct、scalar 要素のみの tuple のみ。`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
    - **文字列**: 任意の文字列値（`val s = "foo"` 等）は未対応。文字列リテラルは `panic` / `assert` / `print` / `println` 引数としてのみ受理
    - **キャスト**: `as` で i64↔u64（identity）と {i64,u64}↔f64 はサポート。bool との cast、Unit との cast は不可
    - **f64 制約**: `%` (mod) は cranelift に native fmod が無いため reject
-   - **コレクション**: tuple、配列、dict 全般未対応（リテラル / アクセス / 分解いずれも reject）
+   - **tuple**: 局所バインディング・要素アクセス・要素書き込み・分解はサポート。関数引数 / 戻り値として tuple は渡せない、ネストした tuple は未対応
+   - **コレクション**: 配列、dict 全般未対応（リテラル / アクセス いずれも reject）
    - **enum / match**: `enum` 宣言と `match` 式いずれも未対応
    - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応
    - **allocator**: `with allocator = ...`、`<A: Allocator>` bound、heap / pointer builtins (`__builtin_heap_alloc` 系) すべて未対応
-   - **DbC**: `requires` / `ensures` 節は parse・型検査は通るが compiler では無視（lowering で見ていない、将来は `--release` 同等の gate 想定）
+   - **DbC**: `requires` / `ensures` 節は実行時チェックされ、違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値（struct は first field）に bind。`--release` 同等の gate（チェックを skip）はまだ未実装
+   - **const**: top-level `const NAME: Type = expr` 対応。初期化式はリテラル / 既存 const 参照 / 単純な算術 fold のみ（文字列 const、関数呼び出し含む式は不可）
    - **generics**: 型パラメータを持つ関数 / struct はいずれも reject
    - **struct の制約**:
      - 関数引数 / 戻り値として struct 値は渡せる（codegen が per-field 展開）

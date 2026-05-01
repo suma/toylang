@@ -36,6 +36,25 @@ pub use options::{CompilerOptions, EmitKind};
 
 use std::path::Path;
 
+/// Pre-interned panic messages used by the lowering pass to attach
+/// clause-specific text to contract-violation panics. We intern these
+/// once up front so the lowering code can pass `DefaultSymbol`s
+/// straight through to `Terminator::Panic` without ever needing
+/// mutable access to the interner itself.
+pub struct ContractMessages {
+    pub requires_violation: string_interner::DefaultSymbol,
+    pub ensures_violation: string_interner::DefaultSymbol,
+}
+
+impl ContractMessages {
+    pub fn intern(interner: &mut string_interner::DefaultStringInterner) -> Self {
+        Self {
+            requires_violation: interner.get_or_intern("requires violation"),
+            ensures_violation: interner.get_or_intern("ensures violation"),
+        }
+    }
+}
+
 /// Top-level entry point used by both the CLI and the integration tests.
 /// Returns `Ok(())` after writing whichever artefact `options.emit`
 /// requested. Errors are stringified for display.
@@ -62,7 +81,14 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
     )
     .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
 
-    let object_bytes = codegen::emit_object(&program, session.string_interner(), options)?;
+    // Intern the canonical contract-violation messages now while the
+    // session's interner is still mutable. The lowering pass uses
+    // these symbols to attach a clause-specific panic message to
+    // requires/ensures checks without needing `&mut` access of its
+    // own.
+    let contract_msgs = ContractMessages::intern(session.string_interner_mut());
+
+    let object_bytes = codegen::emit_object(&program, session.string_interner(), &contract_msgs, options)?;
 
     match options.emit {
         EmitKind::Object => {
@@ -84,7 +110,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             // Emit our own mid-level IR — the layer between AST and
             // Cranelift. Useful for inspecting how the front-end maps
             // onto the compiler's internal representation.
-            let ir_text = codegen::emit_ir_text(&program, session.string_interner(), options)?;
+            let ir_text = codegen::emit_ir_text(&program, session.string_interner(), &contract_msgs, options)?;
             let out = options.output.clone().unwrap_or_else(|| {
                 let mut p = options.input.clone();
                 p.set_extension("ir");
@@ -98,7 +124,7 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
         EmitKind::Clif => {
             // Cranelift IR text — for backend debugging.
-            let clif_text = codegen::emit_clif_text(&program, session.string_interner(), options)?;
+            let clif_text = codegen::emit_clif_text(&program, session.string_interner(), &contract_msgs, options)?;
             let out = options.output.clone().unwrap_or_else(|| {
                 let mut p = options.input.clone();
                 p.set_extension("clif");

@@ -678,6 +678,209 @@ fn struct_explicit_return() {
 }
 
 #[test]
+fn tuple_literal_and_access() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val pair = (3u64, 4u64)
+            print("a=")
+            println(pair.0)
+            print("b=")
+            println(pair.1)
+            pair.0 + pair.1
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_basic");
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a=3\nb=4\n");
+}
+
+#[test]
+fn tuple_destructuring() {
+    if skip_e2e() {
+        return;
+    }
+    // The parser desugars `val (x, y) = (10, 20)` into
+    // `val tmp = (10, 20); val x = tmp.0; val y = tmp.1`. The compiler
+    // needs to handle the tmp binding (tuple literal rhs) and the
+    // subsequent .0 / .1 accesses (tuple-access rhs of a scalar val).
+    let src = r#"
+        fn main() -> u64 {
+            val (a, b) = (40u64, 2u64)
+            a + b
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_destruct");
+    assert_eq!(out.status.code(), Some(42));
+}
+
+#[test]
+fn tuple_element_assignment() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            var t = (0u64, 0u64, 0u64)
+            t.0 = 1u64
+            t.1 = 2u64
+            t.2 = 3u64
+            t.0 + t.1 + t.2
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_assign");
+    assert_eq!(out.status.code(), Some(6));
+}
+
+#[test]
+fn tuple_mixed_types() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val t = (10u64, true, -5i64)
+            print("first=")
+            println(t.0)
+            print("flag=")
+            println(t.1)
+            print("signed=")
+            println(t.2)
+            t.0
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_mixed");
+    assert_eq!(out.status.code(), Some(10));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "first=10\nflag=true\nsigned=-5\n"
+    );
+}
+
+#[test]
+fn top_level_const_literal() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        const MAX: u64 = 100u64
+
+        fn main() -> u64 {
+            print("max=")
+            println(MAX)
+            MAX
+        }
+    "#;
+    let out = compile_and_capture(src, "const_literal");
+    // 100 & 0xff = 100
+    assert_eq!(out.status.code(), Some(100));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "max=100\n");
+}
+
+#[test]
+fn top_level_const_arithmetic_fold() {
+    if skip_e2e() {
+        return;
+    }
+    // `TWO_PI` references an earlier const and applies a binary op;
+    // the compiler must fold both at compile time before the
+    // function body sees the use site.
+    let src = r#"
+        const PI: f64 = 3.14f64
+        const TWO_PI: f64 = PI + PI
+
+        fn main() -> u64 {
+            print("two_pi=")
+            println(TWO_PI)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "const_fold");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "two_pi=6.28\n");
+}
+
+#[test]
+fn dbc_requires_passes() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+            ensures result * b == a
+        {
+            a / b
+        }
+
+        fn main() -> u64 {
+            val x: i64 = divide(10i64, 2i64)
+            x as u64
+        }
+    "#;
+    let out = compile_and_capture(src, "dbc_pass");
+    assert_eq!(out.status.code(), Some(5));
+}
+
+#[test]
+fn dbc_requires_violation_panics() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+        {
+            a / b
+        }
+
+        fn main() -> u64 {
+            val x: i64 = divide(10i64, 0i64)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "dbc_requires_fail");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("requires violation"),
+        "expected 'requires violation' in stdout, got: {stdout:?}"
+    );
+}
+
+#[test]
+fn dbc_ensures_violation_panics() {
+    if skip_e2e() {
+        return;
+    }
+    // `ensures result > 0i64` is intentionally violated by returning
+    // a non-positive value. The check fires after the body computes
+    // the return value, so we should observe the panic immediately
+    // after `divide` would have returned.
+    let src = r#"
+        fn always_negative() -> i64
+            ensures result > 0i64
+        {
+            -1i64
+        }
+
+        fn main() -> u64 {
+            val x: i64 = always_negative()
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "dbc_ensures_fail");
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ensures violation"),
+        "expected 'ensures violation' in stdout, got: {stdout:?}"
+    );
+}
+
+#[test]
 fn emit_object_writes_o_file() {
     if skip_e2e() {
         return;

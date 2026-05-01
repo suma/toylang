@@ -752,6 +752,11 @@ struct LowerCtx<'a, 'b> {
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
     values: HashMap<u32, Value>,
+    /// Per-IR-array-slot cranelift `StackSlot`. Materialised lazily in
+    /// `lower()` so each IR `ArraySlotInfo` becomes one explicit
+    /// stack allocation we can address with `stack_addr` /
+    /// `stack_load` / `stack_store`.
+    array_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
 }
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
@@ -777,6 +782,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             block_map: HashMap::new(),
             locals: HashMap::new(),
             values: HashMap::new(),
+            array_slots: HashMap::new(),
         }
     }
 
@@ -803,6 +809,18 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let var = self.builder.declare_var(t);
                 self.locals.insert(i as u32, var);
             }
+        }
+        // 2b. Allocate one cranelift StackSlot per IR array slot.
+        // Size = length * stride (stride is uniform 8 bytes for the
+        // scalar element types this MVP supports). Codegen later
+        // addresses each slot with `stack_addr` + offset.
+        use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+        for (i, info) in func.array_slots.iter().enumerate() {
+            let bytes = info.length as u32 * info.elem_stride_bytes;
+            let slot = self
+                .builder
+                .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, bytes, 0));
+            self.array_slots.insert(i as u32, slot);
         }
         // Bind parameter locals to the Cranelift block param values.
         // Struct params expand into multiple block params (one per
@@ -1168,6 +1186,60 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.runtime.print_str
                 };
                 self.builder.ins().call(helper, &[addr]);
+            }
+            InstKind::ArrayLoad { slot, index, elem_ty } => {
+                let cl_ty = ir_to_cranelift_ty(*elem_ty)
+                    .ok_or_else(|| format!("ArrayLoad: unsupported elem_ty {elem_ty:?}"))?;
+                let stack_slot = *self
+                    .array_slots
+                    .get(&slot.0)
+                    .ok_or_else(|| format!("missing stack slot for array {:?}", slot.0))?;
+                let stride = self
+                    .ir_module
+                    .function(self.func_id)
+                    .array_slots[slot.0 as usize]
+                    .elem_stride_bytes;
+                let idx_v = self.value(*index);
+                // Compute byte offset = index * stride. Index value
+                // type is I64 in our IR (always u64/i64); stride is
+                // a small u32 constant.
+                let stride_v = self.builder.ins().iconst(types::I64, stride as i64);
+                let byte_off = self.builder.ins().imul(idx_v, stride_v);
+                let base = self.builder.ins().stack_addr(types::I64, stack_slot, 0);
+                let addr = self.builder.ins().iadd(base, byte_off);
+                let v = self.builder.ins().load(
+                    cl_ty,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    addr,
+                    0,
+                );
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, v);
+                }
+            }
+            InstKind::ArrayStore { slot, index, value, elem_ty } => {
+                let _ = elem_ty;
+                let stack_slot = *self
+                    .array_slots
+                    .get(&slot.0)
+                    .ok_or_else(|| format!("missing stack slot for array {:?}", slot.0))?;
+                let stride = self
+                    .ir_module
+                    .function(self.func_id)
+                    .array_slots[slot.0 as usize]
+                    .elem_stride_bytes;
+                let idx_v = self.value(*index);
+                let val_v = self.value(*value);
+                let stride_v = self.builder.ins().iconst(types::I64, stride as i64);
+                let byte_off = self.builder.ins().imul(idx_v, stride_v);
+                let base = self.builder.ins().stack_addr(types::I64, stack_slot, 0);
+                let addr = self.builder.ins().iadd(base, byte_off);
+                self.builder.ins().store(
+                    cranelift_codegen::ir::MemFlags::new(),
+                    val_v,
+                    addr,
+                    0,
+                );
             }
         }
         Ok(())

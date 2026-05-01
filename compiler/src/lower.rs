@@ -36,8 +36,9 @@ use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::{
-    BinOp, Block, BlockId, Const, EnumId, EnumVariant, FuncId, InstKind, Instruction,
-    Linkage, LocalId, Module, StructId, Terminator, Type, UnaryOp as IrUnaryOp, ValueId,
+    ArraySlotId, BinOp, Block, BlockId, Const, EnumId, EnumVariant, FuncId, InstKind,
+    Instruction, Linkage, LocalId, Module, StructId, Terminator, Type, UnaryOp as IrUnaryOp,
+    ValueId,
 };
 
 /// Run the AST → IR pass and return the freshly-built module. Returns the
@@ -1038,6 +1039,16 @@ fn substitute_field_type(
     }
 }
 
+/// Per-element byte stride for an array element type. The compiler
+/// uses a uniform 8-byte stride for every supported scalar so the
+/// runtime address arithmetic can multiply by a single constant.
+/// Bool values store as 1 byte but the slot reserves 8 bytes per
+/// slot to keep things simple — the wasted bytes never matter
+/// because no one observes the gap between elements.
+fn elem_stride_bytes(_ty: Type) -> u32 {
+    8
+}
+
 fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
     match ty {
         TypeDecl::Int64 => Some(Type::I64),
@@ -1309,14 +1320,15 @@ enum Binding {
     /// `EnumStorage` (for enum-typed payloads like `Option<Option<T>>`),
     /// which is what makes nested enum sub-patterns lower correctly.
     Enum(EnumStorage),
-    /// Fixed-size array binding. Phase S keeps it simple: scalar
-    /// element types only, all elements stored in per-index locals.
-    /// Index access (`arr[i]`) requires a constant index in the MVP
-    /// — runtime indexing would need an actual stack-allocated
-    /// buffer + cranelift `stack_load` / `stack_store`.
+    /// Fixed-size array binding. Backed by a per-function
+    /// stack slot (Phase Y); both constant and runtime indices
+    /// lower to `ArrayLoad` / `ArrayStore` against this slot, so
+    /// index access is uniform regardless of compile-time vs.
+    /// runtime knowledge of the offset.
     Array {
         element_ty: Type,
-        elements: Vec<LocalId>,
+        length: usize,
+        slot: ArraySlotId,
     },
 }
 
@@ -2269,18 +2281,33 @@ impl<'a> FunctionLower<'a> {
                     "compiler MVP only supports scalar (i64 / u64 / f64 / bool) array elements; got {elem_ty:?}"
                 ));
             }
-            let mut locals: Vec<LocalId> = Vec::with_capacity(elems.len());
+            // Allocate one stack slot for the whole array; each
+            // element gets stored via ArrayStore with a constant
+            // index (`Const::U64(i)`).
+            let stride = elem_stride_bytes(elem_ty);
+            let slot = self
+                .module
+                .function_mut(self.func_id)
+                .add_array_slot(elem_ty, elems.len(), stride);
             for (i, e) in elems.iter().enumerate() {
-                let local = self.module.function_mut(self.func_id).add_local(elem_ty);
                 let v = self.lower_expr(e)?.ok_or_else(|| {
                     format!("array element #{i} produced no value")
                 })?;
-                self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-                locals.push(local);
+                let idx_v = self
+                    .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                    .expect("Const returns a value");
+                self.emit(
+                    InstKind::ArrayStore { slot, index: idx_v, value: v, elem_ty },
+                    None,
+                );
             }
             self.bindings.insert(
                 name,
-                Binding::Array { element_ty: elem_ty, elements: locals },
+                Binding::Array {
+                    element_ty: elem_ty,
+                    length: elems.len(),
+                    slot,
+                },
             );
             return Ok(None);
         }
@@ -3003,8 +3030,8 @@ impl<'a> FunctionLower<'a> {
                         self.emit_print_enum(&storage, newline)?;
                         return Ok(None);
                     }
-                    Binding::Array { element_ty, elements } => {
-                        self.emit_print_array(element_ty, &elements, newline);
+                    Binding::Array { element_ty, length, slot } => {
+                        self.emit_print_array(element_ty, length, slot, newline);
                         return Ok(None);
                     }
                 }
@@ -3458,17 +3485,24 @@ impl<'a> FunctionLower<'a> {
     fn emit_print_array(
         &mut self,
         element_ty: Type,
-        elements: &[LocalId],
+        length: usize,
+        slot: ArraySlotId,
         newline: bool,
     ) {
         self.emit_print_raw_text("[".to_string(), false);
-        for (i, local) in elements.iter().enumerate() {
+        for i in 0..length {
             if i > 0 {
                 self.emit_print_raw_text(", ".to_string(), false);
             }
+            let idx_v = self
+                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                .expect("Const returns a value");
             let v = self
-                .emit(InstKind::LoadLocal(*local), Some(element_ty))
-                .expect("LoadLocal returns a value");
+                .emit(
+                    InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
+                    Some(element_ty),
+                )
+                .expect("ArrayLoad returns a value");
             self.emit(
                 InstKind::Print {
                     value: v,
@@ -7014,8 +7048,8 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        let (element_ty, elements) = match self.bindings.get(&arr_sym).cloned() {
-            Some(Binding::Array { element_ty, elements }) => (element_ty, elements),
+        let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
             Some(_) => {
                 return Err(format!(
                     "`{}` is not an array binding",
@@ -7029,17 +7063,26 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        let idx_const = self.try_constant_index(index_ref).ok_or_else(|| {
-            "compiler MVP only supports constant array indices (`arr[0u64]`); runtime indexing is not implemented".to_string()
-        })?;
-        if idx_const >= elements.len() {
-            return Err(format!(
-                "array index {idx_const} out of bounds (length {})",
-                elements.len()
-            ));
-        }
-        let local = elements[idx_const];
-        Ok(self.emit(InstKind::LoadLocal(local), Some(element_ty)))
+        // Constant index folds into a Const at compile time;
+        // anything else lowers as a runtime value. Both forms hit
+        // the same `ArrayLoad` instruction so codegen treats them
+        // uniformly. Constant-index out-of-bounds is caught here.
+        let idx_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
+            if idx_const >= length {
+                return Err(format!(
+                    "array index {idx_const} out of bounds (length {length})"
+                ));
+            }
+            self.emit(InstKind::Const(Const::U64(idx_const as u64)), Some(Type::U64))
+                .expect("Const returns a value")
+        } else {
+            self.lower_expr(index_ref)?
+                .ok_or_else(|| "array index produced no value".to_string())?
+        };
+        Ok(self.emit(
+            InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
+            Some(element_ty),
+        ))
     }
 
     /// Lower `arr[i] = v`. Phase S supports single-element write on
@@ -7072,8 +7115,8 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        let elements = match self.bindings.get(&arr_sym).cloned() {
-            Some(Binding::Array { elements, .. }) => elements,
+        let (element_ty, length, slot) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, slot }) => (element_ty, length, slot),
             Some(_) => {
                 return Err(format!(
                     "`{}` is not an array binding",
@@ -7087,23 +7130,23 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        let idx_const = self.try_constant_index(index_ref).ok_or_else(|| {
-            "compiler MVP only supports constant array indices on write".to_string()
-        })?;
-        if idx_const >= elements.len() {
-            return Err(format!(
-                "array index {idx_const} out of bounds (length {})",
-                elements.len()
-            ));
-        }
+        let idx_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
+            if idx_const >= length {
+                return Err(format!(
+                    "array index {idx_const} out of bounds (length {length})"
+                ));
+            }
+            self.emit(InstKind::Const(Const::U64(idx_const as u64)), Some(Type::U64))
+                .expect("Const returns a value")
+        } else {
+            self.lower_expr(index_ref)?
+                .ok_or_else(|| "array index produced no value".to_string())?
+        };
         let v = self
             .lower_expr(value)?
             .ok_or_else(|| "array write rhs produced no value".to_string())?;
         self.emit(
-            InstKind::StoreLocal {
-                dst: elements[idx_const],
-                src: v,
-            },
+            InstKind::ArrayStore { slot, index: idx_v, value: v, elem_ty: element_ty },
             None,
         );
         Ok(None)

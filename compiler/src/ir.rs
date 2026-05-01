@@ -138,6 +138,7 @@ impl Module {
             params,
             return_type,
             locals: Vec::new(),
+            array_slots: Vec::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -168,6 +169,7 @@ impl Module {
             params,
             return_type,
             locals: Vec::new(),
+            array_slots: Vec::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -258,14 +260,45 @@ pub struct Function {
     /// function body. Locals are mutable cells in this IR; SSA construction
     /// is left to the backend.
     pub locals: Vec<Type>,
+    /// Per-function fixed-size array slots. Each entry is a single
+    /// homogeneous array; `ArraySlotId` indexes into this Vec. Used
+    /// for runtime-index access (`arr[i]` where `i` is a variable);
+    /// codegen materialises one cranelift `StackSlot` per entry and
+    /// dispatches `ArrayLoad` / `ArrayStore` against it.
+    pub array_slots: Vec<ArraySlotInfo>,
     pub blocks: Vec<Block>,
     pub entry: BlockId,
+}
+
+/// One stack-allocated array. Holds the element type, length, and
+/// the per-element byte stride (currently 8 for every supported
+/// scalar — bool gets padded to 8 bytes so the stride stays uniform).
+#[derive(Debug, Clone)]
+pub struct ArraySlotInfo {
+    pub element_ty: Type,
+    pub length: usize,
+    pub elem_stride_bytes: u32,
 }
 
 impl Function {
     pub fn add_local(&mut self, ty: Type) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
         self.locals.push(ty);
+        id
+    }
+
+    pub fn add_array_slot(
+        &mut self,
+        element_ty: Type,
+        length: usize,
+        elem_stride_bytes: u32,
+    ) -> ArraySlotId {
+        let id = ArraySlotId(self.array_slots.len() as u32);
+        self.array_slots.push(ArraySlotInfo {
+            element_ty,
+            length,
+            elem_stride_bytes,
+        });
         id
     }
 
@@ -459,6 +492,24 @@ pub enum InstKind {
     /// `print_imports` map as `PrintStr` — only the helper called
     /// at the use site differs.
     ConstStr { message: DefaultSymbol },
+    /// Read one element from an array stack slot at the given
+    /// `index` value. Codegen emits `stack_addr` + offset
+    /// arithmetic + `load.<elem_ty>`; constant indices fold into
+    /// the offset via cranelift's optimiser. Result type is
+    /// `elem_ty`.
+    ArrayLoad {
+        slot: ArraySlotId,
+        index: ValueId,
+        elem_ty: Type,
+    },
+    /// Write `value` into the array slot at the given index. Same
+    /// addressing scheme as `ArrayLoad`. Returns no value.
+    ArrayStore {
+        slot: ArraySlotId,
+        index: ValueId,
+        value: ValueId,
+        elem_ty: Type,
+    },
     /// Codegen-synthesised string emission (no source-program symbol
     /// behind it). Used when lowering `print` / `println` of struct or
     /// tuple values: punctuation, field names, and brackets are
@@ -570,6 +621,9 @@ pub struct ValueId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LocalId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ArraySlotId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockId(pub u32);
@@ -797,6 +851,12 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::Cast { value, from, to } => {
                 write!(f, "{prefix}cast {value}: {from} -> {to}")
+            }
+            InstKind::ArrayLoad { slot, index, elem_ty } => {
+                write!(f, "{prefix}array_load slot#{}, {index}: {elem_ty}", slot.0)
+            }
+            InstKind::ArrayStore { slot, index, value, elem_ty } => {
+                write!(f, "array_store slot#{}, {index} <- {value}: {elem_ty}", slot.0)
             }
         }
     }

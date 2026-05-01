@@ -980,6 +980,45 @@ fn string_in_struct_field() {
 }
 
 #[test]
+fn array_runtime_index_for_loop_sum() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Y: runtime index access. The for-loop variable `i`
+    // isn't a compile-time constant, so the access lowers to
+    // `ArrayLoad` against the per-array stack slot, with the
+    // runtime offset computed via `iadd(stack_addr, i * stride)`.
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [10i64, 20i64, 30i64, 40i64]
+            var sum: i64 = 0i64
+            for i in 0u64..4u64 {
+                sum = sum + arr[i]
+            }
+            sum as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_runtime_loop"), 100);
+}
+
+#[test]
+fn array_runtime_index_with_write() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            var arr = [0i64, 0i64, 0i64]
+            for i in 0u64..3u64 {
+                arr[i] = (i as i64) * 10i64
+            }
+            (arr[0u64] + arr[1u64] + arr[2u64]) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_runtime_write"), 30);
+}
+
+#[test]
 fn array_literal_and_index_read() {
     if skip_e2e() {
         return;

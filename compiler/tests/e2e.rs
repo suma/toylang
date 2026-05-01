@@ -2805,6 +2805,90 @@ fn generic_enum_with_f64_payload() {
 }
 
 #[test]
+fn enum_with_struct_payload() {
+    if skip_e2e() {
+        return;
+    }
+    // `Shape::Wrap(Point)` — enum payload is a struct value. The
+    // payload slot allocates a per-field local tree (same shape as
+    // a regular struct binding), construction stores the literal
+    // fields, match binds via deep copy, print recurses through
+    // emit_print_struct.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        enum Shape {
+            Wrap(Point),
+            Empty,
+        }
+        fn area(s: Shape) -> i64 {
+            match s {
+                Shape::Wrap(p) => p.x * p.y,
+                Shape::Empty => 0i64,
+            }
+        }
+        fn main() -> u64 {
+            val pt = Point { x: 4i64, y: 5i64 }
+            val s = Shape::Wrap(pt)
+            val a: i64 = area(s)
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_struct_payload"), 20);
+}
+
+#[test]
+fn enum_with_struct_payload_println() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        enum Shape {
+            Wrap(Point),
+            Empty,
+        }
+        fn main() -> u64 {
+            val pt = Point { x: 4i64, y: 5i64 }
+            val s = Shape::Wrap(pt)
+            println(s)
+            val e = Shape::Empty
+            println(e)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "enum_struct_payload_println");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Shape::Wrap(Point { x: 4, y: 5 })\nShape::Empty\n",
+    );
+}
+
+#[test]
+fn generic_enum_with_struct_payload() {
+    if skip_e2e() {
+        return;
+    }
+    // `Option<Point>` — generic enum's T resolves to a struct
+    // type. substitute_payload_type recurses through both enum
+    // and struct templates to handle this case.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        enum Option<T> { None, Some(T) }
+        fn main() -> u64 {
+            val pt = Point { x: 6i64, y: 7i64 }
+            val o: Option<Point> = Option::Some(pt)
+            val r: i64 = match o {
+                Option::Some(p) => p.x + p.y,
+                Option::None => 0i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_enum_struct_payload"), 13);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

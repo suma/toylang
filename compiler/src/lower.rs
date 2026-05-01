@@ -378,6 +378,7 @@ fn collect_enum_defs(
 fn instantiate_enum(
     module: &mut Module,
     templates: &EnumDefs,
+    struct_templates: &StructDefs,
     base_name: DefaultSymbol,
     type_args: Vec<Type>,
     interner: &DefaultStringInterner,
@@ -418,7 +419,7 @@ fn instantiate_enum(
         let mut payload_types: Vec<Type> = Vec::with_capacity(v.payload_types.len());
         for pt in &v.payload_types {
             let lowered =
-                substitute_payload_type(pt, &subst, module, templates, interner).ok_or_else(
+                substitute_payload_type(pt, &subst, module, templates, struct_templates, interner).ok_or_else(
                     || {
                         format!(
                             "enum `{}::{}` has unsupported payload type `{:?}` \
@@ -451,7 +452,12 @@ fn instantiate_enum(
 fn is_supported_enum_payload(t: Type) -> bool {
     matches!(
         t,
-        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Enum(_)
+        Type::I64
+            | Type::U64
+            | Type::F64
+            | Type::Bool
+            | Type::Enum(_)
+            | Type::Struct(_)
     )
 }
 
@@ -464,7 +470,8 @@ fn substitute_payload_type(
     pt: &TypeDecl,
     subst: &HashMap<DefaultSymbol, Type>,
     module: &mut Module,
-    templates: &EnumDefs,
+    enum_templates: &EnumDefs,
+    struct_templates: &StructDefs,
     interner: &DefaultStringInterner,
 ) -> Option<Type> {
     if let Some(t) = lower_scalar(pt) {
@@ -476,37 +483,100 @@ fn substitute_payload_type(
             if let Some(t) = subst.get(name).copied() {
                 return Some(t);
             }
-            // A bare `Identifier(name)` may also reference another
-            // non-generic enum directly — instantiate with no args.
-            if templates.contains_key(name) {
-                instantiate_enum(module, templates, *name, Vec::new(), interner)
-                    .ok()
-                    .map(Type::Enum)
+            // A bare `Identifier(name)` may reference another non-
+            // generic enum or struct directly — instantiate the
+            // matching template with no type args.
+            if enum_templates.contains_key(name) {
+                instantiate_enum(
+                    module,
+                    enum_templates,
+                    struct_templates,
+                    *name,
+                    Vec::new(),
+                    interner,
+                )
+                .ok()
+                .map(Type::Enum)
+            } else if struct_templates.contains_key(name) {
+                instantiate_struct(
+                    module,
+                    struct_templates,
+                    enum_templates,
+                    *name,
+                    Vec::new(),
+                    interner,
+                )
+                .ok()
+                .map(Type::Struct)
             } else {
                 None
             }
         }
         TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
-            if !args.is_empty() && templates.contains_key(name) =>
+            if !args.is_empty() && enum_templates.contains_key(name) =>
         {
-            // Substitute each type arg through the active map first
-            // (so `Option<T>` inside `Box<T>`'s payload resolves T)
-            // then instantiate the inner enum.
             let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let t = substitute_payload_type(a, subst, module, templates, interner)?;
+                let t = substitute_payload_type(
+                    a,
+                    subst,
+                    module,
+                    enum_templates,
+                    struct_templates,
+                    interner,
+                )?;
                 concrete.push(t);
             }
-            instantiate_enum(module, templates, *name, concrete, interner)
-                .ok()
-                .map(Type::Enum)
+            instantiate_enum(
+                module,
+                enum_templates,
+                struct_templates,
+                *name,
+                concrete,
+                interner,
+            )
+            .ok()
+            .map(Type::Enum)
+        }
+        TypeDecl::Struct(name, args)
+            if !args.is_empty() && struct_templates.contains_key(name) =>
+        {
+            let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+            for a in args {
+                let t = substitute_payload_type(
+                    a,
+                    subst,
+                    module,
+                    enum_templates,
+                    struct_templates,
+                    interner,
+                )?;
+                concrete.push(t);
+            }
+            instantiate_struct(
+                module,
+                struct_templates,
+                enum_templates,
+                *name,
+                concrete,
+                interner,
+            )
+            .ok()
+            .map(Type::Struct)
         }
         TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
-            if args.is_empty() && templates.contains_key(name) =>
+            if args.is_empty() && enum_templates.contains_key(name) =>
         {
-            instantiate_enum(module, templates, *name, Vec::new(), interner)
-                .ok()
-                .map(Type::Enum)
+            instantiate_enum(
+                module,
+                enum_templates,
+                struct_templates,
+                *name,
+                Vec::new(),
+                interner,
+            )
+            .ok()
+            .map(Type::Enum)
         }
         _ => None,
     }
@@ -650,7 +720,7 @@ fn substitute_field_type(
                 .ok()
                 .map(Type::Struct)
             } else if enum_templates.contains_key(name) {
-                instantiate_enum(module, enum_templates, *name, Vec::new(), interner)
+                instantiate_enum(module, enum_templates, templates, *name, Vec::new(), interner)
                     .ok()
                     .map(Type::Enum)
             } else {
@@ -750,7 +820,7 @@ fn lower_param_or_return_type(
         // (the template's `generic_params` must also be empty for
         // this to succeed).
         TypeDecl::Identifier(name) if enum_defs.contains_key(name) => {
-            instantiate_enum(module, enum_defs, *name, Vec::new(), interner)
+            instantiate_enum(module, enum_defs, struct_defs, *name, Vec::new(), interner)
                 .ok()
                 .map(Type::Enum)
         }
@@ -769,7 +839,7 @@ fn lower_param_or_return_type(
                 }
                 lowered_args.push(l);
             }
-            instantiate_enum(module, enum_defs, *name, lowered_args, interner)
+            instantiate_enum(module, enum_defs, struct_defs, *name, lowered_args, interner)
                 .ok()
                 .map(Type::Enum)
         }
@@ -784,7 +854,7 @@ fn lower_param_or_return_type(
                 }
                 lowered_args.push(l);
             }
-            instantiate_enum(module, enum_defs, *name, lowered_args, interner)
+            instantiate_enum(module, enum_defs, struct_defs, *name, lowered_args, interner)
                 .ok()
                 .map(Type::Enum)
         }
@@ -958,6 +1028,14 @@ struct EnumStorage {
 enum PayloadSlot {
     Scalar { local: LocalId, ty: Type },
     Enum(Box<EnumStorage>),
+    /// Struct-typed payload. Stores the same `FieldBinding` tree
+    /// that `Binding::Struct` uses, so all the existing struct
+    /// helpers (`flatten_struct_locals` / `store_struct_literal_fields`
+    /// / `emit_print_struct`) work unchanged.
+    Struct {
+        struct_id: StructId,
+        fields: Vec<FieldBinding>,
+    },
 }
 
 /// One element of a `Binding::Tuple`. `index` is the element's
@@ -2647,6 +2725,10 @@ impl<'a> FunctionLower<'a> {
                     let inner = (**inner).clone();
                     self.emit_print_enum(&inner, false)?;
                 }
+                PayloadSlot::Struct { struct_id, fields } => {
+                    let fields = fields.clone();
+                    self.emit_print_struct(*struct_id, &fields, false);
+                }
             }
             let _ = last_idx;
         }
@@ -2751,6 +2833,7 @@ impl<'a> FunctionLower<'a> {
             return instantiate_enum(
                 self.module,
                 self.enum_defs,
+                self.struct_defs,
                 base_name,
                 Vec::new(),
                 self.interner,
@@ -2769,6 +2852,7 @@ impl<'a> FunctionLower<'a> {
         instantiate_enum(
             self.module,
             self.enum_defs,
+            self.struct_defs,
             base_name,
             type_args,
             self.interner,
@@ -2802,6 +2886,7 @@ impl<'a> FunctionLower<'a> {
             return instantiate_enum(
                 self.module,
                 self.enum_defs,
+                self.struct_defs,
                 base_name,
                 Vec::new(),
                 self.interner,
@@ -2811,6 +2896,7 @@ impl<'a> FunctionLower<'a> {
             return instantiate_enum(
                 self.module,
                 self.enum_defs,
+                self.struct_defs,
                 base_name,
                 args_from_anno,
                 self.interner,
@@ -2860,6 +2946,7 @@ impl<'a> FunctionLower<'a> {
         instantiate_enum(
             self.module,
             self.enum_defs,
+            self.struct_defs,
             base_name,
             type_args,
             self.interner,
@@ -2910,6 +2997,7 @@ impl<'a> FunctionLower<'a> {
                 instantiate_enum(
                     self.module,
                     self.enum_defs,
+                    self.struct_defs,
                     *name,
                     concrete,
                     self.interner,
@@ -2917,16 +3005,45 @@ impl<'a> FunctionLower<'a> {
                 .ok()
                 .map(Type::Enum)
             }
+            TypeDecl::Struct(name, args) if self.struct_defs.contains_key(name) => {
+                let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+                for a in args {
+                    concrete.push(self.lower_type_arg(a)?);
+                }
+                instantiate_struct(
+                    self.module,
+                    self.struct_defs,
+                    self.enum_defs,
+                    *name,
+                    concrete,
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Struct)
+            }
             TypeDecl::Identifier(name) if self.enum_defs.contains_key(name) => {
                 instantiate_enum(
                     self.module,
                     self.enum_defs,
+                    self.struct_defs,
                     *name,
                     Vec::new(),
                     self.interner,
                 )
                 .ok()
                 .map(Type::Enum)
+            }
+            TypeDecl::Identifier(name) if self.struct_defs.contains_key(name) => {
+                instantiate_struct(
+                    self.module,
+                    self.struct_defs,
+                    self.enum_defs,
+                    *name,
+                    Vec::new(),
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Struct)
             }
             _ => None,
         }
@@ -2961,11 +3078,18 @@ impl<'a> FunctionLower<'a> {
     /// codegen mirrors the same recursion via
     /// `flatten_struct_to_cranelift_tys`.
     fn allocate_payload_slot(&mut self, ty: Type) -> PayloadSlot {
-        if let Type::Enum(inner_id) = ty {
-            PayloadSlot::Enum(Box::new(self.allocate_enum_storage(inner_id)))
-        } else {
-            let local = self.module.function_mut(self.func_id).add_local(ty);
-            PayloadSlot::Scalar { local, ty }
+        match ty {
+            Type::Enum(inner_id) => {
+                PayloadSlot::Enum(Box::new(self.allocate_enum_storage(inner_id)))
+            }
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                PayloadSlot::Struct { struct_id, fields }
+            }
+            _ => {
+                let local = self.module.function_mut(self.func_id).add_local(ty);
+                PayloadSlot::Scalar { local, ty }
+            }
         }
     }
 
@@ -3026,6 +3150,12 @@ impl<'a> FunctionLower<'a> {
                 PayloadSlot::Enum(inner_storage) => {
                     self.lower_into_enum_storage(arg_ref, &inner_storage)?;
                 }
+                PayloadSlot::Struct {
+                    struct_id: slot_struct_id,
+                    fields: slot_fields,
+                } => {
+                    self.lower_into_struct_slot(arg_ref, slot_struct_id, &slot_fields)?;
+                }
             }
         }
         Ok(())
@@ -3059,6 +3189,15 @@ impl<'a> FunctionLower<'a> {
                     PayloadSlot::Enum(inner) => {
                         self.load_enum_locals_into(inner, out);
                     }
+                    PayloadSlot::Struct { fields, .. } => {
+                        let leaves = Self::flatten_struct_locals(fields);
+                        for (local, ty) in leaves {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(ty))
+                                .expect("LoadLocal returns a value");
+                            out.push(v);
+                        }
+                    }
                 }
             }
         }
@@ -3080,6 +3219,11 @@ impl<'a> FunctionLower<'a> {
                 match slot {
                     PayloadSlot::Scalar { local, .. } => out.push(*local),
                     PayloadSlot::Enum(inner) => Self::flatten_enum_dests_into(inner, out),
+                    PayloadSlot::Struct { fields, .. } => {
+                        for (local, _) in Self::flatten_struct_locals(fields) {
+                            out.push(local);
+                        }
+                    }
                 }
             }
         }
@@ -3348,9 +3492,103 @@ impl<'a> FunctionLower<'a> {
                         let d = (**d).clone();
                         self.copy_enum_storage(&s, &d);
                     }
+                    (
+                        PayloadSlot::Struct { fields: sf, .. },
+                        PayloadSlot::Struct { fields: df, .. },
+                    ) => {
+                        let sf = sf.clone();
+                        let df = df.clone();
+                        self.copy_struct_fields(&sf, &df);
+                    }
                     _ => unreachable!("payload slot shape mismatch"),
                 }
             }
+        }
+    }
+
+    /// Recursively copy each leaf scalar local from `src` field
+    /// bindings to the matching `dst` slots. Same shape as
+    /// `copy_enum_storage` but for struct field trees, used both by
+    /// enum-payload struct slots and by potential future struct
+    /// reassign paths.
+    fn copy_struct_fields(&mut self, src: &[FieldBinding], dst: &[FieldBinding]) {
+        for (sb, db) in src.iter().zip(dst.iter()) {
+            match (&sb.shape, &db.shape) {
+                (
+                    FieldShape::Scalar { local: sl, ty },
+                    FieldShape::Scalar { local: dl, .. },
+                ) => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*sl), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(InstKind::StoreLocal { dst: *dl, src: v }, None);
+                }
+                (
+                    FieldShape::Struct { fields: sf, .. },
+                    FieldShape::Struct { fields: df, .. },
+                ) => {
+                    let sf = sf.clone();
+                    let df = df.clone();
+                    self.copy_struct_fields(&sf, &df);
+                }
+                _ => unreachable!("struct field shape mismatch"),
+            }
+        }
+    }
+
+    /// Lower an expression whose result is a struct value into the
+    /// supplied target field bindings (the slot of an enum payload).
+    /// Accepts the same RHS shapes that `lower_let`'s
+    /// `Expr::StructLiteral` branch does, plus a bare identifier
+    /// referring to an existing struct binding (deep-copied via
+    /// `copy_struct_fields`).
+    fn lower_into_struct_slot(
+        &mut self,
+        expr_ref: &ExprRef,
+        target_struct_id: StructId,
+        target_fields: &[FieldBinding],
+    ) -> Result<(), String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "struct-target expression missing".to_string())?;
+        match expr {
+            Expr::StructLiteral(name, literal_fields) => {
+                let expected_base = self.module.struct_def(target_struct_id).base_name;
+                if name != expected_base {
+                    return Err(format!(
+                        "struct payload expects `{}`, got `{}` literal",
+                        self.interner.resolve(expected_base).unwrap_or("?"),
+                        self.interner.resolve(name).unwrap_or("?"),
+                    ));
+                }
+                self.store_struct_literal_fields(
+                    target_struct_id,
+                    target_fields,
+                    &literal_fields,
+                )
+            }
+            Expr::Identifier(sym) => {
+                let src_fields = match self.bindings.get(&sym).cloned() {
+                    Some(Binding::Struct {
+                        struct_id: src_id,
+                        fields,
+                    }) if src_id == target_struct_id => fields,
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not a struct binding of the expected payload type",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                self.copy_struct_fields(&src_fields, target_fields);
+                Ok(())
+            }
+            other => Err(format!(
+                "compiler MVP cannot lower `{:?}` as a struct-typed enum payload",
+                other
+            )),
         }
     }
 
@@ -4582,7 +4820,7 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         self.emit_literal_eq_branch(lit_ref, pv, ty, next_blk)?;
                     }
-                    PayloadSlot::Enum(_) => {
+                    PayloadSlot::Enum(_) | PayloadSlot::Struct { .. } => {
                         return Err(
                             "literal sub-pattern is only valid against a scalar payload"
                                 .to_string(),
@@ -4599,7 +4837,7 @@ impl<'a> FunctionLower<'a> {
                             next_blk,
                         )?;
                     }
-                    PayloadSlot::Scalar { .. } => {
+                    PayloadSlot::Scalar { .. } | PayloadSlot::Struct { .. } => {
                         return Err(
                             "nested enum-variant sub-pattern requires an enum-typed payload"
                                 .to_string(),
@@ -4633,6 +4871,23 @@ impl<'a> FunctionLower<'a> {
                         let copy = self.allocate_enum_storage(inner.enum_id);
                         self.copy_enum_storage(&inner, &copy);
                         self.bindings.insert(*sym, Binding::Enum(copy));
+                    }
+                    PayloadSlot::Struct {
+                        struct_id,
+                        fields: src_fields,
+                    } => {
+                        // Same idea for a struct payload: allocate a
+                        // fresh struct binding and deep-copy each
+                        // field's leaf locals across.
+                        let dst_fields = self.allocate_struct_fields(struct_id);
+                        self.copy_struct_fields(&src_fields, &dst_fields);
+                        self.bindings.insert(
+                            *sym,
+                            Binding::Struct {
+                                struct_id,
+                                fields: dst_fields,
+                            },
+                        );
                     }
                 },
                 Pattern::Wildcard | Pattern::Literal(_) | Pattern::EnumVariant(..) => {
@@ -5007,6 +5262,7 @@ impl<'a> FunctionLower<'a> {
                     instantiate_enum(
                         self.module,
                         self.enum_defs,
+                        self.struct_defs,
                         *name,
                         Vec::new(),
                         self.interner,
@@ -5043,6 +5299,7 @@ impl<'a> FunctionLower<'a> {
                 instantiate_enum(
                     self.module,
                     self.enum_defs,
+                    self.struct_defs,
                     *name,
                     concrete,
                     self.interner,

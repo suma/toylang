@@ -434,6 +434,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 a == b && params_a.is_empty()
                                     && !self.context.is_generic_struct(*a)
                             }
+                            // The parser yields `Identifier(name)` for any
+                            // user-named type in a return-type position, but
+                            // the inferred body type is `Enum(name, [])`
+                            // when the body resolves to an enum value.
+                            // Treat them as equal for non-generic enums —
+                            // mirrors the Struct/Identifier case above and
+                            // `is_equivalent`. Generic enums still require
+                            // their `<T, ...>` form on the declaration.
+                            (TypeDecl::Enum(a, params_a), TypeDecl::Identifier(b))
+                            | (TypeDecl::Identifier(b), TypeDecl::Enum(a, params_a)) => {
+                                a == b && params_a.is_empty()
+                            }
                             _ => false,
                         }
                     }

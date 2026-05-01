@@ -717,9 +717,27 @@ impl<'a> FunctionLower<'a> {
             .statement
             .get(&func.code)
             .ok_or_else(|| "function body missing".to_string())?;
-        let body_value = match stmt {
-            Stmt::Expression(e) => self.lower_expr(&e)?,
+        let body_expr = match stmt {
+            Stmt::Expression(e) => e,
             other => return Err(format!("unexpected top-level statement shape: {other:?}")),
+        };
+
+        let ret_ty = self.module.function(self.func_id).return_type;
+        // Enum-returning functions need composite handling: the
+        // body's tail might be an `if`-chain or `match` whose every
+        // branch produces an enum value. Pre-allocate target locals
+        // and route the body through `lower_into_enum_target` so all
+        // branches converge on the same tag / payload locals (the
+        // same approach that powers `val s = if ... { Enum::A } else
+        // { ... }`). The implicit-return path then reads from the
+        // pending channel.
+        let body_value = if let Type::Enum(enum_name) = ret_ty {
+            let (tag_local, payload_locals) = self.allocate_enum_storage(enum_name)?;
+            self.pending_enum_value = Some((tag_local, payload_locals.clone()));
+            self.lower_into_enum_target(&body_expr, enum_name, tag_local, &payload_locals)?;
+            None
+        } else {
+            self.lower_expr(&body_expr)?
         };
 
         // If control falls off the end of the body, take the tail
@@ -727,7 +745,6 @@ impl<'a> FunctionLower<'a> {
         // implicit-return semantics. Unit-returning functions emit a
         // value-less `ret`.
         if self.current_block.is_some() {
-            let ret_ty = self.module.function(self.func_id).return_type;
             self.emit_implicit_return(ret_ty, body_value, &func.name)?;
         }
         Ok(())

@@ -2088,6 +2088,139 @@ fn enum_branch_with_existing_binding() {
 }
 
 #[test]
+fn enum_returned_from_function_simple() {
+    if skip_e2e() {
+        return;
+    }
+    // Tail-position enum binding flows through the existing
+    // `pending_enum_value` channel; the body just `val`s and
+    // returns the binding.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+            Point,
+        }
+        fn make_rect(w: i64, h: i64) -> Shape {
+            val s = Shape::Rect(w, h)
+            s
+        }
+        fn main() -> u64 {
+            val r = make_rect(4i64, 5i64)
+            val a: i64 = match r {
+                Shape::Circle(_) => -1i64,
+                Shape::Rect(w, h) => w * h,
+                Shape::Point => 0i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_return_simple"), 20);
+}
+
+#[test]
+fn enum_returned_from_if_chain_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Body's tail is an if-chain whose branches each construct an
+    // enum value. `lower_body` allocates the return target and
+    // routes through `lower_into_enum_target` so each branch writes
+    // into the shared locals.
+    let src = r#"
+        enum Pick {
+            Zero,
+            One,
+            Many(u64),
+        }
+        fn pick(n: u64) -> Pick {
+            if n == 0u64 {
+                Pick::Zero
+            } elif n == 1u64 {
+                Pick::One
+            } else {
+                Pick::Many(n)
+            }
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::Zero => 0u64,
+                Pick::One => 1u64,
+                Pick::Many(n) => n,
+            }
+        }
+        fn main() -> u64 {
+            val a = pick(0u64)
+            val b = pick(1u64)
+            val c = pick(7u64)
+            weight(a) + weight(b) + weight(c)
+        }
+    "#;
+    // 0 + 1 + 7 = 8
+    assert_eq!(compile_and_run(src, "enum_return_if_chain"), 8);
+}
+
+#[test]
+fn enum_returned_from_match_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Symmetric: the body's tail is a match producing enum values.
+    let src = r#"
+        enum Tag {
+            Lo,
+            Hi(u64),
+        }
+        fn classify(n: u64) -> Tag {
+            match n {
+                0u64 => Tag::Lo,
+                _ => Tag::Hi(n),
+            }
+        }
+        fn read(t: Tag) -> u64 {
+            match t {
+                Tag::Lo => 1u64,
+                Tag::Hi(n) => n + 10u64,
+            }
+        }
+        fn main() -> u64 {
+            val a = classify(0u64)
+            val b = classify(5u64)
+            read(a) + read(b)
+        }
+    "#;
+    // 1 + 15 = 16
+    assert_eq!(compile_and_run(src, "enum_return_match"), 16);
+}
+
+#[test]
+fn enum_returned_via_tail_constructor() {
+    if skip_e2e() {
+        return;
+    }
+    // Function body is just a single `Enum::Variant(args)` literal;
+    // no intermediate `val` binding required.
+    let src = r#"
+        enum Box {
+            Item(u64),
+        }
+        fn make(n: u64) -> Box {
+            Box::Item(n + 1u64)
+        }
+        fn unwrap(b: Box) -> u64 {
+            match b {
+                Box::Item(v) => v,
+            }
+        }
+        fn main() -> u64 {
+            val b = make(41u64)
+            unwrap(b)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "enum_return_constructor"), 42);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

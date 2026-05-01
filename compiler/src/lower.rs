@@ -1308,6 +1308,15 @@ enum Binding {
     /// `EnumStorage` (for enum-typed payloads like `Option<Option<T>>`),
     /// which is what makes nested enum sub-patterns lower correctly.
     Enum(EnumStorage),
+    /// Fixed-size array binding. Phase S keeps it simple: scalar
+    /// element types only, all elements stored in per-index locals.
+    /// Index access (`arr[i]`) requires a constant index in the MVP
+    /// — runtime indexing would need an actual stack-allocated
+    /// buffer + cranelift `stack_load` / `stack_store`.
+    Array {
+        element_ty: Type,
+        elements: Vec<LocalId>,
+    },
 }
 
 /// Storage tree for one enum value in IR. `tag_local` holds the
@@ -2231,6 +2240,43 @@ impl<'a> FunctionLower<'a> {
             }
             return Ok(None);
         }
+        // Array-literal RHS. Phase S supports a fixed-size array of
+        // scalars: `val arr = [a, b, c]`. Each element gets its own
+        // local; access happens via `arr[const_idx]` (constant
+        // indices only — runtime indexing would require a
+        // stack-allocated buffer).
+        if let Expr::ArrayLiteral(elems) = rhs.clone() {
+            if elems.is_empty() {
+                return Err(
+                    "compiler MVP cannot infer element type for empty array literal".to_string(),
+                );
+            }
+            let elem_ty = self.value_scalar(&elems[0]).ok_or_else(|| {
+                "compiler MVP could not infer scalar type for first array element".to_string()
+            })?;
+            if !matches!(
+                elem_ty,
+                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+            ) {
+                return Err(format!(
+                    "compiler MVP only supports scalar (i64 / u64 / f64 / bool) array elements; got {elem_ty:?}"
+                ));
+            }
+            let mut locals: Vec<LocalId> = Vec::with_capacity(elems.len());
+            for (i, e) in elems.iter().enumerate() {
+                let local = self.module.function_mut(self.func_id).add_local(elem_ty);
+                let v = self.lower_expr(e)?.ok_or_else(|| {
+                    format!("array element #{i} produced no value")
+                })?;
+                self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                locals.push(local);
+            }
+            self.bindings.insert(
+                name,
+                Binding::Array { element_ty: elem_ty, elements: locals },
+            );
+            return Ok(None);
+        }
         // Enum-construction RHS. `Enum::Variant` (unit) parses as a
         // `QualifiedIdentifier(vec![enum, variant])`; `Enum::Variant(args)`
         // parses as `AssociatedFunctionCall(enum, variant, args)`.
@@ -2664,6 +2710,17 @@ impl<'a> FunctionLower<'a> {
                         self.pending_enum_value = Some(storage);
                         Ok(None)
                     }
+                    Some(Binding::Array { .. }) => {
+                        // Bare-identifier use of an array binding is
+                        // not supported in expression position yet —
+                        // arrays don't flow through the IR's value
+                        // graph. The user must access an element.
+                        Err(format!(
+                            "compiler MVP cannot use array `{}` as a value; access an element with `{}[i]`",
+                            self.interner.resolve(sym).unwrap_or("?"),
+                            self.interner.resolve(sym).unwrap_or("?"),
+                        ))
+                    }
                     None => {
                         // Fall back to top-level `const` lookup. This
                         // mirrors what the type-checker does: a name
@@ -2719,6 +2776,10 @@ impl<'a> FunctionLower<'a> {
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
+            Expr::SliceAccess(obj, info) => self.lower_slice_access(&obj, &info),
+            Expr::SliceAssign(obj, start, end, value) => {
+                self.lower_slice_assign(&obj, start.as_ref(), end.as_ref(), &value)
+            }
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other
@@ -2822,6 +2883,10 @@ impl<'a> FunctionLower<'a> {
                     Binding::Scalar { .. } => {}
                     Binding::Enum(storage) => {
                         self.emit_print_enum(&storage, newline)?;
+                        return Ok(None);
+                    }
+                    Binding::Array { element_ty, elements } => {
+                        self.emit_print_array(element_ty, &elements, newline);
                         return Ok(None);
                     }
                 }
@@ -3058,6 +3123,36 @@ impl<'a> FunctionLower<'a> {
 
     fn emit_print_raw_text(&mut self, text: String, newline: bool) {
         self.emit(InstKind::PrintRaw { text, newline }, None);
+    }
+
+    /// Render an array binding as `[a, b, c]`, matching the
+    /// interpreter's `to_display_string` format for `Object::Array`.
+    /// Element type is uniform across the binding (Phase S enforces
+    /// this at construction time).
+    fn emit_print_array(
+        &mut self,
+        element_ty: Type,
+        elements: &[LocalId],
+        newline: bool,
+    ) {
+        self.emit_print_raw_text("[".to_string(), false);
+        for (i, local) in elements.iter().enumerate() {
+            if i > 0 {
+                self.emit_print_raw_text(", ".to_string(), false);
+            }
+            let v = self
+                .emit(InstKind::LoadLocal(*local), Some(element_ty))
+                .expect("LoadLocal returns a value");
+            self.emit(
+                InstKind::Print {
+                    value: v,
+                    value_ty: element_ty,
+                    newline: false,
+                },
+                None,
+            );
+        }
+        self.emit_print_raw_text("]".to_string(), newline);
     }
 
     /// Render a struct's display header (`Name` or `Name<T1, T2, ...>`)
@@ -4595,6 +4690,13 @@ impl<'a> FunctionLower<'a> {
                         // Already handled above.
                         unreachable!("enum reassign was peeked");
                     }
+                    Some(Binding::Array { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign an array binding `{}` whole (assign individual elements via `{}[i] = ...` instead)",
+                            self.interner.resolve(sym).unwrap_or("?"),
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
                     None => {
                         return Err(format!(
                             "undefined identifier `{}`",
@@ -4834,6 +4936,7 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::Tuple(id))
                 }
                 Some(Binding::Enum(_)) => None,
+                Some(Binding::Array { .. }) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),
@@ -5156,6 +5259,10 @@ impl<'a> FunctionLower<'a> {
                 }),
                 Some(Binding::Tuple { .. }) => Err(format!(
                     "compiler MVP cannot use tuple `{}` in a field-access chain",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
+                Some(Binding::Array { .. }) => Err(format!(
+                    "compiler MVP cannot use array `{}` in a field-access chain",
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
                 Some(Binding::Enum { .. }) => Err(format!(
@@ -6003,9 +6110,9 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         return Ok(MatchScrutinee::Scalar { value: v, ty });
                     }
-                    Binding::Struct { .. } | Binding::Tuple { .. } => {
+                    Binding::Struct { .. } | Binding::Tuple { .. } | Binding::Array { .. } => {
                         return Err(format!(
-                            "compiler MVP does not support `match` on struct / tuple \
+                            "compiler MVP does not support `match` on struct / tuple / array \
                              binding `{}`",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
@@ -6493,6 +6600,156 @@ impl<'a> FunctionLower<'a> {
         Ok(func_id)
     }
 
+    /// Lower `arr[index]`. Phase S only handles single-element
+    /// access on a bare identifier bound to an array, with a
+    /// constant index folding to a direct LoadLocal on the matching
+    /// per-element local. Range slicing and runtime indices are
+    /// rejected for now.
+    fn lower_slice_access(
+        &mut self,
+        obj: &ExprRef,
+        info: &frontend::ast::SliceInfo,
+    ) -> Result<Option<ValueId>, String> {
+        if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+            return Err(
+                "compiler MVP only supports single-element array access (`arr[i]`); range slicing is not implemented".to_string(),
+            );
+        }
+        let index_ref = info
+            .start
+            .as_ref()
+            .ok_or_else(|| "single-element slice missing index".to_string())?;
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "array-access object missing".to_string())?;
+        let arr_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP only supports array access on a bare identifier".to_string(),
+                );
+            }
+        };
+        let (element_ty, elements) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, elements }) => (element_ty, elements),
+            Some(_) => {
+                return Err(format!(
+                    "`{}` is not an array binding",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "undefined identifier `{}`",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+        };
+        let idx_const = self.try_constant_index(index_ref).ok_or_else(|| {
+            "compiler MVP only supports constant array indices (`arr[0u64]`); runtime indexing is not implemented".to_string()
+        })?;
+        if idx_const >= elements.len() {
+            return Err(format!(
+                "array index {idx_const} out of bounds (length {})",
+                elements.len()
+            ));
+        }
+        let local = elements[idx_const];
+        Ok(self.emit(InstKind::LoadLocal(local), Some(element_ty)))
+    }
+
+    /// Lower `arr[i] = v`. Phase S supports single-element write on
+    /// a bare-identifier array binding with a constant index. Range
+    /// assignment is rejected.
+    fn lower_slice_assign(
+        &mut self,
+        obj: &ExprRef,
+        start: Option<&ExprRef>,
+        end: Option<&ExprRef>,
+        value: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        if end.is_some() {
+            return Err(
+                "compiler MVP only supports single-element array write (`arr[i] = v`); range assignment is not implemented".to_string(),
+            );
+        }
+        let index_ref = start
+            .ok_or_else(|| "single-element slice write missing index".to_string())?;
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "array-write object missing".to_string())?;
+        let arr_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(
+                    "compiler MVP only supports array write on a bare identifier".to_string(),
+                );
+            }
+        };
+        let elements = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { elements, .. }) => elements,
+            Some(_) => {
+                return Err(format!(
+                    "`{}` is not an array binding",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "undefined identifier `{}`",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+        };
+        let idx_const = self.try_constant_index(index_ref).ok_or_else(|| {
+            "compiler MVP only supports constant array indices on write".to_string()
+        })?;
+        if idx_const >= elements.len() {
+            return Err(format!(
+                "array index {idx_const} out of bounds (length {})",
+                elements.len()
+            ));
+        }
+        let v = self
+            .lower_expr(value)?
+            .ok_or_else(|| "array write rhs produced no value".to_string())?;
+        self.emit(
+            InstKind::StoreLocal {
+                dst: elements[idx_const],
+                src: v,
+            },
+            None,
+        );
+        Ok(None)
+    }
+
+    /// Fold a literal-integer index into a `usize`. Currently
+    /// accepts `Int64` / `UInt64` / `Number` literals only;
+    /// arbitrary const-expression folding is deferred.
+    fn try_constant_index(&self, expr_ref: &ExprRef) -> Option<usize> {
+        let e = self.program.expression.get(expr_ref)?;
+        match e {
+            Expr::UInt64(v) => Some(v as usize),
+            Expr::Int64(v) if v >= 0 => Some(v as usize),
+            Expr::Number(_) => {
+                // `Number` is a type-unspecified literal — usually
+                // emitted as u64 by the parser when no suffix is
+                // present. Fall back to a u64 view.
+                None
+            }
+            Expr::Identifier(sym) => self.const_values.get(&sym).and_then(|c| match c {
+                Const::U64(v) => Some(*v as usize),
+                Const::I64(v) if *v >= 0 => Some(*v as usize),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
     fn lower_method_call(
         &mut self,
         obj: &ExprRef,
@@ -6795,6 +7052,22 @@ impl<'a> FunctionLower<'a> {
                 .function_index
                 .get(&fn_name)
                 .map(|id| self.module.function(*id).return_type),
+            Expr::SliceAccess(obj, info) => {
+                // Single-element access on an array binding peels
+                // off the element_ty without lowering the body.
+                if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                    return None;
+                }
+                let obj_expr = self.program.expression.get(&obj)?;
+                let arr_sym = match obj_expr {
+                    Expr::Identifier(s) => s,
+                    _ => return None,
+                };
+                match self.bindings.get(&arr_sym)? {
+                    Binding::Array { element_ty, .. } => Some(*element_ty),
+                    _ => None,
+                }
+            }
             Expr::MethodCall(obj, method, _) => {
                 // Resolve receiver via the binding table; pull its
                 // struct/enum symbol; look up the method's return

@@ -674,6 +674,66 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn array_literal_and_index_read() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase S: `[a, b, c]` allocates one local per element;
+    // `arr[const_idx]` folds to a direct LoadLocal on the matching
+    // slot. Runtime indices and range slicing aren't supported yet.
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [10i64, 20i64, 30i64]
+            val a: i64 = arr[0u64]
+            val b: i64 = arr[2u64]
+            (a + b) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_read"), 40);
+}
+
+#[test]
+fn array_literal_print() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [1i64, 2i64, 3i64, 4i64]
+            println(arr)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "array_print");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "[1, 2, 3, 4]\n",
+    );
+}
+
+#[test]
+fn array_element_assign() {
+    if skip_e2e() {
+        return;
+    }
+    // `arr[i] = v` lowers to a StoreLocal on the matching slot.
+    // The binding must be `var` (mutable); constants are caught
+    // by the front-end before we see them here.
+    let src = r#"
+        fn main() -> u64 {
+            var arr = [10i64, 20i64, 30i64]
+            arr[1u64] = 99i64
+            val a: i64 = arr[0u64]
+            val b: i64 = arr[1u64]
+            val c: i64 = arr[2u64]
+            (a + b + c) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_assign"), 139);
+}
+
+#[test]
 fn generic_method_basic() {
     if skip_e2e() {
         return;

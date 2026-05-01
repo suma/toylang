@@ -3245,6 +3245,16 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| "assign lhs missing".to_string())?;
         match lhs_expr {
             Expr::Identifier(sym) => {
+                // Enum reassignment: peek at the binding first so we
+                // can route the rhs through `lower_into_enum_storage`
+                // and reuse the existing storage tree (no need to
+                // allocate fresh tag / payload locals — cranelift's
+                // SSA construction copes with multiple def_var sites
+                // for the same Variable).
+                if let Some(Binding::Enum(storage)) = self.bindings.get(&sym).cloned() {
+                    self.lower_into_enum_storage(rhs, &storage)?;
+                    return Ok(None);
+                }
                 let rhs_val = self
                     .lower_expr(rhs)?
                     .ok_or_else(|| "assignment rhs produced no value".to_string())?;
@@ -3263,11 +3273,9 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }
-                    Some(Binding::Enum { .. }) => {
-                        return Err(format!(
-                            "compiler MVP cannot reassign an enum binding `{}` whole",
-                            self.interner.resolve(sym).unwrap_or("?")
-                        ));
+                    Some(Binding::Enum(_)) => {
+                        // Already handled above.
+                        unreachable!("enum reassign was peeked");
                     }
                     None => {
                         return Err(format!(

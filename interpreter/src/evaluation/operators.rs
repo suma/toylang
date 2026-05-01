@@ -82,25 +82,33 @@ impl ArithmeticOp {
     }
 
     fn apply_i64(&self, l: i64, r: i64) -> i64 {
+        // Wrapping arithmetic so the interpreter agrees with the
+        // compiler / JIT (cranelift's `iadd` / `isub` / `imul` wrap
+        // on overflow). Rust's bare `+` would panic in debug mode
+        // and wrap in release — we want a single deterministic
+        // semantics across all build modes.
         match self {
-            ArithmeticOp::Add => l + r,
-            ArithmeticOp::Sub => l - r,
-            ArithmeticOp::Mul => l * r,
-            ArithmeticOp::Div => l / r,
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            // Division and remainder by zero still trap (cranelift's
+            // `sdiv` / `srem` trap, and Rust's `/` / `%` panic);
+            // overflow on signed division (i64::MIN / -1) wraps.
+            ArithmeticOp::Div => l.wrapping_div(r),
             // Rust's `%` is truncated remainder, matching most C-family
             // languages — `(-7) % 3 == -1`. Diverges from mathematical
             // modulo, which is fine for our use cases.
-            ArithmeticOp::Mod => l % r,
+            ArithmeticOp::Mod => l.wrapping_rem(r),
         }
     }
 
     fn apply_u64(&self, l: u64, r: u64) -> u64 {
         match self {
-            ArithmeticOp::Add => l + r,
-            ArithmeticOp::Sub => l - r,
-            ArithmeticOp::Mul => l * r,
-            ArithmeticOp::Div => l / r,
-            ArithmeticOp::Mod => l % r,
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
         }
     }
 

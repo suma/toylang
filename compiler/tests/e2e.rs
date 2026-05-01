@@ -2468,6 +2468,42 @@ fn nested_enum_println_recurses() {
 }
 
 #[test]
+fn enum_var_reassignment() {
+    if skip_e2e() {
+        return;
+    }
+    // `var p` is an enum binding; subsequent assignments overwrite
+    // its tag + payload locals in place. `lower_assign` routes the
+    // rhs through `lower_into_enum_storage` so the existing storage
+    // is reused (cranelift def_var handles the re-binding).
+    let src = r#"
+        enum Pick {
+            A(u64),
+            B,
+            C(u64),
+        }
+        fn weight(p: Pick) -> u64 {
+            match p {
+                Pick::A(n) => n,
+                Pick::B => 100u64,
+                Pick::C(n) => n + 1000u64,
+            }
+        }
+        fn main() -> u64 {
+            var p = Pick::A(5u64)
+            val a = weight(p)
+            p = Pick::B
+            val b = weight(p)
+            p = Pick::C(7u64)
+            val c = weight(p)
+            a + b + c
+        }
+    "#;
+    // 5 + 100 + 1007 = 1112; 1112 & 0xff = 88
+    assert_eq!(compile_and_run(src, "enum_reassign"), 1112 & 0xff);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

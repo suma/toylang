@@ -282,10 +282,6 @@ fn struct_field_match() {
 
 #[test]
 fn tuple_round_trip_match() {
-    // Note: the interpreter panics on u64 underflow while the
-    // compiler / JIT wrap silently — that's a real divergence to
-    // track separately. We pick operands that don't trigger it so
-    // the consistency assertion only catches *unintended* drift.
     let src = r#"
         fn swap(p: (u64, u64)) -> (u64, u64) { (p.1, p.0) }
         fn main() -> u64 {
@@ -295,6 +291,34 @@ fn tuple_round_trip_match() {
         }
     "#;
     assert_consistent(src, "tuple_round");
+}
+
+#[test]
+fn u64_wrapping_overflow_match() {
+    // Now that the interpreter uses wrapping arithmetic too, all
+    // three backends agree on overflow behaviour. The result is
+    // (5 + u64::MAX) wrapped == 4; exit code is 4.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u64 = 18446744073709551615u64
+            a + 5u64
+        }
+    "#;
+    assert_consistent(src, "u64_overflow");
+}
+
+#[test]
+fn u64_wrapping_underflow_match() {
+    // 5 - 10 wraps under u64. Compiler gives `u64::MAX - 4`, which
+    // exits with `(u64::MAX - 4) & 0xff` = 0xfb = 251. Interpreter
+    // now matches.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u64 = 5u64
+            a - 10u64
+        }
+    "#;
+    assert_consistent(src, "u64_underflow");
 }
 
 #[test]

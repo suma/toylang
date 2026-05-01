@@ -31,7 +31,8 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
   - **ネストした enum payload + サブパターン (Phase G)**: enum payload に enum を許容（`enum Box<T> { Put(T) }` で `Box<Box<u64>>` も可）。`val x: Option<Option<i64>> = Option::Some(Option::Some(42i64))` の構築、`match x { Option::Some(Option::Some(v)) => ... }` のネストパターン、`println(x)` の再帰的出力すべて動作。`EnumStorage` は `PayloadSlot::Scalar { local, ty }` または `PayloadSlot::Enum(Box<EnumStorage>)` を持つ recursive 構造で、function boundary flatten / load / copy / dispatch すべて再帰
   - **`print` / `println`**: enum binding（`val` / `var` 由来 または関数引数）を受け取って interpreter と同形式に出力（unit variant: `Color::Red`、tuple variant: `Shape::Circle(5)` / `Shape::Rect(3, 7)`）。runtime tag dispatch で variant ごとの分岐を brif chain で生成。enum リテラル直接（`println(Enum::Variant(args))`）は不可、`val` で受ける必要あり
   - **enum 構築を `if` / `match` 等の式位置で (Phase D)**: `val s = if cond { Pick::A(n) } elif ... { Pick::B } else { Pick::C(m) }` や `val s = match n { 0u64 => Pick::Zero, _ => Pick::Big(n) }` のように、複数分岐の各 tail で enum を構築するパターンを受理。`detect_enum_result` で全分岐が同じ enum を返すか静的に判定し、`lower_into_enum_target` 経由で各分岐が同じ tag/payload locals に書き込む（cranelift の `def_var` walk で merge 時に SSA 化）。ネストした if-chain、`match` arm の guard、blocks (`{ stmt; tail }`) も再帰で動作。tail 位置で既存の enum binding identifier を返すケースも copy 経路で動作
-  - **制約**: enum 全体の再代入、`f64` / 構造体 / tuple payload — 未対応
+  - **enum 再代入 (Phase I)**: `var p = Pick::A(5u64); p = Pick::B; p = Pick::C(7u64)` のように enum binding 全体の再代入が可能（既存の tag/payload locals に書き込む、cranelift の def_var が再 binding 担当）
+  - **制約**: `f64` / 構造体 / tuple payload — 未対応
   - **スコープ**: 全 arm の body は同じ scalar 型を返す必要あり
 
 **注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）

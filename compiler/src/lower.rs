@@ -1039,14 +1039,81 @@ fn substitute_field_type(
     }
 }
 
-/// Per-element byte stride for an array element type. The compiler
-/// uses a uniform 8-byte stride for every supported scalar so the
-/// runtime address arithmetic can multiply by a single constant.
-/// Bool values store as 1 byte but the slot reserves 8 bytes per
-/// slot to keep things simple — the wasted bytes never matter
-/// because no one observes the gap between elements.
-fn elem_stride_bytes(_ty: Type) -> u32 {
-    8
+/// Per-leaf-scalar byte stride. The compiler uses a uniform 8-byte
+/// stride for every supported scalar so runtime address arithmetic
+/// can multiply by a single constant. Compound array elements
+/// (struct / tuple) are flattened into multiple consecutive leaf
+/// slots inside the same backing buffer; the per-element stride
+/// becomes `leaf_count(element_ty) * 8`.
+const ARRAY_LEAF_STRIDE: u32 = 8;
+
+/// How many leaf scalar slots one element of `ty` occupies in an
+/// array's backing buffer. Scalars take one; structs and tuples
+/// recursively flatten through their fields / elements (matching
+/// the function-boundary leaf order).
+fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
+    match ty {
+        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 1,
+        Type::Unit => 0,
+        Type::Struct(id) => {
+            let fields = module.struct_def(id).fields.clone();
+            fields
+                .iter()
+                .map(|(_, ft)| leaf_scalar_count(module, *ft))
+                .sum()
+        }
+        Type::Tuple(id) => {
+            let elems = module.tuple_defs[id.0 as usize].clone();
+            elems
+                .iter()
+                .map(|t| leaf_scalar_count(module, *t))
+                .sum()
+        }
+        Type::Enum(_) => 1, // not supported as array element yet
+    }
+}
+
+/// Per-leaf stride, used as the `elem_stride_bytes` value stored
+/// in `ArraySlotInfo`. Compound elements (struct / tuple) occupy
+/// `leaf_count` consecutive leaf slots in the same buffer; the
+/// lowering computes `leaf_index = element_index * leaf_count + j`
+/// at each access site so codegen still gets a uniform stride.
+fn elem_stride_bytes(_ty: Type, _module: &Module) -> u32 {
+    ARRAY_LEAF_STRIDE
+}
+
+/// The IR type of leaf `j` (0-indexed) within an array element of
+/// `element_ty`. For scalar elements `j` must be 0. For struct /
+/// tuple elements the leaves are walked in declaration order
+/// (matching `flatten_struct_locals` / `flatten_tuple_element_locals`).
+fn leaf_type_at(module: &Module, element_ty: Type, j: usize) -> Type {
+    match element_ty {
+        Type::Struct(id) => {
+            let fields = module.struct_def(id).fields.clone();
+            let mut acc = 0usize;
+            for (_, ft) in &fields {
+                let cnt = leaf_scalar_count(module, *ft);
+                if j < acc + cnt {
+                    return leaf_type_at(module, *ft, j - acc);
+                }
+                acc += cnt;
+            }
+            element_ty
+        }
+        Type::Tuple(id) => {
+            let elems = module.tuple_defs[id.0 as usize].clone();
+            let mut acc = 0usize;
+            for et in &elems {
+                let cnt = leaf_scalar_count(module, *et);
+                if j < acc + cnt {
+                    return leaf_type_at(module, *et, j - acc);
+                }
+                acc += cnt;
+            }
+            element_ty
+        }
+        _ => element_ty,
+    }
 }
 
 fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
@@ -2264,42 +2331,186 @@ impl<'a> FunctionLower<'a> {
         // local; access happens via `arr[const_idx]` (constant
         // indices only — runtime indexing would require a
         // stack-allocated buffer).
+        // Range-slice array read: `val sub = arr[start..end]`.
+        // Phase Y2 supports constant bounds only — both endpoints
+        // must fold via `try_constant_index`. The result is a fresh
+        // fixed-length array binding whose stack slot mirrors the
+        // source slot's leaf layout. Each leaf scalar is copied with
+        // an `ArrayLoad` + `ArrayStore` pair.
+        if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
+            if matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
+                let arr_expr = self
+                    .program
+                    .expression
+                    .get(&arr_obj)
+                    .ok_or_else(|| "array-access object missing".to_string())?;
+                let arr_sym = match arr_expr {
+                    Expr::Identifier(s) => s,
+                    _ => {
+                        return Err(
+                            "compiler MVP only supports range slicing on a bare identifier"
+                                .to_string(),
+                        );
+                    }
+                };
+                let (element_ty, length, src_slot) = match self.bindings.get(&arr_sym).cloned() {
+                    Some(Binding::Array { element_ty, length, slot }) => {
+                        (element_ty, length, slot)
+                    }
+                    _ => {
+                        return Err(format!(
+                            "`{}` is not an array binding",
+                            self.interner.resolve(arr_sym).unwrap_or("?")
+                        ));
+                    }
+                };
+                // Defaults for omitted endpoints follow the
+                // interpreter: `..end` starts at 0, `start..` ends
+                // at `length`, `..` is the whole array.
+                let start = match info.start {
+                    Some(s) => self.try_constant_index(&s).ok_or_else(|| {
+                        "compiler MVP only supports constant range-slice bounds".to_string()
+                    })?,
+                    None => 0,
+                };
+                let end = match info.end {
+                    Some(e) => self.try_constant_index(&e).ok_or_else(|| {
+                        "compiler MVP only supports constant range-slice bounds".to_string()
+                    })?,
+                    None => length,
+                };
+                if start > end || end > length {
+                    return Err(format!(
+                        "range slice {start}..{end} out of bounds (array length {length})"
+                    ));
+                }
+                let new_len = end - start;
+                let leaf_count = leaf_scalar_count(self.module, element_ty);
+                let stride = elem_stride_bytes(element_ty, self.module);
+                let dst_slot = self
+                    .module
+                    .function_mut(self.func_id)
+                    .add_array_slot(element_ty, new_len * leaf_count, stride);
+                for i in 0..new_len {
+                    for j in 0..leaf_count {
+                        let src_idx = (start + i) * leaf_count + j;
+                        let dst_idx = i * leaf_count + j;
+                        let leaf_ty = leaf_type_at(self.module, element_ty, j);
+                        let src_idx_v = self
+                            .emit(
+                                InstKind::Const(Const::U64(src_idx as u64)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns");
+                        let v = self
+                            .emit(
+                                InstKind::ArrayLoad {
+                                    slot: src_slot,
+                                    index: src_idx_v,
+                                    elem_ty: leaf_ty,
+                                },
+                                Some(leaf_ty),
+                            )
+                            .expect("ArrayLoad returns");
+                        let dst_idx_v = self
+                            .emit(
+                                InstKind::Const(Const::U64(dst_idx as u64)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns");
+                        self.emit(
+                            InstKind::ArrayStore {
+                                slot: dst_slot,
+                                index: dst_idx_v,
+                                value: v,
+                                elem_ty: leaf_ty,
+                            },
+                            None,
+                        );
+                    }
+                }
+                self.bindings.insert(
+                    name,
+                    Binding::Array {
+                        element_ty,
+                        length: new_len,
+                        slot: dst_slot,
+                    },
+                );
+                return Ok(None);
+            }
+        }
+        // Compound-element array read: `val p: Point = arr[i]`.
+        // Allocate the right binding shape and load each leaf
+        // directly into its locals via the same per-leaf
+        // ArrayLoad sequence `lower_slice_access` would emit, so
+        // chain access (`p.x`) and field-by-field reads work
+        // through the existing struct-binding path.
+        if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
+            if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                let arr_expr = self
+                    .program
+                    .expression
+                    .get(&arr_obj)
+                    .ok_or_else(|| "array-access object missing".to_string())?;
+                if let Expr::Identifier(arr_sym) = arr_expr {
+                    if let Some(Binding::Array { element_ty, .. }) =
+                        self.bindings.get(&arr_sym).cloned()
+                    {
+                        if let Type::Struct(struct_id) = element_ty {
+                            // Lower the element read, which stashes a
+                            // pending_struct_value with the freshly
+                            // allocated leaves filled in.
+                            self.pending_struct_value = None;
+                            let _ = self.lower_slice_access(&arr_obj, &info)?;
+                            if let Some(fields) = self.pending_struct_value.take() {
+                                self.bindings.insert(
+                                    name,
+                                    Binding::Struct { struct_id, fields },
+                                );
+                                return Ok(None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Expr::ArrayLiteral(elems) = rhs.clone() {
             if elems.is_empty() {
                 return Err(
                     "compiler MVP cannot infer element type for empty array literal".to_string(),
                 );
             }
-            let elem_ty = self.value_scalar(&elems[0]).ok_or_else(|| {
-                "compiler MVP could not infer scalar type for first array element".to_string()
-            })?;
+            // Element type comes from the first element. Scalars
+            // resolve via `value_scalar`; struct literals resolve
+            // through the struct table.
+            let elem_ty = self.infer_array_element_type(&elems[0])?;
             if !matches!(
                 elem_ty,
-                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                Type::I64
+                    | Type::U64
+                    | Type::F64
+                    | Type::Bool
+                    | Type::Struct(_)
+                    | Type::Tuple(_)
             ) {
                 return Err(format!(
-                    "compiler MVP only supports scalar (i64 / u64 / f64 / bool) array elements; got {elem_ty:?}"
+                    "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
                 ));
             }
-            // Allocate one stack slot for the whole array; each
-            // element gets stored via ArrayStore with a constant
-            // index (`Const::U64(i)`).
-            let stride = elem_stride_bytes(elem_ty);
+            // Stride is uniform 8 bytes per leaf scalar; compound
+            // elements occupy `leaf_count` consecutive leaf slots
+            // in the same buffer. The slot's `length` therefore
+            // counts leaves, not elements.
+            let leaf_count = leaf_scalar_count(self.module, elem_ty);
+            let stride = elem_stride_bytes(elem_ty, self.module);
+            let slot_len = elems.len() * leaf_count;
             let slot = self
                 .module
                 .function_mut(self.func_id)
-                .add_array_slot(elem_ty, elems.len(), stride);
+                .add_array_slot(elem_ty, slot_len, stride);
             for (i, e) in elems.iter().enumerate() {
-                let v = self.lower_expr(e)?.ok_or_else(|| {
-                    format!("array element #{i} produced no value")
-                })?;
-                let idx_v = self
-                    .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
-                    .expect("Const returns a value");
-                self.emit(
-                    InstKind::ArrayStore { slot, index: idx_v, value: v, elem_ty },
-                    None,
-                );
+                self.store_array_element(slot, elem_ty, i, leaf_count, e)?;
             }
             self.bindings.insert(
                 name,
@@ -6871,6 +7082,108 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Determine the IR `Type` of an array element from its first
+    /// literal. Scalars use `value_scalar`; struct / tuple literals
+    /// resolve via `infer_tuple_element_type` (which already handles
+    /// both, including interning new tuple shapes).
+    fn infer_array_element_type(&mut self, expr_ref: &ExprRef) -> Result<Type, String> {
+        if let Some(t) = self.infer_tuple_element_type(expr_ref) {
+            return Ok(t);
+        }
+        Err("compiler MVP could not infer type for array element".to_string())
+    }
+
+    /// Lower one element value into the array's stack slot at the
+    /// right leaf-index range. Scalar elements take a single
+    /// `ArrayStore` at index `i * leaf_count + 0`; struct elements
+    /// decompose into per-leaf `ArrayStore`s starting at
+    /// `i * leaf_count`.
+    fn store_array_element(
+        &mut self,
+        slot: ArraySlotId,
+        elem_ty: Type,
+        index: usize,
+        leaf_count: usize,
+        expr_ref: &ExprRef,
+    ) -> Result<(), String> {
+        match elem_ty {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                let expr = self
+                    .program
+                    .expression
+                    .get(expr_ref)
+                    .ok_or_else(|| "array element missing".to_string())?;
+                match expr {
+                    Expr::StructLiteral(name, literal_fields) => {
+                        let expected = self.module.struct_def(struct_id).base_name;
+                        if name != expected {
+                            return Err(format!(
+                                "array element struct name mismatch: expected `{}`, got `{}`",
+                                self.interner.resolve(expected).unwrap_or("?"),
+                                self.interner.resolve(name).unwrap_or("?"),
+                            ));
+                        }
+                        self.store_struct_literal_fields(
+                            struct_id,
+                            &fields,
+                            &literal_fields,
+                        )?;
+                    }
+                    _ => {
+                        return Err(
+                            "compiler MVP only supports struct-literal array elements (bind to val first)"
+                                .to_string(),
+                        );
+                    }
+                }
+                let leaves = Self::flatten_struct_locals(&fields);
+                for (j, (local, ty)) in leaves.iter().enumerate() {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    let leaf_idx = index * leaf_count + j;
+                    let idx_v = self
+                        .emit(
+                            InstKind::Const(Const::U64(leaf_idx as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value");
+                    self.emit(
+                        InstKind::ArrayStore {
+                            slot,
+                            index: idx_v,
+                            value: v,
+                            elem_ty: *ty,
+                        },
+                        None,
+                    );
+                }
+                Ok(())
+            }
+            Type::Tuple(_) => {
+                Err("compiler MVP does not yet support tuple array elements".to_string())
+            }
+            _ => {
+                let v = self.lower_expr(expr_ref)?.ok_or_else(|| {
+                    format!("array element #{index} produced no value")
+                })?;
+                let leaf_idx = index * leaf_count;
+                let idx_v = self
+                    .emit(
+                        InstKind::Const(Const::U64(leaf_idx as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                self.emit(
+                    InstKind::ArrayStore { slot, index: idx_v, value: v, elem_ty },
+                    None,
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// Materialise (or fetch) the FuncId for a generic-method
     /// instance. Handles two flavours uniformly: impl-level generic
     /// params (covered by the receiver's `struct_def.type_args`,
@@ -7063,10 +7376,91 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        // Constant index folds into a Const at compile time;
-        // anything else lowers as a runtime value. Both forms hit
-        // the same `ArrayLoad` instruction so codegen treats them
-        // uniformly. Constant-index out-of-bounds is caught here.
+        // For compound array elements (struct), allocate a fresh
+        // struct binding and load each leaf scalar into the
+        // matching local. The result flows through the
+        // `pending_struct_value` channel so chain access /
+        // tail-position reads pick it up. For scalar elements,
+        // emit a single `ArrayLoad` and return the resulting
+        // value as before.
+        let leaf_count = leaf_scalar_count(self.module, element_ty);
+        if let Type::Struct(struct_id) = element_ty {
+            let fields = self.allocate_struct_fields(struct_id);
+            // Compute the element-base value (in leaf units): for
+            // const idx fold to a constant; for runtime, multiply
+            // by leaf_count.
+            let base_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
+                if idx_const >= length {
+                    return Err(format!(
+                        "array index {idx_const} out of bounds (length {length})"
+                    ));
+                }
+                self.emit(
+                    InstKind::Const(Const::U64((idx_const * leaf_count) as u64)),
+                    Some(Type::U64),
+                )
+                .expect("Const returns a value")
+            } else {
+                let raw_idx = self
+                    .lower_expr(index_ref)?
+                    .ok_or_else(|| "array index produced no value".to_string())?;
+                let leaf_count_v = self
+                    .emit(
+                        InstKind::Const(Const::U64(leaf_count as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                self.emit(
+                    InstKind::BinOp {
+                        op: BinOp::Mul,
+                        lhs: raw_idx,
+                        rhs: leaf_count_v,
+                    },
+                    Some(Type::U64),
+                )
+                .expect("imul returns")
+            };
+            let leaves = Self::flatten_struct_locals(&fields);
+            for (j, (local, ty)) in leaves.iter().enumerate() {
+                let leaf_idx_v = if j == 0 {
+                    base_v
+                } else {
+                    let off_v = self
+                        .emit(
+                            InstKind::Const(Const::U64(j as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns");
+                    self.emit(
+                        InstKind::BinOp {
+                            op: BinOp::Add,
+                            lhs: base_v,
+                            rhs: off_v,
+                        },
+                        Some(Type::U64),
+                    )
+                    .expect("iadd returns")
+                };
+                let v = self
+                    .emit(
+                        InstKind::ArrayLoad {
+                            slot,
+                            index: leaf_idx_v,
+                            elem_ty: *ty,
+                        },
+                        Some(*ty),
+                    )
+                    .expect("ArrayLoad returns");
+                self.emit(InstKind::StoreLocal { dst: *local, src: v }, None);
+            }
+            self.pending_struct_value = Some(fields);
+            return Ok(None);
+        }
+        // Scalar element path. Constant index folds into a Const at
+        // compile time; anything else lowers as a runtime value.
+        // Both forms hit the same `ArrayLoad` instruction so codegen
+        // treats them uniformly. Constant-index out-of-bounds is
+        // caught here.
         let idx_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
             if idx_const >= length {
                 return Err(format!(

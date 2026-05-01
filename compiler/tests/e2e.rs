@@ -980,6 +980,81 @@ fn string_in_struct_field() {
 }
 
 #[test]
+fn array_const_range_slice() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Y2: `arr[start..end]` with constant bounds produces a
+    // fresh fixed-length array binding. Each leaf scalar copies via
+    // an `ArrayLoad` + `ArrayStore` pair into the new slot.
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [10i64, 20i64, 30i64, 40i64, 50i64]
+            val a = arr[1u64..4u64]
+            println(a)
+            val b = arr[..2u64]
+            println(b)
+            val c = arr[3u64..]
+            println(c)
+            val d = arr[..]
+            println(d)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "array_range_slice");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "[20, 30, 40]\n[10, 20]\n[40, 50]\n[10, 20, 30, 40, 50]\n",
+    );
+}
+
+#[test]
+fn array_struct_element_const_index() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Y2: array elements can be struct values. Each element
+    // expands into `leaf_count` consecutive leaf slots in the same
+    // backing buffer; `arr[i]` allocates a fresh `Binding::Struct`
+    // and loads each leaf into its local via per-leaf `ArrayLoad`.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val arr = [Point { x: 1i64, y: 2i64 }, Point { x: 3i64, y: 4i64 }]
+            val p: Point = arr[0u64]
+            val q: Point = arr[1u64]
+            val s: i64 = p.x + p.y + q.x + q.y
+            s as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_struct_const"), 10);
+}
+
+#[test]
+fn array_struct_element_runtime_index() {
+    if skip_e2e() {
+        return;
+    }
+    // Same as above but the index comes from a for-loop variable.
+    // Per-leaf ArrayLoads compute the byte offset at runtime via
+    // `iadd(stack_addr, (i*leaf_count + j) * stride)`.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val arr = [Point { x: 1i64, y: 2i64 }, Point { x: 3i64, y: 4i64 }, Point { x: 5i64, y: 6i64 }]
+            var sum: i64 = 0i64
+            for i in 0u64..3u64 {
+                val p: Point = arr[i]
+                sum = sum + p.x + p.y
+            }
+            sum as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_struct_runtime"), 21);
+}
+
+#[test]
 fn array_runtime_index_for_loop_sum() {
     if skip_e2e() {
         return;

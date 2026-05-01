@@ -2718,6 +2718,93 @@ fn generic_function_called_from_generic_function() {
 }
 
 #[test]
+fn enum_with_f64_payload_construct_and_match() {
+    if skip_e2e() {
+        return;
+    }
+    // f64 in enum payload: storage is just a Type::F64 local, the
+    // boundary flatten passes it as cranelift F64. No bitcast
+    // needed since cranelift handles f64 natively.
+    let src = r#"
+        enum Shape {
+            Circle(f64),
+            Rect(f64, f64),
+            Point,
+        }
+        fn area(s: Shape) -> f64 {
+            match s {
+                Shape::Circle(r) => r * r * 3.14f64,
+                Shape::Rect(w, h) => w * h,
+                Shape::Point => 0.0f64,
+            }
+        }
+        fn main() -> u64 {
+            val c = Shape::Circle(2.0f64)
+            val a: f64 = area(c)
+            a as u64
+        }
+    "#;
+    // 2.0 * 2.0 * 3.14 = 12.56 → as u64 = 12
+    assert_eq!(compile_and_run(src, "enum_f64_match"), 12);
+}
+
+#[test]
+fn enum_with_f64_payload_println() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(f64),
+            Rect(f64, f64),
+            Point,
+        }
+        fn main() -> u64 {
+            val c = Shape::Circle(2.0f64)
+            val r = Shape::Rect(3.0f64, 4.0f64)
+            val p = Shape::Point
+            println(c)
+            println(r)
+            println(p)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "enum_f64_println");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Shape::Circle(2.0)\nShape::Rect(3.0, 4.0)\nShape::Point\n",
+    );
+}
+
+#[test]
+fn generic_enum_with_f64_payload() {
+    if skip_e2e() {
+        return;
+    }
+    // `Option<f64>` runs the same monomorphisation path as
+    // `Option<i64>`; payload type just lowers to F64 via the
+    // updated `is_supported_enum_payload` check.
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        fn unwrap_or(o: Option<f64>, default: f64) -> f64 {
+            match o {
+                Option::Some(v) => v,
+                Option::None => default,
+            }
+        }
+        fn main() -> u64 {
+            val a: Option<f64> = Option::Some(3.5f64)
+            val b: Option<f64> = Option::None
+            val r: f64 = unwrap_or(a, 0.0f64) + unwrap_or(b, 100.0f64)
+            r as u64
+        }
+    "#;
+    // 3.5 + 100.0 = 103.5 → as u64 = 103
+    assert_eq!(compile_and_run(src, "generic_enum_f64"), 103);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

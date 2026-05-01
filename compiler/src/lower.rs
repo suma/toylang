@@ -422,7 +422,7 @@ fn instantiate_enum(
                     || {
                         format!(
                             "enum `{}::{}` has unsupported payload type `{:?}` \
-                             (compiler MVP accepts i64 / u64 / bool, or another \
+                             (compiler MVP accepts i64 / u64 / f64 / bool, or another \
                              enum substituted from a generic parameter)",
                             interner.resolve(base_name).unwrap_or("?"),
                             interner.resolve(v.name).unwrap_or("?"),
@@ -433,7 +433,7 @@ fn instantiate_enum(
             if !is_supported_enum_payload(lowered) {
                 return Err(format!(
                     "enum `{}::{}` has unsupported payload type `{lowered}` \
-                     (compiler MVP only accepts i64 / u64 / bool / nested enum)",
+                     (compiler MVP only accepts i64 / u64 / f64 / bool / nested enum)",
                     interner.resolve(base_name).unwrap_or("?"),
                     interner.resolve(v.name).unwrap_or("?"),
                 ));
@@ -449,7 +449,10 @@ fn instantiate_enum(
 }
 
 fn is_supported_enum_payload(t: Type) -> bool {
-    matches!(t, Type::I64 | Type::U64 | Type::Bool | Type::Enum(_))
+    matches!(
+        t,
+        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Enum(_)
+    )
 }
 
 /// Lower an enum payload `TypeDecl`, applying any active generic

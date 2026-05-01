@@ -22,7 +22,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
 - **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
 - **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
-- **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `bool` のみ受理。
+- **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum を受理。
   - **トップレベルパターン**: `Enum::Variant(...)` / `Wildcard (_)` / `Literal(...)`（scalar scrutinee に対してのみ）
   - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
   - **variant サブパターン**: `Name(sym)` で payload を fresh scalar local に bind、`_` で discard、`Literal` で payload にリテラル等価チェック追加（`Shape::Circle(0i64) => ...` のように）
@@ -41,7 +41,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 未対応（明確なエラーで reject される）:
 
 - 任意の文字列値（リテラルのみ可）、配列、dict
-- enum payload に `f64` / 構造体 / tuple
+- enum payload に 構造体 / tuple
 - trait
 - allocator
 - (廃止) generics（→ struct / enum / 関数とも対応済）

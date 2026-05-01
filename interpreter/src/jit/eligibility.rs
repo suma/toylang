@@ -1393,84 +1393,6 @@ fn check_struct_literal_fields(
     true
 }
 
-/// Detect any control-flow exit (`return` / `break` / `continue`)
-/// inside an arbitrary expression. Used to keep `with allocator = …`
-/// bodies linear so the matching pop is guaranteed to run.
-fn body_has_unsupported_with_exit(program: &Program, expr_ref: &ExprRef) -> bool {
-    let mut found = false;
-    walk_expr_for_exit(program, expr_ref, &mut found);
-    found
-}
-
-fn walk_stmt_for_exit(program: &Program, stmt_ref: &StmtRef, found: &mut bool) {
-    if *found {
-        return;
-    }
-    let Some(stmt) = program.statement.get(stmt_ref) else {
-        return;
-    };
-    match stmt {
-        Stmt::Return(_) | Stmt::Break | Stmt::Continue => *found = true,
-        Stmt::Expression(e) => walk_expr_for_exit(program, &e, found),
-        Stmt::Val(_, _, e) => walk_expr_for_exit(program, &e, found),
-        Stmt::Var(_, _, Some(e)) => walk_expr_for_exit(program, &e, found),
-        Stmt::For(_, s, e, body) => {
-            walk_expr_for_exit(program, &s, found);
-            walk_expr_for_exit(program, &e, found);
-            walk_expr_for_exit(program, &body, found);
-        }
-        Stmt::While(c, body) => {
-            walk_expr_for_exit(program, &c, found);
-            walk_expr_for_exit(program, &body, found);
-        }
-        _ => {}
-    }
-}
-
-fn walk_expr_for_exit(program: &Program, expr_ref: &ExprRef, found: &mut bool) {
-    if *found {
-        return;
-    }
-    let Some(expr) = program.expression.get(expr_ref) else {
-        return;
-    };
-    match expr {
-        Expr::Block(stmts) => {
-            for s in &stmts {
-                walk_stmt_for_exit(program, s, found);
-            }
-        }
-        Expr::Binary(_, l, r) | Expr::Assign(l, r) | Expr::Range(l, r) => {
-            walk_expr_for_exit(program, &l, found);
-            walk_expr_for_exit(program, &r, found);
-        }
-        Expr::Unary(_, e) | Expr::Cast(e, _) | Expr::With(_, e) => {
-            walk_expr_for_exit(program, &e, found);
-        }
-        Expr::IfElifElse(c, t, elifs, el) => {
-            walk_expr_for_exit(program, &c, found);
-            walk_expr_for_exit(program, &t, found);
-            for (ec, eb) in &elifs {
-                walk_expr_for_exit(program, ec, found);
-                walk_expr_for_exit(program, eb, found);
-            }
-            walk_expr_for_exit(program, &el, found);
-        }
-        Expr::Call(_, a) => walk_expr_for_exit(program, &a, found),
-        Expr::ExprList(es) | Expr::ArrayLiteral(es) | Expr::TupleLiteral(es) => {
-            for e in &es {
-                walk_expr_for_exit(program, e, found);
-            }
-        }
-        Expr::BuiltinCall(_, args) => {
-            for a in &args {
-                walk_expr_for_exit(program, a, found);
-            }
-        }
-        _ => {}
-    }
-}
-
 /// Quick syntactic walk to detect any PtrRead within a function body.
 fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
     let mut found = false;
@@ -2591,16 +2513,10 @@ pub(crate) fn check_expr(
                 });
                 return None;
             }
-            // The body must avoid `return` / `break` / `continue` so we
-            // can guarantee the matching `pop` runs. Tests use linear
-            // bodies so this restriction is acceptable for the first
-            // iteration.
-            if body_has_unsupported_with_exit(program, &body_expr) {
-                note(reject_reason, || {
-                    "`with` body cannot contain return/break/continue in JIT".to_string()
-                });
-                return None;
-            }
+            // Early exits inside the body (`return` / `break` /
+            // `continue`) are now supported: the codegen tracks the
+            // active `with` depth and emits the matching pops before
+            // each early-exit terminator.
             check_expr(
                 program,
                 &body_expr,

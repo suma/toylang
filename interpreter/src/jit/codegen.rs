@@ -9,6 +9,7 @@ use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultSymbol, Symbol};
 
 use super::eligibility::{FuncSignature, MonoKey, MonomorphSource, ParamTy, ScalarTy, StructLayout};
@@ -215,6 +216,7 @@ pub fn translate_function<M: Module>(
         loop_stack: Vec::new(),
         return_ty: sig.ret.clone(),
         terminated: false,
+        with_depth: 0,
     };
 
     // Struct returns take a different path: the body's last expression
@@ -479,11 +481,24 @@ struct State<'a, 'b> {
     /// emitted. We can't query the builder directly because the relevant
     /// helper is private.
     terminated: bool,
+    /// Number of `with allocator = …` push helpers active at the
+    /// current point in the codegen walk. Each `Expr::With` increments
+    /// this before lowering its body and decrements after the matching
+    /// pop. Early exits (`return` / `break` / `continue`) read this so
+    /// they can emit the right number of pops before terminating —
+    /// pops are dropped from the *outermost* down so the runtime
+    /// active-allocator stack stays consistent.
+    with_depth: u32,
 }
 
 struct LoopFrame {
     continue_block: Block,
     break_block: Block,
+    /// `with_depth` snapshot at the moment this loop was entered.
+    /// `break` / `continue` pop this many `with` frames first so any
+    /// `with` blocks opened inside the loop are torn down before the
+    /// jump.
+    with_depth_at_entry: u32,
 }
 
 impl<'a, 'b> State<'a, 'b> {
@@ -694,10 +709,16 @@ impl<'a, 'b> State<'a, 'b> {
                     .gen_expr(&allocator_expr)?
                     .ok_or_else(|| "with-allocator expr produced no value".to_string())?;
                 self.call_helper(HelperKind::WithAllocatorPush, &[handle])?;
+                self.with_depth += 1;
                 let body_value = self.gen_expr(&body_expr)?;
-                // Eligibility forbids return/break/continue inside a
-                // `with` body, so control reaches the pop emit.
-                self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                // If the body terminated early (return / break /
+                // continue), the matching pop has already been emitted
+                // by the early-exit site, so skip the unconditional
+                // pop here.
+                if !self.terminated {
+                    self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                }
+                self.with_depth -= 1;
                 Ok(body_value)
             }
             Expr::FieldAccess(receiver, field_name) => {
@@ -1074,13 +1095,17 @@ impl<'a, 'b> State<'a, 'b> {
                             continue;
                         }
                     }
+                    // The parser stores an explicit annotation as
+                    // `Some(td)` and an absent annotation as
+                    // `Some(TypeDecl::Unknown)` — treat the latter as
+                    // "no annotation" and fall back to the rhs type.
                     let st = match type_decl.as_ref() {
-                        Some(td) => ScalarTy::from_type_decl(td)
-                            .ok_or_else(|| "var type unsupported".to_string())?,
-                        None => match value {
+                        Some(TypeDecl::Unknown) | None => match value {
                             Some(v) => self.expr_type(&v)?,
                             None => return Err("var without type or initializer".into()),
                         },
+                        Some(td) => ScalarTy::from_type_decl(td)
+                            .ok_or_else(|| "var type unsupported".to_string())?,
                     };
                     let var = self
                         .builder
@@ -1102,34 +1127,48 @@ impl<'a, 'b> State<'a, 'b> {
                     last_value = None;
                 }
                 Stmt::Return(value) => {
-                    match value {
-                        Some(e) => {
-                            let v = self
-                                .gen_expr(&e)?
-                                .ok_or_else(|| "return value produced no value".to_string())?;
-                            self.ret(&[v]);
-                        }
-                        None => {
-                            self.ret(&[]);
-                        }
+                    let ret_value = match value {
+                        Some(e) => Some(
+                            self.gen_expr(&e)?
+                                .ok_or_else(|| "return value produced no value".to_string())?,
+                        ),
+                        None => None,
+                    };
+                    // Tear down every active `with` frame before the
+                    // return — the runtime active-allocator stack must
+                    // be back to its pre-function depth on exit.
+                    for _ in 0..self.with_depth {
+                        self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                    }
+                    match ret_value {
+                        Some(v) => self.ret(&[v]),
+                        None => self.ret(&[]),
                     }
                     return Ok(None);
                 }
                 Stmt::Break => {
-                    let target = self
+                    let frame = self
                         .loop_stack
                         .last()
-                        .ok_or_else(|| "break outside loop".to_string())?
-                        .break_block;
+                        .ok_or_else(|| "break outside loop".to_string())?;
+                    let target = frame.break_block;
+                    let pop_count = self.with_depth - frame.with_depth_at_entry;
+                    for _ in 0..pop_count {
+                        self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                    }
                     self.jump(target);
                     return Ok(None);
                 }
                 Stmt::Continue => {
-                    let target = self
+                    let frame = self
                         .loop_stack
                         .last()
-                        .ok_or_else(|| "continue outside loop".to_string())?
-                        .continue_block;
+                        .ok_or_else(|| "continue outside loop".to_string())?;
+                    let target = frame.continue_block;
+                    let pop_count = self.with_depth - frame.with_depth_at_entry;
+                    for _ in 0..pop_count {
+                        self.call_helper(HelperKind::WithAllocatorPop, &[])?;
+                    }
                     self.jump(target);
                     return Ok(None);
                 }
@@ -1244,6 +1283,7 @@ impl<'a, 'b> State<'a, 'b> {
         self.loop_stack.push(LoopFrame {
             continue_block: header,
             break_block: exit,
+            with_depth_at_entry: self.with_depth,
         });
         let _ = self.gen_expr(body)?;
         if !self.terminated {
@@ -1302,6 +1342,7 @@ impl<'a, 'b> State<'a, 'b> {
         self.loop_stack.push(LoopFrame {
             continue_block: step_blk,
             break_block: exit,
+            with_depth_at_entry: self.with_depth,
         });
         let _ = self.gen_expr(body)?;
         if !self.terminated {

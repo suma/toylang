@@ -189,9 +189,11 @@ cannot be expressed in the shared hint table.
 of allocator instances plus an active stack; the `with` block lowers
 to a `push` of the chosen allocator before the body and a `pop`
 after, with `heap_alloc` / `heap_free` / `heap_realloc` dispatching
-through the active allocator. Bodies must be linear — `return`,
-`break`, and `continue` inside a `with` are rejected so the matching
-pop is guaranteed to run.
+through the active allocator. `return` / `break` / `continue` inside
+a `with` body are supported: the codegen tracks the active push
+depth and emits the matching pops before each early-exit terminator
+(every `with` for `return`; the `with`s opened inside the loop for
+`break` / `continue`).
 
 ```rust
 val arena = __builtin_arena_allocator()
@@ -387,8 +389,6 @@ the same end-to-end output as the interpreter.
 
 Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 
-* `with` bodies that contain `return` / `break` / `continue` (need
-  cleanup-style pop emission before the early exit).
 * Generic methods and generic structs.
 * `f64` modulo via a runtime callback into `f64::rem`.
 * Lowering simple `requires` / `ensures` predicates to cranelift IR

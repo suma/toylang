@@ -351,6 +351,36 @@ fn fixed_buffer_allocator_example_compiles_callees() {
 }
 
 #[test]
+fn with_early_exit_example_matches_between_modes() {
+    assert_match("example/jit_with_early_exit.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn with_early_exit_example_compiles_callees() {
+    // `return` / `break` / `continue` inside `with allocator = …`
+    // bodies must emit the matching pop helpers before the exit
+    // terminator, otherwise the runtime allocator stack underflows.
+    let r = run("example/jit_with_early_exit.t", true, true);
+    assert_eq!(r.code, 39);
+    assert!(
+        r.stderr.contains("early_return_in_with"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("break_in_with_loop"),
+        "stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("continue_in_with_loop"),
+        "stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn struct_example_returns_20() {
     let r = run("example/jit_struct.t", false, false);
     assert_eq!(r.code, 20);

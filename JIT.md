@@ -183,7 +183,8 @@ cannot be expressed in the shared hint table.
 ### Allocators
 
 `with allocator = expr { … }` blocks compile when `expr` is one of
-`__builtin_default_allocator()`, `__builtin_arena_allocator()`, or
+`__builtin_default_allocator()`, `__builtin_arena_allocator()`,
+`__builtin_fixed_buffer_allocator(capacity)`, or
 `__builtin_current_allocator()`. The JIT runtime maintains a registry
 of allocator instances plus an active stack; the `with` block lowers
 to a `push` of the chosen allocator before the body and a `pop`
@@ -277,8 +278,6 @@ instruction over straight-line code.
   supported; see *Tuples* above).
 * `f64` modulo (`%`) — cranelift has no native `frem`. Integer
   modulo lowers to `srem`/`urem` and is fine.
-* `__builtin_fixed_buffer_allocator` (the quota-tracking allocator
-  variant — only `default` and `arena` are wired up so far).
 * `match` expressions.
 * `panic(expr)` where `expr` is anything other than a string literal —
   e.g. `panic(SOME_CONST)` or `panic(some_str_var)`. The JIT's helper
@@ -388,7 +387,6 @@ the same end-to-end output as the interpreter.
 
 Tracked under todo.md item #159 ("JIT Phase 2 拡張"):
 
-* `__builtin_fixed_buffer_allocator` (quota-tracking allocator variant).
 * `with` bodies that contain `return` / `break` / `continue` (need
   cleanup-style pop emission before the early exit).
 * Generic methods and generic structs.

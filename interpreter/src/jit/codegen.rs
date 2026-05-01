@@ -867,6 +867,12 @@ impl<'a, 'b> State<'a, 'b> {
                     BuiltinFunction::ArenaAllocator => {
                         Ok(Some(self.call_helper(HelperKind::ArenaAllocator, &[])?))
                     }
+                    BuiltinFunction::FixedBufferAllocator => {
+                        let cap = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "fixed_buffer_allocator capacity".to_string())?;
+                        Ok(Some(self.call_helper(HelperKind::FixedBufferAllocator, &[cap])?))
+                    }
                     BuiltinFunction::CurrentAllocator => {
                         Ok(Some(self.call_helper(HelperKind::CurrentAllocator, &[])?))
                     }
@@ -952,7 +958,6 @@ impl<'a, 'b> State<'a, 'b> {
                         self.call_helper(kind, &[a, b, c])?;
                         Ok(None)
                     }
-                    _ => Err("unsupported builtin in JIT".into()),
                 }
             }
             Expr::Cast(inner, target) => {

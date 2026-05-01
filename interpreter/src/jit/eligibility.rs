@@ -2538,11 +2538,35 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Allocator)
                 }
-                other => {
-                    note(reject_reason, || {
-                        format!("uses unsupported builtin {other:?}")
-                    });
-                    None
+                BuiltinFunction::FixedBufferAllocator => {
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!(
+                                "fixed_buffer_allocator expects 1 argument, got {}",
+                                args.len()
+                            )
+                        });
+                        return None;
+                    }
+                    let cap_ty = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if cap_ty != ScalarTy::U64 {
+                        note(reject_reason, || {
+                            "fixed_buffer_allocator capacity must be u64".to_string()
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Allocator)
                 }
             }
         }

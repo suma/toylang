@@ -335,6 +335,22 @@ fn tuple_inline_arg_example_compiles_callees() {
 }
 
 #[test]
+fn fixed_buffer_allocator_example_matches_between_modes() {
+    assert_match("example/jit_fixed_buffer_allocator.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn fixed_buffer_allocator_example_compiles_callees() {
+    // `__builtin_fixed_buffer_allocator(cap)` must lower through the
+    // `HelperKind::FixedBufferAllocator` helper and the resulting
+    // handle must work exactly like the interpreter's quota.
+    let r = run("example/jit_fixed_buffer_allocator.t", true, true);
+    assert_eq!(r.code, 8);
+    assert!(r.stderr.contains("run_with"), "stderr: {}", r.stderr);
+}
+
+#[test]
 fn struct_example_returns_20() {
     let r = run("example/jit_struct.t", false, false);
     assert_eq!(r.code, 20);

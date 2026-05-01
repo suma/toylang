@@ -2266,12 +2266,11 @@ impl<'a> FunctionLower<'a> {
         fields: &[FieldBinding],
         newline: bool,
     ) {
-        let base_name = self.module.struct_def(struct_id).base_name;
-        let header = self.interner.resolve(base_name).unwrap_or("?");
-        // Match the interpreter's display: type name + space + `{ ` + sorted
-        // fields + ` }`. Empty structs collapse to `Name {  }` with two
-        // spaces (matches `format!("{} {{ {} }}", ...)` on an empty
-        // joined parts list).
+        // Format the struct's display header. Generic instantiations
+        // append a `<T1, T2, ...>` suffix so the user can tell
+        // `Cell<u64>` apart from `Cell<i64>` in print output;
+        // non-generic structs render as before (`Point { x: 3, y: 4 }`).
+        let header = self.format_struct_header(struct_id);
         self.emit_print_raw_text(format!("{header} {{ "), false);
         let mut sorted: Vec<&FieldBinding> = fields.iter().collect();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2337,6 +2336,72 @@ impl<'a> FunctionLower<'a> {
         self.emit(InstKind::PrintRaw { text, newline }, None);
     }
 
+    /// Render a struct's display header (`Name` or `Name<T1, T2, ...>`)
+    /// for `print` / `println`. Generic instantiations include the
+    /// concrete type-argument list so callers can tell `Cell<u64>`
+    /// apart from `Cell<i64>` in stdout. Type args are themselves
+    /// rendered through `format_type_for_display`, recursing into
+    /// nested generic struct / enum types.
+    fn format_struct_header(&self, struct_id: StructId) -> String {
+        let def = self.module.struct_def(struct_id);
+        let base = self.interner.resolve(def.base_name).unwrap_or("?");
+        if def.type_args.is_empty() {
+            base.to_string()
+        } else {
+            let parts: Vec<String> = def
+                .type_args
+                .iter()
+                .map(|t| self.format_type_for_display(*t))
+                .collect();
+            format!("{}<{}>", base, parts.join(", "))
+        }
+    }
+
+    /// Same shape as `format_struct_header` for an enum instance —
+    /// `Name` for non-generic, `Name<T1, ...>` for generic. Used as
+    /// the prefix in `Name<T>::Variant` enum print output.
+    fn format_enum_header(&self, enum_id: EnumId) -> String {
+        let def = self.module.enum_def(enum_id);
+        let base = self.interner.resolve(def.base_name).unwrap_or("?");
+        if def.type_args.is_empty() {
+            base.to_string()
+        } else {
+            let parts: Vec<String> = def
+                .type_args
+                .iter()
+                .map(|t| self.format_type_for_display(*t))
+                .collect();
+            format!("{}<{}>", base, parts.join(", "))
+        }
+    }
+
+    /// Human-readable rendering of an IR `Type` for display headers.
+    /// Scalars resolve to their canonical names (`i64` / `u64` / ...),
+    /// struct / enum types resolve through their base name + recursive
+    /// type-arg list, tuples render structurally as `(t1, t2, ...)`.
+    fn format_type_for_display(&self, t: Type) -> String {
+        match t {
+            Type::I64 => "i64".to_string(),
+            Type::U64 => "u64".to_string(),
+            Type::F64 => "f64".to_string(),
+            Type::Bool => "bool".to_string(),
+            Type::Unit => "()".to_string(),
+            Type::Struct(id) => self.format_struct_header(id),
+            Type::Enum(id) => self.format_enum_header(id),
+            Type::Tuple(id) => {
+                let parts: Vec<String> = self
+                    .module
+                    .tuple_defs
+                    .get(id.0 as usize)
+                    .map(|elems| {
+                        elems.iter().map(|e| self.format_type_for_display(*e)).collect()
+                    })
+                    .unwrap_or_default();
+                format!("({})", parts.join(", "))
+            }
+        }
+    }
+
     /// Emit the `Enum::Variant` / `Enum::Variant(p0, p1, ...)` rendering
     /// for an enum binding, matching `Object::to_display_string` in
     /// the interpreter. Tag dispatch happens at runtime via a brif
@@ -2350,11 +2415,11 @@ impl<'a> FunctionLower<'a> {
         newline: bool,
     ) -> Result<(), String> {
         let enum_def = self.module.enum_def(storage.enum_id).clone();
-        let enum_str = self
-            .interner
-            .resolve(enum_def.base_name)
-            .unwrap_or("?")
-            .to_string();
+        // Generic enum instantiations include the type-arg list in
+        // the print prefix so `Option<i64>::Some(5)` is visually
+        // distinguishable from `Option<u64>::Some(5)`. Non-generic
+        // enums render as before (`Color::Red`).
+        let enum_str = self.format_enum_header(storage.enum_id);
         let n_variants = enum_def.variants.len();
         if n_variants == 0 {
             // No variants — this enum can never be constructed, so

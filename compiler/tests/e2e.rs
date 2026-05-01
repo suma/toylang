@@ -2463,7 +2463,7 @@ fn nested_enum_println_recurses() {
     assert_eq!(out.status.code(), Some(0));
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),
-        "Option::Some(Option::Some(7))\nOption::Some(Option::None)\nOption::None\n",
+        "Option<Option<i64>>::Some(Option<i64>::Some(7))\nOption<Option<i64>>::Some(Option<i64>::None)\nOption<Option<i64>>::None\n",
     );
 }
 
@@ -2563,6 +2563,54 @@ fn generic_struct_returned_from_function() {
         }
     "#;
     assert_eq!(compile_and_run(src, "generic_struct_return"), 7);
+}
+
+#[test]
+fn println_generic_struct_includes_type_args() {
+    if skip_e2e() {
+        return;
+    }
+    // Generic instantiations show their type args in the print
+    // header so the user can tell `Y<i64>` apart from `Y<u64>`.
+    let src = r#"
+        struct Y<T> { b: T }
+        fn main() -> u64 {
+            val y: Y<i64> = Y { b: 2i64 }
+            println(y)
+            val z: Y<u64> = Y { b: 7u64 }
+            println(z)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_generic_struct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Y<i64> { b: 2 }\nY<u64> { b: 7 }\n",
+    );
+}
+
+#[test]
+fn println_generic_enum_includes_type_args() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        fn main() -> u64 {
+            val a: Option<i64> = Option::Some(5i64)
+            println(a)
+            val b: Option<u64> = Option::None
+            println(b)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_generic_enum");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Option<i64>::Some(5)\nOption<u64>::None\n",
+    );
 }
 
 #[test]

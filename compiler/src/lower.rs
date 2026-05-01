@@ -136,18 +136,20 @@ pub fn lower_program(
         module.declare_function(func.name, export_name, linkage, params, ret);
     }
 
-    // Declare each inherent method as a regular IR function. The
+    // Declare each non-generic method as a regular IR function. The
     // method's first parameter is `self: Self`; we resolve `Self` to
-    // the impl's target struct type. Phase R1 keeps this simple:
-    // non-generic structs only, all params/return scalar or struct.
+    // the impl's target struct type. Generic methods (e.g.
+    // `impl<T> Cell<T> { fn get(self: Self) -> T }`) are deferred:
+    // they're stashed in `generic_methods` and lazily monomorphised
+    // by call sites — same shape as Phase L for generic functions.
     let mut method_func_ids: HashMap<(DefaultSymbol, DefaultSymbol), FuncId> = HashMap::new();
+    let mut generic_methods: GenericMethods = HashMap::new();
+    let mut method_instances: MethodInstances = HashMap::new();
+    let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
     for ((target_sym, method_sym), method) in method_registry.iter() {
         if !method.generic_params.is_empty() {
-            return Err(format!(
-                "compiler MVP cannot lower generic methods yet: `{}::{}`",
-                interner.resolve(*target_sym).unwrap_or("?"),
-                interner.resolve(*method_sym).unwrap_or("?"),
-            ));
+            generic_methods.insert((*target_sym, *method_sym), Rc::clone(method));
+            continue;
         }
         let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
         for (pname, pty) in &method.parameter {
@@ -205,13 +207,6 @@ pub fn lower_program(
         let target_str = interner.resolve(*target_sym).unwrap_or("?");
         let method_str = interner.resolve(*method_sym).unwrap_or("?");
         let export_name = format!("toy_{}__{}", target_str, method_str);
-        // Mint a synthetic symbol for the (struct, method) pair so it
-        // shares the per-function tables (function_index, function map).
-        // We don't go through `function_index` to avoid colliding with
-        // a top-level function of the same bare method name; instead
-        // method_func_ids holds the FuncId.
-        let mangled_sym = method.name; // we'll key the lookup via (target, method) instead
-        let _ = mangled_sym;
         let func_id =
             module.declare_function_anon(export_name, Linkage::Local, params, ret);
         method_func_ids.insert((*target_sym, *method_sym), func_id);
@@ -249,16 +244,23 @@ pub fn lower_program(
             release,
             &method_registry,
             &method_func_ids,
+            &generic_methods,
+            &mut method_instances,
+            &mut pending_method_work,
         )?;
         builder.lower_body(&func)?;
     }
 
-    // Lower each inherent method body. We share the same
+    // Lower each non-generic inherent method body. We share the same
     // `FunctionLower` driver as plain functions; the method-flavour
     // entry just substitutes `Self` in the parameter list before
-    // delegating.
+    // delegating. Generic methods are skipped — they're lowered
+    // lazily by `pending_method_work` below.
     for ((target_sym, method_sym), method) in method_registry.iter() {
-        let func_id = method_func_ids[&(*target_sym, *method_sym)];
+        let func_id = match method_func_ids.get(&(*target_sym, *method_sym)) {
+            Some(id) => *id,
+            None => continue,
+        };
         let mut builder = FunctionLower::new(
             &mut module,
             func_id,
@@ -275,42 +277,90 @@ pub fn lower_program(
             release,
             &method_registry,
             &method_func_ids,
+            &generic_methods,
+            &mut method_instances,
+            &mut pending_method_work,
         )?;
         builder.lower_method_body(method, *target_sym)?;
     }
 
-    // Drain the queue: each entry pairs an already-declared `FuncId`
-    // with the (template AST, type substitution) it should be lowered
-    // against. The queue can grow as instantiated bodies discover
-    // further generic call sites — keep going until it's empty.
-    while let Some(work) = pending_generic_work.pop() {
-        let template = generic_funcs
-            .get(&work.template_name)
-            .ok_or_else(|| {
-                format!(
-                    "internal error: missing generic template `{}`",
-                    interner.resolve(work.template_name).unwrap_or("?")
-                )
-            })?
-            .clone();
-        let mut builder = FunctionLower::new(
-            &mut module,
-            work.func_id,
-            program,
-            interner,
-            &struct_defs,
-            &enum_defs,
-            &generic_funcs,
-            &mut generic_instances,
-            &mut pending_generic_work,
-            work.subst,
-            &const_values,
-            contract_msgs,
-            release,
-            &method_registry,
-            &method_func_ids,
-        )?;
-        builder.lower_body(&template)?;
+    // Drain both queues: generic functions and generic methods. We
+    // alternate (functions first, then methods) inside the outer
+    // loop so a freshly-instantiated method body that calls another
+    // generic function (or vice versa) gets its dependencies lowered
+    // in one pass.
+    loop {
+        let mut made_progress = false;
+        while let Some(work) = pending_generic_work.pop() {
+            made_progress = true;
+            let template = generic_funcs
+                .get(&work.template_name)
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: missing generic template `{}`",
+                        interner.resolve(work.template_name).unwrap_or("?")
+                    )
+                })?
+                .clone();
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                work.subst,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+            )?;
+            builder.lower_body(&template)?;
+        }
+        while let Some(work) = pending_method_work.pop() {
+            made_progress = true;
+            let template = generic_methods
+                .get(&(work.target_sym, work.method_sym))
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: missing generic method template `{}::{}`",
+                        interner.resolve(work.target_sym).unwrap_or("?"),
+                        interner.resolve(work.method_sym).unwrap_or("?"),
+                    )
+                })?
+                .clone();
+            let mut builder = FunctionLower::new(
+                &mut module,
+                work.func_id,
+                program,
+                interner,
+                &struct_defs,
+                &enum_defs,
+                &generic_funcs,
+                &mut generic_instances,
+                &mut pending_generic_work,
+                work.subst,
+                &const_values,
+                contract_msgs,
+                release,
+                &method_registry,
+                &method_func_ids,
+                &generic_methods,
+                &mut method_instances,
+                &mut pending_method_work,
+            )?;
+            builder.lower_method_body(&template, work.target_sym)?;
+        }
+        if !made_progress {
+            break;
+        }
     }
     Ok(module)
 }
@@ -327,6 +377,34 @@ type MethodRegistry = HashMap<
     (DefaultSymbol, DefaultSymbol),
     Rc<frontend::ast::MethodFunction>,
 >;
+
+/// Generic methods (those with non-empty `generic_params`) stay
+/// outside `method_func_ids` until a call site instantiates them
+/// with concrete type args. Same shape as `GenericFuncs` for
+/// top-level functions (Phase L).
+type GenericMethods = HashMap<
+    (DefaultSymbol, DefaultSymbol),
+    Rc<frontend::ast::MethodFunction>,
+>;
+
+/// `(target_struct_symbol, method_name, type_args)` → `FuncId` for
+/// monomorphised method instances. Mirrors `GenericInstances` for
+/// generic top-level functions.
+type MethodInstances = HashMap<
+    (DefaultSymbol, DefaultSymbol, Vec<Type>),
+    FuncId,
+>;
+
+/// Queued generic-method body lowering. Holds the freshly declared
+/// `FuncId`, the `(target, method)` pair to look up the template,
+/// and the substitution that picked the concrete signature.
+#[derive(Debug, Clone)]
+struct PendingMethodInstance {
+    func_id: FuncId,
+    target_sym: DefaultSymbol,
+    method_sym: DefaultSymbol,
+    subst: HashMap<DefaultSymbol, Type>,
+}
 
 /// Walk the program for impl blocks and collect every method into a
 /// flat (target, method) map. Trait conformance is irrelevant at
@@ -1161,8 +1239,17 @@ struct FunctionLower<'a> {
     /// at call sites so `p.sum()` can resolve to the right method.
     method_registry: &'a MethodRegistry,
     /// `(target_struct_symbol, method_name)` → `FuncId`. The lookup
-    /// table for method calls; pairs with `method_registry`.
+    /// table for non-generic method calls; pairs with `method_registry`.
     method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
+    /// Generic-method templates. Lazily monomorphised at call
+    /// sites — same flow as `generic_funcs` for top-level functions.
+    generic_methods: &'a GenericMethods,
+    /// Already-monomorphised generic method instances, keyed by
+    /// `(target, method, concrete_type_args)`.
+    method_instances: &'a mut MethodInstances,
+    /// Queue of pending generic-method body lowerings. Drained by
+    /// `lower_program` after the non-generic pass completes.
+    pending_method_work: &'a mut Vec<PendingMethodInstance>,
     pending_struct_value: Option<Vec<FieldBinding>>,
     /// Sibling channel for tuple-returning function bodies whose tail
     /// expression is a tuple literal or tuple-bound identifier. Used
@@ -1393,6 +1480,9 @@ impl<'a> FunctionLower<'a> {
         release: bool,
         method_registry: &'a MethodRegistry,
         method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
+        generic_methods: &'a GenericMethods,
+        method_instances: &'a mut MethodInstances,
+        pending_method_work: &'a mut Vec<PendingMethodInstance>,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -1419,6 +1509,9 @@ impl<'a> FunctionLower<'a> {
             type_subst,
             method_registry,
             method_func_ids,
+            generic_methods,
+            method_instances,
+            pending_method_work,
         })
     }
 
@@ -6252,6 +6345,154 @@ impl<'a> FunctionLower<'a> {
     /// symbol, look up the method via the registry built in
     /// `lower_program`, and emit a regular `Call` with the
     /// receiver's leaf scalars prepended to the call's arg values.
+    /// `&self` cousin of `lower_method_param_type` — used by
+    /// `value_scalar`'s MethodCall arm so val/var annotation
+    /// inference can resolve generic method return types without
+    /// triggering monomorphisation. Returns `None` for shapes that
+    /// require interning new IR types (callers fall back to forcing
+    /// an explicit annotation on the val site).
+    fn peek_method_return_type(
+        &self,
+        ty: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, Type>,
+        recv_struct_id: StructId,
+    ) -> Option<Type> {
+        match ty {
+            TypeDecl::Self_ => Some(Type::Struct(recv_struct_id)),
+            TypeDecl::Identifier(sym) if self.interner.resolve(*sym) == Some("Self") => {
+                Some(Type::Struct(recv_struct_id))
+            }
+            TypeDecl::Generic(p) => subst.get(p).copied(),
+            TypeDecl::Identifier(sym) => subst.get(sym).copied().or_else(|| lower_scalar(ty)),
+            other => lower_scalar(other),
+        }
+    }
+
+    /// Lower a method's declared parameter / return TypeDecl with
+    /// `Self` and any `Generic(P)` references resolved against the
+    /// active substitution. `self_type` is the IR type for `Self`
+    /// (always the receiver's `Type::Struct(...)` in Phase R3).
+    fn lower_method_param_type(
+        &mut self,
+        ty: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, Type>,
+        self_type: Type,
+    ) -> Option<Type> {
+        match ty {
+            TypeDecl::Self_ => Some(self_type),
+            TypeDecl::Identifier(sym) if self.interner.resolve(*sym) == Some("Self") => {
+                Some(self_type)
+            }
+            TypeDecl::Generic(p) => subst.get(p).copied(),
+            TypeDecl::Identifier(sym) => {
+                if let Some(t) = subst.get(sym).copied() {
+                    return Some(t);
+                }
+                lower_param_or_return_type(
+                    ty,
+                    self.struct_defs,
+                    self.enum_defs,
+                    self.module,
+                    self.interner,
+                )
+            }
+            // For struct / enum / tuple shapes that may contain
+            // generic params, walk recursively and rebuild via the
+            // boundary lowerer once everything is concrete.
+            _ => self.lower_type_with_subst(ty, subst),
+        }
+    }
+
+    /// Materialise (or fetch) the FuncId for a generic-method
+    /// instance. The substitution comes positionally from the
+    /// receiver's struct `type_args` (the `impl<T>` params line up
+    /// with the struct's params by convention). If a matching
+    /// instance is already in `method_instances`, reuse it; otherwise
+    /// declare a fresh `FuncId` with the substituted signature and
+    /// push a body-lowering job onto `pending_method_work`.
+    fn instantiate_generic_method(
+        &mut self,
+        target_sym: DefaultSymbol,
+        method_sym: DefaultSymbol,
+        template: &frontend::ast::MethodFunction,
+        recv_struct_id: StructId,
+    ) -> Result<FuncId, String> {
+        let recv_type_args =
+            self.module.struct_def(recv_struct_id).type_args.clone();
+        if template.generic_params.len() != recv_type_args.len() {
+            return Err(format!(
+                "compiler MVP: generic method `{}::{}` has {} generic params but receiver supplies {} type args",
+                self.interner.resolve(target_sym).unwrap_or("?"),
+                self.interner.resolve(method_sym).unwrap_or("?"),
+                template.generic_params.len(),
+                recv_type_args.len(),
+            ));
+        }
+        if let Some(id) = self
+            .method_instances
+            .get(&(target_sym, method_sym, recv_type_args.clone()))
+            .copied()
+        {
+            return Ok(id);
+        }
+        let subst: HashMap<DefaultSymbol, Type> = template
+            .generic_params
+            .iter()
+            .copied()
+            .zip(recv_type_args.iter().copied())
+            .collect();
+        // Build the substituted signature. `Self` resolves directly
+        // to the receiver's `Type::Struct(recv_struct_id)`; generic
+        // param references go through `subst`. We bypass the
+        // TypeDecl-roundtrip path for these because the receiver's
+        // struct is already interned in the IR.
+        let self_type = Type::Struct(recv_struct_id);
+        let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
+        for (pname, pty) in &template.parameter {
+            let lowered = self
+                .lower_method_param_type(pty, &subst, self_type)
+                .ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower generic method param `{}: {:?}` after subst",
+                        self.interner.resolve(*pname).unwrap_or("?"),
+                        pty
+                    )
+                })?;
+            params.push(lowered);
+        }
+        let ret = match &template.return_type {
+            Some(ty) => self
+                .lower_method_param_type(ty, &subst, self_type)
+                .ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower generic method return type `{:?}` after subst",
+                        ty
+                    )
+                })?,
+            None => Type::Unit,
+        };
+        let target_str = self.interner.resolve(target_sym).unwrap_or("?");
+        let method_str = self.interner.resolve(method_sym).unwrap_or("?");
+        let arg_str = recv_type_args
+            .iter()
+            .map(|t| format!("{:?}", t))
+            .collect::<Vec<_>>()
+            .join("_");
+        let export_name = format!("toy_{}__{}__{}", target_str, method_str, arg_str);
+        let func_id = self
+            .module
+            .declare_function_anon(export_name, Linkage::Local, params, ret);
+        self.method_instances
+            .insert((target_sym, method_sym, recv_type_args), func_id);
+        self.pending_method_work.push(PendingMethodInstance {
+            func_id,
+            target_sym,
+            method_sym,
+            subst,
+        });
+        Ok(func_id)
+    }
+
     fn lower_method_call(
         &mut self,
         obj: &ExprRef,
@@ -6298,17 +6539,42 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        // Step 2: resolve the method's FuncId.
-        let target = *self
-            .method_func_ids
-            .get(&(target_sym, method))
-            .ok_or_else(|| {
-                format!(
-                    "no method `{}::{}` is defined",
-                    self.interner.resolve(target_sym).unwrap_or("?"),
-                    self.interner.resolve(method).unwrap_or("?"),
-                )
-            })?;
+        // Step 2: resolve the method's FuncId. Non-generic methods
+        // hit `method_func_ids` directly; generic methods go through
+        // `instantiate_generic_method`, which derives the type
+        // substitution from the receiver's `type_args` and either
+        // returns a cached instance or declares a fresh one and
+        // queues body lowering.
+        let target = if let Some(id) =
+            self.method_func_ids.get(&(target_sym, method)).copied()
+        {
+            id
+        } else if let Some(template) =
+            self.generic_methods.get(&(target_sym, method)).cloned()
+        {
+            let recv_struct_id = match &binding {
+                Binding::Struct { struct_id, .. } => *struct_id,
+                _ => {
+                    return Err(format!(
+                        "compiler MVP: generic method `{}::{}` requires a struct receiver",
+                        self.interner.resolve(target_sym).unwrap_or("?"),
+                        self.interner.resolve(method).unwrap_or("?"),
+                    ));
+                }
+            };
+            self.instantiate_generic_method(
+                target_sym,
+                method,
+                &template,
+                recv_struct_id,
+            )?
+        } else {
+            return Err(format!(
+                "no method `{}::{}` is defined",
+                self.interner.resolve(target_sym).unwrap_or("?"),
+                self.interner.resolve(method).unwrap_or("?"),
+            ));
+        };
         let _ = self.method_registry; // referenced for documentation
 
         let ret_ty = self.module.function(target).return_type;
@@ -6533,23 +6799,48 @@ impl<'a> FunctionLower<'a> {
                 // Resolve receiver via the binding table; pull its
                 // struct/enum symbol; look up the method's return
                 // type via the registry so val annotations can rely
-                // on the inferred scalar.
+                // on the inferred scalar. Generic methods get their
+                // return type via the template + receiver type_args
+                // (lifted to a static lookup so we don't trigger
+                // monomorphisation just to peek at the type).
                 let obj_expr = self.program.expression.get(&obj)?;
                 let recv_sym = match obj_expr {
                     Expr::Identifier(s) => s,
                     _ => return None,
                 };
-                let target_sym = match self.bindings.get(&recv_sym)? {
-                    Binding::Struct { struct_id, .. } => {
-                        self.module.struct_def(*struct_id).base_name
-                    }
-                    Binding::Enum(storage) => {
-                        self.module.enum_def(storage.enum_id).base_name
-                    }
+                let (target_sym, recv_struct_id) = match self.bindings.get(&recv_sym)? {
+                    Binding::Struct { struct_id, .. } => (
+                        self.module.struct_def(*struct_id).base_name,
+                        Some(*struct_id),
+                    ),
+                    Binding::Enum(storage) => (
+                        self.module.enum_def(storage.enum_id).base_name,
+                        None,
+                    ),
                     _ => return None,
                 };
-                let func_id = *self.method_func_ids.get(&(target_sym, method))?;
-                Some(self.module.function(func_id).return_type)
+                if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)) {
+                    return Some(self.module.function(*func_id).return_type);
+                }
+                if let (Some(template), Some(struct_id)) =
+                    (self.generic_methods.get(&(target_sym, method)), recv_struct_id)
+                {
+                    let recv_type_args =
+                        self.module.struct_def(struct_id).type_args.clone();
+                    if template.generic_params.len() == recv_type_args.len() {
+                        let subst: HashMap<DefaultSymbol, Type> = template
+                            .generic_params
+                            .iter()
+                            .copied()
+                            .zip(recv_type_args.iter().copied())
+                            .collect();
+                        if let Some(ret) = &template.return_type {
+                            return self.peek_method_return_type(ret, &subst, struct_id);
+                        }
+                        return Some(Type::Unit);
+                    }
+                }
+                None
             }
             _ => None,
         }

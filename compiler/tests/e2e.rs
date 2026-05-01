@@ -674,6 +674,56 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn generic_method_basic() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase R3: `impl<T> Cell<T> { fn get(self: Self) -> T }` —
+    // method's generic_params are inherited from the impl block.
+    // The call site reads the receiver's type_args (i64) and
+    // monomorphises the method via instantiate_generic_method.
+    let src = r#"
+        struct Cell<T> { value: T }
+        impl<T> Cell<T> {
+            fn get(self: Self) -> T {
+                self.value
+            }
+        }
+        fn main() -> u64 {
+            val c: Cell<i64> = Cell { value: 7i64 }
+            val r: i64 = c.get()
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_generic_basic"), 7);
+}
+
+#[test]
+fn generic_method_two_instantiations() {
+    if skip_e2e() {
+        return;
+    }
+    // Cell<i64> and Cell<u64> each get their own monomorphised
+    // get() function via the (target, method, type_args) cache.
+    let src = r#"
+        struct Cell<T> { value: T }
+        impl<T> Cell<T> {
+            fn get(self: Self) -> T {
+                self.value
+            }
+        }
+        fn main() -> u64 {
+            val a: Cell<i64> = Cell { value: 7i64 }
+            val b: Cell<u64> = Cell { value: 13u64 }
+            val ai: i64 = a.get()
+            val bu: u64 = b.get()
+            (ai as u64) + bu
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_generic_two_inst"), 20);
+}
+
+#[test]
 fn struct_returned_from_function() {
     if skip_e2e() {
         return;

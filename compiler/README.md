@@ -15,7 +15,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **`as` キャスト**: `i64 ↔ u64`（identity）、`{i64, u64} ↔ f64`（cranelift の `fcvt_*_sat` で truncating saturation）。bool との cast や Unit との cast は不可
 - **`f64`**: 算術（`+ - * /`）、比較、unary `-`。`%` (mod) は cranelift に native fmod が無いため reject。print 用ヘルパー (`toy_print_f64` / `toy_println_f64`) は `%g` か `%.1f` で出力
 - **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装
-- **`print(x)` / `println(x)`**: `i64` / `u64` / `f64` / `bool` / 文字列リテラルを受け取る。`compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）
+- **`print(x)` / `println(x)`**: `i64` / `u64` / `f64` / `bool` / 文字列リテラル / **struct binding / tuple binding** を受け取る。compound 値は interpreter と同じ表記 (`Point { x: 3, y: 4 }`、`(3, 4)`、1-tuple は `(x,)`) に展開され、struct のフィールドはアルファベット順にソートされる（interpreter `Object::to_display_string` と一致）。ネストした struct も再帰的に整形。実体は `compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）。**制約**: struct / tuple は識別子（`val` / `var` 由来の binding）のみ。struct リテラル直接や struct-returning call の結果を直接 print することはできず、いったん `val` で受ける必要がある
 - **struct**: `struct Name { field: Type, ... }` 宣言、`Name { field: value, ... }` リテラル、`obj.field` 読み取り、`obj.field = value` 書き込み、**関数引数として struct 値を渡せる**、**関数戻り値として struct 値を返せる**（codegen が境界で per-field cranelift param / multi-return に展開）。**制約**: フィールドは scalar のみ、struct binding 全体の再代入は不可、`struct.struct.field` のような chain 構造は未対応、struct-returning call を式位置で使えない（必ず `val` で受ける）
 - **tuple**: `(a, b, c)` リテラル、`t.0` / `t.1` 要素アクセス、`t.N = value` 要素書き込み、`val (a, b) = (x, y)` 分解（パーサが desugar）、**関数引数 / 戻り値として tuple 値を渡せる**（codegen が境界で per-element cranelift param / multi-return に展開）、`val (a, b) = make_pair()` 形式の tuple-returning call も動作。**制約**: scalar 要素のみ、ネストした tuple は未対応、tuple-returning call は式位置で使えない（必ず `val` で受ける）
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
@@ -30,7 +30,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - enum、match、trait
 - allocator
 - generics（型パラメータを持つ関数 / struct）
-- struct / tuple を `print` / `println` に渡す
+- struct / tuple リテラルや関数戻り値を直接 `print` / `println` する（`val` で受ければ可）
 - struct / tuple binding 全体の再代入
 - ネストした tuple 要素 (`((a, b), c)`)、tuple-of-struct, struct-of-tuple
 - 文字列 const、複雑な const 初期化式（リテラル / 単純算術 fold のみ）

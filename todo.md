@@ -111,6 +111,8 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 
    **2026-05-01: tuple / top-level const / DbC を追加** — tuple は struct と同じ「per-element ローカル展開」パターンで `Binding::Tuple { elements }` を新設、`Expr::TupleLiteral` を val rhs として allocate、`Expr::TupleAccess` の読み書きを実装。tuple は局所バインディング限定（関数引数 / 戻り値は未対応）、`val (a, b) = (x, y)` のパーサ desugar が自然に動く。const は `evaluate_consts` で program.consts を compile-time fold（リテラル + 既存 const 参照 + arithmetic）し、Identifier 解決時に local binding が無ければ const テーブルにフォールバック。DbC は `lib.rs::ContractMessages` で "requires violation" / "ensures violation" を pre-intern して `&mut interner` 問題を回避、`emit_contract_checks` で各 clause を bool 評価 → 失敗時 `Terminator::Panic` に分岐、`requires` は entry で / `ensures` は全 Return 直前で発火。`ensures` の `result` は scalar 戻り値（struct は first field）に bind。e2e テスト 9 件追加（tuple 4 + const 2 + DbC 3）、計 42 テスト全 green。
 
+   **2026-05-01: print/println で struct / tuple を受理** — IR に `InstKind::PrintRaw { text: String, newline: bool }` を追加（codegen-synthesised な punctuation / field name 用、source-program symbol を持たない）。`lower_print` が引数を Identifier として解決し、struct binding なら `emit_print_struct`（field をアルファベット順にソート、`Name { field: value, ... }` 形式で interleaved な PrintRaw + Print 列を発行、ネスト struct は再帰）、tuple binding なら `emit_print_tuple`（`(a, b, ...)` / 1-tuple は `(a,)`）を呼び出し。codegen は `raw_print_strings: HashMap<Vec<u8>, DataId>` で literal bytes 単位に intern（`", "` / `": "` 等の重複断片を共有）、`declare_raw_print_imports` で per-function に GlobalValue を引き込み、`toy_print_str` / `toy_println_str` を再利用。e2e テスト 8 件追加（struct 基本、field 順 alphabetical、改行なし print、ネスト struct、bool field、tuple、mixed-type tuple、1-tuple）。**制約**: struct リテラル直接や struct-returning call の戻り値は不可（いったん `val` で受ける）。interpreter `Object::to_display_string` と完全一致する出力。
+
    **2026-05-01: cast (`as`) / f64 / struct boundary crossing を追加** — IR に `Type::F64` / `Const::F64` / `InstKind::Cast { value, from, to }` / `InstKind::CallStruct { target, args, dests }` / `Module.struct_defs` を追加、`Terminator::Return` を `Vec<ValueId>` に変更（scalar / void / struct return を vec 長で表現）。lower で `Expr::Cast`、`Expr::Float64`、struct 引数 / 戻り値、`val x = struct_returning_call()` を扱う。tail-position の struct literal は `pending_struct_value` に貯めて implicit return が消費する設計（IR の SSA グラフに struct 値が流れない）。codegen で struct sig を per-field cranelift param / multi-return に展開、`Type::F64` 演算は cranelift の `fadd/fsub/fmul/fdiv/fcmp` + `fneg`、cast は `fcvt_from_sint/uint` / `fcvt_to_sint/uint_sat` で。runtime に `toy_print_f64` / `toy_println_f64`（`%g` / `%.1f` 切替）追加。e2e テスト 10 件追加（i64↔u64 cast、float-int round trip、float-int truncate、f64 算術 / unary neg / 関数呼び出し、struct return / param / round trip / 明示 return）。
 
    **現在の制約（2026-05-01 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
@@ -132,8 +134,8 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
      - struct-returning call は式位置で使えず、必ず `val x = ...` で受ける
      - struct binding 全体の再代入 (`q = p`) は不可（field 単位の代入のみ）
      - ネストした struct field とそれへの chain access (`a.b.c`) はサポート、ただし leaf scalar への代入のみ（`p.inner = Inner { ... }` 不可）
-     - struct を `print` / `println` に渡せない
-   - **print / println**: `i64` / `u64` / `f64` / `bool` / 文字列リテラルのみ。struct / tuple 等は不可
+     - struct binding を `print` / `println` に渡せる（field アルファベット順、ネスト struct 対応）
+   - **print / println**: `i64` / `u64` / `f64` / `bool` / 文字列リテラル / struct binding / tuple binding を受理。struct / tuple は **identifier（`val` / `var` 由来の binding）のみ** で、struct リテラル直接や struct-returning call の戻り値を直接 print することはできない（いったん `val` で受ける）。dict は不可
    - **panic / assert**: メッセージは文字列リテラル限定（const binding や concat 等は不可）
    - **その他**: 文字列ビルトインメソッド (`.len()` / `.concat()` 等)、associated function (`Foo::new()`)、メソッド呼び出し (`obj.method()`)、関数ポインタはいずれも未対応
    - **既知の挙動差**: compiler は `panic` / `print` / `println` を stdout に出力する。interpreter / JIT は `panic` を stderr に出す（libc `puts` 経由のシンプルな実装に揃えているため。出力方法を選べる仕組みは未着手）

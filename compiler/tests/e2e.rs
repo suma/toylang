@@ -1167,3 +1167,176 @@ fn emit_clif_writes_cranelift_ir() {
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&clif_path);
 }
+
+#[test]
+fn println_struct_value() {
+    if skip_e2e() {
+        return;
+    }
+    // Field display order matches the interpreter: alphabetical by
+    // name. We declare `x` then `y`, which already happens to be
+    // alphabetical, so the output is `Point { x: 3, y: 4 }`.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            println(p)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_struct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Point { x: 3, y: 4 }\n",
+    );
+}
+
+#[test]
+fn println_struct_field_order_alphabetical() {
+    if skip_e2e() {
+        return;
+    }
+    // Declaration order is `b, a, c`; the print should reorder to `a, b, c`.
+    let src = r#"
+        struct Triple { b: u64, a: u64, c: u64 }
+        fn main() -> u64 {
+            val t = Triple { b: 2u64, a: 1u64, c: 3u64 }
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_struct_alpha");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Triple { a: 1, b: 2, c: 3 }\n",
+    );
+}
+
+#[test]
+fn print_struct_no_trailing_newline() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Pair { x: u64, y: u64 }
+        fn main() -> u64 {
+            val p = Pair { x: 7u64, y: 9u64 }
+            print(p)
+            print("!")
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_struct_no_nl");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Pair { x: 7, y: 9 }!",
+    );
+}
+
+#[test]
+fn println_nested_struct_value() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Inner { v: u64 }
+        struct Outer { inner: Inner, k: u64 }
+        fn main() -> u64 {
+            val o = Outer { inner: Inner { v: 42u64 }, k: 7u64 }
+            println(o)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_nested");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Outer { inner: Inner { v: 42 }, k: 7 }\n",
+    );
+}
+
+#[test]
+fn println_struct_with_bool_field() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Flag { ok: bool, n: u64 }
+        fn main() -> u64 {
+            val f = Flag { ok: true, n: 5u64 }
+            println(f)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_struct_bool");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Flag { n: 5, ok: true }\n",
+    );
+}
+
+#[test]
+fn println_tuple_value() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val t = (3u64, 4u64, 5u64)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_tuple");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(3, 4, 5)\n",
+    );
+}
+
+#[test]
+fn println_tuple_pair_mixed_types() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val t = (-7i64, true)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_tuple_pair");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(-7, true)\n",
+    );
+}
+
+#[test]
+fn println_tuple_singleton() {
+    if skip_e2e() {
+        return;
+    }
+    // Single-element tuples render with a trailing comma to disambiguate
+    // from a parenthesised expression — matches the interpreter.
+    let src = r#"
+        fn main() -> u64 {
+            val t = (42u64,)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "println_tuple_one");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(42,)\n",
+    );
+}

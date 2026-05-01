@@ -136,6 +136,11 @@ struct CodegenSession {
     /// `"<msg>\0"`. The literal is unprefixed because the user is
     /// already supplying the exact bytes they want printed.
     print_strings: HashMap<DefaultSymbol, DataId>,
+    /// Codegen-synthesised raw-text fragments → data id holding
+    /// `"<msg>\0"`. Keyed by the literal bytes so identical fragments
+    /// (e.g. `", "` separators repeated across many `println(struct)`
+    /// sites) share a single `.rodata` entry.
+    raw_print_strings: HashMap<Vec<u8>, DataId>,
 }
 
 impl CodegenSession {
@@ -231,6 +236,7 @@ impl CodegenSession {
             rt_println_f64,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
+            raw_print_strings: HashMap::new(),
         })
     }
 
@@ -281,6 +287,50 @@ impl CodegenSession {
         for sym in print_needed {
             self.declare_print_string(sym, interner)?;
         }
+        // Codegen-synthesised PrintRaw fragments are interned by their
+        // literal bytes (no source-program symbol exists). Walk the
+        // module a second time and reserve `.rodata` entries for each
+        // unique fragment.
+        let mut raw_needed: std::collections::BTreeSet<Vec<u8>> =
+            std::collections::BTreeSet::new();
+        for func in &ir_module.functions {
+            for blk in &func.blocks {
+                for inst in &blk.instructions {
+                    if let InstKind::PrintRaw { text, .. } = &inst.kind {
+                        raw_needed.insert(text.as_bytes().to_vec());
+                    }
+                }
+            }
+        }
+        for bytes in raw_needed {
+            self.declare_raw_print_string(bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Reserve a `.rodata` entry for a single codegen-synthesised
+    /// fragment used by struct/tuple `print`/`println`. Naming uses a
+    /// monotonic counter (the bytes themselves are the cache key, not
+    /// the symbol name) so we don't have to escape arbitrary content
+    /// into a linker-safe identifier.
+    fn declare_raw_print_string(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        if self.raw_print_strings.contains_key(&bytes) {
+            return Ok(());
+        }
+        let mut payload = Vec::with_capacity(bytes.len() + 1);
+        payload.extend_from_slice(&bytes);
+        payload.push(0);
+        let name = format!("toy_print_raw_{}", self.raw_print_strings.len());
+        let data_id = self
+            .module
+            .declare_data(&name, CLinkage::Local, false, false)
+            .map_err(|e| format!("declare data {name}: {e}"))?;
+        let mut desc = DataDescription::new();
+        desc.define(payload.into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| format!("define data {name}: {e}"))?;
+        self.raw_print_strings.insert(bytes, data_id);
         Ok(())
     }
 
@@ -395,6 +445,8 @@ impl CodegenSession {
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
+        let raw_print_imports =
+            self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -406,6 +458,7 @@ impl CodegenSession {
                 &imports,
                 &panic_imports,
                 &print_imports,
+                &raw_print_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -432,6 +485,8 @@ impl CodegenSession {
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
+        let raw_print_imports =
+            self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -443,6 +498,7 @@ impl CodegenSession {
                 &imports,
                 &panic_imports,
                 &print_imports,
+                &raw_print_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -489,6 +545,38 @@ impl CodegenSession {
                 };
                 let gv = self.module.declare_data_in_func(data_id, func);
                 imports.insert(*message, gv);
+            }
+        }
+        imports
+    }
+
+    /// Same idea as `declare_print_imports`, but keyed by literal
+    /// bytes for `PrintRaw`. We surface a `Vec<u8>` rather than a
+    /// `&[u8]` slice in the map so the per-function import table can
+    /// own its keys; `LowerCtx` looks them up using the same bytes
+    /// that lowering wrote.
+    fn declare_raw_print_imports(
+        &mut self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> {
+        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                if let InstKind::PrintRaw { text, .. } = &inst.kind {
+                    let key = text.as_bytes().to_vec();
+                    if imports.contains_key(&key) {
+                        continue;
+                    }
+                    let data_id = match self.raw_print_strings.get(&key).copied() {
+                        Some(id) => id,
+                        None => continue,
+                    };
+                    let gv = self.module.declare_data_in_func(data_id, func);
+                    imports.insert(key, gv);
+                }
             }
         }
         imports
@@ -628,6 +716,9 @@ struct LowerCtx<'a, 'b> {
     panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
     /// Same idea, for `print`/`println` string-literal arguments.
     print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+    /// Same idea, for codegen-synthesised `PrintRaw` fragments. Keyed
+    /// by the raw bytes (no source-program symbol).
+    raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
     runtime: &'a RuntimeRefs,
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
@@ -642,6 +733,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         imports: &'a HashMap<FuncId, cranelift_codegen::ir::FuncRef>,
         panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
+        raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         runtime: &'a RuntimeRefs,
     ) -> Self {
         Self {
@@ -651,6 +743,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             imports,
             panic_imports,
             print_imports,
+            raw_print_imports,
             runtime,
             block_map: HashMap::new(),
             locals: HashMap::new(),
@@ -981,6 +1074,20 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     .print_imports
                     .get(message)
                     .ok_or_else(|| format!("missing print import for #{}", message.to_usize()))?;
+                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                let helper = if *newline {
+                    self.runtime.println_str
+                } else {
+                    self.runtime.print_str
+                };
+                self.builder.ins().call(helper, &[addr]);
+            }
+            InstKind::PrintRaw { text, newline } => {
+                let key = text.as_bytes();
+                let gv = *self
+                    .raw_print_imports
+                    .get(key)
+                    .ok_or_else(|| format!("missing raw print import for {text:?}"))?;
                 let addr = self.builder.ins().symbol_value(types::I64, gv);
                 let helper = if *newline {
                     self.runtime.println_str

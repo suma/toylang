@@ -280,6 +280,14 @@ pub enum InstKind {
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
     PrintStr { message: DefaultSymbol, newline: bool },
+    /// Codegen-synthesised string emission (no source-program symbol
+    /// behind it). Used when lowering `print` / `println` of struct or
+    /// tuple values: punctuation, field names, and brackets are
+    /// produced as `PrintRaw` instructions interleaved with `Print`s
+    /// for the leaf scalars. Like `PrintStr`, the bytes ride a
+    /// `.rodata` blob; codegen interns by content so identical
+    /// fragments share a single data symbol.
+    PrintRaw { text: String, newline: bool },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -582,6 +590,10 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::PrintStr { message, newline } => {
                 let kw = if *newline { "println_str" } else { "print_str" };
                 write!(f, "{kw} #{}", message.to_usize())
+            }
+            InstKind::PrintRaw { text, newline } => {
+                let kw = if *newline { "println_raw" } else { "print_raw" };
+                write!(f, "{kw} {text:?}")
             }
             InstKind::Cast { value, from, to } => {
                 write!(f, "{prefix}cast {value}: {from} -> {to}")

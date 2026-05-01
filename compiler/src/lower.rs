@@ -1545,9 +1545,16 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
-    /// `print(x)` and `println(x)` accept a primitive scalar value or a
-    /// string literal. Other shapes (struct, tuple, etc.) are deferred
-    /// to a later phase along with the rest of the language surface.
+    /// `print(x)` and `println(x)` accept a primitive scalar value, a
+    /// string literal, or — via decomposition through the binding table —
+    /// an identifier that refers to a struct or tuple `val` / `var`.
+    /// Compound values are emitted as an interleaved sequence of
+    /// `PrintRaw` (punctuation + field labels) and `Print` (leaf
+    /// scalars), matching the interpreter's `to_display_string` format
+    /// (`Point { x: 3, y: 4 }`, `(3, 4)`, with struct fields sorted
+    /// alphabetically). Anything else (struct literals in expression
+    /// position, function-returning struct/tuple values, dicts,
+    /// allocators, ...) is deferred.
     fn lower_print(
         &mut self,
         args: &Vec<ExprRef>,
@@ -1564,10 +1571,33 @@ impl<'a> FunctionLower<'a> {
             self.emit(InstKind::PrintStr { message: sym, newline }, None);
             return Ok(None);
         }
+        // Struct- and tuple-typed identifier arguments: read the
+        // binding shape and emit a formatted multi-call sequence. We
+        // restrict to identifier expressions because the IR does not
+        // carry struct / tuple values in its SSA graph, so there is
+        // no way to print an arbitrary compound expression without
+        // first storing it into a binding.
+        if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0]) {
+            if let Some(binding) = self.bindings.get(&sym).cloned() {
+                match binding {
+                    Binding::Struct { struct_name, fields } => {
+                        self.emit_print_struct(struct_name, &fields, newline);
+                        return Ok(None);
+                    }
+                    Binding::Tuple { elements } => {
+                        self.emit_print_tuple(&elements, newline);
+                        return Ok(None);
+                    }
+                    Binding::Scalar { .. } => {}
+                }
+            }
+        }
         let value_ty = self.value_scalar(&args[0]).ok_or_else(|| {
             let kw = if newline { "println" } else { "print" };
             format!(
-                "{kw} accepts only scalar values (i64 / u64 / bool) or string literals in this compiler MVP"
+                "{kw} accepts only scalar values (i64 / u64 / bool / f64), \
+                 string literals, or identifiers referring to struct / tuple bindings \
+                 in this compiler MVP"
             )
         })?;
         if matches!(value_ty, Type::Unit) {
@@ -1586,6 +1616,89 @@ impl<'a> FunctionLower<'a> {
             None,
         );
         Ok(None)
+    }
+
+    /// Emit the `Name { field: value, ... }` rendering for a struct
+    /// binding. Field order matches the interpreter's
+    /// `Object::to_display_string`: alphabetical by name. Nested struct
+    /// fields recurse; scalar fields go through a single `Print`.
+    /// Only the very last fragment carries the caller's `newline`
+    /// flag, so `print` vs `println` differs by exactly one helper
+    /// choice.
+    fn emit_print_struct(
+        &mut self,
+        struct_name: DefaultSymbol,
+        fields: &[FieldBinding],
+        newline: bool,
+    ) {
+        let header = self.interner.resolve(struct_name).unwrap_or("?");
+        // Match the interpreter's display: type name + space + `{ ` + sorted
+        // fields + ` }`. Empty structs collapse to `Name {  }` with two
+        // spaces (matches `format!("{} {{ {} }}", ...)` on an empty
+        // joined parts list).
+        self.emit_print_raw_text(format!("{header} {{ "), false);
+        let mut sorted: Vec<&FieldBinding> = fields.iter().collect();
+        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+        for (i, fb) in sorted.iter().enumerate() {
+            if i > 0 {
+                self.emit_print_raw_text(", ".to_string(), false);
+            }
+            self.emit_print_raw_text(format!("{}: ", fb.name), false);
+            match &fb.shape {
+                FieldShape::Scalar { local, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(
+                        InstKind::Print {
+                            value: v,
+                            value_ty: *ty,
+                            newline: false,
+                        },
+                        None,
+                    );
+                }
+                FieldShape::Struct {
+                    struct_name: nested_name,
+                    fields: nested,
+                } => {
+                    self.emit_print_struct(*nested_name, nested, false);
+                }
+            }
+        }
+        self.emit_print_raw_text(" }".to_string(), newline);
+    }
+
+    /// Emit the `(a, b, ...)` rendering for a tuple binding. Single-
+    /// element tuples render as `(a,)` to disambiguate from a
+    /// parenthesised expression, matching the interpreter.
+    fn emit_print_tuple(&mut self, elements: &[TupleElementBinding], newline: bool) {
+        self.emit_print_raw_text("(".to_string(), false);
+        for (i, el) in elements.iter().enumerate() {
+            if i > 0 {
+                self.emit_print_raw_text(", ".to_string(), false);
+            }
+            let v = self
+                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                .expect("LoadLocal returns a value");
+            self.emit(
+                InstKind::Print {
+                    value: v,
+                    value_ty: el.ty,
+                    newline: false,
+                },
+                None,
+            );
+        }
+        // `(x,)` for the 1-tuple case.
+        if elements.len() == 1 {
+            self.emit_print_raw_text(",".to_string(), false);
+        }
+        self.emit_print_raw_text(")".to_string(), newline);
+    }
+
+    fn emit_print_raw_text(&mut self, text: String, newline: bool) {
+        self.emit(InstKind::PrintRaw { text, newline }, None);
     }
 
     /// Lower `expr as Target`. The pair `(from, to)` is recorded on

@@ -779,6 +779,23 @@ fn substitute_field_type(
             .ok()
             .map(Type::Struct)
         }
+        TypeDecl::Tuple(elements) => {
+            // `struct Outer { inner: (i64, i64) }` lands here.
+            // Phase Q allows scalar tuple elements; nested compound
+            // (struct / tuple / enum) still rejected at this layer
+            // — tuple values cross function boundaries by per-leaf
+            // expansion which assumes each leaf is scalar.
+            let mut lowered: Vec<Type> = Vec::with_capacity(elements.len());
+            for e in elements {
+                let s = lower_scalar(e)?;
+                if matches!(s, Type::Unit) {
+                    return None;
+                }
+                lowered.push(s);
+            }
+            let id = intern_tuple(module, lowered);
+            Some(Type::Tuple(id))
+        }
         _ => None,
     }
 }
@@ -1094,6 +1111,10 @@ struct TupleElementBinding {
 enum FieldChainResult {
     Scalar { local: LocalId, ty: Type },
     Struct { fields: Vec<FieldBinding> },
+    /// Inner tuple sub-binding — e.g. `outer.inner` where
+    /// `inner: (i64, i64)`. Callers either step further with a
+    /// `TupleAccess` or stash the elements as a pending tuple.
+    Tuple { elements: Vec<TupleElementBinding> },
 }
 
 /// Resolved match scrutinee. Enum scrutinees are dispatched by
@@ -1123,6 +1144,14 @@ enum FieldShape {
     Struct {
         struct_id: StructId,
         fields: Vec<FieldBinding>,
+    },
+    /// Tuple-typed struct field. Stores the same
+    /// `TupleElementBinding` list `Binding::Tuple` uses, so a chain
+    /// access like `outer.inner.0` walks struct → tuple element via
+    /// the existing field-chain helpers.
+    Tuple {
+        tuple_id: crate::ir::TupleId,
+        elements: Vec<TupleElementBinding>,
     },
 }
 
@@ -2632,6 +2661,9 @@ impl<'a> FunctionLower<'a> {
                     fields: nested,
                 } => {
                     self.emit_print_struct(*nested_id, nested, false);
+                }
+                FieldShape::Tuple { elements, .. } => {
+                    self.emit_print_tuple(elements, false);
                 }
             }
         }
@@ -4276,6 +4308,47 @@ impl<'a> FunctionLower<'a> {
                         &inner_literal,
                     )?;
                 }
+                FieldShape::Tuple { elements: inner_elements, .. } => {
+                    // Field type is a tuple; the rhs must be a tuple
+                    // literal of the matching length. Element values
+                    // store directly into the per-element locals.
+                    let inner_expr = self
+                        .program
+                        .expression
+                        .get(value_ref)
+                        .ok_or_else(|| "struct field rhs missing".to_string())?;
+                    let inner_elems = match inner_expr {
+                        Expr::TupleLiteral(es) => es,
+                        _ => {
+                            return Err(format!(
+                                "compiler MVP requires tuple-typed struct field `{}.{}` to be initialised by a tuple literal",
+                                self.interner.resolve(outer_base).unwrap_or("?"),
+                                field_str
+                            ));
+                        }
+                    };
+                    if inner_elems.len() != inner_elements.len() {
+                        return Err(format!(
+                            "tuple-typed struct field `{}.{}` expects {} elements, got {}",
+                            self.interner.resolve(outer_base).unwrap_or("?"),
+                            field_str,
+                            inner_elements.len(),
+                            inner_elems.len(),
+                        ));
+                    }
+                    for (i, e) in inner_elems.iter().enumerate() {
+                        let v = self.lower_expr(e)?.ok_or_else(|| {
+                            format!("tuple element #{i} produced no value")
+                        })?;
+                        self.emit(
+                            InstKind::StoreLocal {
+                                dst: inner_elements[i].local,
+                                src: v,
+                            },
+                            None,
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -4299,6 +4372,15 @@ impl<'a> FunctionLower<'a> {
                         struct_id: inner,
                         fields: sub,
                     }
+                }
+                Type::Tuple(tuple_id) => {
+                    // Tuple defs are interned at struct-template
+                    // lowering time, so this should always succeed
+                    // — fall back to an empty list defensively.
+                    let elements = self
+                        .allocate_tuple_elements(tuple_id)
+                        .unwrap_or_default();
+                    FieldShape::Tuple { tuple_id, elements }
                 }
                 scalar => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
@@ -4351,6 +4433,11 @@ impl<'a> FunctionLower<'a> {
                 FieldShape::Struct { fields: nested, .. } => {
                     out.extend(Self::flatten_struct_locals(nested));
                 }
+                FieldShape::Tuple { elements, .. } => {
+                    for el in elements {
+                        out.push((el.local, el.ty));
+                    }
+                }
             }
         }
         out
@@ -4369,35 +4456,45 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(obj)
             .ok_or_else(|| "tuple-access object missing".to_string())?;
-        let obj_sym = match obj_expr {
-            Expr::Identifier(sym) => sym,
+        // Two shapes are accepted: (1) a bare identifier bound to a
+        // tuple; (2) a field-access chain whose final step lands on
+        // a tuple-typed struct field (`outer.inner.0` style).
+        let elements = match obj_expr {
+            Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Tuple { elements }) => elements,
+                Some(_) => {
+                    return Err(format!(
+                        "`{}` is not a tuple value",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "undefined identifier `{}`",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    ));
+                }
+            },
+            Expr::FieldAccess(_, _) => match self.resolve_field_chain(obj)? {
+                FieldChainResult::Tuple { elements } => elements,
+                FieldChainResult::Struct { .. } => {
+                    return Err(
+                        "tuple access on a struct-typed field — try a field name instead of an index"
+                            .to_string(),
+                    );
+                }
+                FieldChainResult::Scalar { .. } => {
+                    return Err("tuple access on a scalar field".to_string());
+                }
+            },
             _ => {
                 return Err(
-                    "compiler MVP only supports tuple access on a bare identifier".to_string(),
+                    "compiler MVP only supports tuple access on a bare identifier or a struct field-access chain".to_string(),
                 );
             }
         };
-        let elements = match self.bindings.get(&obj_sym).cloned() {
-            Some(Binding::Tuple { elements }) => elements,
-            Some(_) => {
-                return Err(format!(
-                    "`{}` is not a tuple value",
-                    self.interner.resolve(obj_sym).unwrap_or("?")
-                ));
-            }
-            None => {
-                return Err(format!(
-                    "undefined identifier `{}`",
-                    self.interner.resolve(obj_sym).unwrap_or("?")
-                ));
-            }
-        };
         let elem = elements.iter().find(|e| e.index == index).ok_or_else(|| {
-            format!(
-                "tuple `{}` has no element at index {}",
-                self.interner.resolve(obj_sym).unwrap_or("?"),
-                index
-            )
+            format!("tuple has no element at index {index}")
         })?;
         Ok(self.emit(InstKind::LoadLocal(elem.local), Some(elem.ty)))
     }
@@ -4488,7 +4585,7 @@ impl<'a> FunctionLower<'a> {
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
             FieldChainResult::Struct { fields } => fields,
-            FieldChainResult::Scalar { .. } => {
+            FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                 return Err("field access on a non-struct value".to_string());
             }
         };
@@ -4511,6 +4608,15 @@ impl<'a> FunctionLower<'a> {
                 // implicit return, returning no SSA value because
                 // the IR keeps struct values out of the value graph.
                 self.pending_struct_value = Some(fields.clone());
+                Ok(None)
+            }
+            FieldShape::Tuple { elements, .. } => {
+                // Same idea for a tuple-typed struct field — stash
+                // the element list as the pending tuple value so a
+                // tail-position `outer.inner` chain reaches the
+                // implicit-return path.
+                self.pending_struct_value = None;
+                self.pending_tuple_value = Some(elements.clone());
                 Ok(None)
             }
         }
@@ -4552,7 +4658,7 @@ impl<'a> FunctionLower<'a> {
                 let inner_ref = self.resolve_field_chain(&inner)?;
                 let fields = match inner_ref {
                     FieldChainResult::Struct { fields } => fields,
-                    FieldChainResult::Scalar { .. } => {
+                    FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                         return Err("field access on a non-struct value".to_string());
                     }
                 };
@@ -4572,6 +4678,9 @@ impl<'a> FunctionLower<'a> {
                     }),
                     FieldShape::Struct { fields, .. } => Ok(FieldChainResult::Struct {
                         fields: fields.clone(),
+                    }),
+                    FieldShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
+                        elements: elements.clone(),
                     }),
                 }
             }
@@ -4642,7 +4751,7 @@ impl<'a> FunctionLower<'a> {
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
             FieldChainResult::Struct { fields } => fields,
-            FieldChainResult::Scalar { .. } => {
+            FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                 return Err("field assignment on a non-struct value".to_string());
             }
         };
@@ -4659,6 +4768,9 @@ impl<'a> FunctionLower<'a> {
             FieldShape::Scalar { local, .. } => Ok(*local),
             FieldShape::Struct { .. } => Err(format!(
                 "compiler MVP cannot assign whole struct to nested field `{field_str}` (assign individual leaf scalars instead)"
+            )),
+            FieldShape::Tuple { .. } => Err(format!(
+                "compiler MVP cannot assign whole tuple to struct field `{field_str}` (assign individual elements via `obj.{field_str}.N` instead)"
             )),
         }
     }
@@ -5737,25 +5849,33 @@ impl<'a> FunctionLower<'a> {
                 let inner = self.resolve_field_chain(&obj).ok()?;
                 let fields = match inner {
                     FieldChainResult::Struct { fields } => fields,
-                    FieldChainResult::Scalar { .. } => return None,
+                    FieldChainResult::Scalar { .. }
+                    | FieldChainResult::Tuple { .. } => return None,
                 };
                 let field_str = self.interner.resolve(field)?;
                 fields.iter().find(|f| f.name == field_str).and_then(|f| match &f.shape {
                     FieldShape::Scalar { ty, .. } => Some(*ty),
-                    FieldShape::Struct { .. } => None,
+                    FieldShape::Struct { .. } | FieldShape::Tuple { .. } => None,
                 })
             }
             Expr::TupleAccess(tuple, index) => {
                 // Same idea for tuple element access: pull the type
                 // out of the tuple binding without needing to lower
-                // the whole expression.
+                // the whole expression. Phase Q allows the tuple to
+                // also be a struct field (`outer.inner.0`) — in that
+                // case resolve through the field chain.
                 let obj_expr = self.program.expression.get(&tuple)?;
-                let obj_sym = match obj_expr {
-                    Expr::Identifier(s) => s,
-                    _ => return None,
-                };
-                let elements = match self.bindings.get(&obj_sym)? {
-                    Binding::Tuple { elements } => elements,
+                let elements = match obj_expr {
+                    Expr::Identifier(s) => match self.bindings.get(&s)? {
+                        Binding::Tuple { elements } => elements.clone(),
+                        _ => return None,
+                    },
+                    Expr::FieldAccess(_, _) => {
+                        match self.resolve_field_chain(&tuple).ok()? {
+                            FieldChainResult::Tuple { elements } => elements,
+                            _ => return None,
+                        }
+                    }
                     _ => return None,
                 };
                 elements.iter().find(|e| e.index == index).map(|e| e.ty)

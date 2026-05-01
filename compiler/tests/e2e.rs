@@ -2889,6 +2889,64 @@ fn generic_enum_with_struct_payload() {
 }
 
 #[test]
+fn struct_with_tuple_field_as_function_param_and_return() {
+    if skip_e2e() {
+        return;
+    }
+    // The struct's leaf-scalar layout (per-field locals, including
+    // tuple sub-elements) is what crosses the function boundary, so
+    // struct-of-tuple values flow through `Pair → fn → Pair` once
+    // `flatten_struct_locals` recurses into `FieldShape::Tuple`.
+    let src = r#"
+        struct Pair { ab: (i64, i64), tag: i64 }
+        fn make(x: i64, y: i64) -> Pair {
+            Pair { ab: (x, y), tag: 99i64 }
+        }
+        fn sum(p: Pair) -> i64 {
+            p.ab.0 + p.ab.1 + p.tag
+        }
+        fn main() -> u64 {
+            val p = make(7i64, 13i64)
+            sum(p) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "struct_tuple_field_fn"), 119);
+}
+
+#[test]
+fn struct_with_tuple_field_read_and_print() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Q: struct field can be a tuple. The compiler allocates
+    // per-element locals inside the struct's field tree
+    // (`FieldShape::Tuple { tuple_id, elements }`), and access like
+    // `outer.inner.0` walks struct → tuple via the existing
+    // field-chain helpers, lowering through `lower_tuple_access`'s
+    // FieldAccess arm.
+    let src = r#"
+        struct Outer {
+            inner: (i64, i64),
+            tag: i64,
+        }
+        fn main() -> u64 {
+            val o = Outer { inner: (3i64, 7i64), tag: 1i64 }
+            val a: i64 = o.inner.0
+            val b: i64 = o.inner.1
+            val s: i64 = a + b + o.tag
+            println(o)
+            s as u64
+        }
+    "#;
+    let out = compile_and_capture(src, "struct_tuple_field");
+    assert_eq!(out.status.code(), Some(11));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Outer { inner: (3, 7), tag: 1 }\n",
+    );
+}
+
+#[test]
 fn print_struct_literal_directly() {
     if skip_e2e() {
         return;

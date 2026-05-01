@@ -80,6 +80,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 },
+                TypeDecl::Tuple(_) => {
+                    // Tuple field types are valid; the compiler /
+                    // interpreter handle the per-element layout. We
+                    // don't recurse into element validation here —
+                    // it would duplicate the tuple-literal checks
+                    // that fire at construction sites.
+                },
                 _ => {
                     if !generic_params.is_empty() {
                         self.type_inference.pop_generic_scope();

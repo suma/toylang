@@ -41,7 +41,7 @@ pub fn emit_object(
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
 ) -> Result<Vec<u8>, String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
     let module = build_object_module(&ir_module, interner, options)?;
     let product = module.finish();
     product
@@ -54,9 +54,9 @@ pub fn emit_ir_text(
     program: &Program,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
-    _options: &CompilerOptions,
+    options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
     Ok(format!("{ir_module}"))
 }
 
@@ -66,9 +66,9 @@ pub fn emit_clif_text(
     program: &Program,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
-    _options: &CompilerOptions,
+    options: &CompilerOptions,
 ) -> Result<String, String> {
-    let ir_module = lower::lower_program(program, interner, contract_msgs)?;
+    let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
     let mut session = CodegenSession::new()?;
     session.declare_all(&ir_module, interner)?;
     let mut out = String::new();
@@ -366,42 +366,14 @@ impl CodegenSession {
     }
 
     fn push_param(&self, sig: &mut Signature, ir_module: &IrModule, t: IrType) {
-        match t {
-            IrType::Struct(name) => {
-                // Expand the struct into one cranelift param per
-                // scalar field, in declaration order.
-                if let Some(def) = ir_module.struct_defs.get(&name) {
-                    for (_field_name, field_ty) in def {
-                        if let Some(ct) = ir_to_cranelift_ty(*field_ty) {
-                            sig.params.push(AbiParam::new(ct));
-                        }
-                    }
-                }
-            }
-            other => {
-                if let Some(ct) = ir_to_cranelift_ty(other) {
-                    sig.params.push(AbiParam::new(ct));
-                }
-            }
+        for ct in flatten_struct_to_cranelift_tys(ir_module, t) {
+            sig.params.push(AbiParam::new(ct));
         }
     }
 
     fn push_return(&self, sig: &mut Signature, ir_module: &IrModule, t: IrType) {
-        match t {
-            IrType::Struct(name) => {
-                if let Some(def) = ir_module.struct_defs.get(&name) {
-                    for (_field_name, field_ty) in def {
-                        if let Some(ct) = ir_to_cranelift_ty(*field_ty) {
-                            sig.returns.push(AbiParam::new(ct));
-                        }
-                    }
-                }
-            }
-            other => {
-                if let Some(ct) = ir_to_cranelift_ty(other) {
-                    sig.returns.push(AbiParam::new(ct));
-                }
-            }
+        for ct in flatten_struct_to_cranelift_tys(ir_module, t) {
+            sig.returns.push(AbiParam::new(ct));
         }
     }
 
@@ -603,6 +575,26 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
         // returns at the function boundary instead. Callers that
         // could see a struct here should branch on `is_struct()`.
         IrType::Struct(_) => None,
+    }
+}
+
+/// Recursively flatten an IR type into the sequence of cranelift
+/// types its representation occupies at the function boundary.
+/// Scalars yield one entry; struct types yield one entry per leaf
+/// scalar field, recursing through nested struct fields. Unit
+/// yields nothing (no cranelift slot).
+fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
+    match t {
+        IrType::Struct(name) => {
+            let mut out = Vec::new();
+            if let Some(def) = ir_module.struct_defs.get(&name) {
+                for (_field_name, field_ty) in def {
+                    out.extend(flatten_struct_to_cranelift_tys(ir_module, *field_ty));
+                }
+            }
+            out
+        }
+        other => ir_to_cranelift_ty(other).into_iter().collect(),
     }
 }
 

@@ -101,7 +101,9 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント
 121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
-183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC + --release + nested fields 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
+
+   **2026-05-01: --release ゲート と ネストした struct field を追加** — `CompilerOptions.release: bool` を追加、`--release` 指定で `lower.rs` が requires/ensures 検査を一切 emit しない（interpreter の `INTERPRETER_CONTRACTS=off` と同等）。ネストした struct: `FieldBinding` を `{ name, shape: FieldShape }` に refactor、`FieldShape` enum で `Scalar { local, ty }` と `Struct { struct_name, fields }` を表現。`collect_struct_defs` は struct field type も accept、`allocate_struct_fields` ヘルパーで再帰的に local 展開、`store_struct_literal_fields` ヘルパーで入れ子リテラル `Outer { inner: Inner { x: 1 } }` を再帰 store。`a.b.c` chain access は `resolve_field_chain` で walk、`FieldChainResult::Scalar` / `Struct` を返す。codegen の `flatten_struct_to_cranelift_tys` で nested struct param/return を leaf scalar まで再帰展開。e2e テスト 3 件追加（release skip 検証 / nested field read+write / nested struct param）、計 45 テスト全 green。
 
    **2026-05-01: tuple / top-level const / DbC を追加** — tuple は struct と同じ「per-element ローカル展開」パターンで `Binding::Tuple { elements }` を新設、`Expr::TupleLiteral` を val rhs として allocate、`Expr::TupleAccess` の読み書きを実装。tuple は局所バインディング限定（関数引数 / 戻り値は未対応）、`val (a, b) = (x, y)` のパーサ desugar が自然に動く。const は `evaluate_consts` で program.consts を compile-time fold（リテラル + 既存 const 参照 + arithmetic）し、Identifier 解決時に local binding が無ければ const テーブルにフォールバック。DbC は `lib.rs::ContractMessages` で "requires violation" / "ensures violation" を pre-intern して `&mut interner` 問題を回避、`emit_contract_checks` で各 clause を bool 評価 → 失敗時 `Terminator::Panic` に分岐、`requires` は entry で / `ensures` は全 Return 直前で発火。`ensures` の `result` は scalar 戻り値（struct は first field）に bind。e2e テスト 9 件追加（tuple 4 + const 2 + DbC 3）、計 42 テスト全 green。
 
@@ -118,14 +120,14 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
    - **enum / match**: `enum` 宣言と `match` 式いずれも未対応
    - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応
    - **allocator**: `with allocator = ...`、`<A: Allocator>` bound、heap / pointer builtins (`__builtin_heap_alloc` 系) すべて未対応
-   - **DbC**: `requires` / `ensures` 節は実行時チェックされ、違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値（struct は first field）に bind。`--release` 同等の gate（チェックを skip）はまだ未実装
+   - **DbC**: `requires` / `ensures` 節は実行時チェックされ、違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値（struct は first field）に bind。`--release` フラグで全 contract チェックを skip（`INTERPRETER_CONTRACTS=off` 相当）
    - **const**: top-level `const NAME: Type = expr` 対応。初期化式はリテラル / 既存 const 参照 / 単純な算術 fold のみ（文字列 const、関数呼び出し含む式は不可）
    - **generics**: 型パラメータを持つ関数 / struct はいずれも reject
    - **struct の制約**:
      - 関数引数 / 戻り値として struct 値は渡せる（codegen が per-field 展開）
      - struct-returning call は式位置で使えず、必ず `val x = ...` で受ける
      - struct binding 全体の再代入 (`q = p`) は不可（field 単位の代入のみ）
-     - ネストしたフィールドアクセス (`a.b.c`) や非 scalar フィールドは未対応
+     - ネストした struct field とそれへの chain access (`a.b.c`) はサポート、ただし leaf scalar への代入のみ（`p.inner = Inner { ... }` 不可）
      - struct を `print` / `println` に渡せない
    - **print / println**: `i64` / `u64` / `f64` / `bool` / 文字列リテラルのみ。struct / tuple 等は不可
    - **panic / assert**: メッセージは文字列リテラル限定（const binding や concat 等は不可）

@@ -72,6 +72,7 @@ fn compiler_exit_code(source: &str, stem: &str) -> i32 {
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file");
     let status = Command::new(&exe_path).status().expect("spawn binary");

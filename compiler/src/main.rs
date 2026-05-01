@@ -40,6 +40,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
     let mut output: Option<PathBuf> = None;
     let mut emit = EmitKind::Executable;
     let mut verbose = false;
+    let mut release = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -49,6 +50,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
                 std::process::exit(0);
             }
             "-v" | "--verbose" => verbose = true,
+            "--release" => release = true,
             "-o" => {
                 i += 1;
                 let v = args.get(i).ok_or_else(|| "-o needs an argument".to_string())?;
@@ -80,6 +82,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
         output,
         emit,
         verbose,
+        release,
     })
 }
 
@@ -94,5 +97,7 @@ fn parse_emit(s: &str) -> Result<EmitKind, String> {
 }
 
 fn print_usage() {
-    eprintln!("usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [-v]");
+    eprintln!(
+        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [-v]"
+    );
 }

@@ -26,6 +26,11 @@ pub struct CompilerOptions {
     pub output: Option<PathBuf>,
     pub emit: EmitKind,
     pub verbose: bool,
+    /// Skip Design-by-Contract runtime checks (`requires` / `ensures`).
+    /// Equivalent to the interpreter's `INTERPRETER_CONTRACTS=off`. Use
+    /// when the contract overhead matters and the predicates have been
+    /// validated in a checked build.
+    pub release: bool,
 }
 
 impl CompilerOptions {
@@ -35,6 +40,7 @@ impl CompilerOptions {
             output: None,
             emit: EmitKind::Executable,
             verbose: false,
+            release: false,
         }
     }
 }

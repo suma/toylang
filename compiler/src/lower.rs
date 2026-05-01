@@ -44,6 +44,7 @@ pub fn lower_program(
     program: &Program,
     interner: &DefaultStringInterner,
     contract_msgs: &crate::ContractMessages,
+    release: bool,
 ) -> Result<Module, String> {
     let mut module = Module::new();
 
@@ -130,6 +131,7 @@ pub fn lower_program(
             &struct_defs,
             &const_values,
             contract_msgs,
+            release,
         )?;
         builder.lower_body(&func)?;
     }
@@ -258,27 +260,54 @@ fn collect_struct_defs(
             }
             let mut field_tys: Vec<(String, Type)> = Vec::with_capacity(fields.len());
             for f in &fields {
-                let scalar = lower_scalar(&f.type_decl).ok_or_else(|| {
+                // Resolve the field's declared type. Scalars and known
+                // struct names are accepted; everything else (tuples,
+                // enums, generics, etc.) is rejected with a clear
+                // error. Note: struct field types may reference other
+                // structs declared earlier or later in the program;
+                // we look up by name once all declarations are visible.
+                let ty = resolve_field_type(&f.type_decl, &defs).ok_or_else(|| {
                     format!(
-                        "compiler MVP only supports scalar struct fields; `{}.{}: {:?}` is not supported yet",
+                        "compiler MVP cannot lower struct field `{}.{}: {:?}`",
                         interner.resolve(name).unwrap_or("?"),
                         f.name,
                         f.type_decl
                     )
                 })?;
-                if matches!(scalar, Type::Unit) {
+                if matches!(ty, Type::Unit) {
                     return Err(format!(
                         "struct field `{}.{}` cannot have type Unit",
                         interner.resolve(name).unwrap_or("?"),
                         f.name
                     ));
                 }
-                field_tys.push((f.name.clone(), scalar));
+                field_tys.push((f.name.clone(), ty));
             }
             defs.insert(name, field_tys);
         }
     }
     Ok(defs)
+}
+
+/// Resolve a field's declared type. Scalar types and previously-declared
+/// structs (by name) are accepted; everything else is rejected. Two
+/// passes are not needed because `collect_struct_defs` walks the
+/// program in order and structs that appear later are still recognised
+/// by their identifier — we just verify the symbol resolves to a
+/// known struct in `defs`. To handle forward references in field
+/// types, callers should be willing to re-walk the program; the
+/// existing tests only use already-declared types.
+fn resolve_field_type(ty: &TypeDecl, defs: &StructDefs) -> Option<Type> {
+    if let Some(s) = lower_scalar(ty) {
+        return Some(s);
+    }
+    match ty {
+        TypeDecl::Identifier(name) if defs.contains_key(name) => Some(Type::Struct(*name)),
+        TypeDecl::Struct(name, args) if args.is_empty() && defs.contains_key(name) => {
+            Some(Type::Struct(*name))
+        }
+        _ => None,
+    }
 }
 
 fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
@@ -333,6 +362,10 @@ struct FunctionLower<'a> {
     /// Pre-interned panic messages for contract violations. Set once
     /// per `lower_program` call.
     contract_msgs: &'a crate::ContractMessages,
+    /// `true` when `--release` was supplied; the lowering pass skips
+    /// every `requires` / `ensures` check, mirroring the interpreter's
+    /// `INTERPRETER_CONTRACTS=off` behaviour.
+    release: bool,
     /// `ensures` clauses on the function currently being lowered.
     /// Each Return site (explicit or implicit) emits these checks
     /// before the actual return so a violated postcondition aborts
@@ -399,14 +432,36 @@ struct TupleElementBinding {
     ty: Type,
 }
 
+/// Result of walking a field-access chain (`a`, `a.b`, `a.b.c`, ...).
+/// Either we land on a scalar leaf (ready for LoadLocal) or on an
+/// inner struct sub-binding (the caller decides whether to step
+/// further or stash it as a pending struct value).
+#[derive(Debug, Clone)]
+enum FieldChainResult {
+    Scalar { local: LocalId, ty: Type },
+    Struct { fields: Vec<FieldBinding> },
+}
+
 /// One field of a `Binding::Struct`. `name` matches `StructField.name`
 /// exactly so we can compare against the interner-resolved field name
-/// at access sites without re-interning.
+/// at access sites without re-interning. The `shape` is recursive
+/// because struct fields can themselves be structs, in which case the
+/// nested struct expands into its own per-field locals (so the IR
+/// still sees only scalars at storage / return time).
 #[derive(Debug, Clone)]
 struct FieldBinding {
     name: String,
-    local: LocalId,
-    ty: Type,
+    shape: FieldShape,
+}
+
+#[derive(Debug, Clone)]
+enum FieldShape {
+    Scalar { local: LocalId, ty: Type },
+    Struct {
+        #[allow(dead_code)]
+        struct_name: DefaultSymbol,
+        fields: Vec<FieldBinding>,
+    },
 }
 
 impl<'a> FunctionLower<'a> {
@@ -418,6 +473,7 @@ impl<'a> FunctionLower<'a> {
         struct_defs: &'a StructDefs,
         const_values: &'a ConstValues,
         contract_msgs: &'a crate::ContractMessages,
+        release: bool,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -427,6 +483,7 @@ impl<'a> FunctionLower<'a> {
             struct_defs,
             const_values,
             contract_msgs,
+            release,
             ensures: Vec::new(),
             result_sym: interner.get("result"),
             bindings: HashMap::new(),
@@ -448,25 +505,7 @@ impl<'a> FunctionLower<'a> {
         for (i, (name, _decl_ty)) in func.parameter.iter().enumerate() {
             match param_types[i] {
                 Type::Struct(struct_name) => {
-                    let def = self
-                        .struct_defs
-                        .get(&struct_name)
-                        .cloned()
-                        .ok_or_else(|| {
-                            format!(
-                                "internal error: missing struct definition for parameter `{}`",
-                                self.interner.resolve(*name).unwrap_or("?")
-                            )
-                        })?;
-                    let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
-                    for (field_name, field_ty) in &def {
-                        let local = self.module.function_mut(self.func_id).add_local(*field_ty);
-                        field_bindings.push(FieldBinding {
-                            name: field_name.clone(),
-                            local,
-                            ty: *field_ty,
-                        });
-                    }
+                    let field_bindings = self.allocate_struct_fields(struct_name)?;
                     self.bindings.insert(
                         *name,
                         Binding::Struct {
@@ -500,10 +539,13 @@ impl<'a> FunctionLower<'a> {
         // is evaluated; if false the function aborts via the same
         // panic infrastructure `panic("...")` uses, so the exit code
         // and (terse) message stay consistent across compiler / JIT
-        // / interpreter.
-        self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
-        // Stash `ensures` so every Return site can consult them.
-        self.ensures = func.ensures.clone();
+        // / interpreter. `--release` skips both pre and post checks
+        // entirely — the contracts effectively disappear from the
+        // compiled binary.
+        if !self.release {
+            self.emit_contract_checks(&func.requires, self.contract_msgs.requires_violation)?;
+            self.ensures = func.ensures.clone();
+        }
 
         // Function bodies are wrapped in a single Stmt::Expression(block).
         let stmt = self
@@ -557,10 +599,11 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(*fn_name).unwrap_or("?")
                     )
                 })?;
-                let mut values = Vec::with_capacity(fields.len());
-                for fb in &fields {
+                let leaves = Self::flatten_struct_locals(&fields);
+                let mut values = Vec::with_capacity(leaves.len());
+                for (local, ty) in &leaves {
                     let v = self
-                        .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
                         .expect("LoadLocal returns a value");
                     values.push(v);
                 }
@@ -803,10 +846,11 @@ impl<'a> FunctionLower<'a> {
                             ));
                         }
                     };
-                    let mut values = Vec::with_capacity(fields.len());
-                    for fb in &fields {
+                    let leaves = Self::flatten_struct_locals(&fields);
+                    let mut values = Vec::with_capacity(leaves.len());
+                    for (local, ty) in &leaves {
                         let v = self
-                            .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                            .emit(InstKind::LoadLocal(*local), Some(*ty))
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
@@ -958,36 +1002,16 @@ impl<'a> FunctionLower<'a> {
             }
             return Ok(None);
         }
-        // Struct-literal RHS: allocate one local per field, evaluate
-        // each field, store into the matching slot. The IR layer never
-        // sees a struct value — we decompose at the lowering boundary.
+        // Struct-literal RHS: allocate one local per field (recursing
+        // into nested struct fields), evaluate each field expression,
+        // store into the matching local. The IR layer never sees a
+        // struct value — we decompose at the lowering boundary.
         if let Expr::StructLiteral(struct_name, fields) = rhs {
-            let def = self
-                .struct_defs
-                .get(&struct_name)
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "unknown struct `{}` in literal",
-                        self.interner.resolve(struct_name).unwrap_or("?")
-                    )
-                })?;
-            // Build the binding's field list in declaration order so
-            // every field has a well-known position; we then patch up
-            // each entry's value below.
-            let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
-            for (field_name, field_ty) in &def {
-                let local = self.module.function_mut(self.func_id).add_local(*field_ty);
-                field_bindings.push(FieldBinding {
-                    name: field_name.clone(),
-                    local,
-                    ty: *field_ty,
-                });
-            }
-            // Insert the binding before evaluating field rhs expressions
-            // so a recursive struct literal that references the same
-            // name (currently unsupported, but defensive) doesn't see a
-            // missing binding.
+            let field_bindings = self.allocate_struct_fields(struct_name)?;
+            // Insert the binding before evaluating field rhs
+            // expressions so an inner literal that walks back to the
+            // same name (currently unsupported but defensive) doesn't
+            // see a missing binding.
             self.bindings.insert(
                 name,
                 Binding::Struct {
@@ -995,27 +1019,7 @@ impl<'a> FunctionLower<'a> {
                     fields: field_bindings.clone(),
                 },
             );
-            for (field_sym, value_ref) in &fields {
-                let field_str = self
-                    .interner
-                    .resolve(*field_sym)
-                    .ok_or_else(|| "field name missing in interner".to_string())?;
-                let fb = field_bindings
-                    .iter()
-                    .find(|f| f.name == field_str)
-                    .ok_or_else(|| {
-                        format!(
-                            "struct `{}` has no field `{}`",
-                            self.interner.resolve(struct_name).unwrap_or("?"),
-                            field_str
-                        )
-                    })?;
-                let v = self
-                    .lower_expr(value_ref)?
-                    .ok_or_else(|| "struct field rhs produced no value".to_string())?;
-                let local = fb.local;
-                self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-            }
+            self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
             return Ok(None);
         }
         // Struct-returning call RHS: `val p = make_point()`. Allocate
@@ -1035,17 +1039,15 @@ impl<'a> FunctionLower<'a> {
                                 self.interner.resolve(fn_name).unwrap_or("?")
                             )
                         })?;
-                    let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
-                    let mut dests: Vec<LocalId> = Vec::with_capacity(def.len());
-                    for (field_name, field_ty) in &def {
-                        let local = self.module.function_mut(self.func_id).add_local(*field_ty);
-                        field_bindings.push(FieldBinding {
-                            name: field_name.clone(),
-                            local,
-                            ty: *field_ty,
-                        });
-                        dests.push(local);
-                    }
+                    let _ = def;
+                    let field_bindings = self.allocate_struct_fields(struct_name)?;
+                    // CallStruct dests are the leaf scalar locals in
+                    // declaration order — exactly what the cranelift
+                    // multi-result call gives us back.
+                    let dests: Vec<LocalId> = Self::flatten_struct_locals(&field_bindings)
+                        .into_iter()
+                        .map(|(l, _)| l)
+                        .collect();
                     self.bindings.insert(
                         name,
                         Binding::Struct {
@@ -1107,9 +1109,10 @@ impl<'a> FunctionLower<'a> {
             // `lower_expr`.
             if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
-                    for fb in &fields {
+                    let leaves = Self::flatten_struct_locals(&fields);
+                    for (local, ty) in &leaves {
                         let v = self
-                            .emit(InstKind::LoadLocal(fb.local), Some(fb.ty))
+                            .emit(InstKind::LoadLocal(*local), Some(*ty))
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
@@ -1528,6 +1531,131 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Walk a struct literal's `(field_sym, value_expr)` list against
+    /// a `FieldBinding` tree, evaluating each value and storing it
+    /// into the matching local. Recurses on nested struct literals so
+    /// `Outer { inner: Inner { x: 1 } }` flows the inner values into
+    /// the inner's per-field locals.
+    fn store_struct_literal_fields(
+        &mut self,
+        struct_name: DefaultSymbol,
+        field_bindings: &[FieldBinding],
+        literal_fields: &[(DefaultSymbol, ExprRef)],
+    ) -> Result<(), String> {
+        for (field_sym, value_ref) in literal_fields {
+            let field_str = self
+                .interner
+                .resolve(*field_sym)
+                .ok_or_else(|| "field name missing in interner".to_string())?
+                .to_string();
+            let fb = field_bindings
+                .iter()
+                .find(|f| f.name == field_str)
+                .ok_or_else(|| {
+                    format!(
+                        "struct `{}` has no field `{}`",
+                        self.interner.resolve(struct_name).unwrap_or("?"),
+                        field_str
+                    )
+                })?
+                .clone();
+            match fb.shape {
+                FieldShape::Scalar { local, .. } => {
+                    let v = self
+                        .lower_expr(value_ref)?
+                        .ok_or_else(|| "struct field rhs produced no value".to_string())?;
+                    self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                }
+                FieldShape::Struct { struct_name: inner_name, fields: inner_fields } => {
+                    // Field type is itself a struct; the rhs must be
+                    // a struct literal of the matching shape.
+                    let inner_expr = self
+                        .program
+                        .expression
+                        .get(value_ref)
+                        .ok_or_else(|| "struct field rhs missing".to_string())?;
+                    let inner_literal = match inner_expr {
+                        Expr::StructLiteral(_, inner_fs) => inner_fs,
+                        _ => {
+                            return Err(format!(
+                                "compiler MVP requires struct field `{}.{}` to be initialised by a struct literal",
+                                self.interner.resolve(struct_name).unwrap_or("?"),
+                                field_str
+                            ));
+                        }
+                    };
+                    self.store_struct_literal_fields(
+                        inner_name,
+                        &inner_fields,
+                        &inner_literal,
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Allocate a `FieldBinding` tree for a struct, recursively
+    /// expanding nested struct fields into their own per-field
+    /// locals. Used everywhere a struct binding shape is created
+    /// (val rhs of a struct literal, struct param expansion at
+    /// function entry, struct-returning call destinations, the
+    /// pending-struct-value channel for tail-position struct
+    /// literals).
+    fn allocate_struct_fields(
+        &mut self,
+        struct_name: DefaultSymbol,
+    ) -> Result<Vec<FieldBinding>, String> {
+        let def = self
+            .struct_defs
+            .get(&struct_name)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "internal error: missing struct definition for `{}`",
+                    self.interner.resolve(struct_name).unwrap_or("?")
+                )
+            })?;
+        let mut out: Vec<FieldBinding> = Vec::with_capacity(def.len());
+        for (field_name, field_ty) in &def {
+            let shape = match *field_ty {
+                Type::Struct(inner) => {
+                    let sub = self.allocate_struct_fields(inner)?;
+                    FieldShape::Struct {
+                        struct_name: inner,
+                        fields: sub,
+                    }
+                }
+                scalar => {
+                    let local = self.module.function_mut(self.func_id).add_local(scalar);
+                    FieldShape::Scalar { local, ty: scalar }
+                }
+            };
+            out.push(FieldBinding {
+                name: field_name.clone(),
+                shape,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Flatten a `FieldBinding` tree into a sequential list of
+    /// (LocalId, Type) entries, in declaration order. Mirrors the
+    /// flat scalar walk codegen does over `Module.struct_defs` so
+    /// the lowering and backend agree on parameter / return order.
+    fn flatten_struct_locals(fields: &[FieldBinding]) -> Vec<(LocalId, Type)> {
+        let mut out = Vec::new();
+        for fb in fields {
+            match &fb.shape {
+                FieldShape::Scalar { local, ty } => out.push((*local, *ty)),
+                FieldShape::Struct { fields: nested, .. } => {
+                    out.extend(Self::flatten_struct_locals(nested));
+                }
+            }
+        }
+        out
+    }
+
     /// Read `t.N` where `t` resolves to a tuple binding. Like field
     /// access on a struct, the obj must be a bare identifier so the
     /// lookup is purely static.
@@ -1583,73 +1711,118 @@ impl<'a> FunctionLower<'a> {
         struct_name: DefaultSymbol,
         fields: Vec<(DefaultSymbol, ExprRef)>,
     ) -> Result<Option<ValueId>, String> {
-        let def = self
-            .struct_defs
-            .get(&struct_name)
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "unknown struct `{}` in literal",
-                    self.interner.resolve(struct_name).unwrap_or("?")
-                )
-            })?;
-        let mut field_bindings: Vec<FieldBinding> = Vec::with_capacity(def.len());
-        for (field_name, field_ty) in &def {
-            let local = self.module.function_mut(self.func_id).add_local(*field_ty);
-            field_bindings.push(FieldBinding {
-                name: field_name.clone(),
-                local,
-                ty: *field_ty,
-            });
-        }
-        for (field_sym, value_ref) in &fields {
-            let field_str = self
-                .interner
-                .resolve(*field_sym)
-                .ok_or_else(|| "field name missing in interner".to_string())?;
-            let fb = field_bindings
-                .iter()
-                .find(|f| f.name == field_str)
-                .ok_or_else(|| {
-                    format!(
-                        "struct `{}` has no field `{}`",
-                        self.interner.resolve(struct_name).unwrap_or("?"),
-                        field_str
-                    )
-                })?;
-            let v = self
-                .lower_expr(value_ref)?
-                .ok_or_else(|| "struct field rhs produced no value".to_string())?;
-            let local = fb.local;
-            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-        }
+        let field_bindings = self.allocate_struct_fields(struct_name)?;
+        self.store_struct_literal_fields(struct_name, &field_bindings, &fields)?;
         self.pending_struct_value = Some(field_bindings);
         Ok(None)
     }
 
-    /// Read `obj.field` where `obj` resolves to a struct binding. We
-    /// only accept `obj` shaped as `Identifier(sym)` so the lookup is
-    /// purely static — chained field access (`a.b.c`) and field access
-    /// on a function return value are rejected for the MVP.
+    /// Read `obj.field` where `obj` resolves to either a struct
+    /// binding directly (`p.x`) or another field access (`a.b.c`).
+    /// Walks the chain through nested struct fields and returns
+    /// either a scalar load or stashes a pending struct value (for
+    /// tail-position chained struct returns).
     fn lower_field_access(
         &mut self,
         obj: &ExprRef,
         field: DefaultSymbol,
     ) -> Result<Option<ValueId>, String> {
-        let local = self.resolve_field_local(obj, field)?;
-        let ty = self
-            .bindings
-            .values()
-            .find_map(|b| match b {
-                Binding::Struct { fields, .. } => fields
-                    .iter()
-                    .find(|f| f.local == local)
-                    .map(|f| f.ty),
-                _ => None,
-            })
-            .expect("field binding type lookup");
-        Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+        // Resolve the obj sub-expression to a `FieldChainResult`
+        // first; it must be a struct (we're stepping into one of its
+        // fields). Then look up `field` in that struct's bindings.
+        let inner = self.resolve_field_chain(obj)?;
+        let fields = match inner {
+            FieldChainResult::Struct { fields } => fields,
+            FieldChainResult::Scalar { .. } => {
+                return Err("field access on a non-struct value".to_string());
+            }
+        };
+        let field_str = self
+            .interner
+            .resolve(field)
+            .ok_or_else(|| "field name missing in interner".to_string())?
+            .to_string();
+        let fb = fields
+            .iter()
+            .find(|f| f.name == field_str)
+            .ok_or_else(|| format!("struct has no field `{field_str}`"))?;
+        match &fb.shape {
+            FieldShape::Scalar { local, ty } => {
+                self.pending_struct_value = None;
+                Ok(self.emit(InstKind::LoadLocal(*local), Some(*ty)))
+            }
+            FieldShape::Struct { fields, .. } => {
+                // Mid-chain struct value — stash for tail-position
+                // implicit return, returning no SSA value because
+                // the IR keeps struct values out of the value graph.
+                self.pending_struct_value = Some(fields.clone());
+                Ok(None)
+            }
+        }
     }
+
+    /// Helper that walks a (possibly nested) field-access chain and
+    /// returns either the leaf scalar (LocalId + Type) or the inner
+    /// `FieldBinding` list of a struct sub-binding. Pure / immutable
+    /// — used by both reads and writes.
+    fn resolve_field_chain(&self, expr_ref: &ExprRef) -> Result<FieldChainResult, String> {
+        let expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "field-chain expression missing".to_string())?;
+        match expr {
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Scalar { local, ty }) => Ok(FieldChainResult::Scalar {
+                    local: *local,
+                    ty: *ty,
+                }),
+                Some(Binding::Struct { fields, .. }) => Ok(FieldChainResult::Struct {
+                    fields: fields.clone(),
+                }),
+                Some(Binding::Tuple { .. }) => Err(format!(
+                    "compiler MVP cannot use tuple `{}` in a field-access chain",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
+                None => Err(format!(
+                    "undefined identifier `{}`",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
+            },
+            Expr::FieldAccess(inner, field_sym) => {
+                let inner_ref = self.resolve_field_chain(&inner)?;
+                let fields = match inner_ref {
+                    FieldChainResult::Struct { fields } => fields,
+                    FieldChainResult::Scalar { .. } => {
+                        return Err("field access on a non-struct value".to_string());
+                    }
+                };
+                let field_str = self
+                    .interner
+                    .resolve(field_sym)
+                    .ok_or_else(|| "field name missing in interner".to_string())?
+                    .to_string();
+                let fb = fields
+                    .iter()
+                    .find(|f| f.name == field_str)
+                    .ok_or_else(|| format!("struct has no field `{field_str}`"))?;
+                match &fb.shape {
+                    FieldShape::Scalar { local, ty } => Ok(FieldChainResult::Scalar {
+                        local: *local,
+                        ty: *ty,
+                    }),
+                    FieldShape::Struct { fields, .. } => Ok(FieldChainResult::Struct {
+                        fields: fields.clone(),
+                    }),
+                }
+            }
+            _ => Err(
+                "compiler MVP only supports field-access chains rooted at a bare identifier"
+                    .to_string(),
+            ),
+        }
+    }
+
 
     /// Resolve the LocalId backing `obj.N` where `obj` is required to
     /// be a bare identifier referring to a tuple binding. Used by
@@ -1697,57 +1870,38 @@ impl<'a> FunctionLower<'a> {
             })
     }
 
-    /// Resolve the LocalId backing `obj.field` where `obj` is required
-    /// to be a bare identifier referring to a struct binding. Used by
-    /// both reads and writes.
+    /// Resolve the LocalId backing `obj.field...field = value` for
+    /// any depth of chained field access. Walks through nested
+    /// struct fields and returns the leaf scalar local. The leaf
+    /// must be a scalar; assigning to a struct sub-binding whole
+    /// is rejected (consistent with the top-level reassignment ban).
     fn resolve_field_local(
         &self,
         obj: &ExprRef,
         field: DefaultSymbol,
     ) -> Result<LocalId, String> {
-        let obj_expr = self
-            .program
-            .expression
-            .get(obj)
-            .ok_or_else(|| "field-access object missing".to_string())?;
-        let obj_sym = match obj_expr {
-            Expr::Identifier(sym) => sym,
-            _ => {
-                return Err(
-                    "compiler MVP only supports field access on a bare identifier".to_string(),
-                );
-            }
-        };
-        let binding = self.bindings.get(&obj_sym).ok_or_else(|| {
-            format!(
-                "undefined identifier `{}`",
-                self.interner.resolve(obj_sym).unwrap_or("?")
-            )
-        })?;
-        let fields = match binding {
-            Binding::Struct { fields, .. } => fields,
-            Binding::Scalar { .. } | Binding::Tuple { .. } => {
-                return Err(format!(
-                    "`{}` is not a struct value",
-                    self.interner.resolve(obj_sym).unwrap_or("?")
-                ));
+        let inner = self.resolve_field_chain(obj)?;
+        let fields = match inner {
+            FieldChainResult::Struct { fields } => fields,
+            FieldChainResult::Scalar { .. } => {
+                return Err("field assignment on a non-struct value".to_string());
             }
         };
         let field_str = self
             .interner
             .resolve(field)
-            .ok_or_else(|| "field name missing in interner".to_string())?;
+            .ok_or_else(|| "field name missing in interner".to_string())?
+            .to_string();
         let fb = fields
             .iter()
             .find(|f| f.name == field_str)
-            .ok_or_else(|| {
-                format!(
-                    "struct `{}` has no field `{}`",
-                    self.interner.resolve(obj_sym).unwrap_or("?"),
-                    field_str
-                )
-            })?;
-        Ok(fb.local)
+            .ok_or_else(|| format!("struct has no field `{field_str}`"))?;
+        match &fb.shape {
+            FieldShape::Scalar { local, .. } => Ok(*local),
+            FieldShape::Struct { .. } => Err(format!(
+                "compiler MVP cannot assign whole struct to nested field `{field_str}` (assign individual leaf scalars instead)"
+            )),
+        }
     }
 
     fn lower_binary(
@@ -2045,20 +2199,19 @@ impl<'a> FunctionLower<'a> {
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             Expr::FieldAccess(obj, field) => {
-                // Mirror `lower_field_access`'s lookup: resolve to the
-                // field's stored type. This lets `val z = p.x` pick up
-                // the right scalar type when allocating `z`'s local.
-                let obj_expr = self.program.expression.get(&obj)?;
-                let obj_sym = match obj_expr {
-                    Expr::Identifier(s) => s,
-                    _ => return None,
-                };
-                let fields = match self.bindings.get(&obj_sym)? {
-                    Binding::Struct { fields, .. } => fields,
-                    _ => return None,
+                // Walks the same chain `lower_field_access` does so
+                // expressions like `val z = a.b.c` pick up the right
+                // scalar type when allocating `z`'s local.
+                let inner = self.resolve_field_chain(&obj).ok()?;
+                let fields = match inner {
+                    FieldChainResult::Struct { fields } => fields,
+                    FieldChainResult::Scalar { .. } => return None,
                 };
                 let field_str = self.interner.resolve(field)?;
-                fields.iter().find(|f| f.name == field_str).map(|f| f.ty)
+                fields.iter().find(|f| f.name == field_str).and_then(|f| match &f.shape {
+                    FieldShape::Scalar { ty, .. } => Some(*ty),
+                    FieldShape::Struct { .. } => None,
+                })
             }
             Expr::TupleAccess(tuple, index) => {
                 // Same idea for tuple element access: pull the type

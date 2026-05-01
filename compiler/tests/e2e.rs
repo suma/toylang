@@ -40,6 +40,7 @@ fn compile_and_run(source: &str, stem: &str) -> i32 {
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file failed");
     let status = Command::new(&exe_path)
@@ -179,6 +180,7 @@ fn compile_and_capture(source: &str, stem: &str) -> Output {
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file failed");
     let output = Command::new(&exe_path).output().expect("spawn binary");
@@ -881,6 +883,125 @@ fn dbc_ensures_violation_panics() {
 }
 
 #[test]
+fn release_flag_skips_requires_check() {
+    if skip_e2e() {
+        return;
+    }
+    // Without `--release` the requires check fires on the violation
+    // path. With `--release` it is dropped, so the body executes
+    // — we use a reachable side effect (printing) as evidence.
+    let src = r#"
+        fn check(x: i64) -> i64
+            requires x > 0i64
+        {
+            print("ran with x=")
+            println(x)
+            x
+        }
+
+        fn main() -> u64 {
+            val r: i64 = check(-1i64)
+            r as u64
+        }
+    "#;
+    // 1) checked build: panic, exit 1
+    let src_path = unique_path("rel_chk.t");
+    std::fs::write(&src_path, src).unwrap();
+    let exe_chk = unique_path("rel_chk");
+    let opts_chk = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_chk.clone()),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+    };
+    compile_file(&opts_chk).expect("compile checked");
+    let out_chk = Command::new(&exe_chk).output().expect("spawn checked");
+    assert_eq!(out_chk.status.code(), Some(1));
+    let _ = std::fs::remove_file(&exe_chk);
+    // 2) release build: predicate gone, body runs and returns -1 (cast
+    //    to u64 → 0xff... ; & 0xff = 0xff = 255).
+    let exe_rel = unique_path("rel_rel");
+    let opts_rel = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_rel.clone()),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: true,
+    };
+    compile_file(&opts_rel).expect("compile release");
+    let out_rel = Command::new(&exe_rel).output().expect("spawn release");
+    assert_eq!(out_rel.status.code(), Some(0xff));
+    assert!(
+        String::from_utf8_lossy(&out_rel.stdout).contains("ran with x=-1"),
+        "expected the checked-out body to actually execute under --release"
+    );
+    let _ = std::fs::remove_file(&exe_rel);
+    let _ = std::fs::remove_file(&src_path);
+}
+
+#[test]
+fn nested_struct_field_read_and_write() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Inner { x: i64, y: i64 }
+        struct Outer { inner: Inner, label: u64 }
+
+        fn main() -> u64 {
+            val o = Outer { inner: Inner { x: 3i64, y: 4i64 }, label: 42u64 }
+            print("o.inner.x=")
+            println(o.inner.x)
+            print("o.inner.y=")
+            println(o.inner.y)
+            print("o.label=")
+            println(o.label)
+            var p = Outer { inner: Inner { x: 0i64, y: 0i64 }, label: 0u64 }
+            p.inner.x = 7i64
+            p.inner.y = 8i64
+            p.label = 99u64
+            print("p.inner.x+y=")
+            println(p.inner.x + p.inner.y)
+            p.label
+        }
+    "#;
+    let out = compile_and_capture(src, "nested_field");
+    assert_eq!(out.status.code(), Some(99));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "o.inner.x=3\no.inner.y=4\no.label=42\np.inner.x+y=15\n"
+    );
+}
+
+#[test]
+fn nested_struct_passed_through_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Outer contains Inner; passing Outer through a function should
+    // expand into 3 cranelift params (Inner.x, Inner.y, Outer.tag)
+    // at the boundary, with field access still working on the
+    // receiving side.
+    let src = r#"
+        struct Inner { x: i64, y: i64 }
+        struct Outer { inner: Inner, tag: u64 }
+
+        fn dist_sq(o: Outer) -> i64 {
+            o.inner.x * o.inner.x + o.inner.y * o.inner.y
+        }
+
+        fn main() -> u64 {
+            val o = Outer { inner: Inner { x: 3i64, y: 4i64 }, tag: 0u64 }
+            val d = dist_sq(o)
+            d as u64
+        }
+    "#;
+    let out = compile_and_capture(src, "nested_param");
+    assert_eq!(out.status.code(), Some(25));
+}
+
+#[test]
 fn emit_object_writes_o_file() {
     if skip_e2e() {
         return;
@@ -893,6 +1014,7 @@ fn emit_object_writes_o_file() {
         output: Some(obj_path.clone()),
         emit: EmitKind::Object,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file failed");
     let metadata = std::fs::metadata(&obj_path).expect("object file exists");
@@ -917,6 +1039,7 @@ fn emit_ir_writes_compiler_ir() {
         output: Some(ir_path.clone()),
         emit: EmitKind::Ir,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&ir_path).expect("ir file exists");
@@ -941,6 +1064,7 @@ fn emit_clif_writes_cranelift_ir() {
         output: Some(clif_path.clone()),
         emit: EmitKind::Clif,
         verbose: false,
+        release: false,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&clif_path).expect("clif file exists");

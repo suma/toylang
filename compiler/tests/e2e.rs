@@ -1497,6 +1497,203 @@ fn enum_match_used_inside_loop() {
 }
 
 #[test]
+fn match_scalar_u64_with_literal_arms() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn classify(n: u64) -> u64 {
+            match n {
+                0u64 => 100u64,
+                1u64 => 200u64,
+                2u64 => 300u64,
+                _ => 999u64,
+            }
+        }
+        fn main() -> u64 {
+            classify(2u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_scalar_u64"), 300 & 0xff);
+}
+
+#[test]
+fn match_scalar_u64_falls_through_to_wildcard() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn classify(n: u64) -> u64 {
+            match n {
+                0u64 => 100u64,
+                1u64 => 200u64,
+                _ => 7u64,
+            }
+        }
+        fn main() -> u64 {
+            classify(99u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_scalar_default"), 7);
+}
+
+#[test]
+fn match_scalar_bool_arms() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val b = true
+            match b {
+                true => 11u64,
+                false => 22u64,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_scalar_bool"), 11);
+}
+
+#[test]
+fn match_scalar_i64_with_negative_literal() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn sign(n: i64) -> u64 {
+            match n {
+                -1i64 => 1u64,
+                0i64 => 2u64,
+                _ => 3u64,
+            }
+        }
+        fn main() -> u64 {
+            sign(-1i64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_scalar_i64_neg"), 1);
+}
+
+#[test]
+fn match_variant_with_literal_subpattern() {
+    if skip_e2e() {
+        return;
+    }
+    // The first arm only matches `Circle(0i64)`; a non-zero radius
+    // should fall through to the second arm that binds `r`.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Other,
+        }
+        fn main() -> u64 {
+            val s = Shape::Circle(5i64)
+            val a: i64 = match s {
+                Shape::Circle(0i64) => 0i64,
+                Shape::Circle(r) => r * 10i64,
+                Shape::Other => -1i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_variant_lit_sub"), 50);
+}
+
+#[test]
+fn match_variant_literal_subpattern_matches() {
+    if skip_e2e() {
+        return;
+    }
+    // Same enum, but this time the literal sub-pattern *does* match.
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Other,
+        }
+        fn main() -> u64 {
+            val s = Shape::Circle(0i64)
+            val a: i64 = match s {
+                Shape::Circle(0i64) => 7i64,
+                Shape::Circle(r) => r,
+                Shape::Other => -1i64,
+            }
+            a as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_variant_lit_sub_hit"), 7);
+}
+
+#[test]
+fn match_arm_guard_on_variant() {
+    if skip_e2e() {
+        return;
+    }
+    // Guard runs after the binding is in scope; a falsy guard skips
+    // the arm and we fall through to the next.
+    let src = r#"
+        enum Pick {
+            Some(i64),
+            None,
+        }
+        fn main() -> u64 {
+            val p = Pick::Some(7i64)
+            val a: i64 = match p {
+                Pick::Some(x) if x < 0i64 => 1i64,
+                Pick::Some(x) if x > 5i64 => x * 2i64,
+                Pick::Some(x) => x,
+                Pick::None => 0i64,
+            }
+            a as u64
+        }
+    "#;
+    // 7 > 5, so second guard fires: 7 * 2 = 14
+    assert_eq!(compile_and_run(src, "match_guard_variant"), 14);
+}
+
+#[test]
+fn match_arm_guard_on_scalar() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn classify(n: u64) -> u64 {
+            match n {
+                _ if n == 0u64 => 1u64,
+                _ if n < 10u64 => 2u64,
+                _ => 3u64,
+            }
+        }
+        fn main() -> u64 {
+            classify(5u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_guard_scalar"), 2);
+}
+
+#[test]
+fn match_arm_guard_falls_to_next_when_false() {
+    if skip_e2e() {
+        return;
+    }
+    // First arm matches the variant but its guard is false, so we
+    // fall to the catch-all.
+    let src = r#"
+        enum Pick {
+            Some(i64),
+            None,
+        }
+        fn main() -> u64 {
+            val p = Pick::Some(3i64)
+            match p {
+                Pick::Some(x) if x > 100i64 => 99u64,
+                _ => 1u64,
+            }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "match_guard_false"), 1);
+}
+
+#[test]
 fn println_tuple_singleton() {
     if skip_e2e() {
         return;

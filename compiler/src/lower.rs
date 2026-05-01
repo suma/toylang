@@ -26,6 +26,7 @@
 //! outside this set is rejected with a clear error.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use frontend::ast::{
     BuiltinFunction, Expr, ExprRef, MatchArm, Operator, Pattern, Program, Stmt, StmtRef,
@@ -83,15 +84,21 @@ pub fn lower_program(
     // referring to a const symbol.
     let const_values = evaluate_consts(program, interner)?;
 
-    // First pass: declare every function so call sites (which may refer
-    // to functions defined later in the file) can resolve to a `FuncId`
-    // during the body lowering pass.
+    // Generic functions stay outside the IR module's `function_index`
+    // until a call site instantiates them with concrete type args. We
+    // collect them into a side table keyed by name; the call lowerer
+    // reaches in here via `instantiate_generic_function` on demand.
+    let mut generic_funcs: HashMap<DefaultSymbol, Rc<frontend::ast::Function>> =
+        HashMap::new();
+
+    // First pass: declare every non-generic function so call sites
+    // (which may refer to functions defined later in the file) can
+    // resolve to a `FuncId` during the body lowering pass. Generic
+    // functions go into the templates table instead.
     for func in &program.function {
         if !func.generic_params.is_empty() {
-            return Err(format!(
-                "compiler MVP cannot lower generic function `{}` yet",
-                interner.resolve(func.name).unwrap_or("?")
-            ));
+            generic_funcs.insert(func.name, Rc::clone(func));
+            continue;
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
@@ -122,11 +129,18 @@ pub fn lower_program(
         module.declare_function(func.name, export_name, linkage, params, ret);
     }
 
-    // Second pass: lower each body. We clone the function pointer so the
-    // borrow checker doesn't have to thread mutability through the program
-    // (the Function stays in `program.function` for the rest of the
-    // pipeline; we only ever read it here).
-    for func in program.function.clone() {
+    // Second pass: lower each non-generic body. Generic instantiations
+    // happen lazily as call sites discover them; the work queue keeps
+    // them coming until everything reachable is monomorphised.
+    let non_generic: Vec<Rc<frontend::ast::Function>> = program
+        .function
+        .iter()
+        .filter(|f| f.generic_params.is_empty())
+        .cloned()
+        .collect();
+    let mut generic_instances: GenericInstances = HashMap::new();
+    let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
+    for func in non_generic {
         let func_id = *module
             .function_index
             .get(&func.name)
@@ -138,13 +152,63 @@ pub fn lower_program(
             interner,
             &struct_defs,
             &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            HashMap::new(),
             &const_values,
             contract_msgs,
             release,
         )?;
         builder.lower_body(&func)?;
     }
+
+    // Drain the queue: each entry pairs an already-declared `FuncId`
+    // with the (template AST, type substitution) it should be lowered
+    // against. The queue can grow as instantiated bodies discover
+    // further generic call sites — keep going until it's empty.
+    while let Some(work) = pending_generic_work.pop() {
+        let template = generic_funcs
+            .get(&work.template_name)
+            .ok_or_else(|| {
+                format!(
+                    "internal error: missing generic template `{}`",
+                    interner.resolve(work.template_name).unwrap_or("?")
+                )
+            })?
+            .clone();
+        let mut builder = FunctionLower::new(
+            &mut module,
+            work.func_id,
+            program,
+            interner,
+            &struct_defs,
+            &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            work.subst,
+            &const_values,
+            contract_msgs,
+            release,
+        )?;
+        builder.lower_body(&template)?;
+    }
     Ok(module)
+}
+
+/// Side tables threaded through generic-function lowering.
+type GenericFuncs = HashMap<DefaultSymbol, Rc<frontend::ast::Function>>;
+type GenericInstances = HashMap<(DefaultSymbol, Vec<Type>), FuncId>;
+
+/// One queued generic-function instantiation: the freshly-declared
+/// `FuncId`, the template name, and the type substitution that
+/// produced the concrete signature. The body is lowered later from
+/// the template AST (held in `GenericFuncs`) with `subst` active.
+struct PendingGenericInstance {
+    func_id: FuncId,
+    template_name: DefaultSymbol,
+    subst: HashMap<DefaultSymbol, Type>,
 }
 
 /// Compile-time-evaluated values for each top-level `const`. Only
@@ -825,6 +889,23 @@ struct FunctionLower<'a> {
     /// `emit_implicit_return` will read out into the multi-value
     /// `Return`.
     pending_enum_value: Option<EnumStorage>,
+    /// Generic-function templates discovered during pass 1, keyed by
+    /// base name. Call sites consult this when they fail to find a
+    /// concrete `FuncId` in `module.function_index`.
+    generic_funcs: &'a GenericFuncs,
+    /// Already-instantiated generic functions, keyed by
+    /// `(template_name, type_args)`. Hits short-circuit instantiation;
+    /// misses mint a new `FuncId` and push a body-lowering job onto
+    /// `pending_generic_work`.
+    generic_instances: &'a mut GenericInstances,
+    /// Lazy work queue for generic-function bodies. `lower_program`
+    /// drains this after the non-generic pass; new entries can be
+    /// added by an instantiation discovering a further generic call.
+    pending_generic_work: &'a mut Vec<PendingGenericInstance>,
+    /// Active type-parameter substitution while lowering a generic
+    /// instance. Empty for non-generic functions; for instances it
+    /// maps `T` -> the concrete IR `Type` chosen at the call site.
+    type_subst: HashMap<DefaultSymbol, Type>,
 }
 
 /// Storage shape for a single binding (`val` / `var` / parameter / `for`
@@ -934,6 +1015,10 @@ impl<'a> FunctionLower<'a> {
         interner: &'a DefaultStringInterner,
         struct_defs: &'a StructDefs,
         enum_defs: &'a EnumDefs,
+        generic_funcs: &'a GenericFuncs,
+        generic_instances: &'a mut GenericInstances,
+        pending_generic_work: &'a mut Vec<PendingGenericInstance>,
+        type_subst: HashMap<DefaultSymbol, Type>,
         const_values: &'a ConstValues,
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
@@ -957,6 +1042,10 @@ impl<'a> FunctionLower<'a> {
             pending_struct_value: None,
             pending_tuple_value: None,
             pending_enum_value: None,
+            generic_funcs,
+            generic_instances,
+            pending_generic_work,
+            type_subst,
         })
     }
 
@@ -4701,21 +4790,273 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// Find (or instantiate) a `FuncId` for `fn_name`. Non-generic
+    /// functions hit `module.function_index` directly. Generic
+    /// functions are instantiated lazily: we infer the concrete type
+    /// arguments from the call's argument expressions, mint a fresh
+    /// `FuncId`, and queue the body for lowering.
+    fn resolve_call_target(
+        &mut self,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Result<FuncId, String> {
+        if let Some(id) = self.module.function_index.get(&fn_name).copied() {
+            return Ok(id);
+        }
+        if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {
+            // Infer type-argument bindings by walking each parameter
+            // declaration alongside the call's actual argument
+            // expression. A `T` slot in the parameter type means
+            // "take the IR Type of the matching arg"; concrete slots
+            // are skipped (the type-checker has already verified
+            // they line up).
+            let arg_exprs: Vec<ExprRef> = match self
+                .program
+                .expression
+                .get(args_ref)
+            {
+                Some(Expr::ExprList(items)) => items,
+                _ => {
+                    return Err(
+                        "call arguments must be an ExprList".to_string(),
+                    );
+                }
+            };
+            if template.parameter.len() != arg_exprs.len() {
+                return Err(format!(
+                    "generic function `{}` expects {} argument(s), got {}",
+                    self.interner.resolve(fn_name).unwrap_or("?"),
+                    template.parameter.len(),
+                    arg_exprs.len(),
+                ));
+            }
+            let mut inferred: HashMap<DefaultSymbol, Type> = HashMap::new();
+            for ((_pname, ptype), arg) in template.parameter.iter().zip(arg_exprs.iter())
+            {
+                self.infer_generic_args_from_param(
+                    ptype,
+                    arg,
+                    &template.generic_params,
+                    &mut inferred,
+                );
+            }
+            let type_args: Option<Vec<Type>> = template
+                .generic_params
+                .iter()
+                .map(|p| inferred.get(p).copied())
+                .collect();
+            let type_args = type_args.ok_or_else(|| {
+                format!(
+                    "cannot infer type arguments for generic function `{}` from call \
+                     arguments; expected each `T` parameter to map to a known scalar / \
+                     struct / enum type",
+                    self.interner.resolve(fn_name).unwrap_or("?"),
+                )
+            })?;
+            return self.instantiate_generic_function(fn_name, &template, type_args);
+        }
+        Err(format!(
+            "call to unknown function `{}` (only same-program functions are supported)",
+            self.interner.resolve(fn_name).unwrap_or("?")
+        ))
+    }
+
+    /// Walk one parameter declaration / call-site argument pair and
+    /// record any generic-parameter bindings the pairing implies.
+    /// Currently handles scalar generic params (`fn id<T>(x: T)` where
+    /// `x`'s arg has a concrete scalar type), enum identifier args
+    /// (`fn f<T>(o: Option<T>)` where the arg is an Option binding),
+    /// and struct identifier args. Other shapes are silently skipped
+    /// (`infer` returns None overall).
+    fn infer_generic_args_from_param(
+        &self,
+        ptype: &TypeDecl,
+        arg: &ExprRef,
+        generic_params: &[DefaultSymbol],
+        inferred: &mut HashMap<DefaultSymbol, Type>,
+    ) {
+        match ptype {
+            TypeDecl::Generic(g) | TypeDecl::Identifier(g)
+                if generic_params.contains(g) =>
+            {
+                if let Some(ty) = self.value_scalar(arg) {
+                    inferred.entry(*g).or_insert(ty);
+                    return;
+                }
+                // Non-scalar: try identifier → struct/enum binding.
+                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg) {
+                    if let Some(binding) = self.bindings.get(&sym) {
+                        match binding {
+                            Binding::Struct { struct_id, .. } => {
+                                inferred.entry(*g).or_insert(Type::Struct(*struct_id));
+                            }
+                            Binding::Enum(s) => {
+                                inferred.entry(*g).or_insert(Type::Enum(s.enum_id));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Mint a fresh `FuncId` for `(template_name, type_args)`, declare
+    /// the monomorphised signature on the module, and queue the body
+    /// for lowering. Returns the cached id on subsequent hits.
+    fn instantiate_generic_function(
+        &mut self,
+        template_name: DefaultSymbol,
+        template: &frontend::ast::Function,
+        type_args: Vec<Type>,
+    ) -> Result<FuncId, String> {
+        if let Some(id) = self
+            .generic_instances
+            .get(&(template_name, type_args.clone()))
+            .copied()
+        {
+            return Ok(id);
+        }
+        let subst: HashMap<DefaultSymbol, Type> = template
+            .generic_params
+            .iter()
+            .copied()
+            .zip(type_args.iter().copied())
+            .collect();
+        // Lower the param / return signatures with the active subst.
+        let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
+        for (pname, ptype) in &template.parameter {
+            let lowered = self.lower_type_with_subst(ptype, &subst).ok_or_else(|| {
+                format!(
+                    "generic function `{}`: cannot lower parameter `{}: {:?}` after \
+                     substitution",
+                    self.interner.resolve(template_name).unwrap_or("?"),
+                    self.interner.resolve(*pname).unwrap_or("?"),
+                    ptype,
+                )
+            })?;
+            params.push(lowered);
+        }
+        let ret = match &template.return_type {
+            Some(t) => self.lower_type_with_subst(t, &subst).ok_or_else(|| {
+                format!(
+                    "generic function `{}`: cannot lower return type `{:?}` after \
+                     substitution",
+                    self.interner.resolve(template_name).unwrap_or("?"),
+                    t,
+                )
+            })?,
+            None => Type::Unit,
+        };
+        // Mangle the export name with the type-arg list so each
+        // instance gets a distinct linker symbol. Format mirrors what
+        // print uses for header display: `toy_name__<T1, T2>`.
+        let raw_name = self.interner.resolve(template_name).unwrap_or("anon");
+        let arg_str = type_args
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let export_name = format!("toy_{raw_name}__{arg_str}");
+        let func_id = self
+            .module
+            .declare_function(template_name, export_name, Linkage::Local, params, ret);
+        self.generic_instances
+            .insert((template_name, type_args), func_id);
+        self.pending_generic_work.push(PendingGenericInstance {
+            func_id,
+            template_name,
+            subst,
+        });
+        Ok(func_id)
+    }
+
+    /// Lower a `TypeDecl` with the active type-parameter substitution
+    /// applied. Mirrors `lower_param_or_return_type` but for the
+    /// already-resolved-once-per-instance generic function path.
+    fn lower_type_with_subst(
+        &mut self,
+        t: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, Type>,
+    ) -> Option<Type> {
+        if let Some(s) = lower_scalar(t) {
+            return Some(s);
+        }
+        match t {
+            TypeDecl::Generic(g) => subst.get(g).copied(),
+            TypeDecl::Identifier(name) => {
+                if let Some(ty) = subst.get(name).copied() {
+                    return Some(ty);
+                }
+                if self.struct_defs.contains_key(name) {
+                    instantiate_struct(
+                        self.module,
+                        self.struct_defs,
+                        self.enum_defs,
+                        *name,
+                        Vec::new(),
+                        self.interner,
+                    )
+                    .ok()
+                    .map(Type::Struct)
+                } else if self.enum_defs.contains_key(name) {
+                    instantiate_enum(
+                        self.module,
+                        self.enum_defs,
+                        *name,
+                        Vec::new(),
+                        self.interner,
+                    )
+                    .ok()
+                    .map(Type::Enum)
+                } else {
+                    None
+                }
+            }
+            TypeDecl::Struct(name, args) if self.struct_defs.contains_key(name) => {
+                let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+                for a in args {
+                    concrete.push(self.lower_type_with_subst(a, subst)?);
+                }
+                instantiate_struct(
+                    self.module,
+                    self.struct_defs,
+                    self.enum_defs,
+                    *name,
+                    concrete,
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Struct)
+            }
+            TypeDecl::Enum(name, args) | TypeDecl::Struct(name, args)
+                if self.enum_defs.contains_key(name) =>
+            {
+                let mut concrete: Vec<Type> = Vec::with_capacity(args.len());
+                for a in args {
+                    concrete.push(self.lower_type_with_subst(a, subst)?);
+                }
+                instantiate_enum(
+                    self.module,
+                    self.enum_defs,
+                    *name,
+                    concrete,
+                    self.interner,
+                )
+                .ok()
+                .map(Type::Enum)
+            }
+            _ => None,
+        }
+    }
+
     fn lower_call(
         &mut self,
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
-        let target = *self
-            .module
-            .function_index
-            .get(&fn_name)
-            .ok_or_else(|| {
-                format!(
-                    "call to unknown function `{}` (only same-program functions are supported)",
-                    self.interner.resolve(fn_name).unwrap_or("?")
-                )
-            })?;
+        let target = self.resolve_call_target(fn_name, args_ref)?;
         let ret_ty = self.module.function(target).return_type;
         // Struct-returning calls in expression position aren't
         // supported; the user must bind the result with `val x = ...`.

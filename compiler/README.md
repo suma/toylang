@@ -12,6 +12,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)
 - 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`
 - 同一プログラム内の関数呼び出し（`main` のみ C ABI でエクスポート、それ以外は `toy_<name>` プレフィックス）
+- **ジェネリック関数 (Phase L)**: `fn id<T>(x: T) -> T { x }` を宣言可能。各呼び出しサイトで型引数を引数の型から推論し、`(template_name, type_args)` ごとに新しい IR Function を monomorphise。`fn unwrap_or<T>(o: Option<T>, default: T) -> T` のようにジェネリック enum / struct と組み合わせ可、ジェネリック関数からジェネリック関数を呼ぶチェーンも自動展開（pending work queue で処理）
 - **`as` キャスト**: `i64 ↔ u64`（identity）、`{i64, u64} ↔ f64`（cranelift の `fcvt_*_sat` で truncating saturation）。bool との cast や Unit との cast は不可
 - **`f64`**: 算術（`+ - * /`）、比較、unary `-`。`%` (mod) は cranelift に native fmod が無いため reject。print 用ヘルパー (`toy_print_f64` / `toy_println_f64`) は `%g` か `%.1f` で出力
 - **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装
@@ -43,7 +44,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - enum payload に `f64` / 構造体 / tuple
 - trait
 - allocator
-- generics（型パラメータを持つ関数 / struct）
+- (廃止) generics（→ struct / enum / 関数とも対応済）
 - struct / tuple リテラルや関数戻り値を直接 `print` / `println` する（`val` で受ければ可）
 - struct / tuple binding 全体の再代入
 - ネストした tuple 要素 (`((a, b), c)`)、tuple-of-struct, struct-of-tuple

@@ -2632,6 +2632,92 @@ fn generic_struct_two_type_params() {
 }
 
 #[test]
+fn generic_function_identity_two_instantiations() {
+    if skip_e2e() {
+        return;
+    }
+    // Two call sites of `fn id<T>(x: T) -> T` produce two
+    // monomorphisations: one for u64, one for i64.
+    let src = r#"
+        fn id<T>(x: T) -> T {
+            x
+        }
+        fn main() -> u64 {
+            val a: u64 = id(7u64)
+            val b: i64 = id(-3i64)
+            a + (b as u64)
+        }
+    "#;
+    // 7 + wrap(-3 as u64) = 7 + (u64::MAX - 2) wraps to 4
+    assert_eq!(compile_and_run(src, "generic_fn_id"), 4);
+}
+
+#[test]
+fn generic_function_with_two_typed_params() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn pair_sum<T>(a: T, b: T) -> T {
+            a + b
+        }
+        fn main() -> u64 {
+            val u: u64 = pair_sum(10u64, 20u64)
+            val i: i64 = pair_sum(3i64, 4i64)
+            u + (i as u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_fn_pair_sum"), 37);
+}
+
+#[test]
+fn generic_function_taking_generic_enum() {
+    if skip_e2e() {
+        return;
+    }
+    // `unwrap_or<T>` accepts an `Option<T>` plus a default. The
+    // call infers T from the binding's enum_id (`Option<u64>` here),
+    // and the resulting monomorphisation uses the concrete `Option<u64>`
+    // throughout its body — `match` arms bind `v` as `u64`.
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        fn unwrap_or<T>(o: Option<T>, default: T) -> T {
+            match o {
+                Option::Some(v) => v,
+                Option::None => default,
+            }
+        }
+        fn main() -> u64 {
+            val a: Option<u64> = Option::Some(42u64)
+            val b: Option<u64> = Option::None
+            unwrap_or(a, 1u64) + unwrap_or(b, 2u64)
+        }
+    "#;
+    // 42 + 2 = 44
+    assert_eq!(compile_and_run(src, "generic_fn_unwrap_or"), 44);
+}
+
+#[test]
+fn generic_function_called_from_generic_function() {
+    if skip_e2e() {
+        return;
+    }
+    // Outer generic `apply` calls inner generic `id`. Each
+    // instantiation of `apply<T>` enqueues a fresh `id<T>`
+    // instantiation; the work-queue drains both.
+    let src = r#"
+        fn id<T>(x: T) -> T { x }
+        fn apply<T>(x: T) -> T { id(x) }
+        fn main() -> u64 {
+            val a: u64 = apply(11u64)
+            val b: i64 = apply(5i64)
+            a + (b as u64)
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "generic_fn_chained"), 16);
+}
+
+#[test]
 fn enum_passed_after_construction_in_each_branch() {
     if skip_e2e() {
         return;

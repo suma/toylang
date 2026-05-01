@@ -2,26 +2,24 @@
 //!
 //! Each test source is run through:
 //!
-//! 1. **interpreter** — via the in-process `interpreter::execute_program`
-//!    library entry point.
-//! 2. **compiler** — the lib API compiles to an `.o`, the linker driver
-//!    produces an executable, and we spawn it.
+//! 1. **interpreter (lib API)** — `interpreter::execute_program` in
+//!    process.
+//! 2. **compiler** — `compile_file` produces an executable; we spawn
+//!    it and observe its exit code.
+//! 3. **JIT** — the interpreter binary spawned with `INTERPRETER_JIT=1`,
+//!    forcing the Cranelift JIT path. The interpreter binary is
+//!    built once per test run and cached.
 //!
-//! The two paths must agree on the value `main` would have returned (with
-//! the standard POSIX truncation `& 0xff` applied to the compiled binary's
-//! exit code, since shells only carry 8 bits).
+//! All three paths must agree on the value `main` would have returned,
+//! with the standard POSIX truncation `& 0xff` applied uniformly so
+//! programs need not keep their result under 256 to pass.
 //!
-//! JIT consistency is covered separately by
-//! `interpreter/tests/jit_integration.rs`, which already spawns the
-//! interpreter binary with `INTERPRETER_JIT=1` set. Repeating that here
-//! would duplicate the coverage and add several seconds of subprocess
-//! overhead per test program.
-//!
-//! These tests are slow because they invoke `cc`. Set `COMPILER_E2E=skip`
-//! to opt out (mirrors `e2e.rs`).
+//! These tests are slow because they invoke `cc` and (once) `cargo
+//! build`. Set `COMPILER_E2E=skip` to opt out (mirrors `e2e.rs`).
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 use compiler::{compile_file, CompilerOptions, EmitKind};
 use interpreter::object::Object;
@@ -61,6 +59,62 @@ fn interpreter_value(source: &str) -> u64 {
     v
 }
 
+/// Build the interpreter binary once per test run and return its
+/// path. We can't use `env!("CARGO_BIN_EXE_*")` here because the
+/// macro only resolves bins in the *current* crate, and the
+/// interpreter lives in a sibling crate. Instead we shell out to
+/// `cargo build`, which is a no-op when the binary is already
+/// fresh.
+fn interpreter_bin() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+            let status = Command::new(&cargo)
+                .args(["build", "--quiet", "-p", "interpreter", "--bin", "interpreter"])
+                .status()
+                .expect("cargo build interpreter");
+            if !status.success() {
+                panic!("cargo build interpreter failed");
+            }
+            // The compiler crate sits alongside `interpreter` in the
+            // workspace; the resulting binary lives in
+            // `<workspace>/target/debug/interpreter` regardless of
+            // which package's tests are running.
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let bin = manifest_dir
+                .parent()
+                .expect("compiler dir has a parent")
+                .join("target")
+                .join("debug")
+                .join("interpreter");
+            assert!(
+                bin.exists(),
+                "interpreter binary missing at {}",
+                bin.display()
+            );
+            bin
+        })
+        .clone()
+}
+
+/// Run `source` through the interpreter binary with `INTERPRETER_JIT=1`
+/// set, forcing the Cranelift JIT path. Returns the observed exit
+/// code (already `& 0xff`).
+fn jit_exit_code(source: &str, stem: &str) -> i32 {
+    let bin = interpreter_bin();
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let status = Command::new(&bin)
+        .arg(&src_path)
+        .env("INTERPRETER_JIT", "1")
+        .status()
+        .expect("spawn interpreter+jit");
+    let code = status.code().expect("exit code");
+    let _ = std::fs::remove_file(&src_path);
+    code
+}
+
 /// Compile `source` into a fresh executable, run it, and return the
 /// observed exit code (already `& 0xff` from the OS).
 fn compiler_exit_code(source: &str, stem: &str) -> i32 {
@@ -82,20 +136,26 @@ fn compiler_exit_code(source: &str, stem: &str) -> i32 {
     code
 }
 
-/// Assert that the interpreter result and the compiled binary's exit code
-/// agree (with the standard `& 0xff` shell truncation applied to the
-/// interpreter side as well, so test programs need not stay below 256 to
-/// pass).
+/// Assert that the interpreter result, the JIT-compiled binary's exit
+/// code, and the AOT-compiled binary's exit code all agree, with `&
+/// 0xff` shell truncation applied uniformly so test programs need not
+/// stay below 256 to pass. Any divergence pinpoints which pair drifted.
 fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
     let interp = interpreter_value(source);
     let compiled = compiler_exit_code(source, stem) as u64;
+    let jit = jit_exit_code(source, stem) as u64;
     assert_eq!(
         interp & 0xff,
         compiled & 0xff,
         "interpreter={interp} compiler={compiled} for source:\n{source}",
+    );
+    assert_eq!(
+        interp & 0xff,
+        jit & 0xff,
+        "interpreter={interp} jit={jit} for source:\n{source}",
     );
 }
 
@@ -204,6 +264,67 @@ fn nested_calls_match() {
         }
     "#;
     assert_consistent(src, "nested_calls");
+}
+
+#[test]
+fn struct_field_match() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn dist_sq(p: Point) -> i64 { p.x * p.x + p.y * p.y }
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            val d: i64 = dist_sq(p)
+            d as u64
+        }
+    "#;
+    assert_consistent(src, "struct_field");
+}
+
+#[test]
+fn tuple_round_trip_match() {
+    // Note: the interpreter panics on u64 underflow while the
+    // compiler / JIT wrap silently — that's a real divergence to
+    // track separately. We pick operands that don't trigger it so
+    // the consistency assertion only catches *unintended* drift.
+    let src = r#"
+        fn swap(p: (u64, u64)) -> (u64, u64) { (p.1, p.0) }
+        fn main() -> u64 {
+            val orig = (5u64, 10u64)
+            val s = swap(orig)
+            s.0 + s.1
+        }
+    "#;
+    assert_consistent(src, "tuple_round");
+}
+
+#[test]
+fn top_level_const_match() {
+    let src = r#"
+        const BASE: u64 = 10u64
+        const TIMES: u64 = 7u64
+        const TOTAL: u64 = BASE * TIMES
+        fn main() -> u64 { TOTAL }
+    "#;
+    assert_consistent(src, "const_total");
+}
+
+#[test]
+fn dbc_passing_match() {
+    // `requires` / `ensures` succeed on this input, so all three
+    // backends should produce the same exit code (no panic).
+    let src = r#"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+            ensures result * b == a
+        {
+            a / b
+        }
+        fn main() -> u64 {
+            val q: i64 = divide(20i64, 4i64)
+            q as u64
+        }
+    "#;
+    assert_consistent(src, "dbc_pass");
 }
 
 #[test]

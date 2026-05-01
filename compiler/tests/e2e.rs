@@ -2889,6 +2889,96 @@ fn generic_enum_with_struct_payload() {
 }
 
 #[test]
+fn print_struct_literal_directly() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase P: `println(Point { ... })` no longer requires a
+    // round-trip through `val`. The print path allocates a scratch
+    // struct binding from the literal and routes through
+    // `emit_print_struct`.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            println(Point { x: 3i64, y: 4i64 })
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_struct_literal_direct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Point { x: 3, y: 4 }\n",
+    );
+}
+
+#[test]
+fn print_tuple_literal_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            println((10i64, 20i64, 30i64))
+            print((true, false))
+            println(0u64)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_tuple_literal_direct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(10, 20, 30)\n(true, false)0\n",
+    );
+}
+
+#[test]
+fn print_unit_enum_variant_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Color { Red, Green, Blue }
+        fn main() -> u64 {
+            println(Color::Red)
+            println(Color::Blue)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_unit_enum_direct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Color::Red\nColor::Blue\n",
+    );
+}
+
+#[test]
+fn print_tuple_enum_variant_directly() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Shape {
+            Circle(i64),
+            Rect(i64, i64),
+        }
+        fn main() -> u64 {
+            println(Shape::Circle(5i64))
+            println(Shape::Rect(3i64, 7i64))
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "print_tuple_enum_direct");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "Shape::Circle(5)\nShape::Rect(3, 7)\n",
+    );
+}
+
+#[test]
 fn enum_with_tuple_payload() {
     if skip_e2e() {
         return;

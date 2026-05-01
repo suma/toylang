@@ -2435,6 +2435,132 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+        // Compound-literal shortcuts: `print(Point { ... })`,
+        // `print((1, 2))`, `print(Color::Red)`,
+        // `print(Shape::Circle(5))`. We allocate scratch locals for
+        // the value, store / construct it, then route through the
+        // same `emit_print_*` helpers as for identifier bindings.
+        // Generic struct / enum literals still need an enclosing
+        // `val` annotation (no annotation hint reaches this path).
+        if let Some(arg_expr) = self.program.expression.get(&args[0]) {
+            match arg_expr {
+                Expr::StructLiteral(struct_name, literal_fields) => {
+                    let struct_id =
+                        self.resolve_struct_instance(struct_name, None)?;
+                    let fields = self.allocate_struct_fields(struct_id);
+                    self.store_struct_literal_fields(
+                        struct_id,
+                        &fields,
+                        &literal_fields,
+                    )?;
+                    self.emit_print_struct(struct_id, &fields, newline);
+                    return Ok(None);
+                }
+                Expr::TupleLiteral(elems) => {
+                    let mut elements: Vec<TupleElementBinding> =
+                        Vec::with_capacity(elems.len());
+                    for (i, e) in elems.iter().enumerate() {
+                        let ty = self.value_scalar(e).ok_or_else(|| {
+                            format!("tuple element #{i} has no inferable scalar type")
+                        })?;
+                        if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Unit) {
+                            return Err(format!(
+                                "compiler MVP only supports scalar tuple elements; \
+                                 element #{i} is {ty:?}"
+                            ));
+                        }
+                        let local = self
+                            .module
+                            .function_mut(self.func_id)
+                            .add_local(ty);
+                        elements.push(TupleElementBinding { index: i, local, ty });
+                    }
+                    for (i, e) in elems.iter().enumerate() {
+                        let v = self.lower_expr(e)?.ok_or_else(|| {
+                            format!("tuple element #{i} produced no value")
+                        })?;
+                        self.emit(
+                            InstKind::StoreLocal {
+                                dst: elements[i].local,
+                                src: v,
+                            },
+                            None,
+                        );
+                    }
+                    self.emit_print_tuple(&elements, newline);
+                    return Ok(None);
+                }
+                Expr::QualifiedIdentifier(path)
+                    if path.len() == 2 && self.enum_defs.contains_key(&path[0]) =>
+                {
+                    let enum_id = self.resolve_enum_instance(path[0], None)?;
+                    let enum_def = self.module.enum_def(enum_id).clone();
+                    let variant_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name == path[1])
+                        .ok_or_else(|| {
+                            format!(
+                                "unknown enum variant `{}::{}`",
+                                self.interner.resolve(path[0]).unwrap_or("?"),
+                                self.interner.resolve(path[1]).unwrap_or("?"),
+                            )
+                        })?;
+                    if !enum_def.variants[variant_idx].payload_types.is_empty() {
+                        return Err(format!(
+                            "enum variant `{}::{}` is a tuple variant; supply its arguments \
+                             via `{}::{}(...)`",
+                            self.interner.resolve(path[0]).unwrap_or("?"),
+                            self.interner.resolve(path[1]).unwrap_or("?"),
+                            self.interner.resolve(path[0]).unwrap_or("?"),
+                            self.interner.resolve(path[1]).unwrap_or("?"),
+                        ));
+                    }
+                    let storage = self.allocate_enum_storage(enum_id);
+                    self.write_variant_into_storage(&storage, variant_idx, &[])?;
+                    self.emit_print_enum(&storage, newline)?;
+                    return Ok(None);
+                }
+                Expr::AssociatedFunctionCall(enum_name, variant_name, ctor_args)
+                    if self.enum_defs.contains_key(&enum_name) =>
+                {
+                    let enum_id = self.resolve_enum_instance_with_args(
+                        enum_name,
+                        variant_name,
+                        &ctor_args,
+                        None,
+                    )?;
+                    let enum_def = self.module.enum_def(enum_id).clone();
+                    let variant_idx = enum_def
+                        .variants
+                        .iter()
+                        .position(|v| v.name == variant_name)
+                        .ok_or_else(|| {
+                            format!(
+                                "unknown enum variant `{}::{}`",
+                                self.interner.resolve(enum_name).unwrap_or("?"),
+                                self.interner.resolve(variant_name).unwrap_or("?"),
+                            )
+                        })?;
+                    let expected =
+                        enum_def.variants[variant_idx].payload_types.len();
+                    if ctor_args.len() != expected {
+                        return Err(format!(
+                            "enum variant `{}::{}` expects {} payload value(s), got {}",
+                            self.interner.resolve(enum_name).unwrap_or("?"),
+                            self.interner.resolve(variant_name).unwrap_or("?"),
+                            expected,
+                            ctor_args.len(),
+                        ));
+                    }
+                    let storage = self.allocate_enum_storage(enum_id);
+                    self.write_variant_into_storage(&storage, variant_idx, &ctor_args)?;
+                    self.emit_print_enum(&storage, newline)?;
+                    return Ok(None);
+                }
+                _ => {}
+            }
+        }
         let value_ty = self.value_scalar(&args[0]).ok_or_else(|| {
             let kw = if newline { "println" } else { "print" };
             format!(

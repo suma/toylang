@@ -2889,6 +2889,90 @@ fn generic_enum_with_struct_payload() {
 }
 
 #[test]
+fn nested_tuple_literal_and_access() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Q2: TupleElementShape grows Scalar/Struct/Tuple, so a
+    // tuple element can itself be a tuple. `t.0.1` chains through
+    // two TupleAccess steps; `lower_tuple_access` handles the
+    // Expr::TupleAccess obj via `resolve_tuple_chain_elements`.
+    let src = r#"
+        fn main() -> u64 {
+            val t = ((3i64, 4i64), 5i64)
+            val a: i64 = t.0.0
+            val b: i64 = t.0.1
+            val c: i64 = t.1
+            (a + b + c) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "nested_tuple_literal"), 12);
+}
+
+#[test]
+fn nested_tuple_literal_and_print() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val t = ((3i64, 4i64), 5i64)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "nested_tuple_print");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "((3, 4), 5)\n",
+    );
+}
+
+#[test]
+fn tuple_of_struct_literal_and_access() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Q2: tuple element shape allows Struct, so a value like
+    // `(Point, i64)` is now lowered. `t.0.x` chains TupleAccess →
+    // FieldAccess; `resolve_field_chain` walks through the tuple
+    // step via its new `Expr::TupleAccess` arm.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val t = (Point { x: 7i64, y: 13i64 }, 5i64)
+            val a: i64 = t.0.x
+            val b: i64 = t.0.y
+            val c: i64 = t.1
+            (a + b + c) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "tuple_of_struct"), 25);
+}
+
+#[test]
+fn tuple_of_struct_literal_and_print() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val t = (Point { x: 1i64, y: 2i64 }, 3i64)
+            println(t)
+            0u64
+        }
+    "#;
+    let out = compile_and_capture(src, "tuple_of_struct_print");
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "(Point { x: 1, y: 2 }, 3)\n",
+    );
+}
+
+#[test]
 fn struct_with_tuple_field_as_function_param_and_return() {
     if skip_e2e() {
         return;

@@ -22,7 +22,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
 - **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
 - **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
-- **struct field に tuple (Phase Q)**: `struct Outer { inner: (i64, i64) }` のように tuple を struct field に持てる。`FieldShape::Tuple { tuple_id, elements }` で per-element local を保持し、`outer.inner.0` のような chain access も `lower_tuple_access` の FieldAccess アームで動作。print 出力は `Outer { inner: (3, 7), ... }`、関数 param / return も `flatten_struct_locals` の Tuple アームで leaf scalar まで再帰展開し boundary 通過可。要素は scalar (i64/u64/f64/bool) のみ
+- **struct field / tuple element に compound 型 (Phase Q1 + Q2)**: `struct Outer { inner: (i64, i64) }` の struct-of-tuple、`((a, b), c)` の nested tuple、`(Point, i64)` の tuple-of-struct がすべて動作。`FieldShape::Tuple` と `TupleElementShape::{Scalar, Struct, Tuple}` が再帰的な shape を表現し、`outer.inner.0` / `t.0.1` / `t.0.x` などの chain access が `resolve_field_chain` と `resolve_tuple_chain_elements` で walk される。print 出力は `Outer { inner: (3, 7) }` / `((3, 4), 5)` / `(Point { x: 1, y: 2 }, 3)` のように再帰整形。関数 param / return も `flatten_tuple_element_locals` 経由で leaf scalar まで再帰展開し boundary 通過可
 - **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum / struct / tuple を受理。
   - **トップレベルパターン**: `Enum::Variant(...)` / `Wildcard (_)` / `Literal(...)`（scalar scrutinee に対してのみ）
   - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
@@ -48,7 +48,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - (廃止) generics（→ struct / enum / 関数とも対応済）
 - 関数戻り値の compound 値を直接 `print` / `println` する（`val` で受ければ可。**Phase P 以降**: struct / tuple / enum リテラルは直接 `print` できる）
 - struct / tuple binding 全体の再代入
-- ネストした tuple 要素 (`((a, b), c)`)、tuple-of-struct（**Phase Q 以降**: struct-of-tuple は対応）
+- (廃止) ネストした tuple 要素 / tuple-of-struct / struct-of-tuple — **Phase Q 以降すべて対応**
 - 文字列 const、複雑な const 初期化式（リテラル / 単純算術 fold のみ）
 - `ensures` 内で struct field を個別に参照する
 - ネストしたフィールド全体への代入（`p.inner = Inner { ... }` 不可、leaf scalar への代入は可）

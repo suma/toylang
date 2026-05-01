@@ -1096,11 +1096,65 @@ enum PayloadSlot {
 /// One element of a `Binding::Tuple`. `index` is the element's
 /// positional index used by `t.0` / `t.1` access; we keep it
 /// explicit for diagnostics rather than relying on `Vec` order.
+/// The `shape` recursion mirrors `FieldShape` — a tuple element
+/// may itself be a struct (`(Point, i64)`) or another tuple
+/// (`((a, b), c)`), in which case the leaf scalars expand into
+/// their own per-element / per-field locals.
 #[derive(Debug, Clone)]
 struct TupleElementBinding {
     index: usize,
-    local: LocalId,
-    ty: Type,
+    shape: TupleElementShape,
+}
+
+#[derive(Debug, Clone)]
+enum TupleElementShape {
+    Scalar {
+        local: LocalId,
+        ty: Type,
+    },
+    Struct {
+        struct_id: StructId,
+        fields: Vec<FieldBinding>,
+    },
+    Tuple {
+        tuple_id: crate::ir::TupleId,
+        elements: Vec<TupleElementBinding>,
+    },
+}
+
+impl TupleElementBinding {
+    /// Convenience accessor for sites that have already verified the
+    /// element is scalar (mostly the boundary / print fast paths).
+    /// Returns `None` for compound shapes so the caller can detour.
+    fn scalar(&self) -> Option<(LocalId, Type)> {
+        match &self.shape {
+            TupleElementShape::Scalar { local, ty } => Some((*local, *ty)),
+            _ => None,
+        }
+    }
+}
+
+/// Flatten a tuple-element list into a sequential `(LocalId, Type)`
+/// list, recursing through struct / tuple sub-shapes so compound
+/// elements still expose their leaf scalars in declaration order.
+fn flatten_tuple_element_locals(
+    elements: &[TupleElementBinding],
+) -> Vec<(LocalId, Type)> {
+    let mut out = Vec::new();
+    for el in elements {
+        match &el.shape {
+            TupleElementShape::Scalar { local, ty } => {
+                out.push((*local, *ty));
+            }
+            TupleElementShape::Struct { fields, .. } => {
+                out.extend(FunctionLower::flatten_struct_locals(fields));
+            }
+            TupleElementShape::Tuple { elements: inner, .. } => {
+                out.extend(flatten_tuple_element_locals(inner));
+            }
+        }
+    }
+    out
 }
 
 /// Result of walking a field-access chain (`a`, `a.b`, `a.b.c`, ...).
@@ -1324,10 +1378,11 @@ impl<'a> FunctionLower<'a> {
                         self.interner.resolve(*fn_name).unwrap_or("?")
                     )
                 })?;
-                let mut values = Vec::with_capacity(elements.len());
-                for el in &elements {
+                let leaves = flatten_tuple_element_locals(&elements);
+                let mut values = Vec::with_capacity(leaves.len());
+                for (local, ty) in leaves {
                     let v = self
-                        .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                        .emit(InstKind::LoadLocal(local), Some(ty))
                         .expect("LoadLocal returns a value");
                     values.push(v);
                 }
@@ -1616,10 +1671,11 @@ impl<'a> FunctionLower<'a> {
                                 ));
                             }
                         };
-                        let mut values = Vec::with_capacity(elements.len());
-                        for el in &elements {
+                        let leaves = flatten_tuple_element_locals(&elements);
+                        let mut values = Vec::with_capacity(leaves.len());
+                        for (local, ty) in leaves {
                             let v = self
-                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .emit(InstKind::LoadLocal(local), Some(ty))
                                 .expect("LoadLocal returns a value");
                             values.push(v);
                         }
@@ -1637,10 +1693,11 @@ impl<'a> FunctionLower<'a> {
                             "tuple literal in explicit return produced no pending value"
                                 .to_string()
                         })?;
-                        let mut values = Vec::with_capacity(elements.len());
-                        for el in &elements {
+                        let leaves = flatten_tuple_element_locals(&elements);
+                        let mut values = Vec::with_capacity(leaves.len());
+                        for (local, ty) in leaves {
                             let v = self
-                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .emit(InstKind::LoadLocal(local), Some(ty))
                                 .expect("LoadLocal returns a value");
                             values.push(v);
                         }
@@ -1830,26 +1887,20 @@ impl<'a> FunctionLower<'a> {
         if let Expr::TupleLiteral(elems) = rhs.clone() {
             let mut bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
             // Pre-allocate locals so element-rhs evaluation order
-            // doesn't matter even if we add cross-element references
-            // later. We don't have an obvious authoritative type for
-            // each element until we evaluate it; use `value_scalar`
-            // as a best effort, falling back to U64 for ambiguous
-            // numeric literals.
+            // doesn't matter. For nested tuple / struct elements
+            // (`((a, b), c)`, `(Point, i64)`) we recurse into the
+            // literal to determine the type and intern any new
+            // tuple shapes along the way.
             for (i, elem_ref) in elems.iter().enumerate() {
                 let elem_ty = self
-                    .value_scalar(elem_ref)
+                    .infer_tuple_element_type(elem_ref)
                     .ok_or_else(|| {
                         format!(
-                            "compiler MVP could not infer scalar type for tuple element #{i}"
+                            "compiler MVP could not infer type for tuple element #{i}"
                         )
                     })?;
-                if matches!(elem_ty, Type::Struct(_)) {
-                    return Err(
-                        "compiler MVP cannot lower tuple of struct yet".to_string(),
-                    );
-                }
-                let local = self.module.function_mut(self.func_id).add_local(elem_ty);
-                bindings.push(TupleElementBinding { index: i, local, ty: elem_ty });
+                let shape = self.allocate_tuple_element_shape(elem_ty)?;
+                bindings.push(TupleElementBinding { index: i, shape });
             }
             self.bindings.insert(
                 name,
@@ -1857,18 +1908,13 @@ impl<'a> FunctionLower<'a> {
                     elements: bindings.clone(),
                 },
             );
-            // Evaluate and store each element's value.
+            // Evaluate and store each element's value. Scalar
+            // elements take the fast path; compound elements (struct
+            // / nested tuple) route through the same helpers used
+            // for enum-payload slots.
             for (i, elem_ref) in elems.iter().enumerate() {
-                let v = self
-                    .lower_expr(elem_ref)?
-                    .ok_or_else(|| format!("tuple element #{i} produced no value"))?;
-                self.emit(
-                    InstKind::StoreLocal {
-                        dst: bindings[i].local,
-                        src: v,
-                    },
-                    None,
-                );
+                let shape = bindings[i].shape.clone();
+                self.store_value_into_tuple_element_shape(elem_ref, i, &shape)?;
             }
             return Ok(None);
         }
@@ -1993,8 +2039,10 @@ impl<'a> FunctionLower<'a> {
                 let target_ret = self.module.function(target_id).return_type;
                 if let Type::Tuple(tuple_id) = target_ret {
                     let element_bindings = self.allocate_tuple_elements(tuple_id)?;
-                    let dests: Vec<LocalId> =
-                        element_bindings.iter().map(|e| e.local).collect();
+                    let dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
+                        .into_iter()
+                        .map(|(local, _)| local)
+                        .collect();
                     self.bindings.insert(
                         name,
                         Binding::Tuple { elements: element_bindings },
@@ -2121,10 +2169,11 @@ impl<'a> FunctionLower<'a> {
                 }
                 if let Some(Binding::Tuple { elements }) = self.bindings.get(&sym).cloned() {
                     // Tuple-typed identifier argument: expand into
-                    // one value per element, in declaration order.
-                    for el in &elements {
+                    // one value per leaf scalar, in declaration order
+                    // (recursing through compound elements).
+                    for (local, ty) in flatten_tuple_element_locals(&elements) {
                         let v = self
-                            .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                            .emit(InstKind::LoadLocal(local), Some(ty))
                             .expect("LoadLocal returns a value");
                         values.push(v);
                     }
@@ -2490,31 +2539,14 @@ impl<'a> FunctionLower<'a> {
                         Vec::with_capacity(elems.len());
                     for (i, e) in elems.iter().enumerate() {
                         let ty = self.value_scalar(e).ok_or_else(|| {
-                            format!("tuple element #{i} has no inferable scalar type")
+                            format!("tuple element #{i} has no inferable type")
                         })?;
-                        if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Unit) {
-                            return Err(format!(
-                                "compiler MVP only supports scalar tuple elements; \
-                                 element #{i} is {ty:?}"
-                            ));
-                        }
-                        let local = self
-                            .module
-                            .function_mut(self.func_id)
-                            .add_local(ty);
-                        elements.push(TupleElementBinding { index: i, local, ty });
+                        let shape = self.allocate_tuple_element_shape(ty)?;
+                        elements.push(TupleElementBinding { index: i, shape });
                     }
                     for (i, e) in elems.iter().enumerate() {
-                        let v = self.lower_expr(e)?.ok_or_else(|| {
-                            format!("tuple element #{i} produced no value")
-                        })?;
-                        self.emit(
-                            InstKind::StoreLocal {
-                                dst: elements[i].local,
-                                src: v,
-                            },
-                            None,
-                        );
+                        let shape = elements[i].shape.clone();
+                        self.store_value_into_tuple_element_shape(e, i, &shape)?;
                     }
                     self.emit_print_tuple(&elements, newline);
                     return Ok(None);
@@ -2679,17 +2711,29 @@ impl<'a> FunctionLower<'a> {
             if i > 0 {
                 self.emit_print_raw_text(", ".to_string(), false);
             }
-            let v = self
-                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
-                .expect("LoadLocal returns a value");
-            self.emit(
-                InstKind::Print {
-                    value: v,
-                    value_ty: el.ty,
-                    newline: false,
-                },
-                None,
-            );
+            match &el.shape {
+                TupleElementShape::Scalar { local, ty } => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(
+                        InstKind::Print {
+                            value: v,
+                            value_ty: *ty,
+                            newline: false,
+                        },
+                        None,
+                    );
+                }
+                TupleElementShape::Struct { struct_id, fields } => {
+                    let fields = fields.clone();
+                    self.emit_print_struct(*struct_id, &fields, false);
+                }
+                TupleElementShape::Tuple { elements: inner, .. } => {
+                    let inner = inner.clone();
+                    self.emit_print_tuple(&inner, false);
+                }
+            }
         }
         // `(x,)` for the 1-tuple case.
         if elements.len() == 1 {
@@ -3307,21 +3351,9 @@ impl<'a> FunctionLower<'a> {
                 PayloadSlot::Struct { struct_id, fields }
             }
             Type::Tuple(tuple_id) => {
-                let element_types = self
-                    .module
-                    .tuple_defs
-                    .get(tuple_id.0 as usize)
-                    .cloned()
+                let elements = self
+                    .allocate_tuple_elements(tuple_id)
                     .unwrap_or_default();
-                let mut elements: Vec<TupleElementBinding> =
-                    Vec::with_capacity(element_types.len());
-                for (i, et) in element_types.into_iter().enumerate() {
-                    let local = self
-                        .module
-                        .function_mut(self.func_id)
-                        .add_local(et);
-                    elements.push(TupleElementBinding { index: i, local, ty: et });
-                }
                 PayloadSlot::Tuple { tuple_id, elements }
             }
             _ => {
@@ -3443,9 +3475,9 @@ impl<'a> FunctionLower<'a> {
                         }
                     }
                     PayloadSlot::Tuple { elements, .. } => {
-                        for el in elements {
+                        for (local, ty) in flatten_tuple_element_locals(elements) {
                             let v = self
-                                .emit(InstKind::LoadLocal(el.local), Some(el.ty))
+                                .emit(InstKind::LoadLocal(local), Some(ty))
                                 .expect("LoadLocal returns a value");
                             out.push(v);
                         }
@@ -3477,8 +3509,8 @@ impl<'a> FunctionLower<'a> {
                         }
                     }
                     PayloadSlot::Tuple { elements, .. } => {
-                        for el in elements {
-                            out.push(el.local);
+                        for (local, _) in flatten_tuple_element_locals(elements) {
+                            out.push(local);
                         }
                     }
                 }
@@ -3860,16 +3892,69 @@ impl<'a> FunctionLower<'a> {
     /// Element-wise copy between two tuple slot bindings. The shape
     /// match is checked by the caller (we always pair slots from the
     /// same enum-storage tree, so element types and counts agree).
+    /// Phase Q2 recurses through compound element shapes so a
+    /// `((a, b), c)` value duplicates all leaf scalars.
     fn copy_tuple_elements(
         &mut self,
         src: &[TupleElementBinding],
         dst: &[TupleElementBinding],
     ) {
         for (s, d) in src.iter().zip(dst.iter()) {
-            let v = self
-                .emit(InstKind::LoadLocal(s.local), Some(s.ty))
-                .expect("LoadLocal returns a value");
-            self.emit(InstKind::StoreLocal { dst: d.local, src: v }, None);
+            match (&s.shape, &d.shape) {
+                (
+                    TupleElementShape::Scalar { local: sl, ty },
+                    TupleElementShape::Scalar { local: dl, .. },
+                ) => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*sl), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    self.emit(InstKind::StoreLocal { dst: *dl, src: v }, None);
+                }
+                (
+                    TupleElementShape::Struct { fields: sf, .. },
+                    TupleElementShape::Struct { fields: df, .. },
+                ) => {
+                    let sf = sf.clone();
+                    let df = df.clone();
+                    self.copy_struct_fields(&sf, &df);
+                }
+                (
+                    TupleElementShape::Tuple { elements: se, .. },
+                    TupleElementShape::Tuple { elements: de, .. },
+                ) => {
+                    let se = se.clone();
+                    let de = de.clone();
+                    self.copy_tuple_elements(&se, &de);
+                }
+                _ => unreachable!("tuple element shape mismatch"),
+            }
+        }
+    }
+
+    /// Lower an expression whose result is the value for a single
+    /// tuple element, dispatching on the target's `TupleElementShape`.
+    /// Scalar elements take a direct lower + StoreLocal; struct /
+    /// nested-tuple elements route through the matching slot helper.
+    fn store_value_into_tuple_element_shape(
+        &mut self,
+        expr_ref: &ExprRef,
+        index: usize,
+        shape: &TupleElementShape,
+    ) -> Result<(), String> {
+        match shape {
+            TupleElementShape::Scalar { local, .. } => {
+                let v = self.lower_expr(expr_ref)?.ok_or_else(|| {
+                    format!("tuple element #{index} produced no value")
+                })?;
+                self.emit(InstKind::StoreLocal { dst: *local, src: v }, None);
+                Ok(())
+            }
+            TupleElementShape::Struct { struct_id, fields } => {
+                self.lower_into_struct_slot(expr_ref, *struct_id, fields)
+            }
+            TupleElementShape::Tuple { tuple_id, elements } => {
+                self.lower_into_tuple_slot(expr_ref, *tuple_id, elements)
+            }
         }
     }
 
@@ -3899,18 +3984,8 @@ impl<'a> FunctionLower<'a> {
                     ));
                 }
                 for (i, e) in elems.iter().enumerate() {
-                    let v = self
-                        .lower_expr(e)?
-                        .ok_or_else(|| {
-                            format!("tuple element #{i} produced no value")
-                        })?;
-                    self.emit(
-                        InstKind::StoreLocal {
-                            dst: target_elements[i].local,
-                            src: v,
-                        },
-                        None,
-                    );
+                    let shape = target_elements[i].shape.clone();
+                    self.store_value_into_tuple_element_shape(e, i, &shape)?;
                 }
                 let _ = target_tuple_id;
                 Ok(())
@@ -3931,14 +4006,6 @@ impl<'a> FunctionLower<'a> {
                         target_elements.len(),
                         src_elements.len()
                     ));
-                }
-                for (s, d) in src_elements.iter().zip(target_elements.iter()) {
-                    if s.ty != d.ty {
-                        return Err(format!(
-                            "tuple payload element type mismatch: expected {:?}, got {:?}",
-                            d.ty, s.ty
-                        ));
-                    }
                 }
                 self.copy_tuple_elements(&src_elements, target_elements);
                 Ok(())
@@ -4337,16 +4404,8 @@ impl<'a> FunctionLower<'a> {
                         ));
                     }
                     for (i, e) in inner_elems.iter().enumerate() {
-                        let v = self.lower_expr(e)?.ok_or_else(|| {
-                            format!("tuple element #{i} produced no value")
-                        })?;
-                        self.emit(
-                            InstKind::StoreLocal {
-                                dst: inner_elements[i].local,
-                                src: v,
-                            },
-                            None,
-                        );
+                        let shape = inner_elements[i].shape.clone();
+                        self.store_value_into_tuple_element_shape(e, i, &shape)?;
                     }
                 }
             }
@@ -4397,8 +4456,10 @@ impl<'a> FunctionLower<'a> {
 
     /// Tuple counterpart to `allocate_struct_fields`. Allocates one
     /// local per tuple element and returns the matching binding list
-    /// in declaration order. Tuple elements are scalars in this MVP
-    /// (no nested tuples / struct elements at the boundary).
+    /// in declaration order. Phase Q2 allows nested compound elements
+    /// (tuple-of-tuple, tuple-of-struct) by recursing through the
+    /// `TupleElementShape` tree the same way `allocate_struct_fields`
+    /// does for `FieldShape`.
     fn allocate_tuple_elements(
         &mut self,
         tuple_id: crate::ir::TupleId,
@@ -4411,14 +4472,81 @@ impl<'a> FunctionLower<'a> {
             .ok_or_else(|| format!("internal error: missing tuple def for {tuple_id:?}"))?;
         let mut out: Vec<TupleElementBinding> = Vec::with_capacity(elements.len());
         for (i, ty) in elements.iter().enumerate() {
-            let local = self.module.function_mut(self.func_id).add_local(*ty);
-            out.push(TupleElementBinding {
-                index: i,
-                local,
-                ty: *ty,
-            });
+            let shape = self.allocate_tuple_element_shape(*ty)?;
+            out.push(TupleElementBinding { index: i, shape });
         }
         Ok(out)
+    }
+
+    /// Determine the static `Type` of a tuple element expression,
+    /// interning any new tuple shapes encountered. Falls back to
+    /// `value_scalar` for the scalar / identifier paths and recurses
+    /// for `TupleLiteral` / `StructLiteral` so a nested literal like
+    /// `((1, 2), 3)` resolves all the way down. Returns `None` if
+    /// the element shape can't be resolved (forces the caller to
+    /// emit a clear error).
+    fn infer_tuple_element_type(&mut self, expr_ref: &ExprRef) -> Option<Type> {
+        let expr = self.program.expression.get(expr_ref)?;
+        match expr {
+            Expr::TupleLiteral(elems) => {
+                let mut element_tys: Vec<Type> = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    element_tys.push(self.infer_tuple_element_type(e)?);
+                }
+                let id = intern_tuple(self.module, element_tys);
+                Some(Type::Tuple(id))
+            }
+            Expr::StructLiteral(name, _) => {
+                let id = self.resolve_struct_instance(name, None).ok()?;
+                Some(Type::Struct(id))
+            }
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Scalar { ty, .. }) => Some(*ty),
+                Some(Binding::Struct { struct_id, .. }) => Some(Type::Struct(*struct_id)),
+                Some(Binding::Tuple { elements }) => {
+                    let element_tys: Vec<Type> = elements
+                        .iter()
+                        .map(|e| match &e.shape {
+                            TupleElementShape::Scalar { ty, .. } => *ty,
+                            TupleElementShape::Struct { struct_id, .. } => {
+                                Type::Struct(*struct_id)
+                            }
+                            TupleElementShape::Tuple { tuple_id, .. } => {
+                                Type::Tuple(*tuple_id)
+                            }
+                        })
+                        .collect();
+                    let id = intern_tuple(self.module, element_tys);
+                    Some(Type::Tuple(id))
+                }
+                Some(Binding::Enum(_)) => None,
+                None => self.const_values.get(&sym).map(|c| c.ty()),
+            },
+            _ => self.value_scalar(expr_ref),
+        }
+    }
+
+    fn allocate_tuple_element_shape(
+        &mut self,
+        ty: Type,
+    ) -> Result<TupleElementShape, String> {
+        match ty {
+            Type::Struct(struct_id) => {
+                let fields = self.allocate_struct_fields(struct_id);
+                Ok(TupleElementShape::Struct { struct_id, fields })
+            }
+            Type::Tuple(inner_id) => {
+                let elements = self.allocate_tuple_elements(inner_id)?;
+                Ok(TupleElementShape::Tuple {
+                    tuple_id: inner_id,
+                    elements,
+                })
+            }
+            scalar => {
+                let local = self.module.function_mut(self.func_id).add_local(scalar);
+                Ok(TupleElementShape::Scalar { local, ty: scalar })
+            }
+        }
     }
 
     /// Flatten a `FieldBinding` tree into a sequential list of
@@ -4434,9 +4562,7 @@ impl<'a> FunctionLower<'a> {
                     out.extend(Self::flatten_struct_locals(nested));
                 }
                 FieldShape::Tuple { elements, .. } => {
-                    for el in elements {
-                        out.push((el.local, el.ty));
-                    }
+                    out.extend(flatten_tuple_element_locals(elements));
                 }
             }
         }
@@ -4446,6 +4572,50 @@ impl<'a> FunctionLower<'a> {
     /// Read `t.N` where `t` resolves to a tuple binding. Like field
     /// access on a struct, the obj must be a bare identifier so the
     /// lookup is purely static.
+    /// Walk a (possibly nested) tuple-access chain rooted at an
+    /// identifier or struct field-access, returning the matched
+    /// tuple element list at the deepest step. Used by
+    /// `lower_tuple_access`'s `Expr::TupleAccess` arm to resolve
+    /// `t.0.1` style access where the inner step also lands on a
+    /// tuple shape.
+    fn resolve_tuple_chain_elements(
+        &self,
+        obj: &ExprRef,
+    ) -> Result<Vec<TupleElementBinding>, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "tuple-access object missing".to_string())?;
+        match obj_expr {
+            Expr::Identifier(sym) => match self.bindings.get(&sym) {
+                Some(Binding::Tuple { elements }) => Ok(elements.clone()),
+                _ => Err(format!(
+                    "`{}` is not a tuple value",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
+            },
+            Expr::FieldAccess(_, _) => match self.resolve_field_chain(obj)? {
+                FieldChainResult::Tuple { elements } => Ok(elements),
+                _ => Err("tuple chain expects a tuple-typed step".to_string()),
+            },
+            Expr::TupleAccess(inner, idx) => {
+                let inner_elements = self.resolve_tuple_chain_elements(&inner)?;
+                let elem = inner_elements
+                    .iter()
+                    .find(|e| e.index == idx)
+                    .ok_or_else(|| format!("tuple has no element at index {idx}"))?;
+                match &elem.shape {
+                    TupleElementShape::Tuple { elements, .. } => Ok(elements.clone()),
+                    _ => Err("inner tuple element is not a tuple".to_string()),
+                }
+            }
+            _ => Err(
+                "compiler MVP only supports tuple chains on identifiers, struct fields, or nested tuple elements".to_string(),
+            ),
+        }
+    }
+
     fn lower_tuple_access(
         &mut self,
         obj: &ExprRef,
@@ -4456,9 +4626,11 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(obj)
             .ok_or_else(|| "tuple-access object missing".to_string())?;
-        // Two shapes are accepted: (1) a bare identifier bound to a
-        // tuple; (2) a field-access chain whose final step lands on
-        // a tuple-typed struct field (`outer.inner.0` style).
+        // Three shapes are accepted: (1) a bare identifier bound to
+        // a tuple; (2) a field-access chain whose final step lands
+        // on a tuple-typed struct field (`outer.inner.0` style);
+        // (3) another tuple access whose result is itself a tuple
+        // (`t.0.1` for nested tuples).
         let elements = match obj_expr {
             Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
                 Some(Binding::Tuple { elements }) => elements,
@@ -4487,16 +4659,56 @@ impl<'a> FunctionLower<'a> {
                     return Err("tuple access on a scalar field".to_string());
                 }
             },
+            Expr::TupleAccess(inner_obj, inner_index) => {
+                // Recurse to resolve the inner tuple-access result;
+                // it must itself be a tuple sub-binding for indexing
+                // to make sense. We pre-walk via the same elements
+                // chain as lower_tuple_access does for identifiers.
+                let inner_elements = self.resolve_tuple_chain_elements(&inner_obj)?;
+                match inner_elements
+                    .iter()
+                    .find(|e| e.index == inner_index)
+                    .map(|e| e.shape.clone())
+                {
+                    Some(TupleElementShape::Tuple { elements: inner, .. }) => inner,
+                    Some(TupleElementShape::Struct { .. }) => {
+                        return Err(
+                            "tuple access on a struct element — use a field name instead"
+                                .to_string(),
+                        );
+                    }
+                    Some(TupleElementShape::Scalar { .. }) => {
+                        return Err("tuple access on a scalar element".to_string());
+                    }
+                    None => {
+                        return Err(format!("tuple has no element at index {inner_index}"));
+                    }
+                }
+            }
             _ => {
                 return Err(
-                    "compiler MVP only supports tuple access on a bare identifier or a struct field-access chain".to_string(),
+                    "compiler MVP only supports tuple access on a bare identifier, a struct field-access chain, or a nested tuple element".to_string(),
                 );
             }
         };
         let elem = elements.iter().find(|e| e.index == index).ok_or_else(|| {
             format!("tuple has no element at index {index}")
         })?;
-        Ok(self.emit(InstKind::LoadLocal(elem.local), Some(elem.ty)))
+        match &elem.shape {
+            TupleElementShape::Scalar { local, ty } => {
+                Ok(self.emit(InstKind::LoadLocal(*local), Some(*ty)))
+            }
+            TupleElementShape::Struct { fields, .. } => {
+                self.pending_struct_value = Some(fields.clone());
+                self.pending_tuple_value = None;
+                Ok(None)
+            }
+            TupleElementShape::Tuple { elements: inner, .. } => {
+                self.pending_tuple_value = Some(inner.clone());
+                self.pending_struct_value = None;
+                Ok(None)
+            }
+        }
     }
 
     /// Lower a struct literal in expression position. The result
@@ -4544,26 +4756,13 @@ impl<'a> FunctionLower<'a> {
         for (i, e) in elems.iter().enumerate() {
             let ty = self
                 .value_scalar(e)
-                .ok_or_else(|| format!("tuple element #{i} has no inferable scalar type"))?;
-            if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Unit) {
-                return Err(format!(
-                    "compiler MVP only supports scalar tuple elements; element #{i} is {ty:?}"
-                ));
-            }
-            let local = self.module.function_mut(self.func_id).add_local(ty);
-            element_bindings.push(TupleElementBinding { index: i, local, ty });
+                .ok_or_else(|| format!("tuple element #{i} has no inferable type"))?;
+            let shape = self.allocate_tuple_element_shape(ty)?;
+            element_bindings.push(TupleElementBinding { index: i, shape });
         }
         for (i, e) in elems.iter().enumerate() {
-            let v = self
-                .lower_expr(e)?
-                .ok_or_else(|| format!("tuple element #{i} produced no value"))?;
-            self.emit(
-                InstKind::StoreLocal {
-                    dst: element_bindings[i].local,
-                    src: v,
-                },
-                None,
-            );
+            let shape = element_bindings[i].shape.clone();
+            self.store_value_into_tuple_element_shape(e, i, &shape)?;
         }
         self.pending_tuple_value = Some(element_bindings);
         Ok(None)
@@ -4654,6 +4853,28 @@ impl<'a> FunctionLower<'a> {
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
             },
+            Expr::TupleAccess(inner, idx) => {
+                // Phase Q2: chain may pass through a tuple element
+                // before stepping back into a struct sub-binding
+                // (e.g. `t.0.x` where `t.0` is a Point).
+                let inner_elements = self.resolve_tuple_chain_elements(&inner)?;
+                let elem = inner_elements
+                    .iter()
+                    .find(|e| e.index == idx)
+                    .ok_or_else(|| format!("tuple has no element at index {idx}"))?;
+                match &elem.shape {
+                    TupleElementShape::Scalar { local, ty } => Ok(FieldChainResult::Scalar {
+                        local: *local,
+                        ty: *ty,
+                    }),
+                    TupleElementShape::Struct { fields, .. } => Ok(FieldChainResult::Struct {
+                        fields: fields.clone(),
+                    }),
+                    TupleElementShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
+                        elements: elements.clone(),
+                    }),
+                }
+            }
             Expr::FieldAccess(inner, field_sym) => {
                 let inner_ref = self.resolve_field_chain(&inner)?;
                 let fields = match inner_ref {
@@ -4728,10 +4949,13 @@ impl<'a> FunctionLower<'a> {
         elements
             .iter()
             .find(|e| e.index == index)
-            .map(|e| e.local)
+            .and_then(|e| match &e.shape {
+                TupleElementShape::Scalar { local, .. } => Some(*local),
+                _ => None,
+            })
             .ok_or_else(|| {
                 format!(
-                    "tuple `{}` has no element at index {}",
+                    "tuple `{}` has no scalar element at index {} (compound elements cannot be reassigned as a whole — write to inner leaves instead)",
                     self.interner.resolve(obj_sym).unwrap_or("?"),
                     index
                 )
@@ -5343,14 +5567,35 @@ impl<'a> FunctionLower<'a> {
                         let mut dst_elements: Vec<TupleElementBinding> =
                             Vec::with_capacity(src_elements.len());
                         for el in &src_elements {
-                            let local = self
-                                .module
-                                .function_mut(self.func_id)
-                                .add_local(el.ty);
+                            let shape = match &el.shape {
+                                TupleElementShape::Scalar { ty, .. } => {
+                                    let local = self
+                                        .module
+                                        .function_mut(self.func_id)
+                                        .add_local(*ty);
+                                    TupleElementShape::Scalar { local, ty: *ty }
+                                }
+                                TupleElementShape::Struct { struct_id, .. } => {
+                                    let fields =
+                                        self.allocate_struct_fields(*struct_id);
+                                    TupleElementShape::Struct {
+                                        struct_id: *struct_id,
+                                        fields,
+                                    }
+                                }
+                                TupleElementShape::Tuple { tuple_id, .. } => {
+                                    let elements = self
+                                        .allocate_tuple_elements(*tuple_id)
+                                        .unwrap_or_default();
+                                    TupleElementShape::Tuple {
+                                        tuple_id: *tuple_id,
+                                        elements,
+                                    }
+                                }
+                            };
                             dst_elements.push(TupleElementBinding {
                                 index: el.index,
-                                local,
-                                ty: el.ty,
+                                shape,
                             });
                         }
                         self.copy_tuple_elements(&src_elements, &dst_elements);
@@ -5861,24 +6106,41 @@ impl<'a> FunctionLower<'a> {
             Expr::TupleAccess(tuple, index) => {
                 // Same idea for tuple element access: pull the type
                 // out of the tuple binding without needing to lower
-                // the whole expression. Phase Q allows the tuple to
-                // also be a struct field (`outer.inner.0`) — in that
-                // case resolve through the field chain.
-                let obj_expr = self.program.expression.get(&tuple)?;
-                let elements = match obj_expr {
-                    Expr::Identifier(s) => match self.bindings.get(&s)? {
-                        Binding::Tuple { elements } => elements.clone(),
-                        _ => return None,
-                    },
-                    Expr::FieldAccess(_, _) => {
-                        match self.resolve_field_chain(&tuple).ok()? {
-                            FieldChainResult::Tuple { elements } => elements,
-                            _ => return None,
+                // the whole expression. Phase Q1/Q2 also accepts
+                // tuples reached via a struct field (`outer.inner.0`)
+                // or nested tuple access (`t.0.1`).
+                let elements = self.resolve_tuple_chain_elements(&tuple).ok()?;
+                elements.iter().find(|e| e.index == index).and_then(|e| {
+                    match &e.shape {
+                        TupleElementShape::Scalar { ty, .. } => Some(*ty),
+                        TupleElementShape::Struct { struct_id, .. } => {
+                            Some(Type::Struct(*struct_id))
+                        }
+                        TupleElementShape::Tuple { tuple_id, .. } => {
+                            Some(Type::Tuple(*tuple_id))
                         }
                     }
-                    _ => return None,
-                };
-                elements.iter().find(|e| e.index == index).map(|e| e.ty)
+                })
+            }
+            Expr::TupleLiteral(elems) => {
+                // Recurse to determine each element's type, then
+                // intern the resulting tuple shape. Used when a val
+                // has no annotation but the rhs is a tuple literal,
+                // including nested literals like `((1, 2), 3)`.
+                // Cast to *mut Module via local mutability is not
+                // possible here (this method is &self); fall back to
+                // looking up the existing tuple shape if it's
+                // already interned, otherwise return None and let
+                // the caller force an annotation.
+                let mut element_tys: Vec<Type> = Vec::with_capacity(elems.len());
+                for e in &elems {
+                    element_tys.push(self.value_scalar(e)?);
+                }
+                self.module
+                    .tuple_defs
+                    .iter()
+                    .position(|t| *t == element_tys)
+                    .map(|i| Type::Tuple(crate::ir::TupleId(i as u32)))
             }
             Expr::Binary(op, lhs, _rhs) => match op {
                 Operator::EQ

@@ -674,6 +674,83 @@ fn trait_bound_generic_method_call() {
 }
 
 #[test]
+fn val_rhs_struct_returning_method() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase W: `val q = p.swap()` for a method returning a struct.
+    // The val rhs path detects MethodCall + compound return,
+    // resolves the target via `resolve_method_target` (which
+    // also covers generic methods), and emits CallStruct into a
+    // freshly-allocated Binding::Struct.
+    let src = r#"
+        struct Pair<T> { first: T, second: T }
+        impl<T> Pair<T> {
+            fn swap(self: Self) -> Pair<T> {
+                Pair { first: self.second, second: self.first }
+            }
+        }
+        fn main() -> u64 {
+            val p: Pair<i64> = Pair { first: 3i64, second: 7i64 }
+            val q: Pair<i64> = p.swap()
+            (q.first + q.second) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_struct_rhs"), 10);
+}
+
+#[test]
+fn val_rhs_enum_returning_method() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        struct Holder { value: i64 }
+        impl Holder {
+            fn maybe(self: Self) -> Option<i64> {
+                if self.value > 0i64 {
+                    Option::Some(self.value)
+                } else {
+                    Option::None
+                }
+            }
+        }
+        fn main() -> u64 {
+            val h = Holder { value: 42i64 }
+            val o: Option<i64> = h.maybe()
+            val r: i64 = match o {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_enum_rhs"), 42);
+}
+
+#[test]
+fn val_rhs_tuple_returning_method() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        struct Counter { n: i64 }
+        impl Counter {
+            fn pair(self: Self) -> (i64, i64) {
+                (self.n, self.n * 2i64)
+            }
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 7i64 }
+            val t: (i64, i64) = c.pair()
+            (t.0 + t.1) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "method_tuple_rhs"), 21);
+}
+
+#[test]
 fn print_struct_returning_call_directly() {
     if skip_e2e() {
         return;

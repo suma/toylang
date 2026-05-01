@@ -2394,6 +2394,110 @@ impl<'a> FunctionLower<'a> {
             self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
             return Ok(None);
         }
+        // Compound-returning method call RHS: `val q = p.swap()`.
+        // Resolves the receiver / method target the same way
+        // `lower_method_call` does, then routes the multi-result
+        // through `CallStruct` / `CallTuple` / `CallEnum` into a
+        // freshly-allocated binding. Mirrors the per-target
+        // branches below for plain function calls.
+        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
+            if let Some((target_id, recv_binding)) =
+                self.resolve_method_target(&recv, method_sym)?
+            {
+                let target_ret = self.module.function(target_id).return_type;
+                if matches!(
+                    target_ret,
+                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
+                ) {
+                    // Build the call args: receiver leaf scalars
+                    // first, then method arguments (each lowered
+                    // individually so identifier-arg expansion for
+                    // struct / tuple / enum stays intact).
+                    let mut all_args: Vec<ValueId> = Vec::new();
+                    match &recv_binding {
+                        Binding::Struct { fields, .. } => {
+                            for (local, ty) in Self::flatten_struct_locals(fields) {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(local), Some(ty))
+                                    .expect("LoadLocal returns");
+                                all_args.push(v);
+                            }
+                        }
+                        Binding::Enum(storage) => {
+                            let storage = storage.clone();
+                            let vs = self.load_enum_locals(&storage);
+                            all_args.extend(vs);
+                        }
+                        _ => unreachable!(
+                            "resolve_method_target only returns struct/enum receivers"
+                        ),
+                    }
+                    for a in &method_args {
+                        let v = self
+                            .lower_expr(a)?
+                            .ok_or_else(|| "method argument produced no value".to_string())?;
+                        all_args.push(v);
+                    }
+                    match target_ret {
+                        Type::Struct(struct_id) => {
+                            let fields = self.allocate_struct_fields(struct_id);
+                            let dests: Vec<LocalId> =
+                                Self::flatten_struct_locals(&fields)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.bindings.insert(
+                                name,
+                                Binding::Struct { struct_id, fields },
+                            );
+                            self.emit(
+                                InstKind::CallStruct {
+                                    target: target_id,
+                                    args: all_args,
+                                    dests,
+                                },
+                                None,
+                            );
+                        }
+                        Type::Tuple(tuple_id) => {
+                            let elements = self.allocate_tuple_elements(tuple_id)?;
+                            let dests: Vec<LocalId> =
+                                flatten_tuple_element_locals(&elements)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.bindings.insert(
+                                name,
+                                Binding::Tuple { elements },
+                            );
+                            self.emit(
+                                InstKind::CallTuple {
+                                    target: target_id,
+                                    args: all_args,
+                                    dests,
+                                },
+                                None,
+                            );
+                        }
+                        Type::Enum(enum_id) => {
+                            let storage = self.allocate_enum_storage(enum_id);
+                            let dests = Self::flatten_enum_dests(&storage);
+                            self.bindings.insert(name, Binding::Enum(storage));
+                            self.emit(
+                                InstKind::CallEnum {
+                                    target: target_id,
+                                    args: all_args,
+                                    dests,
+                                },
+                                None,
+                            );
+                        }
+                        _ => unreachable!("guard ensured compound return"),
+                    }
+                    return Ok(None);
+                }
+            }
+        }
         // Tuple-returning call RHS: `val pair = make_pair()`. Same
         // shape as struct-returning calls, just routed through
         // CallTuple. Detect early so the parser-desugared
@@ -6971,6 +7075,59 @@ impl<'a> FunctionLower<'a> {
             }),
             _ => None,
         }
+    }
+
+    /// Resolve `obj.method` to a `(FuncId, receiver Binding)` pair
+    /// without lowering anything. Used by paths (val rhs, print
+    /// argument, future expression-position consumers) that need to
+    /// know the target's signature before deciding what call shape
+    /// to emit. Returns `Ok(None)` when the receiver isn't a
+    /// struct/enum binding (so callers can fall back to the regular
+    /// `lower_method_call` error path).
+    fn resolve_method_target(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+    ) -> Result<Option<(FuncId, Binding)>, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "method-call receiver missing".to_string())?;
+        let recv_sym = match obj_expr {
+            Expr::Identifier(s) => s,
+            _ => return Ok(None),
+        };
+        let binding = match self.bindings.get(&recv_sym).cloned() {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let target_sym = match &binding {
+            Binding::Struct { struct_id, .. } => {
+                self.module.struct_def(*struct_id).base_name
+            }
+            Binding::Enum(storage) => {
+                self.module.enum_def(storage.enum_id).base_name
+            }
+            _ => return Ok(None),
+        };
+        if let Some(id) = self.method_func_ids.get(&(target_sym, method)).copied() {
+            return Ok(Some((id, binding)));
+        }
+        if let Some(template) = self.generic_methods.get(&(target_sym, method)).cloned() {
+            let recv_struct_id = match &binding {
+                Binding::Struct { struct_id, .. } => *struct_id,
+                _ => return Ok(None),
+            };
+            let id = self.instantiate_generic_method(
+                target_sym,
+                method,
+                &template,
+                recv_struct_id,
+            )?;
+            return Ok(Some((id, binding)));
+        }
+        Ok(None)
     }
 
     fn lower_method_call(

@@ -2179,6 +2179,53 @@ pub(crate) fn check_expr(
                         continue;
                     }
                 }
+                // Inline tuple literal `foo((1i64, 2u64))` — accepted
+                // when the callee's parameter is a scalar tuple. Each
+                // element is type-checked independently and the
+                // resulting `ParamTy::Tuple(shape)` must match the
+                // callee's declared shape exactly.
+                if let Expr::TupleLiteral(elements) = arg_expr {
+                    let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                        Some(ParamTy::Tuple(ts)) => ts,
+                        _ => {
+                            note(reject_reason, || {
+                                "inline tuple literal argument needs a tuple parameter".to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    if elements.len() != want.len() {
+                        note(reject_reason, || {
+                            "inline tuple literal argument arity does not match callee parameter".to_string()
+                        });
+                        return None;
+                    }
+                    let mut shape: Vec<ScalarTy> = Vec::with_capacity(elements.len());
+                    for e in &elements {
+                        let t = check_expr(
+                            program,
+                            e,
+                            locals,
+                            struct_locals,
+                            tuple_locals,
+                            substitutions,
+                            struct_layouts,
+                            callees,
+                            ptr_read_hints,
+                            reject_reason,
+                        )?;
+                        shape.push(t);
+                    }
+                    if shape != want {
+                        note(reject_reason, || {
+                            "inline tuple literal argument element types do not match callee parameter".to_string()
+                        });
+                        return None;
+                    }
+                    callee_param_tys.push(ParamTy::Tuple(shape));
+                    scalar_arg_tys.push(ScalarTy::Unit); // placeholder
+                    continue;
+                }
                 // Fall back to scalar typing.
                 let t = check_expr(
                     program,

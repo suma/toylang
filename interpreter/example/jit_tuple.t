@@ -4,8 +4,9 @@
 # expand into one cranelift return per element. Argument tuples must be
 # passed as named locals so the JIT can find the per-element Variables.
 #
-# Out of scope: nested tuples (`((a, b), c)` shapes), tuple literals as
-# function arguments, tuples whose elements are non-scalar.
+# Out of scope: nested tuples (`((a, b), c)` shapes), tuples whose
+# elements are non-scalar. Inline tuple literals as function arguments
+# are now supported — see `jit_tuple_inline_arg.t`.
 #
 # Expected: 20 + 10 + 3 = 33 → exit 33.
 fn swap(p: (u64, u64)) -> (u64, u64) {

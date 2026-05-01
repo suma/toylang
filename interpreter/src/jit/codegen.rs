@@ -1636,28 +1636,41 @@ impl<'a, 'b> State<'a, 'b> {
                     }
                 }
                 ParamTy::Tuple(_) => {
-                    // Tuple arguments must be a local identifier so we
-                    // can pull out the per-element SSA Variables.
+                    // Tuple arguments may be a local identifier (pull
+                    // per-element SSA Variables out of `tuple_locals`)
+                    // or an inline `Expr::TupleLiteral` (lower each
+                    // element on the spot). Eligibility has already
+                    // verified shape compatibility in both cases.
                     let arg_expr = self
                         .program
                         .expression
                         .get(a)
                         .ok_or_else(|| "missing tuple arg expr".to_string())?;
-                    let arg_name = match arg_expr {
-                        Expr::Identifier(s) => s,
+                    match arg_expr {
+                        Expr::Identifier(s) => {
+                            let element_vars = self
+                                .tuple_locals
+                                .get(&s)
+                                .ok_or_else(|| "tuple argument unknown".to_string())?
+                                .clone();
+                            for var in &element_vars {
+                                arg_values.push(self.builder.use_var(*var));
+                            }
+                        }
+                        Expr::TupleLiteral(elements) => {
+                            for e in &elements {
+                                let v = self.gen_expr(e)?.ok_or_else(|| {
+                                    "tuple literal element produced no value".to_string()
+                                })?;
+                                arg_values.push(v);
+                            }
+                        }
                         _ => {
                             return Err(
-                                "tuple argument must be a local identifier".into(),
+                                "tuple argument must be a local identifier or inline tuple literal"
+                                    .into(),
                             )
                         }
-                    };
-                    let element_vars = self
-                        .tuple_locals
-                        .get(&arg_name)
-                        .ok_or_else(|| "tuple argument unknown".to_string())?
-                        .clone();
-                    for var in &element_vars {
-                        arg_values.push(self.builder.use_var(*var));
                     }
                 }
             }

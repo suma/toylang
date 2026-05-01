@@ -319,6 +319,22 @@ fn tuple_example_compiles_callees() {
 }
 
 #[test]
+fn tuple_inline_arg_example_matches_between_modes() {
+    assert_match("example/jit_tuple_inline_arg.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn tuple_inline_arg_example_compiles_callees() {
+    // Inline tuple literals (`f((1i64, 2i64))`) flow through the
+    // JIT call argument path the same way named tuple locals do.
+    let r = run("example/jit_tuple_inline_arg.t", true, true);
+    assert_eq!(r.code, 73);
+    assert!(r.stderr.contains("add_pair"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("add_two_pairs"), "stderr: {}", r.stderr);
+}
+
+#[test]
 fn struct_example_returns_20() {
     let r = run("example/jit_struct.t", false, false);
     assert_eq!(r.code, 20);

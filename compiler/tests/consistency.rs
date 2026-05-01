@@ -159,6 +159,79 @@ fn assert_consistent(source: &str, stem: &str) {
     );
 }
 
+/// Spawn the interpreter binary on the source and capture stdout.
+/// Used by `assert_stdout_consistent` so the same `cc`-built
+/// interpreter binary serves both the JIT and the plain-interpreter
+/// reference outputs (no in-process redirection needed).
+fn interpreter_stdout(source: &str, stem: &str) -> String {
+    let bin = interpreter_bin();
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let out = Command::new(&bin)
+        .arg(&src_path)
+        .output()
+        .expect("spawn interpreter");
+    let _ = std::fs::remove_file(&src_path);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// JIT counterpart to `interpreter_stdout` — same binary, with the
+/// `INTERPRETER_JIT=1` env var that flips on the cranelift JIT path.
+fn jit_stdout(source: &str, stem: &str) -> String {
+    let bin = interpreter_bin();
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let out = Command::new(&bin)
+        .arg(&src_path)
+        .env("INTERPRETER_JIT", "1")
+        .output()
+        .expect("spawn interpreter+jit");
+    let _ = std::fs::remove_file(&src_path);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Compile to a binary, run it, and capture stdout. Mirrors
+/// `compiler_exit_code` but keeps the bytes instead of the exit code.
+fn compiler_stdout(source: &str, stem: &str) -> String {
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, source).expect("write source");
+    let exe_path = unique_path(stem);
+    let options = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_path.clone()),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+    };
+    compile_file(&options).expect("compile_file");
+    let out = Command::new(&exe_path).output().expect("spawn binary");
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Same shape as `assert_consistent`, but compares stdout instead of
+/// exit codes. Catches divergences in `print` / `println` formatting
+/// across the three backends (the original motivation: the
+/// interpreter-vs-compiler generic-instance type-args mismatch that
+/// Phase "interpreter generic print" tracked down).
+fn assert_stdout_consistent(source: &str, stem: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let interp = interpreter_stdout(source, &format!("{stem}_interp"));
+    let compiled = compiler_stdout(source, &format!("{stem}_aot"));
+    let jit = jit_stdout(source, &format!("{stem}_jit"));
+    assert_eq!(
+        interp, compiled,
+        "interpreter vs compiler stdout mismatch for source:\n{source}\n--interp--\n{interp}\n--compiler--\n{compiled}",
+    );
+    assert_eq!(
+        interp, jit,
+        "interpreter vs jit stdout mismatch for source:\n{source}\n--interp--\n{interp}\n--jit--\n{jit}",
+    );
+}
+
 #[test]
 fn literal_returns_match() {
     assert_consistent("fn main() -> u64 { 42u64 }\n", "literal");
@@ -363,3 +436,118 @@ fn boolean_returns_match() {
     "#;
     assert_consistent(src, "bool_return");
 }
+
+
+// =====================================================================
+// Stdout consistency tests (Phase V).
+//
+// `assert_stdout_consistent` runs each source through all three
+// backends (in-process interpreter binary, JIT-flagged interpreter
+// binary, and the AOT compiler-built executable) and asserts the
+// captured stdout bytes are byte-identical. Catches print-formatting
+// drift that the exit-code-only `assert_consistent` cannot.
+// =====================================================================
+
+#[test]
+fn stdout_scalar_println_match() {
+    let src = r#"
+        fn main() -> u64 {
+            println(42i64)
+            println(true)
+            println(false)
+            println(7u64)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_scalar");
+}
+
+#[test]
+fn stdout_string_literal_and_var_match() {
+    let src = r#"
+        fn main() -> u64 {
+            println("hello world")
+            val s = "from var"
+            println(s)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_str");
+}
+
+#[test]
+fn stdout_struct_println_match() {
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> u64 {
+            val p = Point { x: 3i64, y: 4i64 }
+            println(p)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_struct");
+}
+
+#[test]
+fn stdout_enum_println_match() {
+    let src = r#"
+        enum Shape { Circle(i64), Rect(i64, i64), Empty }
+        fn main() -> u64 {
+            val a = Shape::Circle(5i64)
+            val b = Shape::Rect(3i64, 7i64)
+            val c = Shape::Empty
+            println(a)
+            println(b)
+            println(c)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_enum");
+}
+
+#[test]
+fn stdout_generic_struct_println_match() {
+    // Catches the divergence the interpreter generic-print phase
+    // tracked down: compiler emits `Cell<i64> { value: 7 }`; the
+    // interpreter used to drop the type args and emit
+    // `Cell { value: 7 }` instead. With the fix in place all three
+    // backends agree on the type-argument-bearing output.
+    let src = r#"
+        struct Cell<T> { value: T }
+        fn main() -> u64 {
+            val c: Cell<i64> = Cell { value: 7i64 }
+            println(c)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_generic");
+}
+
+#[test]
+fn stdout_generic_enum_println_match() {
+    let src = r#"
+        enum Option<T> { None, Some(T) }
+        fn main() -> u64 {
+            val s: Option<i64> = Option::Some(5i64)
+            val n: Option<i64> = Option::None
+            println(s)
+            println(n)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_generic_enum");
+}
+
+#[test]
+fn stdout_loop_with_print_match() {
+    let src = r#"
+        fn main() -> u64 {
+            for i in 0u64..4u64 {
+                println(i)
+            }
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_loop");
+}
+

@@ -980,6 +980,43 @@ fn string_in_struct_field() {
 }
 
 #[test]
+fn array_tuple_element_const_index() {
+    if skip_e2e() {
+        return;
+    }
+    // Phase Y3: tuple array elements use the same leaf-index
+    // addressing as struct elements. `arr[i]` allocates a fresh
+    // `Binding::Tuple` and loads each leaf into its element local.
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [(1i64, 2i64), (3i64, 4i64), (5i64, 6i64)]
+            val a: (i64, i64) = arr[1u64]
+            (a.0 + a.1) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_tuple_const"), 7);
+}
+
+#[test]
+fn array_tuple_element_runtime_index() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val arr = [(10i64, 20i64), (30i64, 40i64), (50i64, 60i64)]
+            var sum: i64 = 0i64
+            for i in 0u64..3u64 {
+                val t: (i64, i64) = arr[i]
+                sum = sum + t.0 + t.1
+            }
+            sum as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "array_tuple_runtime"), 210);
+}
+
+#[test]
 fn array_const_range_slice() {
     if skip_e2e() {
         return;

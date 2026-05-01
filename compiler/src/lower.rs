@@ -2457,19 +2457,37 @@ impl<'a> FunctionLower<'a> {
                     if let Some(Binding::Array { element_ty, .. }) =
                         self.bindings.get(&arr_sym).cloned()
                     {
-                        if let Type::Struct(struct_id) = element_ty {
-                            // Lower the element read, which stashes a
-                            // pending_struct_value with the freshly
-                            // allocated leaves filled in.
-                            self.pending_struct_value = None;
-                            let _ = self.lower_slice_access(&arr_obj, &info)?;
-                            if let Some(fields) = self.pending_struct_value.take() {
-                                self.bindings.insert(
-                                    name,
-                                    Binding::Struct { struct_id, fields },
-                                );
-                                return Ok(None);
+                        match element_ty {
+                            Type::Struct(struct_id) => {
+                                // Lower the element read, which stashes
+                                // a pending_struct_value with freshly
+                                // allocated leaves filled in.
+                                self.pending_struct_value = None;
+                                let _ = self.lower_slice_access(&arr_obj, &info)?;
+                                if let Some(fields) =
+                                    self.pending_struct_value.take()
+                                {
+                                    self.bindings.insert(
+                                        name,
+                                        Binding::Struct { struct_id, fields },
+                                    );
+                                    return Ok(None);
+                                }
                             }
+                            Type::Tuple(_) => {
+                                self.pending_tuple_value = None;
+                                let _ = self.lower_slice_access(&arr_obj, &info)?;
+                                if let Some(elements) =
+                                    self.pending_tuple_value.take()
+                                {
+                                    self.bindings.insert(
+                                        name,
+                                        Binding::Tuple { elements },
+                                    );
+                                    return Ok(None);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -7161,8 +7179,59 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(())
             }
-            Type::Tuple(_) => {
-                Err("compiler MVP does not yet support tuple array elements".to_string())
+            Type::Tuple(tuple_id) => {
+                // Tuple element: same shape as struct, just routed
+                // through `allocate_tuple_elements` /
+                // `flatten_tuple_element_locals`.
+                let elements = self.allocate_tuple_elements(tuple_id)?;
+                let expr = self
+                    .program
+                    .expression
+                    .get(expr_ref)
+                    .ok_or_else(|| "array element missing".to_string())?;
+                match expr {
+                    Expr::TupleLiteral(literal_elems) => {
+                        if literal_elems.len() != elements.len() {
+                            return Err(format!(
+                                "array element tuple length mismatch: expected {}, got {}",
+                                elements.len(),
+                                literal_elems.len(),
+                            ));
+                        }
+                        for (j, e) in literal_elems.iter().enumerate() {
+                            let shape = elements[j].shape.clone();
+                            self.store_value_into_tuple_element_shape(e, j, &shape)?;
+                        }
+                    }
+                    _ => {
+                        return Err(
+                            "compiler MVP only supports tuple-literal array elements".to_string(),
+                        );
+                    }
+                }
+                let leaves = flatten_tuple_element_locals(&elements);
+                for (j, (local, ty)) in leaves.iter().enumerate() {
+                    let v = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    let leaf_idx = index * leaf_count + j;
+                    let idx_v = self
+                        .emit(
+                            InstKind::Const(Const::U64(leaf_idx as u64)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value");
+                    self.emit(
+                        InstKind::ArrayStore {
+                            slot,
+                            index: idx_v,
+                            value: v,
+                            elem_ty: *ty,
+                        },
+                        None,
+                    );
+                }
+                Ok(())
             }
             _ => {
                 let v = self.lower_expr(expr_ref)?.ok_or_else(|| {
@@ -7384,11 +7453,31 @@ impl<'a> FunctionLower<'a> {
         // emit a single `ArrayLoad` and return the resulting
         // value as before.
         let leaf_count = leaf_scalar_count(self.module, element_ty);
-        if let Type::Struct(struct_id) = element_ty {
-            let fields = self.allocate_struct_fields(struct_id);
-            // Compute the element-base value (in leaf units): for
-            // const idx fold to a constant; for runtime, multiply
-            // by leaf_count.
+        if matches!(element_ty, Type::Struct(_) | Type::Tuple(_)) {
+            // Allocate the right binding shape, then load each leaf
+            // scalar into its local via per-leaf `ArrayLoad`. The
+            // result flows through `pending_struct_value` /
+            // `pending_tuple_value` so the val rhs path / chain
+            // access can bind it.
+            let leaves: Vec<(LocalId, Type)>;
+            let pending_struct: Option<Vec<FieldBinding>>;
+            let pending_tuple: Option<Vec<TupleElementBinding>>;
+            match element_ty {
+                Type::Struct(struct_id) => {
+                    let fields = self.allocate_struct_fields(struct_id);
+                    leaves = Self::flatten_struct_locals(&fields);
+                    pending_struct = Some(fields);
+                    pending_tuple = None;
+                }
+                Type::Tuple(tuple_id) => {
+                    let elements = self.allocate_tuple_elements(tuple_id)?;
+                    leaves = flatten_tuple_element_locals(&elements);
+                    pending_struct = None;
+                    pending_tuple = Some(elements);
+                }
+                _ => unreachable!(),
+            }
+            // Element-base leaf index: const-fold or `imul(idx, leaf_count)`.
             let base_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
                 if idx_const >= length {
                     return Err(format!(
@@ -7420,7 +7509,6 @@ impl<'a> FunctionLower<'a> {
                 )
                 .expect("imul returns")
             };
-            let leaves = Self::flatten_struct_locals(&fields);
             for (j, (local, ty)) in leaves.iter().enumerate() {
                 let leaf_idx_v = if j == 0 {
                     base_v
@@ -7453,7 +7541,8 @@ impl<'a> FunctionLower<'a> {
                     .expect("ArrayLoad returns");
                 self.emit(InstKind::StoreLocal { dst: *local, src: v }, None);
             }
-            self.pending_struct_value = Some(fields);
+            self.pending_struct_value = pending_struct;
+            self.pending_tuple_value = pending_tuple;
             return Ok(None);
         }
         // Scalar element path. Constant index folds into a Const at

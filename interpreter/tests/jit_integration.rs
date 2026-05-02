@@ -104,6 +104,32 @@ fn extension_trait_primitive_method_jit_matches_interpreter() {
     assert_match("example/extension_trait_neg.t");
 }
 
+#[test]
+fn extension_trait_chained_primitive_method_matches_interpreter() {
+    // #194: receiver of an outer MethodCall is itself a MethodCall
+    // (`a.neg().neg()`). Eligibility used to require a bare
+    // identifier receiver, so the JIT silently fell back. Verify
+    // both modes agree on exit 7.
+    assert_match("example/extension_trait_chained.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn extension_trait_chained_primitive_method_jit_compiles_callee() {
+    // Confirm the JIT actually compiles the chained call (i.e. the
+    // eligibility relaxation took effect rather than silently
+    // falling back). The compile log should mention `i64__neg`
+    // because both rounds of the chained call resolve to the same
+    // monomorph.
+    let r = run("example/extension_trait_chained.t", true, true);
+    assert_eq!(r.code, 7, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("i64__neg"),
+        "expected JIT compile log to include i64__neg, got stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn extension_trait_primitive_method_jit_compiles_callee() {

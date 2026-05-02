@@ -2627,32 +2627,52 @@ pub(crate) fn check_expr(
             )
         }
         Expr::MethodCall(receiver, method_name, args) => {
-            // The receiver is either a struct local (existing
-            // struct-method dispatch) or a primitive scalar local
-            // (Step C extension-trait dispatch — `i64.neg()` etc.).
-            // Method calls on temporary / chained primitive values
-            // are not yet JIT-compatible; the interpreter still
-            // serves those.
+            // The receiver may be:
+            //   1. A struct local (existing struct-method dispatch).
+            //   2. A primitive scalar local (Step C extension-trait
+            //      dispatch — `i64.neg()` etc.).
+            //   3. An arbitrary primitive-scalar-typed expression
+            //      (#194 chained-call relaxation — `x.abs().abs()`,
+            //      `make_i64().abs()`, etc.) where the receiver is
+            //      not a bare identifier but type-checks to a known
+            //      primitive scalar.
+            // Eligibility rejects anything that doesn't reduce to
+            // one of these.
             let recv_expr = program.expression.get(&receiver)?;
-            let recv_name = match recv_expr {
-                Expr::Identifier(s) => s,
-                _ => {
-                    note(reject_reason, || {
-                        "method receiver must be a local identifier".to_string()
-                    });
-                    return None;
-                }
+            let recv_name_opt = match recv_expr {
+                Expr::Identifier(s) => Some(s),
+                _ => None,
             };
 
-            // Step C: extension-trait dispatch on a primitive
-            // receiver. The receiver lives in `locals` (scalar) and
-            // the primitive's canonical-name symbol (interned by
-            // `install_primitive_target_symbols`) keys into the
+            // Resolve the receiver's primitive type. Identifier
+            // receivers consult `locals` directly; non-identifier
+            // receivers re-enter `check_expr` so a chained
+            // `MethodCall` / `Call` / `BinaryOp` etc. that returns a
+            // scalar gets its scalar type back.
+            let recv_prim_ty: Option<ScalarTy> = if let Some(name) = recv_name_opt {
+                locals.get(&name).copied()
+            } else {
+                check_expr(
+                    program,
+                    &receiver,
+                    locals,
+                    struct_locals,
+                    tuple_locals,
+                    substitutions,
+                    struct_layouts,
+                    callees,
+                    ptr_read_hints,
+                    reject_reason,
+                )
+            };
+
+            // Step C / #194: extension-trait dispatch on a primitive
+            // receiver. The receiver scalar type keys into the
             // same `find_method` lookup the struct path uses. On
             // success we register the call as a `MonoTarget::Method`
             // so the analyzer queues the method body for compilation,
             // mirroring the struct path.
-            if let Some(prim_ty) = locals.get(&recv_name).copied() {
+            if let Some(prim_ty) = recv_prim_ty {
                 let target_sym = match primitive_target_sym_for_scalar(prim_ty) {
                     Some(s) => s,
                     None => {
@@ -2750,6 +2770,21 @@ pub(crate) fn check_expr(
                 };
             }
 
+            // Struct-method dispatch: the existing path requires a
+            // bare `Identifier` receiver because struct values flow
+            // through `struct_locals` (per-field SSA Variables) and
+            // there's no machinery to materialise a chained struct
+            // value back into that representation. Reject anything
+            // that didn't come through the Identifier shortcut.
+            let recv_name = match recv_name_opt {
+                Some(s) => s,
+                None => {
+                    note(reject_reason, || {
+                        "non-primitive method receiver must be a local identifier".to_string()
+                    });
+                    return None;
+                }
+            };
             let struct_name = match struct_locals.get(&recv_name).copied() {
                 Some(s) => s,
                 None => {

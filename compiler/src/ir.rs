@@ -54,10 +54,17 @@ use string_interner::{DefaultSymbol, Symbol};
 #[derive(Debug, Default)]
 pub struct Module {
     pub functions: Vec<Function>,
-    /// `name -> index into functions`. Populated as functions are
-    /// declared, used by lowering when resolving call targets and by
-    /// codegen when wiring same-module imports.
-    pub function_index: HashMap<DefaultSymbol, FuncId>,
+    /// `(module_qualifier, name) -> index into functions`. The
+    /// qualifier is the **last segment** of the originating module's
+    /// dotted path (`"math"` for `core/std/math.t`) or `None` for
+    /// user-authored top-level functions. Auto-loaded modules push
+    /// `Some(last_seg)` so two modules each defining `pub fn foo` do
+    /// not silently overwrite each other (todo #193). Bare-name
+    /// resolution at call sites tries the `None` key first and then
+    /// falls back to the unique `Some(_)` entry, while qualified
+    /// `Expr::AssociatedFunctionCall(mod, fn)` calls go straight at
+    /// `(Some(mod), fn)`.
+    pub function_index: HashMap<(Option<DefaultSymbol>, DefaultSymbol), FuncId>,
     /// Concrete struct instances. Each entry is one fully-monomorphised
     /// struct: a non-generic struct has exactly one entry; a generic
     /// struct `Cell<T>` has one entry per concrete `T` it's
@@ -137,6 +144,22 @@ impl Module {
         params: Vec<Type>,
         return_type: Type,
     ) -> FuncId {
+        self.declare_function_with_module(symbol, None, export_name, linkage, params, return_type)
+    }
+
+    /// `declare_function` form that takes an explicit module qualifier
+    /// (`Some(last_seg)` for an integrated module's `pub fn`,
+    /// `None` for user-authored top-level functions). Used by the
+    /// lowering pass once the originating module is known.
+    pub fn declare_function_with_module(
+        &mut self,
+        symbol: DefaultSymbol,
+        module_qualifier: Option<DefaultSymbol>,
+        export_name: String,
+        linkage: Linkage,
+        params: Vec<Type>,
+        return_type: Type,
+    ) -> FuncId {
         let id = FuncId(self.functions.len() as u32);
         self.functions.push(Function {
             symbol,
@@ -149,7 +172,17 @@ impl Module {
             blocks: Vec::new(),
             entry: BlockId(0),
         });
-        self.function_index.insert(symbol, id);
+        let key = (module_qualifier, symbol);
+        if let Some(prev) = self.function_index.insert(key, id) {
+            // Existing entry was overwritten — prior declare with the
+            // same `(qualifier, name)` is not expected because the
+            // lowering pre-pass dedups generics into a separate map.
+            // Surface this as a panic so future regressions are loud.
+            panic!(
+                "function_index collision for symbol={:?} qualifier={:?} (previous FuncId={:?})",
+                symbol, module_qualifier, prev
+            );
+        }
         id
     }
 
@@ -185,6 +218,53 @@ impl Module {
 
     pub fn function(&self, id: FuncId) -> &Function {
         &self.functions[id.0 as usize]
+    }
+
+    /// Resolve a call-target `FuncId` by name, with the module-qualified
+    /// fallback semantics described on `function_index`:
+    ///
+    /// - **Bare call (`qualifier == None`)**: try the user-authored
+    ///   `(None, name)` slot first. If that misses, scan for any
+    ///   `(Some(_), name)` entry. Returns `Some(_)` only if exactly
+    ///   one such qualified entry exists; ambiguous bare calls
+    ///   produce `None` so the caller can surface a clear error.
+    /// - **Qualified call (`qualifier == Some(m)`)**: look up
+    ///   `(Some(m), name)` directly. No fallback to `(None, name)`
+    ///   because the user explicitly named the module.
+    ///
+    /// `None` overall means "not found" — the caller is responsible
+    /// for distinguishing missing vs ambiguous in its diagnostic if
+    /// it cares.
+    pub fn lookup_function(
+        &self,
+        qualifier: Option<DefaultSymbol>,
+        name: DefaultSymbol,
+    ) -> Option<FuncId> {
+        if let Some(q) = qualifier {
+            return self.function_index.get(&(Some(q), name)).copied();
+        }
+        if let Some(id) = self.function_index.get(&(None, name)).copied() {
+            return Some(id);
+        }
+        let mut hits = self
+            .function_index
+            .iter()
+            .filter(|((_, n), _)| *n == name);
+        let first = hits.next().map(|(_, id)| *id);
+        if hits.next().is_some() {
+            return None; // ambiguous
+        }
+        first
+    }
+
+    /// Returns true when at least one entry exists for `name`,
+    /// regardless of qualifier. Used by call-site dispatchers that
+    /// want a quick "is there any function by this name" probe
+    /// before computing args.
+    pub fn has_function(&self, name: DefaultSymbol) -> bool {
+        self.function_index
+            .keys()
+            .any(|(_, n)| *n == name)
     }
 
     pub fn function_mut(&mut self, id: FuncId) -> &mut Function {

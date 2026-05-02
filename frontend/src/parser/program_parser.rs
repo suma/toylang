@@ -505,12 +505,14 @@ impl<'a> Parser<'a> {
         let mut ast_builder = AstBuilder::new();
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
+        let function_module_paths = vec![None; def_func.len()];
         Ok(Program {
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             package_decl,
             imports,
             function: def_func,
             imported_function_names: std::collections::HashSet::new(),
+            function_module_paths,
             consts,
             statement: stmt,
             expression: expr,

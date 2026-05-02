@@ -158,12 +158,18 @@ fn integrate_modules(
                     // because the synthetic `ImportDecl` below
                     // registers the module alias from the *last*
                     // segment.
+                    let path_syms: Vec<_> = module
+                        .segments
+                        .iter()
+                        .map(|s| string_interner.get_or_intern(s))
+                        .collect();
                     if let Err(err) =
-                        module_integration::integrate_module_into_program_with_options(
+                        module_integration::integrate_module_into_program_with_options_full(
                             &module.source,
                             program,
                             string_interner,
                             false,
+                            Some(path_syms.clone()),
                         )
                     {
                         errors.push(format!(
@@ -172,11 +178,6 @@ fn integrate_modules(
                         ));
                         continue;
                     }
-                    let path_syms: Vec<_> = module
-                        .segments
-                        .iter()
-                        .map(|s| string_interner.get_or_intern(s))
-                        .collect();
                     program.imports.push(ImportDecl {
                         module_path: path_syms,
                         alias: None,

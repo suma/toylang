@@ -155,7 +155,17 @@ pub fn lower_program(
     // (which may refer to functions defined later in the file) can
     // resolve to a `FuncId` during the body lowering pass. Generic
     // functions go into the templates table instead.
-    for func in &program.function {
+    for (idx, func) in program.function.iter().enumerate() {
+        // Module qualifier (last segment of the originating module's
+        // dotted path) — `None` for user-authored top-level functions,
+        // `Some("math")` for `core/std/math.t` etc. This becomes the
+        // first half of the IR's `function_index` key so two modules
+        // each defining `pub fn foo` no longer overwrite each other.
+        let module_qualifier = program
+            .function_module_paths
+            .get(idx)
+            .and_then(|opt| opt.as_ref())
+            .and_then(|path| path.last().copied());
         if !func.generic_params.is_empty() {
             generic_funcs.insert(func.name, Rc::clone(func));
             continue;
@@ -191,7 +201,14 @@ pub fn lower_program(
                 )?,
                 None => Type::Unit,
             };
-            module.declare_function(func.name, import_name.to_string(), Linkage::Import, params, ret);
+            module.declare_function_with_module(
+                func.name,
+                module_qualifier,
+                import_name.to_string(),
+                Linkage::Import,
+                params,
+                ret,
+            );
             continue;
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
@@ -220,7 +237,14 @@ pub fn lower_program(
         } else {
             (format!("toy_{}", raw_name), Linkage::Local)
         };
-        module.declare_function(func.name, export_name, linkage, params, ret);
+        module.declare_function_with_module(
+            func.name,
+            module_qualifier,
+            export_name,
+            linkage,
+            params,
+            ret,
+        );
     }
 
     // Declare each non-generic method as a regular IR function. The
@@ -310,15 +334,18 @@ pub fn lower_program(
     // Second pass: lower each non-generic body. Generic instantiations
     // happen lazily as call sites discover them; the work queue keeps
     // them coming until everything reachable is monomorphised.
-    let non_generic: Vec<Rc<frontend::ast::Function>> = program
+    // Iterate by index so we can recover the matching module qualifier
+    // from `program.function_module_paths` for the IR lookup key.
+    let non_generic: Vec<(usize, Rc<frontend::ast::Function>)> = program
         .function
         .iter()
-        .filter(|f| f.generic_params.is_empty())
-        .cloned()
+        .enumerate()
+        .filter(|(_, f)| f.generic_params.is_empty())
+        .map(|(i, f)| (i, Rc::clone(f)))
         .collect();
     let mut generic_instances: GenericInstances = HashMap::new();
     let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
-    for func in non_generic {
+    for (idx, func) in non_generic {
         // Skip body lowering for `extern fn` declarations — there is
         // no body to lower. Phase 2c (compiler extern dispatch) will
         // re-declare these as `Linkage::Import` so call sites resolve
@@ -327,9 +354,14 @@ pub fn lower_program(
         if func.is_extern {
             continue;
         }
+        let module_qualifier = program
+            .function_module_paths
+            .get(idx)
+            .and_then(|opt| opt.as_ref())
+            .and_then(|path| path.last().copied());
         let func_id = *module
             .function_index
-            .get(&func.name)
+            .get(&(module_qualifier, func.name))
             .expect("declared in pass 1");
         let mut builder = FunctionLower::new(
             &mut module,

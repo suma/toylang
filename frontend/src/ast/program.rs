@@ -18,6 +18,17 @@ pub struct Program {
     /// before integration; `module_integration::load_and_integrate_module`
     /// inserts each integrated `pub fn` symbol.
     pub imported_function_names: std::collections::HashSet<DefaultSymbol>,
+    /// Module origin per function entry (parallel to `function`). For each
+    /// `function[i]`, this holds:
+    ///   - `None` if the function was authored in the user's source file.
+    ///   - `Some(path)` if it came in via integration; `path` is the
+    ///     dotted module path (`["std", "math"]` for `core/std/math.t`).
+    /// Used to disambiguate same-name `pub fn`s across modules at the IR
+    /// `function_index` level (see compiler todo #193). Empty before
+    /// integration; `module_integration` pushes one entry per integrated
+    /// function — entries already in `function` at integration time get
+    /// `None` retroactively if they don't already have an entry.
+    pub function_module_paths: Vec<Option<Vec<DefaultSymbol>>>,
     /// Top-level `const NAME: Type = expr` declarations. Evaluated once
     /// at program startup and bound as immutable globals so any function
     /// body (including `main`) can reference them.

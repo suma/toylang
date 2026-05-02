@@ -228,14 +228,22 @@ impl<'a> FunctionLower<'a> {
                 // the unsupported reject path below.
                 let is_struct = self.struct_defs.contains_key(&struct_name)
                     || self.enum_defs.contains_key(&struct_name);
-                if !is_struct
-                    && self.module.function_index.contains_key(&fn_name)
-                {
-                    let target = *self
-                        .module
-                        .function_index
-                        .get(&fn_name)
-                        .expect("function_index hit just confirmed");
+                // Qualified call (`math::add(args)`): try
+                // `(Some(struct_name), fn_name)` first so cross-
+                // module collisions resolve unambiguously. Fall back
+                // to the bare lookup so legacy code paths that
+                // pre-date the per-module key still work — e.g.
+                // an integration that didn't record a module path
+                // (None entry) but flattened the function into the
+                // table by name.
+                let target_opt = if !is_struct {
+                    self.module
+                        .lookup_function(Some(struct_name), fn_name)
+                        .or_else(|| self.module.lookup_function(None, fn_name))
+                } else {
+                    None
+                };
+                if let Some(target) = target_opt {
                     let ret_ty = self.module.function(target).return_type;
                     if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
                         return Err(format!(

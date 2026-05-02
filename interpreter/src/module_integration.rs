@@ -586,7 +586,13 @@ pub(crate) fn load_and_integrate_module(
     for path in &candidates {
         tried.push(path.clone());
         if let Ok(source) = std::fs::read_to_string(path) {
-            return integrate_module_into_program(&source, program, string_interner);
+            return integrate_module_into_program_with_options_full(
+                &source,
+                program,
+                string_interner,
+                true,
+                Some(import.module_path.clone()),
+            );
         }
     }
     Err(format!(
@@ -745,6 +751,27 @@ pub fn integrate_module_into_program_with_options(
     main_string_interner: &mut DefaultStringInterner,
     enforce_namespace: bool,
 ) -> Result<(), String> {
+    integrate_module_into_program_with_options_full(
+        source,
+        main_program,
+        main_string_interner,
+        enforce_namespace,
+        None,
+    )
+}
+
+/// Full-featured form that also records the module's dotted path
+/// (e.g. `["std", "math"]`) onto every integrated function in
+/// `program.function_module_paths`. Compiler IR uses the last
+/// segment to disambiguate same-named `pub fn`s coming from
+/// different modules (#193).
+pub fn integrate_module_into_program_with_options_full(
+    source: &str,
+    main_program: &mut Program,
+    main_string_interner: &mut DefaultStringInterner,
+    enforce_namespace: bool,
+    module_path: Option<Vec<DefaultSymbol>>,
+) -> Result<(), String> {
     // Parse the module with its own interner.
     let mut parser = frontend::ParserWithInterner::new(source);
     let module_program = parser
@@ -783,6 +810,9 @@ pub fn integrate_module_into_program_with_options(
             main_program.imported_function_names.insert(function.name);
         }
         main_program.function.push(function);
+        main_program
+            .function_module_paths
+            .push(module_path.clone());
     }
     Ok(())
 }

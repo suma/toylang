@@ -146,10 +146,9 @@ impl<'a> FunctionLower<'a> {
                 Expr::Call(fn_name, args_ref)
                     if self
                         .module
-                        .function_index
-                        .get(&fn_name)
+                        .lookup_function(None, fn_name)
                         .map(|id| {
-                            let ret = self.module.function(*id).return_type;
+                            let ret = self.module.function(id).return_type;
                             matches!(ret, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_))
                         })
                         .unwrap_or(false) =>
@@ -159,7 +158,7 @@ impl<'a> FunctionLower<'a> {
                     // matching CallStruct / CallTuple / CallEnum
                     // (same shape `lower_let` uses), then dispatch
                     // to the corresponding `emit_print_*` helper.
-                    let target_id = *self.module.function_index.get(&fn_name).unwrap();
+                    let target_id = self.module.lookup_function(None, fn_name).unwrap();
                     let target_ret = self.module.function(target_id).return_type;
                     let arg_values = self.lower_call_args(&args_ref)?;
                     match target_ret {

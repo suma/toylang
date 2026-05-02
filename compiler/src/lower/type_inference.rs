@@ -111,19 +111,19 @@ impl<'a> FunctionLower<'a> {
             Expr::Match(_, arms) => arms.iter().find_map(|a| self.value_scalar(&a.body)),
             Expr::Call(fn_name, _) => self
                 .module
-                .function_index
-                .get(&fn_name)
-                .map(|id| self.module.function(*id).return_type),
-            Expr::AssociatedFunctionCall(_struct_name, fn_name, _) => {
-                // Module-qualified call: same lookup path as Call
-                // because module integration flattens imported `pub fn`s
-                // into the main function table. Real associated method
-                // calls aren't supported in expression position so the
+                .lookup_function(None, fn_name)
+                .map(|id| self.module.function(id).return_type),
+            Expr::AssociatedFunctionCall(struct_name, fn_name, _) => {
+                // Module-qualified call: prefer
+                // `(Some(struct_name), fn_name)` so cross-module
+                // collisions resolve unambiguously, then fall back to
+                // the bare lookup. Real associated method calls
+                // aren't supported in expression position so the
                 // None return at the bottom is the correct fallback.
                 self.module
-                    .function_index
-                    .get(&fn_name)
-                    .map(|id| self.module.function(*id).return_type)
+                    .lookup_function(Some(struct_name), fn_name)
+                    .or_else(|| self.module.lookup_function(None, fn_name))
+                    .map(|id| self.module.function(id).return_type)
             }
             Expr::BuiltinCall(func, args) => match func {
                 frontend::ast::BuiltinFunction::Abs => {

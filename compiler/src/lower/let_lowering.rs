@@ -527,7 +527,7 @@ impl<'a> FunctionLower<'a> {
         // `val tmp = make_pair(); val a = tmp.0; val b = tmp.1`) is
         // also handled here without special-casing destructuring.
         if let Expr::Call(fn_name, args_ref) = rhs.clone() {
-            if let Some(target_id) = self.module.function_index.get(&fn_name).copied() {
+            if let Some(target_id) = self.module.lookup_function(None, fn_name) {
                 let target_ret = self.module.function(target_id).return_type;
                 if let Type::Tuple(tuple_id) = target_ret {
                     let element_bindings = self.allocate_tuple_elements(tuple_id)?;
@@ -578,7 +578,7 @@ impl<'a> FunctionLower<'a> {
         // a struct binding and use `CallStruct` so codegen can route
         // the multi-return values into the per-field locals.
         if let Expr::Call(fn_name, args_ref) = rhs {
-            if let Some(target_id) = self.module.function_index.get(&fn_name).copied() {
+            if let Some(target_id) = self.module.lookup_function(None, fn_name) {
                 let target_ret = self.module.function(target_id).return_type;
                 if let Type::Struct(struct_id) = target_ret {
                     let field_bindings = self.allocate_struct_fields(struct_id);

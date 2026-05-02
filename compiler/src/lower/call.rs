@@ -49,7 +49,11 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<FuncId, String> {
-        if let Some(id) = self.module.function_index.get(&fn_name).copied() {
+        // Bare call: try the user-authored `(None, fn_name)` slot
+        // first, then any unique `(Some(_), fn_name)` integrated
+        // module's `pub fn`. See `Module::lookup_function` for the
+        // ambiguity rule.
+        if let Some(id) = self.module.lookup_function(None, fn_name) {
             return Ok(id);
         }
         if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {

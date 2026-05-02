@@ -193,6 +193,22 @@ impl<'a> FunctionLower<'a> {
                         self.module.enum_def(storage.enum_id).base_name,
                         None,
                     ),
+                    // Step D: extension-trait dispatch — primitive
+                    // receiver. Map the binding's IR type back to the
+                    // canonical-name symbol; the rest of the lookup
+                    // falls through into the same `method_func_ids`
+                    // branch struct receivers use.
+                    Binding::Scalar { ty, .. } => {
+                        let name = match ty {
+                            Type::Bool => "bool",
+                            Type::I64 => "i64",
+                            Type::U64 => "u64",
+                            Type::F64 => "f64",
+                            _ => return None,
+                        };
+                        let sym = self.interner.get(name)?;
+                        (sym, None)
+                    }
                     _ => return None,
                 };
                 if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)) {

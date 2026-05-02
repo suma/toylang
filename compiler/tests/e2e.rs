@@ -4548,3 +4548,59 @@ fn extern_fn_dispatch_to_libm() {
     "#;
     assert_eq!(compile_and_run(src, "extern_fn_dispatch"), 16);
 }
+
+#[test]
+fn extension_trait_primitive_method_i64() {
+    // Step D: `impl Trait for i64 { fn neg(self: Self) -> Self { ... } }`
+    // is callable through the AOT compiler. The receiver is a
+    // primitive scalar local; the method body is registered under
+    // the canonical `"i64"` symbol; lower_method_call finds it
+    // through `method_func_ids` and emits a regular call with the
+    // i64 value as the first arg. `7 → -7 → 7` round-trip.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        trait Negate {
+            fn neg(self: Self) -> Self
+        }
+        impl Negate for i64 {
+            fn neg(self: Self) -> Self {
+                0i64 - self
+            }
+        }
+        fn main() -> u64 {
+            val a: i64 = 7i64
+            val b: i64 = a.neg()
+            val c: i64 = b.neg()
+            c as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "extension_trait_i64"), 7);
+}
+
+#[test]
+fn extension_trait_primitive_method_f64() {
+    // Same as the i64 test but for f64, exercising the f64-side
+    // primitive Self resolution + value-method call.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        trait Negate {
+            fn neg(self: Self) -> Self
+        }
+        impl Negate for f64 {
+            fn neg(self: Self) -> Self {
+                0f64 - self
+            }
+        }
+        fn main() -> u64 {
+            val a: f64 = 3.5f64
+            val b: f64 = a.neg()
+            val c: f64 = b.neg()
+            (c * 2f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "extension_trait_f64"), 7);
+}

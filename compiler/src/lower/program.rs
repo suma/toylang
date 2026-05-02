@@ -63,6 +63,32 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
     })
 }
 
+/// Map an `impl Trait for <PrimitiveType>` block target symbol back
+/// to the matching `TypeDecl` primitive. Returns `None` when the
+/// symbol isn't a primitive canonical name — caller falls back to
+/// the regular struct-target resolution path.
+///
+/// Used by Step D of the extension-trait work: lets primitive
+/// impl methods declare Self-typed parameters / return values that
+/// `lower_param_or_return_type` can immediately reduce to `Type::I64`
+/// / `Type::F64` / etc. without ever looking up a struct definition
+/// (one doesn't exist).
+pub(super) fn primitive_type_decl_for_target_sym(
+    sym: DefaultSymbol,
+    interner: &DefaultStringInterner,
+) -> Option<TypeDecl> {
+    Some(match interner.resolve(sym)? {
+        "bool" => TypeDecl::Bool,
+        "i64" => TypeDecl::Int64,
+        "u64" => TypeDecl::UInt64,
+        "f64" => TypeDecl::Float64,
+        "ptr" => TypeDecl::Ptr,
+        // `usize` shares the UInt64 representation in this language.
+        "usize" => TypeDecl::UInt64,
+        _ => return None,
+    })
+}
+
 pub fn lower_program(
     program: &Program,
     interner: &DefaultStringInterner,
@@ -204,15 +230,23 @@ pub fn lower_program(
             generic_methods.insert((*target_sym, *method_sym), Rc::clone(method));
             continue;
         }
+        // Step D: when the impl target is a primitive (`impl Foo for
+        // i64 { ... }`), Self resolves directly to the matching
+        // primitive `TypeDecl` so `lower_param_or_return_type` can
+        // reduce it to `Type::I64` / `Type::F64` / etc. (No struct
+        // definition exists for `i64`, so the existing
+        // `Identifier(target_sym)` path would silently fail.)
+        let self_decl = primitive_type_decl_for_target_sym(*target_sym, interner)
+            .unwrap_or(TypeDecl::Identifier(*target_sym));
         let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
         for (pname, pty) in &method.parameter {
             // `self: Self` — substitute Self for the impl's target.
             // The parser emits `TypeDecl::Self_` for the literal
             // `Self` keyword.
             let resolved = match pty {
-                TypeDecl::Self_ => TypeDecl::Identifier(*target_sym),
+                TypeDecl::Self_ => self_decl.clone(),
                 TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
-                    TypeDecl::Identifier(*target_sym)
+                    self_decl.clone()
                 }
                 other => other.clone(),
             };
@@ -235,9 +269,9 @@ pub fn lower_program(
         let ret = match &method.return_type {
             Some(ty) => {
                 let resolved = match ty {
-                    TypeDecl::Self_ => TypeDecl::Identifier(*target_sym),
+                    TypeDecl::Self_ => self_decl.clone(),
                     TypeDecl::Identifier(sym) if interner.resolve(*sym) == Some("Self") => {
-                        TypeDecl::Identifier(*target_sym)
+                        self_decl.clone()
                     }
                     other => other.clone(),
                 };
@@ -502,16 +536,22 @@ impl<'a> FunctionLower<'a> {
         // `self: Self` as `self: <TargetStruct>`. We don't mutate the
         // original AST — instead we build a parallel `parameter` list
         // with the substitution applied for the binding pass below.
+        // Step D: primitive impl targets (`impl Foo for i64 { ... }`)
+        // resolve `Self` directly to the matching primitive `TypeDecl`
+        // — no struct definition exists for `i64` so the
+        // `Identifier(target_struct)` fallback would fail downstream.
+        let self_decl = primitive_type_decl_for_target_sym(target_struct, self.interner)
+            .unwrap_or(TypeDecl::Identifier(target_struct));
         let parameter: Vec<(DefaultSymbol, TypeDecl)> = method
             .parameter
             .iter()
             .map(|(n, t)| {
                 let resolved = match t {
-                    TypeDecl::Self_ => TypeDecl::Identifier(target_struct),
+                    TypeDecl::Self_ => self_decl.clone(),
                     TypeDecl::Identifier(sym)
                         if self.interner.resolve(*sym) == Some("Self") =>
                     {
-                        TypeDecl::Identifier(target_struct)
+                        self_decl.clone()
                     }
                     other => other.clone(),
                 };

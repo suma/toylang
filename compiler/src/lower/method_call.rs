@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use frontend::ast::{Expr, ExprRef};
 use frontend::type_decl::TypeDecl;
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use super::bindings::{flatten_struct_locals, flatten_tuple_element_locals, Binding};
 use super::method_registry::PendingMethodInstance;
@@ -27,6 +27,33 @@ use super::templates::lower_param_or_return_type;
 use super::types::lower_scalar;
 use super::FunctionLower;
 use crate::ir::{FuncId, InstKind, Linkage, StructId, Type, ValueId};
+
+/// Map an IR `Type` for a primitive scalar receiver back to the
+/// canonical-name symbol that `Stmt::ImplBlock` uses as its target
+/// for `impl Trait for <PrimitiveType> { ... }`. Returns `None` for
+/// non-primitive types (struct / enum / tuple / unit) and for
+/// primitives whose canonical name has never been interned (no impl
+/// targets that primitive in this program — caller short-circuits).
+///
+/// Used by `lower_method_call`'s Step D extension-trait path so
+/// `i64.neg()` can be looked up in the same `method_func_ids`
+/// table that struct methods use.
+fn primitive_target_sym_for_ir_type(
+    ty: Type,
+    interner: &DefaultStringInterner,
+) -> Option<DefaultSymbol> {
+    let name = match ty {
+        Type::Bool => "bool",
+        Type::I64 => "i64",
+        Type::U64 => "u64",
+        Type::F64 => "f64",
+        // `Type::Str` and the (non-existent in IR) `ptr` aren't
+        // wired here yet; revisit when string / pointer extension
+        // traits are exercised.
+        _ => return None,
+    };
+    interner.get(name)
+}
 
 impl<'a> FunctionLower<'a> {
     /// `&self` cousin of `lower_method_param_type` — used by
@@ -363,6 +390,54 @@ impl<'a> FunctionLower<'a> {
                     self.interner.resolve(recv_sym).unwrap_or("?")
                 )
             })?;
+
+        // Step D: extension-trait dispatch on a primitive receiver.
+        // The receiver is a `Binding::Scalar`; map its IR `Type` back
+        // to the canonical-name symbol (`"i64"` / `"f64"` / etc.) and
+        // look the user-defined impl method up in the regular
+        // `method_func_ids` table. On a hit, emit a normal call with
+        // the receiver value prepended to the arg list and return
+        // before the existing struct/enum path runs. On miss, fall
+        // through so the legacy hardcoded `BuiltinMethod`-shaped
+        // arms above (abs/sqrt) still take effect for built-in
+        // numeric methods until Step F migrates them.
+        if let Binding::Scalar { local, ty } = &binding {
+            if let Some(target_sym) =
+                primitive_target_sym_for_ir_type(*ty, self.interner)
+            {
+                if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)).copied()
+                {
+                    let receiver_value = self
+                        .emit(InstKind::LoadLocal(*local), Some(*ty))
+                        .expect("LoadLocal returns a value");
+                    let mut values: Vec<ValueId> = vec![receiver_value];
+                    for a in args {
+                        let v = self
+                            .lower_expr(a)?
+                            .ok_or_else(|| {
+                                "primitive method argument produced no value".to_string()
+                            })?;
+                        values.push(v);
+                    }
+                    let ret_ty = self.module.function(func_id).return_type;
+                    if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                        return Err(format!(
+                            "compiler MVP cannot use a compound-returning method (`{}::{}`) in expression position; bind the result with `val`",
+                            self.interner.resolve(target_sym).unwrap_or("?"),
+                            self.interner.resolve(method).unwrap_or("?"),
+                        ));
+                    }
+                    let inst = InstKind::Call { target: func_id, args: values };
+                    let result_ty = if ret_ty.produces_value() {
+                        Some(ret_ty)
+                    } else {
+                        None
+                    };
+                    return Ok(self.emit(inst, result_ty));
+                }
+            }
+        }
+
         let target_sym = match &binding {
             Binding::Struct { struct_id, .. } => self.module.struct_def(*struct_id).base_name,
             Binding::Enum(storage) => self.module.enum_def(storage.enum_id).base_name,

@@ -54,8 +54,17 @@ fn interpreter_value(source: &str) -> u64 {
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().expect("interpreter parse");
     let interner = parser.get_string_interner();
-    interpreter::check_typing(&mut program, interner, Some(source), Some("test.t"))
-        .expect("interpreter type-check");
+    // Auto-load the same `core/std/*.t` modules the JIT and AOT
+    // paths see so a test that uses `Result<...>` / `Option<...>`
+    // resolves identically across all three backends.
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some("test.t"),
+        Some(&core_modules_dir()),
+    )
+    .expect("interpreter type-check");
     let result = interpreter::execute_program(&program, interner, Some(source), Some("test.t"))
         .expect("interpreter execute");
     let v = match &*result.borrow() {
@@ -562,5 +571,25 @@ fn stdout_loop_with_print_match() {
         }
     "#;
     assert_stdout_consistent(src, "stdout_loop");
+}
+
+#[test]
+fn enum_str_payload_round_trip() {
+    // Result<u64, str> exercises the new str-payload enum support
+    // in the AOT compiler. Previously rejected with "unsupported
+    // payload type str"; now lowers via the same scalar machinery
+    // strings already use (Type::Str = i64-sized opaque pointer
+    // into .rodata). interpreter / JIT (silent fallback) / AOT
+    // must all agree on exit 99 (the Err arm fires).
+    let src = r#"
+        fn main() -> u64 {
+            val r: Result<u64, str> = Result::Err("boom")
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(_) => 99u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "enum_str_payload_round_trip");
 }
 

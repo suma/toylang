@@ -2,7 +2,19 @@
 
 ## 完了済み ✅
 
-198. **コンパイラ allocator builtin に specific error message** (`#121` 部分対応): AOT compiler が `__builtin_arena_allocator` / `fixed_buffer_allocator` / `current_allocator` / `default_allocator` / `heap_alloc` / `realloc` / `free` / `ptr_read` / `ptr_write` を encounter すると、汎用の "compiler MVP cannot lower builtin yet" ではなく `compiler MVP cannot lower allocator builtin <X> yet (todo #121: needs IR-level AllocatorBinding + native codegen)` を出すようにした。`AllocatorBinding` IR enum 自体は既に定義済み (`compiler/src/ir.rs`)、ヒープ系 builtin 命令への配線と native codegen 側 (with-scope の active-allocator stack push/pop と heap helper) が次の本実装ステップ。
+206. **ドキュメント更新 (Option / Result + str enum payload + per-module namespacing)** (`a3c805c` `e05d048`): `docs/language.md` に "Option and Result (via the auto-loaded option / result modules)" 節を追加 (enum 形・全メソッド・no Allocator 設計理由・eager default の理由・shadowing semantics・3 backend coverage)、Known limitations に「Enum support in JIT」エントリ追加、TOC 更新。`compiler/README.md` に str payload bullet と stdlib Option / Result bullet 追加。`interpreter/README.md` に stdlib ファイル一覧テーブル (math.t / i64.t / f64.t / option.t / result.t)。先行コミット `e05d048` で `#193` / `#193b` / `#194` / `#195` を docs 全体に反映。
+
+205. **AOT で str enum payload を許可** (`#96` follow-up、`2cf90ba`): `Result<u64, str>::Err("boom")` 等が AOT で動くように、`is_supported_enum_payload` allow-list に `Type::Str` を追加。Phase T の opaque-pointer 表現 (`Type::Str = i64-sized`) を再利用するので codegen / boundary 変更は不要 (`flatten_struct_to_cranelift_tys` の enum アームと `allocate_payload_slot` の default scalar branch がすでに対応)。`stdlib_result.t` を natural な `Result<u64, str>` に戻す。`compiler/tests/consistency.rs::interpreter_value` を `check_typing_with_core_modules` に切り替え (Result / Option を使う test に必須)、`enum_str_payload_round_trip` 3-backend test を追加 (interpreter / JIT-fallback / AOT 全て exit 99 一致)。
+
+204. **JIT enum constructor / method skip 理由を具体化** (`fe3e2e9`): `Expr::AssociatedFunctionCall` の reject 経路で qualifier が enum 名のときは `JIT does not yet model enum values (constructors / match / methods)` という precise reason を log するようにした。`enum_decl_lookup_by_name` helper を追加。`tests/jit_integration.rs::jit_skip_reason_for_enum_constructor` で fallback exit code (152) と diagnostic 文言の両方を assert。フル enum support (`ParamTy::Enum` + 値モデル + match/tag dispatch + multi-result return) は AOT compiler の Phase A1〜O 相当の規模で別タスク。
+
+203. **stdlib Option / Result (`#96`)** (`ad6d836`): `core/std/option.t` (`enum Option<T> { None, Some(T) }` + `impl<T> Option<T>` の is_some / is_none / unwrap_or / expect)、`core/std/result.t` (`enum Result<T, E> { Ok(T), Err(E) }` + 同等メソッド) を追加。auto-load 経由で import 行なしで利用可能。**module integration の改修**: (1) `EnumDecl` remap が enum 名 / generic params / 各 variant 名 / payload TypeDecl を main interner に reroute (これがないと auto-loaded `Option<T>` が unmappable symbol で struct 扱いされる)、(2) `MethodFunction` remap が generic_params / generic_bounds / parameter TypeDecl / return TypeDecl も remap、(3) 新 helper `remap_type_decl` (Identifier/Generic/Struct/Enum/Tuple/Array/Dict/Range の symbol を再帰 remap) と `remap_pattern` (EnumVariant/Literal/Name/Tuple)、(4) `Expr::Match` arm を `remap_expression` に追加。**衝突回避**: `AstIntegrationContext` が construction 時に `main_program.statement` から user-declared enum / struct 名を snapshot し、`EnumDecl` / `ImplBlock` の remap で同名 user 宣言があれば silent skip (placeholder `Stmt::Break` のまま)。これで既存テストの inline `enum Option<T>` / `struct Option<T>` がそのまま動作。**interpreter dispatch**: `evaluation/call.rs` に `Object::EnumVariant` arm を追加し、enum 名 symbol で method_registry を引く (struct path と同形)。**type-checker**: `visit_method_call_impl` が `Struct(name, args)` annotation を `enum_definitions` に登録された名前なら `Enum(name, args)` に refine、`visit_method_call_on_type` に Enum branch を追加 (T を enum_generic_params から bind、method-only generic を arg 型から推論、Self を receiver enum に解決)。`visit_field_access_impl` が module-qualified resolution の前に local var lookup を実行 (これがないと auto-loaded `result` module alias が DbC `result` キーワードと衝突)。**AOT compiler**: `lower_method_call` の generic-method branch が enum receiver を分岐し、`instantiate_generic_method_with_self_type` (新規) / `peek_method_return_type_with_self` (新規) で `Type::Enum(enum_id)` を Self type に渡す。compiler 側で動作確認。**注意**: JIT は enum 値モデルが無いので silent fallback (interpreter で正しく動作)。
+
+202. **per-module function namespacing — 型チェッカ + interpreter 実行時** (`#193b`、`ecee60e`): `#193` で IR `function_index` を `(qualifier, name)` キー化したのに対して、型チェッカ層と interpreter 実行時の関数テーブルは依然 flat だったため、同名 `pub fn` を複数モジュールが持つ場合に last-wins で誤った関数が呼ばれていた。3 層全てを揃える。**frontend 型チェッカ**: `context.functions` を `HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>` に re-key、`set_fn_with_module` / `lookup_fn(qualifier, name)` 追加 (bare 優先 + 一意な (Some(_), name) fallback)、`add_function_with_module` を utility に追加。`with_program` と `setup_type_checker` の両登録経路で `program.function_module_paths` を引いて qualifier を pass。`dispatch_module_function_call_with_qualifier` を追加。**interpreter 実行時 (本丸)**: `EvaluationContext.function_qualified` フィールド追加、`new_with_qualified` constructor、`lookup_function_qualified(qualifier, name)` helper。`evaluate_function_call` (bare) は qualified table の (None, name) を優先、`call_associated_function` (qualified) は (Some(struct_name), function_name) を優先。`build_function_qualified_map` を `lib.rs` に追加し `execute_program` で渡す。**compiler AOT**: `lower_program` の関数 declare で `module_qualifier` を export name に mangle (`toy_<qualifier>__<name>`)、cranelift declare 衝突を解消。**stdlib 注記**: `core/std/math.t` に `pub fn add` / `pub fn multiply` を export しない方針を明記 (user が独自型で頻繁に書く名前のため)。
+
+201. **AOT compiler enum receiver method dispatch** (`#96` の前提条件、`ad6d836` 内): `lower_method_call` の generic-method branch を enum receiver に対応 (`#96` 完了の根拠)。詳細は #203 参照。
+
+200. **コンパイラ allocator builtin に specific error message** (`#121` 部分対応): AOT compiler が `__builtin_arena_allocator` / `fixed_buffer_allocator` / `current_allocator` / `default_allocator` / `heap_alloc` / `realloc` / `free` / `ptr_read` / `ptr_write` を encounter すると、汎用の "compiler MVP cannot lower builtin yet" ではなく `compiler MVP cannot lower allocator builtin <X> yet (todo #121: needs IR-level AllocatorBinding + native codegen)` を出すようにした。`AllocatorBinding` IR enum 自体は既に定義済み (`compiler/src/ir.rs`)、ヒープ系 builtin 命令への配線と native codegen 側 (with-scope の active-allocator stack push/pop と heap helper) が次の本実装ステップ。
 
 197. **JIT 一般化フォールバック regression test 追加** (`#160` `#159` 部分対応): JIT eligibility が拒否する高度な機能 (nested tuple `((i64,i64), i64)` parameter, generic `struct Cell<T>` + method) について、interpreter が正しく実行し JIT が静かに / clean error で fallback することを assert する fixture + test を追加 (`example/jit_nested_tuple_fallback.t`, `example/jit_generic_struct_fallback.t`, `tests/jit_integration.rs::jit_nested_tuple_falls_back_cleanly` `jit_generic_struct_falls_back_cleanly`)。実装の本体 (nested tuple は `ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造に拡張する 100+ 箇所の refactor、generic struct は `struct_layouts` を type-args 別に持つ refactor) は別タスク。
 
@@ -129,23 +141,18 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 
 ## 未実装 📋
 
-193b. **per-module function namespacing — 型チェッカ層** (`#193` の続き): IR 層は #194 (上記の完了済みエントリ) で per-module key 化したが、`frontend::type_checker::context.functions` は依然 `HashMap<DefaultSymbol, Rc<Function>>` で flat。同名 `pub fn` を複数モジュールが持つ場合、context.set_fn の last-wins で型検査がどちらか一方しか参照できない。E2E で coexistence を許すには `(qualifier, name)` キー化 + qualified call resolution の type-checker パスへの導入が必要。優先度: 中
-
 195b. **`extern fn` 生 monomorph 化** (`#195` の続き): 現状ジェネリック extern は interpreter の type-erased registry でだけ動く。JIT/AOT で動かすには call site ごとに mangled extern symbol (`__extern_id__u64`, `__extern_id__i64` など) を emit し、対応する monomorph 実装を Rust 側に登録する仕組みが必要。優先度: 低 (現状必要なケースなし)
 
-185. **モジュール統合の本格実装 — 完了 (E3 完成 + 多段パス + namespace-only + auto-load)**
-    - **interpreter / JIT / compiler 全 3 経路に対応** (commits: `cb4a61c` `eb289c6` `118c6d2` `95aa437` + Phase 2d/2e + `c3fd179` `74db25a`)
-    - **済み変更**: `StmtPool::update` 追加、module_integration の `update_with_remapped_content` TODO 解消、type_checker / JIT eligibility / compiler lower に `module::func` dispatch 追加、stdlib `math.t` (現 `core/std/math.t`) に math::abs / sqrt / min_* / max_* / pow / sin / cos / tan / log / log2 / exp / floor / ceil / fabs ラッパ追加 (`__extern_*` 経由 — Math externalisation Phase 1〜4 で `__builtin_*` から移行)、multi-segment import path (`import std.math` -> `modules/std/math.t`) 対応、namespace-only 強制 (imported `pub fn` への bare 呼び出しは type-check で reject; ただし `extern fn` と auto-load は exempt)、core modules auto-load (env var / CLI flag / exe-relative search), `Stmt::ImplBlock` / `Stmt::TraitDecl` / `Expr::AssociatedFunctionCall` の symbol remap バグ修正
-    - **残るかもしれない作業**: 3+ part qualified call (`std::math::abs(x)` 形式) — 現状は `import std.math` (または auto-load) してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度低
+185残. **3+ part qualified call** (`std::math::abs(x)` 形式) — 現状は `import std.math` (または auto-load) してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度: 低 (auto-load のおかげで実用上の不便は限定的)
 
-160. **タプルの追加 JIT 対応** — フラットなスカラーtupleの param / return / TupleAccess / destructure / tuple-returning call は完了 (`#163`)。残: ネストタプル (`((a,b),c)`) と tuple-of-struct を JIT codegen で扱う (現状 silent fallback)、inline tuple literal を call argument として渡せるようにする
-159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
-96. **Enum/match 拡張** — Phase 1/2/2c/3 + リテラル + ネスト + 文字列リテラルパターン完了。標準 Option/Result ライブラリ、深い網羅性解析は未実装
-29. **Option<T> を標準的に提供** — ジェネリック enum は動作中。ユーザ空間で書ける（`enum Option<T> { None, Some(T) }`）。標準ライブラリとして組み込むかは別議論
-30. **組み込み関数システム** — 型変換（u64 ↔ i64 は既に `as` で可能）、数学関数（`abs`, `min`, `max`, `pow`, `sqrt`）
-65. **frontendの改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
-26. **ドキュメント整備** — 言語仕様 / API ドキュメント
-121. **Allocator システム残作業** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read` 実装済み。残り: IR レベルの `AllocatorBinding`、Phase 4 以降の native codegen（詳細は `ALLOCATOR_PLAN.md`）
+JIT-enum-1. **JIT 値モデルとしての enum サポート** — `ParamTy::Enum(EnumId)` 追加、enum constructor (`Option::Some(...)`) の cranelift lowering、match の brif chain dispatch、enum-typed function param/return の boundary handling、enum receiver method dispatch、generic enum (Option<T>) のモノモル化対応。AOT compiler の Phase A1〜O 相当の規模 (~1000+ 行)。現状は silent fallback (interpreter で全機能動作)。優先度: 中 (実装すれば Option/Result + ユーザ enum がすべて JIT compile 可能になる)
+
+160. **タプルの追加 JIT 対応** — フラットなスカラーtupleの param / return / TupleAccess / destructure / tuple-returning call は完了 (`#163`)。残: ネストタプル (`((a,b),c)`) と tuple-of-struct を JIT codegen で扱う (`ParamTy::Tuple(Vec<ScalarTy>)` を tree 構造に拡張する 100+ 箇所の refactor)、inline tuple literal を call argument として渡せるようにする
+159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) / `__builtin_fixed_buffer_allocator` / `with` 内の早期 exit はすべて完了。残: generic 構造体 / メソッド (`struct_layouts` を type-args 別に持つ refactor)。サポート範囲のまとめは `JIT.md`
+121. **Allocator native codegen** — `__builtin_sizeof`（primitive/struct/enum/tuple/array）、`struct List<T, A: Allocator>`、任意型 T 対応の `ptr_write`/`ptr_read`、`AllocatorBinding` IR enum 定義はすべて完了。残: IR レベルの `AllocatorBinding` をヒープ系 builtin 命令 (heap_alloc / realloc / free / ptr_read / ptr_write) に配線、AOT compiler 側 native codegen で `with allocator = ...` scope の active-allocator stack push/pop と heap helper 呼び出しを実装 (詳細は `ALLOCATOR_PLAN.md`)。AOT で当該 builtin を使うと現状 `compiler MVP cannot lower allocator builtin <X> yet (todo #121: needs IR-level AllocatorBinding + native codegen)` を返す
+96残. **Enum/match の追加機能** — 標準 Option/Result library は完了 (`#203`)。残: 深い網羅性解析 (`Option<Option<i64>>` の Some(None) / Some(Some(_)) / None 全分岐の網羅性チェック)、より多くの stdlib メソッド (`map<U>`、`and_then` etc. — closures が必要なため要設計議論)
+65. **frontend の改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
+26. **ドキュメント整備** — 言語仕様 / API ドキュメント (`docs/language.md` は最新化済み、`compiler/README.md` / `interpreter/README.md` も追従済み。残: API リファレンス、advanced topics)
 183. **コンパイラの作成（MVP + IR + panic/assert + print/println + struct + cast/f64 + struct boundary + tuple + const + DbC + --release + nested fields + tuple boundary + 3 経路一致テスト 対応・段階的進行中）** — toylang のソースを実行可能バイナリにコンパイルする独立コンポーネントを新設する。
 
    **2026-05-01: 3 経路一致テストに JIT を追加** — `compiler/tests/consistency.rs` が interpreter (lib API) / compiler (subprocess) / **JIT (interpreter binary spawn with INTERPRETER_JIT=1)** の 3 経路で同一 exit code を保証するように拡張。`OnceLock` で interpreter binary を一度だけビルドしてキャッシュ、各テストで `Command::new(bin).env("INTERPRETER_JIT", "1").arg(src)` で spawn。3-way assertion は interp vs compiler / interp vs jit を別々に diff 表示するため、どのペアがズレたか明示できる。新機能カバレッジ向上のため struct / tuple / const / DbC のケースも追加（計 14 テスト 全 green）。**発見した既知差分**: u64 underflow 時、interpreter は overflow panic、compiler / JIT は wrap。consistency テストでは underflow を起こさないオペランドを選んで意図しないドリフトのみを catch する設計に。
@@ -339,12 +346,12 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
 - 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`、ネストフィールド (`a.b.c`) chain access
 - タプル: 局所バインディング + 関数引数 / 戻り値、`val (a, b) = expr` 分解 (ネスト対応)、`t.0` access、ネストタプル + tuple-of-struct + struct-of-tuple
-- Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）。**プリミティブ型に対する extension trait** (`impl <Trait> for i64/f64/...`) も interpreter / JIT / AOT 全 backend で動作。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl 経由
-- `extern fn` 宣言: `extern fn name(params) -> ret` で signature だけ宣言、body は backend (interpreter registry / JIT helper or native / AOT libm import) が提供。math intrinsic はすべてこの仕組み経由
+- Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）。**プリミティブ型に対する extension trait** (`impl <Trait> for i64/f64/...`) も interpreter / JIT / AOT 全 backend で動作。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl 経由。chained primitive method call (`x.abs().abs()`) も 3 backend 全対応 (`#194`)
+- `extern fn` 宣言: `extern fn name(params) -> ret` で signature だけ宣言、body は backend (interpreter registry / JIT helper or native / AOT libm import) が提供。math intrinsic はすべてこの仕組み経由。generic params (`extern fn name<T>(x: T) -> T`) は parser で受理、interpreter で動作 (`#195`)
 - 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
 - Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Global / Arena / **FixedBuffer** allocator (3 種すべて実装済み)
-- Enum + match: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、ジェネリック enum (`Option<T>`)、ネスト enum payload (`Option<Option<i64>>`)、payload に `f64` / struct / tuple、リテラル / ネスト / タプルパターン、guard (`if cond`)、網羅性チェック、到達性チェック
+- Enum + match: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、ジェネリック enum (`Option<T>`)、ネスト enum payload (`Option<Option<i64>>`)、payload に `f64` / struct / tuple / **str** (`#205` AOT も対応)、リテラル / ネスト / タプルパターン、guard (`if cond`)、網羅性チェック、到達性チェック。enum receiver method dispatch も interpreter / AOT で動作 (`#96` `#203`)。JIT は enum 値モデル未対応で silent fallback (`#204` で precise diagnostic)
 - DbC: `requires` / `ensures` 節の実行時チェック、`ensures` 内の `result` バインド、`INTERPRETER_CONTRACTS` (interpreter) / `--release` (compiler) で gating
 - `panic("msg")` / `assert(cond, msg)` ビルトイン (3 backend 全対応、release でも常時 active 設計)
 - `__builtin_sizeof(value)`: primitive / struct / enum (1-byte tag + payload) / tuple / array をサポート
@@ -361,11 +368,12 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 ### モジュール・その他
 - Go-styleモジュールシステム: package/import/qualified name resolution、3-segment 以上は alias 経由
 - **コア・モジュール auto-load**: `<repo>/core/` を起動時に再帰的に integrate (`<exe>/core/` / `<exe>/../share/toylang/core/` / `<exe>/../../core/` の順に探索、CLI flag `--core-modules <DIR>` と env var `TOYLANG_CORE_MODULES` で override)。`math::sin(x)` 等が import 行なしで呼べる
-- stdlib: `core/std/math.t` (math 関数) / `core/std/i64.t` (Abs trait) / `core/std/f64.t` (Abs/Sqrt impl)
+- **per-module function namespacing**: IR / 型チェッカー / interpreter 実行時の関数テーブル全 3 層を `(Option<DefaultSymbol> qualifier, DefaultSymbol name)` キー化 (`#193` `#193b`)。同名 `pub fn` を複数モジュールが持っても安全に共存。bare 呼び出しは user-authored を優先、qualified 呼び出しは module qualifier 直接 lookup
+- stdlib: `core/std/math.t` (math 関数) / `core/std/i64.t` (Abs trait) / `core/std/f64.t` (Abs/Sqrt impl) / `core/std/option.t` (`enum Option<T>` + is_some/is_none/unwrap_or/expect) / `core/std/result.t` (`enum Result<T, E>` + is_ok/is_err/unwrap_or/expect)
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1257 テスト, 31 skipped（100% 成功率、2026-05-02 時点 — #194/#195/#160/#159 fixture で +6）
+- 合計 1261 テスト, 31 skipped（100% 成功率、2026-05-02 時点 — #194/#195/#160/#159 fixture で +6、#193b coexistence test で +1、#96 stdlib_option/result + JIT enum diag + str payload で +4）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (23) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 
@@ -373,5 +381,6 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 - bare `self` 構文非対応（`self: Self` が必要）
 - `else if` 未サポート（`elif`を使用）
 - `val` はキーワードのためパラメータ名に使用不可
-- `extern fn` は generic params 不可 (現状 backend dispatch が name-mangling 未対応)
+- `extern fn` の generic params は parser で受理されるが JIT/AOT は per-instance シンボル名を持たないため interpreter のみで動作 (`#195` / `#195b`)
 - `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省略しているのはこのため)
+- 3-part qualified call (`std::math::abs(x)`) は parser が last 名のみ採用 — `import std.math` または auto-load 経由で `math::abs(x)` の形にする必要あり (`#185残`)

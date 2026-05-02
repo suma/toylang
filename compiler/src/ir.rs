@@ -336,6 +336,10 @@ pub enum Linkage {
     /// Internal symbol; gets the `toy_` prefix so multiple compiled
     /// programs can be linked together without symbol collisions.
     Local,
+    /// External symbol resolved at link time. Used for `extern fn`
+    /// declarations: the body lives in libm / a C runtime, and the
+    /// compiler emits the call but never the definition.
+    Import,
 }
 
 #[derive(Debug)]
@@ -859,6 +863,7 @@ impl fmt::Display for Function {
         let linkage = match self.linkage {
             Linkage::Export => "export",
             Linkage::Local => "local",
+            Linkage::Import => "import",
         };
         let params: Vec<String> = self
             .params

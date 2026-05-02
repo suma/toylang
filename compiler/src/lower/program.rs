@@ -39,6 +39,30 @@ use super::templates::{
 use super::FunctionLower;
 use crate::ir::{FuncId, InstKind, Linkage, Module, Terminator, Type, ValueId};
 
+/// Map a source-level `extern fn` identifier to the libm symbol name
+/// the AOT compiler should emit as a `Linkage::Import`. Returns `None`
+/// for names not yet wired into the libm bridge — the compiler skips
+/// the declaration entirely so any reference triggers a clean
+/// "function index missing" error rather than emitting a dangling
+/// import. Phase 4 will collapse this with the JIT extern dispatch
+/// table once `BuiltinFunction::*` is removed.
+fn libm_import_name_for(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "__extern_sin_f64" => "sin",
+        "__extern_cos_f64" => "cos",
+        "__extern_tan_f64" => "tan",
+        "__extern_log_f64" => "log",
+        "__extern_log2_f64" => "log2",
+        "__extern_exp_f64" => "exp",
+        "__extern_pow_f64" => "pow",
+        "__extern_sqrt_f64" => "sqrt",
+        "__extern_floor_f64" => "floor",
+        "__extern_ceil_f64" => "ceil",
+        "__extern_abs_f64" => "fabs",
+        _ => return None,
+    })
+}
+
 pub fn lower_program(
     program: &Program,
     interner: &DefaultStringInterner,
@@ -102,13 +126,38 @@ pub fn lower_program(
             generic_funcs.insert(func.name, Rc::clone(func));
             continue;
         }
-        // Skip extern fn declarations — Phase 2c will re-declare these
-        // as `Linkage::Import` once compiler-side extern dispatch
-        // lands. For now an `extern fn` declaration is allowed to
-        // appear in the program (so users can author math.t-style
-        // headers that the interpreter handles) but the AOT compiler
-        // can't yet resolve calls to them.
+        // `extern fn` declarations are imports, not definitions. The
+        // body lives in libm / a runtime shim; the linker resolves
+        // the call. Look the source-level name up in the libm
+        // dispatch table (mirrors the JIT extern dispatch in
+        // `interpreter::jit::eligibility`); externs whose name isn't
+        // in the table fall through and are skipped, so any call
+        // site to them produces a clean "no FuncId" error rather
+        // than emitting a dangling symbol.
         if func.is_extern {
+            let raw_name = interner.resolve(func.name).unwrap_or("");
+            let import_name = match libm_import_name_for(raw_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
+            for (pname, pty) in &func.parameter {
+                let lowered = lower_param_or_return_type(pty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower extern fn parameter `{}: {:?}`",
+                        interner.resolve(*pname).unwrap_or("?"),
+                        pty
+                    )
+                })?;
+                params.push(lowered);
+            }
+            let ret = match &func.return_type {
+                Some(ty) => lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(
+                    || format!("compiler MVP cannot lower extern fn return type `{:?}`", ty),
+                )?,
+                None => Type::Unit,
+            };
+            module.declare_function(func.name, import_name.to_string(), Linkage::Import, params, ret);
             continue;
         }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());

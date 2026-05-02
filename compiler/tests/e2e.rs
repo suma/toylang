@@ -4491,3 +4491,31 @@ fn math_log2_pow2_roundtrip() {
     "#;
     assert_eq!(compile_and_run(src, "math_log2_pow2"), 10);
 }
+
+#[test]
+fn extern_fn_dispatch_to_libm() {
+    // Phase 2e: `extern fn` declarations whose name maps into the
+    // libm bridge become `Linkage::Import` cranelift functions.
+    // Each call below resolves to the matching libm symbol at link
+    // time. Picks values so the integer cast lands on a known result:
+    //   sin(0) = 0
+    //   sqrt(81) = 9
+    //   floor(7.9) = 7
+    // Sum = 16.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        extern fn __extern_sin_f64(x: f64) -> f64
+        extern fn __extern_sqrt_f64(x: f64) -> f64
+        extern fn __extern_floor_f64(x: f64) -> f64
+
+        fn main() -> u64 {
+            val s: f64 = __extern_sin_f64(0f64)
+            val r: f64 = __extern_sqrt_f64(81f64)
+            val f: f64 = __extern_floor_f64(7.9f64)
+            (s + r + f) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "extern_fn_dispatch"), 16);
+}

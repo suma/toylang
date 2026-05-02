@@ -93,6 +93,14 @@ fn build_object_module(
     session.declare_all(ir_module, interner)?;
     for func_id in 0..ir_module.functions.len() {
         let func_id = FuncId(func_id as u32);
+        // `Linkage::Import` functions are external — there's no body
+        // to define. The cranelift Import declaration emitted by
+        // `declare_all` is enough; the linker resolves the call at
+        // link time. Trying to define one would crash on the
+        // missing entry block.
+        if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
+            continue;
+        }
         session.define_function(ir_module, func_id)?;
         if options.verbose {
             eprintln!("emitted {}", ir_module.function(func_id).export_name);
@@ -297,6 +305,7 @@ impl CodegenSession {
             let linkage = match func.linkage {
                 Linkage::Export => CLinkage::Export,
                 Linkage::Local => CLinkage::Local,
+                Linkage::Import => CLinkage::Import,
             };
             let cl_id = self
                 .module

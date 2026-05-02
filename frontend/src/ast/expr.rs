@@ -355,6 +355,11 @@ pub enum BuiltinMethod {
     StrTrim,      // str.trim() -> str
     StrToUpper,   // str.to_upper() -> str
     StrToLower,   // str.to_lower() -> str
+
+    // Numeric methods (forward to the matching `__builtin_*` intrinsic
+    // so the implementation stays in one place).
+    I64Abs,   // i64.abs() -> i64  — `__builtin_abs(self)`
+    F64Sqrt,  // f64.sqrt() -> f64 — `__builtin_sqrt(self)`
 }
 
 #[derive(Debug, Clone, PartialEq)]

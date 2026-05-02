@@ -21,6 +21,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         registry.insert((TypeDecl::String, "trim".to_string()), BuiltinMethod::StrTrim);
         registry.insert((TypeDecl::String, "to_upper".to_string()), BuiltinMethod::StrToUpper);
         registry.insert((TypeDecl::String, "to_lower".to_string()), BuiltinMethod::StrToLower);
+
+        // Numeric methods. `i64.abs()` returns `i64` (matches Rust's
+        // `wrapping_abs`); `f64.sqrt()` returns `f64` (IEEE 754 — NaN
+        // for negative inputs). Both forward to the matching
+        // `__builtin_*` intrinsic in the runtime / JIT / compiler.
+        registry.insert((TypeDecl::Int64, "abs".to_string()), BuiltinMethod::I64Abs);
+        registry.insert((TypeDecl::Float64, "sqrt".to_string()), BuiltinMethod::F64Sqrt);
         
         // Future: Array methods (when ArrayLen etc. are added)
         // registry.insert((TypeDecl::Array(vec![], 0), "len".to_string()), BuiltinMethod::ArrayLen);

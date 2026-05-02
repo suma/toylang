@@ -284,6 +284,52 @@ impl<'a> FunctionLower<'a> {
         method: DefaultSymbol,
         args: &Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
+        // Numeric value-method form (`x.abs()` for `i64`,
+        // `x.sqrt()` for `f64`). The frontend type-checker dispatches
+        // these via `BuiltinMethod::I64Abs` / `BuiltinMethod::F64Sqrt`,
+        // but the AST still reaches us as a plain `MethodCall`. We
+        // intercept here before the struct-binding check so the
+        // receiver doesn't have to be a struct.
+        let method_name = self.interner.resolve(method).unwrap_or("");
+        if method_name == "abs" || method_name == "sqrt" {
+            if !args.is_empty() {
+                return Err(format!(
+                    "{method_name}() takes no arguments, got {}",
+                    args.len()
+                ));
+            }
+            let receiver_value = self
+                .lower_expr(obj)?
+                .ok_or_else(|| {
+                    format!("{method_name}() receiver produced no value")
+                })?;
+            let receiver_ty = self.value_ir_type_for(receiver_value);
+            match (method_name, receiver_ty) {
+                ("abs", Some(crate::ir::Type::I64)) => {
+                    return Ok(self.emit(
+                        InstKind::UnaryOp {
+                            op: crate::ir::UnaryOp::Abs,
+                            operand: receiver_value,
+                        },
+                        Some(crate::ir::Type::I64),
+                    ));
+                }
+                ("sqrt", Some(crate::ir::Type::F64)) => {
+                    return Ok(self.emit(
+                        InstKind::UnaryOp {
+                            op: crate::ir::UnaryOp::Sqrt,
+                            operand: receiver_value,
+                        },
+                        Some(crate::ir::Type::F64),
+                    ));
+                }
+                // Fall through to the regular struct/enum method path
+                // — the receiver might be a user struct that happens
+                // to define an `abs` / `sqrt` instance method.
+                _ => {}
+            }
+        }
+
         let obj_expr = self
             .program
             .expression

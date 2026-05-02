@@ -523,6 +523,39 @@ impl EvaluationContext<'_> {
                     }
                 }
             }
+            // Numeric value-method dispatch — `x.abs()` for `i64`,
+            // `x.sqrt()` for `f64`. Both forward to the matching
+            // `__builtin_*` semantics (wrapping_abs / IEEE 754).
+            Object::Int64(n) => {
+                if method_name == "abs" {
+                    if !args.is_empty() {
+                        return Err(InterpreterError::InternalError(format!(
+                            "i64.abs() method takes no arguments, but {} provided",
+                            args.len()
+                        )));
+                    }
+                    return Ok(EvaluationResult::Value(
+                        Object::Int64(n.wrapping_abs()).into(),
+                    ));
+                }
+                Err(InterpreterError::InternalError(format!(
+                    "Method '{method_name}' not found for i64"
+                )))
+            }
+            Object::Float64(x) => {
+                if method_name == "sqrt" {
+                    if !args.is_empty() {
+                        return Err(InterpreterError::InternalError(format!(
+                            "f64.sqrt() method takes no arguments, but {} provided",
+                            args.len()
+                        )));
+                    }
+                    return Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()));
+                }
+                Err(InterpreterError::InternalError(format!(
+                    "Method '{method_name}' not found for f64"
+                )))
+            }
             Object::Struct { type_name, .. } => {
                 let struct_name_symbol = *type_name;
 

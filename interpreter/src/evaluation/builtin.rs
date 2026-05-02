@@ -235,6 +235,34 @@ impl EvaluationContext<'_> {
 
                 Ok(EvaluationResult::Value(Object::Array(Box::new(parts)).into()))
             }
+
+            BuiltinMethod::I64Abs => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "i64.abs() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                let n = receiver.borrow().try_unwrap_int64().map_err(|_| {
+                    InterpreterError::InternalError("abs() requires an i64 receiver".to_string())
+                })?;
+                Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
+            }
+
+            BuiltinMethod::F64Sqrt => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "f64.sqrt() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                let x = receiver.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError("sqrt() requires an f64 receiver".to_string())
+                })?;
+                Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()))
+            }
         }
     }
 

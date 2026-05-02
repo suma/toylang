@@ -138,12 +138,24 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         match method {
             BuiltinMethod::StrLen => Ok(TypeDecl::UInt64),
             BuiltinMethod::IsNull => Ok(TypeDecl::Bool),
+            BuiltinMethod::I64Abs => {
+                if !args.is_empty() {
+                    return Err(TypeCheckError::generic_error("i64.abs() takes no arguments"));
+                }
+                Ok(TypeDecl::Int64)
+            }
+            BuiltinMethod::F64Sqrt => {
+                if !args.is_empty() {
+                    return Err(TypeCheckError::generic_error("f64.sqrt() takes no arguments"));
+                }
+                Ok(TypeDecl::Float64)
+            }
             // Add more builtin methods as needed
             _ => {
                 // For other builtin methods, check receiver type and args
                 let _receiver_type = self.visit_expr(receiver)?;
                 let _arg_types: Result<Vec<_>, _> = args.iter().map(|arg| self.visit_expr(arg)).collect();
-                
+
                 // Return appropriate type based on method
                 Ok(TypeDecl::Unit)
             }

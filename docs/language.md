@@ -843,6 +843,25 @@ widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
 fields; enums account for a 1-byte tag plus payload; tuples and
 arrays sum their elements.
 
+### Numeric value methods
+
+```rust
+val n: i64 = -5i64
+val r: f64 = 16f64
+
+n.abs()    # -> i64  (i64::wrapping_abs semantics)
+r.sqrt()   # -> f64  (IEEE 754; NaN for negative inputs)
+```
+
+These are dispatched as built-in methods on the receiver type
+(`i64.abs()` / `f64.sqrt()`). They forward to the same
+`__builtin_*` intrinsics the `math::abs(x)` / `math::sqrt(x)`
+wrappers use, so the runtime / JIT (forthcoming) / AOT compiler
+behaviour is identical between the two call shapes. Use whichever
+form reads more naturally at the call site — the method form is
+typically clearer when the receiver is a single value, the
+qualified form better when the operand is itself a sub-expression.
+
 ### Math (via the `math` module)
 
 ```rust

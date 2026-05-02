@@ -4026,3 +4026,49 @@ fn math_f64_sqrt_negative_is_nan() {
     "#;
     assert_eq!(compile_and_run(src, "math_f64_sqrt_nan"), 7);
 }
+
+#[test]
+fn value_method_i64_abs() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -42i64
+            n.abs() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_i64_abs"), 42);
+}
+
+#[test]
+fn value_method_f64_sqrt() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val r: f64 = 81f64
+            r.sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_sqrt"), 9);
+}
+
+#[test]
+fn value_method_chained_with_cast() {
+    if skip_e2e() {
+        return;
+    }
+    // Mixes both numeric methods with casts to u64 — exercises the
+    // `value_scalar` peek that infers `MethodCall(receiver, abs/sqrt, [])`
+    // return types so `.abs() as u64` works without an annotation.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -7i64
+            val r: f64 = 16f64
+            n.abs() as u64 + r.sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_chained_cast"), 11);
+}

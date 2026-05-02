@@ -135,6 +135,11 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::Pow => Some(Type::F64),
                 _ => None,
             },
+            Expr::BuiltinMethodCall(_receiver, method, _args) => match method {
+                frontend::ast::BuiltinMethod::I64Abs => Some(Type::I64),
+                frontend::ast::BuiltinMethod::F64Sqrt => Some(Type::F64),
+                _ => None,
+            },
             Expr::SliceAccess(obj, info) => {
                 if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
                     return None;
@@ -150,6 +155,22 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             Expr::MethodCall(obj, method, args) => {
+                // Numeric method calls (`x.abs()` for i64,
+                // `x.sqrt()` for f64) reach the AST as `MethodCall`.
+                // Peek through them so cast / let inference works on
+                // call sites like `x.abs() as u64` without needing an
+                // intermediate `val: i64` annotation.
+                if args.is_empty() {
+                    if let Some(name) = self.interner.resolve(method) {
+                        if let Some(recv_ty) = self.value_scalar(&obj) {
+                            match (name, recv_ty) {
+                                ("abs", Type::I64) => return Some(Type::I64),
+                                ("sqrt", Type::F64) => return Some(Type::F64),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
                 let obj_expr = self.program.expression.get(&obj)?;
                 let recv_sym = match obj_expr {
                     Expr::Identifier(s) => s,

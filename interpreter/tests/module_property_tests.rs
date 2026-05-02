@@ -60,6 +60,37 @@ fn test_module_bare_call_rejected() {
 }
 
 #[test]
+fn test_value_method_i64_abs() {
+    // `x.abs()` should call the built-in `i64.abs()` method and
+    // return `wrapping_abs(x)` semantics — `i64::MIN` stays at
+    // `i64::MIN` instead of panicking.
+    let source = r"
+        fn main() -> u64 {
+            val n: i64 = -42i64
+            n.abs() as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "x.abs() should run: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
+}
+
+#[test]
+fn test_value_method_f64_sqrt() {
+    // `x.sqrt()` should call the built-in `f64.sqrt()` method
+    // (IEEE 754) and return the principal root.
+    let source = r"
+        fn main() -> u64 {
+            val r: f64 = 81f64
+            r.sqrt() as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "x.sqrt() should run: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 9);
+}
+
+#[test]
 fn test_module_qualified_call_executes() {
     // Regression test for the module integration fix
     // (`update_with_remapped_content` used to leave imported function

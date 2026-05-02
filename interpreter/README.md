@@ -66,10 +66,20 @@ $ cargo run -- example/fib.t --core-modules /path/to/my-core
 $ TOYLANG_CORE_MODULES= cargo run example/fib.t
 ```
 
-Auto-loaded modules use `enforce_namespace = false`, so a user-
+Auto-loaded modules opt out of bare-call enforcement, so a user-
 defined `fn add(...)` shadows a same-named stdlib export for bare
 calls; the qualified form (`<alias>::add`) keeps working through
 the synthetic `ImportDecl` the auto-load path inserts.
+
+Both functions also coexist properly: the type-checker
+(`context.functions`) and runtime (`function_qualified` mirror) key
+each entry by `(module_qualifier, name)` so a user `fn add(Point,
+Point)` and an auto-loaded `pub fn add(u64, u64)` no longer
+last-win each other. Bare `add(...)` resolves the user version
+first; qualified `<alias>::add(...)` always reaches the stdlib
+slot. The compiler-side mirror lives in `compiler::ir::Module`
+(`function_index` keyed the same way; export names are mangled
+`toy_<qualifier>__<name>` to keep cranelift symbols distinct).
 
 ## Environment variables
 

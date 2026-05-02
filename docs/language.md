@@ -401,12 +401,26 @@ fn helper() -> u64 { ... }                  # private (default)
 `extern fn name(params) -> ret` declares a function whose body is
 provided by the runtime / linker rather than the source program.
 The declaration carries the signature only — no body block, no
-contract clauses, no generic parameters.
+contract clauses.
 
 ```rust
 extern fn __extern_sin_f64(x: f64) -> f64
 extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
 ```
+
+Generic parameters are accepted on `extern fn`:
+
+```rust
+extern fn __extern_test_identity<T>(x: T) -> T
+```
+
+The interpreter dispatches generic externs through the same
+type-erased `extern_registry` keyed by literal name, so a single
+Rust closure satisfies every `T` the type-checker accepts. The JIT
+and AOT compiler don't yet name-mangle monomorph instances, so a
+generic extern call falls back to the interpreter (JIT) or fails
+to resolve at link time (AOT) until each backend grows
+per-instance dispatch.
 
 Each backend resolves the call differently:
 
@@ -808,11 +822,22 @@ Module paths come from the file system layout under the core dir:
 The alias is always the last path segment, so `math::sin(x)` resolves
 through `core/std/math.t` even though the on-disk path is nested.
 
-Auto-loaded modules opt out of namespace enforcement, so user code
+Auto-loaded modules opt out of bare-call enforcement, so user code
 can shadow auto-loaded names with same-name local definitions
 (`fn sin(x: i64) -> i64 { ... }` works even though `math::sin`
-exists). The qualified form keeps working through the
-synthetic `ImportDecl` the auto-load path inserts.
+exists). The qualified form keeps working through the synthetic
+`ImportDecl` the auto-load path inserts.
+
+The function table is keyed by `(module_qualifier, name)` end-to-end
+(IR `function_index`, type-checker `context.functions`, interpreter
+runtime `function_qualified` map), so two modules that each export
+`pub fn foo` no longer collide. Bare `foo(...)` first looks up
+`(None, "foo")` (the user-authored slot); if missed, it falls back
+to the unique `(Some(_), "foo")` entry across modules. Qualified
+`bar::foo(...)` looks up `(Some("bar"), "foo")` directly. The
+compiler also mangles each integrated function's exported symbol to
+`toy_<qualifier>__<name>` so distinct cranelift entries are emitted
+for cross-module same-name functions.
 
 ### Import (explicit, optional)
 
@@ -1023,6 +1048,19 @@ Use whichever shape reads more naturally at the call site — the
 method form is typically clearer when the receiver is a single value,
 the qualified form better when the operand is itself a sub-expression.
 
+Chained primitive method calls work in all three backends:
+
+```rust
+val r: f64 = (4.0f64).sqrt().abs()    # 2.0f64
+val n: i64 = (-5i64).abs()            # 5
+```
+
+The receiver of an outer call may itself be a `MethodCall` /
+`Call` / arithmetic expression — both interpreter and JIT route
+the inner result through the same primitive-method dispatch. The
+AOT compiler does the same via the `value_scalar`-driven
+`lower_method_call` arm.
+
 ### Math (via the `math` module)
 
 ```rust
@@ -1219,25 +1257,36 @@ These are real today; some appear in `todo.md` as planned work.
   can carry non-trivial cost; even there, `all` is the recommended
   setting — see "Operational guidance" above.)
 - **No string interpolation, raw strings, multi-line strings**.
-- **Flat function table — same name across modules collides**. Two
-  `pub fn add(...)` declarations from different modules silently
-  overwrite each other in the integrated function table. The
-  auto-load path uses `enforce_namespace = false` so user-defined
-  functions can shadow auto-loaded ones for bare calls, but two
-  *modules* sharing a function name still clash. Per-module
-  function namespacing is filed as follow-up work.
 - **Trait limitations** — trait declarations themselves can't take
   generic parameters (`trait Foo<T>`); no default method bodies; no
   multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
   Trait`; no associated types. See *Traits → Out of scope*.
-- **`extern fn` generic params are rejected** — extern dispatch is
-  by literal symbol with no name-mangling story for monomorphised
-  externs.
-- **JIT primitive method dispatch needs a bare-identifier
-  receiver** — chained calls like `x.abs().abs()` fall back to the
-  interpreter at the second receiver because it's a `MethodCall`
-  expression, not an `Identifier`. Same restriction the JIT places
-  on struct method receivers today.
+- **`extern fn` generic params: backend monomorph not yet wired** —
+  the parser accepts `extern fn name<T>(x: T) -> T` and the
+  interpreter dispatches via the type-erased `extern_registry` by
+  literal name, so a single Rust closure satisfies every `T`. The
+  JIT and AOT compiler don't yet name-mangle per-instance entries
+  (they fall back to the interpreter / fail to resolve at link
+  time respectively).
+- **3-part qualified call paths** — `std::math::abs(x)` is not a
+  direct call form; `import std.math` (or auto-load) registers the
+  `math` alias and you call through `math::abs(x)`. The parser
+  drops module path components beyond the last two when the head
+  isn't a known struct / enum.
+- **Generic struct / method JIT** — `struct Cell<T>` and methods
+  on it run in the interpreter only; the JIT eligibility rejects
+  generic struct types because `struct_layouts` isn't yet keyed by
+  type args. AOT compiler handles them through its monomorph
+  pipeline.
+- **JIT tuple parameter shape** — only flat scalar tuples (`(i64,
+  i64, bool)`) reach the JIT; nested tuples (`((a, b), c)`) and
+  tuple-of-struct (`(Point, i64)`) fall back to the interpreter
+  until `ParamTy::Tuple` becomes a tree of element shapes.
+- **`with allocator` not in AOT codegen** — the compiler MVP
+  rejects `__builtin_arena_allocator()` / `with allocator = ...` /
+  `__builtin_heap_alloc(...)` etc. with a precise "needs IR-level
+  AllocatorBinding + native codegen" message. Use the interpreter
+  for allocator-system programs.
 
 ---
 

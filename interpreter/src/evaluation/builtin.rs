@@ -671,6 +671,43 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
             }
 
+            BuiltinFunction::Sqrt => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "sqrt takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let v = self.evaluate(&args[0])?;
+                let v = try_value!(Ok(v));
+                let x = v.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError("sqrt expects an f64 argument".to_string())
+                })?;
+                Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()))
+            }
+
+            BuiltinFunction::Pow => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "pow takes 2 arguments".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                let base = self.evaluate(&args[0])?;
+                let base = try_value!(Ok(base));
+                let exp = self.evaluate(&args[1])?;
+                let exp = try_value!(Ok(exp));
+                let b = base.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError("pow base must be f64".to_string())
+                })?;
+                let e = exp.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError("pow exponent must be f64".to_string())
+                })?;
+                Ok(EvaluationResult::Value(Object::Float64(b.powf(e)).into()))
+            }
+
             BuiltinFunction::Min | BuiltinFunction::Max => {
                 if args.len() != 2 {
                     let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

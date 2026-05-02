@@ -253,6 +253,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown, TypeDecl::Unknown],
                 return_type: TypeDecl::Unknown,
             },
+            // f64 math (user-facing). `pow(base, exp)` matches Rust's
+            // `f64::powf`; `sqrt(x)` matches `f64::sqrt`. The signature
+            // is concrete (both args / arg are Float64) so the
+            // signature-table path picks them up directly without the
+            // dispatch-on-arg-type detour `min` / `max` need.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Pow,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Float64, TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Sqrt,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
         ]
     }
 

@@ -266,6 +266,10 @@ extern "C" fn jit_arena_allocator() -> u64 {
         .unwrap_or(0)
 }
 
+extern "C" fn jit_pow_f64(base: f64, exp: f64) -> f64 {
+    base.powf(exp)
+}
+
 extern "C" fn jit_fixed_buffer_allocator(capacity: u64) -> u64 {
     JIT_RT
         .with(|slot| {
@@ -378,6 +382,11 @@ pub(crate) enum HelperKind {
     CurrentAllocator,
     WithAllocatorPush,
     WithAllocatorPop,
+    /// `pow(base, exp) -> f64` — cranelift has no native `fpow`,
+    /// so the JIT routes the call through a Rust helper that calls
+    /// `f64::powf`. `sqrt` does not need a helper because
+    /// cranelift's `sqrt` instruction lowers directly.
+    Pow,
 }
 
 impl HelperKind {
@@ -412,6 +421,7 @@ impl HelperKind {
             HelperKind::CurrentAllocator => "jit_current_allocator",
             HelperKind::WithAllocatorPush => "jit_with_allocator_push",
             HelperKind::WithAllocatorPop => "jit_with_allocator_pop",
+            HelperKind::Pow => "jit_pow_f64",
         }
     }
 
@@ -446,6 +456,7 @@ impl HelperKind {
             HelperKind::CurrentAllocator => jit_current_allocator as *const u8,
             HelperKind::WithAllocatorPush => jit_with_allocator_push as *const u8,
             HelperKind::WithAllocatorPop => jit_with_allocator_pop as *const u8,
+            HelperKind::Pow => jit_pow_f64 as *const u8,
         }
     }
 
@@ -478,10 +489,11 @@ impl HelperKind {
             HelperKind::FixedBufferAllocator => (vec![types::I64], Some(types::I64)),
             HelperKind::WithAllocatorPush => (vec![types::I64], None),
             HelperKind::WithAllocatorPop => (Vec::new(), None),
+            HelperKind::Pow => (vec![types::F64, types::F64], Some(types::F64)),
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 29] = [
+    pub(crate) const ALL: [HelperKind; 30] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -511,6 +523,7 @@ impl HelperKind {
         HelperKind::CurrentAllocator,
         HelperKind::WithAllocatorPush,
         HelperKind::WithAllocatorPop,
+        HelperKind::Pow,
     ];
 }
 

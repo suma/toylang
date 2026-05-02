@@ -287,6 +287,33 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::I64),
                 ))
             }
+            BuiltinFunction::Sqrt => {
+                if args.len() != 1 {
+                    return Err(format!("sqrt expects 1 argument, got {}", args.len()));
+                }
+                let operand = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "sqrt operand produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::UnaryOp { op: crate::ir::UnaryOp::Sqrt, operand },
+                    Some(Type::F64),
+                ))
+            }
+            BuiltinFunction::Pow => {
+                if args.len() != 2 {
+                    return Err(format!("pow expects 2 arguments, got {}", args.len()));
+                }
+                let lhs = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "pow base produced no value".to_string())?;
+                let rhs = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "pow exponent produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::BinOp { op: crate::ir::BinOp::Pow, lhs, rhs },
+                    Some(Type::F64),
+                ))
+            }
             BuiltinFunction::Min | BuiltinFunction::Max => {
                 if args.len() != 2 {
                     let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

@@ -863,6 +863,20 @@ All three are wired through every backend (interpreter / JIT /
 AOT compiler) — JIT and compiler lower to a cranelift `select`
 chain on the appropriate signed/unsigned comparison.
 
+### f64 math
+
+```rust
+sqrt(x: f64) -> f64
+pow(base: f64, exp: f64) -> f64
+```
+
+User-facing names. Both follow IEEE 754: `sqrt(-1f64)` returns
+NaN rather than panicking, `pow(0f64, 0f64)` returns `1f64`.
+JIT lowers `sqrt` to cranelift's native `sqrt` instruction and
+`pow` to a Rust helper that wraps `f64::powf`. The AOT compiler
+emits a direct call into libm's `pow` (always linked on supported
+platforms) and uses `sqrt` for `UnaryOp::Sqrt`.
+
 ### String methods
 
 Method-call syntax on `str`:

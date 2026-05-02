@@ -2517,6 +2517,62 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::I64)
                 }
+                BuiltinFunction::Sqrt => {
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!("sqrt expects 1 argument, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    let t = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if t != ScalarTy::F64 {
+                        note(reject_reason, || {
+                            "sqrt expects an f64 argument".to_string()
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::F64)
+                }
+                BuiltinFunction::Pow => {
+                    if args.len() != 2 {
+                        note(reject_reason, || {
+                            format!("pow expects 2 arguments, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    for a in args.iter() {
+                        let t = check_expr(
+                            program,
+                            a,
+                            locals,
+                            struct_locals,
+                            tuple_locals,
+                            substitutions,
+                            struct_layouts,
+                            callees,
+                            ptr_read_hints,
+                            reject_reason,
+                        )?;
+                        if t != ScalarTy::F64 {
+                            note(reject_reason, || {
+                                "pow operands must be f64".to_string()
+                            });
+                            return None;
+                        }
+                    }
+                    Some(ScalarTy::F64)
+                }
                 BuiltinFunction::Min | BuiltinFunction::Max => {
                     if args.len() != 2 {
                         let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

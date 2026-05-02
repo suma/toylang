@@ -120,6 +120,8 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::Max => {
                     args.first().and_then(|a| self.value_scalar(a))
                 }
+                frontend::ast::BuiltinFunction::Sqrt
+                | frontend::ast::BuiltinFunction::Pow => Some(Type::F64),
                 _ => None,
             },
             Expr::SliceAccess(obj, info) => {

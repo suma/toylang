@@ -116,6 +116,8 @@ struct CodegenSession {
     /// branch-free.
     libc_puts: cranelift_module::FuncId,
     libc_exit: cranelift_module::FuncId,
+    /// libm `double pow(double, double)` — used by `BinOp::Pow`.
+    libm_pow: cranelift_module::FuncId,
     /// Helpers shipped in `compiler/runtime/toylang_rt.c`. The driver
     /// compiles that file and links it next to the toylang object;
     /// these FuncIds are how codegen reaches them.
@@ -188,6 +190,14 @@ impl CodegenSession {
             .declare_function("exit", CLinkage::Import, &exit_sig)
             .map_err(|e| format!("declare exit: {e}"))?;
 
+        let mut pow_sig = Signature::new(call_conv);
+        pow_sig.params.push(AbiParam::new(types::F64));
+        pow_sig.params.push(AbiParam::new(types::F64));
+        pow_sig.returns.push(AbiParam::new(types::F64));
+        let libm_pow = module
+            .declare_function("pow", CLinkage::Import, &pow_sig)
+            .map_err(|e| format!("declare pow: {e}"))?;
+
         // Declare the `toy_*` runtime helpers up front. Each takes a
         // single value matching its C prototype: i64/u64/bool/(char*).
         // bool is `uint8_t` on the C side, mapped to cranelift `I8`.
@@ -224,6 +234,7 @@ impl CodegenSession {
             fn_ids: HashMap::new(),
             libc_puts,
             libc_exit,
+            libm_pow,
             rt_print_i64,
             rt_println_i64,
             rt_print_u64,
@@ -635,6 +646,7 @@ impl CodegenSession {
             println_str: self.module.declare_func_in_func(self.rt_println_str, func),
             print_f64: self.module.declare_func_in_func(self.rt_print_f64, func),
             println_f64: self.module.declare_func_in_func(self.rt_println_f64, func),
+            pow: self.module.declare_func_in_func(self.libm_pow, func),
         }
     }
 }
@@ -656,6 +668,7 @@ struct RuntimeRefs {
     println_str: cranelift_codegen::ir::FuncRef,
     print_f64: cranelift_codegen::ir::FuncRef,
     println_f64: cranelift_codegen::ir::FuncRef,
+    pow: cranelift_codegen::ir::FuncRef,
 }
 
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
@@ -760,6 +773,22 @@ struct LowerCtx<'a, 'b> {
 }
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
+    /// Emit `libm pow(base, exp) -> double` and return the cranelift
+    /// Value the call produces. The `pow` symbol is declared in
+    /// `CodegenSession::new` and resolved at link time against libm.
+    fn emit_pow_call(
+        &mut self,
+        base: cranelift_codegen::ir::Value,
+        exp: cranelift_codegen::ir::Value,
+    ) -> Result<cranelift_codegen::ir::Value, String> {
+        let call = self.builder.ins().call(self.runtime.pow, &[base, exp]);
+        let results = self.builder.inst_results(call);
+        if results.is_empty() {
+            return Err("libm pow call produced no result".into());
+        }
+        Ok(results[0])
+    }
+
     fn new(
         builder: &'a mut FunctionBuilder<'b>,
         ir_module: &'a IrModule,
@@ -926,6 +955,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                                 "compiler MVP does not support min/max on f64 yet".to_string(),
                             );
                         }
+                        BinOp::Pow => self.emit_pow_call(l, r)?,
                     };
                     self.record_result(inst, v);
                     return Ok(());
@@ -1008,6 +1038,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         let cmp = self.builder.ins().icmp(cc, l, r);
                         self.builder.ins().select(cmp, l, r)
                     }
+                    BinOp::Pow => {
+                        return Err(
+                            "BinOp::Pow expects f64 operands; integer pow is not supported"
+                                .to_string(),
+                        );
+                    }
                 };
                 self.record_result(inst, v);
             }
@@ -1034,6 +1070,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, v, zero);
                         self.builder.ins().select(cmp, neg, v)
                     }
+                    UnaryOp::Sqrt => self.builder.ins().sqrt(v),
                 };
                 self.record_result(inst, result);
             }

@@ -641,6 +641,11 @@ pub enum BinOp {
     // `umax` cranelift instructions as appropriate).
     Min,
     Max,
+
+    // f64 power (`pow(base, exp)`). cranelift has no native `fpow`,
+    // so the codegen pass emits a call into a `pow` symbol resolved
+    // by the linker (libm provides it on every supported platform).
+    Pow,
 }
 
 impl BinOp {
@@ -663,6 +668,9 @@ pub enum UnaryOp {
     /// Integer absolute value. `i64` only; matches Rust's
     /// `wrapping_abs` for `i64::MIN` (returns `i64::MIN`).
     Abs,
+    /// IEEE 754 square root for `f64`. Lowers to cranelift's `sqrt`
+    /// instruction (`fsqrt` on most ISAs).
+    Sqrt,
 }
 
 #[derive(Debug, Clone)]
@@ -799,6 +807,7 @@ impl fmt::Display for BinOp {
             BinOp::Shr => "shr",
             BinOp::Min => "min",
             BinOp::Max => "max",
+            BinOp::Pow => "pow",
         })
     }
 }
@@ -810,6 +819,7 @@ impl fmt::Display for UnaryOp {
             UnaryOp::BitNot => "bnot",
             UnaryOp::LogicalNot => "lnot",
             UnaryOp::Abs => "abs",
+            UnaryOp::Sqrt => "sqrt",
         })
     }
 }

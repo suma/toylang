@@ -370,6 +370,22 @@ fn math_int_example_compiles_callees() {
     assert!(r.stderr.contains("main"), "stderr: {}", r.stderr);
 }
 
+#[test]
+fn math_f64_example_matches_between_modes() {
+    assert_match("example/math_f64.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn math_f64_example_compiles_callees() {
+    // `sqrt` lowers to cranelift's native `sqrt` instruction; `pow`
+    // routes through the `jit_pow_f64` helper. Both keep the
+    // function on the JIT path.
+    let r = run("example/math_f64.t", true, true);
+    assert_eq!(r.code, 36);
+    assert!(r.stderr.contains("main"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn with_early_exit_example_compiles_callees() {

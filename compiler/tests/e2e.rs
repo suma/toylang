@@ -3991,3 +3991,34 @@ fn math_int_min_max_unsigned() {
     "#;
     assert_eq!(compile_and_run(src, "math_int_min_max_unsigned"), 19);
 }
+
+#[test]
+fn math_f64_pow_sqrt() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a: f64 = sqrt(16f64)
+            val b: f64 = pow(2f64, 5f64)
+            a as u64 + b as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_f64"), 36);
+}
+
+#[test]
+fn math_f64_sqrt_negative_is_nan() {
+    if skip_e2e() {
+        return;
+    }
+    // IEEE 754 sqrt of a negative is NaN. NaN cast to integer in
+    // cranelift saturates to 0 (matches Rust `as` semantics).
+    let src = r#"
+        fn main() -> u64 {
+            val n: f64 = sqrt(-4f64)
+            n as u64 + 7u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_f64_sqrt_nan"), 7);
+}

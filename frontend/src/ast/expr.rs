@@ -223,6 +223,12 @@ pub enum BuiltinFunction {
     Abs,
     Min,
     Max,
+
+    // f64 math (user-facing). `pow(base, exp)` matches Rust's
+    // `f64::powf`. `sqrt(x)` matches Rust's `f64::sqrt`. Both follow
+    // IEEE 754 — `sqrt(-1f64)` returns NaN rather than panicking.
+    Pow,
+    Sqrt,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +269,10 @@ pub struct BuiltinFunctionSymbols {
     pub abs: DefaultSymbol,
     pub min: DefaultSymbol,
     pub max: DefaultSymbol,
+
+    // f64 math (user-facing names).
+    pub pow: DefaultSymbol,
+    pub sqrt: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -292,6 +302,8 @@ impl BuiltinFunctionSymbols {
             abs: interner.get_or_intern("abs"),
             min: interner.get_or_intern("min"),
             max: interner.get_or_intern("max"),
+            pow: interner.get_or_intern("pow"),
+            sqrt: interner.get_or_intern("sqrt"),
         }
     }
 
@@ -317,6 +329,8 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }
+        else if symbol == self.pow { Some(BuiltinFunction::Pow) }
+        else if symbol == self.sqrt { Some(BuiltinFunction::Sqrt) }
         else { None }
     }
 }

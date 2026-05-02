@@ -505,6 +505,31 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // operand type. Mismatched / unsupported arg types produce a
         // targeted diagnostic instead of the generic "argument type
         // mismatch" the signature path would emit.
+        if matches!(func, BuiltinFunction::Pow | BuiltinFunction::Sqrt) {
+            let (name, expected) = match func {
+                BuiltinFunction::Pow => ("pow", 2usize),
+                BuiltinFunction::Sqrt => ("sqrt", 1),
+                _ => unreachable!(),
+            };
+            if args.len() != expected {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "{name} expects {expected} argument(s), got {}",
+                    args.len()
+                )));
+            }
+            for (i, a) in args.iter().enumerate() {
+                let t = self.visit_expr(a)?;
+                if !matches!(t, TypeDecl::Float64) {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "{name} argument {} expects f64, got {:?}",
+                        i + 1,
+                        t
+                    )));
+                }
+            }
+            return Ok(TypeDecl::Float64);
+        }
+
         if matches!(
             func,
             BuiltinFunction::Abs | BuiltinFunction::Min | BuiltinFunction::Max

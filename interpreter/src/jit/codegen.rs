@@ -992,6 +992,28 @@ impl<'a, 'b> State<'a, 'b> {
                         let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, x, zero);
                         Ok(Some(self.builder.ins().select(cmp, neg, x)))
                     }
+                    BuiltinFunction::Sqrt => {
+                        // cranelift has a native `sqrt` instruction
+                        // that lowers to the platform's `fsqrt`
+                        // (e.g. arm64 `fsqrt`, x86 `sqrtsd`).
+                        let x = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "sqrt operand".to_string())?;
+                        Ok(Some(self.builder.ins().sqrt(x)))
+                    }
+                    BuiltinFunction::Pow => {
+                        // cranelift has no native `fpow`; route the
+                        // call through the `jit_pow_f64` helper which
+                        // delegates to Rust's `f64::powf` (libm
+                        // underneath on most targets).
+                        let b = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "pow base".to_string())?;
+                        let e = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "pow exponent".to_string())?;
+                        Ok(Some(self.call_helper(HelperKind::Pow, &[b, e])?))
+                    }
                     BuiltinFunction::Min | BuiltinFunction::Max => {
                         // Min/max lowering. The eligibility check has
                         // already verified both operands share an

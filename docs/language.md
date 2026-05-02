@@ -23,9 +23,9 @@ implementation-side details, see the companion documents:
 - [Traits](#traits)
 - [Enums and pattern matching](#enums-and-pattern-matching)
 - [Generics and bounds](#generics-and-bounds)
-- [Modules](#modules)
+- [Modules](#modules) (incl. core auto-load + extern fn)
 - [Allocators](#allocators)
-- [Built-in functions and methods](#built-in-functions-and-methods)
+- [Built-in functions and methods](#built-in-functions-and-methods) (numeric methods are extension traits)
 - [Design by Contract](#design-by-contract)
 - [Runtime model](#runtime-model)
 - [Known limitations](#known-limitations)
@@ -396,6 +396,43 @@ pub fn add(a: u64, b: u64) -> u64 { ... }   # exported from a module
 fn helper() -> u64 { ... }                  # private (default)
 ```
 
+### `extern fn` declarations
+
+`extern fn name(params) -> ret` declares a function whose body is
+provided by the runtime / linker rather than the source program.
+The declaration carries the signature only — no body block, no
+contract clauses, no generic parameters.
+
+```rust
+extern fn __extern_sin_f64(x: f64) -> f64
+extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
+```
+
+Each backend resolves the call differently:
+
+- **interpreter** looks the source-level name up in
+  `evaluation::extern_math::build_default_registry` (a
+  `HashMap<&str, fn(&[Value]) -> Result<Value, _>>`) and
+  invokes the matching Rust closure.
+- **JIT** routes through `jit::eligibility::JIT_EXTERN_DISPATCH`,
+  which maps each name to either a runtime `HelperKind` (for
+  ops cranelift can't lower natively, like `sin` / `cos` / `pow`)
+  or a native cranelift instruction (`sqrt` / `floor` / `ceil` /
+  `fabs`).
+- **AOT compiler** declares the function as `Linkage::Import` with
+  the libm symbol name returned by
+  `lower::program::libm_import_name_for` (`__extern_sin_f64 -> sin`,
+  `__extern_pow_f64 -> pow`, …).
+
+Bare-name calls into `extern fn`s are always allowed regardless of
+import / namespace context — they're runtime bindings, not
+user-visible symbols. The stdlib uses this to expose the math
+intrinsics through `core/std/math.t`'s `pub fn` wrappers.
+
+Calling an `extern fn` whose name isn't registered with any
+backend produces a clean `extern fn '<name>' is not yet
+implemented` error rather than crashing.
+
 ### Calling convention
 
 Arguments are evaluated left-to-right. All values are passed by
@@ -527,6 +564,57 @@ impl Greet for Dog {
 `Self` in a trait signature resolves to the implementing struct, so a
 trait method declared as `fn m(self: Self) -> Self` is satisfied by an
 impl method written the same way.
+
+### Extension traits over primitives
+
+`impl <Trait> for <PrimitiveType> { ... }` is allowed for every
+primitive built into the language (`i64`, `u64`, `f64`, `bool`,
+`str`, `ptr`, `usize`). The impl methods become callable through
+the regular `value.method(args)` syntax — there's no special
+machinery for primitive receivers; they participate in the same
+`method_registry` dispatch struct methods use.
+
+```rust
+trait Negate {
+    fn neg(self: Self) -> Self
+}
+
+impl Negate for i64 {
+    fn neg(self: Self) -> Self {
+        0i64 - self
+    }
+}
+
+fn main() -> u64 {
+    val a: i64 = 7i64
+    val b: i64 = a.neg().neg()    # interpreter / JIT / AOT all work
+    b as u64
+}
+```
+
+`Self` inside a primitive impl resolves to the matching primitive
+`TypeDecl` (`Self == i64` for `impl Negate for i64`), so method
+bodies can take and return `Self` without the type-checker
+complaining about a phantom struct.
+
+Backend support:
+
+- **interpreter** dispatches the call through the user-method
+  registry before falling back to any hardcoded value-method
+  arms (Step B of the extension-trait migration).
+- **JIT** monomorphises the impl method per receiver primitive
+  (`toy_i64__neg`, `toy_f64__neg`). The receiver must be a
+  bare local identifier; chained calls (`x.neg().neg()`) keep
+  falling back to the interpreter at the second receiver
+  because the JIT's call lowering still requires an identifier
+  receiver.
+- **AOT compiler** declares each impl method as
+  `toy_<TypeName>__<method>` and emits regular cranelift calls.
+
+The numeric stdlib (`core/std/i64.t`, `core/std/f64.t`) uses
+exactly this machinery — `n.abs()` / `r.sqrt()` are not
+language-built-ins, they're `impl Abs for i64` / `impl Sqrt for f64`
+loaded from the core directory.
 
 ### Trait bounds on generics
 
@@ -673,7 +761,7 @@ interface declarations are not yet supported.
 ### Declaration
 
 ```rust
-package math.basic
+package my.helpers
 
 pub fn add(a: u64, b: u64) -> u64 {
     a + b
@@ -683,21 +771,76 @@ pub fn add(a: u64, b: u64) -> u64 {
 The `package` declaration is optional and, when present, must be the
 first non-comment line. Path components are dot-separated identifiers.
 
-### Import
+> **Note**: package segments must be `Identifier` tokens; reserved
+> keywords (`i64`, `f64`, etc.) are rejected by the parser. Files
+> living under `core/std/i64.t` / `core/std/f64.t` therefore omit
+> the `package` line — the auto-load path derives the module path
+> from the file system instead.
+
+### Core modules (auto-load)
+
+Each binary discovers a **core modules directory** at startup and
+auto-loads every `.t` file under it. User code can call exported
+functions through the qualified `module::name(...)` form without
+writing an explicit `import` line.
+
+Resolution priority for the core directory (both interpreter and
+compiler):
+
+1. CLI flag — `--core-modules <DIR>` overrides everything.
+2. Env var `TOYLANG_CORE_MODULES`. The empty value (`TOYLANG_CORE_MODULES=`)
+   opts out entirely; auto-load becomes a no-op.
+3. Executable-relative search — `<exe>/core/`,
+   `<exe>/../share/toylang/core/`, `<exe>/../../core/`. The third
+   entry is the dev-tree fallback so `target/debug/{interpreter,compiler}`
+   finds `<repo>/core/` automatically.
+
+Module paths come from the file system layout under the core dir:
+
+| Path                       | Module path        | Alias    |
+|----------------------------|--------------------|----------|
+| `<core>/foo.t`             | `["foo"]`          | `foo`    |
+| `<core>/foo/foo.t`         | `["foo"]`          | `foo`    |
+| `<core>/foo/mod.t`         | `["foo"]`          | `foo`    |
+| `<core>/std/math.t`        | `["std", "math"]`  | `math`   |
+| `<core>/std/i64.t`         | `["std", "i64"]`   | `i64`    |
+
+The alias is always the last path segment, so `math::sin(x)` resolves
+through `core/std/math.t` even though the on-disk path is nested.
+
+Auto-loaded modules opt out of namespace enforcement, so user code
+can shadow auto-loaded names with same-name local definitions
+(`fn sin(x: i64) -> i64 { ... }` works even though `math::sin`
+exists). The qualified form keeps working through the
+synthetic `ImportDecl` the auto-load path inserts.
+
+### Import (explicit, optional)
 
 ```rust
-import math.basic           # bare import
-import math.basic as m      # aliased import
+import my.helpers           # bare import
+import my.helpers as h      # aliased import
 ```
 
-Imported modules are resolved by file path: `import foo` looks for
-`modules/foo/foo.t` relative to the current working directory.
+Most user programs don't need `import` at all — the core directory
+covers the stdlib. Use `import` for non-core modules or for paths
+that aren't on the auto-load search root.
+
+Resolution order for `import a.b.c`:
+
+1. `<core_modules_dir>/a/b/c.t`, `<core_modules_dir>/a/b/c/c.t`,
+   `<core_modules_dir>/a/b/c/mod.t`
+2. `modules/a/b/c.t`, `modules/a/b/c/c.t`, `modules/a/b/c/mod.t`
+   (cwd-relative legacy fallback)
+
+`import` of a module that auto-load already integrated is a no-op
+(deduped by module path), so adding an explicit `import math` to a
+program that already had `math::sin(x)` working causes no error.
 
 ### Qualified identifiers
 
 ```rust
-math::basic::add(1u64, 2u64)
-m::add(1u64, 2u64)              # via alias
+math::sin(x)
+h::add(1u64, 2u64)              # via alias
 ```
 
 `::` is the scope-resolution operator; `.` is field/method access only.
@@ -855,28 +998,34 @@ s.abs()    # -> f64  (IEEE 754 fabs: sign-bit flip, preserves NaN)
 r.sqrt()   # -> f64  (IEEE 754; NaN for negative inputs)
 ```
 
-These are dispatched as built-in methods on the receiver type
-(`i64.abs()` / `f64.abs()` / `f64.sqrt()`). They forward to
-the same `__builtin_*` intrinsics the `math::abs(x)` /
-`math::sqrt(x)` wrappers use, so the runtime / JIT
-(forthcoming for the method form) / AOT compiler behaviour is
-identical between the two call shapes. Use whichever form
-reads more naturally at the call site — the method form is
-typically clearer when the receiver is a single value, the
-qualified form better when the operand is itself a
-sub-expression.
+These are **regular extension-trait methods**, not hardcoded
+builtins. The trait declarations and impl blocks live in
+`core/std/i64.t` and `core/std/f64.t`:
 
-`__builtin_abs` is **polymorphic** on the operand type
-(`i64 -> i64` via `wrapping_abs`, `f64 -> f64` via IEEE 754
-fabs). Mirrors C's `abs` / `fabs` distinction in a single
-intrinsic. The compiler / JIT lower the f64 case to
-cranelift's native `fabs` instruction.
+```rust
+trait Abs { fn abs(self: Self) -> Self }
+impl Abs for i64 { fn abs(self: Self) -> Self { math::abs(self) } }
+impl Abs for f64 { fn abs(self: Self) -> Self { math::fabs(self) } }
+
+trait Sqrt { fn sqrt(self: Self) -> Self }
+impl Sqrt for f64 { fn sqrt(self: Self) -> Self { math::sqrt(self) } }
+```
+
+Because they're auto-loaded with the rest of `core/`, the call sites
+work with no `import` line. All three backends (interpreter / JIT /
+AOT compiler) dispatch the call through the same `method_registry`
+the user-defined extension traits go through (see *Traits → Extension
+traits over primitives* below). Programs that opt out of auto-load
+lose `n.abs()` / `r.sqrt()` — call `math::abs(n)` / `math::sqrt(r)`
+through an explicit `import std.math` instead.
+
+Use whichever shape reads more naturally at the call site — the
+method form is typically clearer when the receiver is a single value,
+the qualified form better when the operand is itself a sub-expression.
 
 ### Math (via the `math` module)
 
 ```rust
-import math
-
 math::abs(x: i64) -> i64
 math::fabs(x: f64) -> f64
 math::sqrt(x: f64) -> f64
@@ -899,13 +1048,19 @@ math::floor(x: f64) -> f64
 math::ceil(x: f64) -> f64
 ```
 
-The math intrinsics live in the standard `math` module
-(`interpreter/modules/math/math.t`). User code reaches them via
-`import math` followed by the `math::name(...)` qualified call
-form. Each wrapper forwards to a low-level `__builtin_*`
-intrinsic that the runtime / JIT / compiler implement directly
-— the prefix is intentional, signalling "no user code below
-this line."
+The math intrinsics live in the standard `math` module at
+`core/std/math.t`. The auto-load path picks the file up at
+startup and aliases it as `math` (the alias derives from the
+last path segment). **No `import math` line is required** — call
+sites use the `math::name(...)` qualified form directly.
+
+Each wrapper forwards to a backend-side `extern fn __extern_*`
+helper that the runtime / JIT / AOT compiler implement
+directly. The `__extern_` prefix signals "runtime binding,
+resolved through the per-backend dispatch tables." Programs
+that opt out of auto-load (`TOYLANG_CORE_MODULES=`) lose the
+`math::*` qualifier; call the matching `__extern_*` symbol
+directly when that matters.
 
 Semantics:
 
@@ -917,12 +1072,13 @@ Semantics:
 - `sqrt` and `pow` follow IEEE 754: `sqrt(-1f64)` returns NaN,
   `pow(0f64, 0f64)` returns `1f64`.
 
-All five are wired through every backend (interpreter / JIT /
+All entries are wired through every backend (interpreter / JIT /
 AOT compiler). The JIT lowers `min_*` / `max_*` / `abs` to a
-cranelift `select` chain, `sqrt` to the native `sqrt`
-instruction, and `pow` to a Rust helper that wraps
-`f64::powf`. The AOT compiler additionally emits a direct call
-into libm's `pow` (always linked on supported platforms).
+cranelift `select` chain, `sqrt` / `floor` / `ceil` / `fabs` to
+the native cranelift instructions, and `sin` / `cos` / `tan` /
+`log` / `log2` / `exp` / `pow` to small Rust helpers. The AOT
+compiler re-declares each `__extern_*_f64` as a `Linkage::Import`
+cranelift function pointing at the matching libm symbol.
 
 ### String methods
 
@@ -1045,8 +1201,6 @@ These are real today; some appear in `todo.md` as planned work.
 
 - **No closures or lambdas** — functions are not first-class values
   outside `fn`-named declarations.
-- **No traits / interfaces** — only the built-in `Allocator` bound is
-  recognised. Trait declarations are not yet a thing.
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.
@@ -1065,8 +1219,25 @@ These are real today; some appear in `todo.md` as planned work.
   can carry non-trivial cost; even there, `all` is the recommended
   setting — see "Operational guidance" above.)
 - **No string interpolation, raw strings, multi-line strings**.
-- **Modules resolve only on the local filesystem** under
-  `modules/<name>/<name>.t`.
+- **Flat function table — same name across modules collides**. Two
+  `pub fn add(...)` declarations from different modules silently
+  overwrite each other in the integrated function table. The
+  auto-load path uses `enforce_namespace = false` so user-defined
+  functions can shadow auto-loaded ones for bare calls, but two
+  *modules* sharing a function name still clash. Per-module
+  function namespacing is filed as follow-up work.
+- **Trait limitations** — trait declarations themselves can't take
+  generic parameters (`trait Foo<T>`); no default method bodies; no
+  multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
+  Trait`; no associated types. See *Traits → Out of scope*.
+- **`extern fn` generic params are rejected** — extern dispatch is
+  by literal symbol with no name-mangling story for monomorphised
+  externs.
+- **JIT primitive method dispatch needs a bare-identifier
+  receiver** — chained calls like `x.abs().abs()` fall back to the
+  interpreter at the second receiver because it's a `MethodCall`
+  expression, not an `Identifier`. Same restriction the JIT places
+  on struct method receivers today.
 
 ---
 

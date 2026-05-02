@@ -38,7 +38,17 @@ and integrates every `.t` file under it before parsing the user's
 source. Functions exported from those files are reachable through
 the qualified `module::name(...)` form without any `import` line —
 this is how the standard `math::sin(x)` / `math::sqrt(x)` /
-`i64.abs()` / `f64.abs()` surfaces become available.
+`i64.abs()` / `f64.abs()` / `Option::Some(...)` / `Result::Ok(...)`
+surfaces become available. The bundled stdlib lives under
+`core/std/`:
+
+| File | Provides |
+|---|---|
+| `math.t` | `extern fn __extern_*_f64` declarations + `pub fn sin` / `cos` / `tan` / `log` / `log2` / `exp` / `floor` / `ceil` / `sqrt` / `abs` / `fabs` / `pow` / `min_*` / `max_*` |
+| `i64.t` | `trait Abs { fn abs(self) -> Self }` + `impl Abs for i64` |
+| `f64.t` | `impl Abs for f64`, `trait Sqrt` + `impl Sqrt for f64` |
+| `option.t` | `enum Option<T> { None, Some(T) }` + `impl<T> Option<T>` (`is_some` / `is_none` / `unwrap_or` / `expect`) |
+| `result.t` | `enum Result<T, E> { Ok(T), Err(E) }` + `impl<T, E> Result<T, E>` (`is_ok` / `is_err` / `unwrap_or` / `expect`) |
 
 Resolution priority (the first hit wins):
 

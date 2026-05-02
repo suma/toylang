@@ -25,7 +25,7 @@ implementation-side details, see the companion documents:
 - [Generics and bounds](#generics-and-bounds)
 - [Modules](#modules) (incl. core auto-load + extern fn)
 - [Allocators](#allocators)
-- [Built-in functions and methods](#built-in-functions-and-methods) (numeric methods are extension traits)
+- [Built-in functions and methods](#built-in-functions-and-methods) (numeric methods + Option / Result + math + string are stdlib `core/std/*.t`)
 - [Design by Contract](#design-by-contract)
 - [Runtime model](#runtime-model)
 - [Known limitations](#known-limitations)
@@ -1118,6 +1118,70 @@ the native cranelift instructions, and `sin` / `cos` / `tan` /
 compiler re-declares each `__extern_*_f64` as a `Linkage::Import`
 cranelift function pointing at the matching libm symbol.
 
+### Option and Result (via the auto-loaded `option` / `result` modules)
+
+```rust
+enum Option<T> {
+    None,
+    Some(T),
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+```
+
+Both enums live in `core/std/option.t` and `core/std/result.t` and
+are auto-loaded into every program (no `import` line needed). The
+implementations carry a small set of stack-only methods — Option
+and Result are tagged unions, not heap-allocated containers, so
+they don't take an `Allocator` type parameter (heap responsibility
+belongs to whatever T or E carries).
+
+```rust
+val o: Option<u64> = Option::Some(42u64)
+
+o.is_some()              # bool
+o.is_none()              # bool
+o.unwrap_or(0u64)        # T  — returns Some's payload or `default`
+o.expect("must be Some") # T  — panics with the literal message on None
+
+val r: Result<u64, str> = Result::Err("boom")
+
+r.is_ok()                # bool
+r.is_err()               # bool
+r.unwrap_or(99u64)       # T
+r.expect("ok required")  # T  — panics on Err
+```
+
+`unwrap_or(default)` takes the default eagerly because the language
+doesn't have closures yet — there's no `unwrap_or_else(|| ...)`
+shape to mirror Rust's lazy default. `expect(msg)` accepts a string
+literal and lowers to the same `panic("...")` machinery the
+runtime already provides.
+
+User code can shadow either type by declaring a same-name local
+`enum` or `struct` — module integration silently skips the stdlib
+declaration when the user's program already defines the name, so
+no "already defined" error fires (the user's version wins
+end-to-end). This shadowing is intentional: `Option` and `Result`
+are common enough names that occasional reuse is expected.
+
+Backend coverage:
+
+- **Interpreter** dispatches the methods through the same
+  `method_registry` extension-trait machinery the user-defined
+  `impl<T> MyEnum<T> { ... }` blocks use.
+- **AOT compiler** lowers each method as a monomorph instance via
+  `instantiate_generic_method_with_self_type`; enum payload types
+  include `i64` / `u64` / `f64` / `bool` / `str` / nested enum /
+  struct / tuple.
+- **JIT** silently falls back to the interpreter for any program
+  touching enum values — full enum support in the JIT is deferred.
+  The verbose log spells this out: `JIT: skipped (... JIT does
+  not yet model enum values (constructors / match / methods))`.
+
 ### String methods
 
 Method-call syntax on `str`:
@@ -1273,6 +1337,13 @@ These are real today; some appear in `todo.md` as planned work.
   `math` alias and you call through `math::abs(x)`. The parser
   drops module path components beyond the last two when the head
   isn't a known struct / enum.
+- **Enum support in JIT** — JIT eligibility rejects every program
+  that touches enum values (constructors, match, methods on enum
+  receivers). `core/std/option.t` / `core/std/result.t` therefore
+  always run via the interpreter fallback. Verbose log:
+  `JIT: skipped (... JIT does not yet model enum values
+  (constructors / match / methods))`. AOT compiler handles all of
+  this through its monomorph pipeline.
 - **Generic struct / method JIT** — `struct Cell<T>` and methods
   on it run in the interpreter only; the JIT eligibility rejects
   generic struct types because `struct_layouts` isn't yet keyed by

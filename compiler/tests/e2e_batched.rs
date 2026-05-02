@@ -59,7 +59,13 @@ fn unique_path(stem: &str) -> PathBuf {
     let n = COUNTER
         .get_or_init(|| std::sync::atomic::AtomicU64::new(0))
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!(".toy_e2e_batched_{stem}_{n}"))
+    // nextest spawns each `#[test]` in its own process. Without
+    // the PID, two parallel batched fixtures would race on the
+    // same `.toy_e2e_batched_<stem>_0` temp file because each
+    // process restarts the counter at 0. Adding `std::process::id()`
+    // gives us unique paths across the parallel test runners.
+    let pid = std::process::id();
+    std::env::temp_dir().join(format!(".toy_e2e_batched_{stem}_{pid}_{n}"))
 }
 
 /// One sub-test in the batched fixture. `source` must define a
@@ -207,6 +213,39 @@ fn mangle_sub_test(source: &str, idx: usize) -> Result<String, String> {
         out = replace_word(&out, name, &format!("{prefix}{name}"));
     }
     Ok(out)
+}
+
+/// Remove every `__t<digits>__` substring from `s`. Used by the
+/// stdout-batched runner: the mangler rewrites declared type
+/// names to `__t<i>__Foo`, and any `println(value)` of a
+/// struct / enum value emits that mangled name through the
+/// runtime's display formatter. Stripping the prefix restores
+/// the user's pre-mangling expectation for comparison.
+fn strip_mangle_prefix(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Try to match `__t<digits>__` starting at `i`.
+        if i + 3 <= bytes.len() && &bytes[i..i + 3] == b"__t" {
+            let mut j = i + 3;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 3 && j + 2 <= bytes.len() && &bytes[j..j + 2] == b"__" {
+                i = j + 2; // skip the entire `__t<digits>__` token
+                continue;
+            }
+        }
+        let ch_start = i;
+        let ch_end = (1..=4)
+            .map(|n| ch_start + n)
+            .find(|&end| s.is_char_boundary(end))
+            .unwrap_or(ch_start + 1);
+        out.push_str(&s[ch_start..ch_end]);
+        i = ch_end;
+    }
+    out
 }
 
 /// Returns true when `name` is one of the language's primitive /
@@ -462,224 +501,31 @@ fn run_batched(label: &str, tests: &[SubTest]) {
     }
 }
 
-/// `include_str!`-loaded copy of the existing per-test `e2e.rs`
-/// runner. Parsed at test runtime by `extract_simple_e2e_tests`
-/// to harvest sub-tests automatically.
-const E2E_RS: &str = include_str!("e2e.rs");
+// Sub-test sources that previously lived as individual
+// `#[test]` functions in `compiler/tests/e2e.rs`. Migrated here
+// as static data tables; the per-test definitions in `e2e.rs`
+// were removed in the same commit.
+//
+// To regenerate after adding new tests to the e2e suite:
+//   cargo run --release -p compiler --example dump_extracted \
+//     > compiler/tests/batched_data/extracted.rs
+// (the dumper still reads `e2e.rs`, so any new tests written
+// in the recognised patterns get captured automatically.)
+include!("batched_data/extracted.rs");
 
-/// Walk `E2E_RS` looking for the simple `compile_and_run` test
-/// pattern and extract `(name, source, expected)` tuples ready
-/// to feed into the batched fixture.
-///
-/// The pattern this targets:
-/// ```text
-/// #[test]
-/// fn TEST_NAME() {
-///     if skip_e2e() {
-///         return;
-///     }
-///     [optional comments]
-///     let src = r#"...source..."#;
-///     let code = compile_and_run(src, "stem");
-///     assert_eq!(code, EXPECTED);
-/// }
-/// ```
-/// or its inline-source variant where the `r#"..."#` literal is
-/// passed directly as the first arg of `compile_and_run`.
-///
-/// Tests that use any of the following are **skipped** (they
-/// don't fit the batched harness today):
-/// - `compile_and_capture` (need stdout assertions)
-/// - `panic` / `assert` programs (the meta-main can't continue
-///   past a panic)
-/// - more than one `compile_and_run` call (each result needs its
-///   own sub-test slot)
-/// - non-`u64` expected (parsed as integer, not signed)
-/// - `assert!` macro instead of `assert_eq!(code, ...)` (custom
-///   shape we'd need a richer extractor for)
+/// Wrap the static `EXIT_SUBTESTS` table (regenerated via the
+/// `dump_extracted` example) into the runtime-friendly
+/// `Vec<SubTest>` shape `run_batched` consumes. The table lives
+/// in `batched_data/extracted.rs`; entries previously came from
+/// the per-test functions in `e2e.rs` that have since been
+/// removed.
 fn extract_simple_e2e_tests() -> Vec<SubTest> {
-    let mut out = Vec::new();
-    // Find every `#[test]` annotation, capture the function name
-    // from the next `fn NAME()` line, then scan ahead within the
-    // *next test* boundary for the markers we need: `let src =
-    // r#"..."#;` and `assert_eq!(code, NUMBER)`. We skip
-    // brace-counting entirely — the raw-string source contains
-    // `{` / `}` that would corrupt a naive counter — and instead
-    // bound each test by "everything up to the next `#[test]` or
-    // EOF", which is correct for the Rust formatting used in
-    // e2e.rs (`#[test]` always appears at column 0 between
-    // tests).
-    let test_starts: Vec<usize> = E2E_RS
-        .match_indices("\n#[test]\n")
-        .map(|(idx, _)| idx + 1)
-        .collect();
-    for (i, &start) in test_starts.iter().enumerate() {
-        let end = test_starts.get(i + 1).copied().unwrap_or(E2E_RS.len());
-        let block = &E2E_RS[start..end];
-        // Pull the function name out of `fn NAME(`.
-        let fn_idx = match block.find("fn ") {
-            Some(p) => p + "fn ".len(),
-            None => continue,
-        };
-        let paren = match block[fn_idx..].find('(') {
-            Some(p) => p,
-            None => continue,
-        };
-        let name = block[fn_idx..fn_idx + paren].trim().to_string();
-        if name.is_empty() {
-            continue;
-        }
-
-        // Skip tests whose body uses unsupported helpers / shapes.
-        // Two `compile_and_run` invocation patterns are supported:
-        //   1. `let code = compile_and_run(src, "stem"); assert_eq!(code, N);`
-        //   2. `assert_eq!(compile_and_run(src, "stem"), N);`
-        // Pattern 2 doesn't have a separate `let code = ...` line.
-        let cap = block.contains("compile_and_capture");
-        let cr_count = block.matches("compile_and_run").count();
-        let has_assert_eq_code = block.contains("assert_eq!(code,");
-        let has_assert_eq_inline = block.contains("assert_eq!(compile_and_run");
-        let has_panic = block.contains("panic(");
-        let has_assert = block.contains("assert(");
-        if cap || cr_count != 1 || (!has_assert_eq_code && !has_assert_eq_inline)
-            || has_panic || has_assert
-        {
-            // BATCHED_VERBOSE=1 dumps each skip with the matched
-            // flags, useful when the extractor pattern needs
-            // expansion to cover a new test shape.
-            if std::env::var("BATCHED_VERBOSE").is_ok() {
-                eprintln!(
-                    "skip {name}: cap={cap} cr_count={cr_count} eq_code={has_assert_eq_code} eq_inline={has_assert_eq_inline} panic={has_panic} assert={has_assert}"
-                );
-            }
-            continue;
-        }
-
-        // Pull the raw-string literal source out of the body.
-        // Tests use one of these shapes:
-        //   let src = r#"..."#;     (most common)
-        //   compile_and_run(r#"..."#, "stem")
-        //   compile_and_run("inline source\n", "stem")
-        let source = if let Some(src) = extract_raw_string(block, "let src = r#\"", "\"#") {
-            src
-        } else if let Some(src) = extract_raw_string(block, "compile_and_run(r#\"", "\"#,") {
-            src
-        } else if let Some(src) = extract_raw_string(block, "compile_and_run(\"", "\",") {
-            unescape_rust_string(&src)
-        } else {
-            continue;
-        };
-
-        // Parse the expected exit code from `assert_eq!(code, NUMBER)`.
-        let expected = match extract_assert_expected(block) {
-            Some(n) => n,
-            None => continue,
-        };
-
-        out.push(SubTest::new(name, source, expected));
-    }
-    out
+    EXIT_SUBTESTS
+        .iter()
+        .map(|(name, source, expected)| SubTest::new(*name, *source, *expected))
+        .collect()
 }
 
-/// Find the first occurrence of `start_marker` in `body`, then
-/// return the substring up to (but not including) the next
-/// occurrence of `end_marker`. Returns `None` if either marker
-/// is missing.
-fn extract_raw_string(body: &str, start_marker: &str, end_marker: &str) -> Option<String> {
-    let s = body.find(start_marker)? + start_marker.len();
-    let rest = &body[s..];
-    let e = rest.find(end_marker)?;
-    Some(rest[..e].to_string())
-}
-
-/// Cheap Rust-string-literal unescape for the inline form of
-/// `compile_and_run("...", "stem")`. Only handles the escape
-/// sequences the existing e2e tests use (`\n`, `\t`, `\"`,
-/// `\\`).
-fn unescape_rust_string(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            match chars.next() {
-                Some('n') => out.push('\n'),
-                Some('t') => out.push('\t'),
-                Some('"') => out.push('"'),
-                Some('\\') => out.push('\\'),
-                Some(other) => {
-                    out.push('\\');
-                    out.push(other);
-                }
-                None => out.push('\\'),
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// Pull the integer expected value out of one of:
-///   - `assert_eq!(code, N)` — paired with a separate
-///     `let code = compile_and_run(...)`.
-///   - `assert_eq!(compile_and_run(SRC, "STEM"), N)` — inline
-///     form. Need to find the comma that closes the
-///     `compile_and_run(...)` call (depth-aware) and read N
-///     between that comma and the matching outer `)`.
-/// Tolerates a trailing `as u64` / `as i32` cast on `N`.
-/// Returns `None` if the integer can't be parsed (e.g., the
-/// expected value is a Rust expression like `1 + 2 * 10`); the
-/// extractor then skips the test.
-fn extract_assert_expected(body: &str) -> Option<u64> {
-    if let Some(s) = body.find("assert_eq!(code,") {
-        let s = s + "assert_eq!(code,".len();
-        let rest = &body[s..];
-        let e = rest.find(')')?;
-        return parse_expected_int(&rest[..e]);
-    }
-    // Inline form: `assert_eq!(compile_and_run(...), N)`. Walk
-    // depth-aware from the start of the call to find the comma
-    // separating the two macro arguments (depth==0 at top of
-    // assert_eq!), then read until the closing paren.
-    let macro_start = body.find("assert_eq!(compile_and_run")?;
-    let body_after = &body[macro_start + "assert_eq!(".len()..];
-    let mut depth = 0;
-    let mut comma_pos: Option<usize> = None;
-    for (i, ch) in body_after.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' => depth -= 1,
-            ',' if depth == 0 => {
-                comma_pos = Some(i);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let comma_pos = comma_pos?;
-    let after_comma = &body_after[comma_pos + 1..];
-    let mut depth = 0;
-    let mut close_pos: Option<usize> = None;
-    for (i, ch) in after_comma.char_indices() {
-        match ch {
-            '(' => depth += 1,
-            ')' if depth == 0 => {
-                close_pos = Some(i);
-                break;
-            }
-            ')' => depth -= 1,
-            _ => {}
-        }
-    }
-    let close_pos = close_pos?;
-    parse_expected_int(&after_comma[..close_pos])
-}
-
-fn parse_expected_int(raw: &str) -> Option<u64> {
-    let raw = raw.trim().trim_end_matches(';').trim();
-    let raw = raw.split(" as ").next().unwrap_or(raw).trim();
-    raw.parse::<u64>().ok()
-}
 
 #[test]
 fn batched_e2e_extracted_from_file() {
@@ -773,4 +619,234 @@ fn batched_e2e_extracted_from_file() {
             "batched e2e (extracted): sub-test #{code} ({failed}) returned an unexpected value",
         );
     }
+}
+
+// ============================================================
+// Stdout-asserting sub-tests (Phase 2 of the batched runner).
+// ============================================================
+//
+// Tests that use `compile_and_capture` and assert on `stdout`
+// content (typically `println` programs) get a separate batched
+// fixture. The meta-main wraps each sub-test call between two
+// distinctive delimiter `println` calls; the runner captures
+// stdout, splits on the delimiters, and compares each section
+// to the recorded expected output.
+//
+// Why a separate fixture: the existing exit-code batched runner
+// uses sub-test return values as the failure signal. Stdout
+// tests don't return interesting exit codes (usually 0), so we
+// need a different reporting channel — the printed delimiter +
+// content lets the runner reconstruct per-sub-test output even
+// though they all share one process.
+
+/// One stdout sub-test. `source` defines a `fn main() -> u64`
+/// that prints to stdout and returns 0 (or any value — we
+/// ignore it). `expected_stdout` is compared verbatim against
+/// the captured section.
+struct StdoutSubTest {
+    name: String,
+    source: String,
+    expected_stdout: String,
+}
+
+impl StdoutSubTest {
+    fn new(
+        name: impl Into<String>,
+        source: impl Into<String>,
+        expected_stdout: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            source: source.into(),
+            expected_stdout: expected_stdout.into(),
+        }
+    }
+}
+
+/// Marker `println` lines the meta-main emits around each sub-
+/// test's stdout. Picked to be unlikely to appear inside any
+/// reasonable test output: 7 `<` / `>` chars plus a numeric
+/// index. The runner splits the captured stdout on these
+/// markers to recover per-sub-test sections.
+fn batch_begin(idx: usize) -> String {
+    format!("<<<<<<<__BATCH_BEGIN_{idx}__>>>>>>>")
+}
+fn batch_end(idx: usize) -> String {
+    format!("<<<<<<<__BATCH_END_{idx}__>>>>>>>")
+}
+
+fn build_stdout_batched_source(tests: &[StdoutSubTest]) -> String {
+    let mut out =
+        String::with_capacity(tests.iter().map(|t| t.source.len()).sum::<usize>() + 1024);
+
+    for (i, t) in tests.iter().enumerate() {
+        out.push_str(&format!("# stdout subtest {} = {}\n", i + 1, t.name));
+        let mangled = mangle_sub_test(&t.source, i)
+            .unwrap_or_else(|err| panic!("stdout subtest {} ({}) mangle failed: {err}", i, t.name));
+        out.push_str(&rename_main(&mangled, i));
+        out.push('\n');
+    }
+
+    out.push_str("\nfn main() -> u64 {\n");
+    for (i, _t) in tests.iter().enumerate() {
+        // Wrap each sub-test call between `println` markers. The
+        // sub-test's own printlns appear between them; the
+        // meta-main ignores the sub-test's return value.
+        out.push_str(&format!(
+            "    println(\"{begin}\")\n    val _r{i}: u64 = __t{i}_main()\n    println(\"{end}\")\n",
+            begin = batch_begin(i),
+            end = batch_end(i),
+            i = i,
+        ));
+    }
+    out.push_str("    0u64\n");
+    out.push_str("}\n");
+    out
+}
+
+/// Run a stdout-batched fixture: compile, spawn, capture stdout,
+/// split on the batch markers, compare each section against the
+/// recorded `expected_stdout`. Reports per-sub-test diffs on
+/// mismatch.
+fn run_stdout_batched(label: &str, tests: &[StdoutSubTest]) {
+    let combined = build_stdout_batched_source(tests);
+    let src_path = unique_path("batched_stdout.t");
+    std::fs::write(&src_path, &combined).expect("write stdout batched source");
+    let exe_path = unique_path("batched_stdout");
+    let opts = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_path.clone()),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+        core_modules_dir: Some(core_modules_dir()),
+    };
+    let t_compile = Instant::now();
+    compile_file(&opts).expect("stdout batched compile_file failed");
+    let compile_dur = t_compile.elapsed();
+
+    let t_run = Instant::now();
+    let output = Command::new(&exe_path)
+        .output()
+        .expect("spawn stdout batched executable");
+    let run_dur = t_run.elapsed();
+    let _ = std::fs::remove_file(&src_path);
+    let _ = std::fs::remove_file(&exe_path);
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    eprintln!(
+        "{label}: {} sub-tests, compile {:?}, spawn+run {:?}",
+        tests.len(),
+        compile_dur,
+        run_dur
+    );
+
+    // Walk each sub-test, find its [begin..end] section in
+    // stdout, compare to expected.
+    let mut errors: Vec<String> = Vec::new();
+    for (i, t) in tests.iter().enumerate() {
+        let begin = batch_begin(i);
+        let end = batch_end(i);
+        let section = match stdout.find(&begin).and_then(|s| {
+            let after_begin = s + begin.len();
+            // Skip the newline that terminates the begin marker.
+            let after_begin = if stdout.as_bytes().get(after_begin) == Some(&b'\n') {
+                after_begin + 1
+            } else {
+                after_begin
+            };
+            let end_pos = stdout[after_begin..].find(&end)?;
+            Some(stdout[after_begin..after_begin + end_pos].to_string())
+        }) {
+            Some(s) => s,
+            None => {
+                errors.push(format!(
+                    "{label}: sub-test #{} ({}): no output section found between markers",
+                    i + 1,
+                    t.name
+                ));
+                continue;
+            }
+        };
+        // Strip every `__t<digits>__` prefix from the captured
+        // section so `println(Color::Green)` (mangled to print
+        // `__t12__Color::Green`) compares equal to the user's
+        // pre-mangling expectation. Single-pass scan; no regex
+        // dep needed.
+        let normalised = strip_mangle_prefix(&section);
+        if normalised != t.expected_stdout {
+            errors.push(format!(
+                "{label}: sub-test #{} ({}): stdout mismatch\nexpected: {:?}\nactual:   {:?}",
+                i + 1,
+                t.name,
+                t.expected_stdout,
+                normalised,
+            ));
+        }
+    }
+
+    if !errors.is_empty() {
+        panic!(
+            "{label}: {} sub-test(s) failed:\n{}",
+            errors.len(),
+            errors.join("\n---\n")
+        );
+    }
+}
+
+#[test]
+fn batched_stdout_smoke() {
+    if skip_e2e() {
+        return;
+    }
+    let tests: Vec<StdoutSubTest> = vec![
+        StdoutSubTest::new(
+            "println_string_literal",
+            "fn main() -> u64 {\n    println(\"hello, world\")\n    0u64\n}\n",
+            "hello, world\n",
+        ),
+        StdoutSubTest::new(
+            "print_without_newline",
+            "fn main() -> u64 {\n    print(\"foo\")\n    print(\"bar\")\n    println(\"!\")\n    0u64\n}\n",
+            "foobar!\n",
+        ),
+        StdoutSubTest::new(
+            "println_numeric",
+            "fn main() -> u64 {\n    println(42u64)\n    println(-7i64)\n    0u64\n}\n",
+            "42\n-7\n",
+        ),
+        StdoutSubTest::new(
+            "println_bool",
+            "fn main() -> u64 {\n    println(true)\n    println(false)\n    0u64\n}\n",
+            "true\nfalse\n",
+        ),
+    ];
+    run_stdout_batched("batched stdout (smoke)", &tests);
+}
+
+/// Wrap the static `STDOUT_SUBTESTS` table into the runtime
+/// `Vec<StdoutSubTest>` shape `run_stdout_batched` consumes. The
+/// table lives in `batched_data/extracted.rs`; entries
+/// previously came from per-test functions in `e2e.rs` that
+/// have since been removed.
+fn extract_simple_stdout_tests() -> Vec<StdoutSubTest> {
+    STDOUT_SUBTESTS
+        .iter()
+        .map(|(name, source, expected)| StdoutSubTest::new(*name, *source, *expected))
+        .collect()
+}
+
+#[test]
+fn batched_stdout_extracted_from_file() {
+    if skip_e2e() {
+        return;
+    }
+    let tests = extract_simple_stdout_tests();
+    eprintln!("auto-extracted {} stdout sub-tests from e2e.rs", tests.len());
+    if tests.is_empty() {
+        panic!(
+            "extract_simple_stdout_tests returned 0 sub-tests — extractor pattern likely stale"
+        );
+    }
+    run_stdout_batched("batched stdout (extracted)", &tests);
 }

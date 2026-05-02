@@ -12,7 +12,10 @@ use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, Stm
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultSymbol, Symbol};
 
-use super::eligibility::{FuncSignature, MonoKey, MonomorphSource, ParamTy, ScalarTy, StructLayout};
+use super::eligibility::{
+    jit_extern_dispatch_for, ExternDispatch, FuncSignature, MonoKey, MonomorphSource, ParamTy,
+    ScalarTy, StructLayout,
+};
 use super::runtime::HelperKind;
 
 pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
@@ -1110,12 +1113,16 @@ impl<'a, 'b> State<'a, 'b> {
                 Ok(Some(result))
             }
             Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
-                // Resolve the callee's signature and reject struct-
-                // returning calls outside of a Val/Var rhs (handled in
-                // try_gen_struct_local). Scalar / unit returns flow
-                // through the regular gen_expr path. Methods reuse the
-                // same path; the call_targets entry already tells us
-                // which monomorph to dispatch to.
+                // `extern fn` calls bypass the monomorphisation /
+                // call_targets pipeline — they have no body to
+                // monomorphise. Eligibility has already validated the
+                // callee against the JIT extern dispatch table; here
+                // we look up the recipe again, lower the args, and
+                // emit either a runtime helper call or a native
+                // cranelift instruction.
+                if let Some(extern_result) = self.try_gen_extern_call(expr_ref)? {
+                    return Ok(Some(extern_result));
+                }
                 let target_key = self
                     .call_targets
                     .get(expr_ref)
@@ -1831,6 +1838,76 @@ impl<'a, 'b> State<'a, 'b> {
             }
         }
         Ok(arg_values)
+    }
+
+    /// Lower a call to an `extern fn` if the callee is known to the
+    /// JIT extern dispatch table. Returns `Ok(None)` for non-extern
+    /// callees (caller continues with the regular monomorph dispatch
+    /// path) and `Ok(Some(v))` after emitting the helper call or
+    /// native instruction. Eligibility has already validated arg
+    /// types match the dispatch table, so this is just code emission.
+    fn try_gen_extern_call(&mut self, expr_ref: &ExprRef) -> Result<Option<Value>, String> {
+        // Resolve the callee name + arg list. Only `Expr::Call` (free
+        // functions) and `Expr::AssociatedFunctionCall` (qualified
+        // module calls) can target an extern; method calls receive a
+        // synthetic receiver that doesn't apply here.
+        let call_expr = self
+            .program
+            .expression
+            .get(expr_ref)
+            .ok_or_else(|| "missing extern call expression".to_string())?;
+        let (name_sym, arg_exprs) = match call_expr {
+            Expr::Call(name, args_ref) => {
+                let args_expr = self
+                    .program
+                    .expression
+                    .get(&args_ref)
+                    .ok_or_else(|| "missing extern call args".to_string())?;
+                let args = match args_expr {
+                    Expr::ExprList(v) => v,
+                    _ => return Err("extern call args must be ExprList".into()),
+                };
+                (name, args)
+            }
+            Expr::AssociatedFunctionCall(_, name, args) => (name, args),
+            _ => return Ok(None),
+        };
+
+        // Confirm the callee is actually `extern fn` before consulting
+        // the dispatch table. Plain user functions still flow through
+        // the regular call_targets pipeline.
+        let callee_is_extern = self
+            .program
+            .function
+            .iter()
+            .find(|f| f.name == name_sym)
+            .map(|f| f.is_extern)
+            .unwrap_or(false);
+        if !callee_is_extern {
+            return Ok(None);
+        }
+        let entry = jit_extern_dispatch_for(name_sym).ok_or_else(|| {
+            "extern fn passed eligibility but missing from dispatch map".to_string()
+        })?;
+
+        // Lower each argument to a Value. Eligibility has already
+        // checked the arg ScalarTys against `entry.params`.
+        let mut args: Vec<Value> = Vec::with_capacity(arg_exprs.len());
+        for a in &arg_exprs {
+            let v = self
+                .gen_expr(a)?
+                .ok_or_else(|| "extern fn argument produced no value".to_string())?;
+            args.push(v);
+        }
+
+        let result = match entry.dispatch {
+            ExternDispatch::Helper(kind) => self.call_helper(kind, &args)?,
+            ExternDispatch::NativeSqrtF64 => self.builder.ins().sqrt(args[0]),
+            ExternDispatch::NativeFloorF64 => self.builder.ins().floor(args[0]),
+            ExternDispatch::NativeCeilF64 => self.builder.ins().ceil(args[0]),
+            ExternDispatch::NativeAbsF64 => self.builder.ins().fabs(args[0]),
+        };
+        Ok(Some(result))
     }
 
     fn call_helper(&mut self, kind: HelperKind, args: &[Value]) -> Result<Value, String> {

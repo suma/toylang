@@ -7,12 +7,98 @@
 //! the entire reachable set ineligible — the caller silently falls back to
 //! the tree-walking interpreter.
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, MethodFunction, Operator, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
+
+use crate::jit::runtime::HelperKind;
+
+/// How the JIT codegen should lower a call to a particular `extern fn`.
+/// `Helper` routes through one of the existing runtime helpers (used
+/// for sin/cos/tan/log/log2/exp/pow which cranelift has no native
+/// instructions for). `Native*` variants emit the corresponding
+/// cranelift instruction inline (sqrt/floor/ceil/abs).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ExternDispatch {
+    Helper(HelperKind),
+    NativeSqrtF64,
+    NativeFloorF64,
+    NativeCeilF64,
+    NativeAbsF64,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct ExternDispatchEntry {
+    pub dispatch: ExternDispatch,
+    pub params: &'static [ScalarTy],
+    pub ret: ScalarTy,
+}
+
+/// Catalogue of extern fn names the JIT knows how to lower.
+/// First field is the source-level identifier (matches the interpreter
+/// extern registry in `evaluation/extern_math.rs`); the rest is the
+/// codegen-side recipe.
+const JIT_EXTERN_DISPATCH: &[(&str, ExternDispatchEntry)] = {
+    use ExternDispatch::*;
+    use ScalarTy::F64;
+    &[
+        ("__extern_sin_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::SinF64),  params: &[F64], ret: F64 }),
+        ("__extern_cos_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::CosF64),  params: &[F64], ret: F64 }),
+        ("__extern_tan_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::TanF64),  params: &[F64], ret: F64 }),
+        ("__extern_log_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::LogF64),  params: &[F64], ret: F64 }),
+        ("__extern_log2_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::Log2F64), params: &[F64], ret: F64 }),
+        ("__extern_exp_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::ExpF64),  params: &[F64], ret: F64 }),
+        ("__extern_pow_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::Pow),     params: &[F64, F64], ret: F64 }),
+        ("__extern_sqrt_f64", ExternDispatchEntry { dispatch: NativeSqrtF64,  params: &[F64], ret: F64 }),
+        ("__extern_floor_f64", ExternDispatchEntry { dispatch: NativeFloorF64, params: &[F64], ret: F64 }),
+        ("__extern_ceil_f64", ExternDispatchEntry { dispatch: NativeCeilF64,  params: &[F64], ret: F64 }),
+        ("__extern_abs_f64", ExternDispatchEntry { dispatch: NativeAbsF64,    params: &[F64], ret: F64 }),
+        // Phase 1/2 test aliases.
+        ("extern_sin", ExternDispatchEntry { dispatch: Helper(HelperKind::SinF64), params: &[F64], ret: F64 }),
+        ("extern_cos", ExternDispatchEntry { dispatch: Helper(HelperKind::CosF64), params: &[F64], ret: F64 }),
+    ]
+};
+
+thread_local! {
+    /// Per-thread map from interned extern fn name → dispatch recipe,
+    /// installed by `analyze` for the lifetime of one JIT compile.
+    /// Threading the map as a regular argument would touch every
+    /// `check_expr` recursion site; the call frequency is low enough
+    /// that a thread-local is acceptable.
+    static EXTERN_DISPATCH_MAP: RefCell<HashMap<DefaultSymbol, ExternDispatchEntry>>
+        = RefCell::new(HashMap::new());
+}
+
+/// Install the extern dispatch map for the current thread. Run inside
+/// `analyze` so that `check_plain_call` can resolve extern callees by
+/// symbol.
+fn install_extern_dispatch(interner: &DefaultStringInterner) {
+    EXTERN_DISPATCH_MAP.with(|cell| {
+        let mut m = cell.borrow_mut();
+        m.clear();
+        for (name, entry) in JIT_EXTERN_DISPATCH {
+            // `interner.get` rather than `get_or_intern`: if the user's
+            // program never mentioned the extern, leave it out so the
+            // map stays small. Functions only get an `is_extern: true`
+            // entry by being declared with the same source-level name,
+            // so an unmentioned extern can never trigger a call.
+            if let Some(sym) = interner.get(name) {
+                m.insert(sym, *entry);
+            }
+        }
+    });
+}
+
+/// Look up the dispatch recipe for an extern fn by its interned name.
+/// Returns `None` if the symbol isn't in the table — caller falls back
+/// to the interpreter dispatch path.
+pub(crate) fn jit_extern_dispatch_for(name: DefaultSymbol) -> Option<ExternDispatchEntry> {
+    EXTERN_DISPATCH_MAP.with(|cell| cell.borrow().get(&name).copied())
+}
 
 /// Records the *first* reason eligibility analysis rejected the program.
 /// Subsequent rejections deeper in the recursion are ignored — the user
@@ -232,6 +318,7 @@ pub fn analyze(
     main: &Rc<Function>,
     interner: &DefaultStringInterner,
 ) -> Result<EligibleSet, String> {
+    install_extern_dispatch(interner);
     let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
     for f in &program.function {
         function_map.insert(f.name, f.clone());
@@ -2824,15 +2911,50 @@ fn check_plain_call(
         }
     };
 
-    // `extern fn` callees are dispatched through the interpreter's
-    // extern registry (Phase 2a). The JIT doesn't yet route extern
-    // calls to native helpers — that's a follow-up. For now reject
-    // so the interpreter call path runs the dispatch.
+    // `extern fn` callees: validate against the JIT extern dispatch
+    // table. The table is keyed by interned symbol via the
+    // thread-local set up by `analyze` (see `with_extern_dispatch`).
+    // Names that aren't in the table fall back to the interpreter
+    // call path.
     if callee.is_extern {
-        note(reject_reason, || {
-            "calls an extern fn (not yet supported by the JIT)".to_string()
-        });
-        return None;
+        let entry = match jit_extern_dispatch_for(name) {
+            Some(e) => e,
+            None => {
+                note(reject_reason, || {
+                    "calls extern fn not registered with the JIT".to_string()
+                });
+                return None;
+            }
+        };
+        if arg_list.len() != entry.params.len() {
+            note(reject_reason, || {
+                format!(
+                    "extern fn called with {} arg(s), expected {}",
+                    arg_list.len(),
+                    entry.params.len()
+                )
+            });
+            return None;
+        }
+        for (a, want) in arg_list.iter().zip(entry.params.iter()) {
+            match check_expr(
+                program, a, locals, struct_locals, tuple_locals,
+                substitutions, struct_layouts, callees, ptr_read_hints,
+                reject_reason,
+            ) {
+                Some(t) if t == *want => {}
+                _ => {
+                    note(reject_reason, || {
+                        "extern fn argument type mismatch".to_string()
+                    });
+                    return None;
+                }
+            }
+        }
+        // Extern fns skip the monomorphisation pipeline; codegen
+        // recognises the `is_extern` flag and emits the matching
+        // helper / native op.
+        return Some(entry.ret);
     }
 
     // Resolve each argument's type, allowing struct identifiers

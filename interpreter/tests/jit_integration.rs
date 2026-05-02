@@ -88,6 +88,29 @@ fn cast_example_matches_between_modes() {
 }
 
 #[test]
+fn extern_math_jit_matches_interpreter() {
+    // Phase 2d: `extern fn` calls dispatched by the JIT (helper-based
+    // sin/cos/etc. + native sqrt/floor/ceil/abs) must produce the
+    // same result as the interpreter extern registry path.
+    assert_match("example/extern_math_jit.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn extern_math_jit_compiles_main() {
+    // Confirm the JIT actually compiles `main` rather than falling
+    // back. If extern fn dispatch was rejected by eligibility, main
+    // would not appear in the "JIT compiled:" log.
+    let r = run("example/extern_math_jit.t", true, true);
+    assert_eq!(r.code, 16, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("main"),
+        "expected JIT compile log mentioning main, got stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn float64_example_matches_between_modes() {
     assert_match("example/jit_float64.t");
 }

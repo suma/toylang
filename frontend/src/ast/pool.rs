@@ -642,9 +642,15 @@ impl ExprPool {
                 self.expr_list[index] = Some(elements);
             }
             Expr::Call(func, args) => {
+                // Match `add` / `get`: Call stores its args ExprRef in
+                // `operand`, not `rhs`. Writing to the wrong column made
+                // the slot look populated to `expr_types` but `None`
+                // through `get`, and the divergence only surfaced when a
+                // remapped Call (e.g. an `extern fn` body call inside an
+                // imported module) tried to round-trip through the pool.
                 self.expr_types[index] = ExprType::Call;
                 self.symbol_val[index] = Some(func);
-                self.rhs[index] = Some(args);
+                self.operand[index] = Some(args);
             }
             Expr::MethodCall(obj, method, args) => {
                 self.expr_types[index] = ExprType::MethodCall;

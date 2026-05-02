@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
@@ -437,7 +436,7 @@ impl EvaluationContext<'_> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Name(sym) => {
-                self.environment.set_val(*sym, (value.clone().into()));
+                self.environment.set_val(*sym, value.clone().into());
                 Ok(true)
             }
             Pattern::Literal(literal_expr) => {

@@ -1,11 +1,18 @@
 .idea
 .DS_Store
 /target
-.DS_Store
-.idea
 Cargo.lock
 frontend/.idea
 frontend/target
 interpreter/.idea
 interpreter/target
 interpreter/proptest-regressions
+
+# Claude Code per-session state (scheduled tasks lock, local settings).
+# Per-user config; should not be tracked.
+.claude/
+
+# Symlink to CLAUDE.md for cross-AI-tool compatibility (Codex / Copilot
+# read AGENTS.md, Claude Code reads CLAUDE.md). Convention is per-user
+# preference — leave the symlink optional rather than tracking it.
+AGENTS.md

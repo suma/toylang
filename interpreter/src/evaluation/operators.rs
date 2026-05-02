@@ -6,7 +6,6 @@ use string_interner::DefaultSymbol;
 use crate::object::Object;
 use crate::value::Value;
 use crate::error::InterpreterError;
-use crate::try_value;
 use super::{EvaluationContext, EvaluationResult};
 
 /// Lift an `&Object` into a `Value` without allocating an `Rc`. Used

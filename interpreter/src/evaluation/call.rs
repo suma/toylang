@@ -138,10 +138,10 @@ impl EvaluationContext<'_> {
         for (param_symbol, _param_type) in &method.parameter {
             if param_index == 0 {
                 // First parameter is 'self' - bind the object
-                self.environment.set_val(*param_symbol, (self_obj.clone().into()));
+                self.environment.set_val(*param_symbol, self_obj.clone().into());
             } else if param_index - 1 < args.len() {
                 // Subsequent parameters are regular args
-                self.environment.set_val(*param_symbol, (args[param_index - 1].clone().into()));
+                self.environment.set_val(*param_symbol, args[param_index - 1].clone().into());
             }
             param_index += 1;
         }
@@ -264,7 +264,7 @@ impl EvaluationContext<'_> {
 
             let arg_index = if skip_self { param_index - 1 } else { param_index };
             if arg_index < args.len() {
-                self.environment.set_val(*param_symbol, (args[arg_index].clone().into()));
+                self.environment.set_val(*param_symbol, args[arg_index].clone().into());
             }
             param_index += 1;
         }

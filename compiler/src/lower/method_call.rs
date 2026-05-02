@@ -60,17 +60,8 @@ impl<'a> FunctionLower<'a> {
     /// `value_scalar`'s MethodCall arm so val/var annotation
     /// inference can resolve generic method return types without
     /// triggering monomorphisation.
-    pub(super) fn peek_method_return_type(
-        &self,
-        ty: &TypeDecl,
-        subst: &HashMap<DefaultSymbol, Type>,
-        recv_struct_id: StructId,
-    ) -> Option<Type> {
-        self.peek_method_return_type_with_self(ty, subst, Type::Struct(recv_struct_id))
-    }
-
-    /// Self-type-agnostic form of `peek_method_return_type`. Used by
-    /// the value_scalar peek path so enum-receiver method calls
+    ///
+    /// Self-type-agnostic so enum-receiver method calls
     /// (`Option<T>::unwrap_or` etc.) get their return type resolved
     /// without forcing the caller to also know which side of the
     /// struct/enum split it's on.

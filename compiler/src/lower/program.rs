@@ -102,6 +102,15 @@ pub fn lower_program(
             generic_funcs.insert(func.name, Rc::clone(func));
             continue;
         }
+        // Skip extern fn declarations — Phase 2c will re-declare these
+        // as `Linkage::Import` once compiler-side extern dispatch
+        // lands. For now an `extern fn` declaration is allowed to
+        // appear in the program (so users can author math.t-style
+        // headers that the interpreter handles) but the AOT compiler
+        // can't yet resolve calls to them.
+        if func.is_extern {
+            continue;
+        }
         let mut params: Vec<Type> = Vec::with_capacity(func.parameter.len());
         for (name, ty) in &func.parameter {
             let lowered = lower_param_or_return_type(ty, &struct_defs, &enum_defs, &mut module, interner).ok_or_else(|| {
@@ -219,6 +228,14 @@ pub fn lower_program(
     let mut generic_instances: GenericInstances = HashMap::new();
     let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
     for func in non_generic {
+        // Skip body lowering for `extern fn` declarations — there is
+        // no body to lower. Phase 2c (compiler extern dispatch) will
+        // re-declare these as `Linkage::Import` so call sites resolve
+        // against libm / a runtime shim. For now they simply don't
+        // contribute any IR.
+        if func.is_extern {
+            continue;
+        }
         let func_id = *module
             .function_index
             .get(&func.name)

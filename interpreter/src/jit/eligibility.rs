@@ -2824,6 +2824,17 @@ fn check_plain_call(
         }
     };
 
+    // `extern fn` callees are dispatched through the interpreter's
+    // extern registry (Phase 2a). The JIT doesn't yet route extern
+    // calls to native helpers — that's a follow-up. For now reject
+    // so the interpreter call path runs the dispatch.
+    if callee.is_extern {
+        note(reject_reason, || {
+            "calls an extern fn (not yet supported by the JIT)".to_string()
+        });
+        return None;
+    }
+
     // Resolve each argument's type, allowing struct identifiers
     // when the callee's parameter at that position is a struct.
     // Generic substitutions are inferred only from scalar args;

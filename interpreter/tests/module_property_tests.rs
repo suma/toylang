@@ -36,6 +36,30 @@ fn test_module_import_declaration() {
 }
 
 #[test]
+fn test_module_qualified_call_executes() {
+    // Regression test for the module integration fix
+    // (`update_with_remapped_content` used to leave imported function
+    // bodies as `Stmt::Break` placeholders). With the fix in place,
+    // calling an imported `pub fn` via the qualified `module::func`
+    // form must execute the real body and return the right value.
+    let source = r"
+        import math
+
+        fn main() -> u64 {
+            math::add(10u64, 20u64)
+        }
+        ";
+
+    let result = test_program(source);
+    assert!(
+        result.is_ok(),
+        "Qualified module call should execute: {:?}",
+        result.err()
+    );
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 30);
+}
+
+#[test]
 fn test_module_package_and_import() {
     let source = r"
         package main

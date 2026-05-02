@@ -251,6 +251,62 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check associated function calls - implementation
+    /// Dispatch a `module::func(args)` qualified call. The qualifier
+    /// has already been confirmed to match an imported module alias;
+    /// the function lives in the (flat) main function table because
+    /// module integration appends imported `pub fn` items there.
+    /// Type-check the args against the callee parameter list (mirrors
+    /// the non-generic branch of `visit_call`) and return the
+    /// callee's declared return type.
+    fn dispatch_module_function_call(
+        &mut self,
+        function_name: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let fun = self.context.get_fn(function_name).ok_or_else(|| {
+            TypeCheckError::not_found("Function", &self.resolve_symbol_name(function_name))
+        })?;
+        // Honour visibility (matches the bare-call path).
+        self.check_function_access(&fun)?;
+        // Generic module functions: synthesize an `ExprList` for the
+        // args and reuse the regular generic-call path so the
+        // existing inference / monomorphisation logic runs.
+        if !fun.generic_params.is_empty() {
+            let args_ref = self
+                .core
+                .expr_pool
+                .add(Expr::ExprList(args.clone()));
+            return self.visit_generic_call(function_name, &args_ref, &fun);
+        }
+        let params: Vec<_> = fun
+            .parameter
+            .iter()
+            .map(|(_, ty)| ty.clone())
+            .collect();
+        if args.len() != params.len() {
+            return Err(TypeCheckError::generic_error(&format!(
+                "module function '{}' expects {} argument(s), found {}",
+                self.resolve_symbol_name(function_name),
+                params.len(),
+                args.len()
+            )));
+        }
+        for (arg_expr, expected_ty) in args.iter().zip(params.iter()) {
+            let actual_ty = self.visit_expr(arg_expr)?;
+            if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+                return Err(TypeCheckError::type_mismatch(
+                    expected_ty.clone(),
+                    actual_ty,
+                ).with_context(&format!(
+                    "argument of module function '{}'",
+                    self.resolve_symbol_name(function_name)
+                )));
+            }
+        }
+        let return_ty = fun.return_type.clone().unwrap_or(TypeDecl::Unit);
+        Ok(return_ty)
+    }
+
     pub fn visit_associated_function_call_impl(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // Handle Container::function_name(args) type calls for any associated function
 
@@ -328,6 +384,32 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .collect();
                 return Ok(TypeDecl::Enum(struct_name, type_args));
             }
+        }
+
+        // Module-qualified call: `module::func(args)` where `module`
+        // is an imported module alias. The actual function definition
+        // lives in the main program (module integration flattens it
+        // into `program.function`), so the qualifier is essentially a
+        // namespace check — once we confirm `struct_name` is a known
+        // import alias, dispatch to the regular function-call path
+        // using `function_name` directly. This keeps `math::add(...)`
+        // working alongside the bare `add(...)` form for backward
+        // compatibility while signalling intent at the call site.
+        let module_alias = vec![struct_name];
+        if self.imported_modules.contains_key(&module_alias) {
+            if self.context.get_fn(function_name).is_some() {
+                return self.dispatch_module_function_call(function_name, args);
+            }
+            // Module name was recognised but the function isn't in the
+            // (flat) function table — surface a targeted diagnostic
+            // rather than falling through to the struct-not-found
+            // path which would mention "Struct".
+            let module_str = self.resolve_symbol_name(struct_name);
+            let func_str = self.resolve_symbol_name(function_name);
+            return Err(TypeCheckError::generic_error(&format!(
+                "module '{}' has no exported function '{}'",
+                module_str, func_str
+            )));
         }
 
         // Verify the struct exists — generic and non-generic both count.

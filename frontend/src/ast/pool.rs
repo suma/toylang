@@ -933,6 +933,108 @@ impl StmtPool {
         StmtRef(index as u32)
     }
 
+    /// Replace the statement at `stmt_ref` with `stmt`. Mirrors
+    /// `ExprPool::update` and exists primarily so the module
+    /// integration pass can install placeholder slots up front and
+    /// fill them with the real remapped statements once every
+    /// `StmtRef` / `ExprRef` has been redirected. Out-of-range refs
+    /// are silently ignored, matching `ExprPool::update`.
+    pub fn update(&mut self, stmt_ref: &StmtRef, stmt: Stmt) {
+        let index = stmt_ref.to_index();
+        if index >= self.stmt_types.len() {
+            return;
+        }
+        // Clear every per-variant slot so the previous payload
+        // doesn't leak into the new variant. Mirrors the field
+        // list inside `extend_to_index` / `add`.
+        self.expr_val[index] = None;
+        self.symbol_val[index] = None;
+        self.type_decl[index] = None;
+        self.condition[index] = None;
+        self.start_expr[index] = None;
+        self.end_expr[index] = None;
+        self.block_expr[index] = None;
+        self.struct_name[index] = None;
+        self.struct_generic_params[index] = None;
+        self.struct_generic_bounds[index] = None;
+        self.struct_fields[index] = None;
+        self.visibility[index] = None;
+        self.impl_methods[index] = None;
+        self.impl_trait_name[index] = None;
+        self.enum_variants[index] = None;
+        self.enum_generic_params[index] = None;
+        self.trait_methods[index] = None;
+
+        // Re-populate from the new statement (same shape as `add`).
+        match stmt {
+            Stmt::Expression(expr) => {
+                self.stmt_types[index] = StmtType::Expression;
+                self.expr_val[index] = Some(expr);
+            }
+            Stmt::Val(name, type_decl, value) => {
+                self.stmt_types[index] = StmtType::Val;
+                self.symbol_val[index] = Some(name);
+                self.type_decl[index] = type_decl;
+                self.expr_val[index] = Some(value);
+            }
+            Stmt::Var(name, type_decl, value) => {
+                self.stmt_types[index] = StmtType::Var;
+                self.symbol_val[index] = Some(name);
+                self.type_decl[index] = type_decl;
+                self.expr_val[index] = value;
+            }
+            Stmt::Return(value) => {
+                self.stmt_types[index] = StmtType::Return;
+                self.expr_val[index] = value;
+            }
+            Stmt::Break => {
+                self.stmt_types[index] = StmtType::Break;
+            }
+            Stmt::Continue => {
+                self.stmt_types[index] = StmtType::Continue;
+            }
+            Stmt::For(var, start, end, block) => {
+                self.stmt_types[index] = StmtType::For;
+                self.symbol_val[index] = Some(var);
+                self.start_expr[index] = Some(start);
+                self.end_expr[index] = Some(end);
+                self.block_expr[index] = Some(block);
+            }
+            Stmt::While(cond, block) => {
+                self.stmt_types[index] = StmtType::While;
+                self.condition[index] = Some(cond);
+                self.block_expr[index] = Some(block);
+            }
+            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
+                self.stmt_types[index] = StmtType::StructDecl;
+                self.struct_name[index] = Some(name);
+                self.struct_generic_params[index] = Some(generic_params);
+                self.struct_generic_bounds[index] = Some(generic_bounds);
+                self.struct_fields[index] = Some(fields);
+                self.visibility[index] = Some(visibility);
+            }
+            Stmt::ImplBlock { target_type, methods, trait_name } => {
+                self.stmt_types[index] = StmtType::ImplBlock;
+                self.struct_name[index] = Some(target_type);
+                self.impl_methods[index] = Some(methods);
+                self.impl_trait_name[index] = trait_name;
+            }
+            Stmt::EnumDecl { name, generic_params, variants, visibility } => {
+                self.stmt_types[index] = StmtType::EnumDecl;
+                self.struct_name[index] = Some(name);
+                self.enum_generic_params[index] = Some(generic_params);
+                self.enum_variants[index] = Some(variants);
+                self.visibility[index] = Some(visibility);
+            }
+            Stmt::TraitDecl { name, methods, visibility } => {
+                self.stmt_types[index] = StmtType::TraitDecl;
+                self.struct_name[index] = Some(name);
+                self.trait_methods[index] = Some(methods);
+                self.visibility[index] = Some(visibility);
+            }
+        }
+    }
+
     pub fn get(&self, stmt_ref: &StmtRef) -> Option<Stmt> {
         let index = stmt_ref.to_index();
         if index >= self.stmt_types.len() {

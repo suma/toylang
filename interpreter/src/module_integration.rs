@@ -425,34 +425,56 @@ impl<'a> AstIntegrationContext<'a> {
         Ok(())
     }
 
-    /// Phase 2: Replace placeholders with actual remapped content
+    /// Phase 2: Replace placeholders with actual remapped content.
+    ///
+    /// Phase 1 reserved a placeholder slot (`Expr::Null` /
+    /// `Stmt::Break`) in the main pools for every node in the
+    /// module's pools, so `expr_mapping` / `stmt_mapping` now point
+    /// at stable destinations for the entire module AST. This
+    /// pass walks the module's pools and overwrites each placeholder
+    /// with the corresponding remapped node via `ExprPool::update`
+    /// and `StmtPool::update`. After this returns, every imported
+    /// function body's `code: StmtRef` resolves through the main
+    /// pool to the real (remapped) statement / expression tree.
     fn update_with_remapped_content(&mut self) -> Result<(), String> {
-        // Pool structures don't support direct element replacement
-        // We need a different approach - rebuild with correct mappings
-        // For now, create new Pool structures with remapped content
-        let _new_expr_pool = ExprPool::new();
-        let _new_stmt_pool = StmtPool::new();
-
-        // Copy existing content from main program first
-        // This is a placeholder implementation - needs proper solution
-        // Update all expressions with correct content
         for index in 0..self.module_program.expression.len() {
-            let expr_ref = ExprRef(index as u32);
-            if let Some(expr) = self.module_program.expression.get(&expr_ref) {
-                let _remapped_expr = self.remap_expression(&expr)?;
-                let _main_expr_ref = self.expr_mapping.get(&(index as u32)).unwrap().clone();
-                // TODO: Need to implement proper Pool update mechanism
-            }
+            let module_expr_ref = ExprRef(index as u32);
+            let expr = self
+                .module_program
+                .expression
+                .get(&module_expr_ref)
+                .ok_or_else(|| {
+                    format!("Module ExprRef({}) is missing during integration", index)
+                })?;
+            let remapped_expr = self.remap_expression(&expr)?;
+            let main_expr_ref = self
+                .expr_mapping
+                .get(&(index as u32))
+                .ok_or_else(|| {
+                    format!("Missing ExprRef({}) placeholder mapping", index)
+                })?
+                .clone();
+            self.main_program.expression.update(&main_expr_ref, remapped_expr);
         }
 
-        // Update all statements with correct content
         for index in 0..self.module_program.statement.len() {
-            let stmt_ref = StmtRef(index as u32);
-            if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
-                let _remapped_stmt = self.remap_statement(&stmt)?;
-                let _main_stmt_ref = self.stmt_mapping.get(&(index as u32)).unwrap().clone();
-                // TODO: Need to implement proper Pool update mechanism
-            }
+            let module_stmt_ref = StmtRef(index as u32);
+            let stmt = self
+                .module_program
+                .statement
+                .get(&module_stmt_ref)
+                .ok_or_else(|| {
+                    format!("Module StmtRef({}) is missing during integration", index)
+                })?;
+            let remapped_stmt = self.remap_statement(&stmt)?;
+            let main_stmt_ref = self
+                .stmt_mapping
+                .get(&(index as u32))
+                .ok_or_else(|| {
+                    format!("Missing StmtRef({}) placeholder mapping", index)
+                })?
+                .clone();
+            self.main_program.statement.update(&main_stmt_ref, remapped_stmt);
         }
 
         Ok(())

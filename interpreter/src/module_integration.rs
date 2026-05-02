@@ -26,6 +26,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 /// Per-import scratch context. Owns the main / module borrows and the
@@ -38,6 +39,18 @@ pub(crate) struct AstIntegrationContext<'a> {
     module_string_interner: &'a DefaultStringInterner,
     expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
     stmt_mapping: HashMap<u32, StmtRef>, // module StmtRef -> main StmtRef
+    /// Set of enum names already declared by the user (or by an
+    /// earlier-integrated module). Built from `main_program.statement`
+    /// at construction; consulted by `remap_statement` so an
+    /// auto-loaded `enum Option<T>` is silently skipped when the user
+    /// program already declares one (the user version wins). Without
+    /// this, every existing test that inlines `enum Option<T> { ... }`
+    /// would trip the type-checker's "enum 'Option' is already
+    /// defined" check after `core/std/option.t` was added.
+    existing_enum_names: std::collections::HashSet<DefaultSymbol>,
+    /// Same idea for structs — silently skip auto-loaded
+    /// `struct Cell<T>` when the user already defines `Cell`.
+    existing_struct_names: std::collections::HashSet<DefaultSymbol>,
 }
 
 impl<'a> AstIntegrationContext<'a> {
@@ -47,6 +60,29 @@ impl<'a> AstIntegrationContext<'a> {
         main_string_interner: &'a mut DefaultStringInterner,
         module_string_interner: &'a DefaultStringInterner,
     ) -> Self {
+        // Snapshot user-defined enum / struct names from
+        // main_program before integration begins so the per-stmt
+        // remap path can defer-as-Break any colliding stdlib
+        // declaration. Iterating over `main_program.statement` here
+        // (rather than later inside the borrow-mut walk) keeps the
+        // lookup cheap without re-scanning per stmt.
+        let mut existing_enum_names: std::collections::HashSet<DefaultSymbol> =
+            std::collections::HashSet::new();
+        let mut existing_struct_names: std::collections::HashSet<DefaultSymbol> =
+            std::collections::HashSet::new();
+        for i in 0..main_program.statement.len() {
+            if let Some(stmt) = main_program.statement.get(&StmtRef(i as u32)) {
+                match &stmt {
+                    Stmt::EnumDecl { name, .. } => {
+                        existing_enum_names.insert(*name);
+                    }
+                    Stmt::StructDecl { name, .. } => {
+                        existing_struct_names.insert(*name);
+                    }
+                    _ => {}
+                }
+            }
+        }
         Self {
             main_program,
             module_program,
@@ -54,6 +90,8 @@ impl<'a> AstIntegrationContext<'a> {
             module_string_interner,
             expr_mapping: HashMap::new(),
             stmt_mapping: HashMap::new(),
+            existing_enum_names,
+            existing_struct_names,
         }
     }
 
@@ -193,8 +231,131 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Expr::AssociatedFunctionCall(new_target, new_method, new_args))
             }
+            Expr::Match(scrutinee, arms) => {
+                // `match` body remap: scrutinee ExprRef + each arm's
+                // pattern (enum / literal / tuple sub-symbols) +
+                // optional guard ExprRef + body ExprRef. Patterns
+                // carry their own DefaultSymbol fields (enum name,
+                // variant name, name bindings) that all need
+                // re-interning into the main interner.
+                let new_scrutinee = self
+                    .expr_mapping
+                    .get(&scrutinee.0)
+                    .ok_or("Cannot find Match scrutinee mapping")?
+                    .clone();
+                let mut new_arms: Vec<MatchArm> = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    let new_pat = self.remap_pattern(&arm.pattern)?;
+                    let new_guard = match arm.guard {
+                        Some(g) => Some(
+                            self.expr_mapping
+                                .get(&g.0)
+                                .ok_or("Cannot find Match arm guard mapping")?
+                                .clone(),
+                        ),
+                        None => None,
+                    };
+                    let new_body = self
+                        .expr_mapping
+                        .get(&arm.body.0)
+                        .ok_or("Cannot find Match arm body mapping")?
+                        .clone();
+                    new_arms.push(MatchArm {
+                        pattern: new_pat,
+                        guard: new_guard,
+                        body: new_body,
+                    });
+                }
+                Ok(Expr::Match(new_scrutinee, new_arms))
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
+        }
+    }
+
+    /// Recursively remap any `DefaultSymbol` carried by a `TypeDecl`
+    /// from the module's interner onto the main program's interner.
+    /// Only `Identifier` / `Generic` / `Struct` / `Enum` carry
+    /// symbols directly; the structural variants (`Tuple`, `Array`,
+    /// `Dict`, `Range`) recurse into their element types.
+    fn remap_type_decl(&mut self, ty: &TypeDecl) -> Result<TypeDecl, String> {
+        Ok(match ty {
+            TypeDecl::Identifier(s) => TypeDecl::Identifier(self.remap_symbol(*s)?),
+            TypeDecl::Generic(s) => TypeDecl::Generic(self.remap_symbol(*s)?),
+            TypeDecl::Struct(s, args) => {
+                let mut new_args = Vec::with_capacity(args.len());
+                for a in args {
+                    new_args.push(self.remap_type_decl(a)?);
+                }
+                TypeDecl::Struct(self.remap_symbol(*s)?, new_args)
+            }
+            TypeDecl::Enum(s, args) => {
+                let mut new_args = Vec::with_capacity(args.len());
+                for a in args {
+                    new_args.push(self.remap_type_decl(a)?);
+                }
+                TypeDecl::Enum(self.remap_symbol(*s)?, new_args)
+            }
+            TypeDecl::Tuple(elems) => {
+                let mut new_elems = Vec::with_capacity(elems.len());
+                for e in elems {
+                    new_elems.push(self.remap_type_decl(e)?);
+                }
+                TypeDecl::Tuple(new_elems)
+            }
+            TypeDecl::Array(elems, n) => {
+                let mut new_elems = Vec::with_capacity(elems.len());
+                for e in elems {
+                    new_elems.push(self.remap_type_decl(e)?);
+                }
+                TypeDecl::Array(new_elems, *n)
+            }
+            TypeDecl::Dict(k, v) => TypeDecl::Dict(
+                Box::new(self.remap_type_decl(k)?),
+                Box::new(self.remap_type_decl(v)?),
+            ),
+            TypeDecl::Range(t) => TypeDecl::Range(Box::new(self.remap_type_decl(t)?)),
+            // Symbol-free leaf cases pass through.
+            other => other.clone(),
+        })
+    }
+
+    /// Recursively remap a `Pattern`'s symbols (enum name, variant
+    /// name, sub-pattern bindings) and any literal `ExprRef` it
+    /// references. Sub-patterns are walked depth-first because nested
+    /// patterns like `Option::Some(Option::Some(v))` carry their own
+    /// enum/variant symbol pairs that all need re-interning.
+    fn remap_pattern(&mut self, pat: &Pattern) -> Result<Pattern, String> {
+        match pat {
+            Pattern::EnumVariant(enum_sym, variant_sym, subpats) => {
+                let new_enum = self.remap_symbol(*enum_sym)?;
+                let new_variant = self.remap_symbol(*variant_sym)?;
+                let mut new_subs = Vec::with_capacity(subpats.len());
+                for sp in subpats {
+                    new_subs.push(self.remap_pattern(sp)?);
+                }
+                Ok(Pattern::EnumVariant(new_enum, new_variant, new_subs))
+            }
+            Pattern::Literal(eref) => {
+                let new_ref = self
+                    .expr_mapping
+                    .get(&eref.0)
+                    .ok_or("Cannot find Pattern::Literal mapping")?
+                    .clone();
+                Ok(Pattern::Literal(new_ref))
+            }
+            Pattern::Name(sym) => {
+                let new_sym = self.remap_symbol(*sym)?;
+                Ok(Pattern::Name(new_sym))
+            }
+            Pattern::Tuple(subs) => {
+                let mut new_subs = Vec::with_capacity(subs.len());
+                for sp in subs {
+                    new_subs.push(self.remap_pattern(sp)?);
+                }
+                Ok(Pattern::Tuple(new_subs))
+            }
+            Pattern::Wildcard => Ok(Pattern::Wildcard),
         }
     }
 
@@ -269,6 +430,17 @@ impl<'a> AstIntegrationContext<'a> {
                 // happen to be at those numeric positions in
                 // `main_string_interner`).
                 let new_target = self.remap_symbol(*target_type)?;
+                // Skip stdlib impl blocks whose target enum/struct
+                // was overridden by a user declaration — the user's
+                // type doesn't have these methods registered, and
+                // re-registering stdlib bodies onto a user-shaped
+                // type (variants/fields may differ) would silently
+                // misbehave.
+                if self.existing_enum_names.contains(&new_target)
+                    || self.existing_struct_names.contains(&new_target)
+                {
+                    return Ok(Stmt::Break);
+                }
                 let new_trait = match trait_name {
                     Some(t) => Some(self.remap_symbol(*t)?),
                     None => None,
@@ -285,10 +457,49 @@ impl<'a> AstIntegrationContext<'a> {
                 })
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
+                // The enum's name, its generic parameter symbols, and
+                // every variant name + payload TypeDecl all carry
+                // module-interner symbols that need rerouting onto the
+                // main interner before the type-checker / runtime can
+                // match them. Without this, an auto-loaded
+                // `enum Option<T> { None, Some(T) }` looks like a
+                // struct named with an unmappable symbol when user
+                // code later writes `Option::Some(42u64)`.
+                let new_name = self.remap_symbol(*name)?;
+                // User-defined enum or struct with the same name
+                // takes precedence: leave the placeholder slot as
+                // `Stmt::Break` so the type-checker only sees the
+                // user's declaration. Mirrors the auto-load
+                // `enforce_namespace = false` policy for functions.
+                // Cross-check structs too because user-side may
+                // declare `struct Option { has_value, value }` for
+                // their own purposes; stdlib's `enum Option` should
+                // bow out either way.
+                if self.existing_enum_names.contains(&new_name)
+                    || self.existing_struct_names.contains(&new_name)
+                {
+                    return Ok(Stmt::Break);
+                }
+                let mut new_generics = Vec::with_capacity(generic_params.len());
+                for g in generic_params {
+                    new_generics.push(self.remap_symbol(*g)?);
+                }
+                let mut new_variants = Vec::with_capacity(variants.len());
+                for v in variants {
+                    let v_name = self.remap_symbol(v.name)?;
+                    let mut new_payloads = Vec::with_capacity(v.payload_types.len());
+                    for ty in &v.payload_types {
+                        new_payloads.push(self.remap_type_decl(ty)?);
+                    }
+                    new_variants.push(EnumVariantDef {
+                        name: v_name,
+                        payload_types: new_payloads,
+                    });
+                }
                 Ok(Stmt::EnumDecl {
-                    name: *name,
-                    generic_params: generic_params.clone(),
-                    variants: variants.clone(),
+                    name: new_name,
+                    generic_params: new_generics,
+                    variants: new_variants,
                     visibility: visibility.clone(),
                 })
             }
@@ -379,18 +590,39 @@ impl<'a> AstIntegrationContext<'a> {
         })
     }
 
-    /// Remap a method function with all its symbols and AST references
+    /// Remap a method function with all its symbols and AST references.
+    /// Generic parameter symbols (`<T>`), bounds, parameter TypeDecls,
+    /// and the return TypeDecl all carry module-interner symbols and
+    /// must be rerouted onto the main interner — without that, an
+    /// auto-loaded `impl<T> Option<T> { fn unwrap_or(...) -> T }` body
+    /// would reference a `Generic(T_module_sym)` that the main
+    /// type-checker can't match against the enum's
+    /// `enum_generic_params` entry (registered under the *main*
+    /// interner's T symbol).
     fn remap_method_function(&mut self, method: &MethodFunction) -> Result<Rc<MethodFunction>, String> {
         let new_name = self.remap_symbol(method.name)?;
 
-        // Remap parameters
+        let mut new_generic_params = Vec::with_capacity(method.generic_params.len());
+        for g in &method.generic_params {
+            new_generic_params.push(self.remap_symbol(*g)?);
+        }
+        let mut new_generic_bounds = std::collections::HashMap::new();
+        for (sym, bound) in &method.generic_bounds {
+            new_generic_bounds.insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
+        }
+
         let mut new_parameters = Vec::new();
         for (param_symbol, param_type) in &method.parameter {
             let new_param_symbol = self.remap_symbol(*param_symbol)?;
-            new_parameters.push((new_param_symbol, param_type.clone()));
+            let new_param_type = self.remap_type_decl(param_type)?;
+            new_parameters.push((new_param_symbol, new_param_type));
         }
 
-        // Remap method body statement reference
+        let new_return_type = match &method.return_type {
+            Some(t) => Some(self.remap_type_decl(t)?),
+            None => None,
+        };
+
         let new_code = self.stmt_mapping.get(&method.code.0)
             .ok_or("Cannot find method code statement mapping")?.clone();
 
@@ -406,10 +638,10 @@ impl<'a> AstIntegrationContext<'a> {
         Ok(Rc::new(MethodFunction {
             node: method.node.clone(),
             name: new_name,
-            generic_params: method.generic_params.clone(), // Copy generic parameters
-            generic_bounds: method.generic_bounds.clone(), // Copy inherited impl bounds
+            generic_params: new_generic_params,
+            generic_bounds: new_generic_bounds,
             parameter: new_parameters,
-            return_type: method.return_type.clone(),
+            return_type: new_return_type,
             requires: new_requires,
             ensures: new_ensures,
             code: new_code,

@@ -159,6 +159,29 @@ fn extern_generic_identity_runs_via_interpreter_registry() {
 }
 
 #[test]
+fn stdlib_option_methods_run_end_to_end() {
+    // #96: core/std/option.t auto-loaded. is_some / is_none /
+    // unwrap_or dispatched through the enum-method registry. JIT
+    // currently rejects (no eligibility for enum receivers), so it
+    // silently falls back to the interpreter — both modes must
+    // therefore produce exit 152.
+    let plain = run("example/stdlib_option.t", false, false);
+    assert_eq!(plain.code, 152, "interpreter exit; stderr: {}", plain.stderr);
+    let jit = run("example/stdlib_option.t", true, false);
+    assert_eq!(jit.code, 152, "jit-mode exit; stderr: {}", jit.stderr);
+}
+
+#[test]
+fn stdlib_result_methods_run_end_to_end() {
+    // #96: core/std/result.t auto-loaded. Same shape as the Option
+    // test (is_ok / is_err / unwrap_or). Exit 152 in both modes.
+    let plain = run("example/stdlib_result.t", false, false);
+    assert_eq!(plain.code, 152, "interpreter exit; stderr: {}", plain.stderr);
+    let jit = run("example/stdlib_result.t", true, false);
+    assert_eq!(jit.code, 152, "jit-mode exit; stderr: {}", jit.stderr);
+}
+
+#[test]
 fn extension_trait_chained_primitive_method_matches_interpreter() {
     // #194: receiver of an outer MethodCall is itself a MethodCall
     // (`a.neg().neg()`). Eligibility used to require a bare

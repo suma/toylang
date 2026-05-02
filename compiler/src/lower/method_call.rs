@@ -66,10 +66,24 @@ impl<'a> FunctionLower<'a> {
         subst: &HashMap<DefaultSymbol, Type>,
         recv_struct_id: StructId,
     ) -> Option<Type> {
+        self.peek_method_return_type_with_self(ty, subst, Type::Struct(recv_struct_id))
+    }
+
+    /// Self-type-agnostic form of `peek_method_return_type`. Used by
+    /// the value_scalar peek path so enum-receiver method calls
+    /// (`Option<T>::unwrap_or` etc.) get their return type resolved
+    /// without forcing the caller to also know which side of the
+    /// struct/enum split it's on.
+    pub(super) fn peek_method_return_type_with_self(
+        &self,
+        ty: &TypeDecl,
+        subst: &HashMap<DefaultSymbol, Type>,
+        self_type: Type,
+    ) -> Option<Type> {
         match ty {
-            TypeDecl::Self_ => Some(Type::Struct(recv_struct_id)),
+            TypeDecl::Self_ => Some(self_type),
             TypeDecl::Identifier(sym) if self.interner.resolve(*sym) == Some("Self") => {
-                Some(Type::Struct(recv_struct_id))
+                Some(self_type)
             }
             TypeDecl::Generic(p) => subst.get(p).copied(),
             TypeDecl::Identifier(sym) => subst.get(sym).copied().or_else(|| lower_scalar(ty)),
@@ -128,6 +142,31 @@ impl<'a> FunctionLower<'a> {
         arg_refs: &[ExprRef],
     ) -> Result<FuncId, String> {
         let recv_type_args = self.module.struct_def(recv_struct_id).type_args.clone();
+        self.instantiate_generic_method_with_self_type(
+            target_sym,
+            method_sym,
+            template,
+            Type::Struct(recv_struct_id),
+            recv_type_args,
+            arg_refs,
+        )
+    }
+
+    /// Receiver-type-agnostic form of
+    /// `instantiate_generic_method_with_args`: takes the explicit
+    /// `Self` cranelift `Type` and the receiver's pre-resolved
+    /// `type_args` so it works for both `Type::Struct(id)` and
+    /// `Type::Enum(id)` receivers. Used by the enum-method dispatch
+    /// path that the (auto-loaded) `impl<T> Option<T>` etc. needs.
+    pub(super) fn instantiate_generic_method_with_self_type(
+        &mut self,
+        target_sym: DefaultSymbol,
+        method_sym: DefaultSymbol,
+        template: &frontend::ast::MethodFunction,
+        self_type: Type,
+        recv_type_args: Vec<Type>,
+        arg_refs: &[ExprRef],
+    ) -> Result<FuncId, String> {
         let impl_param_count = recv_type_args.len();
         if template.generic_params.len() < impl_param_count {
             return Err(format!(
@@ -187,7 +226,9 @@ impl<'a> FunctionLower<'a> {
         {
             return Ok(id);
         }
-        let self_type = Type::Struct(recv_struct_id);
+        // `self_type` is supplied by the caller (Type::Struct(...) or
+        // Type::Enum(...)) so this branch works for both struct and
+        // enum receivers.
         let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
         for (pname, pty) in &template.parameter {
             let lowered = self
@@ -397,23 +438,39 @@ impl<'a> FunctionLower<'a> {
             id
         } else if let Some(template) = self.generic_methods.get(&(target_sym, method)).cloned()
         {
-            let recv_struct_id = match &binding {
-                Binding::Struct { struct_id, .. } => *struct_id,
+            match &binding {
+                Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
+                    target_sym,
+                    method,
+                    &template,
+                    *struct_id,
+                    args,
+                )?,
+                Binding::Enum(storage) => {
+                    // Enum receiver dispatch: pull the receiver's
+                    // resolved `type_args` from `enum_def` and feed
+                    // them to the type-args-aware monomorph
+                    // instantiator. `Type::Enum(enum_id)` is the
+                    // Self type for the impl body.
+                    let enum_id = storage.enum_id;
+                    let recv_type_args = self.module.enum_def(enum_id).type_args.clone();
+                    self.instantiate_generic_method_with_self_type(
+                        target_sym,
+                        method,
+                        &template,
+                        Type::Enum(enum_id),
+                        recv_type_args,
+                        args,
+                    )?
+                }
                 _ => {
                     return Err(format!(
-                        "compiler MVP: generic method `{}::{}` requires a struct receiver",
+                        "compiler MVP: generic method `{}::{}` requires a struct or enum receiver",
                         self.interner.resolve(target_sym).unwrap_or("?"),
                         self.interner.resolve(method).unwrap_or("?"),
                     ));
                 }
-            };
-            self.instantiate_generic_method_with_args(
-                target_sym,
-                method,
-                &template,
-                recv_struct_id,
-                args,
-            )?
+            }
         } else {
             return Err(format!(
                 "no method `{}::{}` is defined",

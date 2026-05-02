@@ -620,6 +620,29 @@ impl EvaluationContext<'_> {
                     Err(InterpreterError::InternalError(format!("Method '{method_name}' not found for struct '{type_name:?}'")))
                 }
             }
+            Object::EnumVariant { enum_name, .. } => {
+                // Enum receivers reuse the same `(target_symbol,
+                // method_name)` `method_registry` lookup the struct
+                // path uses; `impl<T> Option<T> { fn unwrap_or(...) }`
+                // registers under the enum's name symbol. Mirrors how
+                // primitive extension-trait dispatch piggy-backs on
+                // the same registry above.
+                let enum_name_symbol = *enum_name;
+                if let Some(method_func) = self.get_method(enum_name_symbol, *method) {
+                    drop(obj_borrowed);
+                    let mut arg_values = Vec::new();
+                    for arg in args {
+                        let arg_val = self.evaluate(arg)?;
+                        let arg_val = try_value!(Ok(arg_val));
+                        arg_values.push(arg_val);
+                    }
+                    self.call_method(method_func, obj_val, arg_values)
+                } else {
+                    Err(InterpreterError::InternalError(format!(
+                        "Method '{method_name}' not found for enum '{enum_name:?}'"
+                    )))
+                }
+            }
             _ => {
                 Err(InterpreterError::InternalError(format!("Cannot call method '{method_name}' on non-struct object: {obj_borrowed:?}")))
             }

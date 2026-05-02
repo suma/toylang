@@ -186,41 +186,50 @@ impl<'a> FunctionLower<'a> {
                     Expr::Identifier(s) => s,
                     _ => return None,
                 };
-                let (target_sym, recv_struct_id) = match self.bindings.get(&recv_sym)? {
-                    Binding::Struct { struct_id, .. } => (
-                        self.module.struct_def(*struct_id).base_name,
-                        Some(*struct_id),
-                    ),
-                    Binding::Enum(storage) => (
-                        self.module.enum_def(storage.enum_id).base_name,
-                        None,
-                    ),
-                    // Step D: extension-trait dispatch — primitive
-                    // receiver. Map the binding's IR type back to the
-                    // canonical-name symbol; the rest of the lookup
-                    // falls through into the same `method_func_ids`
-                    // branch struct receivers use.
-                    Binding::Scalar { ty, .. } => {
-                        let name = match ty {
-                            Type::Bool => "bool",
-                            Type::I64 => "i64",
-                            Type::U64 => "u64",
-                            Type::F64 => "f64",
-                            _ => return None,
-                        };
-                        let sym = self.interner.get(name)?;
-                        (sym, None)
-                    }
-                    _ => return None,
-                };
+                // Track receiver self-type and per-receiver type
+                // args separately so the generic-method peek path
+                // below can handle struct AND enum receivers
+                // uniformly.
+                let (target_sym, recv_self): (DefaultSymbol, Option<(Type, Vec<Type>)>) =
+                    match self.bindings.get(&recv_sym)? {
+                        Binding::Struct { struct_id, .. } => {
+                            let def = self.module.struct_def(*struct_id);
+                            (
+                                def.base_name,
+                                Some((Type::Struct(*struct_id), def.type_args.clone())),
+                            )
+                        }
+                        Binding::Enum(storage) => {
+                            let def = self.module.enum_def(storage.enum_id);
+                            (
+                                def.base_name,
+                                Some((Type::Enum(storage.enum_id), def.type_args.clone())),
+                            )
+                        }
+                        // Step D: extension-trait dispatch — primitive
+                        // receiver. Map the binding's IR type back to
+                        // the canonical-name symbol; the rest of the
+                        // lookup falls through into the same
+                        // `method_func_ids` branch struct receivers use.
+                        Binding::Scalar { ty, .. } => {
+                            let name = match ty {
+                                Type::Bool => "bool",
+                                Type::I64 => "i64",
+                                Type::U64 => "u64",
+                                Type::F64 => "f64",
+                                _ => return None,
+                            };
+                            let sym = self.interner.get(name)?;
+                            (sym, None)
+                        }
+                        _ => return None,
+                    };
                 if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)) {
                     return Some(self.module.function(*func_id).return_type);
                 }
-                if let (Some(template), Some(struct_id)) =
-                    (self.generic_methods.get(&(target_sym, method)), recv_struct_id)
+                if let (Some(template), Some((self_ty, recv_type_args))) =
+                    (self.generic_methods.get(&(target_sym, method)), recv_self)
                 {
-                    let recv_type_args =
-                        self.module.struct_def(struct_id).type_args.clone();
                     if template.generic_params.len() >= recv_type_args.len() {
                         let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
                         for (i, p) in template.generic_params.iter().enumerate() {
@@ -251,7 +260,9 @@ impl<'a> FunctionLower<'a> {
                             }
                         }
                         if let Some(ret) = &template.return_type {
-                            return self.peek_method_return_type(ret, &subst, struct_id);
+                            return self.peek_method_return_type_with_self(
+                                ret, &subst, self_ty,
+                            );
                         }
                         return Some(Type::Unit);
                     }

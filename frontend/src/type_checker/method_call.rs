@@ -76,8 +76,27 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         
         // The obj_type should already contain the concrete type parameters
-        // No need to look up mappings, just use the type as-is
-        let resolved_obj_type = obj_type.clone();
+        // No need to look up mappings, just use the type as-is.
+        // Refinement: when the parser's `Struct(name, args)` annotation
+        // names a type that the type-checker has registered as an
+        // *enum*, refine it to `Enum(name, args)` so the enum-method
+        // dispatch arm in `visit_method_call_on_type` can match. The
+        // parser can't tell enums from structs at parse time, so this
+        // post-decl refinement is needed for `val o: Option<u64>` to
+        // route through the enum path.
+        let resolved_obj_type = match &obj_type {
+            TypeDecl::Struct(name, args)
+                if self.context.enum_definitions.contains_key(name) =>
+            {
+                TypeDecl::Enum(*name, args.clone())
+            }
+            TypeDecl::Identifier(name)
+                if self.context.enum_definitions.contains_key(name) =>
+            {
+                TypeDecl::Enum(*name, vec![])
+            }
+            _ => obj_type.clone(),
+        };
         
         // Type check arguments
         let mut arg_types = Vec::new();
@@ -162,6 +181,66 @@ impl<'a> TypeCheckerVisitor<'a> {
                     };
                     return Ok(resolved);
                 }
+            }
+        }
+
+        // Method call on a generic enum receiver
+        // (`val o: Option<i64> = ...; o.unwrap_or(default)`).
+        // `impl<T> Option<T> { fn unwrap_or(self: Self, default: T) -> T }`
+        // registers under the enum's name symbol, so the same
+        // `(target_symbol, method_name)` lookup the struct path uses
+        // works here. T is bound from the enum's type_params and
+        // substituted into the return type.
+        if let TypeDecl::Enum(enum_name, type_params) = obj_type {
+            if let Some(method_func) =
+                self.context.get_struct_method(*enum_name, *method).cloned()
+            {
+                let generic_params = self
+                    .context
+                    .enum_generic_params
+                    .get(enum_name)
+                    .cloned()
+                    .unwrap_or_default();
+                let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
+                    HashMap::new();
+                for (i, generic_param) in generic_params.iter().enumerate() {
+                    if let Some(concrete_type) = type_params.get(i) {
+                        substitutions.insert(*generic_param, concrete_type.clone());
+                    }
+                }
+                // Method-only generic params: bind from arg types
+                // (skip self at index 0).
+                if !method_func.generic_params.is_empty() {
+                    for (i, arg_ref) in args.iter().enumerate() {
+                        let param_idx = i + 1;
+                        if let Some((_, declared_ty)) =
+                            method_func.parameter.get(param_idx)
+                        {
+                            let arg_ty = self.visit_expr(arg_ref)?;
+                            collect_substitution(
+                                declared_ty,
+                                &arg_ty,
+                                &method_func.generic_params,
+                                &mut substitutions,
+                            );
+                        }
+                    }
+                }
+                let method_return_type = method_func
+                    .return_type
+                    .clone()
+                    .unwrap_or(TypeDecl::Unit);
+                let resolved = match method_return_type {
+                    TypeDecl::Self_ => {
+                        TypeDecl::Enum(*enum_name, type_params.clone())
+                    }
+                    TypeDecl::Generic(p) => substitutions
+                        .get(&p)
+                        .cloned()
+                        .unwrap_or(TypeDecl::Generic(p)),
+                    other => other.substitute_generics(&substitutions),
+                };
+                return Ok(resolved);
             }
         }
 

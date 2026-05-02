@@ -134,9 +134,25 @@ impl<'a> TypeCheckerVisitor<'a> {
             ));
         }
 
-        // Phase 4: Check if this might be a module qualified name (math.add)
-        if let Some(module_function_type) = self.try_resolve_module_qualified_name(obj, field)? {
-            return Ok(module_function_type);
+        // Phase 4: Check if this might be a module qualified name
+        // (math.add). Variable bindings (including the DbC `result`
+        // keyword that `impl_block::check_method_contract_clause`
+        // injects) take precedence — without that check, an
+        // auto-loaded `core/std/result.t` registers `result` as a
+        // module alias and `ensures result.n == ...` would resolve
+        // `result.n` as a module member instead of struct field
+        // access on the bound return value.
+        let obj_is_local_var = if let Some(Expr::Identifier(name)) =
+            self.core.expr_pool.get(obj)
+        {
+            self.context.get_var(name).is_some()
+        } else {
+            false
+        };
+        if !obj_is_local_var {
+            if let Some(module_function_type) = self.try_resolve_module_qualified_name(obj, field)? {
+                return Ok(module_function_type);
+            }
         }
 
         self.type_inference.recursion_depth += 1;

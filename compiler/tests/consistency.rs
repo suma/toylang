@@ -535,11 +535,14 @@ fn stdout_generic_struct_println_match() {
 
 #[test]
 fn stdout_generic_enum_println_match() {
+    // Uses `Maybe` rather than `Option` so the test's inline enum
+    // declaration doesn't collide with `core/std/option.t`'s
+    // `enum Option<T>` (now auto-loaded by every program).
     let src = r#"
-        enum Option<T> { None, Some(T) }
+        enum Maybe<T> { Nothing, Just(T) }
         fn main() -> u64 {
-            val s: Option<i64> = Option::Some(5i64)
-            val n: Option<i64> = Option::None
+            val s: Maybe<i64> = Maybe::Just(5i64)
+            val n: Maybe<i64> = Maybe::Nothing
             println(s)
             println(n)
             0u64

@@ -427,6 +427,18 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => (),
         }
 
+        // `extern fn` declarations have no body to walk — the
+        // implementation is provided by the runtime / linker. The
+        // declared parameter / return signature is the contract;
+        // skip body type-checking and record the declared return.
+        if func.is_extern {
+            let declared = func.return_type.clone().unwrap_or(TypeDecl::Unit);
+            self.function_checking
+                .is_checked_fn
+                .insert(func.name, Some(declared.clone()));
+            return Ok(declared);
+        }
+
         // Now checking...
         self.function_checking.is_checked_fn.insert(func.name, None);
 

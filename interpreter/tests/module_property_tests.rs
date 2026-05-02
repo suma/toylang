@@ -60,6 +60,47 @@ fn test_module_bare_call_rejected() {
 }
 
 #[test]
+fn test_extern_fn_declaration_type_checks() {
+    // Phase 1 of the math externalisation work: `extern fn`
+    // declarations parse + type-check (signature only — no body).
+    // Calling them is still a runtime error because the
+    // backend dispatch doesn't exist yet (lands in Phase 2).
+    let source = r"
+        extern fn extern_sin(x: f64) -> f64
+
+        fn main() -> u64 {
+            42u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "extern fn declaration should parse + type-check: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
+}
+
+#[test]
+fn test_extern_fn_call_errors_cleanly() {
+    // Calling an extern fn before Phase 2 dispatch lands surfaces
+    // a targeted "not yet implemented" runtime error rather than
+    // returning Unit / panicking.
+    let source = r"
+        extern fn extern_cos(x: f64) -> f64
+
+        fn main() -> u64 {
+            val r: f64 = extern_cos(0f64)
+            r as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_err(), "extern fn call should error: {:?}", result.ok());
+    let err = format!("{:?}", result.err().unwrap());
+    assert!(
+        err.contains("extern fn") && err.contains("not yet implemented"),
+        "diagnostic should mention extern fn + not-implemented, got: {}",
+        err
+    );
+}
+
+#[test]
 fn test_value_method_i64_abs() {
     // `x.abs()` should call the built-in `i64.abs()` method and
     // return `wrapping_abs(x)` semantics — `i64::MIN` stays at

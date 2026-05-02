@@ -682,6 +682,12 @@ impl EvaluationContext<'_> {
     }
 
     pub fn evaluate_function(&mut self, function: Rc<Function>, args: &[ExprRef]) -> Result<RcObject, InterpreterError> {
+        if function.is_extern {
+            return Err(InterpreterError::FunctionNotFound(format!(
+                "extern fn `{}` is not yet implemented in the interpreter",
+                self.string_interner.resolve(function.name).unwrap_or("?")
+            )));
+        }
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
                 match self.expr_pool.get(&e) {
@@ -734,6 +740,12 @@ impl EvaluationContext<'_> {
     /// Phase 5: takes `&[Value]` and returns `Value` so primitive arguments
     /// and return values stay inline through the call boundary.
     pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[crate::value::Value]) -> Result<crate::value::Value, InterpreterError> {
+        if function.is_extern {
+            return Err(InterpreterError::FunctionNotFound(format!(
+                "extern fn `{}` is not yet implemented in the interpreter",
+                self.string_interner.resolve(function.name).unwrap_or("?")
+            )));
+        }
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
                 match self.expr_pool.get(&e) {

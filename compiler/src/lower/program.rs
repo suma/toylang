@@ -465,6 +465,7 @@ impl<'a> FunctionLower<'a> {
             requires: method.requires.clone(),
             ensures: method.ensures.clone(),
             code: method.code,
+            is_extern: false,
             visibility: method.visibility.clone(),
         };
         self.lower_body(&synthetic)

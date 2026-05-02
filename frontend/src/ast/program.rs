@@ -68,7 +68,20 @@ pub struct Function {
     /// expression evaluated just before return; the special identifier
     /// `result` is in scope and refers to the return value.
     pub ensures: Vec<ExprRef>,
+    /// Body block. For `extern fn` declarations this points at a
+    /// placeholder `Stmt::Break`; backends look at `is_extern`
+    /// before walking the body.
     pub code: StmtRef,
+    /// `extern fn name(args) -> T` — declared signature only, with
+    /// the implementation provided by the runtime / linker. Each
+    /// backend resolves `name` against its own dispatch:
+    /// the interpreter consults a Rust-side registry, the JIT looks
+    /// up a same-named helper, and the AOT compiler emits an
+    /// import that the linker resolves (e.g. against libm). Used
+    /// to keep math intrinsics (`sin`, `cos`, ...) out of the
+    /// frontend's `BuiltinFunction` enum and inside a stdlib
+    /// `.t` file instead.
+    pub is_extern: bool,
     pub visibility: Visibility,
 }
 

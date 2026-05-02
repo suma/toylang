@@ -45,6 +45,72 @@ impl<'a> Parser<'a> {
             };
 
             match self.peek() {
+                Some(Kind::Extern) => {
+                    // `extern fn name(params) -> ret` — declares a
+                    // function whose body is provided by the runtime
+                    // / linker (interpreter registry / JIT helper /
+                    // libm). No body block; no contract clauses.
+                    let fn_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
+                    update_start_pos(fn_start_pos);
+                    self.next(); // consume 'extern'
+                    if !matches!(self.peek(), Some(Kind::Function)) {
+                        self.collect_error("expected `fn` after `extern`");
+                        continue;
+                    }
+                    self.next(); // consume 'fn'
+                    let fn_name = match self.peek() {
+                        Some(Kind::Identifier(s)) => {
+                            let s = s.to_string();
+                            let n = self.string_interner.get_or_intern(s);
+                            self.next();
+                            n
+                        }
+                        _ => {
+                            self.collect_error("expected function name after `extern fn`");
+                            self.next();
+                            continue;
+                        }
+                    };
+                    // Generic params on extern fn are not supported yet; the
+                    // backend dispatch is by literal name and assumes a single
+                    // monomorphic linkage entry.
+                    self.expect_err(&Kind::ParenOpen)?;
+                    let params = self.parse_param_def_list_with_generic_context(vec![], &[])?;
+                    self.expect_err(&Kind::ParenClose)?;
+                    let mut ret_ty: Option<TypeDecl> = None;
+                    if let Some(Kind::Arrow) = self.peek() {
+                        self.expect_err(&Kind::Arrow)?;
+                        ret_ty = Some(self.parse_type_declaration_with_generic_context(
+                            &HashSet::new(),
+                        )?);
+                    }
+                    self.skip_newlines();
+                    let fn_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                    update_end_pos(fn_end_pos);
+                    // Use a placeholder `Stmt::Break` as the body slot.
+                    // Backends consult `is_extern` before walking it, so
+                    // the placeholder never executes.
+                    let placeholder_body_expr = self
+                        .ast_builder
+                        .add_expr(crate::ast::Expr::Block(vec![]));
+                    let placeholder_body = self
+                        .ast_builder
+                        .expression_stmt(placeholder_body_expr, Some(location));
+                    def_func.push(Rc::new(Function {
+                        node: Node::new(fn_start_pos, fn_end_pos),
+                        name: fn_name,
+                        generic_params: vec![],
+                        generic_bounds: std::collections::HashMap::new(),
+                        parameter: params,
+                        return_type: ret_ty,
+                        requires: vec![],
+                        ensures: vec![],
+                        code: placeholder_body,
+                        is_extern: true,
+                        visibility,
+                    }));
+                }
                 Some(Kind::Function) => {
                     let fn_start_pos = self.peek_position_n(0).unwrap().start;
                     let location = self.current_source_location();
@@ -93,6 +159,7 @@ impl<'a> Parser<'a> {
                                 requires,
                                 ensures,
                                 code: self.ast_builder.expression_stmt(block, Some(location)),
+                                is_extern: false,
                                 visibility,
                             }));
                         }

@@ -314,6 +314,7 @@ impl<'a> AstIntegrationContext<'a> {
             requires: new_requires,
             ensures: new_ensures,
             code: new_code,
+            is_extern: function.is_extern,
             visibility: function.visibility.clone()
         })
     }

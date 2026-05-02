@@ -2018,6 +2018,29 @@ pub(crate) fn check_expr(
                 }
             }
         }
+        Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+            // Module-qualified call (`math::add(args)`): when the
+            // qualifier doesn't refer to a struct / enum but the
+            // function name lives in the (post-import) flat function
+            // table, treat it as a plain `Call(function_name, args)`
+            // and reuse the same eligibility logic. Real associated
+            // function calls (`Container::new(args)` with `Container`
+            // a struct) keep the unsupported reject path because the
+            // JIT doesn't lower instance methods yet.
+            if struct_layouts.contains_key(&struct_name)
+                || !program.function.iter().any(|f| f.name == function_name)
+            {
+                note(reject_reason, || {
+                    "uses unsupported expression associated function call".to_string()
+                });
+                return None;
+            }
+            return check_plain_call(
+                program, expr_ref, function_name, &args, locals, struct_locals,
+                tuple_locals, substitutions, struct_layouts, callees,
+                ptr_read_hints, reject_reason,
+            );
+        }
         Expr::Call(name, args_ref) => {
             let args_expr = program.expression.get(&args_ref)?;
             let arg_list = match args_expr {
@@ -2025,186 +2048,11 @@ pub(crate) fn check_expr(
                 _ => return None,
             };
 
-            // Locate the callee in the program's function table.
-            let callee = program.function.iter().find(|f| f.name == name).cloned();
-            let callee = match callee {
-                Some(f) => f,
-                None => {
-                    note(reject_reason, || "calls an unknown function".to_string());
-                    return None;
-                }
-            };
-
-            // Resolve each argument's type, allowing struct identifiers
-            // when the callee's parameter at that position is a struct.
-            // Generic substitutions are inferred only from scalar args;
-            // generic-over-struct functions aren't supported in this
-            // iteration.
-            if arg_list.len() != callee.parameter.len() {
-                note(reject_reason, || {
-                    format!(
-                        "call has {} arg(s), callee expects {}",
-                        arg_list.len(),
-                        callee.parameter.len()
-                    )
-                });
-                return None;
-            }
-            let mut scalar_arg_tys: Vec<ScalarTy> = Vec::with_capacity(arg_list.len());
-            let mut callee_param_tys: Vec<ParamTy> = Vec::with_capacity(arg_list.len());
-            for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
-                // Determine the declared param type up front so we can
-                // distinguish scalar vs struct expected shape. Generic
-                // params resolve via inference below.
-                let arg_expr = program.expression.get(a)?;
-                if let Expr::Identifier(id) = arg_expr {
-                    if let Some(struct_name) = struct_locals.get(&id).copied() {
-                        // Struct argument: callee's param must be a
-                        // matching struct type.
-                        match param_td {
-                            TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
-                                if *s == struct_name && struct_layouts.contains_key(s) =>
-                            {
-                                callee_param_tys.push(ParamTy::Struct(struct_name));
-                                scalar_arg_tys.push(ScalarTy::Unit); // placeholder
-                                continue;
-                            }
-                            _ => {
-                                note(reject_reason, || {
-                                    "struct argument's type does not match callee parameter"
-                                        .to_string()
-                                });
-                                return None;
-                            }
-                        }
-                    }
-                    if let Some(shape) = tuple_locals.get(&id).cloned() {
-                        // Tuple argument: callee's param must be a
-                        // matching tuple type.
-                        let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
-                            Some(ParamTy::Tuple(ts)) => ts,
-                            _ => {
-                                note(reject_reason, || {
-                                    "tuple argument's type does not match callee parameter".to_string()
-                                });
-                                return None;
-                            }
-                        };
-                        if want != shape {
-                            note(reject_reason, || {
-                                "tuple argument shape does not match callee parameter".to_string()
-                            });
-                            return None;
-                        }
-                        callee_param_tys.push(ParamTy::Tuple(shape));
-                        scalar_arg_tys.push(ScalarTy::Unit); // placeholder
-                        continue;
-                    }
-                }
-                // Inline tuple literal `foo((1i64, 2u64))` — accepted
-                // when the callee's parameter is a scalar tuple. Each
-                // element is type-checked independently and the
-                // resulting `ParamTy::Tuple(shape)` must match the
-                // callee's declared shape exactly.
-                if let Expr::TupleLiteral(elements) = arg_expr {
-                    let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
-                        Some(ParamTy::Tuple(ts)) => ts,
-                        _ => {
-                            note(reject_reason, || {
-                                "inline tuple literal argument needs a tuple parameter".to_string()
-                            });
-                            return None;
-                        }
-                    };
-                    if elements.len() != want.len() {
-                        note(reject_reason, || {
-                            "inline tuple literal argument arity does not match callee parameter".to_string()
-                        });
-                        return None;
-                    }
-                    let mut shape: Vec<ScalarTy> = Vec::with_capacity(elements.len());
-                    for e in &elements {
-                        let t = check_expr(
-                            program,
-                            e,
-                            locals,
-                            struct_locals,
-                            tuple_locals,
-                            substitutions,
-                            struct_layouts,
-                            callees,
-                            ptr_read_hints,
-                            reject_reason,
-                        )?;
-                        shape.push(t);
-                    }
-                    if shape != want {
-                        note(reject_reason, || {
-                            "inline tuple literal argument element types do not match callee parameter".to_string()
-                        });
-                        return None;
-                    }
-                    callee_param_tys.push(ParamTy::Tuple(shape));
-                    scalar_arg_tys.push(ScalarTy::Unit); // placeholder
-                    continue;
-                }
-                // Fall back to scalar typing.
-                let t = check_expr(
-                    program,
-                    a,
-                    locals,
-                    struct_locals,
-                    tuple_locals,
-                    substitutions,
-                    struct_layouts,
-                    callees,
-                    ptr_read_hints,
-                    reject_reason,
-                )?;
-                scalar_arg_tys.push(t);
-                callee_param_tys.push(ParamTy::Scalar(t));
-            }
-
-            // Infer substitutions for any generic params from the scalar
-            // arg types. Struct args contribute placeholders that
-            // `infer_substitutions` skips because the callee's param
-            // type is concrete (not Generic).
-            let callee_subs = match infer_substitutions(
-                &callee,
-                &scalar_arg_tys,
-                substitutions,
-                reject_reason,
-            ) {
-                Some(s) => s,
-                None => return None,
-            };
-
-            // Build the ordered substitution vec (MonoKey tail) and record
-            // the call site so codegen can resolve it later.
-            let mono_args: Vec<ScalarTy> = callee
-                .generic_params
-                .iter()
-                .map(|g| callee_subs.get(g).copied().unwrap_or(ScalarTy::Unit))
-                .collect();
-            callees.push(MonoCall {
-                call_expr: *expr_ref,
-                target: MonoTarget::Function(name),
-                mono_args,
-            });
-
-            // The struct-arg placeholders we put in `scalar_arg_tys` keep
-            // the inferer happy; they must agree with the callee's
-            // declared (non-generic) struct types, which we already
-            // verified above.
-            let _ = callee_param_tys;
-
-            // Compute callee's substituted return type. Struct returns
-            // aren't supported yet — substitute_to_scalar returns None
-            // for `TypeDecl::Identifier(struct)` so such calls reject.
-            match &callee.return_type {
-                Some(td) => substitute_to_scalar(td, &callee_subs),
-                None => Some(ScalarTy::Unit),
-            }
+            check_plain_call(
+                program, expr_ref, name, &arg_list, locals, struct_locals,
+                tuple_locals, substitutions, struct_layouts, callees,
+                ptr_read_hints, reject_reason,
+            )
         }
         Expr::BuiltinCall(func, args) => {
             // Type-check each argument against an expected ScalarTy.
@@ -2887,6 +2735,169 @@ pub(crate) fn check_expr(
             });
             None
         }
+    }
+}
+
+/// Shared eligibility check for plain function calls. Used by both
+/// `Expr::Call(name, ExprList(args))` (the bare-name form) and
+/// `Expr::AssociatedFunctionCall(module, name, args)` (the
+/// module-qualified form, after the module-alias guard has confirmed
+/// the qualifier doesn't refer to a struct). Locates the callee in
+/// the program's function table, type-checks each argument against
+/// the matching parameter (handling identifier-of-struct, identifier-
+/// of-tuple-local, inline tuple literal, and scalar fall-throughs),
+/// records the monomorphisation key, and returns the substituted
+/// callee return type.
+#[allow(clippy::too_many_arguments)]
+fn check_plain_call(
+    program: &Program,
+    expr_ref: &ExprRef,
+    name: DefaultSymbol,
+    arg_list: &Vec<ExprRef>,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> Option<ScalarTy> {
+    // Locate the callee in the program's function table.
+    let callee = program.function.iter().find(|f| f.name == name).cloned();
+    let callee = match callee {
+        Some(f) => f,
+        None => {
+            note(reject_reason, || "calls an unknown function".to_string());
+            return None;
+        }
+    };
+
+    // Resolve each argument's type, allowing struct identifiers
+    // when the callee's parameter at that position is a struct.
+    // Generic substitutions are inferred only from scalar args;
+    // generic-over-struct functions aren't supported in this
+    // iteration.
+    if arg_list.len() != callee.parameter.len() {
+        note(reject_reason, || {
+            format!(
+                "call has {} arg(s), callee expects {}",
+                arg_list.len(),
+                callee.parameter.len()
+            )
+        });
+        return None;
+    }
+    let mut scalar_arg_tys: Vec<ScalarTy> = Vec::with_capacity(arg_list.len());
+    let mut callee_param_tys: Vec<ParamTy> = Vec::with_capacity(arg_list.len());
+    for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
+        let arg_expr = program.expression.get(a)?;
+        if let Expr::Identifier(id) = arg_expr {
+            if let Some(struct_name) = struct_locals.get(&id).copied() {
+                match param_td {
+                    TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
+                        if *s == struct_name && struct_layouts.contains_key(s) =>
+                    {
+                        callee_param_tys.push(ParamTy::Struct(struct_name));
+                        scalar_arg_tys.push(ScalarTy::Unit);
+                        continue;
+                    }
+                    _ => {
+                        note(reject_reason, || {
+                            "struct argument's type does not match callee parameter"
+                                .to_string()
+                        });
+                        return None;
+                    }
+                }
+            }
+            if let Some(shape) = tuple_locals.get(&id).cloned() {
+                let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                    Some(ParamTy::Tuple(ts)) => ts,
+                    _ => {
+                        note(reject_reason, || {
+                            "tuple argument's type does not match callee parameter".to_string()
+                        });
+                        return None;
+                    }
+                };
+                if want != shape {
+                    note(reject_reason, || {
+                        "tuple argument shape does not match callee parameter".to_string()
+                    });
+                    return None;
+                }
+                callee_param_tys.push(ParamTy::Tuple(shape));
+                scalar_arg_tys.push(ScalarTy::Unit);
+                continue;
+            }
+        }
+        if let Expr::TupleLiteral(elements) = arg_expr {
+            let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
+                Some(ParamTy::Tuple(ts)) => ts,
+                _ => {
+                    note(reject_reason, || {
+                        "inline tuple literal argument needs a tuple parameter".to_string()
+                    });
+                    return None;
+                }
+            };
+            if elements.len() != want.len() {
+                note(reject_reason, || {
+                    "inline tuple literal argument arity does not match callee parameter".to_string()
+                });
+                return None;
+            }
+            let mut shape: Vec<ScalarTy> = Vec::with_capacity(elements.len());
+            for e in &elements {
+                let t = check_expr(
+                    program, e, locals, struct_locals, tuple_locals, substitutions,
+                    struct_layouts, callees, ptr_read_hints, reject_reason,
+                )?;
+                shape.push(t);
+            }
+            if shape != want {
+                note(reject_reason, || {
+                    "inline tuple literal argument element types do not match callee parameter"
+                        .to_string()
+                });
+                return None;
+            }
+            callee_param_tys.push(ParamTy::Tuple(shape));
+            scalar_arg_tys.push(ScalarTy::Unit);
+            continue;
+        }
+        let t = check_expr(
+            program, a, locals, struct_locals, tuple_locals, substitutions,
+            struct_layouts, callees, ptr_read_hints, reject_reason,
+        )?;
+        scalar_arg_tys.push(t);
+        callee_param_tys.push(ParamTy::Scalar(t));
+    }
+
+    let callee_subs = match infer_substitutions(
+        &callee, &scalar_arg_tys, substitutions, reject_reason,
+    ) {
+        Some(s) => s,
+        None => return None,
+    };
+
+    let mono_args: Vec<ScalarTy> = callee
+        .generic_params
+        .iter()
+        .map(|g| callee_subs.get(g).copied().unwrap_or(ScalarTy::Unit))
+        .collect();
+    callees.push(MonoCall {
+        call_expr: *expr_ref,
+        target: MonoTarget::Function(name),
+        mono_args,
+    });
+
+    let _ = callee_param_tys;
+
+    match &callee.return_type {
+        Some(td) => substitute_to_scalar(td, &callee_subs),
+        None => Some(ScalarTy::Unit),
     }
 }
 

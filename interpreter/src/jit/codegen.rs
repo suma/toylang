@@ -1066,7 +1066,7 @@ impl<'a, 'b> State<'a, 'b> {
                 };
                 Ok(Some(result))
             }
-            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
                 // Resolve the callee's signature and reject struct-
                 // returning calls outside of a Val/Var rhs (handled in
                 // try_gen_struct_local). Scalar / unit returns flow
@@ -1513,7 +1513,7 @@ impl<'a, 'b> State<'a, 'b> {
                 self.struct_local_types.insert(name, struct_name);
                 Ok(true)
             }
-            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
                 // Look up the call's resolved monomorph to see if it
                 // returns a struct. If yes, handle the multi-return.
                 let target_key = match self.call_targets.get(value_ref) {
@@ -1618,7 +1618,7 @@ impl<'a, 'b> State<'a, 'b> {
                 self.tuple_local_types.insert(name, element_tys);
                 Ok(true)
             }
-            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
                 let target_key = match self.call_targets.get(value_ref) {
                     Some(k) => k.clone(),
                     None => return Ok(false),
@@ -1693,6 +1693,15 @@ impl<'a, 'b> State<'a, 'b> {
                 all.push(receiver);
                 all.extend(args.iter().copied());
                 all
+            }
+            Expr::AssociatedFunctionCall(_, _, args) => {
+                // Module-qualified call (`math::add(args)`): args is
+                // already a flat `Vec<ExprRef>`. Eligibility has
+                // verified the qualifier is an imported alias and the
+                // function exists in the (flat) function table — the
+                // codegen call site (`call_targets`) already points
+                // at the right monomorph.
+                args
             }
             _ => return Err("not a call expression".into()),
         };

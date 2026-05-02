@@ -217,6 +217,57 @@ impl<'a> FunctionLower<'a> {
                 self.lower_if_chain(&cond, &then_blk, &elif_pairs, &else_blk)
             }
             Expr::Call(fn_name, args_ref) => self.lower_call(fn_name, &args_ref),
+            Expr::AssociatedFunctionCall(struct_name, fn_name, args) => {
+                // Module-qualified call (`math::add(args)`): when the
+                // qualifier doesn't refer to a struct / enum and the
+                // function exists in the (post-import) main function
+                // table, treat it as a plain `Call`. Module
+                // integration flattens imported `pub fn`s in, so the
+                // bare lookup hits without needing the qualifier.
+                // Real associated calls (`Container::new(...)`) keep
+                // the unsupported reject path below.
+                let is_struct = self.struct_defs.contains_key(&struct_name)
+                    || self.enum_defs.contains_key(&struct_name);
+                if !is_struct
+                    && self.module.function_index.contains_key(&fn_name)
+                {
+                    let target = *self
+                        .module
+                        .function_index
+                        .get(&fn_name)
+                        .expect("function_index hit just confirmed");
+                    let ret_ty = self.module.function(target).return_type;
+                    if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                        return Err(format!(
+                            "compiler MVP cannot use a compound-returning module call (`{}::{}`) in expression position; bind the result with `val`",
+                            self.interner.resolve(struct_name).unwrap_or("?"),
+                            self.interner.resolve(fn_name).unwrap_or("?"),
+                        ));
+                    }
+                    let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+                    for a in &args {
+                        let v = self
+                            .lower_expr(a)?
+                            .ok_or_else(|| {
+                                "module function arg produced no value".to_string()
+                            })?;
+                        arg_values.push(v);
+                    }
+                    let result_ty = if ret_ty.produces_value() {
+                        Some(ret_ty)
+                    } else {
+                        None
+                    };
+                    return Ok(self.emit(
+                        InstKind::Call { target, args: arg_values },
+                        result_ty,
+                    ));
+                }
+                Err(format!(
+                    "compiler MVP cannot lower expression yet: {:?}",
+                    Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+                ))
+            }
             Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),

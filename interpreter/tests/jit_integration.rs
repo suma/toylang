@@ -375,6 +375,25 @@ fn math_f64_example_matches_between_modes() {
     assert_match("example/math_f64.t");
 }
 
+#[test]
+fn module_qualified_call_matches_between_modes() {
+    // `import math; math::add(10u64, 20u64)` -> exit 30. Confirms
+    // the JIT eligibility / codegen module-call dispatch added in
+    // #185 P3 produces the same answer as the interpreter.
+    assert_match("example/math_module_demo.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn module_qualified_call_compiles_callees() {
+    // The JIT must lower both `main` (which contains `math::add(...)`)
+    // and the imported `add` so neither side falls back.
+    let r = run("example/math_module_demo.t", true, true);
+    assert_eq!(r.code, 30);
+    assert!(r.stderr.contains("main"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("add"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn math_f64_example_compiles_callees() {

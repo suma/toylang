@@ -21,6 +21,11 @@ pub struct TypeCheckerVisitor<'a> {
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
+    /// Names of functions that came in through `import`. Bare-name
+    /// calls into these are rejected; users must spell out the
+    /// `module::func(args)` form. Populated in `with_program` from
+    /// `Program::imported_function_names`.
+    pub imported_function_names: std::collections::HashSet<DefaultSymbol>,
     // Track transformed expressions for Number -> concrete type conversions
     pub transformed_exprs: HashMap<ExprRef, Expr>,
     // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
@@ -37,6 +42,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         let imports = program.imports.clone();
         // Clone functions to avoid borrowing conflicts
         let functions = program.function.clone();
+        // Snapshot the set of imported-function names so the
+        // type-checker can enforce the namespace-only rule (bare
+        // calls into imported `pub fn`s are rejected; users must
+        // spell out `module::func(args)`). Cloned upfront because
+        // CoreReferences takes a mutable borrow of `program`.
+        let imported_function_names = program.imported_function_names.clone();
 
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
@@ -48,6 +59,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            imported_function_names,
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             transformed_exprs: HashMap::new(),
@@ -97,6 +109,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            imported_function_names: std::collections::HashSet::new(),
             transformed_exprs: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
@@ -291,6 +304,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            imported_function_names: std::collections::HashSet::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             transformed_exprs: HashMap::new(),

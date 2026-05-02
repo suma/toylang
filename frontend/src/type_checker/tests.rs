@@ -26,6 +26,7 @@ mod tests {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
+            imported_function_names: std::collections::HashSet::new(),
             transformed_exprs: HashMap::new(),
             builtin_methods: TypeCheckerVisitor::create_builtin_method_registry(),
         }

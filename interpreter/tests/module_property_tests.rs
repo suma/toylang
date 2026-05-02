@@ -36,6 +36,30 @@ fn test_module_import_declaration() {
 }
 
 #[test]
+fn test_module_bare_call_rejected() {
+    // Namespace-only enforcement: imported `pub fn`s must be called
+    // via the qualified `module::func(args)` form. A bare `func(args)`
+    // call into an imported function is rejected at type-check time
+    // so users always spell out where the function lives.
+    let source = r"
+        import math
+
+        fn main() -> u64 {
+            add(1u64, 2u64)
+        }
+        ";
+
+    let result = test_program(source);
+    assert!(result.is_err(), "Bare call into imported fn should be rejected");
+    let err_text = format!("{:?}", result.err().unwrap());
+    assert!(
+        err_text.contains("must be called with the qualified form"),
+        "diagnostic should mention qualified form, got: {}",
+        err_text
+    );
+}
+
+#[test]
 fn test_module_qualified_call_executes() {
     // Regression test for the module integration fix
     // (`update_with_remapped_content` used to leave imported function

@@ -588,6 +588,12 @@ pub fn integrate_module_into_program(
 
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
+        // Track imported names so the type-checker can enforce the
+        // namespace-only contract: imported `pub fn`s are only
+        // reachable via `module::func(args)` qualified calls, never
+        // as bare `func(args)` even though they live in the flat
+        // function table.
+        main_program.imported_function_names.insert(function.name);
         main_program.function.push(function);
     }
     Ok(())

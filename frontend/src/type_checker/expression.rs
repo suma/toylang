@@ -549,10 +549,30 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check function calls
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let _fn_name_str = self.resolve_symbol_name(fn_name);
-        
-        
+
+        // Namespace-only enforcement: functions that came in through
+        // `import` are only callable via the qualified
+        // `module::func(args)` form (handled by
+        // `visit_associated_function_call_impl`'s module-dispatch
+        // branch). Bare `func(args)` calls into them are rejected so
+        // every import site spells out where the function lives.
+        if self.imported_function_names.contains(&fn_name) {
+            let module_hint = self
+                .imported_modules
+                .keys()
+                .find_map(|alias| alias.first().copied())
+                .map(|sym| self.resolve_symbol_name(sym).to_string())
+                .unwrap_or_else(|| "<module>".to_string());
+            return Err(TypeCheckError::generic_error(&format!(
+                "imported function '{}' must be called with the qualified form `{}::{}(...)`; bare-name calls into imported modules are not allowed",
+                self.resolve_symbol_name(fn_name),
+                module_hint,
+                self.resolve_symbol_name(fn_name),
+            )));
+        }
+
         self.push_context();
-        
+
         if let Some(fun) = self.context.get_fn(fn_name) {
             // Check visibility access control
             if let Err(err) = self.check_function_access(&fun) {

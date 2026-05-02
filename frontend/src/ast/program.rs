@@ -11,6 +11,13 @@ pub struct Program {
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
     pub function: Vec<Rc<Function>>,
+    /// Names of functions that came in through `import`. The
+    /// type-checker reads this set to enforce namespace separation:
+    /// imported functions can only be called via the qualified
+    /// `module::func(args)` form, not as bare `func(args)`. Empty
+    /// before integration; `module_integration::load_and_integrate_module`
+    /// inserts each integrated `pub fn` symbol.
+    pub imported_function_names: std::collections::HashSet<DefaultSymbol>,
     /// Top-level `const NAME: Type = expr` declarations. Evaluated once
     /// at program startup and bound as immutable globals so any function
     /// body (including `main`) can reference them.

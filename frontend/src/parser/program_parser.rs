@@ -409,6 +409,7 @@ impl<'a> Parser<'a> {
             package_decl,
             imports,
             function: def_func,
+            imported_function_names: std::collections::HashSet::new(),
             consts,
             statement: stmt,
             expression: expr,

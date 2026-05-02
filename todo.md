@@ -93,12 +93,10 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 
 ## 未実装 📋
 
-185. **モジュール統合の本格実装 — interpreter は完了、JIT/compiler 残作業あり**
-    - **完了 (interpreter)**: `update_with_remapped_content` の TODO 解消 + type_checker `visit_associated_function_call` に module dispatch 追加。`import math; math::add(10, 20)` が正しく 30 を返す。新 test `test_module_qualified_call_executes` で回帰防止
-    - **済み変更**: `StmtPool::update(stmt_ref, stmt)` 追加 (ExprPool 既存と同形)。module_integration が remap 内容を pool に書き戻すように修正。type_checker は imported alias を struct より先に試し、`dispatch_module_function_call` 経路で関数呼び出し
-    - **残り (E3 stdlib 化に必要)**: JIT / compiler 側で qualified module call の dispatch 確認。現状 interpreter のフラット function table 経由で動くが、JIT の eligibility / compiler の lower で `Expr::AssociatedFunctionCall(module, func, args)` を struct 関連として扱うと fallback / エラーになる可能性あり
-    - **その後**: stdlib `math.t` に `pub fn abs / sqrt / min_i64 / min_u64 / max_i64 / max_u64 / pow` ラッパを追加し、`__builtin_*` プレフィックスを top-level に移して E3 完成
-    - 関連 commit: `e13add6` (BuiltinCall remap 漏れ修正), 本フェーズで module integration 完成
+185. **モジュール統合の本格実装 — 完了 (E3 完成 + 多段パス + namespace-only)**
+    - **interpreter / JIT / compiler 全 3 経路に対応** (commits: `cb4a61c` `eb289c6` `118c6d2` `95aa437` + 本コミット)
+    - **済み変更**: `StmtPool::update` 追加、module_integration の `update_with_remapped_content` TODO 解消、type_checker / JIT eligibility / compiler lower に `module::func` dispatch 追加、stdlib `math.t` に math::abs / sqrt / min_* / max_* / pow ラッパ追加 (`__builtin_*` プレフィックスで low-level 化)、multi-segment import path (`import std.math` -> `modules/std/math.t`) 対応、namespace-only 強制 (imported `pub fn` への bare 呼び出しは type-check で reject)
+    - **残るかもしれない作業**: 3+ part qualified call (`std::math::abs(x)` 形式) — 現状は `import std.math` してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度低
 
 160. **タプルの追加 JIT 対応** — フラットなスカラーtupleの param / return / TupleAccess / destructure / tuple-returning call は完了 (`#163`)。残: ネストタプル (`((a,b),c)`) と tuple-of-struct を JIT codegen で扱う (現状 silent fallback)、inline tuple literal を call argument として渡せるようにする
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`

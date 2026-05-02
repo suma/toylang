@@ -135,8 +135,19 @@ fn mangle_sub_test(source: &str, idx: usize) -> Result<String, String> {
                 }
             }
             Stmt::ImplBlock { target_type, trait_name, .. } => {
+                // `impl <Trait> for <Type>` — `target_type` may be
+                // a primitive (`i64`, `f64`, ...) for extension
+                // traits; we must not rename those because the
+                // language relies on their canonical interner name
+                // for primitive dispatch (`i64.abs()` resolves
+                // through the symbol `"i64"`, not a user-defined
+                // type). Same protection for `Self`. The trait
+                // name itself stays mangled because two batched
+                // sub-tests can each declare `trait Negate { ... }`.
                 if let Some(n) = interner.resolve(*target_type) {
-                    decl_names.insert(n.to_string());
+                    if !is_primitive_type_name(n) {
+                        decl_names.insert(n.to_string());
+                    }
                 }
                 if let Some(t) = trait_name {
                     if let Some(n) = interner.resolve(*t) {
@@ -196,6 +207,19 @@ fn mangle_sub_test(source: &str, idx: usize) -> Result<String, String> {
         out = replace_word(&out, name, &format!("{prefix}{name}"));
     }
     Ok(out)
+}
+
+/// Returns true when `name` is one of the language's primitive /
+/// keyword type names that the JIT / type checker dispatches on
+/// by canonical symbol. Renaming any of these would break
+/// extension-trait dispatch (`impl Foo for i64 { ... }`),
+/// `Self` resolution inside impl bodies, and a few other
+/// hard-coded type-name lookups in the frontend.
+fn is_primitive_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "i64" | "u64" | "f64" | "bool" | "str" | "ptr" | "usize" | "Self" | "main"
+    )
 }
 
 /// Replace every whole-word occurrence of `needle` in `haystack`
@@ -662,17 +686,9 @@ fn batched_e2e_extracted_from_file() {
     if skip_e2e() {
         return;
     }
-    let mut tests = extract_simple_e2e_tests();
-    // Phase JE-1b regression — extension-trait sub-tests trip
-    // the mangler's trait-name renaming because their impl
-    // bodies need `Self` resolution against the (now-mangled)
-    // trait name. Excluding these two until the mangler is
-    // smart enough to handle nested `Self` references.
-    tests.retain(|t| {
-        t.name != "extension_trait_primitive_method_i64"
-            && t.name != "extension_trait_primitive_method_f64"
-    });
+    let tests = extract_simple_e2e_tests();
     eprintln!("auto-extracted {} sub-tests from e2e.rs", tests.len());
+    let mut tests = tests;
     if tests.is_empty() {
         // The extractor found nothing. Most likely the e2e.rs
         // pattern changed. Surface a clear error rather than

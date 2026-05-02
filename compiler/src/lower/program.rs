@@ -59,6 +59,14 @@ fn libm_import_name_for(name: &str) -> Option<&'static str> {
         "__extern_floor_f64" => "floor",
         "__extern_ceil_f64" => "ceil",
         "__extern_abs_f64" => "fabs",
+        // `__extern_abs_i64` — wrapping_abs for i64. libc has
+        // `int abs(int)` and `long labs(long)`; we use `labs` and
+        // assume `long` is 64-bit on the supported targets (LP64
+        // on macOS/Linux, no Windows MSVC support yet). For
+        // `i64::MIN` libc's `labs` is technically UB but on the
+        // platforms we target it returns `i64::MIN` unchanged
+        // (matches the legacy `BuiltinMethod::I64Abs` semantics).
+        "__extern_abs_i64" => "labs",
         _ => return None,
     })
 }

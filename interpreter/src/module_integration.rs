@@ -240,16 +240,29 @@ impl<'a> AstIntegrationContext<'a> {
                 })
             }
             Stmt::ImplBlock { target_type, methods, trait_name } => {
-                // MethodFunction symbols need remapping
+                // Remap target / trait symbols and each method body
+                // through the module's interner. Without the symbol
+                // remap, `target_type` and `trait_name` would still
+                // refer to entries in the module's own
+                // `DefaultStringInterner` and the integrated AST
+                // would silently use the wrong identifier text in
+                // the main program (they'd alias whatever symbols
+                // happen to be at those numeric positions in
+                // `main_string_interner`).
+                let new_target = self.remap_symbol(*target_type)?;
+                let new_trait = match trait_name {
+                    Some(t) => Some(self.remap_symbol(*t)?),
+                    None => None,
+                };
                 let mut new_methods = Vec::new();
                 for method in methods {
                     let new_method = self.remap_method_function(method)?;
                     new_methods.push(new_method);
                 }
                 Ok(Stmt::ImplBlock {
-                    target_type: target_type.clone(),
+                    target_type: new_target,
                     methods: new_methods,
-                    trait_name: *trait_name,
+                    trait_name: new_trait,
                 })
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
@@ -261,9 +274,37 @@ impl<'a> AstIntegrationContext<'a> {
                 })
             }
             Stmt::TraitDecl { name, methods, visibility } => {
+                // Same fix as ImplBlock: `name` belongs to the
+                // module's interner and must be remapped before
+                // landing in the main program. Each
+                // `TraitMethodSignature` also stores its own
+                // method name + parameter symbols in module space;
+                // remap them too so trait conformance checks
+                // (which key on the method-name `DefaultSymbol`)
+                // can match the impl side after integration.
+                let new_name = self.remap_symbol(*name)?;
+                let mut new_methods = Vec::with_capacity(methods.len());
+                for sig in methods {
+                    let remapped_method_name = self.remap_symbol(sig.name)?;
+                    let mut remapped_params = Vec::with_capacity(sig.parameter.len());
+                    for (pname, pty) in &sig.parameter {
+                        remapped_params.push((self.remap_symbol(*pname)?, pty.clone()));
+                    }
+                    new_methods.push(TraitMethodSignature {
+                        node: sig.node.clone(),
+                        name: remapped_method_name,
+                        generic_params: sig.generic_params.clone(),
+                        generic_bounds: sig.generic_bounds.clone(),
+                        parameter: remapped_params,
+                        return_type: sig.return_type.clone(),
+                        requires: sig.requires.clone(),
+                        ensures: sig.ensures.clone(),
+                        has_self_param: sig.has_self_param,
+                    });
+                }
                 Ok(Stmt::TraitDecl {
-                    name: *name,
-                    methods: methods.clone(),
+                    name: new_name,
+                    methods: new_methods,
                     visibility: visibility.clone(),
                 })
             }
@@ -573,6 +614,21 @@ pub fn integrate_module_into_program(
     main_program: &mut Program,
     main_string_interner: &mut DefaultStringInterner,
 ) -> Result<(), String> {
+    integrate_module_into_program_with_options(source, main_program, main_string_interner, true)
+}
+
+/// `enforce_namespace = false` is the prelude path: integrated
+/// functions stay callable bare from prelude bodies (and from
+/// user code, since the prelude has no surrounding `module::`
+/// qualifier). Regular user `import math` calls keep
+/// `enforce_namespace = true` so `math::add(...)` is the only legal
+/// call form.
+pub fn integrate_module_into_program_with_options(
+    source: &str,
+    main_program: &mut Program,
+    main_string_interner: &mut DefaultStringInterner,
+    enforce_namespace: bool,
+) -> Result<(), String> {
     // Parse the module with its own interner.
     let mut parser = frontend::ParserWithInterner::new(source);
     let module_program = parser
@@ -594,7 +650,22 @@ pub fn integrate_module_into_program(
         // reachable via `module::func(args)` qualified calls, never
         // as bare `func(args)` even though they live in the flat
         // function table.
-        main_program.imported_function_names.insert(function.name);
+        //
+        // `extern fn` declarations are runtime bindings (resolved
+        // through the interpreter / JIT / AOT extern dispatch
+        // tables, not through user-visible source paths), so they're
+        // globally bare-callable from any body — including the
+        // bodies of *other* imported modules' impl blocks (e.g.
+        // the prelude's `impl Abs for f64` calls `__extern_abs_f64`,
+        // which math.t also declares). Excluding extern fns from
+        // the enforcement set keeps both call sites valid.
+        //
+        // Prelude integration also opts out via
+        // `enforce_namespace = false` so its own `pub fn`s (none
+        // exist today, but future entries) stay bare-callable.
+        if enforce_namespace && !function.is_extern {
+            main_program.imported_function_names.insert(function.name);
+        }
         main_program.function.push(function);
     }
     Ok(())

@@ -97,6 +97,42 @@ mod basic {
     }
 
     #[test]
+    fn test_prelude_i64_abs() {
+        // Step E: `i64.abs()` resolves through the prelude's
+        // `impl Abs for i64 { fn abs(self) -> Self { __extern_abs_i64(self) } }`
+        // — same user-facing surface as the legacy
+        // `BuiltinMethod::I64Abs` path, but routed through the
+        // extension-trait machinery + extern dispatch tables. No
+        // explicit `import` is needed since the prelude is always
+        // integrated.
+        let source = r#"
+            fn main() -> u64 {
+                val n: i64 = -42i64
+                n.abs() as u64
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "prelude i64.abs() should run: {:?}", result.err());
+        assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
+    }
+
+    #[test]
+    fn test_prelude_f64_abs_and_sqrt() {
+        // Same coverage as the i64 test on the f64 side. `(-7.5).abs() +
+        // 81.sqrt() = 7.5 + 9 = 16.5`, cast to u64 → 16.
+        let source = r#"
+            fn main() -> u64 {
+                val x: f64 = -7.5f64
+                val y: f64 = 81f64
+                (x.abs() + y.sqrt()) as u64
+            }
+        "#;
+        let result = test_program(source);
+        assert!(result.is_ok(), "prelude f64 methods should run: {:?}", result.err());
+        assert_eq!(result.unwrap().borrow().unwrap_uint64(), 16);
+    }
+
+    #[test]
     fn test_extension_trait_method_dispatch_on_primitive() {
         // Step B of the extension-trait work: a user `impl Trait for
         // <PrimitiveType>` method is callable through the regular

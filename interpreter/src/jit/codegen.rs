@@ -1853,6 +1853,18 @@ impl<'a, 'b> State<'a, 'b> {
             ExternDispatch::NativeFloorF64 => self.builder.ins().floor(args[0]),
             ExternDispatch::NativeCeilF64 => self.builder.ins().ceil(args[0]),
             ExternDispatch::NativeAbsF64 => self.builder.ins().fabs(args[0]),
+            ExternDispatch::NativeAbsI64 => {
+                // `select(x < 0, -x, x)` — same shape as the
+                // legacy `BuiltinFunction::Abs` lowering for i64.
+                // The negation wraps for `i64::MIN`, so the result
+                // stays at `i64::MIN` (matches the runtime
+                // `extern_abs_i64` helper's `wrapping_abs`).
+                let x = args[0];
+                let zero = self.builder.ins().iconst(types::I64, 0);
+                let neg = self.builder.ins().ineg(x);
+                let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, x, zero);
+                self.builder.ins().select(cmp, neg, x)
+            }
         };
         Ok(Some(result))
     }

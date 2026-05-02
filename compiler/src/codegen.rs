@@ -74,6 +74,12 @@ pub fn emit_clif_text(
     let mut out = String::new();
     for func_id in 0..ir_module.functions.len() {
         let func_id = FuncId(func_id as u32);
+        // Skip `Linkage::Import` functions — they have no body to
+        // lower (declaration-only `extern fn` from the prelude or
+        // user code). Same skip as `build_object_module`.
+        if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
+            continue;
+        }
         let clif = session.lower_function(&ir_module, func_id)?;
         out.push_str(&format!(
             "; --- {} ---\n{}\n",

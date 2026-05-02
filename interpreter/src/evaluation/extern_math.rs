@@ -40,6 +40,10 @@ pub fn build_default_registry() -> HashMap<&'static str, ExternFn> {
     m.insert("__extern_sqrt_f64", extern_sqrt_f64);
     m.insert("__extern_abs_f64", extern_abs_f64);
     m.insert("__extern_pow_f64", extern_pow_f64);
+    // i64 wrapping_abs — used by the prelude's `impl Abs for i64`.
+    // `i64::MIN` stays at `i64::MIN` (matches the legacy
+    // `BuiltinMethod::I64Abs` semantics that the prelude replaces).
+    m.insert("__extern_abs_i64", extern_abs_i64);
 
     // Test-only aliases used by Phase 1/2 regression tests so we can
     // exercise the extern dispatch without rewriting math.t yet.
@@ -78,6 +82,22 @@ fn extern_floor_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f
 fn extern_ceil_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("ceil", args, f64::ceil) }
 fn extern_sqrt_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("sqrt", args, f64::sqrt) }
 fn extern_abs_f64(args: &[Value]) -> Result<Value, InterpreterError> { unary_f64("abs", args, f64::abs) }
+
+fn extern_abs_i64(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `abs` (i64) takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    match &args[0] {
+        Value::Int64(v) => Ok(Value::Int64(v.wrapping_abs())),
+        other => Err(InterpreterError::InternalError(format!(
+            "extern fn `__extern_abs_i64` expects an i64 argument, got {other:?}"
+        ))),
+    }
+}
 
 fn extern_pow_f64(args: &[Value]) -> Result<Value, InterpreterError> {
     if args.len() != 2 {

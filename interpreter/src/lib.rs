@@ -76,33 +76,54 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
     tc
 }
 
-/// Setup TypeCheckerVisitor with module resolution support
-fn setup_type_checker_with_modules<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> Result<TypeCheckerVisitor<'a>, Vec<String>> {
+/// Source for the always-loaded prelude. Defines the extension-trait
+/// shapes for the legacy `i64.abs()` / `f64.abs()` / `f64.sqrt()`
+/// numeric methods that `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}`
+/// previously hardcoded — Step E of the extension-trait work.
+/// Implementations forward to `__extern_abs_i64` / `__extern_abs_f64`
+/// / `__extern_sqrt_f64`, which every backend already knows how to
+/// dispatch (interpreter registry / JIT extern dispatch / AOT libm
+/// import).
+const PRELUDE_SOURCE: &str = include_str!("prelude.t");
+
+/// Integrate every module the program needs into the in-memory
+/// `Program`. Called by `check_typing` *before* the impl-block scan so
+/// imported impl blocks (and the always-loaded prelude impls) are
+/// visible to the type-checker registration pass and to the runtime
+/// `build_method_registry` walk.
+fn integrate_modules(
+    program: &mut Program,
+    string_interner: &mut DefaultStringInterner,
+) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
-    
-    // Clone imports before creating TypeChecker to avoid borrowing conflicts
+
+    // Always integrate the prelude first so its trait declarations
+    // are visible before user impl blocks try to reference them. The
+    // prelude has no `import` line, so it cannot itself depend on
+    // user code or other modules — the integration order doesn't
+    // need to fixpoint here.
+    if let Err(err) = module_integration::integrate_module_into_program_with_options(
+        PRELUDE_SOURCE,
+        program,
+        string_interner,
+        false, // enforce_namespace = false: prelude bodies must be
+               // able to call their own extern fns by bare name
+    ) {
+        errors.push(format!("Prelude integration error: {}", err));
+    }
+
+    // User-declared imports.
     let imports = program.imports.clone();
-    
-    // Check if program has imports that need resolution
-    if !imports.is_empty() {
-        
-        // Load and integrate each imported module
-        for import in &imports {
-            if let Err(err) = load_and_integrate_module(program, import, string_interner) {
-                errors.push(format!("Module integration error: {}", err));
-            }
+    for import in &imports {
+        if let Err(err) = load_and_integrate_module(program, import, string_interner) {
+            errors.push(format!("Module integration error: {}", err));
         }
-        
-        // If there were module loading errors, return them
-        if !errors.is_empty() {
-            return Err(errors);
-        }
-        
-        // Create TypeChecker with integrated modules
-        Ok(setup_type_checker(program, string_interner))
+    }
+
+    if errors.is_empty() {
+        Ok(())
     } else {
-        // No imports, use standard setup
-        Ok(setup_type_checker(program, string_interner))
+        Err(errors)
     }
 }
 
@@ -139,10 +160,29 @@ pub fn check_typing(
     
     // Clone string_interner for later use
     let string_interner_for_names = string_interner.clone();
-    
-    // Extract data before setting up TypeChecker to avoid borrowing conflicts
+
+    // Capture user-authored functions BEFORE integration so the type-
+    // checker only walks bodies the user wrote, not bodies that come
+    // from `import math` etc. — those modules were already type-
+    // checked when they were authored, and re-checking them here
+    // would trip the namespace-only enforcement on their internal
+    // bare calls.
     let functions = program.function.clone();
     let consts: Vec<frontend::ast::ConstDecl> = program.consts.clone();
+
+    // Integrate user imports + the always-loaded prelude *before* we
+    // extract impl_blocks below — the prelude's `impl Abs for i64`
+    // etc. must be visible to the type-checker registration pass and
+    // to `build_method_registry` so `x.abs()` resolves through the
+    // extension-trait machinery.
+    if let Err(module_errors) = integrate_modules(program, string_interner) {
+        errors.extend(module_errors);
+        return Err(errors);
+    }
+
+    // The impl_blocks walk runs over all statements (user +
+    // integrated module + prelude) so impl blocks from every source
+    // contribute methods to `context.struct_methods`.
     let mut impl_blocks = Vec::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
@@ -152,15 +192,9 @@ pub fn check_typing(
             }
         }
     }
-    
-    // Setup TypeChecker with module resolution support
-    let mut tc = match setup_type_checker_with_modules(program, string_interner) {
-        Ok(tc) => tc,
-        Err(module_errors) => {
-            errors.extend(module_errors);
-            return Err(errors);
-        }
-    };
+
+    // Setup TypeChecker now that imports and prelude are integrated.
+    let mut tc = setup_type_checker(program, string_interner);
 
     // Create error formatter if we have source code and filename
     let formatter = if let (Some(source), Some(file)) = (source_code, filename) {

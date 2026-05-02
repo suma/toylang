@@ -29,6 +29,12 @@ pub(crate) enum ExternDispatch {
     NativeFloorF64,
     NativeCeilF64,
     NativeAbsF64,
+    /// `__extern_abs_i64` — `wrapping_abs` for i64, used by the
+    /// prelude's `impl Abs for i64`. Lowered to a `select(x < 0,
+    /// -x, x)` sequence; for `i64::MIN` the negation wraps and the
+    /// result stays at `i64::MIN`, matching the legacy
+    /// `BuiltinMethod::I64Abs` semantics.
+    NativeAbsI64,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -44,7 +50,7 @@ pub(crate) struct ExternDispatchEntry {
 /// codegen-side recipe.
 const JIT_EXTERN_DISPATCH: &[(&str, ExternDispatchEntry)] = {
     use ExternDispatch::*;
-    use ScalarTy::F64;
+    use ScalarTy::{F64, I64};
     &[
         ("__extern_sin_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::SinF64),  params: &[F64], ret: F64 }),
         ("__extern_cos_f64", ExternDispatchEntry { dispatch: Helper(HelperKind::CosF64),  params: &[F64], ret: F64 }),
@@ -57,6 +63,7 @@ const JIT_EXTERN_DISPATCH: &[(&str, ExternDispatchEntry)] = {
         ("__extern_floor_f64", ExternDispatchEntry { dispatch: NativeFloorF64, params: &[F64], ret: F64 }),
         ("__extern_ceil_f64", ExternDispatchEntry { dispatch: NativeCeilF64,  params: &[F64], ret: F64 }),
         ("__extern_abs_f64", ExternDispatchEntry { dispatch: NativeAbsF64,    params: &[F64], ret: F64 }),
+        ("__extern_abs_i64", ExternDispatchEntry { dispatch: NativeAbsI64,    params: &[I64], ret: I64 }),
         // Phase 1/2 test aliases.
         ("extern_sin", ExternDispatchEntry { dispatch: Helper(HelperKind::SinF64), params: &[F64], ret: F64 }),
         ("extern_cos", ExternDispatchEntry { dispatch: Helper(HelperKind::CosF64), params: &[F64], ret: F64 }),

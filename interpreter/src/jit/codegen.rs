@@ -979,6 +979,41 @@ impl<'a, 'b> State<'a, 'b> {
                         self.call_helper(kind, &[a, b, c])?;
                         Ok(None)
                     }
+                    BuiltinFunction::Abs => {
+                        // Integer absolute value via select. cranelift
+                        // has no `iabs`, but `select(x < 0, -x, x)` is
+                        // equivalent and gets folded into a single
+                        // conditional move on most ISAs.
+                        let x = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "abs operand".to_string())?;
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let neg = self.builder.ins().ineg(x);
+                        let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, x, zero);
+                        Ok(Some(self.builder.ins().select(cmp, neg, x)))
+                    }
+                    BuiltinFunction::Min | BuiltinFunction::Max => {
+                        // Min/max lowering. The eligibility check has
+                        // already verified both operands share an
+                        // integer ScalarTy, so it's safe to peek the
+                        // first arg's type to pick signed vs unsigned
+                        // comparison.
+                        let a = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "min/max arg0".to_string())?;
+                        let b = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "min/max arg1".to_string())?;
+                        let signed = matches!(self.expr_type(&args[0])?, ScalarTy::I64);
+                        let cc = match (matches!(func, BuiltinFunction::Min), signed) {
+                            (true, true) => IntCC::SignedLessThan,
+                            (false, true) => IntCC::SignedGreaterThan,
+                            (true, false) => IntCC::UnsignedLessThan,
+                            (false, false) => IntCC::UnsignedGreaterThan,
+                        };
+                        let cmp = self.builder.ins().icmp(cc, a, b);
+                        Ok(Some(self.builder.ins().select(cmp, a, b)))
+                    }
                 }
             }
             Expr::Cast(inner, target) => {

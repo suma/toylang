@@ -478,7 +478,7 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         <Self as method::MethodProcessing>::visit_builtin_method_call(self, receiver, method, args)
     }
 
-    fn visit_builtin_call(&mut self, func: &BuiltinFunction, _args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+    fn visit_builtin_call(&mut self, func: &BuiltinFunction, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         // `ptr_read` originally always returned u64, but generic `List<T>`
         // code stores non-u64 values. When the caller supplies a primitive
         // type hint (e.g. `val v: i64 = __builtin_ptr_read(p, off)` or a
@@ -497,6 +497,63 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 }
             }
             return Ok(TypeDecl::UInt64);
+        }
+
+        // Integer math builtins: dispatch on the actual argument type
+        // so the same `min(a, b)` symbol works for both `i64` and `u64`.
+        // `abs(x)` accepts `i64` only; the result type matches the
+        // operand type. Mismatched / unsupported arg types produce a
+        // targeted diagnostic instead of the generic "argument type
+        // mismatch" the signature path would emit.
+        if matches!(
+            func,
+            BuiltinFunction::Abs | BuiltinFunction::Min | BuiltinFunction::Max
+        ) {
+            let expected = match func {
+                BuiltinFunction::Abs => 1usize,
+                _ => 2,
+            };
+            if args.len() != expected {
+                let name = match func {
+                    BuiltinFunction::Abs => "abs",
+                    BuiltinFunction::Min => "min",
+                    BuiltinFunction::Max => "max",
+                    _ => unreachable!(),
+                };
+                return Err(TypeCheckError::generic_error(&format!(
+                    "{name} expects {expected} argument(s), got {}",
+                    args.len()
+                )));
+            }
+            let arg_types: Vec<TypeDecl> = args
+                .iter()
+                .map(|a| self.visit_expr(a))
+                .collect::<Result<_, _>>()?;
+            if matches!(func, BuiltinFunction::Abs) {
+                if !matches!(arg_types[0], TypeDecl::Int64) {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "abs expects an i64 argument, got {:?}",
+                        arg_types[0]
+                    )));
+                }
+                return Ok(TypeDecl::Int64);
+            }
+            // Min / Max: both operands must be the same integer type.
+            if !matches!(arg_types[0], TypeDecl::Int64 | TypeDecl::UInt64) {
+                let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                return Err(TypeCheckError::generic_error(&format!(
+                    "{name} expects integer arguments, got {:?}",
+                    arg_types[0]
+                )));
+            }
+            if arg_types[0] != arg_types[1] {
+                let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                return Err(TypeCheckError::generic_error(&format!(
+                    "{name} arguments must agree on type: got {:?} and {:?}",
+                    arg_types[0], arg_types[1]
+                )));
+            }
+            return Ok(arg_types[0].clone());
         }
 
         // Find matching function signature from pre-built table

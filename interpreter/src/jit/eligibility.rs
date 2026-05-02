@@ -2490,6 +2490,74 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Allocator)
                 }
+                BuiltinFunction::Abs => {
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!("abs expects 1 argument, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    let t = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if t != ScalarTy::I64 {
+                        note(reject_reason, || {
+                            "abs expects an i64 argument".to_string()
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::I64)
+                }
+                BuiltinFunction::Min | BuiltinFunction::Max => {
+                    if args.len() != 2 {
+                        let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                        note(reject_reason, || {
+                            format!("{name} expects 2 arguments, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    let a = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    let b = check_expr(
+                        program,
+                        &args[1],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if !matches!(a, ScalarTy::I64 | ScalarTy::U64) || a != b {
+                        let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                        note(reject_reason, || {
+                            format!("{name} expects matching i64 or u64 operands")
+                        });
+                        return None;
+                    }
+                    Some(a)
+                }
             }
         }
         Expr::With(allocator_expr, body_expr) => {

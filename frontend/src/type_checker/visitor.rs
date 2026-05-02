@@ -230,6 +230,29 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::UInt64,
             },
+            // Integer math (user-facing). Signatures use Unknown
+            // because the concrete shape is `i64 -> i64` *or*
+            // `u64 -> u64` (resp. `(T, T) -> T`); visit_builtin_call
+            // dispatches on the actual argument type and surfaces a
+            // targeted diagnostic for incompatible types.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Abs,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Int64],
+                return_type: TypeDecl::Int64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Min,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Unknown, TypeDecl::Unknown],
+                return_type: TypeDecl::Unknown,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Max,
+                arg_count: 2,
+                arg_types: vec![TypeDecl::Unknown, TypeDecl::Unknown],
+                return_type: TypeDecl::Unknown,
+            },
         ]
     }
 

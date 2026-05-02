@@ -651,6 +651,66 @@ impl EvaluationContext<'_> {
                 );
                 Ok(EvaluationResult::Value(Object::Allocator(allocator).into()))
             }
+
+            BuiltinFunction::Abs => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "abs takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let v = self.evaluate(&args[0])?;
+                let v = try_value!(Ok(v));
+                let n = v.borrow().try_unwrap_int64().map_err(|_| {
+                    InterpreterError::InternalError("abs expects an i64 argument".to_string())
+                })?;
+                // `wrapping_abs` matches Rust's behaviour for i64::MIN
+                // (returns i64::MIN itself) so the language doesn't
+                // panic on the boundary value.
+                Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
+            }
+
+            BuiltinFunction::Min | BuiltinFunction::Max => {
+                if args.len() != 2 {
+                    let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: format!("{name} takes 2 arguments"),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+                let a = self.evaluate(&args[0])?;
+                let a = try_value!(Ok(a));
+                let b = self.evaluate(&args[1])?;
+                let b = try_value!(Ok(b));
+                let pick_min = matches!(func, BuiltinFunction::Min);
+                // The type-checker has already enforced matching i64
+                // or u64 operands, so a borrow + concrete unwrap pair
+                // is enough.
+                let a_borrow = a.borrow();
+                if let Ok(av) = a_borrow.try_unwrap_int64() {
+                    let bv = b.borrow().try_unwrap_int64().map_err(|_| {
+                        InterpreterError::InternalError(
+                            "min/max operands must agree on i64 / u64".to_string(),
+                        )
+                    })?;
+                    let result = if pick_min { av.min(bv) } else { av.max(bv) };
+                    return Ok(EvaluationResult::Value(Object::Int64(result).into()));
+                }
+                if let Ok(av) = a_borrow.try_unwrap_uint64() {
+                    let bv = b.borrow().try_unwrap_uint64().map_err(|_| {
+                        InterpreterError::InternalError(
+                            "min/max operands must agree on i64 / u64".to_string(),
+                        )
+                    })?;
+                    let result = if pick_min { av.min(bv) } else { av.max(bv) };
+                    return Ok(EvaluationResult::Value(Object::UInt64(result).into()));
+                }
+                Err(InterpreterError::InternalError(
+                    "min/max expects i64 or u64 operands".to_string(),
+                ))
+            }
         }
     }
 }

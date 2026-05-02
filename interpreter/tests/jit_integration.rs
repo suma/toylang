@@ -355,6 +355,21 @@ fn with_early_exit_example_matches_between_modes() {
     assert_match("example/jit_with_early_exit.t");
 }
 
+#[test]
+fn math_int_example_matches_between_modes() {
+    assert_match("example/math_int.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn math_int_example_compiles_callees() {
+    // `abs` / `min` / `max` lower to cranelift `select` chains; the
+    // verbose log should show `main` as JIT-compiled (no fallback).
+    let r = run("example/math_int.t", true, true);
+    assert_eq!(r.code, 20);
+    assert!(r.stderr.contains("main"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn with_early_exit_example_compiles_callees() {

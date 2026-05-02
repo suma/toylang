@@ -214,6 +214,15 @@ pub enum BuiltinFunction {
 
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
+
+    // Integer math (user-facing; same shape as `print`/`println`/`panic`/
+    // `assert` — everyday operations rather than low-level intrinsics).
+    // `abs(x)` accepts `i64` and returns `i64` (matches Rust's
+    // `i64::wrapping_abs` for `i64::MIN`). `min(a, b)` / `max(a, b)`
+    // accept either `i64` or `u64` and return the shared input type.
+    Abs,
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +258,11 @@ pub struct BuiltinFunctionSymbols {
 
     // Type introspection
     pub sizeof: DefaultSymbol,
+
+    // Integer math (user-facing names).
+    pub abs: DefaultSymbol,
+    pub min: DefaultSymbol,
+    pub max: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -275,6 +289,9 @@ impl BuiltinFunctionSymbols {
             panic: interner.get_or_intern("panic"),
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
+            abs: interner.get_or_intern("abs"),
+            min: interner.get_or_intern("min"),
+            max: interner.get_or_intern("max"),
         }
     }
 
@@ -297,6 +314,9 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.panic { Some(BuiltinFunction::Panic) }
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
+        else if symbol == self.abs { Some(BuiltinFunction::Abs) }
+        else if symbol == self.min { Some(BuiltinFunction::Min) }
+        else if symbol == self.max { Some(BuiltinFunction::Max) }
         else { None }
     }
 }

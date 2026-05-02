@@ -843,6 +843,26 @@ widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
 fields; enums account for a 1-byte tag plus payload; tuples and
 arrays sum their elements.
 
+### Integer math
+
+```rust
+abs(x: i64) -> i64
+min(a: T, b: T) -> T   # T ∈ { i64, u64 }
+max(a: T, b: T) -> T   # T ∈ { i64, u64 }
+```
+
+User-facing names (no `__builtin_` prefix). `abs` returns the
+absolute value of an `i64`; matches Rust's `wrapping_abs` so
+`abs(i64::MIN)` returns `i64::MIN` rather than panicking. `min`
+and `max` are polymorphic over the two integer scalars: both
+operands must agree on `i64` *or* `u64` and the result keeps
+the operand type. Mixing the two (`min(1i64, 2u64)`) is a
+type-check error.
+
+All three are wired through every backend (interpreter / JIT /
+AOT compiler) — JIT and compiler lower to a cranelift `select`
+chain on the appropriate signed/unsigned comparison.
+
 ### String methods
 
 Method-call syntax on `str`:

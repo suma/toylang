@@ -114,6 +114,14 @@ impl<'a> FunctionLower<'a> {
                 .function_index
                 .get(&fn_name)
                 .map(|id| self.module.function(*id).return_type),
+            Expr::BuiltinCall(func, args) => match func {
+                frontend::ast::BuiltinFunction::Abs => Some(Type::I64),
+                frontend::ast::BuiltinFunction::Min
+                | frontend::ast::BuiltinFunction::Max => {
+                    args.first().and_then(|a| self.value_scalar(a))
+                }
+                _ => None,
+            },
             Expr::SliceAccess(obj, info) => {
                 if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
                     return None;

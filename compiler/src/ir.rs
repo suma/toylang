@@ -634,6 +634,13 @@ pub enum BinOp {
     BitXor,
     Shl,
     Shr,
+
+    // Integer min / max. Backed by `min(a, b)` / `max(a, b)` builtins;
+    // signedness is decided at codegen time from the operand `Type`
+    // (so the same IR opcode lowers to `smin` / `umin` / `smax` /
+    // `umax` cranelift instructions as appropriate).
+    Min,
+    Max,
 }
 
 impl BinOp {
@@ -653,6 +660,9 @@ pub enum UnaryOp {
     BitNot,
     /// Logical NOT on `bool`. Lowered to `xor 1` in the backend.
     LogicalNot,
+    /// Integer absolute value. `i64` only; matches Rust's
+    /// `wrapping_abs` for `i64::MIN` (returns `i64::MIN`).
+    Abs,
 }
 
 #[derive(Debug, Clone)]
@@ -787,6 +797,8 @@ impl fmt::Display for BinOp {
             BinOp::BitXor => "bxor",
             BinOp::Shl => "shl",
             BinOp::Shr => "shr",
+            BinOp::Min => "min",
+            BinOp::Max => "max",
         })
     }
 }
@@ -797,6 +809,7 @@ impl fmt::Display for UnaryOp {
             UnaryOp::Neg => "neg",
             UnaryOp::BitNot => "bnot",
             UnaryOp::LogicalNot => "lnot",
+            UnaryOp::Abs => "abs",
         })
     }
 }

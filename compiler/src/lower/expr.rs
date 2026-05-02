@@ -275,6 +275,42 @@ impl<'a> FunctionLower<'a> {
             }
             BuiltinFunction::Print => self.lower_print(args, false),
             BuiltinFunction::Println => self.lower_print(args, true),
+            BuiltinFunction::Abs => {
+                if args.len() != 1 {
+                    return Err(format!("abs expects 1 argument, got {}", args.len()));
+                }
+                let operand = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "abs operand produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
+                    Some(Type::I64),
+                ))
+            }
+            BuiltinFunction::Min | BuiltinFunction::Max => {
+                if args.len() != 2 {
+                    let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };
+                    return Err(format!("{name} expects 2 arguments, got {}", args.len()));
+                }
+                let lhs = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "min/max arg0 produced no value".to_string())?;
+                let rhs = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "min/max arg1 produced no value".to_string())?;
+                let result_ty = self
+                    .value_ir_type_for(lhs)
+                    .ok_or_else(|| "min/max operand type unknown".to_string())?;
+                let op = if matches!(func, BuiltinFunction::Min) {
+                    crate::ir::BinOp::Min
+                } else {
+                    crate::ir::BinOp::Max
+                };
+                Ok(self.emit(
+                    InstKind::BinOp { op, lhs, rhs },
+                    Some(result_ty),
+                ))
+            }
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",
                 other

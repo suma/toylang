@@ -3941,3 +3941,53 @@ fn println_tuple_singleton() {
         "(42,)\n",
     );
 }
+
+#[test]
+fn math_int_abs_min_max() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val a: i64 = abs(-7i64)
+            val b: i64 = min(3i64, 5i64)
+            val c: u64 = max(10u64, 4u64)
+            a as u64 + b as u64 + c
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_int"), 20);
+}
+
+#[test]
+fn math_int_abs_handles_min_value() {
+    if skip_e2e() {
+        return;
+    }
+    // `i64::MIN` (-9_223_372_036_854_775_808) has no positive counterpart;
+    // `wrapping_abs` returns `i64::MIN` itself, matching Rust semantics.
+    // Cast to u64 surfaces it as 0x8000_0000_0000_0000, which we exit-code
+    // through the low byte (0).
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -9223372036854775808i64
+            val a: i64 = abs(n)
+            (a as u64) & 0xFFu64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_int_abs_min_value"), 0);
+}
+
+#[test]
+fn math_int_min_max_unsigned() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val lo: u64 = min(7u64, 12u64)
+            val hi: u64 = max(7u64, 12u64)
+            lo + hi
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_int_min_max_unsigned"), 19);
+}

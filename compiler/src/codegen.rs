@@ -921,6 +921,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                                 "bitwise / shift operators are not defined on f64".to_string(),
                             );
                         }
+                        BinOp::Min | BinOp::Max => {
+                            return Err(
+                                "compiler MVP does not support min/max on f64 yet".to_string(),
+                            );
+                        }
                     };
                     self.record_result(inst, v);
                     return Ok(());
@@ -985,6 +990,24 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                             self.builder.ins().ushr(l, r)
                         }
                     }
+                    BinOp::Min => {
+                        let cc = if signed {
+                            IntCC::SignedLessThan
+                        } else {
+                            IntCC::UnsignedLessThan
+                        };
+                        let cmp = self.builder.ins().icmp(cc, l, r);
+                        self.builder.ins().select(cmp, l, r)
+                    }
+                    BinOp::Max => {
+                        let cc = if signed {
+                            IntCC::SignedGreaterThan
+                        } else {
+                            IntCC::UnsignedGreaterThan
+                        };
+                        let cmp = self.builder.ins().icmp(cc, l, r);
+                        self.builder.ins().select(cmp, l, r)
+                    }
                 };
                 self.record_result(inst, v);
             }
@@ -1003,6 +1026,13 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     UnaryOp::LogicalNot => {
                         let one = self.builder.ins().iconst(types::I8, 1);
                         self.builder.ins().bxor(v, one)
+                    }
+                    UnaryOp::Abs => {
+                        // i64-only; lowered as `select(x < 0, -x, x)`.
+                        let zero = self.builder.ins().iconst(types::I64, 0);
+                        let neg = self.builder.ins().ineg(v);
+                        let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, v, zero);
+                        self.builder.ins().select(cmp, neg, v)
                     }
                 };
                 self.record_result(inst, result);

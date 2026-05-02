@@ -160,6 +160,25 @@ fn extern_generic_identity_runs_via_interpreter_registry() {
 
 #[cfg(feature = "jit")]
 #[test]
+fn jit_skip_reason_for_unit_enum_pending_codegen() {
+    // Phase JE-1a: a non-generic, unit-variant-only enum has its
+    // layout in the JIT's `enum_layouts` thread-local, but
+    // constructor + match codegen isn't wired yet (deferred to
+    // JE-1b). The skip log must say "JIT enum support pending"
+    // (with the JE-1b breadcrumb) rather than the generic
+    // "qualified identifier" / "match expression" catch-all.
+    let r = run("example/jit_unit_enum_pending.t", true, true);
+    assert_eq!(r.code, 1, "interpreter fallback exit; stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT: skipped")
+            && r.stderr.contains("JIT enum support pending"),
+        "expected JE-1b-pending diagnostic; stderr: {}",
+        r.stderr
+    );
+}
+
+#[cfg(feature = "jit")]
+#[test]
 fn jit_skip_reason_for_enum_constructor() {
     // JIT enum-value support (`ParamTy::Enum`, tag dispatch, match
     // codegen) isn't yet implemented — the interpreter handles

@@ -88,6 +88,16 @@ thread_local! {
     /// interner reference.
     static PRIMITIVE_TARGET_SYMBOLS: RefCell<HashMap<ScalarTy, DefaultSymbol>>
         = RefCell::new(HashMap::new());
+
+    /// Layout map for non-generic, unit-variant-only enums (Phase
+    /// JE-1). Same justification as PRIMITIVE_TARGET_SYMBOLS for the
+    /// thread-local: `check_expr` already takes a long parameter
+    /// list, and threading a per-program `&HashMap` through every
+    /// recursive call would cascade into many arms. Set in
+    /// `analyze` after `collect_enum_layouts`. Looked up by
+    /// `enum_layout_for(name)` from the enum-related arms.
+    static ENUM_LAYOUTS: RefCell<HashMap<DefaultSymbol, EnumLayout>>
+        = RefCell::new(HashMap::new());
 }
 
 /// Install the extern dispatch map for the current thread. Run inside
@@ -147,6 +157,27 @@ fn install_primitive_target_symbols(interner: &DefaultStringInterner) {
 /// interned).
 fn primitive_target_sym_for_scalar(sty: ScalarTy) -> Option<DefaultSymbol> {
     PRIMITIVE_TARGET_SYMBOLS.with(|cell| cell.borrow().get(&sty).copied())
+}
+
+/// Install the per-program enum layout map for the current thread.
+/// Called by `analyze` once `collect_enum_layouts` has run; the
+/// thread-local is consulted by `enum_layout_for` from
+/// `check_expr`'s enum-related arms.
+fn install_enum_layouts(layouts: &HashMap<DefaultSymbol, EnumLayout>) {
+    ENUM_LAYOUTS.with(|cell| {
+        let mut m = cell.borrow_mut();
+        m.clear();
+        for (name, layout) in layouts {
+            m.insert(*name, layout.clone());
+        }
+    });
+}
+
+/// Look up the JIT-side `EnumLayout` for `name`. Returns `None` when
+/// the enum either doesn't exist or was filtered out by
+/// `collect_enum_layouts` (generic, has tuple variants, etc.).
+fn enum_layout_for(name: DefaultSymbol) -> Option<EnumLayout> {
+    ENUM_LAYOUTS.with(|cell| cell.borrow().get(&name).cloned())
 }
 
 /// Reverse lookup: when an impl-target symbol corresponds to a
@@ -347,6 +378,43 @@ impl StructLayout {
     }
 }
 
+/// Layout for a JIT-compatible enum (Phase JE-1: unit variants only,
+/// no payloads, no generics). The variant index in the `Vec` doubles
+/// as the cranelift tag value, so eligibility / codegen agree on the
+/// dispatch order via the source-declaration order.
+///
+/// Future phases will widen this:
+///   - JE-1b: actual constructor + match codegen (this commit only
+///     wires the data structure and uses it for a precise skip
+///     diagnostic).
+///   - JE-2: tuple-variant payloads (`PayloadSlot::Scalar` per slot,
+///     plus per-variant payload-type vec).
+///   - JE-3: generic enum monomorphisation (separate layout entries
+///     per `(name, type_args)` instantiation).
+///   - JE-4: enum-typed function parameters / returns (cranelift
+///     boundary expansion).
+///
+/// `base_name` / `variants` / `variant_tag` are read from JE-1b
+/// onward; the `#[allow(dead_code)]` keeps the build clean while
+/// only the diagnostic in `enum_layout_for` consumes the layout.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct EnumLayout {
+    pub base_name: DefaultSymbol,
+    /// Variant names in declaration order. Index = tag value.
+    pub variants: Vec<DefaultSymbol>,
+}
+
+impl EnumLayout {
+    #[allow(dead_code)]
+    pub fn variant_tag(&self, name: DefaultSymbol) -> Option<u64> {
+        self.variants
+            .iter()
+            .position(|n| *n == name)
+            .map(|i| i as u64)
+    }
+}
+
 /// Result of eligibility analysis. Each MonoKey corresponds to one
 /// cranelift function the runtime will compile.
 pub struct EligibleSet {
@@ -372,6 +440,15 @@ pub struct EligibleSet {
     /// Layout of every struct type the JIT understands. Built in a
     /// pre-pass over top-level `Stmt::StructDecl` declarations.
     pub struct_layouts: HashMap<DefaultSymbol, StructLayout>,
+    /// Layout of every enum type the JIT understands. Phase JE-1
+    /// only fills this for non-generic, unit-only enums (no payload
+    /// variants); anything else is silently omitted and references to
+    /// it stay on the interpreter fallback path. Currently only
+    /// consulted via the `ENUM_LAYOUTS` thread-local from
+    /// `check_expr`'s skip diagnostic; JE-1b will read it directly
+    /// for codegen.
+    #[allow(dead_code)]
+    pub enum_layouts: HashMap<DefaultSymbol, EnumLayout>,
 }
 
 /// Per-callsite monomorphization record. `call_expr` identifies the
@@ -405,6 +482,9 @@ pub fn analyze(
     // generic structs, struct with arrays / strings, …) is silently
     // omitted; reads from such types would later reject anyway.
     let struct_layouts = collect_struct_layouts(program, interner);
+    // Pre-pass: enum layouts for non-generic, unit-only enums (Phase JE-1).
+    let enum_layouts = collect_enum_layouts(program);
+    install_enum_layouts(&enum_layouts);
 
     let mut visited: HashSet<MonoKey> = HashSet::new();
     let mut signatures: HashMap<MonoKey, FuncSignature> = HashMap::new();
@@ -540,6 +620,7 @@ pub fn analyze(
         call_targets,
         ptr_read_hints,
         struct_layouts,
+        enum_layouts,
     })
 }
 
@@ -630,6 +711,47 @@ fn collect_struct_layouts(
                     name,
                     StructLayout {
                         fields: scalar_fields,
+                    },
+                );
+            }
+        }
+    }
+    out
+}
+
+/// Pre-pass over `Stmt::EnumDecl` declarations: build a layout for
+/// every JIT-compatible enum (Phase JE-1: non-generic, unit-only).
+/// Anything with a tuple variant or generic param is silently
+/// omitted; eligibility checks downstream will reject references to
+/// it via the regular "JIT does not yet model enum values" path.
+fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout> {
+    let mut out: HashMap<DefaultSymbol, EnumLayout> = HashMap::new();
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::EnumDecl {
+            name,
+            generic_params,
+            variants,
+            ..
+        }) = program.statement.get(&StmtRef(i as u32))
+        {
+            if !generic_params.is_empty() {
+                continue;
+            }
+            let mut variant_names: Vec<DefaultSymbol> = Vec::with_capacity(variants.len());
+            let mut all_unit = true;
+            for v in &variants {
+                if !v.payload_types.is_empty() {
+                    all_unit = false;
+                    break;
+                }
+                variant_names.push(v.name);
+            }
+            if all_unit {
+                out.insert(
+                    name,
+                    EnumLayout {
+                        base_name: name,
+                        variants: variant_names,
                     },
                 );
             }
@@ -2231,10 +2353,25 @@ pub(crate) fn check_expr(
                 // interpreter handles the call correctly via
                 // fallback; this just makes the reason precise.
                 let is_enum_qualifier = enum_decl_lookup_by_name(program, struct_name).is_some();
+                // Phase JE-1a: a JIT-eligible enum (non-generic,
+                // unit-variant-only) shows up in `enum_layouts`. The
+                // architecture for tag-based dispatch is in place
+                // (EnumLayout + ENUM_LAYOUTS thread-local), but
+                // constructor / match codegen hasn't landed yet —
+                // use a precise "infrastructure ready, codegen
+                // pending" message so a later JE-1b commit knows
+                // which programs to enable.
                 note(reject_reason, || {
                     if is_enum_qualifier {
-                        "JIT does not yet model enum values (constructors / match / methods)"
-                            .to_string()
+                        if enum_layout_for(struct_name).is_some() {
+                            "JIT enum support pending: unit-variant constructor codegen \
+                             (Phase JE-1b will lower this via the existing tag layout)"
+                                .to_string()
+                        } else {
+                            "JIT does not yet model enum values \
+                             (constructors / match / methods)"
+                                .to_string()
+                        }
                     } else {
                         "uses unsupported expression associated function call".to_string()
                     }
@@ -3037,9 +3174,37 @@ pub(crate) fn check_expr(
         }
         // Everything else is unsupported in this iteration.
         other => {
-            note(reject_reason, || {
-                format!("uses unsupported expression {}", expr_kind_name(&other))
-            });
+            // Phase JE-1a: a `QualifiedIdentifier` whose head is a
+            // JIT-eligible enum (non-generic, unit-only) corresponds
+            // to a unit-variant constructor like `Color::Red`. The
+            // tag layout is already in `enum_layouts`; the missing
+            // piece is constructor + match codegen (Phase JE-1b).
+            // Surface a precise "infra ready, codegen pending"
+            // message instead of the generic "qualified identifier"
+            // catch-all so the next phase knows which programs to
+            // enable.
+            let precise = match &other {
+                Expr::QualifiedIdentifier(path)
+                    if path.len() == 2
+                        && enum_layout_for(path[0])
+                            .and_then(|l| l.variant_tag(path[1]))
+                            .is_some() =>
+                {
+                    "JIT enum support pending: unit-variant constructor codegen \
+                     (Phase JE-1b will lower this via the existing tag layout)"
+                        .to_string()
+                }
+                Expr::QualifiedIdentifier(path)
+                    if !path.is_empty()
+                        && enum_decl_lookup_by_name(program, path[0]).is_some() =>
+                {
+                    "JIT does not yet model enum values \
+                     (constructors / match / methods)"
+                        .to_string()
+                }
+                _ => format!("uses unsupported expression {}", expr_kind_name(&other)),
+            };
+            note(reject_reason, move || precise);
             None
         }
     }

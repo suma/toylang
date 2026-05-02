@@ -36,13 +36,14 @@ extern fn __extern_floor_f64(x: f64) -> f64
 extern fn __extern_ceil_f64(x: f64) -> f64
 extern fn __extern_sqrt_f64(x: f64) -> f64
 extern fn __extern_abs_f64(x: f64) -> f64
+extern fn __extern_abs_i64(x: i64) -> i64
 extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
 
 pub fn abs(x: i64) -> i64 {
-    # Integer abs stays on the legacy `__builtin_abs` polymorphic
-    # intrinsic for now — Phase 5 will move `Abs` / `Min` / `Max`
-    # to the same extern-fn machinery as the f64 family.
-    __builtin_abs(x)
+    # Forwards to the runtime `wrapping_abs` helper so `i64::MIN.abs()`
+    # stays at `i64::MIN` (matches the legacy `BuiltinMethod::I64Abs`
+    # semantics that the extension-trait migration replaced).
+    __extern_abs_i64(x)
 }
 
 pub fn fabs(x: f64) -> f64 {

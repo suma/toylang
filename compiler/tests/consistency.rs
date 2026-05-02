@@ -135,7 +135,7 @@ fn compiler_exit_code(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: None,
+        core_modules_dir: Some(core_modules_dir()),
     };
     compile_file(&options).expect("compile_file");
     let status = Command::new(&exe_path).status().expect("spawn binary");
@@ -211,7 +211,7 @@ fn compiler_stdout(source: &str, stem: &str) -> String {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: None,
+        core_modules_dir: Some(core_modules_dir()),
     };
     compile_file(&options).expect("compile_file");
     let out = Command::new(&exe_path).output().expect("spawn binary");

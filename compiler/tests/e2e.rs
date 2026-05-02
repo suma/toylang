@@ -29,23 +29,19 @@ fn unique_path(stem: &str) -> PathBuf {
     p
 }
 
-/// Path to the repo-root `core/` directory containing the auto-loaded
-/// stdlib modules. Computed at compile time relative to the compiler
-/// crate's `CARGO_MANIFEST_DIR` so tests that opt in to auto-load
+/// Path to the repo-root `core/` directory. Computed at compile time
+/// relative to the compiler crate's `CARGO_MANIFEST_DIR` so tests
 /// resolve the same modules the compiler binary picks up via its
-/// exe-relative search. Most e2e tests intentionally don't use this
-/// — they define their own functions (often with names like `add`
-/// that would collide with `math::add`), so the helper below
-/// defaults to `core_modules_dir: None`.
-#[allow(dead_code)]
+/// exe-relative search.
 fn core_modules_dir() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
 }
 
-/// Compile `source` to a unique executable path, run it, and return the
-/// exit code (or panic on link / spawn failure). Tests that need
-/// auto-load construct `CompilerOptions` with
-/// `core_modules_dir: Some(core_modules_dir())` directly.
+/// Compile `source` to a unique executable path, run it, and return
+/// the exit code (or panic on link / spawn failure). Auto-loads
+/// `<repo>/core/` so value-method tests using `i64.abs()` /
+/// `f64.sqrt()` (provided by `core/std/i64.t` and
+/// `core/std/f64.t`) work without per-test wiring.
 fn compile_and_run(source: &str, stem: &str) -> i32 {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
@@ -56,7 +52,7 @@ fn compile_and_run(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: None,
+        core_modules_dir: Some(core_modules_dir()),
     };
     compile_file(&options).expect("compile_file failed");
     let status = Command::new(&exe_path)

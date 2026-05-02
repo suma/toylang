@@ -174,6 +174,25 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Expr::BuiltinCall(func.clone(), new_args))
             }
+            Expr::AssociatedFunctionCall(target, method, args) => {
+                // Module-qualified calls (`math::abs(x)` parses as
+                // `AssociatedFunctionCall(math_sym, abs_sym, [x])`)
+                // need both the qualifier symbol and the method name
+                // routed through the module interner remap; the arg
+                // ExprRefs follow the standard expr_mapping path.
+                let new_target = self.remap_symbol(*target)?;
+                let new_method = self.remap_symbol(*method)?;
+                let mut new_args = Vec::new();
+                for arg in args {
+                    let new_arg = self
+                        .expr_mapping
+                        .get(&arg.0)
+                        .ok_or("Cannot find AssociatedFunctionCall argument mapping")?
+                        .clone();
+                    new_args.push(new_arg);
+                }
+                Ok(Expr::AssociatedFunctionCall(new_target, new_method, new_args))
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
         }

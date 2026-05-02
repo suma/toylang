@@ -8,34 +8,38 @@ use std::rc::Rc;
 use interpreter::object::Object;
 
 /// Path to the repo-root `core/` directory. Computed at compile
-/// time relative to the interpreter crate's `CARGO_MANIFEST_DIR` —
-/// available to tests that opt in to auto-load via
-/// `test_program_with_core_modules`.
+/// time relative to the interpreter crate's `CARGO_MANIFEST_DIR`.
 #[allow(dead_code)]
 pub fn core_modules_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
 }
 
-/// Test helper function to parse, type-check and execute a program.
-/// Defaults to *no* auto-loaded core modules so a test can name its
-/// own functions (e.g. `fn add(...)`) without colliding with the
-/// stdlib's matching symbols. Tests that need `math::*` etc. should
-/// call `test_program_with_core_modules` instead.
+/// Default test helper — auto-loads `<repo>/core/` modules the same
+/// way the interpreter binary does when launched without
+/// `TOYLANG_CORE_MODULES=`. Tests that explicitly need to opt out
+/// (because they declare a function with a name that would clash
+/// with a stdlib symbol) should call `test_program_no_core`.
 pub fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
-    test_program_with_core(source_code, None)
+    let core = core_modules_dir();
+    test_program_with_core(source_code, Some(core))
 }
 
-/// Variant of `test_program` that auto-loads every top-level module
-/// in the repo `core/` directory the same way the interpreter binary
-/// would when launched without `TOYLANG_CORE_MODULES=`. Use from
-/// tests that exercise `math::sin(x)` etc. without writing an
-/// explicit `import math` line.
+/// Backwards-compatible alias kept while call sites migrate to the
+/// default `test_program`. Identical behaviour now that the default
+/// path auto-loads core.
 #[allow(dead_code)]
 pub fn test_program_with_core_modules(
     source_code: &str,
 ) -> Result<Rc<RefCell<Object>>, String> {
-    let core = core_modules_dir();
-    test_program_with_core(source_code, Some(core))
+    test_program(source_code)
+}
+
+/// Variant that opts *out* of auto-load. Use sparingly — only when
+/// the test source declares a function whose name would shadow /
+/// collide with a stdlib symbol auto-loaded from `core/`.
+#[allow(dead_code)]
+pub fn test_program_no_core(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
+    test_program_with_core(source_code, None)
 }
 
 fn test_program_with_core(

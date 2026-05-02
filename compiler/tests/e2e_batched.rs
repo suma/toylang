@@ -850,3 +850,31 @@ fn batched_stdout_extracted_from_file() {
     }
     run_stdout_batched("batched stdout (extracted)", &tests);
 }
+
+// ============================================================
+// Panic / assert sub-tests — investigated, not implemented.
+// ============================================================
+//
+// Initial design: keep one `#[test]` that compiles + spawns each
+// panic/assert source individually (since `panic` aborts the
+// process and prevents shared `main` execution) using
+// `std::thread::spawn` for parallelism. Empirical measurement on
+// Apple Silicon (release build):
+//
+//   nextest runs 6 individual panic #[test]s in:    ~1.97 s
+//   batched runner with parallel threads:           ~2.08 s
+//   batched runner with sequential serial:          ~2.58 s
+//
+// The macOS kernel serialises Gatekeeper / xprotect first-execve
+// scans, so the parallel batched approach offers no measurable
+// speedup over nextest's existing per-test parallelism — each
+// fresh binary still pays its full ~300 ms first-run cost in
+// kernel time regardless of who issued the spawn. Implementing
+// the batched fixture would have meant adding ~150 LoC, removing
+// 6 tests from e2e.rs, and netting roughly zero wall-clock change.
+//
+// Conclusion: leave panic / assert tests on the per-test
+// `e2e.rs` runner. The actual remaining win on the test suite
+// would come from the cranelift-jit in-process loader noted in
+// `compiler/README.md`'s future-work list (the only way to skip
+// the kernel-side first-execve cost entirely).

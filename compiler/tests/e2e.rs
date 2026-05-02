@@ -4120,3 +4120,259 @@ fn value_method_f64_abs_jit_via_builtin() {
     "#;
     assert_eq!(compile_and_run(src, "value_method_f64_abs_combined"), 15);
 }
+
+// ----------------------------------------------------------------------------
+// math/abs edge cases and compositional tests.
+// ----------------------------------------------------------------------------
+
+#[test]
+fn value_method_i64_abs_min_value() {
+    if skip_e2e() {
+        return;
+    }
+    // `i64::MIN.abs()` is the canonical wrapping case — there's no
+    // positive counterpart, so `wrapping_abs` returns `i64::MIN`
+    // itself. Cast to u64 surfaces it as 0x8000_0000_0000_0000;
+    // the bottom byte is 0, the top byte is 0x80.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -9223372036854775808i64
+            ((n.abs() as u64) >> 56u64) & 0xFFu64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_i64_abs_min_value"), 128);
+}
+
+#[test]
+fn value_method_i64_abs_zero() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = 0i64
+            n.abs() as u64 + 5u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_i64_abs_zero"), 5);
+}
+
+#[test]
+fn value_method_i64_abs_idempotent() {
+    if skip_e2e() {
+        return;
+    }
+    // abs is idempotent: `x.abs().abs() == x.abs()`. Exercises
+    // chained method calls on the result of a previous method.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -42i64
+            val once: i64 = n.abs()
+            val twice: i64 = n.abs().abs()
+            (once - twice + 12i64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_i64_abs_idempotent"), 12);
+}
+
+#[test]
+fn value_method_f64_abs_neg_zero_is_pos_zero() {
+    if skip_e2e() {
+        return;
+    }
+    // IEEE 754: `-0.0.abs() == +0.0`. Exercises the sign-bit flip.
+    // Both literal forms are valid f64 zeros; comparison should
+    // succeed (regular `==` doesn't distinguish +0 / -0).
+    let src = r#"
+        fn main() -> u64 {
+            val n: f64 = -0f64
+            val r: f64 = n.abs()
+            if r == 0f64 { 1u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_abs_neg_zero"), 1);
+}
+
+#[test]
+fn value_method_f64_abs_already_positive() {
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val r: f64 = 3.5f64
+            (r.abs() * 2f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_abs_pos"), 7);
+}
+
+#[test]
+fn value_method_f64_abs_in_comparison() {
+    if skip_e2e() {
+        return;
+    }
+    // Method-form result feeds straight into a comparison —
+    // exercises that the cranelift `fabs` value flows through
+    // the regular f64 fcmp path without an intermediate `val`.
+    let src = r#"
+        fn main() -> u64 {
+            val r: f64 = -2.5f64
+            if r.abs() < 3f64 { 1u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_abs_cmp"), 1);
+}
+
+#[test]
+fn value_method_f64_sqrt_chained() {
+    if skip_e2e() {
+        return;
+    }
+    // `sqrt(sqrt(256)) = sqrt(16) = 4`. Same chain pattern as
+    // `abs().abs()` but exercises the cranelift `sqrt`
+    // instruction instead of `fabs`.
+    let src = r#"
+        fn main() -> u64 {
+            val r: f64 = 256f64
+            r.sqrt().sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_sqrt_chained"), 4);
+}
+
+#[test]
+fn value_method_f64_sqrt_zero_and_one() {
+    if skip_e2e() {
+        return;
+    }
+    // sqrt(0) = 0, sqrt(1) = 1. Boundary cases that often break
+    // naive iterative implementations; cranelift's `sqrt` lowers
+    // to `fsqrt` which handles them in hardware.
+    let src = r#"
+        fn main() -> u64 {
+            val z: f64 = 0f64
+            val o: f64 = 1f64
+            z.sqrt() as u64 + o.sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_sqrt_zero_one"), 1);
+}
+
+#[test]
+fn value_method_pow_via_pythagorean() {
+    if skip_e2e() {
+        return;
+    }
+    // sqrt(3^2 + 4^2) = sqrt(25) = 5. Exercises pow + sqrt
+    // composed in a single expression so the value flow tests
+    // the libm `pow` call returning into another f64 op without
+    // an intervening `val`.
+    let src = r#"
+        fn main() -> u64 {
+            val a: f64 = 3f64
+            val b: f64 = 4f64
+            (__builtin_pow_f64(a, 2f64) + __builtin_pow_f64(b, 2f64)).sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_pythagorean"), 5);
+}
+
+#[test]
+fn value_method_abs_in_arithmetic() {
+    if skip_e2e() {
+        return;
+    }
+    // The method-form result feeds into both i64 and f64
+    // arithmetic across different binops, exercising a few
+    // distinct codegen paths in the same compile unit.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -10i64
+            val m: i64 = -3i64
+            val r: f64 = -1.5f64
+            val s: f64 = -2f64
+            val int_part: u64 = (n.abs() + m.abs()) as u64
+            val flt_part: u64 = (r.abs() * s.abs()) as u64
+            int_part + flt_part
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_abs_arith"), 16);
+}
+
+#[test]
+fn value_method_abs_inside_if_branches() {
+    if skip_e2e() {
+        return;
+    }
+    // Both branches of an if-expression call `.abs()`. The
+    // unifier needs to see both branches as `i64` so the
+    // surrounding `val` infers correctly.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -7i64
+            val cond: bool = true
+            val r: i64 = if cond { n.abs() } else { (-n).abs() }
+            r as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_abs_in_if"), 7);
+}
+
+#[test]
+fn builtin_abs_matches_value_method_i64() {
+    if skip_e2e() {
+        return;
+    }
+    // `__builtin_abs(x)` and `x.abs()` should produce the same
+    // bit-for-bit result — they go through the same `UnaryOp::Abs`
+    // IR opcode, so the difference disappears at codegen. Use a
+    // small positive (123) so the cast to u64 fits in the OS exit
+    // code's low byte; otherwise the test would compare 1234 % 256
+    // == 210 and silently disagree with the source comment.
+    let src = r#"
+        fn main() -> u64 {
+            val n: i64 = -123i64
+            val a: i64 = __builtin_abs(n)
+            val b: i64 = n.abs()
+            if a == b { a as u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "builtin_abs_matches_method_i64"), 123);
+}
+
+#[test]
+fn builtin_abs_matches_value_method_f64() {
+    if skip_e2e() {
+        return;
+    }
+    // Same equivalence check on the f64 path. Both call shapes
+    // lower to cranelift's `fabs` instruction.
+    let src = r#"
+        fn main() -> u64 {
+            val r: f64 = -42.5f64
+            val a: f64 = __builtin_abs(r)
+            val b: f64 = r.abs()
+            if a == b { a as u64 } else { 0u64 }
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "builtin_abs_matches_method_f64"), 42);
+}
+
+#[test]
+fn abs_sqrt_combined_negative_overflow_safe() {
+    if skip_e2e() {
+        return;
+    }
+    // `sqrt(abs(x))` is a common pattern (RMS, distance metrics).
+    // Force the abs of a large negative to push the surrounding
+    // arithmetic through the codegen paths that interact with
+    // `as u64` + cranelift's saturating cast on f64 → integer.
+    let src = r#"
+        fn main() -> u64 {
+            val n: f64 = -10000f64
+            n.abs().sqrt() as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "abs_sqrt_combined"), 100);
+}

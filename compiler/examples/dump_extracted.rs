@@ -14,7 +14,14 @@ fn main() {
         .parent()
         .unwrap()
         .to_path_buf();
-    let e2e_path = workspace.join("compiler/tests/e2e.rs");
+    // `DUMP_EXTRACTED_E2E_PATH=/tmp/e2e_old.rs` overrides the
+    // input source — useful when re-extracting after some tests
+    // have already been migrated out of the live `e2e.rs` (the
+    // dumper otherwise sees only the surviving subset).
+    let e2e_path = match std::env::var("DUMP_EXTRACTED_E2E_PATH") {
+        Ok(p) => PathBuf::from(p),
+        Err(_) => workspace.join("compiler/tests/e2e.rs"),
+    };
     let e2e = std::fs::read_to_string(&e2e_path).expect("read e2e.rs");
 
     let exit = extract_exit(&e2e);
@@ -25,7 +32,10 @@ fn main() {
     println!("// Source data for the batched e2e fixtures. Each entry mirrors the");
     println!("// `#[test]` definitions that previously lived in `compiler/tests/e2e.rs`.");
     println!("");
-    println!("pub(super) static EXIT_SUBTESTS: &[(&str, &str, u64)] = &[");
+    // `pub static` (not `pub(super)`) because this file is
+    // pulled in via `include!()` at the crate root rather than
+    // as a real submodule — `super` would over-resolve.
+    println!("pub static EXIT_SUBTESTS: &[(&str, &str, u64)] = &[");
     for (name, src, exp) in &exit {
         println!(
             "    (\"{name}\", \"{src}\", {exp}),",
@@ -36,7 +46,7 @@ fn main() {
     }
     println!("];");
     println!("");
-    println!("pub(super) static STDOUT_SUBTESTS: &[(&str, &str, &str)] = &[");
+    println!("pub static STDOUT_SUBTESTS: &[(&str, &str, &str)] = &[");
     for (name, src, expected) in &stdout {
         println!(
             "    (\"{name}\", \"{src}\", \"{expected}\"),",
@@ -220,15 +230,92 @@ fn extract_stdout(e2e: &str) -> Vec<(String, String, String)> {
             Some(s) => s,
             None => continue,
         };
-        let expected = match extract_raw_string(
+        // Two assert_eq layouts to handle:
+        //   1. single-line: assert_eq!(String::from_utf8_lossy(&out.stdout), "X")
+        //   2. multi-line:
+        //        assert_eq!(
+        //            String::from_utf8_lossy(&out.stdout),
+        //            "X",
+        //        );
+        // For (2), the marker between `String::from_utf8_lossy(&out.stdout)`
+        // and the literal is `,\n        "` rather than `, "`. Try the
+        // single-line first, then fall back.
+        let expected = if let Some(s) = extract_raw_string(
             block,
             "assert_eq!(String::from_utf8_lossy(&out.stdout), \"",
             "\")",
         ) {
-            Some(s) => unescape(&s),
-            None => continue,
+            unescape(&s)
+        } else if let Some(s) =
+            extract_after_lossy_multiline(block)
+        {
+            unescape(&s)
+        } else {
+            continue;
         };
         out.push((name, source, expected));
     }
     out
+}
+
+/// Multi-line variant: locate `String::from_utf8_lossy(&out.stdout)`,
+/// scan past the trailing `,` (and any whitespace / newlines)
+/// until the next `"`, then read the literal up to its closing
+/// `"`. Returns `None` if the structure doesn't match.
+///
+/// Guards: only fires when the marker is the first arg of an
+/// `assert_eq!(` macro call. The pattern
+/// ```text
+///   let stdout = String::from_utf8_lossy(&out.stdout);
+///   assert!(stdout.starts_with("X"), "unexpected: {stdout:?}");
+/// ```
+/// must not be picked up — the literal at the comma is the
+/// assert message, not the expected stdout. Without the
+/// `assert_eq!(` prefix check, the extractor latches onto
+/// `"unexpected ..."`.
+fn extract_after_lossy_multiline(body: &str) -> Option<String> {
+    let marker = "String::from_utf8_lossy(&out.stdout)";
+    let i = body.find(marker)?;
+    // Walk backwards from `i` looking for the most recent
+    // non-whitespace token. It must be `(` of an
+    // `assert_eq!(` call (possibly followed by a newline +
+    // indent).
+    let head = &body[..i];
+    let mut k = head.len();
+    // Skip trailing whitespace.
+    while k > 0 && head.as_bytes()[k - 1].is_ascii_whitespace() {
+        k -= 1;
+    }
+    if k == 0 || head.as_bytes()[k - 1] != b'(' {
+        return None;
+    }
+    // The `(` must be from `assert_eq!(`.
+    let bang_idx = head[..k - 1].rfind('!')?;
+    let macro_name_end = bang_idx;
+    let macro_start = head[..macro_name_end]
+        .rfind(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .map_or(0, |p| p + 1);
+    let macro_name = &head[macro_start..macro_name_end];
+    if macro_name != "assert_eq" {
+        return None;
+    }
+    let after_marker_idx = i + marker.len();
+    let after = &body[after_marker_idx..];
+    let comma = after.find(',')?;
+    let rest = &after[comma + 1..];
+    let quote = rest.find('"')?;
+    let body = &rest[quote + 1..];
+    let bytes = body.as_bytes();
+    let mut j = 0;
+    while j < bytes.len() {
+        if bytes[j] == b'\\' {
+            j += 2;
+            continue;
+        }
+        if bytes[j] == b'"' {
+            return Some(body[..j].to_string());
+        }
+        j += 1;
+    }
+    None
 }

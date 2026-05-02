@@ -95,6 +95,32 @@ fn extern_math_jit_matches_interpreter() {
     assert_match("example/extern_math_jit.t");
 }
 
+#[test]
+fn extension_trait_primitive_method_jit_matches_interpreter() {
+    // Step C of the extension-trait work: a user `impl Trait for i64
+    // { fn neg(...) }` method called on a primitive local must
+    // produce the same result whether dispatched by the interpreter
+    // or by the JIT. Side-by-side run of `example/extension_trait_neg.t`.
+    assert_match("example/extension_trait_neg.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn extension_trait_primitive_method_jit_compiles_callee() {
+    // Confirm the JIT actually compiles the impl method itself
+    // (`i64__neg`) rather than falling back to the interpreter for
+    // it. If eligibility rejected the primitive MethodCall, the
+    // callee would never be queued and only `main` would appear in
+    // the compile log.
+    let r = run("example/extension_trait_neg.t", true, true);
+    assert_eq!(r.code, 7, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("i64__neg"),
+        "expected JIT compile log to include the primitive impl method, got stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn extern_math_jit_compiles_main() {

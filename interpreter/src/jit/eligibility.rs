@@ -71,6 +71,16 @@ thread_local! {
     /// that a thread-local is acceptable.
     static EXTERN_DISPATCH_MAP: RefCell<HashMap<DefaultSymbol, ExternDispatchEntry>>
         = RefCell::new(HashMap::new());
+
+    /// Per-thread map from primitive `ScalarTy` → canonical-name
+    /// `DefaultSymbol`, populated for those primitives whose
+    /// `impl Trait for <PrimitiveType> { ... }` block target name has
+    /// been interned (i.e. extension traits exist for them in this
+    /// program). Same justification as the extern dispatch map for
+    /// using a thread-local — `check_expr` doesn't carry the
+    /// interner reference.
+    static PRIMITIVE_TARGET_SYMBOLS: RefCell<HashMap<ScalarTy, DefaultSymbol>>
+        = RefCell::new(HashMap::new());
 }
 
 /// Install the extern dispatch map for the current thread. Run inside
@@ -98,6 +108,61 @@ fn install_extern_dispatch(interner: &DefaultStringInterner) {
 /// to the interpreter dispatch path.
 pub(crate) fn jit_extern_dispatch_for(name: DefaultSymbol) -> Option<ExternDispatchEntry> {
     EXTERN_DISPATCH_MAP.with(|cell| cell.borrow().get(&name).copied())
+}
+
+/// Install the primitive ScalarTy → canonical-name symbol map for the
+/// current thread. Run inside `analyze`. Only inserts entries for
+/// primitives whose canonical name has actually been interned — a
+/// program with no extension-trait impl on that primitive returns
+/// `None` from `primitive_target_sym_for_scalar`, and the eligibility
+/// analyzer falls through to its non-extension path.
+fn install_primitive_target_symbols(interner: &DefaultStringInterner) {
+    PRIMITIVE_TARGET_SYMBOLS.with(|cell| {
+        let mut m = cell.borrow_mut();
+        m.clear();
+        for (sty, name) in [
+            (ScalarTy::Bool, "bool"),
+            (ScalarTy::I64, "i64"),
+            (ScalarTy::U64, "u64"),
+            (ScalarTy::F64, "f64"),
+            (ScalarTy::Ptr, "ptr"),
+        ] {
+            if let Some(sym) = interner.get(name) {
+                m.insert(sty, sym);
+            }
+        }
+    });
+}
+
+/// Look up the canonical-name symbol used as the impl target for
+/// extension-trait methods on `sty`. Returns `None` when the program
+/// has no impl block for that primitive (canonical name was never
+/// interned).
+fn primitive_target_sym_for_scalar(sty: ScalarTy) -> Option<DefaultSymbol> {
+    PRIMITIVE_TARGET_SYMBOLS.with(|cell| cell.borrow().get(&sty).copied())
+}
+
+/// Reverse lookup: when an impl-target symbol corresponds to a
+/// primitive (extension-trait impl), return the matching `TypeDecl`
+/// so `Self_` resolution in `callable_signature` produces a scalar
+/// `TypeDecl` instead of `TypeDecl::Identifier(prim_sym)` (which
+/// `resolve_param_ty` rejects).
+fn primitive_type_decl_for_target_sym(sym: DefaultSymbol) -> Option<TypeDecl> {
+    PRIMITIVE_TARGET_SYMBOLS.with(|cell| {
+        cell.borrow().iter().find_map(|(sty, &s)| {
+            if s != sym {
+                return None;
+            }
+            Some(match sty {
+                ScalarTy::Bool => TypeDecl::Bool,
+                ScalarTy::I64 => TypeDecl::Int64,
+                ScalarTy::U64 => TypeDecl::UInt64,
+                ScalarTy::F64 => TypeDecl::Float64,
+                ScalarTy::Ptr => TypeDecl::Ptr,
+                _ => return None,
+            })
+        })
+    })
 }
 
 /// Records the *first* reason eligibility analysis rejected the program.
@@ -319,6 +384,7 @@ pub fn analyze(
     interner: &DefaultStringInterner,
 ) -> Result<EligibleSet, String> {
     install_extern_dispatch(interner);
+    install_primitive_target_symbols(interner);
     let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
     for f in &program.function {
         function_map.insert(f.name, f.clone());
@@ -691,9 +757,15 @@ fn callable_signature(
     let mut params = Vec::with_capacity(parameters.len());
     let self_struct = receiver_struct;
     for (_, td) in parameters {
-        // Map `Self_` to the receiver's struct type for methods.
+        // Map `Self_` to the receiver's type for methods. For a
+        // primitive impl target (extension trait — Step C onward),
+        // expand `Self_` directly to the matching primitive
+        // `TypeDecl` so `resolve_param_ty` can reduce it to a
+        // `ParamTy::Scalar`. Struct receivers fall back to
+        // `TypeDecl::Identifier` as before.
         let resolved_td = match (td, self_struct) {
-            (TypeDecl::Self_, Some(s)) => TypeDecl::Identifier(s),
+            (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
+                .unwrap_or_else(|| TypeDecl::Identifier(s)),
             (other, _) => other.clone(),
         };
         let pt = match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
@@ -718,9 +790,12 @@ fn callable_signature(
     // field) at the ABI layer.
     let ret = match source.return_type() {
         Some(td) => {
-            // Map `Self_` similarly for methods.
+            // Map `Self_` similarly for methods. Primitive impl
+            // targets resolve to the matching primitive `TypeDecl`
+            // so the return is a `ParamTy::Scalar`.
             let resolved_td = match (td, self_struct) {
-                (TypeDecl::Self_, Some(s)) => TypeDecl::Identifier(s),
+                (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
+                    .unwrap_or_else(|| TypeDecl::Identifier(s)),
                 (other, _) => other.clone(),
             };
             match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
@@ -2545,18 +2620,129 @@ pub(crate) fn check_expr(
             )
         }
         Expr::MethodCall(receiver, method_name, args) => {
-            // The receiver must be a known struct local; we don't yet
-            // support method calls on temporary struct values.
+            // The receiver is either a struct local (existing
+            // struct-method dispatch) or a primitive scalar local
+            // (Step C extension-trait dispatch — `i64.neg()` etc.).
+            // Method calls on temporary / chained primitive values
+            // are not yet JIT-compatible; the interpreter still
+            // serves those.
             let recv_expr = program.expression.get(&receiver)?;
             let recv_name = match recv_expr {
                 Expr::Identifier(s) => s,
                 _ => {
                     note(reject_reason, || {
-                        "method receiver must be a struct local".to_string()
+                        "method receiver must be a local identifier".to_string()
                     });
                     return None;
                 }
             };
+
+            // Step C: extension-trait dispatch on a primitive
+            // receiver. The receiver lives in `locals` (scalar) and
+            // the primitive's canonical-name symbol (interned by
+            // `install_primitive_target_symbols`) keys into the
+            // same `find_method` lookup the struct path uses. On
+            // success we register the call as a `MonoTarget::Method`
+            // so the analyzer queues the method body for compilation,
+            // mirroring the struct path.
+            if let Some(prim_ty) = locals.get(&recv_name).copied() {
+                let target_sym = match primitive_target_sym_for_scalar(prim_ty) {
+                    Some(s) => s,
+                    None => {
+                        note(reject_reason, || {
+                            "method receiver primitive has no extension impls".to_string()
+                        });
+                        return None;
+                    }
+                };
+                let method = match find_method(program, target_sym, method_name) {
+                    Some(m) => m,
+                    None => {
+                        note(reject_reason, || {
+                            "method not found on primitive type".to_string()
+                        });
+                        return None;
+                    }
+                };
+                if !method.generic_params.is_empty() {
+                    note(reject_reason, || {
+                        "generic methods are not yet JIT-compatible".to_string()
+                    });
+                    return None;
+                }
+                if method.parameter.is_empty() {
+                    note(reject_reason, || {
+                        "method has no parameters; expected `self`".to_string()
+                    });
+                    return None;
+                }
+                let expected_param_count = method.parameter.len() - 1;
+                if args.len() != expected_param_count {
+                    note(reject_reason, || {
+                        format!(
+                            "primitive method call has {} arg(s), expects {}",
+                            args.len(),
+                            expected_param_count
+                        )
+                    });
+                    return None;
+                }
+                // Type-check each arg against the parameter, with
+                // `Self_` resolved to the receiver's primitive type.
+                for (i, arg) in args.iter().enumerate() {
+                    let raw_param_td = &method.parameter[i + 1].1;
+                    let resolved_param_td = match raw_param_td {
+                        TypeDecl::Self_ => primitive_type_decl_for_target_sym(target_sym)
+                            .unwrap_or_else(|| raw_param_td.clone()),
+                        other => other.clone(),
+                    };
+                    let actual = check_expr(
+                        program, arg, locals, struct_locals, tuple_locals,
+                        substitutions, struct_layouts, callees, ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    let want = match resolve_param_ty(&resolved_param_td, substitutions, struct_layouts) {
+                        Some(ParamTy::Scalar(s)) => s,
+                        _ => {
+                            note(reject_reason, || {
+                                "primitive method parameter type unsupported".to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    if actual != want {
+                        note(reject_reason, || {
+                            format!("primitive method arg type mismatch: got {actual:?}, want {want:?}")
+                        });
+                        return None;
+                    }
+                }
+                callees.push(MonoCall {
+                    call_expr: *expr_ref,
+                    target: MonoTarget::Method(target_sym, method_name),
+                    mono_args: Vec::new(),
+                });
+                // Resolve the return type, with `Self_` mapping to the
+                // receiver's primitive type.
+                let ret_td = match &method.return_type {
+                    Some(td) => match td {
+                        TypeDecl::Self_ => primitive_type_decl_for_target_sym(target_sym)
+                            .unwrap_or_else(|| td.clone()),
+                        other => other.clone(),
+                    },
+                    None => TypeDecl::Unit,
+                };
+                return match resolve_param_ty(&ret_td, substitutions, struct_layouts) {
+                    Some(ParamTy::Scalar(s)) => Some(s),
+                    _ => {
+                        note(reject_reason, || {
+                            "primitive method return type unsupported".to_string()
+                        });
+                        None
+                    }
+                };
+            }
+
             let struct_name = match struct_locals.get(&recv_name).copied() {
                 Some(s) => s,
                 None => {

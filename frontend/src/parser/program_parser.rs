@@ -93,17 +93,29 @@ impl<'a> Parser<'a> {
                             continue;
                         }
                     };
-                    // Generic params on extern fn are not supported yet; the
-                    // backend dispatch is by literal name and assumes a single
-                    // monomorphic linkage entry.
+                    // #195: optional generic params on extern fn
+                    // (`extern fn pick<T>(a: T, b: T) -> T`).  Parsed
+                    // here so the AST shape matches non-extern fns,
+                    // but each backend's actual dispatch decides
+                    // whether to accept the call: the interpreter
+                    // walks the typed args at call time (works
+                    // unconditionally), the JIT and AOT compiler
+                    // need name-mangled monomorph entries (rejected
+                    // with a clear error until they're wired).
+                    let (generic_params, generic_bounds) = if matches!(self.peek(), Some(Kind::LT)) {
+                        self.parse_generic_params()?
+                    } else {
+                        (vec![], std::collections::HashMap::new())
+                    };
                     self.expect_err(&Kind::ParenOpen)?;
-                    let params = self.parse_param_def_list_with_generic_context(vec![], &[])?;
+                    let params = self.parse_param_def_list_with_generic_context(vec![], &generic_params)?;
                     self.expect_err(&Kind::ParenClose)?;
                     let mut ret_ty: Option<TypeDecl> = None;
                     if let Some(Kind::Arrow) = self.peek() {
                         self.expect_err(&Kind::Arrow)?;
+                        let generic_context: HashSet<DefaultSymbol> = generic_params.iter().cloned().collect();
                         ret_ty = Some(self.parse_type_declaration_with_generic_context(
-                            &HashSet::new(),
+                            &generic_context,
                         )?);
                     }
                     self.skip_newlines();
@@ -121,8 +133,8 @@ impl<'a> Parser<'a> {
                     def_func.push(Rc::new(Function {
                         node: Node::new(fn_start_pos, fn_end_pos),
                         name: fn_name,
-                        generic_params: vec![],
-                        generic_bounds: std::collections::HashMap::new(),
+                        generic_params,
+                        generic_bounds,
                         parameter: params,
                         return_type: ret_ty,
                         requires: vec![],

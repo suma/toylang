@@ -49,8 +49,29 @@ pub fn build_default_registry() -> HashMap<&'static str, ExternFn> {
     // exercise the extern dispatch without rewriting math.t yet.
     m.insert("extern_sin", extern_sin_f64);
     m.insert("extern_cos", extern_cos_f64);
+    // Test-only generic-extern probe (#195): identity over T. Used by
+    // tests that verify `extern fn name<T>(x: T) -> T` parses and the
+    // interpreter dispatches the call via type-erased registry lookup.
+    // The implementation just hands back the argument value, so it
+    // works for every T the type-checker accepts.
+    m.insert("__extern_test_identity", extern_test_identity);
 
     m
+}
+
+/// Type-erased identity used by #195 tests. The runtime sees only
+/// `&[Value]`, so genuinely polymorphic dispatch costs nothing here
+/// — the user's `extern fn id<T>(x: T) -> T` resolves by literal
+/// name and this closure forwards the value unchanged.
+fn extern_test_identity(args: &[Value]) -> Result<Value, InterpreterError> {
+    if args.len() != 1 {
+        return Err(InterpreterError::FunctionParameterMismatch {
+            message: "extern fn `__extern_test_identity` takes 1 argument".to_string(),
+            expected: 1,
+            found: args.len(),
+        });
+    }
+    Ok(args[0].clone())
 }
 
 fn unary_f64(name: &str, args: &[Value], op: fn(f64) -> f64) -> Result<Value, InterpreterError> {

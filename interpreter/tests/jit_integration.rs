@@ -105,6 +105,20 @@ fn extension_trait_primitive_method_jit_matches_interpreter() {
 }
 
 #[test]
+fn extern_generic_identity_runs_via_interpreter_registry() {
+    // #195: `extern fn name<T>(x: T) -> T` parses and the interpreter
+    // dispatches the call through the type-erased extern_registry by
+    // literal name. JIT's extern dispatch table doesn't know about
+    // generic externs and falls back to the interpreter, so both
+    // modes must agree on the exit code (= 10 from the multi-T
+    // identity calls).
+    let plain = run("example/extern_generic_identity.t", false, false);
+    assert_eq!(plain.code, 10, "interpreter exit code mismatch; stderr: {}", plain.stderr);
+    let jit = run("example/extern_generic_identity.t", true, false);
+    assert_eq!(jit.code, 10, "jit-mode exit code mismatch; stderr: {}", jit.stderr);
+}
+
+#[test]
 fn extension_trait_chained_primitive_method_matches_interpreter() {
     // #194: receiver of an outer MethodCall is itself a MethodCall
     // (`a.neg().neg()`). Eligibility used to require a bare

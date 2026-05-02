@@ -158,6 +158,22 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Expr::QualifiedIdentifier(new_path))
             }
+            Expr::BuiltinCall(func, args) => {
+                // BuiltinFunction variants are universal (no symbol
+                // table dependency), so the variant survives the
+                // remap untouched. Only the per-arg ExprRefs need
+                // re-pointing into the main program's pools.
+                let mut new_args = Vec::new();
+                for arg in args {
+                    let new_arg = self
+                        .expr_mapping
+                        .get(&arg.0)
+                        .ok_or("Cannot find BuiltinCall argument mapping")?
+                        .clone();
+                    new_args.push(new_arg);
+                }
+                Ok(Expr::BuiltinCall(func.clone(), new_args))
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
         }

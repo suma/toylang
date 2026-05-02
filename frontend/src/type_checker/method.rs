@@ -39,6 +39,17 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Self_ => {
                 if let Some(target_symbol) = self.context.current_impl_target {
+                    // Extension-trait support (Step A): when the impl
+                    // block targets a primitive type (`impl Foo for i64
+                    // { ... }`), `Self` resolves directly to the
+                    // matching `TypeDecl::Int64` etc. so method bodies
+                    // don't see the `Struct(sym_for_i64, _)` they
+                    // would otherwise — the type-checker would then
+                    // reject every `self`-typed expression as a
+                    // struct/primitive mismatch.
+                    if let Some(prim) = self.primitive_type_decl_from_symbol(target_symbol) {
+                        return prim;
+                    }
                     // Include generic parameters if available
                     let type_params = if let Some(ref generic_params) = self.context.current_impl_generic_params {
                         generic_params.iter().map(|param| TypeDecl::Generic(*param)).collect()
@@ -176,10 +187,14 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             let resolved_type = self.resolve_self_type(param_type);
             
             match &resolved_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String |
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
+                TypeDecl::String | TypeDecl::Ptr |
                 TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
                 TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
-                    // Valid parameter types (including struct types, generic types, and collection types)
+                    // Valid parameter types — primitives, structs,
+                    // generics, and collections. `Float64` / `Ptr`
+                    // were added when extension traits over
+                    // primitives landed (Step A).
                 },
                 _ => {
                     if has_generics {
@@ -202,10 +217,14 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             // For generic types, we need to validate they can be resolved
             // but don't enforce strict type checking here since generics will be resolved later
             match &resolved_ret_type {
-                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String |
+                TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
+                TypeDecl::String | TypeDecl::Ptr |
                 TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
                 TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
-                    // Valid return types (including generic types, struct types, and collection types)
+                    // Valid return types — primitives, structs,
+                    // generics, and collections. `Float64` / `Ptr`
+                    // were added when extension traits over
+                    // primitives landed (Step A).
                 },
                 _ => {
                     if has_generics {

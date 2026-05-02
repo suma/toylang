@@ -58,6 +58,29 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn resolve_symbol_name(&self, symbol: DefaultSymbol) -> String {
         self.core.string_interner.resolve(symbol).unwrap_or("<unknown>").to_string()
     }
+
+    /// Map a symbol whose interned text is the canonical name of a
+    /// primitive type (`i64`, `f64`, …) to the matching `TypeDecl`.
+    /// Returns `None` for any other symbol — including user struct
+    /// names that happen to share the lookup path. Used by the
+    /// extension-trait machinery (Step A onward) so an
+    /// `impl Trait for i64 { ... }` block can resolve `Self`
+    /// inside its method bodies to `TypeDecl::Int64` instead of
+    /// `TypeDecl::Struct(sym_for_i64, _)`.
+    pub fn primitive_type_decl_from_symbol(&self, symbol: DefaultSymbol) -> Option<TypeDecl> {
+        Some(match self.core.string_interner.resolve(symbol)? {
+            "bool" => TypeDecl::Bool,
+            "u64" => TypeDecl::UInt64,
+            "i64" => TypeDecl::Int64,
+            "f64" => TypeDecl::Float64,
+            // `usize` shares the `UInt64` representation in this
+            // language; the parser maps both to the same TypeDecl.
+            "usize" => TypeDecl::UInt64,
+            "str" => TypeDecl::String,
+            "ptr" => TypeDecl::Ptr,
+            _ => return None,
+        })
+    }
     
     /// Handle shift operations type resolution
     pub fn resolve_shift_operand_types(&self, lhs_ty: &TypeDecl, rhs_ty: &TypeDecl) -> (TypeDecl, TypeDecl) {

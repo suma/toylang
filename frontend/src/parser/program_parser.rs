@@ -7,6 +7,27 @@ use crate::token::Kind;
 use crate::parser::error::{ParserErrorKind, ParserResult, MultipleParserResult};
 use super::core::Parser;
 
+/// Map a primitive-type token to the canonical string it should be
+/// interned as for `impl Trait for <PrimitiveType>` blocks. Returns
+/// `None` for non-type tokens. The returned name is the same string
+/// the type-checker resolves primitive-method receivers to, so the
+/// `Stmt::ImplBlock { target_type }` symbol round-trips through the
+/// existing `DefaultSymbol`-keyed method registry without any new
+/// indirection. (Step A of the extension-trait work — full
+/// primitive method dispatch lands in Step B.)
+fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
+    Some(match kind {
+        Kind::Bool => "bool",
+        Kind::U64 => "u64",
+        Kind::I64 => "i64",
+        Kind::F64 => "f64",
+        Kind::USize => "usize",
+        Kind::Str => "str",
+        Kind::Ptr => "ptr",
+        _ => return None,
+    })
+}
+
 impl<'a> Parser<'a> {
     pub fn parse_program(&mut self) -> ParserResult<Program> {
         let mut start_pos: Option<usize> = None;
@@ -355,7 +376,14 @@ impl<'a> Parser<'a> {
                             // `impl Trait for Type` — the `for` keyword is
                             // contextually reused here. If present, the
                             // identifier we just consumed was the trait name
-                            // and the next identifier is the target type.
+                            // and the next identifier (or primitive type
+                            // keyword) is the target type. Primitive types
+                            // (`i64`, `f64`, …) interned by their canonical
+                            // name string so the same `DefaultSymbol`
+                            // identifies the impl target across the
+                            // type-checker / interpreter / compiler — they
+                            // are reserved keywords so there's no clash with
+                            // a user struct of the same name.
                             let (trait_name, target_type_symbol) = if matches!(self.peek(), Some(Kind::For)) {
                                 self.next(); // consume `for`
                                 let target_sym = match self.peek() {
@@ -366,6 +394,12 @@ impl<'a> Parser<'a> {
                                         if self.peek() == Some(&Kind::LT) {
                                             self.skip_until_matching_gt();
                                         }
+                                        sym
+                                    }
+                                    Some(kind) if primitive_type_canonical_name(kind).is_some() => {
+                                        let name = primitive_type_canonical_name(kind).unwrap();
+                                        let sym = self.string_interner.get_or_intern(name);
+                                        self.next();
                                         sym
                                     }
                                     _ => {

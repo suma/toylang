@@ -95,6 +95,36 @@ mod basic {
         "#;
         assert!(test_program(source).is_ok(), "expected ok");
     }
+
+    #[test]
+    fn test_extension_trait_parses_for_primitive_target() {
+        // Step A of the extension-trait work: `impl Trait for i64`
+        // / `impl Trait for f64` etc. parse + type-check. The body
+        // can use `Self` which resolves to the matching primitive
+        // (`Self == i64` here, so the `0i64 - self` expression
+        // type-checks). The method itself is not yet *callable* —
+        // dispatch (Step B+) wires `x.neg()` up to this body.
+        let source = r#"
+            trait Negate {
+                fn neg(self: Self) -> Self
+            }
+            impl Negate for i64 {
+                fn neg(self: Self) -> Self {
+                    0i64 - self
+                }
+            }
+            impl Negate for f64 {
+                fn neg(self: Self) -> Self {
+                    0f64 - self
+                }
+            }
+            fn main() -> u64 { 7u64 }
+        "#;
+        assert!(
+            test_program(source).is_ok(),
+            "extension-trait impls on primitives should parse + type-check"
+        );
+    }
 }
 
 mod errors {

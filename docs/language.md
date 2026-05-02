@@ -878,12 +878,25 @@ cranelift's native `fabs` instruction.
 import math
 
 math::abs(x: i64) -> i64
+math::fabs(x: f64) -> f64
 math::sqrt(x: f64) -> f64
 math::min_i64(a: i64, b: i64) -> i64
 math::min_u64(a: u64, b: u64) -> u64
 math::max_i64(a: i64, b: i64) -> i64
 math::max_u64(a: u64, b: u64) -> u64
 math::pow(base: f64, exp: f64) -> f64
+
+# f64 transcendentals (libm-backed)
+math::sin(x: f64) -> f64
+math::cos(x: f64) -> f64
+math::tan(x: f64) -> f64
+math::log(x: f64) -> f64    # natural log (ln)
+math::log2(x: f64) -> f64
+math::exp(x: f64) -> f64
+
+# f64 rounding (cranelift-native)
+math::floor(x: f64) -> f64
+math::ceil(x: f64) -> f64
 ```
 
 The math intrinsics live in the standard `math` module

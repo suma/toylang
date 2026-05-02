@@ -52,6 +52,46 @@ pub fn pow(base: f64, exp: f64) -> f64 {
     __builtin_pow_f64(base, exp)
 }
 
+# f64 transcendentals — forward to libm in the AOT compiler / a
+# Rust shim in the JIT. cranelift has no native opcodes for sin /
+# cos / tan / log / log2 / exp, so each call hits the runtime
+# helper at execution time.
+
+pub fn sin(x: f64) -> f64 {
+    __builtin_sin_f64(x)
+}
+
+pub fn cos(x: f64) -> f64 {
+    __builtin_cos_f64(x)
+}
+
+pub fn tan(x: f64) -> f64 {
+    __builtin_tan_f64(x)
+}
+
+pub fn log(x: f64) -> f64 {
+    __builtin_log_f64(x)
+}
+
+pub fn log2(x: f64) -> f64 {
+    __builtin_log2_f64(x)
+}
+
+pub fn exp(x: f64) -> f64 {
+    __builtin_exp_f64(x)
+}
+
+# f64 rounding — both lower to cranelift's native `floor` /
+# `ceil` instructions on every supported ISA.
+
+pub fn floor(x: f64) -> f64 {
+    __builtin_floor_f64(x)
+}
+
+pub fn ceil(x: f64) -> f64 {
+    __builtin_ceil_f64(x)
+}
+
 fn private_helper() -> u64 {
     42u64
 }

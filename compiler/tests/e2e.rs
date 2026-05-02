@@ -4376,3 +4376,118 @@ fn abs_sqrt_combined_negative_overflow_safe() {
     "#;
     assert_eq!(compile_and_run(src, "abs_sqrt_combined"), 100);
 }
+
+// ----------------------------------------------------------------------------
+// f64 transcendentals + rounding (sin / cos / tan / log / log2 / exp /
+// floor / ceil). The transcendentals lower to libm calls; floor / ceil
+// use cranelift's native instructions.
+// ----------------------------------------------------------------------------
+
+#[test]
+fn math_trig_floor_ceil() {
+    if skip_e2e() {
+        return;
+    }
+    // sin(π/2)=1, cos(0)=1, exp(0)=1, log(e)≈1, log2(8)=3,
+    // floor(3.7)=3, ceil(3.2)=4. Total = 13. Mirrors the
+    // `math_trig_demo.t` example.
+    let src = r#"
+        fn main() -> u64 {
+            val pi: f64 = 3.14159265358979f64
+            val s: f64 = __builtin_sin_f64(pi / 2f64)
+            val c: f64 = __builtin_cos_f64(0f64)
+            val e: f64 = __builtin_exp_f64(0f64)
+            val l: f64 = __builtin_log_f64(2.718281828f64)
+            val l2: f64 = __builtin_log2_f64(8f64)
+            val fl: f64 = __builtin_floor_f64(3.7f64)
+            val ce: f64 = __builtin_ceil_f64(3.2f64)
+            s as u64 + c as u64 + e as u64 + l as u64 + l2 as u64
+                + fl as u64 + ce as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_trig_floor_ceil"), 13);
+}
+
+#[test]
+fn math_floor_negative() {
+    if skip_e2e() {
+        return;
+    }
+    // floor(-3.2) = -4 (rounds toward -∞). Cast to u64 saturates
+    // negatives to 0 (Rust `as` semantics, also what cranelift's
+    // `fcvt_to_uint_sat` emits), so we shift into the positive
+    // range first: floor(-3.2) + 10.0 = 6.
+    let src = r#"
+        fn main() -> u64 {
+            val n: f64 = -3.2f64
+            (__builtin_floor_f64(n) + 10f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_floor_negative"), 6);
+}
+
+#[test]
+fn math_ceil_negative() {
+    if skip_e2e() {
+        return;
+    }
+    // ceil(-3.7) = -3 (rounds toward +∞). Same shift trick:
+    // ceil(-3.7) + 10.0 = 7.
+    let src = r#"
+        fn main() -> u64 {
+            val n: f64 = -3.7f64
+            (__builtin_ceil_f64(n) + 10f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_ceil_negative"), 7);
+}
+
+#[test]
+fn math_log_exp_roundtrip() {
+    if skip_e2e() {
+        return;
+    }
+    // exp(log(x)) ≈ x for positive x. Round-to-nearest via
+    // `floor(.. + 0.5)` — plain `floor` would catch the
+    // last-bit drift on the *low* side and report 6 for
+    // `exp(log(7)) = 6.999…`.
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = 7f64
+            __builtin_floor_f64(__builtin_exp_f64(__builtin_log_f64(x)) + 0.5f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_log_exp_roundtrip"), 7);
+}
+
+#[test]
+fn math_sin_squared_plus_cos_squared() {
+    if skip_e2e() {
+        return;
+    }
+    // sin²x + cos²x = 1 (Pythagorean identity). Exit-code via
+    // round, accepting last-bit drift.
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = 0.7f64
+            val s: f64 = __builtin_sin_f64(x)
+            val c: f64 = __builtin_cos_f64(x)
+            __builtin_floor_f64(s * s + c * c + 0.5f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_sin_cos_identity"), 1);
+}
+
+#[test]
+fn math_log2_pow2_roundtrip() {
+    if skip_e2e() {
+        return;
+    }
+    // log2(2^k) = k for integer k. log2(1024) = 10.
+    let src = r#"
+        fn main() -> u64 {
+            __builtin_log2_f64(1024f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "math_log2_pow2"), 10);
+}

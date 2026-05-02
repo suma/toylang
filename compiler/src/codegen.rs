@@ -118,6 +118,15 @@ struct CodegenSession {
     libc_exit: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
+    /// libm transcendentals — `double sin(double)` etc. Used by the
+    /// matching `UnaryOp::{Sin, Cos, Tan, Log, Log2, Exp}` cases.
+    /// `floor` / `ceil` use cranelift's native instructions instead.
+    libm_sin: cranelift_module::FuncId,
+    libm_cos: cranelift_module::FuncId,
+    libm_tan: cranelift_module::FuncId,
+    libm_log: cranelift_module::FuncId,
+    libm_log2: cranelift_module::FuncId,
+    libm_exp: cranelift_module::FuncId,
     /// Helpers shipped in `compiler/runtime/toylang_rt.c`. The driver
     /// compiles that file and links it next to the toylang object;
     /// these FuncIds are how codegen reaches them.
@@ -198,6 +207,26 @@ impl CodegenSession {
             .declare_function("pow", CLinkage::Import, &pow_sig)
             .map_err(|e| format!("declare pow: {e}"))?;
 
+        // libm `(double) -> double` family. Same signature shape, so
+        // build it once and reuse. Each call goes through cranelift's
+        // module-level FuncRef; no special handling needed for the
+        // imports beyond the linker resolving them against libm at
+        // link time.
+        let mut f64_unary_sig = Signature::new(call_conv);
+        f64_unary_sig.params.push(AbiParam::new(types::F64));
+        f64_unary_sig.returns.push(AbiParam::new(types::F64));
+        let declare_libm = |module: &mut ObjectModule, name: &str| -> Result<cranelift_module::FuncId, String> {
+            module
+                .declare_function(name, CLinkage::Import, &f64_unary_sig)
+                .map_err(|e| format!("declare {name}: {e}"))
+        };
+        let libm_sin = declare_libm(&mut module, "sin")?;
+        let libm_cos = declare_libm(&mut module, "cos")?;
+        let libm_tan = declare_libm(&mut module, "tan")?;
+        let libm_log = declare_libm(&mut module, "log")?;
+        let libm_log2 = declare_libm(&mut module, "log2")?;
+        let libm_exp = declare_libm(&mut module, "exp")?;
+
         // Declare the `toy_*` runtime helpers up front. Each takes a
         // single value matching its C prototype: i64/u64/bool/(char*).
         // bool is `uint8_t` on the C side, mapped to cranelift `I8`.
@@ -235,6 +264,12 @@ impl CodegenSession {
             libc_puts,
             libc_exit,
             libm_pow,
+            libm_sin,
+            libm_cos,
+            libm_tan,
+            libm_log,
+            libm_log2,
+            libm_exp,
             rt_print_i64,
             rt_println_i64,
             rt_print_u64,
@@ -647,6 +682,12 @@ impl CodegenSession {
             print_f64: self.module.declare_func_in_func(self.rt_print_f64, func),
             println_f64: self.module.declare_func_in_func(self.rt_println_f64, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
+            sin: self.module.declare_func_in_func(self.libm_sin, func),
+            cos: self.module.declare_func_in_func(self.libm_cos, func),
+            tan: self.module.declare_func_in_func(self.libm_tan, func),
+            log: self.module.declare_func_in_func(self.libm_log, func),
+            log2: self.module.declare_func_in_func(self.libm_log2, func),
+            exp: self.module.declare_func_in_func(self.libm_exp, func),
         }
     }
 }
@@ -669,6 +710,12 @@ struct RuntimeRefs {
     print_f64: cranelift_codegen::ir::FuncRef,
     println_f64: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
+    sin: cranelift_codegen::ir::FuncRef,
+    cos: cranelift_codegen::ir::FuncRef,
+    tan: cranelift_codegen::ir::FuncRef,
+    log: cranelift_codegen::ir::FuncRef,
+    log2: cranelift_codegen::ir::FuncRef,
+    exp: cranelift_codegen::ir::FuncRef,
 }
 
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
@@ -785,6 +832,23 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         let results = self.builder.inst_results(call);
         if results.is_empty() {
             return Err("libm pow call produced no result".into());
+        }
+        Ok(results[0])
+    }
+
+    /// Emit a `libm (double) -> double` call (`sin` / `cos` /
+    /// `tan` / `log` / `log2` / `exp`). The caller picks the right
+    /// FuncRef from `RuntimeRefs`; this helper just wraps the
+    /// `inst_results` shuffle that every f64-unary libm call needs.
+    fn emit_libm_unary_call(
+        &mut self,
+        target: cranelift_codegen::ir::FuncRef,
+        operand: cranelift_codegen::ir::Value,
+    ) -> Result<cranelift_codegen::ir::Value, String> {
+        let call = self.builder.ins().call(target, &[operand]);
+        let results = self.builder.inst_results(call);
+        if results.is_empty() {
+            return Err("libm unary call produced no result".into());
         }
         Ok(results[0])
     }
@@ -1080,6 +1144,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         }
                     }
                     UnaryOp::Sqrt => self.builder.ins().sqrt(v),
+                    UnaryOp::Floor => self.builder.ins().floor(v),
+                    UnaryOp::Ceil => self.builder.ins().ceil(v),
+                    UnaryOp::Sin => self.emit_libm_unary_call(self.runtime.sin, v)?,
+                    UnaryOp::Cos => self.emit_libm_unary_call(self.runtime.cos, v)?,
+                    UnaryOp::Tan => self.emit_libm_unary_call(self.runtime.tan, v)?,
+                    UnaryOp::Log => self.emit_libm_unary_call(self.runtime.log, v)?,
+                    UnaryOp::Log2 => self.emit_libm_unary_call(self.runtime.log2, v)?,
+                    UnaryOp::Exp => self.emit_libm_unary_call(self.runtime.exp, v)?,
                 };
                 self.record_result(inst, result);
             }

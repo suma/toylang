@@ -135,7 +135,15 @@ impl<'a> FunctionLower<'a> {
                     args.first().and_then(|a| self.value_scalar(a))
                 }
                 frontend::ast::BuiltinFunction::Sqrt
-                | frontend::ast::BuiltinFunction::Pow => Some(Type::F64),
+                | frontend::ast::BuiltinFunction::Pow
+                | frontend::ast::BuiltinFunction::Sin
+                | frontend::ast::BuiltinFunction::Cos
+                | frontend::ast::BuiltinFunction::Tan
+                | frontend::ast::BuiltinFunction::Log
+                | frontend::ast::BuiltinFunction::Log2
+                | frontend::ast::BuiltinFunction::Exp
+                | frontend::ast::BuiltinFunction::Floor
+                | frontend::ast::BuiltinFunction::Ceil => Some(Type::F64),
                 _ => None,
             },
             Expr::BuiltinMethodCall(_receiver, method, _args) => match method {

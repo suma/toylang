@@ -505,10 +505,30 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // operand type. Mismatched / unsupported arg types produce a
         // targeted diagnostic instead of the generic "argument type
         // mismatch" the signature path would emit.
-        if matches!(func, BuiltinFunction::Pow | BuiltinFunction::Sqrt) {
+        if matches!(
+            func,
+            BuiltinFunction::Pow
+                | BuiltinFunction::Sqrt
+                | BuiltinFunction::Sin
+                | BuiltinFunction::Cos
+                | BuiltinFunction::Tan
+                | BuiltinFunction::Log
+                | BuiltinFunction::Log2
+                | BuiltinFunction::Exp
+                | BuiltinFunction::Floor
+                | BuiltinFunction::Ceil
+        ) {
             let (name, expected) = match func {
                 BuiltinFunction::Pow => ("pow", 2usize),
                 BuiltinFunction::Sqrt => ("sqrt", 1),
+                BuiltinFunction::Sin => ("sin", 1),
+                BuiltinFunction::Cos => ("cos", 1),
+                BuiltinFunction::Tan => ("tan", 1),
+                BuiltinFunction::Log => ("log", 1),
+                BuiltinFunction::Log2 => ("log2", 1),
+                BuiltinFunction::Exp => ("exp", 1),
+                BuiltinFunction::Floor => ("floor", 1),
+                BuiltinFunction::Ceil => ("ceil", 1),
                 _ => unreachable!(),
             };
             if args.len() != expected {

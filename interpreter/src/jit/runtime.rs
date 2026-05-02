@@ -270,6 +270,29 @@ extern "C" fn jit_pow_f64(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
 
+// f64 transcendental shims. Each forwards to the matching Rust
+// `f64::*` method (libm underneath on most targets). Kept as
+// individual `extern "C"` functions so the helper dispatch table
+// can pass a stable function pointer for each.
+extern "C" fn jit_sin_f64(x: f64) -> f64 {
+    x.sin()
+}
+extern "C" fn jit_cos_f64(x: f64) -> f64 {
+    x.cos()
+}
+extern "C" fn jit_tan_f64(x: f64) -> f64 {
+    x.tan()
+}
+extern "C" fn jit_log_f64(x: f64) -> f64 {
+    x.ln()
+}
+extern "C" fn jit_log2_f64(x: f64) -> f64 {
+    x.log2()
+}
+extern "C" fn jit_exp_f64(x: f64) -> f64 {
+    x.exp()
+}
+
 extern "C" fn jit_fixed_buffer_allocator(capacity: u64) -> u64 {
     JIT_RT
         .with(|slot| {
@@ -387,6 +410,17 @@ pub(crate) enum HelperKind {
     /// `f64::powf`. `sqrt` does not need a helper because
     /// cranelift's `sqrt` instruction lowers directly.
     Pow,
+    /// f64 transcendentals — cranelift has no native opcodes, so each
+    /// dispatches through a Rust shim that calls `f64::sin` /
+    /// `f64::cos` / etc. (libm underneath on most targets).
+    /// `floor` / `ceil` are NOT in this list because cranelift has
+    /// dedicated instructions for them.
+    SinF64,
+    CosF64,
+    TanF64,
+    LogF64,   // natural log (ln)
+    Log2F64,
+    ExpF64,
 }
 
 impl HelperKind {
@@ -422,6 +456,12 @@ impl HelperKind {
             HelperKind::WithAllocatorPush => "jit_with_allocator_push",
             HelperKind::WithAllocatorPop => "jit_with_allocator_pop",
             HelperKind::Pow => "jit_pow_f64",
+            HelperKind::SinF64 => "jit_sin_f64",
+            HelperKind::CosF64 => "jit_cos_f64",
+            HelperKind::TanF64 => "jit_tan_f64",
+            HelperKind::LogF64 => "jit_log_f64",
+            HelperKind::Log2F64 => "jit_log2_f64",
+            HelperKind::ExpF64 => "jit_exp_f64",
         }
     }
 
@@ -457,6 +497,12 @@ impl HelperKind {
             HelperKind::WithAllocatorPush => jit_with_allocator_push as *const u8,
             HelperKind::WithAllocatorPop => jit_with_allocator_pop as *const u8,
             HelperKind::Pow => jit_pow_f64 as *const u8,
+            HelperKind::SinF64 => jit_sin_f64 as *const u8,
+            HelperKind::CosF64 => jit_cos_f64 as *const u8,
+            HelperKind::TanF64 => jit_tan_f64 as *const u8,
+            HelperKind::LogF64 => jit_log_f64 as *const u8,
+            HelperKind::Log2F64 => jit_log2_f64 as *const u8,
+            HelperKind::ExpF64 => jit_exp_f64 as *const u8,
         }
     }
 
@@ -490,10 +536,16 @@ impl HelperKind {
             HelperKind::WithAllocatorPush => (vec![types::I64], None),
             HelperKind::WithAllocatorPop => (Vec::new(), None),
             HelperKind::Pow => (vec![types::F64, types::F64], Some(types::F64)),
+            HelperKind::SinF64
+            | HelperKind::CosF64
+            | HelperKind::TanF64
+            | HelperKind::LogF64
+            | HelperKind::Log2F64
+            | HelperKind::ExpF64 => (vec![types::F64], Some(types::F64)),
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 30] = [
+    pub(crate) const ALL: [HelperKind; 36] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -524,6 +576,12 @@ impl HelperKind {
         HelperKind::WithAllocatorPush,
         HelperKind::WithAllocatorPop,
         HelperKind::Pow,
+        HelperKind::SinF64,
+        HelperKind::CosF64,
+        HelperKind::TanF64,
+        HelperKind::LogF64,
+        HelperKind::Log2F64,
+        HelperKind::ExpF64,
     ];
 }
 

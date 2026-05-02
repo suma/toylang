@@ -760,6 +760,54 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Float64(b.powf(e)).into()))
             }
 
+            // f64 transcendentals + rounding. All take a single
+            // f64 argument and return f64. Uses the same shape so
+            // a single arm dispatches via a closure on the operand.
+            BuiltinFunction::Sin
+            | BuiltinFunction::Cos
+            | BuiltinFunction::Tan
+            | BuiltinFunction::Log
+            | BuiltinFunction::Log2
+            | BuiltinFunction::Exp
+            | BuiltinFunction::Floor
+            | BuiltinFunction::Ceil => {
+                let name = match func {
+                    BuiltinFunction::Sin => "sin",
+                    BuiltinFunction::Cos => "cos",
+                    BuiltinFunction::Tan => "tan",
+                    BuiltinFunction::Log => "log",
+                    BuiltinFunction::Log2 => "log2",
+                    BuiltinFunction::Exp => "exp",
+                    BuiltinFunction::Floor => "floor",
+                    BuiltinFunction::Ceil => "ceil",
+                    _ => unreachable!(),
+                };
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: format!("{name} takes 1 argument"),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let v = self.evaluate(&args[0])?;
+                let v = try_value!(Ok(v));
+                let x = v.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError(format!("{name} expects an f64 argument"))
+                })?;
+                let result = match func {
+                    BuiltinFunction::Sin => x.sin(),
+                    BuiltinFunction::Cos => x.cos(),
+                    BuiltinFunction::Tan => x.tan(),
+                    BuiltinFunction::Log => x.ln(),
+                    BuiltinFunction::Log2 => x.log2(),
+                    BuiltinFunction::Exp => x.exp(),
+                    BuiltinFunction::Floor => x.floor(),
+                    BuiltinFunction::Ceil => x.ceil(),
+                    _ => unreachable!(),
+                };
+                Ok(EvaluationResult::Value(Object::Float64(result).into()))
+            }
+
             BuiltinFunction::Min | BuiltinFunction::Max => {
                 if args.len() != 2 {
                     let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

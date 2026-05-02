@@ -376,6 +376,23 @@ fn math_f64_example_matches_between_modes() {
 }
 
 #[test]
+fn math_trig_demo_matches_between_modes() {
+    // sin / cos / tan / log / log2 / exp / floor / ceil through
+    // the math module wrappers. The transcendentals route through
+    // libm shim helpers in the JIT (`jit_sin_f64` etc.); floor /
+    // ceil use cranelift's native instructions.
+    assert_match("example/math_trig_demo.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn math_trig_demo_compiles_callees() {
+    let r = run("example/math_trig_demo.t", true, true);
+    assert_eq!(r.code, 13);
+    assert!(r.stderr.contains("main"), "stderr: {}", r.stderr);
+}
+
+#[test]
 fn fabs_demo_matches_between_modes() {
     // f64.abs() (= C's fabs). The JIT will silently fall back to
     // the interpreter for the method form (method dispatch on

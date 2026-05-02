@@ -671,6 +671,19 @@ pub enum UnaryOp {
     /// IEEE 754 square root for `f64`. Lowers to cranelift's `sqrt`
     /// instruction (`fsqrt` on most ISAs).
     Sqrt,
+    /// f64 floor / ceiling. Both lower to cranelift's native
+    /// `floor` / `ceil` instructions (round toward -∞ / +∞).
+    Floor,
+    Ceil,
+    /// f64 transcendentals. cranelift has no native opcodes for
+    /// these; codegen emits a direct call into the matching libm
+    /// symbol (`sin` / `cos` / `tan` / `log` / `log2` / `exp`).
+    Sin,
+    Cos,
+    Tan,
+    Log,
+    Log2,
+    Exp,
 }
 
 #[derive(Debug, Clone)]
@@ -820,6 +833,14 @@ impl fmt::Display for UnaryOp {
             UnaryOp::LogicalNot => "lnot",
             UnaryOp::Abs => "abs",
             UnaryOp::Sqrt => "sqrt",
+            UnaryOp::Floor => "floor",
+            UnaryOp::Ceil => "ceil",
+            UnaryOp::Sin => "sin",
+            UnaryOp::Cos => "cos",
+            UnaryOp::Tan => "tan",
+            UnaryOp::Log => "log",
+            UnaryOp::Log2 => "log2",
+            UnaryOp::Exp => "exp",
         })
     }
 }

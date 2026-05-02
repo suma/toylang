@@ -2427,6 +2427,51 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::F64)
                 }
+                BuiltinFunction::Sin
+                | BuiltinFunction::Cos
+                | BuiltinFunction::Tan
+                | BuiltinFunction::Log
+                | BuiltinFunction::Log2
+                | BuiltinFunction::Exp
+                | BuiltinFunction::Floor
+                | BuiltinFunction::Ceil => {
+                    let name = match func {
+                        BuiltinFunction::Sin => "sin",
+                        BuiltinFunction::Cos => "cos",
+                        BuiltinFunction::Tan => "tan",
+                        BuiltinFunction::Log => "log",
+                        BuiltinFunction::Log2 => "log2",
+                        BuiltinFunction::Exp => "exp",
+                        BuiltinFunction::Floor => "floor",
+                        BuiltinFunction::Ceil => "ceil",
+                        _ => unreachable!(),
+                    };
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!("{name} expects 1 argument, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    let t = check_expr(
+                        program,
+                        &args[0],
+                        locals,
+                        struct_locals,
+                        tuple_locals,
+                        substitutions,
+                        struct_layouts,
+                        callees,
+                        ptr_read_hints,
+                        reject_reason,
+                    )?;
+                    if t != ScalarTy::F64 {
+                        note(reject_reason, || {
+                            format!("{name} expects an f64 argument")
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::F64)
+                }
                 BuiltinFunction::Min | BuiltinFunction::Max => {
                     if args.len() != 2 {
                         let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

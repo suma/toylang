@@ -283,6 +283,58 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Float64],
                 return_type: TypeDecl::Float64,
             },
+            // f64 transcendentals + rounding. All take a single
+            // f64 argument and return f64. visit_builtin_call has a
+            // shared `Sin..=Ceil` arm that enforces the arity /
+            // type contract uniformly.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Sin,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Cos,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Tan,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Log,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Log2,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Exp,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Floor,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::Ceil,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Float64],
+                return_type: TypeDecl::Float64,
+            },
         ]
     }
 

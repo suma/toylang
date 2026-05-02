@@ -229,6 +229,20 @@ pub enum BuiltinFunction {
     // IEEE 754 — `sqrt(-1f64)` returns NaN rather than panicking.
     Pow,
     Sqrt,
+
+    // Additional f64 transcendentals / rounding. All follow Rust /
+    // C99 / IEEE 754 semantics. The rounding ops (`floor`, `ceil`)
+    // lower to cranelift's native instructions on every supported
+    // ISA; the transcendentals dispatch through libm in the AOT
+    // path and a Rust shim in the JIT.
+    Sin,    // f64 -> f64
+    Cos,    // f64 -> f64
+    Tan,    // f64 -> f64
+    Log,    // f64 -> f64 — natural log (ln)
+    Log2,   // f64 -> f64 — base-2 log
+    Exp,    // f64 -> f64 — e^x
+    Floor,  // f64 -> f64
+    Ceil,   // f64 -> f64
 }
 
 #[derive(Debug, Clone)]
@@ -273,6 +287,16 @@ pub struct BuiltinFunctionSymbols {
     // f64 math (user-facing names).
     pub pow: DefaultSymbol,
     pub sqrt: DefaultSymbol,
+
+    // Additional f64 math intrinsics.
+    pub sin: DefaultSymbol,
+    pub cos: DefaultSymbol,
+    pub tan: DefaultSymbol,
+    pub log: DefaultSymbol,
+    pub log2: DefaultSymbol,
+    pub exp: DefaultSymbol,
+    pub floor: DefaultSymbol,
+    pub ceil: DefaultSymbol,
 }
 
 impl BuiltinFunctionSymbols {
@@ -310,6 +334,14 @@ impl BuiltinFunctionSymbols {
             max: interner.get_or_intern("__builtin_max"),
             pow: interner.get_or_intern("__builtin_pow_f64"),
             sqrt: interner.get_or_intern("__builtin_sqrt"),
+            sin: interner.get_or_intern("__builtin_sin_f64"),
+            cos: interner.get_or_intern("__builtin_cos_f64"),
+            tan: interner.get_or_intern("__builtin_tan_f64"),
+            log: interner.get_or_intern("__builtin_log_f64"),
+            log2: interner.get_or_intern("__builtin_log2_f64"),
+            exp: interner.get_or_intern("__builtin_exp_f64"),
+            floor: interner.get_or_intern("__builtin_floor_f64"),
+            ceil: interner.get_or_intern("__builtin_ceil_f64"),
         }
     }
 
@@ -337,6 +369,14 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.max { Some(BuiltinFunction::Max) }
         else if symbol == self.pow { Some(BuiltinFunction::Pow) }
         else if symbol == self.sqrt { Some(BuiltinFunction::Sqrt) }
+        else if symbol == self.sin { Some(BuiltinFunction::Sin) }
+        else if symbol == self.cos { Some(BuiltinFunction::Cos) }
+        else if symbol == self.tan { Some(BuiltinFunction::Tan) }
+        else if symbol == self.log { Some(BuiltinFunction::Log) }
+        else if symbol == self.log2 { Some(BuiltinFunction::Log2) }
+        else if symbol == self.exp { Some(BuiltinFunction::Exp) }
+        else if symbol == self.floor { Some(BuiltinFunction::Floor) }
+        else if symbol == self.ceil { Some(BuiltinFunction::Ceil) }
         else { None }
     }
 }

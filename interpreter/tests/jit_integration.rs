@@ -158,6 +158,26 @@ fn extern_generic_identity_runs_via_interpreter_registry() {
     assert_eq!(jit.code, 10, "jit-mode exit code mismatch; stderr: {}", jit.stderr);
 }
 
+#[cfg(feature = "jit")]
+#[test]
+fn jit_skip_reason_for_enum_constructor() {
+    // JIT enum-value support (`ParamTy::Enum`, tag dispatch, match
+    // codegen) isn't yet implemented — the interpreter handles
+    // anything enum-touching via fallback. The verbose JIT log
+    // should call out enum values specifically rather than the
+    // generic "associated function call" message so users grep
+    // for the right thing. Pairs with the
+    // `stdlib_option_methods_run_end_to_end` test below which
+    // verifies the fallback itself produces the correct result.
+    let r = run("example/stdlib_option.t", true, true);
+    assert_eq!(r.code, 152, "fallback exit code; stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT: skipped") && r.stderr.contains("enum values"),
+        "expected enum-specific skip reason; stderr: {}",
+        r.stderr
+    );
+}
+
 #[test]
 fn stdlib_option_methods_run_end_to_end() {
     // #96: core/std/option.t auto-loaded. is_some / is_none /

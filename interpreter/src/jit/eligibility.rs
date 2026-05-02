@@ -1572,6 +1572,24 @@ fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
     found
 }
 
+/// Returns true if `name` matches any top-level `enum` declaration
+/// in the program. Used by the AssociatedFunctionCall reject path so
+/// it can distinguish enum constructors (`Option::Some(...)`) from
+/// other unsupported associated calls and report a precise reason.
+fn enum_decl_lookup_by_name(
+    program: &Program,
+    name: DefaultSymbol,
+) -> Option<()> {
+    for i in 0..program.statement.len() {
+        if let Some(Stmt::EnumDecl { name: n, .. }) = program.statement.get(&StmtRef(i as u32)) {
+            if n == name {
+                return Some(());
+            }
+        }
+    }
+    None
+}
+
 fn walk_stmt_for_ptr_read(program: &Program, stmt_ref: &StmtRef, found: &mut bool) {
     if *found {
         return;
@@ -2202,8 +2220,24 @@ pub(crate) fn check_expr(
             if struct_layouts.contains_key(&struct_name)
                 || !program.function.iter().any(|f| f.name == function_name)
             {
+                // Differentiate the common "enum constructor" case
+                // (`Option::Some(...)`, `Result::Err(...)`, etc.)
+                // from the generic struct-associated-function reject
+                // so the verbose JIT log points at the actual blocker.
+                // Enum values aren't represented in the JIT yet —
+                // adding them would mean a `ParamTy::Enum`,
+                // `enum_locals` map, tag-dispatch codegen, etc.
+                // (essentially the AOT compiler's enum phases). The
+                // interpreter handles the call correctly via
+                // fallback; this just makes the reason precise.
+                let is_enum_qualifier = enum_decl_lookup_by_name(program, struct_name).is_some();
                 note(reject_reason, || {
-                    "uses unsupported expression associated function call".to_string()
+                    if is_enum_qualifier {
+                        "JIT does not yet model enum values (constructors / match / methods)"
+                            .to_string()
+                    } else {
+                        "uses unsupported expression associated function call".to_string()
+                    }
                 });
                 return None;
             }

@@ -839,7 +839,10 @@ pub(crate) fn resolve_param_ty(
         }
         TypeDecl::Tuple(elements) => {
             // Tuples are scalar-only at the JIT layer; any non-scalar
-            // element means we silently fall back.
+            // element (a nested tuple `((a,b),c)` or a struct element
+            // `(Point, i64)`) drops us back to the interpreter. todo
+            // #160 tracks lifting this by extending `ParamTy::Tuple`
+            // to a tree of element shapes — large enough to defer.
             let mut scalars: Vec<ScalarTy> = Vec::with_capacity(elements.len());
             for e in elements {
                 let s = substitute_to_scalar(e, substitutions)?;

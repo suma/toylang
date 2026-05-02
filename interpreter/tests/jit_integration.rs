@@ -105,6 +105,46 @@ fn extension_trait_primitive_method_jit_matches_interpreter() {
 }
 
 #[test]
+fn jit_generic_struct_falls_back_cleanly() {
+    // #159 last remaining sub-item: generic struct / method JIT
+    // support. Eligibility rejects generic struct types because
+    // `struct_layouts` is not yet parameterised by type args. This
+    // test confirms the interpreter handles the program and the
+    // JIT-mode fallback produces the same exit code (42) so any
+    // future work that breaks the fallback is caught.
+    assert_match("example/jit_generic_struct_fallback.t");
+    let r = run("example/jit_generic_struct_fallback.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[test]
+fn jit_nested_tuple_falls_back_cleanly() {
+    // #160: nested-tuple `((i64, i64), i64)` parameter shape is not
+    // yet JIT-compatible (would need ParamTy::Tuple to become a tree
+    // of element shapes). Verify the interpreter and the JIT-mode
+    // fallback both produce the same result.
+    assert_match("example/jit_nested_tuple_fallback.t");
+    let r = run("example/jit_nested_tuple_fallback.t", false, false);
+    assert_eq!(r.code, 6, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_nested_tuple_skip_reason_visible() {
+    // Confirm the JIT verbose log explains the fallback rather than
+    // silently dropping the function. The exact wording may evolve;
+    // checking for "skipped" + "tuple" keeps the test robust to
+    // small phrasings.
+    let r = run("example/jit_nested_tuple_fallback.t", true, true);
+    assert_eq!(r.code, 6, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT: skipped") && r.stderr.contains("tuple"),
+        "expected fallback reason mentioning a tuple, stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn extern_generic_identity_runs_via_interpreter_registry() {
     // #195: `extern fn name<T>(x: T) -> T` parses and the interpreter
     // dispatches the call through the type-erased extern_registry by

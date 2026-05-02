@@ -403,10 +403,34 @@ impl<'a> FunctionLower<'a> {
                     Some(result_ty),
                 ))
             }
-            other => Err(format!(
-                "compiler MVP cannot lower builtin yet: {:?}",
-                other
-            )),
+            other => {
+                use frontend::ast::BuiltinFunction;
+                // Allocator system builtins (todo #121) need IR-level
+                // `AllocatorBinding` plus native codegen for the
+                // active-allocator stack and the heap-alloc family.
+                // Surface a precise message so users know it's tracked
+                // and not a generic "not implemented".
+                let msg = match other {
+                    BuiltinFunction::ArenaAllocator
+                    | BuiltinFunction::FixedBufferAllocator
+                    | BuiltinFunction::CurrentAllocator
+                    | BuiltinFunction::DefaultAllocator
+                    | BuiltinFunction::HeapAlloc
+                    | BuiltinFunction::HeapRealloc
+                    | BuiltinFunction::HeapFree
+                    | BuiltinFunction::PtrRead
+                    | BuiltinFunction::PtrWrite => format!(
+                        "compiler MVP cannot lower allocator builtin {:?} yet \
+                         (todo #121: needs IR-level AllocatorBinding + native codegen)",
+                        other
+                    ),
+                    _ => format!(
+                        "compiler MVP cannot lower builtin yet: {:?}",
+                        other
+                    ),
+                };
+                Err(msg)
+            }
         }
     }
 

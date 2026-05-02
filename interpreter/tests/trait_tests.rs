@@ -97,6 +97,46 @@ mod basic {
     }
 
     #[test]
+    fn test_extension_trait_method_dispatch_on_primitive() {
+        // Step B of the extension-trait work: a user `impl Trait for
+        // <PrimitiveType>` method is callable through the regular
+        // `receiver.method(args)` syntax. The interpreter resolves
+        // the canonical primitive name (`"i64"` / `"f64"`) to a
+        // symbol and looks it up in the same `method_registry` as
+        // struct methods. Both i64 and f64 sides exercise `Self`
+        // resolution + chained calls.
+        let source = r#"
+            trait Negate {
+                fn neg(self: Self) -> Self
+            }
+            impl Negate for i64 {
+                fn neg(self: Self) -> Self {
+                    0i64 - self
+                }
+            }
+            impl Negate for f64 {
+                fn neg(self: Self) -> Self {
+                    0f64 - self
+                }
+            }
+            fn main() -> u64 {
+                val a: i64 = 7i64
+                val c: i64 = a.neg().neg()       # 7
+                val x: f64 = 3.5f64
+                val y: f64 = x.neg().neg()       # 3.5
+                (c + (y as i64) + 5i64) as u64    # 7 + 3 + 5 = 15
+            }
+        "#;
+        let result = test_program(source);
+        assert!(
+            result.is_ok(),
+            "extension-trait method dispatch on primitive should run: {:?}",
+            result.err()
+        );
+        assert_eq!(result.unwrap().borrow().unwrap_uint64(), 15);
+    }
+
+    #[test]
     fn test_extension_trait_parses_for_primitive_target() {
         // Step A of the extension-trait work: `impl Trait for i64`
         // / `impl Trait for f64` etc. parse + type-check. The body

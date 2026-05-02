@@ -67,6 +67,28 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// `impl Trait for i64 { ... }` block can resolve `Self`
     /// inside its method bodies to `TypeDecl::Int64` instead of
     /// `TypeDecl::Struct(sym_for_i64, _)`.
+    /// Inverse of `primitive_type_decl_from_symbol`: map a primitive
+    /// `TypeDecl` back to the canonical-name symbol used as an
+    /// `impl Trait for <PrimitiveType>` target. Returns `None` for
+    /// non-primitive type decls and for primitives whose canonical
+    /// name has never been interned (no impl block targeted that
+    /// type — extension-trait dispatch can short-circuit).
+    pub fn primitive_target_symbol_from_type(
+        &self,
+        ty: &TypeDecl,
+    ) -> Option<DefaultSymbol> {
+        let name = match ty {
+            TypeDecl::Bool => "bool",
+            TypeDecl::Int64 => "i64",
+            TypeDecl::UInt64 => "u64",
+            TypeDecl::Float64 => "f64",
+            TypeDecl::String => "str",
+            TypeDecl::Ptr => "ptr",
+            _ => return None,
+        };
+        self.core.string_interner.get(name)
+    }
+
     pub fn primitive_type_decl_from_symbol(&self, symbol: DefaultSymbol) -> Option<TypeDecl> {
         Some(match self.core.string_interner.resolve(symbol)? {
             "bool" => TypeDecl::Bool,

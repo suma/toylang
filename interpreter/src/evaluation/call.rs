@@ -3,12 +3,38 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
 use frontend::type_decl::TypeDecl;
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::object::{Object, RcObject};
 use crate::error::InterpreterError;
 use crate::try_value;
 use super::{EnumRegistryEntry, EnumRegistryVariant, EvaluationContext, EvaluationResult, StructRegistryEntry};
 use std::collections::HashMap as HashMapStd;
+
+/// Map a runtime value to the canonical-name `DefaultSymbol` the
+/// extension-trait machinery uses as an impl target. Returns `None`
+/// for non-primitive values (struct / enum / heap composite) — those
+/// reach `evaluate_method_call`'s existing per-variant arms.
+///
+/// The interner lookup is `get` rather than `get_or_intern`: if a
+/// program never wrote `impl Foo for i64 { ... }`, the canonical name
+/// `"i64"` was never interned, so there is no symbol and no registry
+/// entry to find. Falling back to `None` keeps the dispatch cost a
+/// single hashmap probe per primitive method call.
+fn primitive_target_symbol(
+    obj: &Object,
+    interner: &DefaultStringInterner,
+) -> Option<DefaultSymbol> {
+    let name = match obj {
+        Object::Bool(_) => "bool",
+        Object::Int64(_) => "i64",
+        Object::UInt64(_) => "u64",
+        Object::Float64(_) => "f64",
+        Object::ConstString(_) | Object::String(_) => "str",
+        Object::Pointer(_) => "ptr",
+        _ => return None,
+    };
+    interner.get(name)
+}
 
 /// Walk the struct field type-decls looking for `Generic(P)`
 /// occurrences and bind each generic parameter to the runtime
@@ -398,6 +424,31 @@ impl EvaluationContext<'_> {
             }
             let is_null = obj_borrowed.is_null();
             return Ok(EvaluationResult::Value((Object::Bool(is_null)).into()));
+        }
+
+        // Step B of extension-trait support: dispatch through the
+        // user-registered method registry first when the receiver is
+        // a primitive. Mirrors what `Object::Struct { type_name, .. }`
+        // already does — looks `(target_symbol, method_name)` up in
+        // `method_registry` and, on hit, evaluates args and calls the
+        // method body with `self` as the first parameter.
+        //
+        // This runs *before* the hardcoded `Object::Int64`/`Float64`
+        // arms below, so a user `impl Foo for i64 { fn abs(self) -> i64 { ... } }`
+        // takes precedence over the legacy `BuiltinMethod::I64Abs`
+        // path. Steps E + F migrate the legacy methods onto extension
+        // traits and remove the hardcoded arms entirely.
+        if let Some(target_sym) = primitive_target_symbol(&obj_borrowed, self.string_interner) {
+            if let Some(method_func) = self.get_method(target_sym, *method) {
+                drop(obj_borrowed);
+                let mut arg_values = Vec::new();
+                for arg in args {
+                    let arg_val = self.evaluate(arg)?;
+                    let arg_val = try_value!(Ok(arg_val));
+                    arg_values.push(arg_val);
+                }
+                return self.call_method(method_func, obj_val, arg_values);
+            }
         }
 
         match &*obj_borrowed {

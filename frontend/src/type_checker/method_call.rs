@@ -116,6 +116,37 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_method_call_on_type(&mut self, obj_type: &TypeDecl, method: &DefaultSymbol, args: &Vec<ExprRef>, _arg_types: &[TypeDecl]) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.resolve_symbol_name(*method);
 
+        // Step B of extension-trait support: dispatch primitive
+        // receivers through the user-registered `struct_methods`
+        // table first. The impl-block type-checker registered each
+        // `impl Trait for <PrimitiveType>` method under the canonical
+        // primitive symbol (`"i64"`, `"f64"`, …); a method call on a
+        // primitive value can therefore look the body up by symbol
+        // before falling back to the legacy hardcoded `BuiltinMethod`
+        // arms below. `Self` in the return type resolves back to the
+        // receiver's primitive `TypeDecl`.
+        if let Some(target_sym) = self.primitive_target_symbol_from_type(obj_type) {
+            if let Some(method_func) =
+                self.context.get_struct_method(target_sym, *method).cloned()
+            {
+                // Visit the args so each one is type-checked even
+                // when the callee's parameters are concrete (no
+                // generics to bind on primitives in this iteration).
+                for arg_ref in args {
+                    let _ = self.visit_expr(arg_ref)?;
+                }
+                let return_type = method_func
+                    .return_type
+                    .clone()
+                    .unwrap_or(TypeDecl::Unit);
+                let resolved = match return_type {
+                    TypeDecl::Self_ => obj_type.clone(),
+                    other => other,
+                };
+                return Ok(resolved);
+            }
+        }
+
         // Method call on a trait-bounded generic parameter, e.g. inside
         // `fn f<T: MyTrait>(x: T) { x.foo() }`. Resolve `foo` through the
         // trait's method signature table; `Self` in the return type is

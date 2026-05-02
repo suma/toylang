@@ -158,21 +158,31 @@ fn extern_generic_identity_runs_via_interpreter_registry() {
     assert_eq!(jit.code, 10, "jit-mode exit code mismatch; stderr: {}", jit.stderr);
 }
 
+#[test]
+fn jit_unit_enum_constructor_and_match_compile() {
+    // Phase JE-1b: non-generic, unit-variant-only enum compiles
+    // through the JIT — `Color::Red` becomes `iconst U64` of the
+    // variant tag and `match c { ... }` becomes a brif chain
+    // across per-variant blocks. interpreter and JIT must agree
+    // on exit 1 (Color::Red branch).
+    assert_match("example/jit_unit_enum_pending.t");
+    let r = run("example/jit_unit_enum_pending.t", false, false);
+    assert_eq!(r.code, 1, "interpreter exit; stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
-fn jit_skip_reason_for_unit_enum_pending_codegen() {
-    // Phase JE-1a: a non-generic, unit-variant-only enum has its
-    // layout in the JIT's `enum_layouts` thread-local, but
-    // constructor + match codegen isn't wired yet (deferred to
-    // JE-1b). The skip log must say "JIT enum support pending"
-    // (with the JE-1b breadcrumb) rather than the generic
-    // "qualified identifier" / "match expression" catch-all.
+fn jit_unit_enum_actually_compiles_pick() {
+    // Confirm the JIT actually compiles `pick` (the function
+    // touching the enum) rather than silently falling back. The
+    // verbose log must mention `JIT compiled: pick` — Phase JE-1a
+    // emitted "JIT enum support pending"; JE-1b removes that and
+    // the function reaches the JIT instead.
     let r = run("example/jit_unit_enum_pending.t", true, true);
-    assert_eq!(r.code, 1, "interpreter fallback exit; stderr: {}", r.stderr);
+    assert_eq!(r.code, 1, "stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("JIT: skipped")
-            && r.stderr.contains("JIT enum support pending"),
-        "expected JE-1b-pending diagnostic; stderr: {}",
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("pick"),
+        "expected JE-1b to compile `pick`; stderr: {}",
         r.stderr
     );
 }

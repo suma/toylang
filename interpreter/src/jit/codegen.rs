@@ -8,7 +8,7 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Pattern, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultSymbol, Symbol};
 
@@ -1102,6 +1102,112 @@ impl<'a, 'b> State<'a, 'b> {
                 } else {
                     Ok(Some(results[0]))
                 }
+            }
+            // Phase JE-1b: unit-variant constructor (`Color::Red`).
+            // Eligibility verified the path is `[enum_name,
+            // variant_name]` and that the enum is in `enum_layouts`
+            // with `variant_name` resolving to a tag. Just emit the
+            // tag as a U64 constant; the enum value's runtime
+            // representation IS its tag (no payload to allocate).
+            Expr::QualifiedIdentifier(path) if path.len() == 2 => {
+                if let Some(layout) = super::eligibility::enum_layout_for_codegen(path[0]) {
+                    if let Some(tag) = layout.variant_tag(path[1]) {
+                        return Ok(Some(self.builder.ins().iconst(types::I64, tag as i64)));
+                    }
+                }
+                Err(format!(
+                    "unsupported qualified identifier in JIT codegen: {:?}",
+                    path
+                ))
+            }
+            // Phase JE-1b: `match scrutinee { ... }`. Lower as a
+            // brif chain across per-arm blocks, terminating in a
+            // common `cont` block whose block-param carries the
+            // unified result. Pattern shapes accepted here are
+            // those `check_match_pattern` allowed: wildcard,
+            // scalar literal, or a unit-enum variant (which
+            // compares the scrutinee's u64 tag to the variant's
+            // index).
+            Expr::Match(scrutinee, arms) => {
+                let scrut_ty = self.expr_type(&scrutinee)?;
+                let scrut_v = self
+                    .gen_expr(&scrutinee)?
+                    .ok_or_else(|| "match scrutinee produced no value".to_string())?;
+                // Result type: take the first arm's body. Eligibility
+                // already verified all arms agree.
+                let result_ty = self.expr_type(&arms[0].body)?;
+                let cont = self.builder.create_block();
+                let result_param = match ir_type(result_ty) {
+                    Some(t) => Some(self.builder.append_block_param(cont, t)),
+                    None => None,
+                };
+                for arm in &arms {
+                    let arm_blk = self.builder.create_block();
+                    let next_blk = self.builder.create_block();
+                    // Compute the cmp value for this arm. Wildcard
+                    // is unconditional jump; literal / variant emit
+                    // an `icmp eq scrut, pattern_value` then brif.
+                    match &arm.pattern {
+                        Pattern::Wildcard => {
+                            // Drop the next_blk (unreachable) by
+                            // jumping straight to arm_blk.
+                            self.jump(arm_blk);
+                        }
+                        Pattern::Literal(lit_ref) => {
+                            let lit_v = self
+                                .gen_expr(lit_ref)?
+                                .ok_or_else(|| "match literal produced no value".to_string())?;
+                            let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
+                            self.brif(cmp, arm_blk, next_blk);
+                        }
+                        Pattern::EnumVariant(enum_sym, variant_sym, _sub_pats) => {
+                            let layout = super::eligibility::enum_layout_for_codegen(*enum_sym)
+                                .ok_or_else(|| "match variant: enum layout missing in JIT".to_string())?;
+                            let tag = layout
+                                .variant_tag(*variant_sym)
+                                .ok_or_else(|| "match variant: variant tag missing in JIT".to_string())?;
+                            let tag_v = self.builder.ins().iconst(types::I64, tag as i64);
+                            let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, tag_v);
+                            self.brif(cmp, arm_blk, next_blk);
+                        }
+                        _ => {
+                            return Err("unsupported match pattern in JIT codegen".to_string());
+                        }
+                    }
+
+                    // Emit the arm body in `arm_blk`, terminating
+                    // with a jump_with(cont, [body_value]).
+                    self.switch_to(arm_blk);
+                    let body_v = self.gen_expr(&arm.body)?;
+                    if !self.terminated {
+                        match (result_param.is_some(), body_v) {
+                            (true, Some(v)) => self.jump_with(cont, &[v]),
+                            (false, _) => self.jump(cont),
+                            (true, None) => return Err("match arm missing required value".into()),
+                        }
+                    }
+
+                    // Continue building in `next_blk` for the
+                    // following arm's comparison.
+                    self.switch_to(next_blk);
+                    // Suppress the scrut-ty unused warning for arms
+                    // that don't reference it.
+                    let _ = scrut_ty;
+                }
+
+                // Reaching here means none of the patterns matched
+                // (eligibility couldn't enforce exhaustiveness for
+                // arbitrary literal / variant subsets). Trap so the
+                // failure is loud rather than silent.
+                self.builder.ins().trap(TrapCode::user(1).expect("non-zero trap"));
+                self.terminated = true;
+
+                // Continue lowering subsequent expressions in the
+                // cont block. The block param (if any) carries the
+                // unified arm result; reach for it via `block_params`.
+                self.switch_to(cont);
+                self.terminated = false;
+                Ok(result_param.map(|_| self.builder.block_params(cont)[0]))
             }
             _ => Err("unsupported expression in JIT codegen".to_string()),
         }

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, MethodFunction, Operator, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Function, MethodFunction, Operator, Pattern, Program, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -178,6 +178,28 @@ fn install_enum_layouts(layouts: &HashMap<DefaultSymbol, EnumLayout>) {
 /// `collect_enum_layouts` (generic, has tuple variants, etc.).
 fn enum_layout_for(name: DefaultSymbol) -> Option<EnumLayout> {
     ENUM_LAYOUTS.with(|cell| cell.borrow().get(&name).cloned())
+}
+
+/// `enum_layout_for` re-exported for the codegen sibling module.
+/// Same thread-local lookup; the rename underscores that codegen
+/// reads — never writes — the layout map.
+pub(crate) fn enum_layout_for_codegen(name: DefaultSymbol) -> Option<EnumLayout> {
+    enum_layout_for(name)
+}
+
+/// Phase JE-1b: when a `val` / `var` annotation refers to a
+/// JIT-eligible enum, return `ScalarTy::U64` (the tag is the entire
+/// representation for unit-only enums). The parser emits enum
+/// annotations as `TypeDecl::Identifier(name)`; we look the name up
+/// in `enum_layouts` and accept any hit. Anything else falls back
+/// to `None` so the existing reject path runs.
+fn scalar_ty_for_enum_decl(td: &TypeDecl) -> Option<ScalarTy> {
+    let name = match td {
+        TypeDecl::Identifier(s) => *s,
+        TypeDecl::Enum(s, args) if args.is_empty() => *s,
+        _ => return None,
+    };
+    enum_layout_for(name).map(|_| ScalarTy::U64)
 }
 
 /// Reverse lookup: when an impl-target symbol corresponds to a
@@ -1694,6 +1716,88 @@ fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
     found
 }
 
+/// Phase JE-1b: validate that a `Pattern` is supported by the JIT
+/// match codegen for the given scrutinee scalar type. Patterns
+/// reduce to one of:
+///   - `Wildcard` — accepted for any scrutinee type
+///   - `Literal(ExprRef)` — accepted when the literal's scalar type
+///     matches the scrutinee
+///   - `EnumVariant(enum, variant, [])` — accepted when the enum is
+///     in `enum_layouts`, the variant is unit, and the scrutinee is
+///     a U64 tag (the JIT representation of unit-only enums)
+/// Tuple patterns and named bindings (which require payload
+/// extraction) are rejected.
+fn check_match_pattern(
+    program: &Program,
+    pat: &Pattern,
+    scrut_ty: ScalarTy,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    match pat {
+        Pattern::Wildcard => true,
+        Pattern::Literal(eref) => {
+            let lit_ty = match program.expression.get(eref) {
+                Some(Expr::Int64(_)) => ScalarTy::I64,
+                Some(Expr::UInt64(_)) => ScalarTy::U64,
+                Some(Expr::True) | Some(Expr::False) => ScalarTy::Bool,
+                _ => {
+                    note(reject_reason, || {
+                        "JIT match: unsupported literal pattern shape".to_string()
+                    });
+                    return false;
+                }
+            };
+            if lit_ty != scrut_ty {
+                note(reject_reason, || {
+                    format!(
+                        "JIT match: literal pattern type {lit_ty:?} does not match scrutinee {scrut_ty:?}"
+                    )
+                });
+                return false;
+            }
+            true
+        }
+        Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
+            if !sub_pats.is_empty() {
+                note(reject_reason, || {
+                    "JIT match: enum variant with payload sub-patterns not yet supported (JE-2+)".to_string()
+                });
+                return false;
+            }
+            if scrut_ty != ScalarTy::U64 {
+                note(reject_reason, || {
+                    format!(
+                        "JIT match: enum variant pattern but scrutinee is {scrut_ty:?}, expected U64 tag"
+                    )
+                });
+                return false;
+            }
+            let layout = match enum_layout_for(*enum_sym) {
+                Some(l) => l,
+                None => {
+                    note(reject_reason, || {
+                        "JIT match: enum is not JIT-eligible (generic / has payloads)".to_string()
+                    });
+                    return false;
+                }
+            };
+            if layout.variant_tag(*variant_sym).is_none() {
+                note(reject_reason, || {
+                    "JIT match: variant not declared on this enum".to_string()
+                });
+                return false;
+            }
+            true
+        }
+        Pattern::Tuple(_) | Pattern::Name(_) => {
+            note(reject_reason, || {
+                "JIT match: tuple / name patterns not yet supported".to_string()
+            });
+            false
+        }
+    }
+}
+
 /// Returns true if `name` matches any top-level `enum` declaration
 /// in the program. Used by the AssociatedFunctionCall reject path so
 /// it can distinguish enum constructors (`Option::Some(...)`) from
@@ -1904,7 +2008,15 @@ fn check_stmt(
                 Some(TypeDecl::Unknown) | None => val_ty,
                 Some(td) => match ScalarTy::from_type_decl(&td) {
                     Some(t) => t,
-                    None => return false,
+                    None => match scalar_ty_for_enum_decl(&td) {
+                        // Phase JE-1b: a JIT-eligible enum
+                        // annotation (`val c: Color = ...`)
+                        // resolves to ScalarTy::U64 because the
+                        // enum's representation at the JIT layer
+                        // is just its tag.
+                        Some(t) => t,
+                        None => return false,
+                    },
                 },
             };
             if declared != val_ty {
@@ -2127,6 +2239,67 @@ pub(crate) fn check_expr(
         Expr::Float64(_) => Some(ScalarTy::F64),
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
+        // Phase JE-1b: unit-variant constructor (`Color::Red`).
+        // Reduce to `ScalarTy::U64` so the rest of eligibility +
+        // codegen treats the value as just the tag — that's the
+        // entire representation for unit variants. Generic enums
+        // and enums with payload variants miss the layout map and
+        // fall through to the catch-all reject.
+        Expr::QualifiedIdentifier(path)
+            if path.len() == 2
+                && enum_layout_for(path[0])
+                    .and_then(|l| l.variant_tag(path[1]))
+                    .is_some() =>
+        {
+            Some(ScalarTy::U64)
+        }
+        // Phase JE-1b: `match scrutinee { ... }` for scalar / unit-
+        // enum-tag scrutinees. Each arm's body must produce a
+        // value-typed result; all arms must agree on the result
+        // type. Variant patterns over a JIT-eligible enum reduce
+        // to a u64 tag comparison, just like the constructor
+        // returns the tag.
+        Expr::Match(scrutinee, arms) => {
+            let scrut_ty = check_expr(
+                program, &scrutinee, locals, struct_locals, tuple_locals,
+                substitutions, struct_layouts, callees, ptr_read_hints,
+                reject_reason,
+            )?;
+            // All arms unify to a single type. Walk each arm's
+            // pattern (rejecting unsupported shapes) and body.
+            let mut result_ty: Option<ScalarTy> = None;
+            for arm in &arms {
+                if !check_match_pattern(
+                    program, &arm.pattern, scrut_ty, reject_reason,
+                ) {
+                    return None;
+                }
+                if arm.guard.is_some() {
+                    note(reject_reason, || {
+                        "JIT match arm guards are not yet supported".to_string()
+                    });
+                    return None;
+                }
+                let body_ty = check_expr(
+                    program, &arm.body, locals, struct_locals, tuple_locals,
+                    substitutions, struct_layouts, callees, ptr_read_hints,
+                    reject_reason,
+                )?;
+                match result_ty {
+                    None => result_ty = Some(body_ty),
+                    Some(prev) if prev == body_ty => {}
+                    Some(prev) => {
+                        note(reject_reason, || {
+                            format!(
+                                "match arms disagree on result type: {prev:?} vs {body_ty:?}"
+                            )
+                        });
+                        return None;
+                    }
+                }
+            }
+            result_ty
+        }
         Expr::Binary(op, lhs, rhs) => {
             let lt = check_expr(program, &lhs, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let rt = check_expr(program, &rhs, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;

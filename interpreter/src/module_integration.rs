@@ -483,34 +483,84 @@ impl<'a> AstIntegrationContext<'a> {
 
 /// Load and integrate a module directly into the main program before
 /// TypeChecker creation. Looks for the module on disk under
-/// `modules/<name>/<name>.t`. Errors are returned as strings; the caller
-/// formats them into the project's standard diagnostic shape.
+/// Tries the following layouts under `modules/` (in order) until one
+/// resolves to a readable file:
+///
+/// 1. `modules/<a>/<b>/.../<last>.t`     — each segment is a
+///    directory except the last, which is the source file. This
+///    matches `import std.math` -> `modules/std/math.t`.
+/// 2. `modules/<a>/<b>/.../<last>/<last>.t` — `<last>` is also a
+///    directory whose entry-point file repeats the segment name.
+///    Matches the legacy single-segment layout (`import math` ->
+///    `modules/math/math.t`) and the multi-segment grandchild
+///    pattern (`import std.collections` ->
+///    `modules/std/collections/collections.t`).
+/// 3. `modules/<a>/<b>/.../<last>/mod.t` — Rust-style `mod.rs`
+///    convention for directory modules.
+///
+/// Errors are returned as strings; the caller formats them into the
+/// project's standard diagnostic shape.
 pub(crate) fn load_and_integrate_module(
     program: &mut Program,
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
 ) -> Result<(), String> {
-    // Simple module resolution: look for module files in modules/ directory
-    let module_name = import.module_path.first()
-        .and_then(|&symbol| string_interner.resolve(symbol))
-        .ok_or("Invalid module path")?;
-
-    // Construct module file path
-    let module_file = format!("modules/{}/{}.t", module_name, module_name);
-    eprintln!("Attempting to load module: {}", module_file);
-
-    // Try to read and parse the module file
-    match std::fs::read_to_string(&module_file) {
-        Ok(source) => {
-            eprintln!("Successfully read module file");
-
-            // Parse module and integrate into main program
-            integrate_module_into_program(&source, program, string_interner)?;
-
-            Ok(())
-        }
-        Err(err) => Err(format!("Failed to read module file {}: {}", module_file, err))
+    if import.module_path.is_empty() {
+        return Err("Invalid module path: empty".to_string());
     }
+    let segments: Vec<String> = import
+        .module_path
+        .iter()
+        .map(|sym| {
+            string_interner
+                .resolve(*sym)
+                .map(|s| s.to_string())
+                .ok_or_else(|| "Invalid module path: unresolvable symbol".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+
+    let candidates = candidate_module_paths(&segments);
+    let mut tried: Vec<String> = Vec::with_capacity(candidates.len());
+    for path in &candidates {
+        tried.push(path.clone());
+        if let Ok(source) = std::fs::read_to_string(path) {
+            return integrate_module_into_program(&source, program, string_interner);
+        }
+    }
+    Err(format!(
+        "Failed to read module file for `{}`: tried {}",
+        segments.join("."),
+        tried.join(", ")
+    ))
+}
+
+/// Build the candidate filesystem paths for `import a.b.c`. Order
+/// matters — earlier candidates win.
+fn candidate_module_paths(segments: &[String]) -> Vec<String> {
+    let prefix_dirs = &segments[..segments.len() - 1];
+    let last = segments.last().expect("non-empty segments");
+
+    let join_dirs = |extras: &[&str]| -> String {
+        let mut parts: Vec<&str> = vec!["modules"];
+        for s in prefix_dirs {
+            parts.push(s.as_str());
+        }
+        for s in extras {
+            parts.push(s);
+        }
+        parts.join("/")
+    };
+
+    vec![
+        // Strategy 1: `<last>.t` directly inside the prefix dir
+        // (matches `import std.math` -> `modules/std/math.t`).
+        format!("{}/{}.t", join_dirs(&[]), last),
+        // Strategy 2: `<last>/<last>.t` (legacy single-segment
+        // layout `import math` -> `modules/math/math.t`).
+        format!("{}/{}/{}.t", join_dirs(&[]), last, last),
+        // Strategy 3: `<last>/mod.t` (Rust-style mod.rs convention).
+        format!("{}/{}/mod.t", join_dirs(&[]), last),
+    ]
 }
 
 /// Integrate a module's source text into the main program by parsing it
@@ -522,40 +572,23 @@ pub fn integrate_module_into_program(
     main_program: &mut Program,
     main_string_interner: &mut DefaultStringInterner,
 ) -> Result<(), String> {
-    eprintln!("Starting AST-based module integration...");
-
-    // Parse the module with its own interner
+    // Parse the module with its own interner.
     let mut parser = frontend::ParserWithInterner::new(source);
-    let module_program = parser.parse_program()
+    let module_program = parser
+        .parse_program()
         .map_err(|e| format!("Parse error in module: {}", e))?;
-
-    // Get the module's string interner
     let module_string_interner = parser.get_string_interner();
 
-    eprintln!("Successfully parsed module: {} functions, {} expressions, {} statements",
-        module_program.function.len(),
-        module_program.expression.len(),
-        module_program.statement.len()
-    );
-
-    // Create AST integration context with both string interners
     let mut integration_context = AstIntegrationContext::new(
         main_program,
         &module_program,
         main_string_interner,
-        module_string_interner
+        module_string_interner,
     );
 
-    // Perform complete AST integration
     let integrated_functions = integration_context.integrate()?;
-
-    // Add integrated functions to main program
     for function in integrated_functions {
-        let func_name = main_string_interner.resolve(function.name).unwrap_or("<unknown>");
-        eprintln!("Successfully integrated function: {}", func_name);
         main_program.function.push(function);
     }
-
-    eprintln!("AST-based module integration completed successfully");
     Ok(())
 }

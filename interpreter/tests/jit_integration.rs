@@ -394,6 +394,23 @@ fn module_qualified_call_compiles_callees() {
     assert!(r.stderr.contains("add"), "stderr: {}", r.stderr);
 }
 
+#[test]
+fn module_multi_segment_path_matches_between_modes() {
+    // `import std.math` should resolve to `modules/std/math.t`. The
+    // alias derives from the last segment, so call sites still write
+    // `math::abs(x)`.
+    assert_match("example/math_std_demo.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn module_multi_segment_path_compiles_callees() {
+    let r = run("example/math_std_demo.t", true, true);
+    assert_eq!(r.code, 13);
+    assert!(r.stderr.contains("abs"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("sqrt"), "stderr: {}", r.stderr);
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn math_f64_example_compiles_callees() {

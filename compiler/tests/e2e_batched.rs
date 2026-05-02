@@ -83,6 +83,125 @@ fn rename_main(source: &str, idx: usize) -> String {
     source.replace("fn main", &format!("fn {new_name}"))
 }
 
+/// Parse a sub-test source through the frontend, walk every
+/// top-level `Stmt::StructDecl` / `Stmt::EnumDecl` /
+/// `Stmt::TraitDecl` / `Stmt::ImplBlock` / `Stmt::Function`
+/// (other than the special `main`), collect their declared
+/// names, and return a textually-mangled copy of the source
+/// where each collected name has the `__t<idx>__` prefix
+/// prepended at every occurrence. Sub-tests can therefore share
+/// declaration names (`Point`, `Color`, etc.) without colliding
+/// after concatenation.
+///
+/// Why textual substitution at the symbol-name level works for
+/// the toy language: identifiers are atomic tokens with no
+/// punctuation collisions, and the parser's interner means
+/// every reference site uses the same source spelling. Locating
+/// occurrences with `\b<name>\b`-style word-boundary matching
+/// (here: ASCII identifier-character boundary) is sound for the
+/// language's grammar — there are no string-literal-embedded
+/// type names the JIT / AOT pipeline cares about.
+fn mangle_sub_test(source: &str, idx: usize) -> Result<String, String> {
+    use frontend::ast::Stmt;
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let program = parser
+        .parse_program()
+        .map_err(|e| format!("mangler parse: {e:?}"))?;
+    let interner = parser.get_string_interner();
+
+    let mut decl_names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for i in 0..program.statement.len() {
+        let sref = frontend::ast::StmtRef(i as u32);
+        let stmt = match program.statement.get(&sref) {
+            Some(s) => s,
+            None => continue,
+        };
+        match &stmt {
+            Stmt::StructDecl { name, .. } | Stmt::EnumDecl { name, .. } | Stmt::TraitDecl { name, .. } => {
+                if let Some(n) = interner.resolve(*name) {
+                    decl_names.insert(n.to_string());
+                }
+            }
+            Stmt::ImplBlock { target_type, trait_name, .. } => {
+                if let Some(n) = interner.resolve(*target_type) {
+                    decl_names.insert(n.to_string());
+                }
+                if let Some(t) = trait_name {
+                    if let Some(n) = interner.resolve(*t) {
+                        decl_names.insert(n.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    // Top-level non-main fn names: collide if two sub-tests both
+    // define a helper `add(...)`. Walk `program.function` and
+    // mangle every entry except `main` (which `rename_main` already
+    // handles via `fn main → fn __t<i>_main`).
+    for f in &program.function {
+        if let Some(n) = interner.resolve(f.name) {
+            if n != "main" {
+                decl_names.insert(n.to_string());
+            }
+        }
+    }
+
+    let mut out = source.to_string();
+    let prefix = format!("__t{idx}__");
+    // Replace longest names first so a shorter prefix can't eat
+    // into a longer one (e.g., `Foo` before `FooBar` would
+    // mis-replace `FooBar` as `__t0__FooBar` instead of leaving
+    // it whole and prefixing only the standalone `Foo`).
+    let mut sorted: Vec<&String> = decl_names.iter().collect();
+    sorted.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    for name in sorted {
+        out = replace_word(&out, name, &format!("{prefix}{name}"));
+    }
+    Ok(out)
+}
+
+/// Replace every whole-word occurrence of `needle` in `haystack`
+/// with `replacement`. "Whole-word" means the surrounding chars
+/// (or buffer boundary) are not ASCII letter / digit / underscore
+/// — toy lang's identifier alphabet. Lets the mangler rename
+/// `Point` without touching `MyPoint` or `Pointer`.
+fn replace_word(haystack: &str, needle: &str, replacement: &str) -> String {
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + needle_bytes.len() <= bytes.len()
+            && &bytes[i..i + needle_bytes.len()] == needle_bytes
+        {
+            let before = if i == 0 { None } else { Some(bytes[i - 1]) };
+            let after = bytes.get(i + needle_bytes.len()).copied();
+            let is_id_char = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+            let bound_before = before.map_or(true, |c| !is_id_char(c));
+            let bound_after = after.map_or(true, |c| !is_id_char(c));
+            if bound_before && bound_after {
+                out.push_str(replacement);
+                i += needle_bytes.len();
+                continue;
+            }
+        }
+        // Not a match: append the next UTF-8 codepoint and move on.
+        // The toy lang source is ASCII in practice but be defensive.
+        let ch_start = i;
+        let ch_end = (1..=4)
+            .map(|n| ch_start + n)
+            .find(|&end| haystack.is_char_boundary(end))
+            .unwrap_or(ch_start + 1);
+        out.push_str(&haystack[ch_start..ch_end]);
+        i = ch_end;
+    }
+    out
+}
+
 /// Concatenate every sub-test's renamed source, then append a
 /// generated `fn main() -> u64` that calls each sub-test entry,
 /// compares to the expected value, and returns the index of the
@@ -94,7 +213,14 @@ fn build_batched_source(tests: &[SubTest]) -> String {
 
     for (i, t) in tests.iter().enumerate() {
         out.push_str(&format!("# subtest {} = {}\n", i + 1, t.name));
-        out.push_str(&rename_main(t.source, i));
+        // First mangle every top-level decl name with `__t<i>__`
+        // so two sub-tests can each define their own `Point` /
+        // `Color` / helper fn without colliding. `rename_main`
+        // then turns `fn main` into the per-sub-test entry point
+        // the meta-main below dispatches into.
+        let mangled = mangle_sub_test(t.source, i)
+            .unwrap_or_else(|err| panic!("subtest {} ({}) mangle failed: {err}", i, t.name));
+        out.push_str(&rename_main(&mangled, i));
         out.push('\n');
     }
 
@@ -213,6 +339,80 @@ fn batched_smoke_runs_ten_subtests_in_one_spawn() {
     let (code, compile_dur, run_dur) = compile_and_run_batched(tests);
     eprintln!(
         "batched e2e: {} sub-tests, compile {:?}, spawn+run {:?}",
+        tests.len(),
+        compile_dur,
+        run_dur
+    );
+    if code != 0 {
+        let failed = tests
+            .get((code - 1) as usize)
+            .map(|t| t.name)
+            .unwrap_or("<unknown>");
+        panic!(
+            "batched e2e: sub-test #{code} ({failed}) returned an unexpected value",
+        );
+    }
+}
+
+#[test]
+fn batched_with_struct_and_enum_decls() {
+    if skip_e2e() {
+        return;
+    }
+    // Sub-tests with their own top-level `struct` / `enum`
+    // declarations. The mangler renames each declared name with
+    // the per-sub-test prefix so two tests can both declare
+    // `Point` / `Color` etc. without colliding after concatenation.
+    let tests: &[SubTest] = &[
+        SubTest {
+            name: "struct_point_sum",
+            source: "struct Point { x: u64, y: u64 }\n\
+                     fn make() -> Point { Point { x: 3u64, y: 4u64 } }\n\
+                     fn main() -> u64 { val p = make()\n p.x + p.y }\n",
+            expected: 7,
+        },
+        SubTest {
+            name: "struct_point_product",
+            // Same `Point` name as above — would collide without
+            // the mangler.
+            source: "struct Point { x: u64, y: u64 }\n\
+                     fn main() -> u64 {\n    val p = Point { x: 5u64, y: 6u64 }\n    p.x * p.y\n}\n",
+            expected: 30,
+        },
+        SubTest {
+            name: "enum_color_red",
+            source: "enum Color { Red, Green, Blue }\n\
+                     fn main() -> u64 {\n    val c: Color = Color::Red\n    match c {\n        Color::Red => 1u64,\n        Color::Green => 2u64,\n        Color::Blue => 3u64,\n    }\n}\n",
+            expected: 1,
+        },
+        SubTest {
+            name: "enum_color_blue",
+            // Same `Color` name as above — mangler keeps them
+            // distinct.
+            source: "enum Color { Red, Green, Blue }\n\
+                     fn main() -> u64 {\n    val c: Color = Color::Blue\n    match c {\n        Color::Red => 10u64,\n        Color::Green => 20u64,\n        Color::Blue => 30u64,\n    }\n}\n",
+            expected: 30,
+        },
+        SubTest {
+            name: "helper_fn_named_add",
+            // Top-level helper fn named `add`. Two sub-tests below
+            // also declare `add` — the mangler keeps each test's
+            // version private.
+            source: "fn add(a: u64, b: u64) -> u64 { a + b }\n\
+                     fn main() -> u64 { add(7u64, 8u64) }\n",
+            expected: 15,
+        },
+        SubTest {
+            name: "helper_fn_named_add_doubled",
+            source: "fn add(a: u64, b: u64) -> u64 { (a + b) * 2u64 }\n\
+                     fn main() -> u64 { add(3u64, 4u64) }\n",
+            expected: 14,
+        },
+    ];
+
+    let (code, compile_dur, run_dur) = compile_and_run_batched(tests);
+    eprintln!(
+        "batched e2e (decls): {} sub-tests, compile {:?}, spawn+run {:?}",
         tests.len(),
         compile_dur,
         run_dur

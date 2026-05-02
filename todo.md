@@ -2,6 +2,32 @@
 
 ## 完了済み ✅
 
+192. **コア・モジュール auto-load** (`<repo>/core/` を起動時に再帰的にロード): 解決順は (1) CLI フラグ `--core-modules <DIR>` (2) 環境変数 `TOYLANG_CORE_MODULES` (空文字で opt-out) (3) 実行ファイル相対 `<exe>/core/` / `<exe>/../share/toylang/core/` / `<exe>/../../core/`。ファイルシステムの階層から module path を導出し (`core/std/math.t` → `["std", "math"]`)、auto-load された各モジュールに対して `enforce_namespace = false` の synthetic `ImportDecl` を `program.imports` に push、type-checker が module alias (last segment) を登録するので `math::sin(x)` が import 行なしで呼べる。ユーザの explicit `import` は path-dedup で no-op に。`load_and_integrate_module` も core dir を search root として受け取るよう拡張、legacy cwd-relative `modules/...` パスは fallback として残置。`module_integration::remap_expression` に `Expr::AssociatedFunctionCall` arm を追加 (auto-load した stdlib body が `math::abs(self)` を含むため)。stdlib は `core/std/math.t` (math 関数 + extern fn 宣言) / `core/std/i64.t` (Abs trait + i64 impl) / `core/std/f64.t` (Abs/Sqrt impls for f64) に分割、impl body は `math::*` 経由で extern fn を呼ぶ。compiler / interpreter 両方の test helper をデフォルト auto-load にし、collide する fn 名がないことを確認。**1251 tests pass** (commits: `c3fd179` `74db25a` `3825d3c` `10ab918`、2026-05-02)
+
+191. **Extension trait 全 backend 対応 (Step A〜F)**: ユーザが `impl <Trait> for <PrimitiveType> { ... }` を書けるようにし、stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も同じ仕組みで再実装、最終的に `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` を削除。
+    - **Step A** (`57e9307`): parser + 型チェッカが `impl Trait for i64/f64/...` を受理。parser で primitive type token を canonical name string として interner 化、`Stmt::ImplBlock { target_type: DefaultSymbol }` の shape を維持。型チェッカの `resolve_self_type` が primitive impl target に対して `TypeDecl::{Int64, Float64, ...}` を直接返す。method/return type のホワイトリストに `Float64` / `Ptr` 追加。
+    - **Step B** (`6f1d0a1`): interpreter で primitive receiver の MethodCall を user-method registry 経由で dispatch。`evaluate_method_call` の冒頭に `primitive_target_symbol(obj)` lookup を追加し、`Object::{Bool, Int64, UInt64, Float64, ConstString, String, Pointer}` の各 variant に対して canonical 名 → DefaultSymbol → `method_registry` 引きを実行、ヒット時は user impl body を呼ぶ (legacy hardcoded arms より優先)。
+    - **Step C** (`187477f`): JIT 対応。`PRIMITIVE_TARGET_SYMBOLS: HashMap<ScalarTy, DefaultSymbol>` を thread-local で持ち、`callable_signature` が `Self_` を primitive `TypeDecl` に解決、MethodCall arm で primitive receiver を accept し `MonoTarget::Method(prim_target_sym, method_name)` を callees に push。method body の monomorph 経路 (`toy_i64__abs` 等) を介して native cranelift code 化。**制約**: receiver は bare identifier 限定 (chained call は interpreter fallback)。
+    - **Step D** (`ec9e737`): AOT compiler 対応。`primitive_type_decl_for_target_sym` ヘルパで Self を primitive `TypeDecl` 化、`lower_method_call` の冒頭に `value_scalar` で receiver の IR Type を peek して primitive method dispatch を試みる arm を追加 (struct path より先に走るので chained call も lower 可能)。`value_scalar` の MethodCall arm に `Binding::Scalar` 受信側のフォールバックを追加。
+    - **Step E** (`4152edf`): always-loaded prelude (`interpreter/src/prelude.t`、`include_str!` で binary に embed) に `Abs` / `Sqrt` trait + i64/f64 impl を移行。impl body は `__extern_*` 経由で wrapping_abs / IEEE 754 fabs/sqrt の semantic を保持。`__extern_abs_i64` を 3 backend (interpreter registry / JIT helper or NativeAbsI64 variant / AOT libm `labs` import) に追加。`module_integration::integrate_module_into_program_with_options(... enforce_namespace: bool)` を追加 (prelude は false で bare-callable)。`extern fn` を `imported_function_names` から exempt するロジックも追加。**ExprPool::update バグ修正**: `Stmt::ImplBlock` / `Stmt::TraitDecl` の symbol が module interner のままで main interner に remap されていなかった既存バグを発見・修正 (Step E が最初に triggered)。
+    - **Step F** (`eb33e50`): `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` を frontend enum と全 backend hardcoded dispatch から削除。`compiler/lower/method_call.rs` の hardcoded `("abs"|"sqrt", recv_ty)` fast path も削除し、Step D の primitive-receiver dispatch path を bare-identifier 制約から外して `value_scalar` driven にした (chained primitive method call が AOT でも動くように)。**-163 行 net** の hardcoded dispatch を削除。
+    - **Step E の後で**: prelude を空にして `core/std/{i64,f64}.t` に extension trait 実装を移動 (`74db25a`)。
+
+190. **Math externalisation (Phase 1〜4)**: f64 math intrinsic (sin/cos/tan/log/log2/exp/floor/ceil/pow/sqrt/abs) を frontend の `BuiltinFunction` enum から削除し、stdlib `.t` モジュール経由で `extern fn __extern_*_f64` 経由に切り替えた。
+    - **Phase 1** (`decb16f`): `extern fn name(params) -> ret` 宣言構文を frontend parser + 型チェッカに追加。`Function::is_extern: bool` フィールド、placeholder body (`Stmt::Break`)、type checker の short-circuit (declared return type をそのまま採用、body 走査スキップ)。`extern fn` を持つ関数を呼ぶと当面 "not yet implemented" runtime error。
+    - **Phase 2a** (`6ce8717`): interpreter dispatch。`evaluation/extern_math.rs` に `f64::{sin,cos,tan,log,log2,exp,floor,ceil,sqrt,abs}` + `pow` の Rust 実装を持つ `HashMap<&'static str, fn(&[Value]) -> Result<Value, _>>` レジストリを構築、`EvaluationContext::extern_registry` で startup 時に populate。`evaluate_function*` で `is_extern` 時に `dispatch_extern_fn` 経由で registry を引く。
+    - **Phase 2b/2c** (`12bda7e`): JIT / AOT で extern fn を skip (defensive) — JIT は eligibility で reject、AOT は declare/lower で skip。
+    - **Phase 2d** (`64e209e`): JIT name-based extern dispatch。`JIT_EXTERN_DISPATCH` table が extern fn 名 → `Helper(HelperKind)` (sin/cos/tan/log/log2/exp/pow) または `Native*` variant (sqrt/floor/ceil/abs) に振り分ける。`try_gen_extern_call` で codegen 側のディスパッチ。
+    - **Phase 2e** (`7481770`): AOT 対応。IR に `Linkage::Import` を追加、`libm_import_name_for(name)` で `__extern_sin_f64 → sin` 等に正規化、`Stmt::ImplBlock` / extern fn を `Linkage::Import` で declare、`build_object_module` / `emit_clif_text` で skip。
+    - **Phase 3** (`6aed1f9`): `interpreter/modules/math/math.t` を `extern fn __extern_*_f64` ベースに書き換え。**ExprPool::update bug 修正**: Call args が `rhs` 列に書き込まれていたが `add` / `get` は `operand` 列を読む不整合を発見 (Phase 3 で初めて顕在化)。
+    - **Phase 4** (`2842bf2`): `BuiltinFunction::{Sin, Cos, Tan, Log, Log2, Exp, Floor, Ceil, Pow, Sqrt}` を frontend enum と全 backend dispatch から削除。**-395 行 net**。e2e テスト 14 件を `extern fn __extern_*_f64` 宣言ベースに書き換え。
+
+189. **compiler test 高速化 — `toylang_rt.c` をビルド時に prebuild**: `compiler/build.rs` で `cc -c -O2 -fPIC runtime/toylang_rt.c -o $OUT_DIR/toylang_rt.o` を 1 回実行、`driver.rs` は `include_bytes!` で取り込んで link 時に書き出すだけにした。1 テストあたりの compile 時間が 700-800ms → 50ms (debug build) に。並列 wall-clock は macOS の Mach-O 検証コスト (150-300ms/binary) が dominate しているため改善限定的だが、sequential / CI シナリオで効く。残るボトルネック: 各 e2e テストが新規 binary を fork+exec する macOS のコード署名検証。完全解決には cranelift-jit ベースの in-process loader が必要 (要 codegen 大幅 refactor)。コミット: `b295174` (2026-05-02)
+
+188. **`compiler/README.md` にテスト構成セクションを追加** (`2e4d8f6`): `e2e.rs` (191) / `consistency.rs` (23) の役割、`COMPILER_E2E=skip` opt-out、`cargo nextest run -p compiler` 推奨、現状の wall-clock (60-70s on 20-core macOS)、パフォーマンス内訳 (compile ≈50ms / Mach-O 検証 ≈150-300ms)、調査済み dead-end (cp/exec/dlopen/lld/codesign/shared path)、残る改善余地 (cranelift-jit / テスト統合)。Future contributor が同じ調査を繰り返さないように記録。
+
+187. **`ExprPool::update` の Call args 列ミスマッチバグ修正** (Math externalisation Phase 3 副作用): `add` / `get` は `Expr::Call(func, args)` の args を `operand` 列に格納するが、`update` は `rhs` 列に書いていた。Module integration の `update_with_remapped_content` が remap した Call を pool に書き戻すと silent corruption (slot の `expr_types` は Call なのに `get` が None を返す)。Phase 3 で math.t の wrapper body が `__extern_*_f64(x)` を呼ぶようになって初めて顕在化。1-line fix で `operand` 列に統一、コメントで invariant を明示 (`6aed1f9`)。
+
 184. **`trait` 宣言と `impl <Trait> for <Type>`**: 共通インターフェースの仕組みを追加。`trait Name { fn m(self: Self, ...) -> T; ... }` でシグネチャだけを宣言、`impl <Trait> for <Struct> { ... }` で body を提供。型チェッカーが trait のシグネチャと比較して欠落メソッド・型不一致を検出（`missing method` / `parameter type mismatch` / `return type mismatch`）。型パラメータ bound `<T: SomeTrait>` を関数・struct・impl に書け、呼出時に「実型がその trait を実装しているか」を `struct_trait_impls` で検証。`Self` は impl の対象 struct に解決される。impl-trait の method は同 struct の inherent method としても登録されるため、interpreter 側のメソッドディスパッチは無変更で動作。トークン `Kind::Trait`、AST `Stmt::TraitDecl` + `Stmt::ImplBlock.trait_name: Option<DefaultSymbol>`、新規 `frontend/src/type_checker/trait_decl.rs` で conformance check。tests: `interpreter/tests/trait_tests.rs` に 10 件追加（基本宣言・impl-method dispatch・bounded-generic dispatch・複数 struct 実装・missing method / signature mismatch / 未実装 struct の bound 違反 / 重複 trait / 重複 method）。example: `interpreter/example/trait_basic.t`。`docs/language.md` に新章 *Traits*、CLAUDE.md にもキーワード追加。out of scope（後続）: trait ジェネリクス・デフォルトメソッド・複数 bound・trait 継承・`dyn Trait`・associated types (2026-04-30)
 182. **Value/Reference 分離 Phase 5 後半 — variable assignment / 演算子 operand の Value 化**: `handle_variable_assignment` を Value-native に書き直し（`val.borrow()` 経由の Object クローンを Value::clone で置換、不要な `rhs_borrow` を排除）、`evaluate_binary` / `evaluate_unary` / 短絡論理演算子の operand 評価を `try_value!` (Rc allocate) → `try_value_v!` (Value 直) に置換、Phase 2 で残っていた `Value::from_rc(&lhs_val)` の中間変換を削除。`handle_val_declaration` / `handle_var_declaration` も同様。**Bench 結果 (Apple Silicon release)**:
 
@@ -93,10 +119,16 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 
 ## 未実装 📋
 
-185. **モジュール統合の本格実装 — 完了 (E3 完成 + 多段パス + namespace-only)**
-    - **interpreter / JIT / compiler 全 3 経路に対応** (commits: `cb4a61c` `eb289c6` `118c6d2` `95aa437` + 本コミット)
-    - **済み変更**: `StmtPool::update` 追加、module_integration の `update_with_remapped_content` TODO 解消、type_checker / JIT eligibility / compiler lower に `module::func` dispatch 追加、stdlib `math.t` に math::abs / sqrt / min_* / max_* / pow ラッパ追加 (`__builtin_*` プレフィックスで low-level 化)、multi-segment import path (`import std.math` -> `modules/std/math.t`) 対応、namespace-only 強制 (imported `pub fn` への bare 呼び出しは type-check で reject)
-    - **残るかもしれない作業**: 3+ part qualified call (`std::math::abs(x)` 形式) — 現状は `import std.math` してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度低
+193. **per-module function namespacing** (auto-load + 衝突回避): 現状は flat `program.function` table のため、複数モジュールが同じ名前の `pub fn` を declare すると IR codegen の `function_index.insert` が後勝ちで silent overwrite (`(target_module, fn_name)` を含めた key 化が必要)。**現状の対症療法**: auto-load は `enforce_namespace = false` で integrate するため user-defined fn が同名 stdlib fn を bare 呼出で shadow できる + `compiler/codegen.rs` の `build_object_module` に "no blocks" guard を入れて crash → 明確な error にした。stdlib 側は collide しやすい関数名 (`math::add` / `math::multiply`) を削除して当面回避。**抜本解決**: IR の `function_index` を `(target_module: Option<DefaultSymbol>, fn_name)` に変更し、call site が module qualifier を持って resolve するように。`MonoTarget::Function` も同様に拡張。優先度: 中 (大きい refactor だが auto-load が広く使われると顕在化する)
+
+194. **JIT primitive method dispatch の chained call**: Step C の `eligibility::check_method_call` が receiver を `Expr::Identifier(local)` 限定で accept するため、`x.abs().abs()` のように内側 receiver が `MethodCall` の場合は外側が JIT reject → interpreter fallback。AOT compiler は Step F の refactor で `value_scalar` driven にして chained call を扱えるようになったが、JIT は同じ refactor が未適用。優先度: 低 (interpreter fallback で正しく動作)
+
+195. **`extern fn` の generic params**: 現状 parser で `extern fn name<T>(x: T) -> T` を reject。Backend dispatch が literal name (`__extern_*`) で resolve するため、monomorph 化された extern symbol を name-mangle する仕組みが必要。優先度: 低 (現状必要なケースなし)
+
+185. **モジュール統合の本格実装 — 完了 (E3 完成 + 多段パス + namespace-only + auto-load)**
+    - **interpreter / JIT / compiler 全 3 経路に対応** (commits: `cb4a61c` `eb289c6` `118c6d2` `95aa437` + Phase 2d/2e + `c3fd179` `74db25a`)
+    - **済み変更**: `StmtPool::update` 追加、module_integration の `update_with_remapped_content` TODO 解消、type_checker / JIT eligibility / compiler lower に `module::func` dispatch 追加、stdlib `math.t` (現 `core/std/math.t`) に math::abs / sqrt / min_* / max_* / pow / sin / cos / tan / log / log2 / exp / floor / ceil / fabs ラッパ追加 (`__extern_*` 経由 — Math externalisation Phase 1〜4 で `__builtin_*` から移行)、multi-segment import path (`import std.math` -> `modules/std/math.t`) 対応、namespace-only 強制 (imported `pub fn` への bare 呼び出しは type-check で reject; ただし `extern fn` と auto-load は exempt)、core modules auto-load (env var / CLI flag / exe-relative search), `Stmt::ImplBlock` / `Stmt::TraitDecl` / `Expr::AssociatedFunctionCall` の symbol remap バグ修正
+    - **残るかもしれない作業**: 3+ part qualified call (`std::math::abs(x)` 形式) — 現状は `import std.math` (または auto-load) してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度低
 
 160. **タプルの追加 JIT 対応** — フラットなスカラーtupleの param / return / TupleAccess / destructure / tuple-returning call は完了 (`#163`)。残: ネストタプル (`((a,b),c)`) と tuple-of-struct を JIT codegen で扱う (現状 silent fallback)、inline tuple literal を call argument として渡せるようにする
 159. **JIT Phase 2 拡張** — Phase 1 / 2a-2h / 2c-2 / 2d-2/3/4 / 2e (allocator stack) は完了。残: `__builtin_fixed_buffer_allocator`、`with` 内の早期 exit (return/break/continue) サポート、generic 構造体 / メソッド。サポート範囲のまとめは `JIT.md`
@@ -293,33 +325,45 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 ### コア言語機能
 - 基本言語機能: if/else/elif、for、while、break/continue、return
 - 変数: val（不変）/var（可変）、コンテキストベース型推論
-- 数値型: u64 / i64 / f64（f64 リテラルは `1.5f64` / `42f64` のように `f64` サフィックス必須、タプルアクセスとの曖昧性回避）。`as` による i64/u64 ↔ f64 変換
-- 固定配列: 型推論対応、インデックス型推論、境界チェック
+- 数値型: u64 / i64 / f64（f64 リテラルは `1.5f64` / `42f64` のように `f64` サフィックス必須、タプルアクセスとの曖昧性回避）。`as` による i64/u64 ↔ f64 変換、剰余 `%` と複合代入 `+= -= *= /= %=` 対応
+- 固定配列: 型推論対応、インデックス型推論、境界チェック、要素に struct / tuple / 別配列も可
 - 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
-- 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`
-- Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）
+- 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`、ネストフィールド (`a.b.c`) chain access
+- タプル: 局所バインディング + 関数引数 / 戻り値、`val (a, b) = expr` 分解 (ネスト対応)、`t.0` access、ネストタプル + tuple-of-struct + struct-of-tuple
+- Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）。**プリミティブ型に対する extension trait** (`impl <Trait> for i64/f64/...`) も interpreter / JIT / AOT 全 backend で動作。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl 経由
+- `extern fn` 宣言: `extern fn name(params) -> ret` で signature だけ宣言、body は backend (interpreter registry / JIT helper or native / AOT libm import) が提供。math intrinsic はすべてこの仕組み経由
 - 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
-- Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Arena / FixedBuffer allocator
-- Enum + match（Phase 1/2）: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、`match` arm は unit・tuple パターン（バインディング/`_` discard）+ ワイルドカード `_`
+- Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Global / Arena / **FixedBuffer** allocator (3 種すべて実装済み)
+- Enum + match: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、ジェネリック enum (`Option<T>`)、ネスト enum payload (`Option<Option<i64>>`)、payload に `f64` / struct / tuple、リテラル / ネスト / タプルパターン、guard (`if cond`)、網羅性チェック、到達性チェック
+- DbC: `requires` / `ensures` 節の実行時チェック、`ensures` 内の `result` バインド、`INTERPRETER_CONTRACTS` (interpreter) / `--release` (compiler) で gating
+- `panic("msg")` / `assert(cond, msg)` ビルトイン (3 backend 全対応、release でも常時 active 設計)
+- `__builtin_sizeof(value)`: primitive / struct / enum (1-byte tag + payload) / tuple / array をサポート
 
 ### 型システム
 - 自動型変換・型推論（数値リテラルのサフィックス省略可）
-- ジェネリック関数: `fn identity<T>(x: T) -> T`（パース→型推論→実行）
+- ジェネリック関数: `fn identity<T>(x: T) -> T`（パース→型推論→実行→3 backend モノモル化）
 - ジェネリック構造体: `struct Container<T>`、constraint-based型推論
 - ネストジェネリック: `Container<Container<T>>`（C++11スタイル`>>`分割）
-- Self キーワード: implブロック内での構造体参照
+- Self キーワード: implブロック内での構造体参照、プリミティブ impl では対応する `TypeDecl` (i64 / f64 / ...) に解決
 - Trait bound: `<A: Allocator>` および `<T: UserTrait>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
+- method-only generic params: `impl Box { fn pick<U>(self, a: U, b: U) -> U }`
 
 ### モジュール・その他
-- Go-styleモジュールシステム: package/import/qualified name resolution
+- Go-styleモジュールシステム: package/import/qualified name resolution、3-segment 以上は alias 経由
+- **コア・モジュール auto-load**: `<repo>/core/` を起動時に再帰的に integrate (`<exe>/core/` / `<exe>/../share/toylang/core/` / `<exe>/../../core/` の順に探索、CLI flag `--core-modules <DIR>` と env var `TOYLANG_CORE_MODULES` で override)。`math::sin(x)` 等が import 行なしで呼べる
+- stdlib: `core/std/math.t` (math 関数) / `core/std/i64.t` (Abs trait) / `core/std/f64.t` (Abs/Sqrt impl)
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 894 テスト（100% 成功率、2026-04-22 時点）
+- 合計 1251 テスト, 31 skipped（100% 成功率、2026-05-02 時点）
+- 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (23) — 後者は interpreter / JIT / AOT 3 経路一致を保証
+- パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）
 - `else if` 未サポート（`elif`を使用）
 - `val` はキーワードのためパラメータ名に使用不可
+- `extern fn` は generic params 不可 (現状 backend dispatch が name-mangling 未対応)
+- `package` 宣言 / `import` path のセグメントに primitive type キーワード (`i64` / `f64` / ...) は使えない (`core/std/i64.t` が `package` 宣言を省略しているのはこのため)

@@ -147,6 +147,80 @@ export function main() -> u64 {
 `--emit=clif` は IR lowering 後の Cranelift IR を、`--emit=obj` は
 リンク前の `.o`、`--emit=exe`（default）は最終バイナリを出力する。
 
+## テスト
+
+### 構成
+
+`compiler/tests/` 配下に 2 ファイル：
+
+- **`e2e.rs`** (191 テスト) — toylang ソース文字列から `compile_and_run`
+  ヘルパで実行可能ファイルを生成 → spawn → exit code を assert する
+  end-to-end テスト。各機能フラグ（`val` / `if` / `for` / 関数呼び出し
+  / struct / tuple / enum / match / trait method / generics / `print`
+  / `panic` / `requires` / `ensures` / `as` cast / array / `extern fn`
+  / extension trait など）ごとに最小再現プログラムが並んでいる。サンプルは
+  ほぼすべて `fn main() -> u64 { ... }` で値を return し、終了コードを
+  突き合わせる方式。
+- **`consistency.rs`** (23 テスト) — 同じソースを **interpreter (lib API)
+  / AOT compiler (compile + spawn) / JIT (`INTERPRETER_JIT=1` で
+  interpreter binary を spawn)** の 3 経路に流し、`main` の戻り値が
+  3 経路で一致することを確認する横並びテスト。仕様の解釈差を早期に
+  検知するセーフティネット。interpreter binary は OnceLock で 1 回だけ
+  `cargo build` する。
+
+両ファイルとも `COMPILER_E2E=skip` を環境変数に渡すと early return
+してスキップする（`cc` が無いサンドボックス環境向けの opt-out）。
+
+### 実行
+
+```bash
+# nextest（推奨、並列実行）
+cargo nextest run -p compiler
+
+# cargo test（1プロセスにまとめる）
+cargo test -p compiler
+
+# 単一テスト
+cargo nextest run -p compiler -E 'test(returns_literal_exit_code)'
+```
+
+テスト全体の wall-clock は 20 コアの macOS で約 60〜70 秒。
+
+### パフォーマンス
+
+各テストが `compile_file(... emit=Executable)` → 生成された binary の
+spawn を行う構造のため、
+
+- compile 部分（parse + type-check + IR lowering + Cranelift codegen
+  + リンク）：1テストあたり ≈ 50ms（debug build）
+- 生成バイナリの新規 exec：macOS では新規 Mach-O ごとにコード署名検証
+  が走り、≈ 150〜300ms
+
+の二段構成。**並列 wall-clock の支配項は後者** で、署名検証は path /
+content / `cc` / `ld` / `dlopen` / 事前 `codesign --sign -` いずれの
+工夫でも回避できないことを実測済み（同じパスで内容を上書きしても
+再検証される）。
+
+すでに入っている最適化：
+
+- **`compiler/build.rs`** が `cc -c -O2 -fPIC runtime/toylang_rt.c
+  -o $OUT_DIR/toylang_rt.o` をビルド時に 1 度だけ実行し、driver は
+  その `.o` を `include_bytes!` で取り込む。これにより各テストの
+  `cc` 呼び出しは「2 つの `.o` をリンクするだけ」となり、C
+  コンパイル分（〜数百ms）を完全に削減。
+
+並列 wall-clock を更に縮める余地としては、
+
+- cranelift-jit を compiler crate に取り込み、テスト用 API
+  `compile_to_jit_main(source) -> fn() -> u64` で **新規 Mach-O を
+  ディスクに書かない経路** を提供する。これで macOS 検証を完全に
+  回避できる（in-process で executable memory を確保するため）。
+  codegen.rs を `Module` trait で generic 化する作業がそれなりに
+  あるため別タスク扱い。
+- `e2e.rs` の小さい `fn main() -> u64 { ... }` 系テストを「1 つの
+  巨大プログラムにまとめてケース ID で dispatch」する形に再構成し、
+  spawn 回数を減らす。テスト分離度が落ちるトレードオフがある。
+
 ## 次のフェーズ（todo.md #183 参照）
 
 - Phase A: `toy_ir` の新設、`AllocatorBinding` 配線、AST → IR lowering

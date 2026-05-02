@@ -3947,11 +3947,15 @@ fn math_int_abs_min_max() {
     if skip_e2e() {
         return;
     }
+    // The user-facing wrappers live in the `math` module
+    // (`interpreter/modules/math/math.t`); calling the intrinsics
+    // directly works too, and keeps these tests self-contained
+    // (no module-loader cwd dependency).
     let src = r#"
         fn main() -> u64 {
-            val a: i64 = abs(-7i64)
-            val b: i64 = min(3i64, 5i64)
-            val c: u64 = max(10u64, 4u64)
+            val a: i64 = __builtin_abs(-7i64)
+            val b: i64 = __builtin_min(3i64, 5i64)
+            val c: u64 = __builtin_max(10u64, 4u64)
             a as u64 + b as u64 + c
         }
     "#;
@@ -3970,7 +3974,7 @@ fn math_int_abs_handles_min_value() {
     let src = r#"
         fn main() -> u64 {
             val n: i64 = -9223372036854775808i64
-            val a: i64 = abs(n)
+            val a: i64 = __builtin_abs(n)
             (a as u64) & 0xFFu64
         }
     "#;
@@ -3984,8 +3988,8 @@ fn math_int_min_max_unsigned() {
     }
     let src = r#"
         fn main() -> u64 {
-            val lo: u64 = min(7u64, 12u64)
-            val hi: u64 = max(7u64, 12u64)
+            val lo: u64 = __builtin_min(7u64, 12u64)
+            val hi: u64 = __builtin_max(7u64, 12u64)
             lo + hi
         }
     "#;
@@ -3999,8 +4003,8 @@ fn math_f64_pow_sqrt() {
     }
     let src = r#"
         fn main() -> u64 {
-            val a: f64 = sqrt(16f64)
-            val b: f64 = pow(2f64, 5f64)
+            val a: f64 = __builtin_sqrt(16f64)
+            val b: f64 = __builtin_pow_f64(2f64, 5f64)
             a as u64 + b as u64
         }
     "#;
@@ -4016,7 +4020,7 @@ fn math_f64_sqrt_negative_is_nan() {
     // cranelift saturates to 0 (matches Rust `as` semantics).
     let src = r#"
         fn main() -> u64 {
-            val n: f64 = sqrt(-4f64)
+            val n: f64 = __builtin_sqrt(-4f64)
             n as u64 + 7u64
         }
     "#;

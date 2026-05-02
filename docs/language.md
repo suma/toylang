@@ -843,39 +843,44 @@ widths (`u64`/`i64`/`f64`/`ptr` = 8, `bool` = 1); structs sum their
 fields; enums account for a 1-byte tag plus payload; tuples and
 arrays sum their elements.
 
-### Integer math
+### Math (via the `math` module)
 
 ```rust
-abs(x: i64) -> i64
-min(a: T, b: T) -> T   # T ∈ { i64, u64 }
-max(a: T, b: T) -> T   # T ∈ { i64, u64 }
+import math
+
+math::abs(x: i64) -> i64
+math::sqrt(x: f64) -> f64
+math::min_i64(a: i64, b: i64) -> i64
+math::min_u64(a: u64, b: u64) -> u64
+math::max_i64(a: i64, b: i64) -> i64
+math::max_u64(a: u64, b: u64) -> u64
+math::pow(base: f64, exp: f64) -> f64
 ```
 
-User-facing names (no `__builtin_` prefix). `abs` returns the
-absolute value of an `i64`; matches Rust's `wrapping_abs` so
-`abs(i64::MIN)` returns `i64::MIN` rather than panicking. `min`
-and `max` are polymorphic over the two integer scalars: both
-operands must agree on `i64` *or* `u64` and the result keeps
-the operand type. Mixing the two (`min(1i64, 2u64)`) is a
-type-check error.
+The math intrinsics live in the standard `math` module
+(`interpreter/modules/math/math.t`). User code reaches them via
+`import math` followed by the `math::name(...)` qualified call
+form. Each wrapper forwards to a low-level `__builtin_*`
+intrinsic that the runtime / JIT / compiler implement directly
+— the prefix is intentional, signalling "no user code below
+this line."
 
-All three are wired through every backend (interpreter / JIT /
-AOT compiler) — JIT and compiler lower to a cranelift `select`
-chain on the appropriate signed/unsigned comparison.
+Semantics:
 
-### f64 math
+- `abs(x: i64)` matches Rust's `wrapping_abs`, so
+  `abs(i64::MIN)` returns `i64::MIN` rather than panicking.
+- `min_*` / `max_*` come in `_i64` and `_u64` flavours; the
+  type-checker enforces that both operands match the wrapper's
+  declared type.
+- `sqrt` and `pow` follow IEEE 754: `sqrt(-1f64)` returns NaN,
+  `pow(0f64, 0f64)` returns `1f64`.
 
-```rust
-sqrt(x: f64) -> f64
-pow(base: f64, exp: f64) -> f64
-```
-
-User-facing names. Both follow IEEE 754: `sqrt(-1f64)` returns
-NaN rather than panicking, `pow(0f64, 0f64)` returns `1f64`.
-JIT lowers `sqrt` to cranelift's native `sqrt` instruction and
-`pow` to a Rust helper that wraps `f64::powf`. The AOT compiler
-emits a direct call into libm's `pow` (always linked on supported
-platforms) and uses `sqrt` for `UnaryOp::Sqrt`.
+All five are wired through every backend (interpreter / JIT /
+AOT compiler). The JIT lowers `min_*` / `max_*` / `abs` to a
+cranelift `select` chain, `sqrt` to the native `sqrt`
+instruction, and `pow` to a Rust helper that wraps
+`f64::powf`. The AOT compiler additionally emits a direct call
+into libm's `pow` (always linked on supported platforms).
 
 ### String methods
 

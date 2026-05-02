@@ -299,11 +299,17 @@ impl BuiltinFunctionSymbols {
             panic: interner.get_or_intern("panic"),
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
-            abs: interner.get_or_intern("abs"),
-            min: interner.get_or_intern("min"),
-            max: interner.get_or_intern("max"),
-            pow: interner.get_or_intern("pow"),
-            sqrt: interner.get_or_intern("sqrt"),
+            // Math intrinsics live under the `__builtin_` prefix; the
+            // user-facing entry points are the `math::abs` / `math::min`
+            // / `math::max` / `math::pow` / `math::sqrt` wrappers in
+            // `interpreter/modules/math/math.t`. The wrappers forward
+            // straight to these symbols, so the runtime / JIT / compiler
+            // implementations don't move.
+            abs: interner.get_or_intern("__builtin_abs"),
+            min: interner.get_or_intern("__builtin_min"),
+            max: interner.get_or_intern("__builtin_max"),
+            pow: interner.get_or_intern("__builtin_pow_f64"),
+            sqrt: interner.get_or_intern("__builtin_sqrt"),
         }
     }
 

@@ -114,6 +114,17 @@ impl<'a> FunctionLower<'a> {
                 .function_index
                 .get(&fn_name)
                 .map(|id| self.module.function(*id).return_type),
+            Expr::AssociatedFunctionCall(_struct_name, fn_name, _) => {
+                // Module-qualified call: same lookup path as Call
+                // because module integration flattens imported `pub fn`s
+                // into the main function table. Real associated method
+                // calls aren't supported in expression position so the
+                // None return at the bottom is the correct fallback.
+                self.module
+                    .function_index
+                    .get(&fn_name)
+                    .map(|id| self.module.function(*id).return_type)
+            }
             Expr::BuiltinCall(func, args) => match func {
                 frontend::ast::BuiltinFunction::Abs => Some(Type::I64),
                 frontend::ast::BuiltinFunction::Min

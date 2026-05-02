@@ -407,74 +407,12 @@ impl<'a> FunctionLower<'a> {
                     Some(result_ty),
                 ))
             }
-            BuiltinFunction::Sqrt => {
-                if args.len() != 1 {
-                    return Err(format!("sqrt expects 1 argument, got {}", args.len()));
-                }
-                let operand = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "sqrt operand produced no value".to_string())?;
-                Ok(self.emit(
-                    InstKind::UnaryOp { op: crate::ir::UnaryOp::Sqrt, operand },
-                    Some(Type::F64),
-                ))
-            }
-            BuiltinFunction::Sin
-            | BuiltinFunction::Cos
-            | BuiltinFunction::Tan
-            | BuiltinFunction::Log
-            | BuiltinFunction::Log2
-            | BuiltinFunction::Exp
-            | BuiltinFunction::Floor
-            | BuiltinFunction::Ceil => {
-                let name = match func {
-                    BuiltinFunction::Sin => "sin",
-                    BuiltinFunction::Cos => "cos",
-                    BuiltinFunction::Tan => "tan",
-                    BuiltinFunction::Log => "log",
-                    BuiltinFunction::Log2 => "log2",
-                    BuiltinFunction::Exp => "exp",
-                    BuiltinFunction::Floor => "floor",
-                    BuiltinFunction::Ceil => "ceil",
-                    _ => unreachable!(),
-                };
-                if args.len() != 1 {
-                    return Err(format!("{name} expects 1 argument, got {}", args.len()));
-                }
-                let operand = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| format!("{name} operand produced no value"))?;
-                let op = match func {
-                    BuiltinFunction::Sin => crate::ir::UnaryOp::Sin,
-                    BuiltinFunction::Cos => crate::ir::UnaryOp::Cos,
-                    BuiltinFunction::Tan => crate::ir::UnaryOp::Tan,
-                    BuiltinFunction::Log => crate::ir::UnaryOp::Log,
-                    BuiltinFunction::Log2 => crate::ir::UnaryOp::Log2,
-                    BuiltinFunction::Exp => crate::ir::UnaryOp::Exp,
-                    BuiltinFunction::Floor => crate::ir::UnaryOp::Floor,
-                    BuiltinFunction::Ceil => crate::ir::UnaryOp::Ceil,
-                    _ => unreachable!(),
-                };
-                Ok(self.emit(
-                    InstKind::UnaryOp { op, operand },
-                    Some(Type::F64),
-                ))
-            }
-            BuiltinFunction::Pow => {
-                if args.len() != 2 {
-                    return Err(format!("pow expects 2 arguments, got {}", args.len()));
-                }
-                let lhs = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "pow base produced no value".to_string())?;
-                let rhs = self
-                    .lower_expr(&args[1])?
-                    .ok_or_else(|| "pow exponent produced no value".to_string())?;
-                Ok(self.emit(
-                    InstKind::BinOp { op: crate::ir::BinOp::Pow, lhs, rhs },
-                    Some(Type::F64),
-                ))
-            }
+            // NOTE: f64 math arms (Sqrt/Pow and Sin..=Ceil) lived
+            // here before Phase 4. Each is now declared as
+            // `extern fn __extern_*_f64` in math.t and lowered
+            // through `lower/program::libm_import_name_for` —
+            // the call site emits a regular cranelift call against
+            // the imported libm symbol.
             BuiltinFunction::Min | BuiltinFunction::Max => {
                 if args.len() != 2 {
                     let name = if matches!(func, BuiltinFunction::Min) { "min" } else { "max" };

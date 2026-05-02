@@ -1000,66 +1000,13 @@ impl<'a, 'b> State<'a, 'b> {
                         let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, x, zero);
                         Ok(Some(self.builder.ins().select(cmp, neg, x)))
                     }
-                    BuiltinFunction::Sqrt => {
-                        // cranelift has a native `sqrt` instruction
-                        // that lowers to the platform's `fsqrt`
-                        // (e.g. arm64 `fsqrt`, x86 `sqrtsd`).
-                        let x = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "sqrt operand".to_string())?;
-                        Ok(Some(self.builder.ins().sqrt(x)))
-                    }
-                    BuiltinFunction::Pow => {
-                        // cranelift has no native `fpow`; route the
-                        // call through the `jit_pow_f64` helper which
-                        // delegates to Rust's `f64::powf` (libm
-                        // underneath on most targets).
-                        let b = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "pow base".to_string())?;
-                        let e = self
-                            .gen_expr(&args[1])?
-                            .ok_or_else(|| "pow exponent".to_string())?;
-                        Ok(Some(self.call_helper(HelperKind::Pow, &[b, e])?))
-                    }
-                    BuiltinFunction::Floor => {
-                        // cranelift has a native `floor` instruction
-                        // (`frintm` on arm64, `roundsd` on x86 with
-                        // RC=down). No libm round-trip needed.
-                        let x = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "floor operand".to_string())?;
-                        Ok(Some(self.builder.ins().floor(x)))
-                    }
-                    BuiltinFunction::Ceil => {
-                        let x = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "ceil operand".to_string())?;
-                        Ok(Some(self.builder.ins().ceil(x)))
-                    }
-                    BuiltinFunction::Sin
-                    | BuiltinFunction::Cos
-                    | BuiltinFunction::Tan
-                    | BuiltinFunction::Log
-                    | BuiltinFunction::Log2
-                    | BuiltinFunction::Exp => {
-                        // cranelift has no native trig / log / exp.
-                        // Each routes through a small Rust helper
-                        // that calls the matching `f64::*` method.
-                        let x = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "transcendental operand".to_string())?;
-                        let kind = match func {
-                            BuiltinFunction::Sin => HelperKind::SinF64,
-                            BuiltinFunction::Cos => HelperKind::CosF64,
-                            BuiltinFunction::Tan => HelperKind::TanF64,
-                            BuiltinFunction::Log => HelperKind::LogF64,
-                            BuiltinFunction::Log2 => HelperKind::Log2F64,
-                            BuiltinFunction::Exp => HelperKind::ExpF64,
-                            _ => unreachable!(),
-                        };
-                        Ok(Some(self.call_helper(kind, &[x])?))
-                    }
+                    // NOTE: f64 math arms (Sqrt/Pow/Floor/Ceil and
+                    // Sin..=Exp) lived here before Phase 4. Each is
+                    // now declared as `extern fn __extern_*_f64`,
+                    // and `try_gen_extern_call` routes the call to
+                    // the matching helper (or native cranelift op
+                    // for sqrt/floor/ceil/abs) via the entries in
+                    // `JIT_EXTERN_DISPATCH`.
                     BuiltinFunction::Min | BuiltinFunction::Max => {
                         // Min/max lowering. The eligibility check has
                         // already verified both operands share an

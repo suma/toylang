@@ -224,25 +224,19 @@ pub enum BuiltinFunction {
     Min,
     Max,
 
-    // f64 math (user-facing). `pow(base, exp)` matches Rust's
-    // `f64::powf`. `sqrt(x)` matches Rust's `f64::sqrt`. Both follow
-    // IEEE 754 — `sqrt(-1f64)` returns NaN rather than panicking.
-    Pow,
-    Sqrt,
-
-    // Additional f64 transcendentals / rounding. All follow Rust /
-    // C99 / IEEE 754 semantics. The rounding ops (`floor`, `ceil`)
-    // lower to cranelift's native instructions on every supported
-    // ISA; the transcendentals dispatch through libm in the AOT
-    // path and a Rust shim in the JIT.
-    Sin,    // f64 -> f64
-    Cos,    // f64 -> f64
-    Tan,    // f64 -> f64
-    Log,    // f64 -> f64 — natural log (ln)
-    Log2,   // f64 -> f64 — base-2 log
-    Exp,    // f64 -> f64 — e^x
-    Floor,  // f64 -> f64
-    Ceil,   // f64 -> f64
+    // NOTE: f64 math intrinsics (sin/cos/tan/log/log2/exp/floor/ceil
+    // /pow/sqrt) used to live here as `BuiltinFunction::*` variants
+    // dispatched by the parser-recognised `__builtin_*_f64` names.
+    // Phase 4 of the math externalisation work removed them — the
+    // `math` module now declares each as `extern fn __extern_*_f64`
+    // and every backend dispatches through the extern path
+    // (`evaluation/extern_math` registry / JIT extern dispatch table /
+    // AOT libm import). User code calls `math::sin(x)` etc. as
+    // before; the `__builtin_*_f64` names are no longer recognised.
+    //
+    // `Abs` / `Min` / `Max` are still here because integer math
+    // doesn't have an extern dispatch path yet — Phase 5 moves
+    // those onto the same machinery.
 }
 
 #[derive(Debug, Clone)]
@@ -283,20 +277,13 @@ pub struct BuiltinFunctionSymbols {
     pub abs: DefaultSymbol,
     pub min: DefaultSymbol,
     pub max: DefaultSymbol,
-
-    // f64 math (user-facing names).
-    pub pow: DefaultSymbol,
-    pub sqrt: DefaultSymbol,
-
-    // Additional f64 math intrinsics.
-    pub sin: DefaultSymbol,
-    pub cos: DefaultSymbol,
-    pub tan: DefaultSymbol,
-    pub log: DefaultSymbol,
-    pub log2: DefaultSymbol,
-    pub exp: DefaultSymbol,
-    pub floor: DefaultSymbol,
-    pub ceil: DefaultSymbol,
+    // NOTE: f64 math symbol fields (`pow` / `sqrt` / `sin` / `cos` /
+    // `tan` / `log` / `log2` / `exp` / `floor` / `ceil`) lived here
+    // before Phase 4. They were the parser-side recogniser for the
+    // legacy `__builtin_*_f64` names. After Phase 4, the math
+    // module declares each as `extern fn __extern_*_f64` so the
+    // recognition happens through the regular function table —
+    // these dedicated symbol fields are no longer needed.
 }
 
 impl BuiltinFunctionSymbols {
@@ -323,25 +310,16 @@ impl BuiltinFunctionSymbols {
             panic: interner.get_or_intern("panic"),
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
-            // Math intrinsics live under the `__builtin_` prefix; the
-            // user-facing entry points are the `math::abs` / `math::min`
-            // / `math::max` / `math::pow` / `math::sqrt` wrappers in
-            // `interpreter/modules/math/math.t`. The wrappers forward
-            // straight to these symbols, so the runtime / JIT / compiler
-            // implementations don't move.
+            // Integer math intrinsics. The user-facing entry points
+            // are `math::abs` / `math::min_*` / `math::max_*` in
+            // `interpreter/modules/math/math.t`; the wrappers forward
+            // to these symbols. The f64 family (sin/cos/tan/log/log2
+            // /exp/floor/ceil/pow/sqrt) used to live here too — Phase 4
+            // moved them onto `extern fn __extern_*_f64` declarations
+            // in math.t so they no longer need a parser-level symbol.
             abs: interner.get_or_intern("__builtin_abs"),
             min: interner.get_or_intern("__builtin_min"),
             max: interner.get_or_intern("__builtin_max"),
-            pow: interner.get_or_intern("__builtin_pow_f64"),
-            sqrt: interner.get_or_intern("__builtin_sqrt"),
-            sin: interner.get_or_intern("__builtin_sin_f64"),
-            cos: interner.get_or_intern("__builtin_cos_f64"),
-            tan: interner.get_or_intern("__builtin_tan_f64"),
-            log: interner.get_or_intern("__builtin_log_f64"),
-            log2: interner.get_or_intern("__builtin_log2_f64"),
-            exp: interner.get_or_intern("__builtin_exp_f64"),
-            floor: interner.get_or_intern("__builtin_floor_f64"),
-            ceil: interner.get_or_intern("__builtin_ceil_f64"),
         }
     }
 
@@ -367,16 +345,6 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }
-        else if symbol == self.pow { Some(BuiltinFunction::Pow) }
-        else if symbol == self.sqrt { Some(BuiltinFunction::Sqrt) }
-        else if symbol == self.sin { Some(BuiltinFunction::Sin) }
-        else if symbol == self.cos { Some(BuiltinFunction::Cos) }
-        else if symbol == self.tan { Some(BuiltinFunction::Tan) }
-        else if symbol == self.log { Some(BuiltinFunction::Log) }
-        else if symbol == self.log2 { Some(BuiltinFunction::Log2) }
-        else if symbol == self.exp { Some(BuiltinFunction::Exp) }
-        else if symbol == self.floor { Some(BuiltinFunction::Floor) }
-        else if symbol == self.ceil { Some(BuiltinFunction::Ceil) }
         else { None }
     }
 }

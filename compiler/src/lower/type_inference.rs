@@ -134,16 +134,11 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::Max => {
                     args.first().and_then(|a| self.value_scalar(a))
                 }
-                frontend::ast::BuiltinFunction::Sqrt
-                | frontend::ast::BuiltinFunction::Pow
-                | frontend::ast::BuiltinFunction::Sin
-                | frontend::ast::BuiltinFunction::Cos
-                | frontend::ast::BuiltinFunction::Tan
-                | frontend::ast::BuiltinFunction::Log
-                | frontend::ast::BuiltinFunction::Log2
-                | frontend::ast::BuiltinFunction::Exp
-                | frontend::ast::BuiltinFunction::Floor
-                | frontend::ast::BuiltinFunction::Ceil => Some(Type::F64),
+                // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp
+                // /floor/ceil) used to be `BuiltinFunction` arms.
+                // Phase 4 moved them onto `extern fn`, so type
+                // inference for those calls flows through the
+                // regular `Expr::Call` path instead.
                 _ => None,
             },
             Expr::BuiltinMethodCall(_receiver, method, _args) => match method {

@@ -1,15 +1,19 @@
 package std.math
 
-# A multi-segment stdlib example. Forwards to the same `__builtin_*`
-# intrinsics as the single-segment `math` module — but via a deeper
-# package path so users can write `import std.math; std::math::abs(x)`.
+# A multi-segment stdlib example. The f64 intrinsics now route
+# through `extern fn` declarations (the same pattern used by the
+# single-segment `math` module); abs / min / max stay on the
+# legacy `__builtin_*` polymorphic intrinsics until Phase 5
+# moves them onto the same extern-fn machinery.
+
+extern fn __extern_sqrt_f64(x: f64) -> f64
 
 pub fn abs(x: i64) -> i64 {
     __builtin_abs(x)
 }
 
 pub fn sqrt(x: f64) -> f64 {
-    __builtin_sqrt(x)
+    __extern_sqrt_f64(x)
 }
 
 pub fn min_i64(a: i64, b: i64) -> i64 {

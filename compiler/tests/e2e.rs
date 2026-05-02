@@ -4002,9 +4002,12 @@ fn math_f64_pow_sqrt() {
         return;
     }
     let src = r#"
+        extern fn __extern_sqrt_f64(x: f64) -> f64
+        extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
+
         fn main() -> u64 {
-            val a: f64 = __builtin_sqrt(16f64)
-            val b: f64 = __builtin_pow_f64(2f64, 5f64)
+            val a: f64 = __extern_sqrt_f64(16f64)
+            val b: f64 = __extern_pow_f64(2f64, 5f64)
             a as u64 + b as u64
         }
     "#;
@@ -4019,8 +4022,10 @@ fn math_f64_sqrt_negative_is_nan() {
     // IEEE 754 sqrt of a negative is NaN. NaN cast to integer in
     // cranelift saturates to 0 (matches Rust `as` semantics).
     let src = r#"
+        extern fn __extern_sqrt_f64(x: f64) -> f64
+
         fn main() -> u64 {
-            val n: f64 = __builtin_sqrt(-4f64)
+            val n: f64 = __extern_sqrt_f64(-4f64)
             n as u64 + 7u64
         }
     "#;
@@ -4269,10 +4274,12 @@ fn value_method_pow_via_pythagorean() {
     // the libm `pow` call returning into another f64 op without
     // an intervening `val`.
     let src = r#"
+        extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
+
         fn main() -> u64 {
             val a: f64 = 3f64
             val b: f64 = 4f64
-            (__builtin_pow_f64(a, 2f64) + __builtin_pow_f64(b, 2f64)).sqrt() as u64
+            (__extern_pow_f64(a, 2f64) + __extern_pow_f64(b, 2f64)).sqrt() as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "value_method_pythagorean"), 5);
@@ -4392,15 +4399,23 @@ fn math_trig_floor_ceil() {
     // floor(3.7)=3, ceil(3.2)=4. Total = 13. Mirrors the
     // `math_trig_demo.t` example.
     let src = r#"
+        extern fn __extern_sin_f64(x: f64) -> f64
+        extern fn __extern_cos_f64(x: f64) -> f64
+        extern fn __extern_exp_f64(x: f64) -> f64
+        extern fn __extern_log_f64(x: f64) -> f64
+        extern fn __extern_log2_f64(x: f64) -> f64
+        extern fn __extern_floor_f64(x: f64) -> f64
+        extern fn __extern_ceil_f64(x: f64) -> f64
+
         fn main() -> u64 {
             val pi: f64 = 3.14159265358979f64
-            val s: f64 = __builtin_sin_f64(pi / 2f64)
-            val c: f64 = __builtin_cos_f64(0f64)
-            val e: f64 = __builtin_exp_f64(0f64)
-            val l: f64 = __builtin_log_f64(2.718281828f64)
-            val l2: f64 = __builtin_log2_f64(8f64)
-            val fl: f64 = __builtin_floor_f64(3.7f64)
-            val ce: f64 = __builtin_ceil_f64(3.2f64)
+            val s: f64 = __extern_sin_f64(pi / 2f64)
+            val c: f64 = __extern_cos_f64(0f64)
+            val e: f64 = __extern_exp_f64(0f64)
+            val l: f64 = __extern_log_f64(2.718281828f64)
+            val l2: f64 = __extern_log2_f64(8f64)
+            val fl: f64 = __extern_floor_f64(3.7f64)
+            val ce: f64 = __extern_ceil_f64(3.2f64)
             s as u64 + c as u64 + e as u64 + l as u64 + l2 as u64
                 + fl as u64 + ce as u64
         }
@@ -4418,9 +4433,11 @@ fn math_floor_negative() {
     // `fcvt_to_uint_sat` emits), so we shift into the positive
     // range first: floor(-3.2) + 10.0 = 6.
     let src = r#"
+        extern fn __extern_floor_f64(x: f64) -> f64
+
         fn main() -> u64 {
             val n: f64 = -3.2f64
-            (__builtin_floor_f64(n) + 10f64) as u64
+            (__extern_floor_f64(n) + 10f64) as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "math_floor_negative"), 6);
@@ -4434,9 +4451,11 @@ fn math_ceil_negative() {
     // ceil(-3.7) = -3 (rounds toward +∞). Same shift trick:
     // ceil(-3.7) + 10.0 = 7.
     let src = r#"
+        extern fn __extern_ceil_f64(x: f64) -> f64
+
         fn main() -> u64 {
             val n: f64 = -3.7f64
-            (__builtin_ceil_f64(n) + 10f64) as u64
+            (__extern_ceil_f64(n) + 10f64) as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "math_ceil_negative"), 7);
@@ -4452,9 +4471,13 @@ fn math_log_exp_roundtrip() {
     // last-bit drift on the *low* side and report 6 for
     // `exp(log(7)) = 6.999…`.
     let src = r#"
+        extern fn __extern_floor_f64(x: f64) -> f64
+        extern fn __extern_exp_f64(x: f64) -> f64
+        extern fn __extern_log_f64(x: f64) -> f64
+
         fn main() -> u64 {
             val x: f64 = 7f64
-            __builtin_floor_f64(__builtin_exp_f64(__builtin_log_f64(x)) + 0.5f64) as u64
+            __extern_floor_f64(__extern_exp_f64(__extern_log_f64(x)) + 0.5f64) as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "math_log_exp_roundtrip"), 7);
@@ -4468,11 +4491,15 @@ fn math_sin_squared_plus_cos_squared() {
     // sin²x + cos²x = 1 (Pythagorean identity). Exit-code via
     // round, accepting last-bit drift.
     let src = r#"
+        extern fn __extern_sin_f64(x: f64) -> f64
+        extern fn __extern_cos_f64(x: f64) -> f64
+        extern fn __extern_floor_f64(x: f64) -> f64
+
         fn main() -> u64 {
             val x: f64 = 0.7f64
-            val s: f64 = __builtin_sin_f64(x)
-            val c: f64 = __builtin_cos_f64(x)
-            __builtin_floor_f64(s * s + c * c + 0.5f64) as u64
+            val s: f64 = __extern_sin_f64(x)
+            val c: f64 = __extern_cos_f64(x)
+            __extern_floor_f64(s * s + c * c + 0.5f64) as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "math_sin_cos_identity"), 1);
@@ -4485,8 +4512,10 @@ fn math_log2_pow2_roundtrip() {
     }
     // log2(2^k) = k for integer k. log2(1024) = 10.
     let src = r#"
+        extern fn __extern_log2_f64(x: f64) -> f64
+
         fn main() -> u64 {
-            __builtin_log2_f64(1024f64) as u64
+            __extern_log2_f64(1024f64) as u64
         }
     "#;
     assert_eq!(compile_and_run(src, "math_log2_pow2"), 10);

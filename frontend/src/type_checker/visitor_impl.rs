@@ -505,50 +505,12 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // operand type. Mismatched / unsupported arg types produce a
         // targeted diagnostic instead of the generic "argument type
         // mismatch" the signature path would emit.
-        if matches!(
-            func,
-            BuiltinFunction::Pow
-                | BuiltinFunction::Sqrt
-                | BuiltinFunction::Sin
-                | BuiltinFunction::Cos
-                | BuiltinFunction::Tan
-                | BuiltinFunction::Log
-                | BuiltinFunction::Log2
-                | BuiltinFunction::Exp
-                | BuiltinFunction::Floor
-                | BuiltinFunction::Ceil
-        ) {
-            let (name, expected) = match func {
-                BuiltinFunction::Pow => ("pow", 2usize),
-                BuiltinFunction::Sqrt => ("sqrt", 1),
-                BuiltinFunction::Sin => ("sin", 1),
-                BuiltinFunction::Cos => ("cos", 1),
-                BuiltinFunction::Tan => ("tan", 1),
-                BuiltinFunction::Log => ("log", 1),
-                BuiltinFunction::Log2 => ("log2", 1),
-                BuiltinFunction::Exp => ("exp", 1),
-                BuiltinFunction::Floor => ("floor", 1),
-                BuiltinFunction::Ceil => ("ceil", 1),
-                _ => unreachable!(),
-            };
-            if args.len() != expected {
-                return Err(TypeCheckError::generic_error(&format!(
-                    "{name} expects {expected} argument(s), got {}",
-                    args.len()
-                )));
-            }
-            for (i, a) in args.iter().enumerate() {
-                let t = self.visit_expr(a)?;
-                if !matches!(t, TypeDecl::Float64) {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "{name} argument {} expects f64, got {:?}",
-                        i + 1,
-                        t
-                    )));
-                }
-            }
-            return Ok(TypeDecl::Float64);
-        }
+        // NOTE: f64 math arity / type-check arm (pow/sqrt/sin/cos/tan
+        // /log/log2/exp/floor/ceil) lived here before Phase 4. Each
+        // is now declared as `extern fn __extern_*_f64` in math.t,
+        // so type checking falls through to the regular call path
+        // (the extern fn signature is enough to validate arity +
+        // arg types).
 
         if matches!(
             func,

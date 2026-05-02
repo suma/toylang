@@ -1,4 +1,4 @@
 
 fn main() -> u64 {
-    math::add(10u64, 20u64)
+    math::abs(-30i64) as u64
 }

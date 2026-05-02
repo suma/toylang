@@ -26,16 +26,17 @@ fn test_module_auto_load_no_import_needed() {
     // automatically — no `import math` line required. The
     // qualified form `math::name(...)` still resolves through the
     // synthetic `ImportDecl` the auto-load path inserts.
+    // `min_i64(7, 35) + max_i64(7, 35) = 7 + 35 = 42`.
     let source = r"
         fn main() -> u64 {
-            math::add(10u64, 32u64)
+            (math::min_i64(7i64, 35i64) + math::max_i64(7i64, 35i64)) as u64
         }
         ";
 
     let result = test_program_with_core_modules(source);
     assert!(
         result.is_ok(),
-        "math::add should resolve via auto-load: {:?}",
+        "math::* should resolve via auto-load: {:?}",
         result.err()
     );
     assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
@@ -170,10 +171,10 @@ fn test_module_qualified_call_executes() {
     // calling an imported `pub fn` via the qualified `module::func`
     // form must execute the real body and return the right value.
     // No `import math` line — the auto-load path picks math up from
-    // the configured `core/` directory.
+    // the configured `core/` directory. `math::abs(-30) = 30`.
     let source = r"
         fn main() -> u64 {
-            math::add(10u64, 20u64)
+            math::abs(-30i64) as u64
         }
         ";
 

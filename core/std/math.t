@@ -38,14 +38,6 @@ extern fn __extern_sqrt_f64(x: f64) -> f64
 extern fn __extern_abs_f64(x: f64) -> f64
 extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
 
-pub fn add(a: u64, b: u64) -> u64 {
-    a + b
-}
-
-pub fn multiply(a: u64, b: u64) -> u64 {
-    a * b
-}
-
 pub fn abs(x: i64) -> i64 {
     # Integer abs stays on the legacy `__builtin_abs` polymorphic
     # intrinsic for now — Phase 5 will move `Abs` / `Min` / `Max`

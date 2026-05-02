@@ -91,9 +91,19 @@ const PRELUDE_SOURCE: &str = include_str!("prelude.t");
 /// imported impl blocks (and the always-loaded prelude impls) are
 /// visible to the type-checker registration pass and to the runtime
 /// `build_method_registry` walk.
+///
+/// `core_modules_dir` (when supplied) is scanned for top-level
+/// modules that are auto-imported into the program — the user no
+/// longer needs an explicit `import math` line for files in that
+/// directory. Each subdirectory `<dir>/<name>/` (with an entry-point
+/// `<name>.t` / `mod.t`) and each top-level `<name>.t` becomes the
+/// module `<name>`. User `import` statements still resolve normally
+/// (and dedup against already-auto-loaded modules so importing
+/// something twice is a no-op).
 fn integrate_modules(
     program: &mut Program,
     string_interner: &mut DefaultStringInterner,
+    core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
 
@@ -112,11 +122,95 @@ fn integrate_modules(
         errors.push(format!("Prelude integration error: {}", err));
     }
 
-    // User-declared imports.
+    // Track which module paths have been integrated so the
+    // user-import pass below doesn't re-integrate (the integration
+    // machinery is *not* idempotent — duplicate adds would create
+    // duplicate functions / structs / extern decls). Paths are
+    // joined with `.` to match `std.math` style.
+    let mut loaded_modules: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+
+    // Auto-load every module under the configured core modules
+    // directory. This is the "every program gets `import math` for
+    // free" path the user opted into via `--core-modules <DIR>`.
+    // Each auto-loaded module gets a synthetic `ImportDecl` pushed
+    // into `program.imports` so the type-checker's
+    // `visit_import_decl` path registers the namespace alias —
+    // without that, `math::add(...)` from user code wouldn't
+    // resolve even though the module's functions are in the
+    // function table.
+    if let Some(dir) = core_modules_dir {
+        match module_integration::discover_core_modules(dir) {
+            Ok(modules) => {
+                for module in modules {
+                    let dotted = module.segments.join(".");
+                    if !loaded_modules.insert(dotted.clone()) {
+                        continue;
+                    }
+                    // Auto-loaded modules opt out of namespace
+                    // enforcement (`enforce_namespace = false`) so
+                    // user code can still define functions with
+                    // names that happen to collide with
+                    // auto-loaded ones (e.g. a user `fn add(a:
+                    // Point, b: Point) -> Point` shadows
+                    // `math::add` for bare calls). The qualified
+                    // form `<alias>::name(...)` keeps working
+                    // because the synthetic `ImportDecl` below
+                    // registers the module alias from the *last*
+                    // segment.
+                    if let Err(err) =
+                        module_integration::integrate_module_into_program_with_options(
+                            &module.source,
+                            program,
+                            string_interner,
+                            false,
+                        )
+                    {
+                        errors.push(format!(
+                            "Core module `{}` integration error: {}",
+                            dotted, err
+                        ));
+                        continue;
+                    }
+                    let path_syms: Vec<_> = module
+                        .segments
+                        .iter()
+                        .map(|s| string_interner.get_or_intern(s))
+                        .collect();
+                    program.imports.push(ImportDecl {
+                        module_path: path_syms,
+                        alias: None,
+                    });
+                }
+            }
+            Err(err) => {
+                errors.push(format!(
+                    "Failed to scan core modules directory `{}`: {}",
+                    dir.display(),
+                    err
+                ));
+            }
+        }
+    }
+
+    // User-declared imports. Skip paths that were already auto-loaded
+    // from the core modules directory so `import math` after an
+    // auto-load that already contains math is a no-op.
     let imports = program.imports.clone();
     for import in &imports {
-        if let Err(err) = load_and_integrate_module(program, import, string_interner) {
+        let module_name = import
+            .module_path
+            .iter()
+            .filter_map(|sym| string_interner.resolve(*sym))
+            .collect::<Vec<_>>()
+            .join(".");
+        if loaded_modules.contains(&module_name) {
+            continue;
+        }
+        if let Err(err) = load_and_integrate_module(program, import, string_interner, core_modules_dir) {
             errors.push(format!("Module integration error: {}", err));
+        } else {
+            loaded_modules.insert(module_name);
         }
     }
 
@@ -151,10 +245,27 @@ fn process_impl_blocks_extracted(
 }
 
 pub fn check_typing(
-    program: &mut Program, 
+    program: &mut Program,
     string_interner: &mut DefaultStringInterner,
-    source_code: Option<&str>, 
-    filename: Option<&str>
+    source_code: Option<&str>,
+    filename: Option<&str>,
+) -> Result<(), Vec<String>> {
+    check_typing_with_core_modules(program, string_interner, source_code, filename, None)
+}
+
+/// Same as `check_typing` but with an explicit core-modules directory.
+/// Files inside that directory get auto-loaded — the user no longer
+/// needs an explicit `import` line for them. Pass `None` to keep the
+/// legacy behaviour where only the prelude + user `import`s are
+/// integrated. CLI front-ends (`interpreter::main`,
+/// `compiler::main`) compute the path from `--core-modules` /
+/// `TOYLANG_CORE_MODULES` and forward it here.
+pub fn check_typing_with_core_modules(
+    program: &mut Program,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = vec![];
     
@@ -175,7 +286,7 @@ pub fn check_typing(
     // etc. must be visible to the type-checker registration pass and
     // to `build_method_registry` so `x.abs()` resolves through the
     // extension-trait machinery.
-    if let Err(module_errors) = integrate_modules(program, string_interner) {
+    if let Err(module_errors) = integrate_modules(program, string_interner, core_modules_dir) {
         errors.extend(module_errors);
         return Err(errors);
     }

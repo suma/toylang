@@ -7,18 +7,56 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use interpreter::object::Object;
 
-/// Test helper function to parse, type-check and execute a program
+/// Path to the repo-root `core/` directory. Computed at compile
+/// time relative to the interpreter crate's `CARGO_MANIFEST_DIR` —
+/// available to tests that opt in to auto-load via
+/// `test_program_with_core_modules`.
+#[allow(dead_code)]
+pub fn core_modules_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
+}
+
+/// Test helper function to parse, type-check and execute a program.
+/// Defaults to *no* auto-loaded core modules so a test can name its
+/// own functions (e.g. `fn add(...)`) without colliding with the
+/// stdlib's matching symbols. Tests that need `math::*` etc. should
+/// call `test_program_with_core_modules` instead.
 pub fn test_program(source_code: &str) -> Result<Rc<RefCell<Object>>, String> {
+    test_program_with_core(source_code, None)
+}
+
+/// Variant of `test_program` that auto-loads every top-level module
+/// in the repo `core/` directory the same way the interpreter binary
+/// would when launched without `TOYLANG_CORE_MODULES=`. Use from
+/// tests that exercise `math::sin(x)` etc. without writing an
+/// explicit `import math` line.
+#[allow(dead_code)]
+pub fn test_program_with_core_modules(
+    source_code: &str,
+) -> Result<Rc<RefCell<Object>>, String> {
+    let core = core_modules_dir();
+    test_program_with_core(source_code, Some(core))
+}
+
+fn test_program_with_core(
+    source_code: &str,
+    core: Option<std::path::PathBuf>,
+) -> Result<Rc<RefCell<Object>>, String> {
     let mut parser = frontend::ParserWithInterner::new(source_code);
     let mut program = parser.parse_program()
         .map_err(|e| format!("Parse error: {e:?}"))?;
-    
+
     let string_interner = parser.get_string_interner();
-    
-    // Check typing
-    interpreter::check_typing(&mut program, string_interner, Some(source_code), Some("test.t"))
-        .map_err(|errors| format!("Type check errors: {errors:?}"))?;
-    
+
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        string_interner,
+        Some(source_code),
+        Some("test.t"),
+        core.as_deref(),
+    )
+    .map_err(|errors| format!("Type check errors: {errors:?}"))?;
+
     // Execute program
     interpreter::execute_program(&program, string_interner, Some(source_code), Some("test.t"))
 }

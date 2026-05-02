@@ -41,6 +41,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
     let mut emit = EmitKind::Executable;
     let mut verbose = false;
     let mut release = false;
+    let mut core_modules_dir: Option<PathBuf> = None;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -64,6 +65,16 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
                 let v = args.get(i).ok_or_else(|| "--emit needs an argument".to_string())?;
                 emit = parse_emit(v)?;
             }
+            "--core-modules" => {
+                i += 1;
+                let v = args
+                    .get(i)
+                    .ok_or_else(|| "--core-modules needs a path argument".to_string())?;
+                core_modules_dir = Some(PathBuf::from(v));
+            }
+            s if s.starts_with("--core-modules=") => {
+                core_modules_dir = Some(PathBuf::from(&s["--core-modules=".len()..]));
+            }
             s if s.starts_with('-') => {
                 return Err(format!("unknown flag: {s}"));
             }
@@ -83,6 +94,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
         emit,
         verbose,
         release,
+        core_modules_dir,
     })
 }
 

@@ -3,7 +3,6 @@
 #
 # sin(π/2) = 1, cos(0) = 1, exp(0) = 1, log(e) ≈ 1,
 # log2(8) = 3, floor(3.7) = 3, ceil(3.2) = 4. Total = 13.
-import math
 
 fn main() -> u64 {
     val pi: f64 = 3.14159265358979f64

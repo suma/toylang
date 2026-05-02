@@ -4,7 +4,6 @@
 # spells out which module the function comes from.
 #
 # Expected: 10 + 20 = 30 → exit 30.
-import math
 
 fn main() -> u64 {
     math::add(10u64, 20u64)

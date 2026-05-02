@@ -28,6 +28,14 @@ fn skip_e2e() -> bool {
     std::env::var("COMPILER_E2E").map(|v| v == "skip").unwrap_or(false)
 }
 
+/// Path to the repo-root `core/` directory containing the auto-loaded
+/// stdlib modules. Computed at compile time relative to the compiler
+/// crate's `CARGO_MANIFEST_DIR` so tests resolve the same modules
+/// the interpreter side picks up via its exe-relative search.
+fn core_modules_dir() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
+}
+
 fn unique_path(stem: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
     let pid = std::process::id();
@@ -127,6 +135,7 @@ fn compiler_exit_code(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file");
     let status = Command::new(&exe_path).status().expect("spawn binary");
@@ -202,6 +211,7 @@ fn compiler_stdout(source: &str, stem: &str) -> String {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file");
     let out = Command::new(&exe_path).output().expect("spawn binary");

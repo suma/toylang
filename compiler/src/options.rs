@@ -31,6 +31,12 @@ pub struct CompilerOptions {
     /// when the contract overhead matters and the predicates have been
     /// validated in a checked build.
     pub release: bool,
+    /// Override for the core-modules directory. When `None`, the
+    /// driver consults `TOYLANG_CORE_MODULES` and then falls back to
+    /// an executable-relative search (see
+    /// `compiler::resolve_core_modules_dir`). Set explicitly via the
+    /// `--core-modules <DIR>` CLI flag or by direct API consumers.
+    pub core_modules_dir: Option<PathBuf>,
 }
 
 impl CompilerOptions {
@@ -41,6 +47,7 @@ impl CompilerOptions {
             emit: EmitKind::Executable,
             verbose: false,
             release: false,
+            core_modules_dir: None,
         }
     }
 }

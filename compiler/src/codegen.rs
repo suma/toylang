@@ -107,6 +107,13 @@ fn build_object_module(
         if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
             continue;
         }
+        let func = ir_module.function(func_id);
+        if func.blocks.is_empty() {
+            return Err(format!(
+                "internal: IR function `{}` (linkage={:?}) has no blocks; pass 1 declared it but pass 2 didn't lower a body",
+                func.export_name, func.linkage
+            ));
+        }
         session.define_function(ir_module, func_id)?;
         if options.verbose {
             eprintln!("emitted {}", ir_module.function(func_id).export_name);

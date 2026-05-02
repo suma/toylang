@@ -73,11 +73,24 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
 
     // Reuse the interpreter's check_typing so trait conformance, allocator
     // bounds, and contract validation all run before codegen sees the AST.
-    interpreter::check_typing(
+    // Forwards the optional core-modules directory so the AOT build path
+    // sees the same auto-loaded modules the interpreter does (resolution
+    // priority: `options.core_modules_dir` > `TOYLANG_CORE_MODULES` env
+    // var > exe-relative search; see `resolve_core_modules_dir`).
+    let core_modules_dir = resolve_core_modules_dir(options.core_modules_dir.clone());
+    if options.verbose {
+        if let Some(d) = &core_modules_dir {
+            eprintln!("core modules: {}", d.display());
+        } else {
+            eprintln!("core modules: <none> (auto-load disabled)");
+        }
+    }
+    interpreter::check_typing_with_core_modules(
         &mut program,
         session.string_interner_mut(),
         Some(&source),
         Some(options.input.to_string_lossy().as_ref()),
+        core_modules_dir.as_deref(),
     )
     .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
 
@@ -138,6 +151,52 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Resolve the core-modules directory using the same priority chain
+/// the interpreter binary does. Mirrors
+/// `interpreter::main::resolve_core_modules_dir` so a single build of
+/// the source repo behaves identically across the AOT compiler and
+/// the interpreter:
+///
+/// 1. CLI / API caller override (`options.core_modules_dir`).
+/// 2. `TOYLANG_CORE_MODULES` env var. Empty value opts out.
+/// 3. Executable-relative probe — `<exe>/modules/`,
+///    `<exe>/../share/toylang/modules/`, `<exe>/../../interpreter/modules/`
+///    (the last entry is the dev-tree fallback so
+///    `target/debug/compiler` finds `<repo>/interpreter/modules/`).
+///
+/// Returns `None` when nothing resolves; auto-loading then becomes a
+/// no-op.
+pub fn resolve_core_modules_dir(
+    cli_override: Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    if let Some(p) = cli_override {
+        return Some(p);
+    }
+    if let Some(env_val) = std::env::var_os("TOYLANG_CORE_MODULES") {
+        if env_val.is_empty() {
+            return None;
+        }
+        return Some(std::path::PathBuf::from(env_val));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let exe_dir = exe.parent()?;
+    // Default search candidates. The third entry is the dev-tree
+    // fallback: when the binary is `target/debug/compiler`,
+    // `exe_dir/../../core` resolves to `<repo>/core/`. The first two
+    // cover a co-located distribution and a Unix install layout.
+    let candidates: [std::path::PathBuf; 3] = [
+        exe_dir.join("core"),
+        exe_dir.join("../share/toylang/core"),
+        exe_dir.join("../../core"),
+    ];
+    for cand in candidates {
+        if cand.is_dir() {
+            return Some(cand);
+        }
+    }
+    None
 }
 
 fn default_object_path(input: &Path) -> std::path::PathBuf {

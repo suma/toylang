@@ -1,5 +1,5 @@
 mod common;
-use common::test_program;
+use common::{test_program, test_program_with_core_modules};
 
 // ============================================================================
 // Module system tests
@@ -21,42 +21,24 @@ fn test_module_package_declaration() {
 }
 
 #[test]
-fn test_module_import_declaration() {
+fn test_module_auto_load_no_import_needed() {
+    // Core modules in the configured `core/` dir are integrated
+    // automatically — no `import math` line required. The
+    // qualified form `math::name(...)` still resolves through the
+    // synthetic `ImportDecl` the auto-load path inserts.
     let source = r"
-        import math
-
         fn main() -> u64 {
-            42u64
+            math::add(10u64, 32u64)
         }
         ";
 
-    let result = test_program(source);
-    assert!(result.is_ok(), "Program with import declaration should run");
-    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
-}
-
-#[test]
-fn test_module_bare_call_rejected() {
-    // Namespace-only enforcement: imported `pub fn`s must be called
-    // via the qualified `module::func(args)` form. A bare `func(args)`
-    // call into an imported function is rejected at type-check time
-    // so users always spell out where the function lives.
-    let source = r"
-        import math
-
-        fn main() -> u64 {
-            add(1u64, 2u64)
-        }
-        ";
-
-    let result = test_program(source);
-    assert!(result.is_err(), "Bare call into imported fn should be rejected");
-    let err_text = format!("{:?}", result.err().unwrap());
+    let result = test_program_with_core_modules(source);
     assert!(
-        err_text.contains("must be called with the qualified form"),
-        "diagnostic should mention qualified form, got: {}",
-        err_text
+        result.is_ok(),
+        "math::add should resolve via auto-load: {:?}",
+        result.err()
     );
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
 }
 
 #[test]
@@ -187,15 +169,15 @@ fn test_module_qualified_call_executes() {
     // bodies as `Stmt::Break` placeholders). With the fix in place,
     // calling an imported `pub fn` via the qualified `module::func`
     // form must execute the real body and return the right value.
+    // No `import math` line — the auto-load path picks math up from
+    // the configured `core/` directory.
     let source = r"
-        import math
-
         fn main() -> u64 {
             math::add(10u64, 20u64)
         }
         ";
 
-    let result = test_program(source);
+    let result = test_program_with_core_modules(source);
     assert!(
         result.is_ok(),
         "Qualified module call should execute: {:?}",
@@ -205,18 +187,20 @@ fn test_module_qualified_call_executes() {
 }
 
 #[test]
-fn test_module_package_and_import() {
+fn test_module_package_and_no_import_needed() {
+    // `package main` declaration alongside auto-loaded core modules
+    // — confirms the package directive doesn't disturb the
+    // auto-load path's synthetic ImportDecl insertion.
     let source = r"
         package main
-        import math
 
         fn main() -> u64 {
             42u64
         }
         ";
 
-    let result = test_program(source);
-    assert!(result.is_ok(), "Program with package and import should run");
+    let result = test_program_with_core_modules(source);
+    assert!(result.is_ok(), "Program with package + auto-load should run");
     assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
 }
 

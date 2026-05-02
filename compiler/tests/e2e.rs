@@ -29,8 +29,23 @@ fn unique_path(stem: &str) -> PathBuf {
     p
 }
 
+/// Path to the repo-root `core/` directory containing the auto-loaded
+/// stdlib modules. Computed at compile time relative to the compiler
+/// crate's `CARGO_MANIFEST_DIR` so tests that opt in to auto-load
+/// resolve the same modules the compiler binary picks up via its
+/// exe-relative search. Most e2e tests intentionally don't use this
+/// — they define their own functions (often with names like `add`
+/// that would collide with `math::add`), so the helper below
+/// defaults to `core_modules_dir: None`.
+#[allow(dead_code)]
+fn core_modules_dir() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
+}
+
 /// Compile `source` to a unique executable path, run it, and return the
-/// exit code (or panic on link / spawn failure).
+/// exit code (or panic on link / spawn failure). Tests that need
+/// auto-load construct `CompilerOptions` with
+/// `core_modules_dir: Some(core_modules_dir())` directly.
 fn compile_and_run(source: &str, stem: &str) -> i32 {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
@@ -41,6 +56,7 @@ fn compile_and_run(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let status = Command::new(&exe_path)
@@ -181,6 +197,7 @@ fn compile_and_capture(source: &str, stem: &str) -> Output {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let output = Command::new(&exe_path).output().expect("spawn binary");
@@ -1569,6 +1586,7 @@ fn release_flag_skips_requires_check() {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&opts_chk).expect("compile checked");
     let out_chk = Command::new(&exe_chk).output().expect("spawn checked");
@@ -1583,6 +1601,7 @@ fn release_flag_skips_requires_check() {
         emit: EmitKind::Executable,
         verbose: false,
         release: true,
+        core_modules_dir: None,
     };
     compile_file(&opts_rel).expect("compile release");
     let out_rel = Command::new(&exe_rel).output().expect("spawn release");
@@ -1762,6 +1781,7 @@ fn emit_object_writes_o_file() {
         emit: EmitKind::Object,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let metadata = std::fs::metadata(&obj_path).expect("object file exists");
@@ -1787,6 +1807,7 @@ fn emit_ir_writes_compiler_ir() {
         emit: EmitKind::Ir,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&ir_path).expect("ir file exists");
@@ -1812,6 +1833,7 @@ fn emit_clif_writes_cranelift_ir() {
         emit: EmitKind::Clif,
         verbose: false,
         release: false,
+        core_modules_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&clif_path).expect("clif file exists");

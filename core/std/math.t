@@ -1,21 +1,14 @@
-package math
+package std.math
 
-# Existing helper exports kept for backward-compat with module
-# integration tests.
-
-pub fn add(a: u64, b: u64) -> u64 {
-    a + b
-}
-
-pub fn multiply(a: u64, b: u64) -> u64 {
-    a * b
-}
-
-# ---------------------------------------------------------------------
-# Rust-`core`-style stdlib bridge.
+# Stdlib math module. Auto-loaded from `<core>/std/math.t` so user
+# programs can call `math::sin(x)` / `math::sqrt(x)` etc. without
+# writing an `import` line. The synthetic `ImportDecl` inserted by
+# `interpreter::lib::integrate_modules` registers `math` as the
+# qualified-call alias (it derives from the *last* segment of
+# `std.math`).
 #
-# The intrinsics are declared as `extern fn` with the canonical
-# `__extern_*_f64` names. Each backend resolves them differently:
+# Architecture: every f64 intrinsic delegates to a runtime extern
+# fn whose name each backend resolves differently:
 #
 # - interpreter: dispatched by the registry in
 #   `interpreter::evaluation::extern_math::build_default_registry`.
@@ -27,9 +20,11 @@ pub fn multiply(a: u64, b: u64) -> u64 {
 #   function pointing at the matching libm symbol via
 #   `compiler::lower::program::libm_import_name_for`.
 #
-# The wrapper `pub fn` layer keeps the user-facing surface stable
-# (`math::sin(x)`, `math::sqrt(x)`, …) so callers never need to type
-# the `__extern_` mangled name themselves.
+# `pub fn` wrappers keep the user-facing surface stable
+# (`math::sin(x)`, `math::sqrt(x)`, …) so callers never have to type
+# the `__extern_` mangled name themselves. `add` / `multiply` are
+# convenience exports kept around for the module-integration
+# regression tests.
 
 extern fn __extern_sin_f64(x: f64) -> f64
 extern fn __extern_cos_f64(x: f64) -> f64
@@ -42,6 +37,14 @@ extern fn __extern_ceil_f64(x: f64) -> f64
 extern fn __extern_sqrt_f64(x: f64) -> f64
 extern fn __extern_abs_f64(x: f64) -> f64
 extern fn __extern_pow_f64(base: f64, exp: f64) -> f64
+
+pub fn add(a: u64, b: u64) -> u64 {
+    a + b
+}
+
+pub fn multiply(a: u64, b: u64) -> u64 {
+    a * b
+}
 
 pub fn abs(x: i64) -> i64 {
     # Integer abs stays on the legacy `__builtin_abs` polymorphic
@@ -112,8 +115,4 @@ pub fn floor(x: f64) -> f64 {
 
 pub fn ceil(x: f64) -> f64 {
     __extern_ceil_f64(x)
-}
-
-fn private_helper() -> u64 {
-    42u64
 }

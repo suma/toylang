@@ -546,6 +546,7 @@ pub(crate) fn load_and_integrate_module(
     program: &mut Program,
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
+    core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), String> {
     if import.module_path.is_empty() {
         return Err("Invalid module path: empty".to_string());
@@ -561,7 +562,7 @@ pub(crate) fn load_and_integrate_module(
         })
         .collect::<Result<_, _>>()?;
 
-    let candidates = candidate_module_paths(&segments);
+    let candidates = candidate_module_paths(&segments, core_modules_dir);
     let mut tried: Vec<String> = Vec::with_capacity(candidates.len());
     for path in &candidates {
         tried.push(path.clone());
@@ -576,14 +577,105 @@ pub(crate) fn load_and_integrate_module(
     ))
 }
 
+/// Discovered core-module entry. `segments` mirrors the
+/// `ImportDecl::module_path` shape an explicit `import a.b.c` would
+/// have produced (`["std", "math"]` for `core/std/math.t`); the
+/// integration path uses it to register the namespace alias under
+/// the *last* segment (`math` for the std.math example).
+#[derive(Debug, Clone)]
+pub struct DiscoveredCoreModule {
+    pub segments: Vec<String>,
+    pub source: String,
+}
+
+/// Recursively walk a core-modules directory and collect every
+/// `.t` file the auto-load path should integrate. Returns entries
+/// in deterministic (path-sorted) order so test runs and release
+/// builds see identical integration sequences.
+///
+/// Layout patterns (all equivalent — first match wins per directory):
+///
+/// - `dir/<name>.t` — single-file module. `segments = ["<name>"]`.
+/// - `dir/<a>/<b>/.../<last>.t` — nested directory tree, the leaf
+///   `.t` file's stem becomes the last segment. `segments` reflects
+///   the full path. Matches `core/std/math.t -> ["std", "math"]`.
+/// - `dir/<a>/<b>/.../<last>/<last>.t` — directory whose entry-point
+///   repeats the directory name. Same `segments` as the leaf-file
+///   form (last segment from the directory). Matches
+///   `core/math/math.t -> ["math"]`.
+/// - `dir/<a>/<b>/.../<last>/mod.t` — Rust-style `mod.rs` form.
+///   Same `segments` shape.
+pub fn discover_core_modules(
+    dir: &std::path::Path,
+) -> Result<Vec<DiscoveredCoreModule>, String> {
+    let mut out: Vec<DiscoveredCoreModule> = Vec::new();
+    walk_core_dir(dir, &mut Vec::new(), &mut out)?;
+    out.sort_by(|a, b| a.segments.cmp(&b.segments));
+    Ok(out)
+}
+
+fn walk_core_dir(
+    dir: &std::path::Path,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<DiscoveredCoreModule>,
+) -> Result<(), String> {
+    let read = std::fs::read_dir(dir)
+        .map_err(|e| format!("read_dir {}: {}", dir.display(), e))?;
+    let mut subdirs: Vec<(String, std::path::PathBuf)> = Vec::new();
+    let mut leaf_files: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for entry in read {
+        let entry = entry.map_err(|e| format!("dir entry: {}", e))?;
+        let entry_path = entry.path();
+        let file_name = match entry_path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        if entry_path.is_file() {
+            if let Some(stem) = file_name.strip_suffix(".t") {
+                leaf_files.push((stem.to_string(), entry_path));
+            }
+        } else if entry_path.is_dir() {
+            subdirs.push((file_name, entry_path));
+        }
+    }
+    // Leaf `.t` files in this directory become modules with the
+    // current `prefix + stem` segments.
+    for (stem, path) in leaf_files {
+        let mut segments = prefix.clone();
+        segments.push(stem);
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| format!("read {}: {}", path.display(), e))?;
+        out.push(DiscoveredCoreModule { segments, source });
+    }
+    // Subdirectories recurse. Each subdir contributes its name to
+    // the segment prefix for the next level. The legacy
+    // `<name>/<name>.t` and `<name>/mod.t` entry-point candidates
+    // emerge naturally from the recursion: the inner `.t` file is
+    // treated as a leaf, and the outer directory contributes its
+    // own segment to the prefix.
+    for (sub_name, sub_path) in subdirs {
+        prefix.push(sub_name);
+        walk_core_dir(&sub_path, prefix, out)?;
+        prefix.pop();
+    }
+    Ok(())
+}
+
 /// Build the candidate filesystem paths for `import a.b.c`. Order
-/// matters — earlier candidates win.
-fn candidate_module_paths(segments: &[String]) -> Vec<String> {
+/// matters — earlier candidates win. Two roots are searched: the
+/// configured `core_modules_dir` (when present) takes precedence so
+/// the resolver matches the auto-load source of truth, then the
+/// legacy cwd-relative `modules/...` so existing call sites that
+/// pre-date the `core/` move keep working.
+fn candidate_module_paths(
+    segments: &[String],
+    core_modules_dir: Option<&std::path::Path>,
+) -> Vec<String> {
     let prefix_dirs = &segments[..segments.len() - 1];
     let last = segments.last().expect("non-empty segments");
 
-    let join_dirs = |extras: &[&str]| -> String {
-        let mut parts: Vec<&str> = vec!["modules"];
+    let join_under = |root: &str, extras: &[&str]| -> String {
+        let mut parts: Vec<&str> = vec![root];
         for s in prefix_dirs {
             parts.push(s.as_str());
         }
@@ -593,16 +685,21 @@ fn candidate_module_paths(segments: &[String]) -> Vec<String> {
         parts.join("/")
     };
 
-    vec![
-        // Strategy 1: `<last>.t` directly inside the prefix dir
-        // (matches `import std.math` -> `modules/std/math.t`).
-        format!("{}/{}.t", join_dirs(&[]), last),
-        // Strategy 2: `<last>/<last>.t` (legacy single-segment
-        // layout `import math` -> `modules/math/math.t`).
-        format!("{}/{}/{}.t", join_dirs(&[]), last, last),
-        // Strategy 3: `<last>/mod.t` (Rust-style mod.rs convention).
-        format!("{}/{}/mod.t", join_dirs(&[]), last),
-    ]
+    let mut out: Vec<String> = Vec::with_capacity(6);
+    if let Some(dir) = core_modules_dir {
+        let root = dir.to_string_lossy().into_owned();
+        out.push(format!("{}/{}.t", join_under(&root, &[]), last));
+        out.push(format!("{}/{}/{}.t", join_under(&root, &[]), last, last));
+        out.push(format!("{}/{}/mod.t", join_under(&root, &[]), last));
+    }
+    // Legacy cwd-relative `modules/...` candidates kept for backward
+    // compat — pre-`core/`-move tests / scripts that ran from the
+    // project root with an `interpreter/modules/` symlink in place
+    // still work.
+    out.push(format!("{}/{}.t", join_under("modules", &[]), last));
+    out.push(format!("{}/{}/{}.t", join_under("modules", &[]), last, last));
+    out.push(format!("{}/{}/mod.t", join_under("modules", &[]), last));
+    out
 }
 
 /// Integrate a module's source text into the main program by parsing it

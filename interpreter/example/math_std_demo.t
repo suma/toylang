@@ -4,7 +4,6 @@
 # the file lives under `std/`.
 #
 # Expected: 9 + 4 = 13 → exit 13.
-import std.math
 
 fn main() -> u64 {
     val a: i64 = math::abs(-9i64)

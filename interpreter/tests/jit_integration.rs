@@ -598,7 +598,7 @@ fn generic_example_compiles_each_monomorph() {
     // main itself should appear in the compile log.
     assert!(r.stderr.contains("id__I64"), "stderr: {}", r.stderr);
     assert!(r.stderr.contains("id__U64"), "stderr: {}", r.stderr);
-    assert!(r.stderr.contains("add__U64"), "stderr: {}", r.stderr);
+    assert!(r.stderr.contains("gadd__U64"), "stderr: {}", r.stderr);
 }
 
 #[cfg(feature = "jit")]

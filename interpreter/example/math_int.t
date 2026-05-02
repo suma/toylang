@@ -1,7 +1,6 @@
 # Smoke test for the integer math wrappers in `std math` (== the
 # `math` module shipped under `interpreter/modules/math/math.t`).
 # Expected: abs(-7) + min(3, 5) + max(10u64, 4u64) = 7 + 3 + 10 = 20 → exit 20.
-import math
 
 fn main() -> u64 {
     val a: i64 = math::abs(-7i64)

@@ -21,9 +21,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Source for the runtime, embedded into the compiler binary at build
-/// time. We write it out to a temp file each compile so `cc` can see it.
-const RUNTIME_C_SOURCE: &str = include_str!("../runtime/toylang_rt.c");
+/// Pre-compiled runtime object. `compiler/build.rs` invokes `cc -c
+/// runtime/toylang_rt.c -o $OUT_DIR/toylang_rt.o` once when the
+/// compiler crate itself is built, so every `link_executable`
+/// invocation can skip the C compilation step and just hand `cc`
+/// two ready-to-link objects. Massively cuts the per-test cost of
+/// the compiler e2e suite (the runtime never changes between tests
+/// in a single run).
+const RUNTIME_OBJECT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/toylang_rt.o"));
 
 pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Result<(), String> {
     // Write the toylang object next to the desired output. Putting it
@@ -34,12 +39,15 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
     std::fs::write(&tmp_obj, object_bytes)
         .map_err(|e| format!("write {}: {}", tmp_obj.display(), e))?;
 
-    // Materialise the C runtime as a sibling source file. The compiler
-    // built this binary with the source baked in via include_str!, so
-    // the user doesn't need to ship the .c file themselves.
-    let tmp_rt_src = sibling_temp_path(output, ".rt.c");
-    std::fs::write(&tmp_rt_src, RUNTIME_C_SOURCE)
-        .map_err(|e| format!("write {}: {}", tmp_rt_src.display(), e))?;
+    // Materialise the pre-compiled runtime object as a sibling file.
+    // It's the same bytes for every link, so a follow-up could share
+    // a single on-disk copy across compiles — but the cost of the
+    // write itself is now well under the (already-eliminated) C
+    // compile cost, so leaving it per-compile keeps the cleanup logic
+    // local and avoids races between concurrent test workers.
+    let tmp_rt_obj = sibling_temp_path(output, ".rt.o");
+    std::fs::write(&tmp_rt_obj, RUNTIME_OBJECT)
+        .map_err(|e| format!("write {}: {}", tmp_rt_obj.display(), e))?;
 
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
 
@@ -55,7 +63,7 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
     // linker's deployment-target metadata. No-op on Linux / Windows
     // where cranelift emits ELF / COFF and the warning doesn't apply.
     let mut cmd = Command::new(&cc);
-    cmd.arg(&tmp_obj).arg(&tmp_rt_src);
+    cmd.arg(&tmp_obj).arg(&tmp_rt_obj);
     #[cfg(target_os = "macos")]
     {
         cmd.arg("-mmacosx-version-min=11.0");
@@ -67,7 +75,7 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
             "invoking: {} {} {}{} -o {}",
             cc,
             tmp_obj.display(),
-            tmp_rt_src.display(),
+            tmp_rt_obj.display(),
             if cfg!(target_os = "macos") {
                 " -mmacosx-version-min=11.0"
             } else {
@@ -76,8 +84,9 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
             output.display()
         );
     }
-    // Hand `cc` both the toylang `.o` and the runtime `.c`; it compiles
-    // the latter and links them into a single executable in one call.
+    // Hand `cc` both objects; it just links them into a single
+    // executable, which is dramatically faster than recompiling the
+    // runtime's C source every invocation.
     //
     // On macOS we capture stderr and filter out the per-object
     // "ld: warning: no platform load command found in '...'"
@@ -100,7 +109,7 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
     // Best-effort cleanup; if linking failed we still want to surface
     // that, not the rm error.
     let _ = std::fs::remove_file(&tmp_obj);
-    let _ = std::fs::remove_file(&tmp_rt_src);
+    let _ = std::fs::remove_file(&tmp_rt_obj);
     if !status.success() {
         return Err(format!("`{cc}` exited with status {}", status));
     }

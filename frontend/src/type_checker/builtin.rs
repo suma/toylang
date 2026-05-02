@@ -22,13 +22,15 @@ impl<'a> TypeCheckerVisitor<'a> {
         registry.insert((TypeDecl::String, "to_upper".to_string()), BuiltinMethod::StrToUpper);
         registry.insert((TypeDecl::String, "to_lower".to_string()), BuiltinMethod::StrToLower);
 
-        // Numeric methods. `i64.abs()` returns `i64` (matches Rust's
-        // `wrapping_abs`); `f64.sqrt()` returns `f64` (IEEE 754 — NaN
-        // for negative inputs). Both forward to the matching
-        // `__builtin_*` intrinsic in the runtime / JIT / compiler.
-        registry.insert((TypeDecl::Int64, "abs".to_string()), BuiltinMethod::I64Abs);
-        registry.insert((TypeDecl::Float64, "abs".to_string()), BuiltinMethod::F64Abs);
-        registry.insert((TypeDecl::Float64, "sqrt".to_string()), BuiltinMethod::F64Sqrt);
+        // NOTE: numeric value-method registrations (`i64.abs()` /
+        // `f64.abs()` / `f64.sqrt()`) lived here as
+        // `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` entries. Step E
+        // moved them onto extension-trait impls in the always-loaded
+        // prelude (`impl Abs for i64 { fn abs(self) -> i64 { ... } }`
+        // / `impl Abs for f64` / `impl Sqrt for f64`); call sites
+        // resolve through `context.struct_methods` keyed by the
+        // canonical primitive name (`"i64"` / `"f64"`) instead of
+        // through this builtin-method registry.
         
         // Future: Array methods (when ArrayLen etc. are added)
         // registry.insert((TypeDecl::Array(vec![], 0), "len".to_string()), BuiltinMethod::ArrayLen);

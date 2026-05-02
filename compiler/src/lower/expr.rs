@@ -272,65 +272,23 @@ impl<'a> FunctionLower<'a> {
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
-            Expr::BuiltinMethodCall(receiver, method, args) => {
-                // `x.abs()` / `x.sqrt()` style method calls. Both
-                // forward to the matching `__builtin_*` intrinsic so
-                // the lowering reuses the same `UnaryOp` variants the
-                // bare-call path already supports. String / pointer
-                // / `is_null` methods aren't lowered yet — they
-                // remain interpreter-only.
-                use frontend::ast::BuiltinMethod;
-                match method {
-                    BuiltinMethod::I64Abs => {
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "i64.abs() takes no arguments, got {}",
-                                args.len()
-                            ));
-                        }
-                        let operand = self
-                            .lower_expr(&receiver)?
-                            .ok_or_else(|| "i64.abs() receiver produced no value".to_string())?;
-                        Ok(self.emit(
-                            InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
-                            Some(Type::I64),
-                        ))
-                    }
-                    BuiltinMethod::F64Abs => {
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "f64.abs() takes no arguments, got {}",
-                                args.len()
-                            ));
-                        }
-                        let operand = self
-                            .lower_expr(&receiver)?
-                            .ok_or_else(|| "f64.abs() receiver produced no value".to_string())?;
-                        Ok(self.emit(
-                            InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
-                            Some(Type::F64),
-                        ))
-                    }
-                    BuiltinMethod::F64Sqrt => {
-                        if !args.is_empty() {
-                            return Err(format!(
-                                "f64.sqrt() takes no arguments, got {}",
-                                args.len()
-                            ));
-                        }
-                        let operand = self
-                            .lower_expr(&receiver)?
-                            .ok_or_else(|| "f64.sqrt() receiver produced no value".to_string())?;
-                        Ok(self.emit(
-                            InstKind::UnaryOp { op: crate::ir::UnaryOp::Sqrt, operand },
-                            Some(Type::F64),
-                        ))
-                    }
-                    other => Err(format!(
-                        "compiler MVP cannot lower builtin method yet: {:?}",
-                        other
-                    )),
-                }
+            Expr::BuiltinMethodCall(_receiver, method, _args) => {
+                // NOTE: `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}`
+                // arms used to live here, lowering directly to
+                // `UnaryOp::{Abs, Sqrt}` cranelift instructions.
+                // Step F removed them — `x.abs()` / `x.sqrt()` now
+                // resolve through the prelude's extension-trait
+                // impls and reach `lower_method_call`'s
+                // primitive-receiver path (Step D), which emits a
+                // regular call into the prelude's wrapper body that
+                // forwards to `__extern_*` (resolved by
+                // `libm_import_name_for` to the matching libm
+                // symbol). String / `is_null` methods stay
+                // interpreter-only as before.
+                Err(format!(
+                    "compiler MVP cannot lower builtin method yet: {:?}",
+                    method
+                ))
             }
             Expr::SliceAccess(obj, info) => self.lower_slice_access(&obj, &info),
             Expr::SliceAssign(obj, start, end, value) => {

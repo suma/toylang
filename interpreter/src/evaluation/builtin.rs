@@ -236,48 +236,14 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Array(Box::new(parts)).into()))
             }
 
-            BuiltinMethod::I64Abs => {
-                if !args.is_empty() {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "i64.abs() takes no arguments".to_string(),
-                        expected: 0,
-                        found: args.len(),
-                    });
-                }
-                let n = receiver.borrow().try_unwrap_int64().map_err(|_| {
-                    InterpreterError::InternalError("abs() requires an i64 receiver".to_string())
-                })?;
-                Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
-            }
-
-            BuiltinMethod::F64Abs => {
-                if !args.is_empty() {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "f64.abs() takes no arguments".to_string(),
-                        expected: 0,
-                        found: args.len(),
-                    });
-                }
-                let x = receiver.borrow().try_unwrap_float64().map_err(|_| {
-                    InterpreterError::InternalError("abs() requires an f64 receiver".to_string())
-                })?;
-                // IEEE 754 fabs: preserves NaN, flips the sign bit.
-                Ok(EvaluationResult::Value(Object::Float64(x.abs()).into()))
-            }
-
-            BuiltinMethod::F64Sqrt => {
-                if !args.is_empty() {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "f64.sqrt() takes no arguments".to_string(),
-                        expected: 0,
-                        found: args.len(),
-                    });
-                }
-                let x = receiver.borrow().try_unwrap_float64().map_err(|_| {
-                    InterpreterError::InternalError("sqrt() requires an f64 receiver".to_string())
-                })?;
-                Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()))
-            }
+            // NOTE: numeric value-method arms (`I64Abs` / `F64Abs` /
+            // `F64Sqrt`) lived here before Step F. The prelude's
+            // extension-trait impls now cover the same surface; the
+            // call-eval primitive-receiver path (Step B) routes to
+            // them through the regular `method_registry`, then the
+            // body forwards to `__extern_abs_i64` / `__extern_abs_f64`
+            // / `__extern_sqrt_f64` (registered in
+            // `evaluation/extern_math::build_default_registry`).
         }
     }
 

@@ -311,105 +311,24 @@ impl<'a> FunctionLower<'a> {
         method: DefaultSymbol,
         args: &Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
-        // Numeric value-method form (`x.abs()` for `i64`,
-        // `x.sqrt()` for `f64`). The frontend type-checker dispatches
-        // these via `BuiltinMethod::I64Abs` / `BuiltinMethod::F64Sqrt`,
-        // but the AST still reaches us as a plain `MethodCall`. We
-        // intercept here before the struct-binding check so the
-        // receiver doesn't have to be a struct.
-        let method_name = self.interner.resolve(method).unwrap_or("");
-        if method_name == "abs" || method_name == "sqrt" {
-            if !args.is_empty() {
-                return Err(format!(
-                    "{method_name}() takes no arguments, got {}",
-                    args.len()
-                ));
-            }
-            let receiver_value = self
-                .lower_expr(obj)?
-                .ok_or_else(|| {
-                    format!("{method_name}() receiver produced no value")
-                })?;
-            let receiver_ty = self.value_ir_type_for(receiver_value);
-            match (method_name, receiver_ty) {
-                ("abs", Some(crate::ir::Type::I64)) => {
-                    return Ok(self.emit(
-                        InstKind::UnaryOp {
-                            op: crate::ir::UnaryOp::Abs,
-                            operand: receiver_value,
-                        },
-                        Some(crate::ir::Type::I64),
-                    ));
-                }
-                ("abs", Some(crate::ir::Type::F64)) => {
-                    return Ok(self.emit(
-                        InstKind::UnaryOp {
-                            op: crate::ir::UnaryOp::Abs,
-                            operand: receiver_value,
-                        },
-                        Some(crate::ir::Type::F64),
-                    ));
-                }
-                ("sqrt", Some(crate::ir::Type::F64)) => {
-                    return Ok(self.emit(
-                        InstKind::UnaryOp {
-                            op: crate::ir::UnaryOp::Sqrt,
-                            operand: receiver_value,
-                        },
-                        Some(crate::ir::Type::F64),
-                    ));
-                }
-                // Fall through to the regular struct/enum method path
-                // — the receiver might be a user struct that happens
-                // to define an `abs` / `sqrt` instance method.
-                _ => {}
-            }
-        }
-
-        let obj_expr = self
-            .program
-            .expression
-            .get(obj)
-            .ok_or_else(|| "method-call receiver missing".to_string())?;
-        let recv_sym = match obj_expr {
-            Expr::Identifier(sym) => sym,
-            _ => {
-                return Err(format!(
-                    "compiler MVP only supports method calls on a bare identifier (got {:?})",
-                    obj_expr
-                ));
-            }
-        };
-        let binding = self
-            .bindings
-            .get(&recv_sym)
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "undefined receiver `{}` for method call",
-                    self.interner.resolve(recv_sym).unwrap_or("?")
-                )
-            })?;
-
-        // Step D: extension-trait dispatch on a primitive receiver.
-        // The receiver is a `Binding::Scalar`; map its IR `Type` back
-        // to the canonical-name symbol (`"i64"` / `"f64"` / etc.) and
-        // look the user-defined impl method up in the regular
-        // `method_func_ids` table. On a hit, emit a normal call with
-        // the receiver value prepended to the arg list and return
-        // before the existing struct/enum path runs. On miss, fall
-        // through so the legacy hardcoded `BuiltinMethod`-shaped
-        // arms above (abs/sqrt) still take effect for built-in
-        // numeric methods until Step F migrates them.
-        if let Binding::Scalar { local, ty } = &binding {
+        // Step D + F: extension-trait dispatch on a primitive
+        // receiver. Run *before* the bare-identifier check so
+        // chained primitive method calls (`x.abs().abs()`) — whose
+        // receiver is itself a `MethodCall`, not an
+        // `Expr::Identifier` — also lower correctly. We can use
+        // `value_scalar` to discover the receiver's IR type
+        // without committing to lowering it twice; a hit then
+        // requires another `lower_expr` pass to actually emit the
+        // value (cheap because most receivers are simple).
+        if let Some(recv_ty) = self.value_scalar(obj) {
             if let Some(target_sym) =
-                primitive_target_sym_for_ir_type(*ty, self.interner)
+                primitive_target_sym_for_ir_type(recv_ty, self.interner)
             {
                 if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)).copied()
                 {
                     let receiver_value = self
-                        .emit(InstKind::LoadLocal(*local), Some(*ty))
-                        .expect("LoadLocal returns a value");
+                        .lower_expr(obj)?
+                        .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
                     let mut values: Vec<ValueId> = vec![receiver_value];
                     for a in args {
                         let v = self
@@ -437,6 +356,31 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "method-call receiver missing".to_string())?;
+        let recv_sym = match obj_expr {
+            Expr::Identifier(sym) => sym,
+            _ => {
+                return Err(format!(
+                    "compiler MVP only supports method calls on a bare identifier (got {:?})",
+                    obj_expr
+                ));
+            }
+        };
+        let binding = self
+            .bindings
+            .get(&recv_sym)
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "undefined receiver `{}` for method call",
+                    self.interner.resolve(recv_sym).unwrap_or("?")
+                )
+            })?;
 
         let target_sym = match &binding {
             Binding::Struct { struct_id, .. } => self.module.struct_def(*struct_id).base_name,

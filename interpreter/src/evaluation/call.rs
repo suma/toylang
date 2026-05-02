@@ -574,48 +574,23 @@ impl EvaluationContext<'_> {
                     }
                 }
             }
-            // Numeric value-method dispatch — `x.abs()` for `i64`,
-            // `x.sqrt()` for `f64`. Both forward to the matching
-            // `__builtin_*` semantics (wrapping_abs / IEEE 754).
-            Object::Int64(n) => {
-                if method_name == "abs" {
-                    if !args.is_empty() {
-                        return Err(InterpreterError::InternalError(format!(
-                            "i64.abs() method takes no arguments, but {} provided",
-                            args.len()
-                        )));
-                    }
-                    return Ok(EvaluationResult::Value(
-                        Object::Int64(n.wrapping_abs()).into(),
-                    ));
-                }
-                Err(InterpreterError::InternalError(format!(
-                    "Method '{method_name}' not found for i64"
-                )))
-            }
-            Object::Float64(x) => {
-                if method_name == "sqrt" {
-                    if !args.is_empty() {
-                        return Err(InterpreterError::InternalError(format!(
-                            "f64.sqrt() method takes no arguments, but {} provided",
-                            args.len()
-                        )));
-                    }
-                    return Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()));
-                }
-                if method_name == "abs" {
-                    if !args.is_empty() {
-                        return Err(InterpreterError::InternalError(format!(
-                            "f64.abs() method takes no arguments, but {} provided",
-                            args.len()
-                        )));
-                    }
-                    return Ok(EvaluationResult::Value(Object::Float64(x.abs()).into()));
-                }
-                Err(InterpreterError::InternalError(format!(
-                    "Method '{method_name}' not found for f64"
-                )))
-            }
+            // NOTE: hardcoded `Object::Int64.abs()` /
+            // `Object::Float64.{abs,sqrt}` arms lived here before
+            // Step F. The Step B primitive-receiver dispatch path
+            // earlier in this function intercepts these calls and
+            // routes through the prelude's extension-trait impls
+            // (`impl Abs for i64 { fn abs(self) -> i64 { ... } }`
+            // / `impl Sqrt for f64 { ... }`). The arms below are
+            // unreachable for `abs` / `sqrt` now; they only fire
+            // when a user calls some unknown method on a
+            // primitive, which produces the same "method not
+            // found" diagnostic as before.
+            Object::Int64(_) => Err(InterpreterError::InternalError(format!(
+                "Method '{method_name}' not found for i64"
+            ))),
+            Object::Float64(_) => Err(InterpreterError::InternalError(format!(
+                "Method '{method_name}' not found for f64"
+            ))),
             Object::Struct { type_name, .. } => {
                 let struct_name_symbol = *type_name;
 

@@ -141,12 +141,14 @@ impl<'a> FunctionLower<'a> {
                 // regular `Expr::Call` path instead.
                 _ => None,
             },
-            Expr::BuiltinMethodCall(_receiver, method, _args) => match method {
-                frontend::ast::BuiltinMethod::I64Abs => Some(Type::I64),
-                frontend::ast::BuiltinMethod::F64Abs
-                | frontend::ast::BuiltinMethod::F64Sqrt => Some(Type::F64),
-                _ => None,
-            },
+            Expr::BuiltinMethodCall(_receiver, _method, _args) => {
+                // NOTE: `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}`
+                // arms used to live here. Step F removed them;
+                // numeric value-method type inference now flows
+                // through the regular `MethodCall` arm against the
+                // prelude's extension-trait impls.
+                None
+            }
             Expr::SliceAccess(obj, info) => {
                 if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
                     return None;

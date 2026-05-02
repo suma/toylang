@@ -364,11 +364,13 @@ pub enum BuiltinMethod {
     StrToUpper,   // str.to_upper() -> str
     StrToLower,   // str.to_lower() -> str
 
-    // Numeric methods (forward to the matching `__builtin_*` intrinsic
-    // so the implementation stays in one place).
-    I64Abs,   // i64.abs() -> i64  — `__builtin_abs(self)` (wrapping_abs)
-    F64Abs,   // f64.abs() -> f64  — `__builtin_abs(self)` (IEEE 754 fabs)
-    F64Sqrt,  // f64.sqrt() -> f64 — `__builtin_sqrt(self)`
+    // NOTE: `I64Abs` / `F64Abs` / `F64Sqrt` lived here as hardcoded
+    // numeric value-method dispatchers. Step E (extension-trait
+    // migration) replaced them with regular `impl Abs for {i64,f64}`
+    // / `impl Sqrt for f64` blocks in the always-loaded prelude
+    // (`interpreter/src/prelude.t`); `x.abs()` / `x.sqrt()` now
+    // resolve through the same `method_registry` user-defined
+    // extension traits go through. Step F removed the variants.
 }
 
 #[derive(Debug, Clone, PartialEq)]

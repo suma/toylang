@@ -149,24 +149,12 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         match method {
             BuiltinMethod::StrLen => Ok(TypeDecl::UInt64),
             BuiltinMethod::IsNull => Ok(TypeDecl::Bool),
-            BuiltinMethod::I64Abs => {
-                if !args.is_empty() {
-                    return Err(TypeCheckError::generic_error("i64.abs() takes no arguments"));
-                }
-                Ok(TypeDecl::Int64)
-            }
-            BuiltinMethod::F64Abs => {
-                if !args.is_empty() {
-                    return Err(TypeCheckError::generic_error("f64.abs() takes no arguments"));
-                }
-                Ok(TypeDecl::Float64)
-            }
-            BuiltinMethod::F64Sqrt => {
-                if !args.is_empty() {
-                    return Err(TypeCheckError::generic_error("f64.sqrt() takes no arguments"));
-                }
-                Ok(TypeDecl::Float64)
-            }
+            // NOTE: numeric value-method arms (`I64Abs` / `F64Abs` /
+            // `F64Sqrt`) lived here before Step F. The prelude's
+            // extension-trait impls now cover the same surface, so
+            // call sites resolve through `visit_method_call_on_type`'s
+            // primitive-receiver path against the user-method
+            // registry instead.
             // Add more builtin methods as needed
             _ => {
                 // For other builtin methods, check receiver type and args

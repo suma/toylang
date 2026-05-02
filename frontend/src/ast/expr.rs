@@ -358,7 +358,8 @@ pub enum BuiltinMethod {
 
     // Numeric methods (forward to the matching `__builtin_*` intrinsic
     // so the implementation stays in one place).
-    I64Abs,   // i64.abs() -> i64  — `__builtin_abs(self)`
+    I64Abs,   // i64.abs() -> i64  — `__builtin_abs(self)` (wrapping_abs)
+    F64Abs,   // f64.abs() -> f64  — `__builtin_abs(self)` (IEEE 754 fabs)
     F64Sqrt,  // f64.sqrt() -> f64 — `__builtin_sqrt(self)`
 }
 

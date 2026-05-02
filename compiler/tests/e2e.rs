@@ -4072,3 +4072,51 @@ fn value_method_chained_with_cast() {
     "#;
     assert_eq!(compile_and_run(src, "value_method_chained_cast"), 11);
 }
+
+#[test]
+fn value_method_f64_abs() {
+    if skip_e2e() {
+        return;
+    }
+    // C-style `fabs` on f64 — same `.abs()` syntax as i64 but
+    // dispatches to cranelift's `fabs` instruction.
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = -7.5f64
+            (x.abs() * 2f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_abs"), 15);
+}
+
+#[test]
+fn builtin_abs_polymorphic_f64() {
+    if skip_e2e() {
+        return;
+    }
+    // `__builtin_abs` is polymorphic on the operand type.
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = -3.5f64
+            (__builtin_abs(x) * 2f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "builtin_abs_f64"), 7);
+}
+
+#[test]
+fn value_method_f64_abs_jit_via_builtin() {
+    // Exercises the AOT compiler path (JIT path is in jit_integration);
+    // the `fabs_demo.t` example exercises both methods + cast.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val x: f64 = -5f64
+            val y: f64 = -2.5f64
+            x.abs() as u64 + (y.abs() * 4f64) as u64
+        }
+    "#;
+    assert_eq!(compile_and_run(src, "value_method_f64_abs_combined"), 15);
+}

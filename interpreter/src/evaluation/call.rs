@@ -552,6 +552,15 @@ impl EvaluationContext<'_> {
                     }
                     return Ok(EvaluationResult::Value(Object::Float64(x.sqrt()).into()));
                 }
+                if method_name == "abs" {
+                    if !args.is_empty() {
+                        return Err(InterpreterError::InternalError(format!(
+                            "f64.abs() method takes no arguments, but {} provided",
+                            args.len()
+                        )));
+                    }
+                    return Ok(EvaluationResult::Value(Object::Float64(x.abs()).into()));
+                }
                 Err(InterpreterError::InternalError(format!(
                     "Method '{method_name}' not found for f64"
                 )))

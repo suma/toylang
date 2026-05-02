@@ -126,7 +126,10 @@ impl<'a> FunctionLower<'a> {
                     .map(|id| self.module.function(*id).return_type)
             }
             Expr::BuiltinCall(func, args) => match func {
-                frontend::ast::BuiltinFunction::Abs => Some(Type::I64),
+                frontend::ast::BuiltinFunction::Abs => {
+                    // Polymorphic: forwards the operand's type.
+                    args.first().and_then(|a| self.value_scalar(a))
+                }
                 frontend::ast::BuiltinFunction::Min
                 | frontend::ast::BuiltinFunction::Max => {
                     args.first().and_then(|a| self.value_scalar(a))
@@ -137,7 +140,8 @@ impl<'a> FunctionLower<'a> {
             },
             Expr::BuiltinMethodCall(_receiver, method, _args) => match method {
                 frontend::ast::BuiltinMethod::I64Abs => Some(Type::I64),
-                frontend::ast::BuiltinMethod::F64Sqrt => Some(Type::F64),
+                frontend::ast::BuiltinMethod::F64Abs
+                | frontend::ast::BuiltinMethod::F64Sqrt => Some(Type::F64),
                 _ => None,
             },
             Expr::SliceAccess(obj, info) => {
@@ -165,6 +169,7 @@ impl<'a> FunctionLower<'a> {
                         if let Some(recv_ty) = self.value_scalar(&obj) {
                             match (name, recv_ty) {
                                 ("abs", Type::I64) => return Some(Type::I64),
+                                ("abs", Type::F64) => return Some(Type::F64),
                                 ("sqrt", Type::F64) => return Some(Type::F64),
                                 _ => {}
                             }

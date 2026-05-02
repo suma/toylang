@@ -21,6 +21,13 @@ pub fn abs(x: i64) -> i64 {
     __builtin_abs(x)
 }
 
+pub fn fabs(x: f64) -> f64 {
+    # C-style fabs: IEEE 754 absolute value (sign-bit flip,
+    # preserves NaN). The polymorphic `__builtin_abs` dispatches
+    # on the operand type, so we just forward.
+    __builtin_abs(x)
+}
+
 pub fn sqrt(x: f64) -> f64 {
     __builtin_sqrt(x)
 }

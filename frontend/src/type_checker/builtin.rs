@@ -27,6 +27,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // for negative inputs). Both forward to the matching
         // `__builtin_*` intrinsic in the runtime / JIT / compiler.
         registry.insert((TypeDecl::Int64, "abs".to_string()), BuiltinMethod::I64Abs);
+        registry.insert((TypeDecl::Float64, "abs".to_string()), BuiltinMethod::F64Abs);
         registry.insert((TypeDecl::Float64, "sqrt".to_string()), BuiltinMethod::F64Sqrt);
         
         // Future: Array methods (when ArrayLen etc. are added)

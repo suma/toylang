@@ -296,6 +296,21 @@ impl<'a> FunctionLower<'a> {
                             Some(Type::I64),
                         ))
                     }
+                    BuiltinMethod::F64Abs => {
+                        if !args.is_empty() {
+                            return Err(format!(
+                                "f64.abs() takes no arguments, got {}",
+                                args.len()
+                            ));
+                        }
+                        let operand = self
+                            .lower_expr(&receiver)?
+                            .ok_or_else(|| "f64.abs() receiver produced no value".to_string())?;
+                        Ok(self.emit(
+                            InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
+                            Some(Type::F64),
+                        ))
+                    }
                     BuiltinMethod::F64Sqrt => {
                         if !args.is_empty() {
                             return Err(format!(
@@ -378,9 +393,18 @@ impl<'a> FunctionLower<'a> {
                 let operand = self
                     .lower_expr(&args[0])?
                     .ok_or_else(|| "abs operand produced no value".to_string())?;
+                // Result type matches the operand: i64 -> i64,
+                // f64 -> f64. Codegen branches on the operand IR
+                // type to pick `fabs` vs the integer select chain.
+                let result_ty = self
+                    .value_ir_type_for(operand)
+                    .filter(|t| matches!(t, Type::I64 | Type::F64))
+                    .ok_or_else(|| {
+                        "abs expects an i64 or f64 operand".to_string()
+                    })?;
                 Ok(self.emit(
                     InstKind::UnaryOp { op: crate::ir::UnaryOp::Abs, operand },
-                    Some(Type::I64),
+                    Some(result_ty),
                 ))
             }
             BuiltinFunction::Sqrt => {

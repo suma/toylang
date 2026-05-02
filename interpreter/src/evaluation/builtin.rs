@@ -250,6 +250,21 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
             }
 
+            BuiltinMethod::F64Abs => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "f64.abs() takes no arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                let x = receiver.borrow().try_unwrap_float64().map_err(|_| {
+                    InterpreterError::InternalError("abs() requires an f64 receiver".to_string())
+                })?;
+                // IEEE 754 fabs: preserves NaN, flips the sign bit.
+                Ok(EvaluationResult::Value(Object::Float64(x.abs()).into()))
+            }
+
             BuiltinMethod::F64Sqrt => {
                 if !args.is_empty() {
                     return Err(InterpreterError::FunctionParameterMismatch {
@@ -690,13 +705,22 @@ impl EvaluationContext<'_> {
                 }
                 let v = self.evaluate(&args[0])?;
                 let v = try_value!(Ok(v));
-                let n = v.borrow().try_unwrap_int64().map_err(|_| {
-                    InterpreterError::InternalError("abs expects an i64 argument".to_string())
-                })?;
-                // `wrapping_abs` matches Rust's behaviour for i64::MIN
-                // (returns i64::MIN itself) so the language doesn't
-                // panic on the boundary value.
-                Ok(EvaluationResult::Value(Object::Int64(n.wrapping_abs()).into()))
+                // Polymorphic dispatch: i64 -> wrapping_abs (so
+                // `i64::MIN` stays at `i64::MIN` instead of
+                // panicking), f64 -> IEEE 754 abs (matches C's
+                // `fabs`; preserves NaN, flips the sign bit).
+                let v_borrow = v.borrow();
+                if let Ok(n) = v_borrow.try_unwrap_int64() {
+                    return Ok(EvaluationResult::Value(
+                        Object::Int64(n.wrapping_abs()).into(),
+                    ));
+                }
+                if let Ok(x) = v_borrow.try_unwrap_float64() {
+                    return Ok(EvaluationResult::Value(Object::Float64(x.abs()).into()));
+                }
+                Err(InterpreterError::InternalError(
+                    "abs expects an i64 or f64 argument".to_string(),
+                ))
             }
 
             BuiltinFunction::Sqrt => {

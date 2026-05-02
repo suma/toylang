@@ -848,19 +848,29 @@ arrays sum their elements.
 ```rust
 val n: i64 = -5i64
 val r: f64 = 16f64
+val s: f64 = -3.5f64
 
 n.abs()    # -> i64  (i64::wrapping_abs semantics)
+s.abs()    # -> f64  (IEEE 754 fabs: sign-bit flip, preserves NaN)
 r.sqrt()   # -> f64  (IEEE 754; NaN for negative inputs)
 ```
 
 These are dispatched as built-in methods on the receiver type
-(`i64.abs()` / `f64.sqrt()`). They forward to the same
-`__builtin_*` intrinsics the `math::abs(x)` / `math::sqrt(x)`
-wrappers use, so the runtime / JIT (forthcoming) / AOT compiler
-behaviour is identical between the two call shapes. Use whichever
-form reads more naturally at the call site — the method form is
+(`i64.abs()` / `f64.abs()` / `f64.sqrt()`). They forward to
+the same `__builtin_*` intrinsics the `math::abs(x)` /
+`math::sqrt(x)` wrappers use, so the runtime / JIT
+(forthcoming for the method form) / AOT compiler behaviour is
+identical between the two call shapes. Use whichever form
+reads more naturally at the call site — the method form is
 typically clearer when the receiver is a single value, the
-qualified form better when the operand is itself a sub-expression.
+qualified form better when the operand is itself a
+sub-expression.
+
+`__builtin_abs` is **polymorphic** on the operand type
+(`i64 -> i64` via `wrapping_abs`, `f64 -> f64` via IEEE 754
+fabs). Mirrors C's `abs` / `fabs` distinction in a single
+intrinsic. The compiler / JIT lower the f64 case to
+cranelift's native `fabs` instruction.
 
 ### Math (via the `math` module)
 

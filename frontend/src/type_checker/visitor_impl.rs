@@ -555,13 +555,19 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 .map(|a| self.visit_expr(a))
                 .collect::<Result<_, _>>()?;
             if matches!(func, BuiltinFunction::Abs) {
-                if !matches!(arg_types[0], TypeDecl::Int64) {
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "abs expects an i64 argument, got {:?}",
-                        arg_types[0]
-                    )));
+                // Polymorphic: `i64 -> i64` or `f64 -> f64`. Mirrors
+                // C's overloaded `abs` / `fabs` distinction in a
+                // single user-facing intrinsic.
+                match arg_types[0] {
+                    TypeDecl::Int64 => return Ok(TypeDecl::Int64),
+                    TypeDecl::Float64 => return Ok(TypeDecl::Float64),
+                    _ => {
+                        return Err(TypeCheckError::generic_error(&format!(
+                            "abs expects an i64 or f64 argument, got {:?}",
+                            arg_types[0]
+                        )));
+                    }
                 }
-                return Ok(TypeDecl::Int64);
             }
             // Min / Max: both operands must be the same integer type.
             if !matches!(arg_types[0], TypeDecl::Int64 | TypeDecl::UInt64) {

@@ -376,6 +376,15 @@ fn math_f64_example_matches_between_modes() {
 }
 
 #[test]
+fn fabs_demo_matches_between_modes() {
+    // f64.abs() (= C's fabs). The JIT will silently fall back to
+    // the interpreter for the method form (method dispatch on
+    // non-struct receivers is not implemented yet) but the result
+    // must agree.
+    assert_match("example/fabs_demo.t");
+}
+
+#[test]
 fn module_qualified_call_matches_between_modes() {
     // `import math; math::add(10u64, 20u64)` -> exit 30. Confirms
     // the JIT eligibility / codegen module-call dispatch added in

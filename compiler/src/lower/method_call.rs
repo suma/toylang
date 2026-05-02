@@ -314,6 +314,15 @@ impl<'a> FunctionLower<'a> {
                         Some(crate::ir::Type::I64),
                     ));
                 }
+                ("abs", Some(crate::ir::Type::F64)) => {
+                    return Ok(self.emit(
+                        InstKind::UnaryOp {
+                            op: crate::ir::UnaryOp::Abs,
+                            operand: receiver_value,
+                        },
+                        Some(crate::ir::Type::F64),
+                    ));
+                }
                 ("sqrt", Some(crate::ir::Type::F64)) => {
                     return Ok(self.emit(
                         InstKind::UnaryOp {

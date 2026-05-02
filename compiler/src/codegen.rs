@@ -1064,11 +1064,20 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         self.builder.ins().bxor(v, one)
                     }
                     UnaryOp::Abs => {
-                        // i64-only; lowered as `select(x < 0, -x, x)`.
-                        let zero = self.builder.ins().iconst(types::I64, 0);
-                        let neg = self.builder.ins().ineg(v);
-                        let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, v, zero);
-                        self.builder.ins().select(cmp, neg, v)
+                        // Polymorphic on operand type. f64 lowers to
+                        // cranelift's native `fabs` instruction
+                        // (single-cycle on most ISAs); i64 has no
+                        // direct equivalent, so we emit
+                        // `select(x < 0, -x, x)` which folds to a
+                        // conditional move.
+                        if matches!(operand_ty, Some(IrType::F64)) {
+                            self.builder.ins().fabs(v)
+                        } else {
+                            let zero = self.builder.ins().iconst(types::I64, 0);
+                            let neg = self.builder.ins().ineg(v);
+                            let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, v, zero);
+                            self.builder.ins().select(cmp, neg, v)
+                        }
                     }
                     UnaryOp::Sqrt => self.builder.ins().sqrt(v),
                 };

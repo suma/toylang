@@ -980,13 +980,18 @@ impl<'a, 'b> State<'a, 'b> {
                         Ok(None)
                     }
                     BuiltinFunction::Abs => {
-                        // Integer absolute value via select. cranelift
-                        // has no `iabs`, but `select(x < 0, -x, x)` is
-                        // equivalent and gets folded into a single
-                        // conditional move on most ISAs.
+                        // Polymorphic: i64 / f64. cranelift has no
+                        // `iabs`, so the integer path uses
+                        // `select(x < 0, -x, x)` (folds to a
+                        // conditional move on most ISAs). The f64
+                        // path uses cranelift's native `fabs`.
+                        let operand_ty = self.expr_type(&args[0])?;
                         let x = self
                             .gen_expr(&args[0])?
                             .ok_or_else(|| "abs operand".to_string())?;
+                        if matches!(operand_ty, ScalarTy::F64) {
+                            return Ok(Some(self.builder.ins().fabs(x)));
+                        }
                         let zero = self.builder.ins().iconst(types::I64, 0);
                         let neg = self.builder.ins().ineg(x);
                         let cmp = self.builder.ins().icmp(IntCC::SignedLessThan, x, zero);

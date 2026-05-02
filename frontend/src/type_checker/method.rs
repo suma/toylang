@@ -144,6 +144,12 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 }
                 Ok(TypeDecl::Int64)
             }
+            BuiltinMethod::F64Abs => {
+                if !args.is_empty() {
+                    return Err(TypeCheckError::generic_error("f64.abs() takes no arguments"));
+                }
+                Ok(TypeDecl::Float64)
+            }
             BuiltinMethod::F64Sqrt => {
                 if !args.is_empty() {
                     return Err(TypeCheckError::generic_error("f64.sqrt() takes no arguments"));

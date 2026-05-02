@@ -2357,13 +2357,19 @@ pub(crate) fn check_expr(
                         ptr_read_hints,
                         reject_reason,
                     )?;
-                    if t != ScalarTy::I64 {
-                        note(reject_reason, || {
-                            "abs expects an i64 argument".to_string()
-                        });
-                        return None;
+                    // Polymorphic: i64 / f64 both produce same-type
+                    // result. f64 lowers to cranelift's `fabs`
+                    // instruction, i64 to `select(x < 0, -x, x)`.
+                    match t {
+                        ScalarTy::I64 => Some(ScalarTy::I64),
+                        ScalarTy::F64 => Some(ScalarTy::F64),
+                        _ => {
+                            note(reject_reason, || {
+                                "abs expects an i64 or f64 argument".to_string()
+                            });
+                            None
+                        }
                     }
-                    Some(ScalarTy::I64)
                 }
                 BuiltinFunction::Sqrt => {
                     if args.len() != 1 {

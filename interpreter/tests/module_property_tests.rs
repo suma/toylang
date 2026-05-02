@@ -76,6 +76,37 @@ fn test_value_method_i64_abs() {
 }
 
 #[test]
+fn test_value_method_f64_abs() {
+    // `x.abs()` on an f64 should call the IEEE 754 fabs (sign-bit
+    // flip; preserves NaN). C's `fabs` semantics.
+    let source = r"
+        fn main() -> u64 {
+            val x: f64 = -7.5f64
+            (x.abs() * 2f64) as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "f64.abs() should run: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 15);
+}
+
+#[test]
+fn test_builtin_abs_polymorphic_f64() {
+    // `__builtin_abs(x)` is polymorphic: i64 -> wrapping_abs,
+    // f64 -> IEEE 754 fabs. Mirrors C's `abs` / `fabs` distinction
+    // in a single user-facing intrinsic.
+    let source = r"
+        fn main() -> u64 {
+            val x: f64 = -3.5f64
+            (__builtin_abs(x) * 2f64) as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "__builtin_abs(f64) should run: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 7);
+}
+
+#[test]
 fn test_value_method_f64_sqrt() {
     // `x.sqrt()` should call the built-in `f64.sqrt()` method
     // (IEEE 754) and return the principal root.

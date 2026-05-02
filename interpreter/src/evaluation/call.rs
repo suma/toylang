@@ -681,12 +681,52 @@ impl EvaluationContext<'_> {
         self.call_associated_function(*struct_name, *function_name, &arg_values, &struct_name_str, &function_name_str)
     }
 
+    /// Look up an `extern fn` in the registry and invoke it. Surfaces
+    /// a targeted "not yet implemented" error when no Rust impl is
+    /// registered for the declared name. Shared by both the
+    /// `evaluate_function` (RcObject-result) and
+    /// `evaluate_function_with_values` (Value-result) call paths.
+    fn dispatch_extern_fn(
+        &mut self,
+        function: &Rc<Function>,
+        args: &[crate::value::Value],
+    ) -> Result<crate::value::Value, InterpreterError> {
+        let name = self
+            .string_interner
+            .resolve(function.name)
+            .ok_or_else(|| InterpreterError::InternalError(
+                "extern fn name failed to resolve in interner".to_string(),
+            ))?;
+        match self.extern_registry.get(name) {
+            Some(impl_fn) => impl_fn(args),
+            None => Err(InterpreterError::FunctionNotFound(format!(
+                "extern fn `{name}` is not yet implemented in the interpreter"
+            ))),
+        }
+    }
+
     pub fn evaluate_function(&mut self, function: Rc<Function>, args: &[ExprRef]) -> Result<RcObject, InterpreterError> {
         if function.is_extern {
-            return Err(InterpreterError::FunctionNotFound(format!(
-                "extern fn `{}` is not yet implemented in the interpreter",
-                self.string_interner.resolve(function.name).unwrap_or("?")
-            )));
+            // Evaluate args eagerly, then route to the extern dispatch
+            // shared with the values-based call path. Keeps the
+            // implementation lookup in one place.
+            let mut arg_values: Vec<crate::value::Value> = Vec::with_capacity(args.len());
+            for arg_expr in args {
+                let result = self.evaluate(arg_expr)?;
+                let v = match result {
+                    EvaluationResult::Value(v) => v,
+                    EvaluationResult::Return(_)
+                    | EvaluationResult::Break
+                    | EvaluationResult::Continue
+                    | EvaluationResult::None => {
+                        return Err(InterpreterError::InternalError(
+                            "extern fn argument produced control-flow value".to_string(),
+                        ));
+                    }
+                };
+                arg_values.push(v);
+            }
+            return self.dispatch_extern_fn(&function, &arg_values).map(|v| v.into_rc());
         }
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
@@ -741,10 +781,7 @@ impl EvaluationContext<'_> {
     /// and return values stay inline through the call boundary.
     pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[crate::value::Value]) -> Result<crate::value::Value, InterpreterError> {
         if function.is_extern {
-            return Err(InterpreterError::FunctionNotFound(format!(
-                "extern fn `{}` is not yet implemented in the interpreter",
-                self.string_interner.resolve(function.name).unwrap_or("?")
-            )));
+            return self.dispatch_extern_fn(&function, args);
         }
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {

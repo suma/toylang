@@ -10,6 +10,9 @@ use crate::value::Value;
 use crate::error::InterpreterError;
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 
+pub mod extern_math;
+use extern_math::ExternFn;
+
 /// Per-enum entry registered with the evaluation context. Carries
 /// enough info both for variant lookup at construction sites and for
 /// deriving `type_args` on the resulting `Object::EnumVariant`.
@@ -145,6 +148,14 @@ pub struct EvaluationContext<'a> {
     /// clauses. Cached at construction so contract evaluation doesn't
     /// re-intern the same string on every call.
     pub(super) result_symbol: DefaultSymbol,
+    /// Registry of extern fn implementations. Populated at construction
+    /// from `extern_math::build_default_registry`. Look-up is by the
+    /// extern fn's declared name (the user-visible identifier in source).
+    /// Phase 2 of the math externalisation work — replaces the
+    /// hardcoded `BuiltinFunction::{Sin, Cos, ...}` dispatch in
+    /// `evaluation/builtin.rs` for any function the user declares as
+    /// `extern fn`.
+    pub(super) extern_registry: HashMap<&'static str, ExternFn>,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -170,6 +181,7 @@ impl<'a> EvaluationContext<'a> {
             struct_definitions: HashMap::new(),
             contract_mode: ContractMode::from_env(),
             result_symbol,
+            extern_registry: extern_math::build_default_registry(),
         }
     }
 

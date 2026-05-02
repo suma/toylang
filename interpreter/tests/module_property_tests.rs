@@ -78,20 +78,38 @@ fn test_extern_fn_declaration_type_checks() {
 }
 
 #[test]
-fn test_extern_fn_call_errors_cleanly() {
-    // Calling an extern fn before Phase 2 dispatch lands surfaces
-    // a targeted "not yet implemented" runtime error rather than
-    // returning Unit / panicking.
+fn test_extern_fn_call_dispatches_to_registry() {
+    // Phase 2: extern fn call is now wired up to the interpreter's
+    // extern fn registry. `extern_cos(0f64)` resolves to f64::cos
+    // and returns 1.0 — `(r * 7.0) as u64` -> 7.
     let source = r"
         extern fn extern_cos(x: f64) -> f64
 
         fn main() -> u64 {
             val r: f64 = extern_cos(0f64)
+            (r * 7f64) as u64
+        }
+        ";
+    let result = test_program(source);
+    assert!(result.is_ok(), "extern fn call should dispatch: {:?}", result.err());
+    assert_eq!(result.unwrap().borrow().unwrap_uint64(), 7);
+}
+
+#[test]
+fn test_extern_fn_unregistered_errors_cleanly() {
+    // An extern fn whose name has no Rust impl in the registry must
+    // still surface the targeted "not yet implemented" diagnostic
+    // (i.e. unknown extern fns don't silently return Unit).
+    let source = r"
+        extern fn extern_unknown_xyz(x: f64) -> f64
+
+        fn main() -> u64 {
+            val r: f64 = extern_unknown_xyz(0f64)
             r as u64
         }
         ";
     let result = test_program(source);
-    assert!(result.is_err(), "extern fn call should error: {:?}", result.ok());
+    assert!(result.is_err(), "unknown extern fn call should error: {:?}", result.ok());
     let err = format!("{:?}", result.err().unwrap());
     assert!(
         err.contains("extern fn") && err.contains("not yet implemented"),

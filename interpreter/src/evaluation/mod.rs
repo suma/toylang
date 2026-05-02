@@ -113,6 +113,20 @@ pub struct EvaluationContext<'a> {
     pub(super) expr_pool: &'a ExprPool,
     pub string_interner: &'a mut DefaultStringInterner,
     pub(super) function: HashMap<DefaultSymbol, Rc<Function>>,
+    /// Module-aware mirror of `function` keyed by
+    /// `(module_qualifier, fn_name)`. The qualifier is the **last
+    /// segment** of the originating module's dotted path
+    /// (`Some("math")` for `core/std/math.t`) or `None` for
+    /// user-authored top-level functions. Mirrors the IR-level
+    /// `function_index` keying introduced for #193 and the
+    /// type-checker `context.functions` keying for #193b. Bare
+    /// `Expr::Call("add", ...)` resolves via
+    /// `lookup_function_qualified(None, "add")`; qualified
+    /// `Expr::AssociatedFunctionCall("math", "add", ...)` resolves
+    /// via `lookup_function_qualified(Some("math"), "add")`. The
+    /// flat `function` map above is kept for backwards-compatibility
+    /// at sites that don't yet thread the qualifier.
+    pub(super) function_qualified: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
     pub environment: Environment,
     pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
     pub(super) null_object: RcObject, // Pre-created null object for reuse
@@ -160,6 +174,21 @@ pub struct EvaluationContext<'a> {
 
 impl<'a> EvaluationContext<'a> {
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
+        Self::new_with_qualified(stmt_pool, expr_pool, string_interner, function, HashMap::new())
+    }
+
+    /// Construct with both the legacy bare-name map (`function`) and
+    /// the module-qualified map (`function_qualified`). Callers that
+    /// have access to `program.function_module_paths` should populate
+    /// the latter so #193b's qualified lookups reach the right
+    /// function.
+    pub fn new_with_qualified(
+        stmt_pool: &'a StmtPool,
+        expr_pool: &'a ExprPool,
+        string_interner: &'a mut DefaultStringInterner,
+        function: HashMap<DefaultSymbol, Rc<Function>>,
+        function_qualified: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
+    ) -> Self {
         let heap_manager = Rc::new(RefCell::new(HeapManager::new()));
         let global_allocator: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap_manager.clone()));
         let allocator_stack: Vec<Rc<dyn Allocator>> = vec![global_allocator.clone()];
@@ -169,6 +198,7 @@ impl<'a> EvaluationContext<'a> {
             expr_pool,
             string_interner,
             function,
+            function_qualified,
             environment: Environment::new(),
             method_registry: HashMap::new(),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
@@ -182,6 +212,41 @@ impl<'a> EvaluationContext<'a> {
             contract_mode: ContractMode::from_env(),
             result_symbol,
             extern_registry: extern_math::build_default_registry(),
+        }
+    }
+
+    /// Module-aware function resolver. Mirrors the type-checker's
+    /// `TypeCheckContext::lookup_fn`:
+    /// - `Some(qualifier)` looks up `(Some(q), name)` directly.
+    /// - `None` (bare call) prefers `(None, name)`, then falls back to
+    ///   the unique `(Some(_), name)` entry; ambiguous bare calls
+    ///   return `None` so the caller can surface a clean error.
+    /// Returns `None` if `function_qualified` is empty (legacy
+    /// constructor path) — in that case callers fall back to the
+    /// flat `function` map.
+    pub(super) fn lookup_function_qualified(
+        &self,
+        qualifier: Option<DefaultSymbol>,
+        name: DefaultSymbol,
+    ) -> Option<Rc<Function>> {
+        if self.function_qualified.is_empty() {
+            return None;
+        }
+        if let Some(q) = qualifier {
+            return self.function_qualified.get(&(Some(q), name)).cloned();
+        }
+        if let Some(f) = self.function_qualified.get(&(None, name)).cloned() {
+            return Some(f);
+        }
+        let candidates: Vec<_> = self
+            .function_qualified
+            .iter()
+            .filter(|((_, n), _)| *n == name)
+            .collect();
+        if candidates.len() == 1 {
+            Some(candidates[0].1.clone())
+        } else {
+            None
         }
     }
 

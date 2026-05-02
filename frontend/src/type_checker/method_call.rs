@@ -294,9 +294,27 @@ impl<'a> TypeCheckerVisitor<'a> {
         function_name: DefaultSymbol,
         args: &Vec<ExprRef>,
     ) -> Result<TypeDecl, TypeCheckError> {
-        let fun = self.context.get_fn(function_name).ok_or_else(|| {
-            TypeCheckError::not_found("Function", &self.resolve_symbol_name(function_name))
-        })?;
+        self.dispatch_module_function_call_with_qualifier(None, function_name, args)
+    }
+
+    /// Same as `dispatch_module_function_call` but takes the explicit
+    /// module-qualifier symbol (e.g. `math` for `math::add(args)`).
+    /// Resolves through `context.lookup_fn` so cross-module
+    /// collisions land on the right `(qualifier, name)` slot
+    /// (#193b). Bare-call resolution still falls back via
+    /// `lookup_fn(None, name)` semantics.
+    pub(super) fn dispatch_module_function_call_with_qualifier(
+        &mut self,
+        qualifier: Option<DefaultSymbol>,
+        function_name: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let fun = self
+            .context
+            .lookup_fn(qualifier, function_name)
+            .ok_or_else(|| {
+                TypeCheckError::not_found("Function", &self.resolve_symbol_name(function_name))
+            })?;
         // Honour visibility (matches the bare-call path).
         self.check_function_access(&fun)?;
         // Generic module functions: synthesize an `ExprList` for the
@@ -418,17 +436,30 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Module-qualified call: `module::func(args)` where `module`
-        // is an imported module alias. The actual function definition
-        // lives in the main program (module integration flattens it
-        // into `program.function`), so the qualifier is essentially a
-        // namespace check — once we confirm `struct_name` is a known
-        // import alias, dispatch to the regular function-call path
-        // using `function_name` directly. This keeps `math::add(...)`
-        // working alongside the bare `add(...)` form for backward
-        // compatibility while signalling intent at the call site.
+        // is an imported module alias. With per-module function
+        // namespacing (#193b) the function lives at
+        // `(Some(struct_name), function_name)` in `context.functions`;
+        // we route through `lookup_fn(Some(...), ...)` first so a
+        // user-defined `fn add(Point, Point)` no longer shadows
+        // `math::add(u64, u64)`. The bare-name fallback in
+        // `lookup_fn(None, ...)` covers older flows where module
+        // integration left the entry under `(None, name)`.
         let module_alias = vec![struct_name];
         if self.imported_modules.contains_key(&module_alias) {
-            if self.context.get_fn(function_name).is_some() {
+            let qualified = self.context.lookup_fn(Some(struct_name), function_name);
+            let bare = if qualified.is_none() {
+                self.context.lookup_fn(None, function_name)
+            } else {
+                None
+            };
+            if qualified.is_some() {
+                return self.dispatch_module_function_call_with_qualifier(
+                    Some(struct_name),
+                    function_name,
+                    args,
+                );
+            }
+            if bare.is_some() {
                 return self.dispatch_module_function_call(function_name, args);
             }
             // Module name was recognised but the function isn't in the

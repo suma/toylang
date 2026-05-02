@@ -42,6 +42,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let imports = program.imports.clone();
         // Clone functions to avoid borrowing conflicts
         let functions = program.function.clone();
+        // Parallel `Option<Vec<DefaultSymbol>>` per function entry
+        // (introduced for #193 / #193b). Each entry is `None` for
+        // user-authored functions and `Some(path)` for those that
+        // came in through `module_integration`. Cloned upfront so
+        // the registration loop below can index it without
+        // re-borrowing `program`.
+        let function_module_paths = program.function_module_paths.clone();
         // Snapshot the set of imported-function names so the
         // type-checker can enforce the namespace-only rule (bare
         // calls into imported `pub fn`s are rejected; users must
@@ -74,9 +81,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             let _ = visitor.visit_import(import_decl);
         }
 
-        // Register all functions from the program into the type checker context
-        for func in &functions {
-            visitor.add_function(func.clone());
+        // Register all functions from the program into the type
+        // checker context. Pass the matching module qualifier (last
+        // segment of the originating dotted path) so two same-named
+        // `pub fn`s coming from different modules end up under
+        // distinct keys (#193b).
+        for (idx, func) in functions.iter().enumerate() {
+            let qualifier = function_module_paths
+                .get(idx)
+                .and_then(|opt| opt.as_ref())
+                .and_then(|path| path.last().copied());
+            visitor.add_function_with_module(qualifier, func.clone());
         }
 
         // Register all structs from the program's statements into the type checker context

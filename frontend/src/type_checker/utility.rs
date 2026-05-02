@@ -278,6 +278,18 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn add_function(&mut self, f: Rc<Function>) {
         self.context.set_fn(f.name, f.clone());
     }
+
+    /// Module-aware variant: register with a specific module
+    /// qualifier (last segment of the originating module's dotted
+    /// path) so two modules each defining `pub fn foo` can coexist
+    /// in `context.functions` (#193b).
+    pub fn add_function_with_module(
+        &mut self,
+        qualifier: Option<string_interner::DefaultSymbol>,
+        f: Rc<Function>,
+    ) {
+        self.context.set_fn_with_module(qualifier, f.name, f.clone());
+    }
     
     /// Extract expression type mappings after type checking
     pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {

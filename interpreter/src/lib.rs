@@ -54,14 +54,32 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
         struct_symbols_and_fields.push((name, fields, visibility));
     }
 
-    // Register all defined functions before creating the type checker
-    let functions_to_register: Vec<_> = program.function.iter().cloned().collect();
+    // Register all defined functions before creating the type checker.
+    // Pair each function with its module qualifier (last segment of
+    // the originating dotted path; `None` for user-authored) so the
+    // type-checker registers them under module-aware keys (#193b).
+    let functions_to_register: Vec<(Option<DefaultSymbol>, std::rc::Rc<frontend::ast::Function>)> =
+        program
+            .function
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let qualifier = program
+                    .function_module_paths
+                    .get(i)
+                    .and_then(|opt| opt.as_ref())
+                    .and_then(|path| path.last().copied());
+                (qualifier, f.clone())
+            })
+            .collect();
 
     // Now create the type checker
     let mut tc = TypeCheckerVisitor::with_program(program, string_interner);
 
-    // Register all defined functions
-    functions_to_register.iter().for_each(|f| { tc.add_function(f.clone()) });
+    // Register all defined functions (module-qualified)
+    for (qualifier, f) in &functions_to_register {
+        tc.add_function_with_module(*qualifier, f.clone());
+    }
     
     // Register struct definitions with their symbols
     for (struct_symbol, fields, visibility) in struct_symbols_and_fields {
@@ -455,6 +473,28 @@ fn build_function_map(program: &Program, _string_interner: &DefaultStringInterne
     func_map
 }
 
+/// Module-aware mirror of `build_function_map`. Each function is
+/// keyed by `(module_qualifier, fn_name)` where the qualifier is the
+/// last segment of `program.function_module_paths[i]` (`None` for
+/// user-authored). Lets the runtime resolve a bare `Expr::Call("add",
+/// ...)` to the user version while routing
+/// `Expr::AssociatedFunctionCall("math", "add", ...)` to the stdlib
+/// version (#193b).
+fn build_function_qualified_map(
+    program: &Program,
+) -> HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>> {
+    let mut map = HashMap::new();
+    for (i, f) in program.function.iter().enumerate() {
+        let qualifier = program
+            .function_module_paths
+            .get(i)
+            .and_then(|opt| opt.as_ref())
+            .and_then(|path| path.last().copied());
+        map.insert((qualifier, f.name), f.clone());
+    }
+    map
+}
+
 /// Initialize module environment based on package and import declarations
 fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program) {
     // Set current module from package declaration
@@ -514,14 +554,16 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     };
     
     let func_map = build_function_map(program, string_interner);
+    let func_qualified = build_function_qualified_map(program);
     let mut string_interner_mut = string_interner.clone();
     let method_registry = build_method_registry(program);
-    
-    let mut eval = EvaluationContext::new(
-        &program.statement, 
-        &program.expression, 
-        &mut string_interner_mut, 
-        func_map
+
+    let mut eval = EvaluationContext::new_with_qualified(
+        &program.statement,
+        &program.expression,
+        &mut string_interner_mut,
+        func_map,
+        func_qualified,
     );
     
     // Initialize module system

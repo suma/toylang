@@ -232,10 +232,24 @@ pub fn lower_program(
         // `main` keeps its name so the system C runtime invokes it as the
         // program entry point. Every other function is mangled to avoid
         // colliding with libc symbols when the resulting object is linked.
+        // Functions that came in through module integration also get
+        // their module qualifier mangled in (#193 / #193b) so two
+        // modules each defining `pub fn add` end up with distinct
+        // cranelift symbols (`toy_add` for the user version,
+        // `toy_math__add` for the stdlib version) — without this, the
+        // module's `declare_function` would error on a duplicate
+        // signature even though the IR `function_index` keys them
+        // apart.
         let (export_name, linkage) = if raw_name == "main" {
             (raw_name.to_string(), Linkage::Export)
         } else {
-            (format!("toy_{}", raw_name), Linkage::Local)
+            let mangled = match module_qualifier
+                .and_then(|q| interner.resolve(q))
+            {
+                Some(qual) => format!("toy_{}__{}", qual, raw_name),
+                None => format!("toy_{}", raw_name),
+            };
+            (mangled, Linkage::Local)
         };
         module.declare_function_with_module(
             func.name,

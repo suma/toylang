@@ -109,3 +109,10 @@ pub fn floor(x: f64) -> f64 {
 pub fn ceil(x: f64) -> f64 {
     __extern_ceil_f64(x)
 }
+
+# Note: `math::add` / `math::multiply` are intentionally NOT
+# exported. Users name their own `fn add(...)` / `fn multiply(...)`
+# over custom types frequently enough that the stdlib should not
+# occupy those bare slots, even though #193 / #193b's
+# `(module_qualifier, name)` keying would make coexistence safe.
+# Use `+` / `*` directly for numeric arithmetic.

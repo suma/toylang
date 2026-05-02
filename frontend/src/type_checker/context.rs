@@ -20,7 +20,16 @@ pub struct StructDefinition {
 #[derive(Debug)]
 pub struct TypeCheckContext {
     pub vars: Vec<HashMap<DefaultSymbol, VarState>>,
-    pub functions: HashMap<DefaultSymbol, Rc<Function>>,
+    /// `(module_qualifier, fn_name) -> Function`. The qualifier is the
+    /// **last segment** of the originating module's dotted path
+    /// (`Some("math")` for `core/std/math.t`) or `None` for
+    /// user-authored top-level functions. Mirrors the IR-level
+    /// `function_index` keying introduced by todo #193 so two modules
+    /// each defining `pub fn foo` no longer last-wins at type-check
+    /// time. Bare-name lookups try `(None, name)` first and then fall
+    /// back to a unique `(Some(_), name)`; qualified
+    /// `module::func(args)` calls go straight at `(Some(m), name)`.
+    pub functions: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
     pub struct_definitions: HashMap<DefaultSymbol, StructDefinition>,
     pub struct_methods: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>,
     pub struct_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>, // Store generic parameters for structs
@@ -93,8 +102,23 @@ impl TypeCheckContext {
         last.insert(name, VarState { ty });
     }
 
+    /// Backwards-compatible: registers under `(None, name)` (the
+    /// user-authored slot). Use `set_fn_with_module` for integrated
+    /// `pub fn`s that came in through module integration.
     pub fn set_fn(&mut self, name: DefaultSymbol, f: Rc<Function>) {
-        self.functions.insert(name, f);
+        self.functions.insert((None, name), f);
+    }
+
+    /// Module-aware registration. `qualifier` is `Some(last_segment)`
+    /// for an integrated module's `pub fn`, `None` for user-authored
+    /// top-level functions.
+    pub fn set_fn_with_module(
+        &mut self,
+        qualifier: Option<DefaultSymbol>,
+        name: DefaultSymbol,
+        f: Rc<Function>,
+    ) {
+        self.functions.insert((qualifier, name), f);
     }
 
     pub fn get_var(&self, name: DefaultSymbol) -> Option<TypeDecl> {
@@ -107,9 +131,44 @@ impl TypeCheckContext {
         None
     }
 
+    /// Backwards-compatible: bare-name lookup. Tries the user-authored
+    /// `(None, name)` slot first, then falls back to a unique
+    /// `(Some(_), name)` integrated-module entry. Returns None on
+    /// either miss or ambiguity (multiple modules export the same
+    /// bare name) — call `lookup_fn` directly for the explicit
+    /// qualifier-aware form.
     pub fn get_fn(&self, name: DefaultSymbol) -> Option<Rc<Function>> {
-        if let Some(val) = self.functions.get(&name) {
-            Some(val.clone())
+        self.lookup_fn(None, name)
+    }
+
+    /// Module-aware lookup. With `qualifier == Some(m)` looks up
+    /// `(Some(m), name)` directly (no fallback). With
+    /// `qualifier == None` tries `(None, name)` then falls back to the
+    /// unique `(Some(_), name)` entry across modules; ambiguous bare
+    /// resolution returns None so the caller can surface a clear
+    /// error.
+    pub fn lookup_fn(
+        &self,
+        qualifier: Option<DefaultSymbol>,
+        name: DefaultSymbol,
+    ) -> Option<Rc<Function>> {
+        if let Some(q) = qualifier {
+            return self.functions.get(&(Some(q), name)).cloned();
+        }
+        if let Some(f) = self.functions.get(&(None, name)).cloned() {
+            return Some(f);
+        }
+        // Bare-name fallback: look for a unique entry across modules.
+        // Returns Some only when exactly one (Some(_), name) exists,
+        // else None so the caller can surface "ambiguous" as a clean
+        // error rather than silently picking one.
+        let candidates: Vec<_> = self
+            .functions
+            .iter()
+            .filter(|((_, n), _)| *n == name)
+            .collect();
+        if candidates.len() == 1 {
+            Some(candidates[0].1.clone())
         } else {
             None
         }

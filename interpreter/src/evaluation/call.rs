@@ -325,7 +325,16 @@ impl EvaluationContext<'_> {
 
     /// Evaluates function calls
     pub(super) fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(func) = self.function.get::<DefaultSymbol>(name).cloned() {
+        // Bare-name resolution: prefer the user-authored
+        // `(None, name)` slot so a user `fn add(Point, Point)`
+        // wins over an auto-loaded stdlib `pub fn add(u64, u64)`
+        // (#193b). Falls back to the legacy flat `function` map
+        // when the qualified table isn't populated (e.g. tests
+        // that built the context with the older constructor).
+        let resolved = self
+            .lookup_function_qualified(None, *name)
+            .or_else(|| self.function.get::<DefaultSymbol>(name).cloned());
+        if let Some(func) = resolved {
             let args = self.expr_pool.get(&args)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid arguments reference".to_string()))?;
             match args {
@@ -903,8 +912,18 @@ impl EvaluationContext<'_> {
         struct_name_str: &str,
         function_name_str: &str
     ) -> Result<EvaluationResult, InterpreterError> {
-        // Look for the associated function in the function map first (as a regular function)
-        if let Some(func) = self.function.get(&function_name).cloned() {
+        // Look for the associated function in the function map first
+        // (as a regular function). #193b: try the module-qualified
+        // slot `(Some(struct_name), function_name)` first so
+        // `math::add(...)` resolves to the stdlib's u64 version
+        // even when a user `fn add(Point, Point)` exists. Falls
+        // back to the bare-name lookup, then to the legacy flat
+        // map for back-compat.
+        let resolved = self
+            .lookup_function_qualified(Some(struct_name), function_name)
+            .or_else(|| self.lookup_function_qualified(None, function_name))
+            .or_else(|| self.function.get(&function_name).cloned());
+        if let Some(func) = resolved {
             // This is a regular function, call it directly without self.
             // Bridge `RcObject` args to `Value` at the boundary.
             let value_args: Vec<crate::value::Value> = args.iter().cloned().map(Into::into).collect();

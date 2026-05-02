@@ -2,9 +2,9 @@
 
 AOT コンパイラ。toylang のソースから native の実行可能バイナリを生成する。
 
-## ステータス: MVP
+## ステータス
 
-現状サポートしている機能はとても限定的で、interpreter / JIT で実行できるプログラムのうち **数値計算と制御フローのみ** からなるものが対象。
+MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (191 件) と `compiler/tests/consistency.rs` (23 件、interpreter / JIT / AOT 3 経路一致) が緑のものはすべて使える。
 
 サポート:
 
@@ -30,6 +30,9 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 - **配列 (Phase S + Y)**: `[a, b, c]` リテラルと `arr[idx]` の read / write をサポート。`Binding::Array` が `ArraySlotId` を保持し、IR の `ArrayLoad` / `ArrayStore` で `(slot, index, elem_ty)` を渡す。codegen は per-IR-slot で cranelift `StackSlot` (length × stride バイト、現状 stride は 8 バイト固定) を確保、index は `iadd(stack_addr, idx * stride)` + `load`/`store`。const index も runtime index も同一の IR 命令で扱われる (cranelift の最適化で const index は折りたたまれる)。print 出力は `[1, 2, 3]` 形式 (interpreter 一致)。**制約**: 要素は scalar (i64/u64/f64/bool) のみ、range slicing は未対応
 - **method-only generic params (Phase X)**: `impl Box { fn pick<U>(self, a: U, b: U) -> U }` のように impl の generic params とは独立した method 自身の generic params を許可。frontend parser が `<U>` を実際に parse、type-checker が arg type から U を substitute、compiler は `instantiate_generic_method_with_args` で receiver の type_args (impl-level) と call args の型 (method-only) の両方から subst を組み立ててモノモル化
 - **method dispatch (Phase R)**: `impl <Type> { ... }` の inherent method、`impl <Trait> for <Type>` の trait conformance method、`fn f<T: Trait>(x: T) { x.method() }` の bound 経由 generic 呼び出しすべて対応。impl ブロックを pre-scan して `(target_struct_symbol, method_name) → MethodFunction` の registry を構築、各メソッドを mangled name `toy_<Type>__<method>` で declare。`Self` は impl 対象に substitute。call site は receiver 識別子を struct/enum binding に解決し、`(target, method)` で `FuncId` を引いて receiver の leaf scalar 列を call args の先頭に prepend。Phase L (generic monomorphisation) と組み合わせることで trait dispatch も静的に解決される (vtable 不要)。**Phase R3** で `impl<T> Cell<T> { fn get(self: Self) -> T }` のような generic method も lazy monomorphisation 対応 (call site で receiver の type_args から impl の generic param を bind して fresh `FuncId` を declare、queue で body lowering)。**制約**: dynamic `dyn Trait` は未対応
+- **extension trait over primitives (Step A〜F)**: `impl <Trait> for i64 / f64 / u64 / bool / str / ptr` をユーザが書ける。`primitive_type_decl_for_target_sym` ヘルパで `Self` を対応する primitive `TypeDecl` に解決、`lower_method_call` の冒頭に `value_scalar` driven の primitive-receiver dispatch arm を追加 (struct path より先に走るので chained call `x.abs().abs()` も lower 可能)。impl method は `toy_<TypeName>__<method>` (例: `toy_i64__neg`、`toy_f64__abs`) として declare。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl として配信、`BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` の hardcoded fast path は削除済み
+- **`extern fn` 宣言 (Math externalisation Phase 1〜4)**: `extern fn name(params) -> ret` で signature だけ宣言、body は backend が提供。Compiler は `lower/program.rs::libm_import_name_for` で `__extern_sin_f64` → `sin` 等を libm symbol 名にマップし、IR の `Linkage::Import` で declare、`build_object_module` / `emit_clif_text` は body 定義を skip。リンカが libm から解決。math intrinsic (sin/cos/tan/log/log2/exp/floor/ceil/sqrt/abs/pow) はすべてこの仕組み経由で interpreter / JIT と対称
+- **core modules auto-load**: `<repo>/core/` 配下を起動時に再帰 integrate (詳細は上記 *core modules*)。`compile_file` が `interpreter::check_typing_with_core_modules` 経由で frontend に core dir を forward、AOT 経路でも `math::sin(x)` 等が import 行なしで呼べる
 - **struct field / tuple element に compound 型 (Phase Q1 + Q2)**: `struct Outer { inner: (i64, i64) }` の struct-of-tuple、`((a, b), c)` の nested tuple、`(Point, i64)` の tuple-of-struct がすべて動作。`FieldShape::Tuple` と `TupleElementShape::{Scalar, Struct, Tuple}` が再帰的な shape を表現し、`outer.inner.0` / `t.0.1` / `t.0.x` などの chain access が `resolve_field_chain` と `resolve_tuple_chain_elements` で walk される。print 出力は `Outer { inner: (3, 7) }` / `((3, 4), 5)` / `(Point { x: 1, y: 2 }, 3)` のように再帰整形。関数 param / return も `flatten_tuple_element_locals` 経由で leaf scalar まで再帰展開し boundary 通過可
 - **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum / struct / tuple を受理。
   - **トップレベルパターン**: `Enum::Variant(...)` / `Wildcard (_)` / `Literal(...)`（scalar scrutinee に対してのみ）
@@ -79,11 +82,43 @@ cargo run -p compiler -- input.t --release -o output
 cargo run -p compiler -- input.t --emit=obj -o input.o
 
 # Cranelift IR をテキストで dump
-cargo run -p compiler -- input.t --emit=ir -o input.clif
+cargo run -p compiler -- input.t --emit=clif -o input.clif
+
+# 中間 IR をテキストで dump
+cargo run -p compiler -- input.t --emit=ir -o input.ir
+
+# core modules ディレクトリを指定
+cargo run -p compiler -- input.t --core-modules /path/to/my-core -o output
 
 # 進行ログ
 cargo run -p compiler -- input.t -v -o output
 ```
+
+### CLI フラグ
+
+| フラグ | 意味 |
+|---|---|
+| `<file>` | 入力ソース。必須。 |
+| `-o <path>` | 出力パス。`--emit=exe` のときは実行ファイル、それ以外は対応する中間生成物。 |
+| `--emit <kind>` (`--emit=<kind>` も可) | `exe`(default) / `obj` / `ir` / `clif` を選択。 |
+| `--release` | 全 DbC (`requires` / `ensures`) チェックを skip。`INTERPRETER_CONTRACTS=off` 相当。 |
+| `-v` / `--verbose` | コンパイル進行と core modules dir 解決結果を stderr に出す。 |
+| `--core-modules <DIR>` (`--core-modules=<DIR>` も可) | core modules ディレクトリを上書き。下記参照。 |
+
+### core modules (auto-load)
+
+interpreter と同じく compiler も起動時に `core/` 配下を再帰的に
+auto-load し、`math::sin(x)` 等を `import` 行なしで呼べるように
+する。解決順:
+
+1. `--core-modules <DIR>` フラグ
+2. `TOYLANG_CORE_MODULES` 環境変数 (空文字で opt-out)
+3. 実行ファイル相対探索 (`<exe>/core/` →
+   `<exe>/../share/toylang/core/` → `<exe>/../../core/`)
+
+dev tree から `target/debug/compiler` を直接実行する場合は最後の
+fallback (`<repo>/core/`) で見つかる。`-v` で実際に拾った path が
+出る。
 
 `main` の戻り値（`u64` または `i64`）はプロセス終了コードになる。POSIX
 シェルは下位 8 bit に切り詰める点に注意。
@@ -103,12 +138,13 @@ cargo run -p compiler -- compiler/example/fib.t -o /tmp/fib
 IR レイヤで完結できる構成にしてある。
 
 - `src/main.rs` — CLI
-- `src/lib.rs` — `compile_file()` パブリック API
-- `src/options.rs` — `CompilerOptions` / `EmitKind`
-- `src/ir.rs` — 中間 IR 定義（`Module` / `Function` / `Block` / `Instruction` / `Terminator` / `Type` / `ValueId` / `LocalId` / `BlockId` / `FuncId`）と `Display` 実装
-- `src/lower.rs` — AST → IR の lowering pass
+- `src/lib.rs` — `compile_file()` パブリック API + `resolve_core_modules_dir()`
+- `src/options.rs` — `CompilerOptions` (`core_modules_dir` / `release` / `emit` / `verbose`) / `EmitKind`
+- `src/ir.rs` — 中間 IR 定義（`Module` / `Function` / `Block` / `Instruction` / `Terminator` / `Type` / `ValueId` / `LocalId` / `BlockId` / `FuncId`、`Linkage::{Export, Local, Import}`）と `Display` 実装
+- `src/lower/` — AST → IR の lowering pass。Phase Z refactor で 24 ファイル / mod.rs 265 行に分割: `consts` / `array_layout` / `types` / `method_registry` / `templates` / `bindings` / `type_inference` / `method_call` / `print` / `array_access` / `compound_storage` / `call` / `match_lowering` / `field_access` / `compound_literal` / `expr_ops` / `type_resolution` / `assign` / `let_lowering` / `loops` / `stmt` / `expr` / `program` (top-level driver、`extern fn` を `Linkage::Import` で declare、`libm_import_name_for` で `__extern_*_f64` → libm symbol を解決)
 - `src/codegen.rs` — IR → Cranelift IR の codegen pass + `.o` 出力
-- `src/driver.rs` — `cc` を呼んで `.o` を実行ファイルにリンク
+- `src/driver.rs` — `cc` を呼んで `.o` を実行ファイルにリンク。runtime の `toylang_rt.c` は `build.rs` で 1 度だけ pre-build され、driver は `include_bytes!` した `.o` を `.rt.o` として書き出すだけ
+- `build.rs` — `cc -c -O2 -fPIC runtime/toylang_rt.c -o $OUT_DIR/toylang_rt.o` を実行 (各テストの `cc` 起動コストを削るため)
 
 IR の値モデルは「型付きローカルスロット + 関数ローカルな SSA 値」の
 組み合わせで、`val` / `var` / 関数引数は `LocalId` 経由で `LoadLocal` /

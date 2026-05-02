@@ -9,13 +9,14 @@ knobs.
 ## CLI
 
 ```
-interpreter <file> [-v]
+interpreter <file> [-v] [--core-modules <DIR>]
 ```
 
 | Flag | Meaning |
 |---|---|
 | `<file>` | Required. Source file to parse, type-check, and execute. By convention `*.t`. |
-| `-v` | Verbose mode. Prints "Parsing source file: …", "Performing type checking", "Executing program" between phases, and any JIT decisions ("JIT compiled: …" or "JIT: skipped (…)" with a reason). |
+| `-v` / `--verbose` | Verbose mode. Prints "Core modules directory: …", "Parsing source file: …", "Performing type checking", "Executing program" between phases, and any JIT decisions ("JIT compiled: …" or "JIT: skipped (…)" with a reason). |
+| `--core-modules <DIR>` (also `--core-modules=<DIR>`) | Override the core-modules directory the interpreter auto-loads at startup. See *Core modules* below. |
 
 The exit code is the integer returned by `main`:
 
@@ -30,6 +31,46 @@ $ cargo run example/contracts.t    # exits 22
 $ cargo run example/fib.t -v       # show pipeline phases on stderr
 ```
 
+## Core modules (auto-load)
+
+At startup the interpreter resolves a **core-modules directory**
+and integrates every `.t` file under it before parsing the user's
+source. Functions exported from those files are reachable through
+the qualified `module::name(...)` form without any `import` line —
+this is how the standard `math::sin(x)` / `math::sqrt(x)` /
+`i64.abs()` / `f64.abs()` surfaces become available.
+
+Resolution priority (the first hit wins):
+
+1. `--core-modules <DIR>` CLI flag.
+2. `TOYLANG_CORE_MODULES` env var. Set to the empty string
+   (`TOYLANG_CORE_MODULES=`) to opt out entirely — auto-load
+   becomes a no-op and only the embedded prelude (currently empty)
+   stays in scope.
+3. Executable-relative search:
+   - `<exe_dir>/core/`
+   - `<exe_dir>/../share/toylang/core/`
+   - `<exe_dir>/../../core/` (the dev-tree fallback —
+     `target/debug/interpreter` finds `<repo>/core/` here).
+
+Module paths come from the file system layout: `core/std/math.t`
+becomes module `["std", "math"]` aliased as `math` (the alias is
+always the last path segment). Run with `-v` to confirm which
+directory the binary picked up.
+
+```bash
+# Use a custom core directory
+$ cargo run -- example/fib.t --core-modules /path/to/my-core
+
+# Disable auto-load entirely (only the embedded prelude is active)
+$ TOYLANG_CORE_MODULES= cargo run example/fib.t
+```
+
+Auto-loaded modules use `enforce_namespace = false`, so a user-
+defined `fn add(...)` shadows a same-named stdlib export for bare
+calls; the qualified form (`<alias>::add`) keeps working through
+the synthetic `ImportDecl` the auto-load path inserts.
+
 ## Environment variables
 
 All env-vars are read once at process start. Unset = the default in the table.
@@ -38,6 +79,7 @@ All env-vars are read once at process start. Unset = the default in the table.
 |---|---|---|---|
 | `INTERPRETER_JIT` | `1` (any other value = off) | unset (off) | When `1`, eligible functions are compiled to native code via cranelift before execution. Ineligible functions silently fall back to the tree walker. Requires the `jit` cargo feature (on by default). With `-v`, each function prints either `JIT compiled: <name>` or `JIT: skipped (<reason>)`. |
 | `INTERPRETER_CONTRACTS` | `all` \| `pre` \| `post` \| `off` (case-insensitive; `on`/`1`/`true` ≡ `all`, `0`/`false` ≡ `off`) | `all` | Selects which Design-by-Contract clauses run. `all` = both `requires` and `ensures`; `pre` = only `requires`; `post` = only `ensures`; `off` = neither (D's `-release` equivalent). Unrecognised values log a warning to stderr and fall back to `all` so a typo can't silently disable contracts. |
+| `TOYLANG_CORE_MODULES` | path to a directory \| empty string | unset (uses exe-relative search) | Override the core-modules directory. Empty string opts out of auto-load entirely. Lower priority than the `--core-modules` CLI flag; see *Core modules* above. |
 
 ```bash
 # Native code path (about 100×–1000× faster on numeric kernels)

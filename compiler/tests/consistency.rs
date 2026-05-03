@@ -574,6 +574,34 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
+fn hash_trait_dispatch_on_all_primitives() {
+    // Phase 1 of the user-space dict effort (`core/std/hash.t`):
+    // verifies the auto-loaded `Hash` extension trait dispatches
+    // identically across interpreter / JIT-fallback / AOT for
+    // every primitive impl. Sum lets us catch a per-backend
+    // divergence anywhere in the chain rather than just the
+    // first one. Expected: 7 (i64) + 100 (u64) + 1 (bool true)
+    // + 0 (str placeholder) = 108.
+    //
+    // The str arm is intentionally a constant `0u64` rather than
+    // a real `self.len()`-based hash — the AOT compiler doesn't
+    // yet lower `BuiltinMethodCall::Len` on str. When that lands
+    // (or when `__extern_str_hash` is wired), the str impl in
+    // `core/std/hash.t` and this expected value should be
+    // updated together.
+    let src = r#"
+        fn main() -> u64 {
+            val a: i64 = 7i64
+            val b: u64 = 100u64
+            val c: bool = true
+            val d: str = "hi"
+            a.hash() + b.hash() + c.hash() + d.hash()
+        }
+    "#;
+    assert_consistent(src, "hash_trait_dispatch_on_all_primitives");
+}
+
+#[test]
 fn enum_str_payload_round_trip() {
     // Result<u64, str> exercises the new str-payload enum support
     // in the AOT compiler. Previously rejected with "unsupported

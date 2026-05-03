@@ -268,6 +268,39 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Expr::Match(new_scrutinee, new_arms))
             }
+            Expr::Cast(value, ty) => {
+                // `expr as Type`. The inner ExprRef goes through the
+                // standard expr_mapping; the TypeDecl can carry struct
+                // / enum / nested generic symbols that need re-interning,
+                // so route through remap_type_decl.
+                let new_value = self
+                    .expr_mapping
+                    .get(&value.0)
+                    .ok_or("Cannot find Cast value mapping")?
+                    .clone();
+                let new_ty = self.remap_type_decl(ty)?;
+                Ok(Expr::Cast(new_value, new_ty))
+            }
+            Expr::MethodCall(receiver, method, args) => {
+                // `obj.method(args)` — receiver ExprRef + method
+                // symbol + per-arg ExprRefs all need remap.
+                let new_receiver = self
+                    .expr_mapping
+                    .get(&receiver.0)
+                    .ok_or("Cannot find MethodCall receiver mapping")?
+                    .clone();
+                let new_method = self.remap_symbol(*method)?;
+                let mut new_args = Vec::new();
+                for arg in args {
+                    let new_arg = self
+                        .expr_mapping
+                        .get(&arg.0)
+                        .ok_or("Cannot find MethodCall argument mapping")?
+                        .clone();
+                    new_args.push(new_arg);
+                }
+                Ok(Expr::MethodCall(new_receiver, new_method, new_args))
+            }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
         }

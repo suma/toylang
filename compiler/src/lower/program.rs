@@ -93,6 +93,12 @@ pub(super) fn primitive_type_decl_for_target_sym(
         "ptr" => TypeDecl::Ptr,
         // `usize` shares the UInt64 representation in this language.
         "usize" => TypeDecl::UInt64,
+        // `str` is a pointer-sized opaque handle in IR
+        // (`Type::Str`, see Phase T). Adding the entry here lets
+        // `impl <Trait> for str { ... }` extension methods (e.g.
+        // `core/std/hash.t`'s `Hash for str`) reach the same
+        // method-lowering path the other primitive impls use.
+        "str" => TypeDecl::String,
         _ => return None,
     })
 }

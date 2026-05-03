@@ -47,9 +47,16 @@ fn primitive_target_sym_for_ir_type(
         Type::I64 => "i64",
         Type::U64 => "u64",
         Type::F64 => "f64",
-        // `Type::Str` and the (non-existent in IR) `ptr` aren't
-        // wired here yet; revisit when string / pointer extension
-        // traits are exercised.
+        // `Type::Str` is a pointer-sized opaque handle in IR
+        // (Phase T). Extension-trait dispatch (`s.hash()` from
+        // `core/std/hash.t`'s `impl Hash for str`) routes through
+        // the same per-target method registry as the numeric
+        // primitives above — `lower_program` uses the matching
+        // `"str" => TypeDecl::String` entry in
+        // `primitive_type_decl_for_target_sym`.
+        Type::Str => "str",
+        // `ptr` has no extension trait in stdlib yet; wire when
+        // exercised.
         _ => return None,
     };
     interner.get(name)

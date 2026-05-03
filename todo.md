@@ -306,7 +306,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 
    **現在の制約（2026-05-03 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
 
-   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit` / `str` (Phase T) / `ptr` (#121 Phase A) / narrow int 全 6 width (`u8/u16/u32/i8/i16/i32`、NUM-W-AOT) を value として扱える。`Allocator` の handle 値生成 (arena/fixed_buffer/current/default) は未対応 (#121 Phase B+)、heap / pointer builtins (`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write`) は対応済み
+   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit` / `str` (Phase T) / `ptr` (#121 Phase A) / `Allocator` (#121 Phase B-min、u64 sentinel) / narrow int 全 6 width (`u8/u16/u32/i8/i16/i32`、NUM-W-AOT) を value として扱える。allocator は `__builtin_default_allocator` / `__builtin_current_allocator` + `with allocator = ...` scope が動作 — `__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator` のみ未対応 (#121 Phase B-rest)。heap / pointer builtins (`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write`) は対応済み
    - **文字列**: 値として `val s = "foo"` / 関数 param / return / struct field 等で扱える (Phase T)
    - **キャスト**: `as` で全 13 type の cross-cast マトリクス対応 (i64/u64/f64/bool + 6 narrow int)、generic 2-phase で sext/uext + ireduce + fcvt_*_sat
    - **f64 制約**: `%` (mod) は cranelift に native fmod が無いため reject
@@ -314,7 +314,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
    - **コレクション**: array (Phase Y/Y2/Y3) 対応 — runtime index、constant-bound range slicing、scalar/struct/tuple 要素、narrow scalar の per-width packing (NUM-W-AOT-pack Phase 1)。dict は user-space `Dict<K, V>` 経由で利用 (`core/std/dict.t`、DICT-AOT-NEW Phase B/C/D)
    - **enum / match**: 非ジェネリック / ジェネリック enum + unit / tuple variant + `match` + 全 backend boundary対応。payload 型は scalar / 別 enum / struct / tuple すべて可、ネストパターン + 再帰 print 動作。深い網羅性解析 (96残 前半) で nested EnumVariant の coverage を検証
    - **trait**: `trait` 宣言と `impl <Trait> for <Type>` 対応 (Phase R)、trait method dispatch 動作、`<T: Trait>` bound 経由の generic 関数も対応
-   - **allocator (#121 Phase A 対応済み)**: 残: `with allocator = ...` scope syntax の native codegen、`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator` / `__builtin_current_allocator` / `__builtin_default_allocator` の handle 生成、`AllocatorBinding::Generic/Local/Ambient` 経由の non-Static path
+   - **allocator (#121 Phase A + B-min 対応済み)**: 残 (#121 Phase B-rest): `__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator` の native runtime 実装 (現状 sentinel 0 以外の handle を生成する手段なし)、`with` body 内の早期 exit (return / break / continue) で stack を確実に pop する panic-style cleanup、`AllocatorBinding::Generic/Local/Ambient` を heap builtin 命令に配線して active stack 経由ディスパッチ (現状 heap_alloc は常に libc 直呼び)
    - **DbC**: `requires` / `ensures` 節は実行時チェック、`--release` で全 contract skip
    - **const**: top-level `const NAME: Type = expr` 対応 (リテラル / 既存 const 参照 / 算術 fold のみ)
    - **generics**: 関数 (Phase L)、struct (Phase Q1/Q2)、impl method (Phase R3)、method-only `<U>` (Phase X)、associated function (DICT-AOT-NEW Phase B) 対応。per-monomorph subst で val annotation 内の generic param も解決 (DICT-AOT-NEW Phase C)
@@ -400,7 +400,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - `extern fn` 宣言: `extern fn name(params) -> ret` で signature だけ宣言、body は backend (interpreter registry / JIT helper or native / AOT libm import) が提供。math intrinsic はすべてこの仕組み経由。generic params (`extern fn name<T>(x: T) -> T`) は parser で受理、interpreter で動作 (`#195`)
 - 文字列: ConstString/String二重システム、`str.len()`、`.concat()`、`.trim()`、`.to_upper()`、`.to_lower()`、`.split()`、`.substring()`、`.contains()`
 - コメント: `#`（行）、`/* */`（ブロック）
-- Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Global / Arena / **FixedBuffer** allocator (3 種すべて実装済み)
+- Allocator システム: `with allocator = expr { ... }`、`ambient` キーワード、`<A: Allocator>` bound、自動 ambient 挿入、Global / Arena / **FixedBuffer** allocator (interpreter / JIT で 3 種すべて実装済み)。AOT は Phase A (heap / pointer builtins via libc) + Phase B-min (`__builtin_default_allocator` / `__builtin_current_allocator` + `with allocator = ...` scope) を対応 — arena / fixed_buffer の native backend は #121 Phase B-rest で未対応
 - Enum + match: unit + tuple variant、`Enum::Variant` / `Enum::Variant(args)`、ジェネリック enum (`Option<T>`)、ネスト enum payload (`Option<Option<i64>>`)、payload に `f64` / struct / tuple / **str** (`#205` AOT も対応)、リテラル / ネスト / タプルパターン、guard (`if cond`)、網羅性チェック、到達性チェック。enum receiver method dispatch も interpreter / AOT で動作 (`#96` `#203`)。JIT は enum 値モデル未対応で silent fallback (`#204` で precise diagnostic)
 - DbC: `requires` / `ensures` 節の実行時チェック、`ensures` 内の `result` バインド、`INTERPRETER_CONTRACTS` (interpreter) / `--release` (compiler) で gating
 - `panic("msg")` / `assert(cond, msg)` ビルトイン (3 backend 全対応、release でも常時 active 設計)
@@ -425,7 +425,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1139 テスト, 31 skipped（100% 成功率、2026-05-03 時点 — DICT-CROSS-MODULE-OPTION / NUM-W-AOT-pack / #121 Phase A / DICT-AOT-NEW Phase B+C+D / `&mut self` Stage 1 / 96残 前半 で複数 regression test 追加。compiler/e2e は 191、consistency は 30 強）
+- 合計 1140 テスト, 31 skipped（100% 成功率、2026-05-03 時点 — DICT-CROSS-MODULE-OPTION / NUM-W-AOT-pack / #121 Phase A+B-min / DICT-AOT-NEW Phase B+C+D / `&mut self` Stage 1 / 96残 前半 で複数 regression test 追加。compiler/e2e は 191、consistency は 30 強）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (23) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

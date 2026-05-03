@@ -141,6 +141,23 @@ parsing_only              34 µs        34 µs         36 µs             +6% (n
 
 ## 未実装 📋
 
+NUM-W. **狭い数値型 (u8 / u16 / u32 / i8 / i16 / i32) の追加** — 現状の数値型は `u64` / `i64` / `f64` のみ。1/2/4 バイトの整数を直接表現する手段がなく、サイズが効くケース (バイト列処理、低レベル interop、メモリ局所性を狙った struct パッキング、`u8` でのバイト I/O) は全て `u64` で代用するしかない。実装範囲は広い:
+   - **frontend (parser / type_decl / type_checker)**: lexer のキーワード / 型注釈 / リテラル接尾辞 (`42u8` / `42i32`) / `as` キャスト / 型推論ルール (literal default / number coercion) / 演算子の signed/unsigned 分岐 / shift の右オペランド型 / 比較とビット演算の幅一致チェック。
+   - **interpreter (`Object` / `evaluation/operators.rs`)**: 6 個の新 variant を追加、wrapping/overflow セマンティクスを `wrapping_add` 等で全演算で揃える、display/eq/hash 実装、`__builtin_sizeof` の幅を 1/2/4 バイトに、Object→numeric 変換ヘルパ。
+   - **JIT (`eligibility` / `codegen`)**: cranelift の `I8` / `I16` / `I32` 型に lowering、ABI 越境で extension (sext/uext) を入れる規則、`ScalarTy::U8/I8/U16/I16/U32/I32` 6 個追加で eligibility check 全箇所を更新。
+   - **AOT (`compiler/src/lower/types.rs` / `codegen.rs`)**: `IrType::U8/I8/U16/I16/U32/I32` を追加し `ir_to_cranelift_ty` / `flatten_struct_to_cranelift_tys` を拡張、struct field の packing (アラインメント考慮) / boundary lowering (call/return/struct field/tuple element) / cast 全パターン。`__builtin_ptr_read/write` の typed-slot map と byte buffer 両方が新型を扱えるようにする。
+   - **runtime / print**: `toy_print_{i,u}{8,16,32}` を `runtime/toylang_rt.c` と `compiler/src/jit.rs` (capture 経路) の両方に追加。
+   - **stdlib**: `core/std/{i8,i16,i32,u8,u16,u32}.t` に `Abs` / `Hash` impl を追加。
+   - **テスト**: 3 backend 一致テスト (consistency.rs)、wrapping vs overflow の差分既知化、struct field packing の boundary、cast マトリクス。
+
+   優先度: 低〜中 (現実装で `u64` 代用が可能なため致命的ではないが、低レベル / interop / バイト処理を本格的に書く場合に必須)。Phase 分割例:
+   1. lexer + parser + type_decl + リテラル + 型推論
+   2. interpreter (Object variant + 演算子)
+   3. cast マトリクス + display + sizeof + 3 backend consistency
+   4. JIT eligibility + cranelift codegen
+   5. AOT codegen + boundary + struct packing
+   6. stdlib (Abs / Hash) + runtime print helpers
+
 195b. **`extern fn` 生 monomorph 化** (`#195` の続き): 現状ジェネリック extern は interpreter の type-erased registry でだけ動く。JIT/AOT で動かすには call site ごとに mangled extern symbol (`__extern_id__u64`, `__extern_id__i64` など) を emit し、対応する monomorph 実装を Rust 側に登録する仕組みが必要。優先度: 低 (現状必要なケースなし)
 
 185残. **3+ part qualified call** (`std::math::abs(x)` 形式) — 現状は `import std.math` (または auto-load) してエイリアス `math` 経由でしか呼べない (parser が 3-part path で last 名のみを採用するため)。優先度: 低 (auto-load のおかげで実用上の不便は限定的)

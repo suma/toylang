@@ -46,7 +46,7 @@ impl<K, V> Dict<K, V> {
     # append path below. The early `return` from inside the
     # while loop relies on the DICT-RETURN-WHILE fix to the
     # interpreter loop evaluator (`88d9af6` predecessor).
-    fn insert(self: Self, key: K, value: V) {
+    fn insert(&mut self, key: K, value: V) {
         if self.key_size == 0u64 {
             self.key_size = __builtin_sizeof(key)
             self.val_size = __builtin_sizeof(value)
@@ -123,7 +123,7 @@ impl<K, V> Dict<K, V> {
 
     # Remove `key` if present. On hit: swap-remove with the
     # last slot and return true. On miss: return false.
-    fn remove(self: Self, key: K) -> bool {
+    fn remove(&mut self, key: K) -> bool {
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)

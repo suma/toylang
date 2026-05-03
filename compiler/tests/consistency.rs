@@ -1092,16 +1092,15 @@ fn dict_typed_slot_survives_geometric_growth() {
 
 #[test]
 fn dict_user_space_round_trip() {
-    // Phase 2 of the user-space dict effort
+    // Originally Phase 2 of the user-space dict effort
     // (`core/std/dict.t`): exercises insert / get_or / overwrite
-    // / contains_key / remove on the auto-loaded `Dict<i64, u64>`
-    // through interpreter and JIT (silent fallback to interpreter
-    // — Dict::new is a generic-struct associated function the
-    // JIT path doesn't yet eligibility-check). AOT is excluded
-    // because `Dict::new()` requires generic-struct
-    // associated-function lowering (#159) which the AOT
-    // compiler doesn't ship yet; this test compares interp + JIT
-    // directly without going through `assert_consistent`.
+    // / contains_key / remove on the auto-loaded `Dict<i64, u64>`.
+    // Promoted to a 3-way `assert_consistent` after `&mut self`
+    // Phase 1c migrated `dict.t::insert` and `dict.t::remove` to
+    // `&mut self`, which closes DICT-AOT-NEW Phase D — the
+    // mutating methods now propagate `self.field = ...` writes
+    // back to the caller's `d` binding via the AOT
+    // Self-out-parameter writeback.
     //
     // Coverage:
     //   - insert into empty dict (allocation)
@@ -1139,10 +1138,7 @@ fn dict_user_space_round_trip() {
             else { 8u64 }
         }
     "#;
-    let interp = interpreter_value(src);
-    assert_eq!(interp, 42, "interpreter expected 42, got {interp}");
-    let jit = jit_exit_code(src, "dict_user_space_jit");
-    assert_eq!(jit as u64, 42, "JIT expected 42, got {jit}");
+    assert_consistent(src, "dict_user_space_round_trip");
 }
 
 #[test]

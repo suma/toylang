@@ -759,6 +759,63 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn vec_user_space_round_trip() {
+    // `core/std/collections/vec.t::Vec<T>` is the user-space
+    // dynamic array sibling to `core/std/dict.t::Dict<K, V>`.
+    // Built entirely on `__builtin_heap_alloc` /
+    // `__builtin_heap_realloc` / `__builtin_ptr_read` /
+    // `__builtin_ptr_write` / `__builtin_sizeof` — no
+    // special-casing in the parser, type checker, or any
+    // backend. Mutating methods (`push`, `pop`, `set`) use
+    // `&mut self` so the AOT Self-out-parameter writeback
+    // (Stage 1 of `&` references) propagates `self.cap` /
+    // `self.data` / `self.len` updates back to the caller's
+    // binding.
+    //
+    // Coverage:
+    //   - `Vec::new()` (associated function on a generic struct
+    //     — DICT-AOT-NEW Phase B)
+    //   - `push` past the initial capacity, exercising the
+    //     geometric grow path (`heap_realloc`)
+    //   - `get` random read
+    //   - `set` random write
+    //   - `pop` and the resulting `size()` decrement
+    //   - `is_empty()` true / false transitions
+    //
+    // Exit 42 means every step matched. Any digit 1..7 names the
+    // step that failed first.
+    let src = r#"
+        fn main() -> u64 {
+            var v: Vec<u64> = Vec::new()
+            var i: u64 = 0u64
+            while i < 10u64 {
+                v.push(i * 11u64)
+                i = i + 1u64
+            }
+            val a: u64 = v.get(0u64)
+            val b: u64 = v.get(5u64)
+            val c: u64 = v.get(9u64)
+            v.set(5u64, 999u64)
+            val d: u64 = v.get(5u64)
+            val sz_before: u64 = v.size()
+            val popped: u64 = v.pop()
+            val sz_after: u64 = v.size()
+            val empty_before: bool = v.is_empty()
+            if a != 0u64 { 1u64 }
+            elif b != 55u64 { 2u64 }
+            elif c != 99u64 { 3u64 }
+            elif d != 999u64 { 4u64 }
+            elif sz_before != 10u64 { 5u64 }
+            elif popped != 99u64 { 6u64 }
+            elif sz_after != 9u64 { 7u64 }
+            elif empty_before { 8u64 }
+            else { 42u64 }
+        }
+    "#;
+    assert_consistent(src, "vec_user_space_round_trip");
+}
+
+#[test]
 fn str_len_extension_method_round_trip() {
     // `core/std/str.t::Length::len(self) -> u64` returns the byte
     // count of the string. AOT lowers to a libc `strlen` call;

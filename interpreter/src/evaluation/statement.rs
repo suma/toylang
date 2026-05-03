@@ -26,7 +26,16 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
         let mut borrow = rc.borrow_mut();
         match &mut *borrow {
             Object::Struct { type_args, .. } | Object::EnumVariant { type_args, .. } => {
-                if type_args.is_empty() {
+                // Patch when the existing args are empty OR when
+                // every existing arg is `Unknown` — `derive_struct_type_args`
+                // emits `[Unknown; N]` for a generic struct whose
+                // fields don't reference `T` (e.g. `struct Container<T> { value: u64 }`),
+                // which prevents CONCRETE-IMPL Phase 2 dispatch from
+                // matching `[u8]` against `[Unknown]`. The annotation
+                // is the source of truth for `T` in that case.
+                let needs_patch = type_args.is_empty()
+                    || type_args.iter().all(|t| matches!(t, TypeDecl::Unknown));
+                if needs_patch {
                     *type_args = args;
                 }
             }

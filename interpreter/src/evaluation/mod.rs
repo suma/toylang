@@ -28,6 +28,20 @@ pub struct EnumRegistryVariant {
     pub payload_types: Vec<TypeDecl>,
 }
 
+/// One impl-block specialisation registered for a `(struct, method)`
+/// pair. CONCRETE-IMPL Phase 2: a single `(struct_name, method_name)`
+/// can have multiple specs distinguished by `target_type_args` (e.g.
+/// `impl FromStr for Vec<u8>` registers under
+/// `(Vec, from_str)` with `target_type_args = [TypeDecl::UInt8]`,
+/// while `impl FromStr for Vec<i64>` registers separately under
+/// the same pair with `[TypeDecl::Int64]`). Empty `target_type_args`
+/// means a generic-parameterised impl (`impl<T> Foo<T>`).
+#[derive(Debug, Clone)]
+pub struct MethodSpec {
+    pub target_type_args: Vec<TypeDecl>,
+    pub method: Rc<MethodFunction>,
+}
+
 /// Per-struct entry registered with the evaluation context. Used
 /// only for deriving `type_args` on `Object::Struct` so generic
 /// instances print like the compiler.
@@ -128,7 +142,7 @@ pub struct EvaluationContext<'a> {
     /// at sites that don't yet thread the qualifier.
     pub(super) function_qualified: HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>>,
     pub environment: Environment,
-    pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, // struct_name -> method_name -> method
+    pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>, // struct_name -> method_name -> [specs by target_type_args]
     pub(super) null_object: RcObject, // Pre-created null object for reuse
     pub(super) recursion_depth: u32,
     pub(super) max_recursion_depth: u32,
@@ -269,18 +283,69 @@ impl<'a> EvaluationContext<'a> {
         self.struct_definitions.insert(name, entry);
     }
 
-    pub fn register_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
-        self.method_registry
+    /// Register an impl-block method. CONCRETE-IMPL Phase 2:
+    /// `target_type_args` distinguishes multiple impls of the same
+    /// `(struct, method)` pair under different concrete type args;
+    /// pass an empty Vec for inherent / generic-parameterised impls.
+    pub fn register_method(
+        &mut self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        target_type_args: Vec<TypeDecl>,
+        method: Rc<MethodFunction>,
+    ) {
+        let specs = self
+            .method_registry
             .entry(struct_name)
             .or_default()
-            .insert(method_name, method);
+            .entry(method_name)
+            .or_default();
+        // Replace an existing spec with the same target_type_args
+        // (later registration wins for the same exact args; this
+        // matches the legacy single-entry HashMap semantics).
+        if let Some(existing) = specs
+            .iter_mut()
+            .find(|s| s.target_type_args == target_type_args)
+        {
+            existing.method = method;
+        } else {
+            specs.push(MethodSpec { target_type_args, method });
+        }
     }
 
-    pub fn get_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<Rc<MethodFunction>> {
-        self.method_registry
-            .get(&struct_name)?
-            .get(&method_name)
-            .cloned()
+    /// Resolve a method by struct + method name + receiver's concrete
+    /// type args. Lookup priority:
+    /// 1. exact match on `target_type_args`;
+    /// 2. generic-parameterised impl with empty args;
+    /// 3. if only one spec exists for this `(struct, method)` pair,
+    ///    return it regardless of args mismatch — this preserves
+    ///    legacy behaviour for associated function calls
+    ///    (`Vec::from_str(...)`) where the call site has no
+    ///    receiver and no annotation hint to feed concrete args
+    ///    into the lookup. Phase 2b will thread annotation hints
+    ///    through so this fallback can become stricter.
+    /// Pass `&[]` when the receiver has no type args (inherent impls,
+    /// non-generic structs, primitive receivers).
+    pub fn get_method(
+        &self,
+        struct_name: DefaultSymbol,
+        method_name: DefaultSymbol,
+        receiver_type_args: &[TypeDecl],
+    ) -> Option<Rc<MethodFunction>> {
+        let specs = self.method_registry.get(&struct_name)?.get(&method_name)?;
+        if let Some(spec) = specs
+            .iter()
+            .find(|s| s.target_type_args.as_slice() == receiver_type_args)
+        {
+            return Some(spec.method.clone());
+        }
+        if let Some(spec) = specs.iter().find(|s| s.target_type_args.is_empty()) {
+            return Some(spec.method.clone());
+        }
+        if specs.len() == 1 {
+            return Some(specs[0].method.clone());
+        }
+        None
     }
 
     /// Drop the `EvaluationResult` envelope of a successful evaluation,

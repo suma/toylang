@@ -759,52 +759,46 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
-fn concrete_impl_conflict_emits_loud_error() {
-    // CONCRETE-IMPL: until full dispatch on concrete type args
-    // lands, having both `impl Foo for Container<u8>` and
-    // `impl Foo for Container<i64>` (different concrete args for
-    // the same trait + struct) used to silently overwrite the
-    // first impl. The parser now captures `<u8>` / `<i64>` into
-    // `ImplBlock.target_type_args` and the registry collectors
-    // (interpreter `build_method_registry`, compiler
-    // `collect_method_decls`) emit a loud, CONCRETE-IMPL-tagged
-    // diagnostic when conflicting target_type_args show up under
-    // the same `(target, method)` pair.
+fn concrete_impl_dispatch_by_receiver_type_args() {
+    // CONCRETE-IMPL Phase 2: two `impl MarkerName for Container<X>`
+    // blocks with different concrete `X` coexist in the interpreter
+    // method registry. Instance method dispatch picks the matching
+    // impl by reading the receiver's `Object::Struct.type_args` and
+    // looking up the `(struct, method)` spec list with that key.
+    //
+    // The compiler-side `collect_method_decls` still loud-errors on
+    // such a program (Phase 2 is interpreter-only), so this test
+    // runs interpreter-only — not via `assert_consistent`.
+    //
+    // Expected exit: 8 + 64 = 72 (the u8 impl returns 8u64, the i64
+    // impl returns 64u64; instance dispatch routes each receiver to
+    // its concrete-args impl).
     let src = r#"
         struct Container<T> {
             value: u64
         }
         trait MarkerName {
-            fn marker_name() -> u64
+            fn marker_name(self: Self) -> u64
+        }
+        impl<T> Container<T> {
+            fn new() -> Self { Container { value: 0u64 } }
         }
         impl MarkerName for Container<u8> {
-            fn marker_name() -> u64 { 8u64 }
+            fn marker_name(self: Self) -> u64 { 8u64 }
         }
         impl MarkerName for Container<i64> {
-            fn marker_name() -> u64 { 64u64 }
+            fn marker_name(self: Self) -> u64 { 64u64 }
         }
         fn main() -> u64 {
-            0u64
+            val a: Container<u8> = Container::new()
+            val b: Container<i64> = Container::new()
+            a.marker_name() + b.marker_name()
         }
     "#;
-    let mut parser = frontend::ParserWithInterner::new(src);
-    let mut program = parser.parse_program().expect("parse");
-    let interner = parser.get_string_interner();
-    // Type-checking is not strict enough to catch the conflict
-    // (the registry is only built at execute time), so let the TC
-    // pass succeed and assert the loud error from execute_program.
-    let _ = interpreter::check_typing_with_core_modules(
-        &mut program,
-        interner,
-        Some(src),
-        Some("test.t"),
-        Some(&core_modules_dir()),
-    );
-    let err = interpreter::execute_program(&program, interner, Some(src), Some("test.t"))
-        .expect_err("two impls with different concrete type args must error");
-    assert!(
-        err.contains("CONCRETE-IMPL"),
-        "expected CONCRETE-IMPL diagnostic, got: {err}"
+    let v = interpreter_value(src);
+    assert_eq!(
+        v, 72,
+        "expected dispatch to pick u8-impl (8) for Container<u8> + i64-impl (64) for Container<i64>"
     );
 }
 

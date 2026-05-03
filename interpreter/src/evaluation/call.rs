@@ -509,7 +509,12 @@ impl EvaluationContext<'_> {
         // path. Steps E + F migrate the legacy methods onto extension
         // traits and remove the hardcoded arms entirely.
         if let Some(target_sym) = primitive_target_symbol(&obj_borrowed, self.string_interner) {
-            if let Some(method_func) = self.get_method(target_sym, *method) {
+            // Primitive receivers have no type args; pass empty
+            // slice. CONCRETE-IMPL Phase 2: any future
+            // `impl Foo for u8` etc. always registers with empty
+            // target_type_args, so the empty-args lookup is
+            // exhaustive for the primitive path.
+            if let Some(method_func) = self.get_method(target_sym, *method, &[]) {
                 drop(obj_borrowed);
                 let mut arg_values = Vec::new();
                 for arg in args {
@@ -661,10 +666,16 @@ impl EvaluationContext<'_> {
             Object::Float64(_) => Err(InterpreterError::InternalError(format!(
                 "Method '{method_name}' not found for f64"
             ))),
-            Object::Struct { type_name, .. } => {
+            Object::Struct { type_name, type_args, .. } => {
                 let struct_name_symbol = *type_name;
+                // CONCRETE-IMPL Phase 2: dispatch picks the impl
+                // matching the receiver's concrete type args
+                // (e.g. `impl FromStr for Vec<u8>` for a `Vec<u8>`),
+                // falling back to a generic-parameterised impl with
+                // empty target_type_args.
+                let receiver_type_args = type_args.clone();
 
-                if let Some(method_func) = self.get_method(struct_name_symbol, *method) {
+                if let Some(method_func) = self.get_method(struct_name_symbol, *method, &receiver_type_args) {
                     drop(obj_borrowed); // Release borrow before method call
 
                     // Evaluate method arguments
@@ -681,15 +692,20 @@ impl EvaluationContext<'_> {
                     Err(InterpreterError::InternalError(format!("Method '{method_name}' not found for struct '{type_name:?}'")))
                 }
             }
-            Object::EnumVariant { enum_name, .. } => {
+            Object::EnumVariant { enum_name, type_args, .. } => {
                 // Enum receivers reuse the same `(target_symbol,
                 // method_name)` `method_registry` lookup the struct
                 // path uses; `impl<T> Option<T> { fn unwrap_or(...) }`
                 // registers under the enum's name symbol. Mirrors how
                 // primitive extension-trait dispatch piggy-backs on
-                // the same registry above.
+                // the same registry above. CONCRETE-IMPL Phase 2:
+                // pass enum's runtime type_args so any future
+                // `impl Foo for Option<u8>` would dispatch correctly;
+                // generic `impl<T> Option<T>` falls through with
+                // empty target_type_args.
                 let enum_name_symbol = *enum_name;
-                if let Some(method_func) = self.get_method(enum_name_symbol, *method) {
+                let receiver_type_args = type_args.clone();
+                if let Some(method_func) = self.get_method(enum_name_symbol, *method, &receiver_type_args) {
                     drop(obj_borrowed);
                     let mut arg_values = Vec::new();
                     for arg in args {
@@ -969,15 +985,22 @@ impl EvaluationContext<'_> {
             return Ok(EvaluationResult::Value(result.into()));
         }
 
-        // Look for struct method
+        // Look for struct method. CONCRETE-IMPL Phase 2:
+        // `call_struct_method` is hit by `call.rs` paths that have
+        // an `RcObject` receiver but no compile-time type args
+        // hint; extract type_args from the receiver itself when
+        // it's a struct/enum so concrete-impls dispatch correctly.
         let struct_symbol = self.string_interner.get(struct_name)
             .ok_or_else(|| InterpreterError::InternalError(format!("Unknown struct: {}", struct_name)))?;
+        let receiver_type_args: Vec<TypeDecl> = match &*object.borrow() {
+            Object::Struct { type_args, .. } => type_args.clone(),
+            Object::EnumVariant { type_args, .. } => type_args.clone(),
+            _ => Vec::new(),
+        };
 
-        if let Some(struct_methods) = self.method_registry.get(&struct_symbol) {
-            if let Some(method) = struct_methods.get(&method_name) {
-                let method_args = args.to_vec();
-                return self.call_method(method.clone(), object, method_args);
-            }
+        if let Some(method) = self.get_method(struct_symbol, method_name, &receiver_type_args) {
+            let method_args = args.to_vec();
+            return self.call_method(method, object, method_args);
         }
 
         Err(InterpreterError::FunctionNotFound(
@@ -1015,12 +1038,15 @@ impl EvaluationContext<'_> {
             return Ok(EvaluationResult::Value(result.into()));
         }
 
-        // Look for associated function in struct methods (but call without self)
-        if let Some(struct_methods) = self.method_registry.get(&struct_name) {
-            if let Some(method) = struct_methods.get(&function_name) {
-                // For associated functions, we don't pass self, just the arguments
-                return self.call_associated_method(method.clone(), args.to_vec());
-            }
+        // Look for associated function in struct methods (but call
+        // without self). CONCRETE-IMPL Phase 2: associated function
+        // calls (`Vec::from_str(...)`) have no receiver to read
+        // type_args off of; pass empty so the generic-parameterised
+        // impl is preferred. The caller-side annotation hint
+        // (`var v: Vec<u8> = ...`) isn't threaded into this layer
+        // yet — that's a Phase 2b refinement.
+        if let Some(method) = self.get_method(struct_name, function_name, &[]) {
+            return self.call_associated_method(method, args.to_vec());
         }
 
         Err(InterpreterError::FunctionNotFound(

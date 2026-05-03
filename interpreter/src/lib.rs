@@ -563,18 +563,22 @@ fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program
     // For now, we just register the module namespaces
 }
 
+/// Per-impl record collected by `build_method_registry`. CONCRETE-IMPL
+/// Phase 2: the registry now stores a list of these per
+/// `(struct, method)` pair so multiple impls with different
+/// concrete type args can coexist; runtime dispatch picks the
+/// matching spec via `EvaluationContext::get_method`.
+struct CollectedMethod {
+    target_type_args: Vec<frontend::type_decl::TypeDecl>,
+    method: Rc<MethodFunction>,
+}
+
 fn build_method_registry(
     program: &Program,
     string_interner: &DefaultStringInterner,
-) -> Result<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, String> {
-    let mut method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> = HashMap::new();
-    // CONCRETE-IMPL: track which (struct, method) pairs were already
-    // registered and the type-args that registered them. A second impl
-    // with a *different* target_type_args (e.g. `impl FromStr for Vec<u8>`
-    // alongside `impl FromStr for Vec<i64>`) used to silently overwrite
-    // the first; now it errors. Same args is a duplicate registration
-    // (also rejected). True dispatch by type_args is a follow-up.
-    let mut seen_args: HashMap<(DefaultSymbol, DefaultSymbol), Vec<frontend::type_decl::TypeDecl>> = HashMap::new();
+) -> Result<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>>, String> {
+    let mut method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>> =
+        HashMap::new();
 
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
@@ -583,32 +587,30 @@ fn build_method_registry(
                 let struct_name_symbol = *target_type;
                 for method in methods {
                     let method_name_symbol = method.name;
-                    let key = (struct_name_symbol, method_name_symbol);
-                    if let Some(prev_args) = seen_args.get(&key) {
-                        if prev_args != target_type_args {
-                            let struct_name = string_interner.resolve(struct_name_symbol).unwrap_or("<unknown>");
-                            let method_name = string_interner.resolve(method_name_symbol).unwrap_or("<unknown>");
-                            return Err(format!(
-                                "CONCRETE-IMPL: multiple `impl` blocks for `{}` provide method `{}` with different concrete type arguments \
-({:?} vs {:?}). Dispatch on concrete type args is not yet supported \
-(see CONCRETE-IMPL in todo.md). Workaround: keep only one such impl, or \
-factor the differing logic into separately-named methods.",
-                                struct_name, method_name, prev_args, target_type_args
-                            ));
-                        }
-                        // Same args = exact duplicate, also reject loudly
+                    let specs = method_registry
+                        .entry(struct_name_symbol)
+                        .or_insert_with(HashMap::new)
+                        .entry(method_name_symbol)
+                        .or_insert_with(Vec::new);
+                    // Reject *exact-duplicate* (same target_type_args)
+                    // re-registration loudly — the front-end TC also
+                    // catches this for inherent impls but the safety
+                    // net keeps us from silently masking one impl.
+                    if specs
+                        .iter()
+                        .any(|s| s.target_type_args == *target_type_args)
+                    {
                         let struct_name = string_interner.resolve(struct_name_symbol).unwrap_or("<unknown>");
                         let method_name = string_interner.resolve(method_name_symbol).unwrap_or("<unknown>");
                         return Err(format!(
-                            "duplicate `impl` registration for `{}::{}` with same target type args",
-                            struct_name, method_name
+                            "duplicate `impl` registration for `{}::{}` with same target type args {:?}",
+                            struct_name, method_name, target_type_args
                         ));
                     }
-                    seen_args.insert(key, target_type_args.clone());
-                    method_registry
-                        .entry(struct_name_symbol)
-                        .or_insert_with(HashMap::new)
-                        .insert(method_name_symbol, method.clone());
+                    specs.push(CollectedMethod {
+                        target_type_args: target_type_args.clone(),
+                        method: method.clone(),
+                    });
                 }
             }
         }
@@ -619,11 +621,18 @@ factor the differing logic into separately-named methods.",
 
 fn register_methods(
     eval: &mut EvaluationContext,
-    method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>
+    method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>>,
 ) {
     for (struct_symbol, methods) in method_registry {
-        for (method_symbol, method_func) in methods {
-            eval.register_method(struct_symbol, method_symbol, method_func);
+        for (method_symbol, specs) in methods {
+            for spec in specs {
+                eval.register_method(
+                    struct_symbol,
+                    method_symbol,
+                    spec.target_type_args,
+                    spec.method,
+                );
+            }
         }
     }
 }

@@ -25,6 +25,9 @@
 //! `puts` via `libc` so `println(struct)` etc. produces the same
 //! output regardless of which backend ran the program.
 
+use std::cell::RefCell;
+use std::io::Write as _;
+
 use cranelift_jit::{JITBuilder, JITModule};
 use frontend::ast::Program;
 use string_interner::DefaultStringInterner;
@@ -61,11 +64,100 @@ impl JitProgram {
         unsafe { (self.main)() }
     }
 
+    /// Run the program with stdout captured into a `String`. The
+    /// `toy_print_*` runtime helpers consult a thread-local
+    /// buffer; when one is set they append to it instead of
+    /// writing to fd 1. Returns `(exit_code, captured_stdout)`.
+    ///
+    /// Thread-local rather than module-global because the JIT
+    /// runtime helpers run on whatever thread invokes `main`
+    /// (here: this very thread), and a process-wide static would
+    /// race when two parallel `cargo test` workers each ran a
+    /// JIT-capturing program. Each test thread gets its own
+    /// buffer with no synchronisation needed.
+    ///
+    /// Use the panic-safe RAII guard inside so the capture state
+    /// gets cleared even if the JIT-compiled code panics through
+    /// us — leaving capture armed across tests would silently
+    /// swallow stdout for unrelated work in the same thread.
+    pub fn run_capturing_stdout(&self) -> (u64, String) {
+        struct CaptureGuard;
+        impl CaptureGuard {
+            fn arm() -> Self {
+                CAPTURE.with(|c| {
+                    *c.borrow_mut() = Some(Vec::new());
+                });
+                CaptureGuard
+            }
+            fn take(self) -> Vec<u8> {
+                let buf = CAPTURE
+                    .with(|c| c.borrow_mut().take())
+                    .unwrap_or_default();
+                std::mem::forget(self); // drop side already done
+                buf
+            }
+        }
+        impl Drop for CaptureGuard {
+            fn drop(&mut self) {
+                CAPTURE.with(|c| *c.borrow_mut() = None);
+            }
+        }
+
+        let guard = CaptureGuard::arm();
+        let exit = self.run();
+        let buf = guard.take();
+        // Lossy decode: the JIT helpers only ever push valid UTF-8
+        // (they're either ASCII formatting from format!() or the
+        // bytes the user's `str` literal already contained, which
+        // the parser stored as UTF-8). Lossy guards against weird
+        // raw `__builtin_*` bytes a future test might smuggle in.
+        let s = String::from_utf8_lossy(&buf).into_owned();
+        (exit, s)
+    }
+
     /// Raw pointer for callers that want a different signature
     /// (e.g. an `i64`-returning main). Still `unsafe` to invoke.
     pub fn main_ptr(&self) -> JitMainFn {
         self.main
     }
+}
+
+thread_local! {
+    /// Stdout-capture buffer. `None` is the normal case (the
+    /// `toy_*` helpers write to fd 1 via `printf` / `puts`).
+    /// `run_capturing_stdout` flips it to `Some(Vec::new())` for
+    /// the duration of one program run. Thread-local so parallel
+    /// `cargo test` workers don't fight over a single buffer.
+    static CAPTURE: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+}
+
+/// Append bytes to the capture buffer if one is armed. Returns
+/// `true` when the bytes were captured, `false` when no capture
+/// is active and the caller should fall through to printf/puts.
+fn try_capture(bytes: &[u8]) -> bool {
+    CAPTURE.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            buf.extend_from_slice(bytes);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Same idea, for callers that want to format directly into the
+/// buffer with `write!` rather than building an intermediate
+/// `String`. Skips the format step entirely when no capture is
+/// armed (returns `false` for the printf fallback).
+fn try_capture_with(f: impl FnOnce(&mut Vec<u8>)) -> bool {
+    CAPTURE.with(|c| {
+        if let Some(buf) = c.borrow_mut().as_mut() {
+            f(buf);
+            true
+        } else {
+            false
+        }
+    })
 }
 
 // `JITModule` allocates executable memory. The drop order matters:
@@ -260,50 +352,110 @@ unsafe extern "C" {
 }
 
 unsafe extern "C" fn toy_print_i64(v: i64) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
     unsafe {
         printf(b"%lld\0".as_ptr(), v as std::ffi::c_longlong);
     }
 }
 
 unsafe extern "C" fn toy_println_i64(v: i64) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
     unsafe {
         printf(b"%lld\n\0".as_ptr(), v as std::ffi::c_longlong);
     }
 }
 
 unsafe extern "C" fn toy_print_u64(v: u64) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
     unsafe {
         printf(b"%llu\0".as_ptr(), v as std::ffi::c_ulonglong);
     }
 }
 
 unsafe extern "C" fn toy_println_u64(v: u64) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
     unsafe {
         printf(b"%llu\n\0".as_ptr(), v as std::ffi::c_ulonglong);
     }
 }
 
 unsafe extern "C" fn toy_print_bool(v: u8) {
+    let s: &[u8] = if v != 0 { b"true" } else { b"false" };
+    if try_capture(s) {
+        return;
+    }
+    let cstr: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
     unsafe {
-        let s: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
-        printf(b"%s\0".as_ptr(), s.as_ptr());
+        printf(b"%s\0".as_ptr(), cstr.as_ptr());
     }
 }
 
 unsafe extern "C" fn toy_println_bool(v: u8) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{}", if v != 0 { "true" } else { "false" });
+    }) {
+        return;
+    }
+    let cstr: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
     unsafe {
-        let s: &[u8] = if v != 0 { b"true\0" } else { b"false\0" };
-        puts(s.as_ptr());
+        puts(cstr.as_ptr());
     }
 }
 
+/// Walk a NUL-terminated C string and return its bytes (without
+/// the terminator). Used by the str-print helpers when capture
+/// is active so we can splice the content into the Vec<u8>
+/// buffer directly. Bounded to 1 MiB just to make sure a stray
+/// non-terminated pointer doesn't infinite-loop.
+unsafe fn cstr_bytes<'a>(s: *const u8) -> &'a [u8] {
+    if s.is_null() {
+        return &[];
+    }
+    let mut len = 0usize;
+    let limit = 1 << 20;
+    while len < limit {
+        if unsafe { *s.add(len) } == 0 {
+            break;
+        }
+        len += 1;
+    }
+    unsafe { std::slice::from_raw_parts(s, len) }
+}
+
 unsafe extern "C" fn toy_print_str(s: *const u8) {
+    let bytes = unsafe { cstr_bytes(s) };
+    if try_capture(bytes) {
+        return;
+    }
     unsafe {
         printf(b"%s\0".as_ptr(), s);
     }
 }
 
 unsafe extern "C" fn toy_println_str(s: *const u8) {
+    let bytes = unsafe { cstr_bytes(s) };
+    if try_capture_with(|buf| {
+        buf.extend_from_slice(bytes);
+        buf.push(b'\n');
+    }) {
+        return;
+    }
     unsafe {
         puts(s);
     }
@@ -311,7 +463,21 @@ unsafe extern "C" fn toy_println_str(s: *const u8) {
 
 // f64 display follows the C runtime's contract: integral values
 // print as `%.1f` (so `1f64` displays as `1.0`, matching the
-// interpreter), everything else uses `%g`.
+// interpreter), everything else uses `%g`. Captured-mode mirrors
+// this: `format!("{:.1}", v)` for integral, `format!("{}", v)`
+// for the `%g` path. Rust's default Display for f64 differs from
+// `%g` for very large / very small magnitudes (Rust never uses
+// scientific notation by default at this width while C `%g` does
+// past 6 sig figs), but every fixture in the e2e suite uses
+// short decimals where the two agree byte-for-byte.
+fn format_f64(v: f64) -> String {
+    if v == (v as i64) as f64 {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    }
+}
+
 unsafe extern "C" fn emit_f64(v: f64, newline: bool) {
     unsafe {
         if v == (v as i64) as f64 {
@@ -326,13 +492,24 @@ unsafe extern "C" fn emit_f64(v: f64, newline: bool) {
 }
 
 unsafe extern "C" fn toy_print_f64(v: f64) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{}", format_f64(v));
+    }) {
+        return;
+    }
     unsafe {
         emit_f64(v, false);
     }
 }
 
 unsafe extern "C" fn toy_println_f64(v: f64) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{}", format_f64(v));
+    }) {
+        return;
+    }
     unsafe {
         emit_f64(v, true);
     }
 }
+

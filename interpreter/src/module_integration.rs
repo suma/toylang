@@ -39,18 +39,26 @@ pub(crate) struct AstIntegrationContext<'a> {
     module_string_interner: &'a DefaultStringInterner,
     expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
     stmt_mapping: HashMap<u32, StmtRef>, // module StmtRef -> main StmtRef
-    /// Set of enum names already declared by the user (or by an
-    /// earlier-integrated module). Built from `main_program.statement`
-    /// at construction; consulted by `remap_statement` so an
-    /// auto-loaded `enum Option<T>` is silently skipped when the user
-    /// program already declares one (the user version wins). Without
-    /// this, every existing test that inlines `enum Option<T> { ... }`
-    /// would trip the type-checker's "enum 'Option' is already
-    /// defined" check after `core/std/option.t` was added.
-    existing_enum_names: std::collections::HashSet<DefaultSymbol>,
-    /// Same idea for structs — silently skip auto-loaded
-    /// `struct Cell<T>` when the user already defines `Cell`.
-    existing_struct_names: std::collections::HashSet<DefaultSymbol>,
+    /// Stdlib type names (struct + enum decl names declared by any
+    /// auto-loaded core module) that the user has shadowed with their
+    /// own declaration. Computed up-front by the caller (lib.rs's
+    /// `integrate_modules`) by intersecting user-declared type names
+    /// with the union of all core-module-declared type names.
+    ///
+    /// When the integration walks a stdlib module's AST, any symbol
+    /// whose textual name appears in this set gets re-interned under
+    /// the alias `__std_<name>` (see `remap_type_symbol`). The
+    /// shadowed stdlib decl itself is therefore *not* dropped — it is
+    /// registered under the aliased name so other stdlib modules that
+    /// reference it (e.g. `core/std/dict.t`'s `-> Option<V>`)
+    /// continue to resolve to the stdlib version regardless of what
+    /// the user named their own type.
+    ///
+    /// This replaces the old "drop on conflict" strategy
+    /// (`existing_enum_names` / `existing_struct_names`) that silently
+    /// broke any cross-module stdlib reference into a shadowed type
+    /// (DICT-CROSS-MODULE-OPTION).
+    shadowed_stdlib_types: std::collections::HashSet<String>,
 }
 
 impl<'a> AstIntegrationContext<'a> {
@@ -59,30 +67,8 @@ impl<'a> AstIntegrationContext<'a> {
         module_program: &'a Program,
         main_string_interner: &'a mut DefaultStringInterner,
         module_string_interner: &'a DefaultStringInterner,
+        shadowed_stdlib_types: std::collections::HashSet<String>,
     ) -> Self {
-        // Snapshot user-defined enum / struct names from
-        // main_program before integration begins so the per-stmt
-        // remap path can defer-as-Break any colliding stdlib
-        // declaration. Iterating over `main_program.statement` here
-        // (rather than later inside the borrow-mut walk) keeps the
-        // lookup cheap without re-scanning per stmt.
-        let mut existing_enum_names: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
-        let mut existing_struct_names: std::collections::HashSet<DefaultSymbol> =
-            std::collections::HashSet::new();
-        for i in 0..main_program.statement.len() {
-            if let Some(stmt) = main_program.statement.get(&StmtRef(i as u32)) {
-                match &stmt {
-                    Stmt::EnumDecl { name, .. } => {
-                        existing_enum_names.insert(*name);
-                    }
-                    Stmt::StructDecl { name, .. } => {
-                        existing_struct_names.insert(*name);
-                    }
-                    _ => {}
-                }
-            }
-        }
         Self {
             main_program,
             module_program,
@@ -90,8 +76,43 @@ impl<'a> AstIntegrationContext<'a> {
             module_string_interner,
             expr_mapping: HashMap::new(),
             stmt_mapping: HashMap::new(),
-            existing_enum_names,
-            existing_struct_names,
+            shadowed_stdlib_types,
+        }
+    }
+
+    /// Compute the alias name a stdlib type symbol should be remapped
+    /// to, if the user has shadowed the original name. Returns `None`
+    /// when no aliasing applies (the symbol passes through
+    /// `remap_symbol` unchanged).
+    fn aliased_name(&self, symbol_str: &str) -> Option<String> {
+        if self.shadowed_stdlib_types.contains(symbol_str) {
+            Some(format!("__std_{}", symbol_str))
+        } else {
+            None
+        }
+    }
+
+    /// Variant of `remap_symbol` that participates in stdlib aliasing.
+    /// Use this for symbols that resolve to a top-level type (struct
+    /// or enum) — type-decl names, impl-block targets, struct-literal
+    /// type names, enum-pattern enum names, and the type-position
+    /// symbols carried inside `TypeDecl`.
+    ///
+    /// Plain `remap_symbol` is still used for everything that can't
+    /// shadow a type: function names, parameter names, generic param
+    /// declarations, struct field names, enum variant names, method
+    /// names, etc. Mixing the two keeps the alias rewrite scoped so a
+    /// generic param that happens to be spelled `Option` (silly but
+    /// legal) doesn't get unexpectedly renamed inside a generic body.
+    fn remap_type_symbol(&mut self, symbol: DefaultSymbol) -> Result<DefaultSymbol, String> {
+        let symbol_str = self
+            .module_string_interner
+            .resolve(symbol)
+            .ok_or("Cannot resolve symbol")?;
+        if let Some(alias) = self.aliased_name(symbol_str) {
+            Ok(self.main_string_interner.get_or_intern(&alias))
+        } else {
+            Ok(self.main_string_interner.get_or_intern(symbol_str))
         }
     }
 
@@ -188,10 +209,25 @@ impl<'a> AstIntegrationContext<'a> {
                 Ok(Expr::IfElifElse(new_if_cond, new_if_block, new_elif_pairs, new_else_block))
             }
             Expr::QualifiedIdentifier(path) => {
-                // Remap all symbols in the qualified identifier path
+                // Remap each segment. Path elements that name a
+                // top-level type (like `Option` in
+                // `Option::None`) need to participate in stdlib
+                // aliasing so a stdlib internal reference still
+                // resolves under user shadow
+                // (DICT-CROSS-MODULE-OPTION). Plain `remap_symbol`
+                // is only safe for elements that can't be a type
+                // name — and at the AST level we can't tell the
+                // segment's role yet, so go through the
+                // type-symbol form for every segment. This
+                // over-aliases module aliases / variant names that
+                // happen to collide with a user-shadowed stdlib
+                // type name, but in practice the shadow set is
+                // tiny (Option, Result, Dict at the moment) and
+                // module-/variant-name collisions with those
+                // names are extremely unlikely.
                 let mut new_path = Vec::new();
                 for symbol in path {
-                    let new_symbol = self.remap_symbol(*symbol)?;
+                    let new_symbol = self.remap_type_symbol(*symbol)?;
                     new_path.push(new_symbol);
                 }
                 Ok(Expr::QualifiedIdentifier(new_path))
@@ -218,7 +254,14 @@ impl<'a> AstIntegrationContext<'a> {
                 // need both the qualifier symbol and the method name
                 // routed through the module interner remap; the arg
                 // ExprRefs follow the standard expr_mapping path.
-                let new_target = self.remap_symbol(*target)?;
+                //
+                // The `target` symbol can be a top-level type name
+                // (e.g. `Option::Some(v)` from a stdlib body), so
+                // route it through `remap_type_symbol` to pick up
+                // stdlib aliasing (DICT-CROSS-MODULE-OPTION). The
+                // `method` symbol is the function/variant name and
+                // stays plain.
+                let new_target = self.remap_type_symbol(*target)?;
                 let new_method = self.remap_symbol(*method)?;
                 let mut new_args = Vec::new();
                 for arg in args {
@@ -272,8 +315,12 @@ impl<'a> AstIntegrationContext<'a> {
                 // `Point { x: 10, y: 20 }` — both the struct's
                 // type symbol and each field name need re-interning,
                 // and the per-field value ExprRefs follow the
-                // standard expr_mapping path.
-                let new_name = self.remap_symbol(*name)?;
+                // standard expr_mapping path. The struct name
+                // participates in stdlib aliasing
+                // (DICT-CROSS-MODULE-OPTION) so a stdlib body
+                // building `Dict { ... }` reaches the aliased
+                // `__std_Dict` when the user has shadowed `Dict`.
+                let new_name = self.remap_type_symbol(*name)?;
                 let mut new_fields = Vec::with_capacity(fields.len());
                 for (fname, fexpr) in fields {
                     let new_fname = self.remap_symbol(*fname)?;
@@ -389,21 +436,27 @@ impl<'a> AstIntegrationContext<'a> {
     /// `Dict`, `Range`) recurse into their element types.
     fn remap_type_decl(&mut self, ty: &TypeDecl) -> Result<TypeDecl, String> {
         Ok(match ty {
-            TypeDecl::Identifier(s) => TypeDecl::Identifier(self.remap_symbol(*s)?),
+            // Identifier / Struct / Enum carry top-level type-name
+            // symbols and so participate in stdlib aliasing
+            // (DICT-CROSS-MODULE-OPTION). Generic carries a
+            // function-/struct-local generic parameter symbol and must
+            // pass through plain remap so a `<Option>`-named generic
+            // (admittedly a corner case) isn't accidentally renamed.
+            TypeDecl::Identifier(s) => TypeDecl::Identifier(self.remap_type_symbol(*s)?),
             TypeDecl::Generic(s) => TypeDecl::Generic(self.remap_symbol(*s)?),
             TypeDecl::Struct(s, args) => {
                 let mut new_args = Vec::with_capacity(args.len());
                 for a in args {
                     new_args.push(self.remap_type_decl(a)?);
                 }
-                TypeDecl::Struct(self.remap_symbol(*s)?, new_args)
+                TypeDecl::Struct(self.remap_type_symbol(*s)?, new_args)
             }
             TypeDecl::Enum(s, args) => {
                 let mut new_args = Vec::with_capacity(args.len());
                 for a in args {
                     new_args.push(self.remap_type_decl(a)?);
                 }
-                TypeDecl::Enum(self.remap_symbol(*s)?, new_args)
+                TypeDecl::Enum(self.remap_type_symbol(*s)?, new_args)
             }
             TypeDecl::Tuple(elems) => {
                 let mut new_elems = Vec::with_capacity(elems.len());
@@ -437,7 +490,10 @@ impl<'a> AstIntegrationContext<'a> {
     fn remap_pattern(&mut self, pat: &Pattern) -> Result<Pattern, String> {
         match pat {
             Pattern::EnumVariant(enum_sym, variant_sym, subpats) => {
-                let new_enum = self.remap_symbol(*enum_sym)?;
+                // enum_sym is a top-level enum name and participates
+                // in stdlib aliasing. variant_sym is the variant
+                // identifier and stays plain.
+                let new_enum = self.remap_type_symbol(*enum_sym)?;
                 let new_variant = self.remap_symbol(*variant_sym)?;
                 let mut new_subs = Vec::with_capacity(subpats.len());
                 for sp in subpats {
@@ -548,14 +604,18 @@ impl<'a> AstIntegrationContext<'a> {
                 // hold struct / enum / generic-param symbols that
                 // need remap.
                 //
-                // User-defined struct of the same name takes
-                // precedence: leave the placeholder so the user's
-                // shape wins (mirrors how `EnumDecl` handles
-                // collisions for `enum Option<T>` etc.).
-                let new_name = self.remap_symbol(*name)?;
-                if self.existing_struct_names.contains(&new_name) {
-                    return Ok(Stmt::Break);
-                }
+                // User-defined struct of the same name no longer
+                // displaces the stdlib decl outright — instead, the
+                // stdlib version is registered under
+                // `__std_<name>` (DICT-CROSS-MODULE-OPTION). The
+                // alias is chosen by `remap_type_symbol` based on
+                // the `shadowed_stdlib_types` set computed in
+                // lib.rs::integrate_modules. User-side references
+                // to `<name>` continue to resolve to the user's
+                // declaration; stdlib internals (other modules, or
+                // this module's own impl block) reach the stdlib
+                // decl via the aliased name.
+                let new_name = self.remap_type_symbol(*name)?;
                 let mut new_generic_params = Vec::with_capacity(generic_params.len());
                 for g in generic_params {
                     new_generic_params.push(self.remap_symbol(*g)?);
@@ -592,18 +652,16 @@ impl<'a> AstIntegrationContext<'a> {
                 // the main program (they'd alias whatever symbols
                 // happen to be at those numeric positions in
                 // `main_string_interner`).
-                let new_target = self.remap_symbol(*target_type)?;
-                // Skip stdlib impl blocks whose target enum/struct
-                // was overridden by a user declaration — the user's
-                // type doesn't have these methods registered, and
-                // re-registering stdlib bodies onto a user-shaped
-                // type (variants/fields may differ) would silently
-                // misbehave.
-                if self.existing_enum_names.contains(&new_target)
-                    || self.existing_struct_names.contains(&new_target)
-                {
-                    return Ok(Stmt::Break);
-                }
+                // Impl-block targets are top-level type names — go
+                // through `remap_type_symbol` so a stdlib
+                // `impl<T> Option<T>` inside `core/std/option.t`
+                // lands on `__std_Option` when the user has
+                // shadowed `Option` (DICT-CROSS-MODULE-OPTION).
+                // The previous strategy (drop the impl block when
+                // its target was user-shadowed) silently broke
+                // every cross-module reference into the shadowed
+                // type, including stdlib's own internal calls.
+                let new_target = self.remap_type_symbol(*target_type)?;
                 let new_trait = match trait_name {
                     Some(t) => Some(self.remap_symbol(*t)?),
                     None => None,
@@ -628,21 +686,16 @@ impl<'a> AstIntegrationContext<'a> {
                 // `enum Option<T> { None, Some(T) }` looks like a
                 // struct named with an unmappable symbol when user
                 // code later writes `Option::Some(42u64)`.
-                let new_name = self.remap_symbol(*name)?;
-                // User-defined enum or struct with the same name
-                // takes precedence: leave the placeholder slot as
-                // `Stmt::Break` so the type-checker only sees the
-                // user's declaration. Mirrors the auto-load
-                // `enforce_namespace = false` policy for functions.
-                // Cross-check structs too because user-side may
-                // declare `struct Option { has_value, value }` for
-                // their own purposes; stdlib's `enum Option` should
-                // bow out either way.
-                if self.existing_enum_names.contains(&new_name)
-                    || self.existing_struct_names.contains(&new_name)
-                {
-                    return Ok(Stmt::Break);
-                }
+                //
+                // User-defined enum/struct with the same name no
+                // longer displaces the stdlib decl — instead, the
+                // stdlib version is re-registered under
+                // `__std_<name>` (DICT-CROSS-MODULE-OPTION). User
+                // bare references continue to resolve to the
+                // user's decl; stdlib internals reach the stdlib
+                // version through the alias. Mirrors how StructDecl
+                // and ImplBlock above handle the same shadow case.
+                let new_name = self.remap_type_symbol(*name)?;
                 let mut new_generics = Vec::with_capacity(generic_params.len());
                 for g in generic_params {
                     new_generics.push(self.remap_symbol(*g)?);
@@ -989,6 +1042,7 @@ pub(crate) fn load_and_integrate_module(
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
     core_modules_dir: Option<&std::path::Path>,
+    shadowed_stdlib_types: std::collections::HashSet<String>,
 ) -> Result<(), String> {
     if import.module_path.is_empty() {
         return Err("Invalid module path: empty".to_string());
@@ -1015,6 +1069,7 @@ pub(crate) fn load_and_integrate_module(
                 string_interner,
                 true,
                 Some(import.module_path.clone()),
+                shadowed_stdlib_types.clone(),
             );
         }
     }
@@ -1162,6 +1217,57 @@ pub fn integrate_module_into_program(
     integrate_module_into_program_with_options(source, main_program, main_string_interner, true)
 }
 
+/// Snapshot every top-level enum / struct decl name in `program`.
+/// Used by `integrate_modules` to compute the user-shadow set
+/// before any stdlib module is integrated, and by direct callers
+/// who want the same view of the program's already-declared types.
+pub fn collect_top_level_type_names(
+    program: &Program,
+    interner: &DefaultStringInterner,
+) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for i in 0..program.statement.len() {
+        if let Some(stmt) = program.statement.get(&StmtRef(i as u32)) {
+            match &stmt {
+                Stmt::EnumDecl { name, .. } | Stmt::StructDecl { name, .. } => {
+                    if let Some(s) = interner.resolve(*name) {
+                        names.insert(s.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
+/// Parse a stdlib module source just far enough to extract its
+/// top-level type-decl names. Used by `integrate_modules` to build
+/// the union of stdlib type names so the shadow set
+/// (`stdlib_types ∩ user_types`) can be computed before any
+/// integration runs.
+pub fn extract_stdlib_type_names(source: &str) -> Result<Vec<String>, String> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let program = parser
+        .parse_program()
+        .map_err(|e| format!("Parse error in module pre-scan: {}", e))?;
+    let interner = parser.get_string_interner();
+    let mut names = Vec::new();
+    for i in 0..program.statement.len() {
+        if let Some(stmt) = program.statement.get(&StmtRef(i as u32)) {
+            match &stmt {
+                Stmt::EnumDecl { name, .. } | Stmt::StructDecl { name, .. } => {
+                    if let Some(s) = interner.resolve(*name) {
+                        names.push(s.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(names)
+}
+
 /// `enforce_namespace = false` is the prelude path: integrated
 /// functions stay callable bare from prelude bodies (and from
 /// user code, since the prelude has no surrounding `module::`
@@ -1180,6 +1286,7 @@ pub fn integrate_module_into_program_with_options(
         main_string_interner,
         enforce_namespace,
         None,
+        std::collections::HashSet::new(),
     )
 }
 
@@ -1194,6 +1301,7 @@ pub fn integrate_module_into_program_with_options_full(
     main_string_interner: &mut DefaultStringInterner,
     enforce_namespace: bool,
     module_path: Option<Vec<DefaultSymbol>>,
+    shadowed_stdlib_types: std::collections::HashSet<String>,
 ) -> Result<(), String> {
     // Parse the module with its own interner.
     let mut parser = frontend::ParserWithInterner::new(source);
@@ -1207,6 +1315,7 @@ pub fn integrate_module_into_program_with_options_full(
         &module_program,
         main_string_interner,
         module_string_interner,
+        shadowed_stdlib_types,
     );
 
     let integrated_functions = integration_context.integrate()?;

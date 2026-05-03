@@ -916,6 +916,62 @@ fn dict_user_space_round_trip() {
 }
 
 #[test]
+fn dict_get_with_user_option_shadow() {
+    // DICT-CROSS-MODULE-OPTION regression test:
+    //
+    // `core/std/dict.t::get(key) -> Option<V>` used to break when
+    // user code declared its own `struct Option<T>`. The auto-load
+    // integration silently dropped the stdlib `enum Option<T>` (the
+    // user's same-named decl took precedence) but dict.t's body
+    // still referenced `Option`, which now resolved to the user's
+    // struct shape — `Option::Some(v)` failed with
+    // "Associated function 'Some' not found for struct 'Option'".
+    //
+    // Fix: stdlib type names that the user shadows are re-interned
+    // under `__std_<name>` during integration so dict.t's
+    // `-> Option<V>` and `Option::Some(v)` keep resolving to the
+    // stdlib enum (now `__std_Option`). User bare references to
+    // `Option` still bind to the user's struct.
+    //
+    // This test lands a user `struct Option<T>` alongside a
+    // `Dict<i64, u64>` and expects:
+    //   1. The user's `Option` struct binding (`o.value`) keeps
+    //      working — bare `Option` references resolve to the
+    //      user's decl.
+    //   2. `d.get(1)` returns the stdlib `Option<V>` (now
+    //      registered as `__std_Option<V>` thanks to the alias),
+    //      and inherent-method dispatch through method-call
+    //      syntax (`r.is_some()`) reaches the stdlib impl on the
+    //      aliased type. Users don't need to know the
+    //      `__std_<name>` form to interop.
+    //
+    // Falls back to interpreter + JIT (silent fallback) — AOT
+    // can't compile `Dict::new()` yet (#159 / DICT-AOT-NEW).
+    let src = r#"
+        struct Option<T> {
+            value: T,
+            is_some: bool
+        }
+
+        fn main() -> u64 {
+            val o: Option<u64> = Option { value: 7u64, is_some: true }
+            var d: Dict<i64, u64> = Dict::new()
+            d.insert(1i64, 100u64)
+            val r = d.get(1i64)
+            val ok: bool = r.is_some()
+            if ok { o.value } else { 0u64 }
+        }
+    "#;
+    let interp = interpreter_value(src);
+    assert_eq!(
+        interp, 7,
+        "interpreter expected 7 (user Option.value, gated on stdlib Option::is_some hit), got {interp}"
+    );
+    let jit = jit_exit_code(src, "dict_get_with_user_option_shadow_jit");
+    assert_eq!(jit as u64, 7, "JIT expected 7, got {jit}");
+}
+
+#[test]
 fn enum_str_payload_round_trip() {
     // Result<u64, str> exercises the new str-payload enum support
     // in the AOT compiler. Previously rejected with "unsupported

@@ -10,13 +10,15 @@
 # `__builtin_sizeof`). No special-casing in the parser, the type
 # checker, or any backend.
 #
-# Why no `Option<V>` in the API: referencing `Option` from inside
-# this module triggers a cross-contamination bug in the auto-load
-# integration when downstream user code happens to declare its
-# own `struct Option<T>` for unrelated purposes. Until that
-# integration bug is fixed, the MVP API uses
-# `get_or(key, default) -> V` (caller supplies the miss value)
-# plus `contains_key(key) -> bool` for explicit presence probes.
+# `get(key) -> Option<V>` is the canonical lookup that surfaces
+# presence in the value (`Option::Some(v)` on hit, `Option::None`
+# on miss). `get_or(key, default) -> V` is kept as a convenience
+# for callers that already have a fallback handy and want to skip
+# the `match`. Internal references to `Option` survive even when
+# user code declares its own `struct Option<T>`: the auto-load
+# integration aliases stdlib `Option` to `__std_Option` in that
+# case so dict.t's `-> Option<V>` still resolves to the stdlib
+# enum (DICT-CROSS-MODULE-OPTION fix).
 
 struct Dict<K, V> {
     keys: ptr,
@@ -86,6 +88,21 @@ impl<K, V> Dict<K, V> {
             i = i + 1u64
         }
         default
+    }
+
+    # Option-returning lookup. Returns `Option::Some(v)` on hit,
+    # `Option::None` on miss.
+    fn get(self: Self, key: K) -> Option<V> {
+        var i: u64 = 0u64
+        while i < self.count {
+            val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
+            if existing == key {
+                val v: V = __builtin_ptr_read(self.vals, i * self.val_size)
+                return Option::Some(v)
+            }
+            i = i + 1u64
+        }
+        Option::None
     }
 
     fn contains_key(self: Self, key: K) -> bool {

@@ -148,6 +148,49 @@ fn integrate_modules(
     let mut loaded_modules: std::collections::HashSet<String> =
         std::collections::HashSet::new();
 
+    // Compute the user-shadow set for stdlib type names before any
+    // core module is integrated. The set is the intersection of
+    //   (a) top-level enum / struct names declared in the user
+    //       program, and
+    //   (b) the union of top-level enum / struct names declared
+    //       across every auto-load core module.
+    // Stdlib symbols whose textual name lands in this set get
+    // re-interned under `__std_<name>` during integration so the
+    // user's same-named declaration can keep its bare name while
+    // stdlib internals (e.g. `core/std/dict.t` referencing
+    // `Option<V>`) still resolve to the stdlib version
+    // (DICT-CROSS-MODULE-OPTION).
+    let user_type_names =
+        module_integration::collect_top_level_type_names(program, string_interner);
+    let mut shadowed_stdlib_types: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let core_modules_for_shadow_scan =
+        if let Some(dir) = core_modules_dir {
+            module_integration::discover_core_modules(dir).ok()
+        } else {
+            None
+        };
+    if let Some(modules) = &core_modules_for_shadow_scan {
+        for module in modules {
+            match module_integration::extract_stdlib_type_names(&module.source) {
+                Ok(names) => {
+                    for name in names {
+                        if user_type_names.contains(&name) {
+                            shadowed_stdlib_types.insert(name);
+                        }
+                    }
+                }
+                Err(err) => {
+                    errors.push(format!(
+                        "Core module `{}` shadow-scan error: {}",
+                        module.segments.join("."),
+                        err
+                    ));
+                }
+            }
+        }
+    }
+
     // Auto-load every module under the configured core modules
     // directory. This is the "every program gets `import math` for
     // free" path the user opted into via `--core-modules <DIR>`.
@@ -157,52 +200,54 @@ fn integrate_modules(
     // without that, `math::add(...)` from user code wouldn't
     // resolve even though the module's functions are in the
     // function table.
-    if let Some(dir) = core_modules_dir {
-        match module_integration::discover_core_modules(dir) {
-            Ok(modules) => {
-                for module in modules {
-                    let dotted = module.segments.join(".");
-                    if !loaded_modules.insert(dotted.clone()) {
-                        continue;
-                    }
-                    // Auto-loaded modules opt out of namespace
-                    // enforcement (`enforce_namespace = false`) so
-                    // user code can still define functions with
-                    // names that happen to collide with
-                    // auto-loaded ones (e.g. a user `fn add(a:
-                    // Point, b: Point) -> Point` shadows
-                    // `math::add` for bare calls). The qualified
-                    // form `<alias>::name(...)` keeps working
-                    // because the synthetic `ImportDecl` below
-                    // registers the module alias from the *last*
-                    // segment.
-                    let path_syms: Vec<_> = module
-                        .segments
-                        .iter()
-                        .map(|s| string_interner.get_or_intern(s))
-                        .collect();
-                    if let Err(err) =
-                        module_integration::integrate_module_into_program_with_options_full(
-                            &module.source,
-                            program,
-                            string_interner,
-                            false,
-                            Some(path_syms.clone()),
-                        )
-                    {
-                        errors.push(format!(
-                            "Core module `{}` integration error: {}",
-                            dotted, err
-                        ));
-                        continue;
-                    }
-                    program.imports.push(ImportDecl {
-                        module_path: path_syms,
-                        alias: None,
-                    });
-                }
+    if let Some(modules) = core_modules_for_shadow_scan {
+        for module in modules {
+            let dotted = module.segments.join(".");
+            if !loaded_modules.insert(dotted.clone()) {
+                continue;
             }
-            Err(err) => {
+            // Auto-loaded modules opt out of namespace
+            // enforcement (`enforce_namespace = false`) so
+            // user code can still define functions with
+            // names that happen to collide with
+            // auto-loaded ones (e.g. a user `fn add(a:
+            // Point, b: Point) -> Point` shadows
+            // `math::add` for bare calls). The qualified
+            // form `<alias>::name(...)` keeps working
+            // because the synthetic `ImportDecl` below
+            // registers the module alias from the *last*
+            // segment.
+            let path_syms: Vec<_> = module
+                .segments
+                .iter()
+                .map(|s| string_interner.get_or_intern(s))
+                .collect();
+            if let Err(err) =
+                module_integration::integrate_module_into_program_with_options_full(
+                    &module.source,
+                    program,
+                    string_interner,
+                    false,
+                    Some(path_syms.clone()),
+                    shadowed_stdlib_types.clone(),
+                )
+            {
+                errors.push(format!(
+                    "Core module `{}` integration error: {}",
+                    dotted, err
+                ));
+                continue;
+            }
+            program.imports.push(ImportDecl {
+                module_path: path_syms,
+                alias: None,
+            });
+        }
+    } else if core_modules_dir.is_some() {
+        // discover_core_modules failed earlier; surface the same error
+        // shape as before by re-running it just to fetch the diagnostic.
+        if let Some(dir) = core_modules_dir {
+            if let Err(err) = module_integration::discover_core_modules(dir) {
                 errors.push(format!(
                     "Failed to scan core modules directory `{}`: {}",
                     dir.display(),
@@ -226,7 +271,13 @@ fn integrate_modules(
         if loaded_modules.contains(&module_name) {
             continue;
         }
-        if let Err(err) = load_and_integrate_module(program, import, string_interner, core_modules_dir) {
+        if let Err(err) = load_and_integrate_module(
+            program,
+            import,
+            string_interner,
+            core_modules_dir,
+            shadowed_stdlib_types.clone(),
+        ) {
             errors.push(format!("Module integration error: {}", err));
         } else {
             loaded_modules.insert(module_name);

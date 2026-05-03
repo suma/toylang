@@ -245,6 +245,19 @@ impl<'a> FunctionLower<'a> {
                                 Type::I64 => "i64",
                                 Type::U64 => "u64",
                                 Type::F64 => "f64",
+                                // `core/std/str.t::AsPtr` and
+                                // `core/std/hash.t::Hash for str`
+                                // dispatch through this path.
+                                Type::Str => "str",
+                                // Narrow int extension traits live
+                                // in `core/std/hash.t` (`Hash for
+                                // u8 / u16 / u32 / i8 / i16 / i32`).
+                                Type::U8 => "u8",
+                                Type::U16 => "u16",
+                                Type::U32 => "u32",
+                                Type::I8 => "i8",
+                                Type::I16 => "i16",
+                                Type::I32 => "i32",
                                 _ => return None,
                             };
                             let sym = self.interner.get(name)?;

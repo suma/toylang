@@ -759,6 +759,36 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn str_as_ptr_extension_method_round_trip() {
+    // `core/std/str.t::AsPtr::as_ptr(self) -> ptr` is the user-
+    // facing entry point for the byte-pointer view of a string;
+    // the body delegates to the underlying
+    // `__builtin_str_to_ptr` primitive. This test confirms the
+    // extension-trait dispatch reaches the same backend path
+    // across all three backends — interpreter / JIT (silent
+    // fallback through interpreter, since str scalar isn't
+    // modelled in the JIT IR) / AOT.
+    //
+    // Walks "hi" byte-by-byte through the method form. Exit 42
+    // means each byte ('h'=104, 'i'=105, NUL=0) matched.
+    let src = r#"
+        fn main() -> u64 {
+            val s = "hi"
+            val p: ptr = s.as_ptr()
+            val a: u8 = __builtin_ptr_read(p, 0u64)
+            val b: u8 = __builtin_ptr_read(p, 1u64)
+            val nul: u8 = __builtin_ptr_read(p, 2u64)
+            if a == 104u8 {
+                if b == 105u8 {
+                    if nul == 0u8 { 42u64 } else { 3u64 }
+                } else { 2u64 }
+            } else { 1u64 }
+        }
+    "#;
+    assert_consistent(src, "str_as_ptr_extension_method_round_trip");
+}
+
+#[test]
 fn str_to_ptr_byte_walk_round_trip() {
     // `__builtin_str_to_ptr(s: str) -> ptr` returns a pointer to
     // the string's UTF-8 bytes (NUL-terminated). 3-way

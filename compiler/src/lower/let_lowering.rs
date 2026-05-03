@@ -463,7 +463,9 @@ impl<'a> FunctionLower<'a> {
                 // resolution), so we can dispatch with a plain
                 // `Call` / `CallStruct` here without going
                 // through `instantiate_generic_method_with_self_type`.
-                if let Some(func_id) = self.method_func_ids.get(&(struct_name, fn_name)).copied() {
+                if let Some(func_id) = super::method_registry::lookup_method_func(
+                    self.method_func_ids, struct_name, fn_name, &recv_type_args,
+                ) {
                     let target_ret = self.module.function(func_id).return_type;
                     if let Type::Struct(ret_struct_id) = target_ret {
                         let field_bindings = self.allocate_struct_fields(ret_struct_id);
@@ -530,7 +532,9 @@ impl<'a> FunctionLower<'a> {
                 // entry exists (older paths only cared about generics).
                 let _ = recv_type_args;
                 let _ = struct_id;
-                let template = self.generic_methods.get(&(struct_name, fn_name)).cloned();
+                let template = super::method_registry::lookup_method_template(
+                    self.generic_methods, struct_name, fn_name, &[],
+                );
                 if let Some(template) = template {
                     // Re-resolve to use the right type_args path for
                     // generic methods.

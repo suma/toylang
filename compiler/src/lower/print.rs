@@ -241,10 +241,20 @@ impl<'a> FunctionLower<'a> {
                                 _ => None,
                             };
                             if let Some(target_sym) = target_sym_opt {
-                                let target_id = self
-                                    .method_func_ids
-                                    .get(&(target_sym, method_sym))
-                                    .copied();
+                                // CONCRETE-IMPL Phase 2b: pick FuncId
+                                // by receiver type args.
+                                let recv_args: Vec<crate::ir::Type> = match &binding {
+                                    Binding::Struct { struct_id, .. } => {
+                                        self.module.struct_def(*struct_id).type_args.clone()
+                                    }
+                                    Binding::Enum(storage) => {
+                                        self.module.enum_def(storage.enum_id).type_args.clone()
+                                    }
+                                    _ => Vec::new(),
+                                };
+                                let target_id = super::method_registry::lookup_method_func(
+                                    self.method_func_ids, target_sym, method_sym, &recv_args,
+                                );
                                 if let Some(target_id) = target_id {
                                     let target_ret =
                                         self.module.function(target_id).return_type;

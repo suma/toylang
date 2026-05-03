@@ -267,11 +267,22 @@ impl<'a> FunctionLower<'a> {
                         }
                         _ => return None,
                     };
-                if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)) {
-                    return Some(self.module.function(*func_id).return_type);
+                // CONCRETE-IMPL Phase 2b: pick FuncId by receiver
+                // type args (extracted above as part of recv_self).
+                let recv_args_for_lookup: Vec<Type> = recv_self
+                    .as_ref()
+                    .map(|(_, args)| args.clone())
+                    .unwrap_or_default();
+                if let Some(func_id) = super::method_registry::lookup_method_func(
+                    self.method_func_ids, target_sym, method, &recv_args_for_lookup,
+                ) {
+                    return Some(self.module.function(func_id).return_type);
                 }
+                let template_opt = super::method_registry::lookup_method_template(
+                    self.generic_methods, target_sym, method, &[],
+                );
                 if let (Some(template), Some((self_ty, recv_type_args))) =
-                    (self.generic_methods.get(&(target_sym, method)), recv_self)
+                    (template_opt, recv_self)
                 {
                     if template.generic_params.len() >= recv_type_args.len() {
                         let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();

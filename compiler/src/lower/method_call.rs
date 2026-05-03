@@ -339,15 +339,37 @@ impl<'a> FunctionLower<'a> {
             Some(b) => b,
             None => return Ok(None),
         };
-        let target_sym = match &binding {
-            Binding::Struct { struct_id, .. } => self.module.struct_def(*struct_id).base_name,
-            Binding::Enum(storage) => self.module.enum_def(storage.enum_id).base_name,
+        // CONCRETE-IMPL Phase 2b: receiver's IR type args distinguish
+        // multiple `impl Foo for Container<X>` impls; consult them
+        // when looking up the matching FuncId. Templates likewise.
+        let (target_sym, recv_type_args): (DefaultSymbol, Vec<crate::ir::Type>) = match &binding {
+            Binding::Struct { struct_id, .. } => {
+                let def = self.module.struct_def(*struct_id);
+                (def.base_name, def.type_args.clone())
+            }
+            Binding::Enum(storage) => {
+                let def = self.module.enum_def(storage.enum_id);
+                (def.base_name, def.type_args.clone())
+            }
             _ => return Ok(None),
         };
-        if let Some(id) = self.method_func_ids.get(&(target_sym, method)).copied() {
+        if let Some(id) = super::method_registry::lookup_method_func(
+            self.method_func_ids,
+            target_sym,
+            method,
+            &recv_type_args,
+        ) {
             return Ok(Some((id, binding)));
         }
-        if let Some(template) = self.generic_methods.get(&(target_sym, method)).cloned() {
+        // For generic methods we still use the raw lookup (templates
+        // are TypeDecl-based; lone-spec fallback dominates).
+        let recv_type_args_decl: Vec<frontend::type_decl::TypeDecl> = Vec::new();
+        if let Some(template) = super::method_registry::lookup_method_template(
+            self.generic_methods,
+            target_sym,
+            method,
+            &recv_type_args_decl,
+        ) {
             let recv_struct_id = match &binding {
                 Binding::Struct { struct_id, .. } => *struct_id,
                 _ => return Ok(None),
@@ -388,8 +410,10 @@ impl<'a> FunctionLower<'a> {
             if let Some(target_sym) =
                 primitive_target_sym_for_ir_type(recv_ty, self.interner)
             {
-                if let Some(func_id) = self.method_func_ids.get(&(target_sym, method)).copied()
-                {
+                // Primitive receiver: empty type args (no `impl Foo for u8<...>`).
+                if let Some(func_id) = super::method_registry::lookup_method_func(
+                    self.method_func_ids, target_sym, method, &[],
+                ) {
                     let receiver_value = self
                         .lower_expr(obj)?
                         .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
@@ -446,9 +470,17 @@ impl<'a> FunctionLower<'a> {
                 )
             })?;
 
-        let target_sym = match &binding {
-            Binding::Struct { struct_id, .. } => self.module.struct_def(*struct_id).base_name,
-            Binding::Enum(storage) => self.module.enum_def(storage.enum_id).base_name,
+        // CONCRETE-IMPL Phase 2b: extract receiver's IR type args
+        // for spec-aware dispatch.
+        let (target_sym, recv_type_args): (DefaultSymbol, Vec<crate::ir::Type>) = match &binding {
+            Binding::Struct { struct_id, .. } => {
+                let def = self.module.struct_def(*struct_id);
+                (def.base_name, def.type_args.clone())
+            }
+            Binding::Enum(storage) => {
+                let def = self.module.enum_def(storage.enum_id);
+                (def.base_name, def.type_args.clone())
+            }
             _ => {
                 return Err(format!(
                     "compiler MVP requires the method receiver `{}` to be a struct or enum binding",
@@ -456,11 +488,13 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        let target = if let Some(id) = self.method_func_ids.get(&(target_sym, method)).copied()
-        {
+        let target = if let Some(id) = super::method_registry::lookup_method_func(
+            self.method_func_ids, target_sym, method, &recv_type_args,
+        ) {
             id
-        } else if let Some(template) = self.generic_methods.get(&(target_sym, method)).cloned()
-        {
+        } else if let Some(template) = super::method_registry::lookup_method_template(
+            self.generic_methods, target_sym, method, &[],
+        ) {
             match &binding {
                 Binding::Struct { struct_id, .. } => self.instantiate_generic_method_with_args(
                     target_sym,
@@ -571,9 +605,11 @@ impl<'a> FunctionLower<'a> {
         // because writeback for enum receivers needs additional
         // tag/payload-slot plumbing (deferred). Falls through to
         // a regular `Call` for `self: Self` / `&self` methods.
-        let template_self_is_mut = self
-            .method_registry
-            .get(&(target_sym, method))
+        // CONCRETE-IMPL Phase 2b: pick the matching template spec by
+        // receiver type args (same priority as `lookup_method_func`).
+        let template_self_is_mut = super::method_registry::lookup_method_template(
+            self.method_registry, target_sym, method, &[],
+        )
             .map(|m| m.self_is_mut && m.has_self_param)
             .unwrap_or(false);
         if template_self_is_mut {

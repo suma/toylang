@@ -31,7 +31,8 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use super::bindings::{flatten_struct_locals, flatten_tuple_element_locals, Binding};
 use super::consts::{evaluate_consts, ConstValues};
 use super::method_registry::{
-    collect_method_decls, GenericMethods, MethodInstances, MethodRegistry, PendingMethodInstance,
+    collect_method_decls, GenericMethods, MethodFuncIds, MethodFuncSpec, MethodInstances,
+    MethodRegistry, MethodTemplateSpec, PendingMethodInstance,
 };
 use super::templates::{
     collect_enum_defs, collect_struct_defs, lower_param_or_return_type, EnumDefs, StructDefs,
@@ -287,23 +288,50 @@ pub fn lower_program(
     // `impl<T> Cell<T> { fn get(self: Self) -> T }`) are deferred:
     // they're stashed in `generic_methods` and lazily monomorphised
     // by call sites — same shape as Phase L for generic functions.
-    let mut method_func_ids: HashMap<(DefaultSymbol, DefaultSymbol), FuncId> = HashMap::new();
+    let mut method_func_ids: MethodFuncIds = HashMap::new();
     let mut generic_methods: GenericMethods = HashMap::new();
     let mut method_instances: MethodInstances = HashMap::new();
     let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
-    for ((target_sym, method_sym), method) in method_registry.iter() {
-        if !method.generic_params.is_empty() {
-            generic_methods.insert((*target_sym, *method_sym), Rc::clone(method));
-            continue;
-        }
+    // CONCRETE-IMPL Phase 2b: each `(target, method)` may have
+    // multiple template specs (one per impl block with distinct
+    // concrete `target_type_args`). Iterate them and declare a
+    // separate FuncId per spec, mangling the export name with the
+    // type args to disambiguate.
+    let registry_pairs: Vec<((DefaultSymbol, DefaultSymbol), Vec<MethodTemplateSpec>)> = method_registry
+        .iter()
+        .map(|((t, m), specs)| ((*t, *m), specs.clone()))
+        .collect();
+    for ((target_sym, method_sym), specs) in &registry_pairs {
+        for spec in specs {
+            let method = &spec.method;
+            let target_type_args_decl = spec.target_type_args.clone();
+            if !method.generic_params.is_empty() {
+                generic_methods
+                    .entry((*target_sym, *method_sym))
+                    .or_insert_with(Vec::new)
+                    .push(MethodTemplateSpec {
+                        target_type_args: target_type_args_decl.clone(),
+                        method: Rc::clone(method),
+                    });
+                continue;
+            }
         // Step D: when the impl target is a primitive (`impl Foo for
         // i64 { ... }`), Self resolves directly to the matching
         // primitive `TypeDecl` so `lower_param_or_return_type` can
         // reduce it to `Type::I64` / `Type::F64` / etc. (No struct
         // definition exists for `i64`, so the existing
         // `Identifier(target_sym)` path would silently fail.)
-        let self_decl = primitive_type_decl_for_target_sym(*target_sym, interner)
-            .unwrap_or(TypeDecl::Identifier(*target_sym));
+        // CONCRETE-IMPL Phase 2b: for `impl Foo for Container<u8>`,
+        // resolve Self to `TypeDecl::Struct(Container, [u8])` so
+        // the body's `self: Self` parameter lowers to the right
+        // monomorphised struct shape.
+        let self_decl = if let Some(prim) = primitive_type_decl_for_target_sym(*target_sym, interner) {
+            prim
+        } else if !target_type_args_decl.is_empty() {
+            TypeDecl::Struct(*target_sym, target_type_args_decl.clone())
+        } else {
+            TypeDecl::Identifier(*target_sym)
+        };
         // NUM-W-AOT (T5): narrow-int impls now lower like any
         // other primitive impl — `lower_scalar` recognises the
         // widths and `ir_to_cranelift_ty` produces the matching
@@ -389,10 +417,49 @@ pub fn lower_program(
         };
         let target_str = interner.resolve(*target_sym).unwrap_or("?");
         let method_str = interner.resolve(*method_sym).unwrap_or("?");
-        let export_name = format!("toy_{}__{}", target_str, method_str);
+        // CONCRETE-IMPL Phase 2b: lower target_type_args to IR
+        // types so disambiguation between `impl Foo for Vec<u8>` and
+        // `impl Foo for Vec<i64>` is encoded in (a) the FuncId mangled
+        // name and (b) the MethodFuncSpec's type_args used by
+        // call-site dispatch.
+        let mut target_type_args_lowered: Vec<Type> = Vec::with_capacity(target_type_args_decl.len());
+        for arg_decl in &target_type_args_decl {
+            let lowered = lower_param_or_return_type(
+                arg_decl,
+                &struct_defs,
+                &enum_defs,
+                &mut module,
+                interner,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP cannot lower impl-target type arg `{:?}` for `{}::{}`",
+                    arg_decl, target_str, method_str
+                )
+            })?;
+            target_type_args_lowered.push(lowered);
+        }
+        let args_suffix = if target_type_args_lowered.is_empty() {
+            String::new()
+        } else {
+            let mut s = String::new();
+            for t in &target_type_args_lowered {
+                s.push('_');
+                s.push_str(&format!("{:?}", t));
+            }
+            s
+        };
+        let export_name = format!("toy_{}{}__{}", target_str, args_suffix, method_str);
         let func_id =
             module.declare_function_anon(export_name, Linkage::Local, params, ret);
-        method_func_ids.insert((*target_sym, *method_sym), func_id);
+        method_func_ids
+            .entry((*target_sym, *method_sym))
+            .or_insert_with(Vec::new)
+            .push(MethodFuncSpec {
+                target_type_args: target_type_args_lowered,
+                func_id,
+            });
+        }
     }
 
     // Second pass: lower each non-generic body. Generic instantiations
@@ -454,11 +521,33 @@ pub fn lower_program(
     // entry just substitutes `Self` in the parameter list before
     // delegating. Generic methods are skipped — they're lowered
     // lazily by `pending_method_work` below.
-    for ((target_sym, method_sym), method) in method_registry.iter() {
-        let func_id = match method_func_ids.get(&(*target_sym, *method_sym)) {
-            Some(id) => *id,
-            None => continue,
-        };
+    // CONCRETE-IMPL Phase 2b: iterate (target, method, spec) triples
+    // and pair each non-generic spec with its corresponding FuncId
+    // (declared in the first pass, same iteration order — non-generic
+    // specs are pushed to `func_specs` in the same order they appear
+    // in `specs`).
+    let bodies_to_lower: Vec<(DefaultSymbol, Rc<frontend::ast::MethodFunction>, FuncId)> = {
+        let mut acc = Vec::new();
+        for ((target_sym, method_sym), specs) in method_registry.iter() {
+            let func_specs = match method_func_ids.get(&(*target_sym, *method_sym)) {
+                Some(v) => v,
+                None => continue,
+            };
+            let non_generic_specs: Vec<&MethodTemplateSpec> = specs
+                .iter()
+                .filter(|s| s.method.generic_params.is_empty())
+                .collect();
+            for (template_spec, func_spec) in non_generic_specs.iter().zip(func_specs.iter()) {
+                acc.push((
+                    *target_sym,
+                    Rc::clone(&template_spec.method),
+                    func_spec.func_id,
+                ));
+            }
+        }
+        acc
+    };
+    for (target_sym, method, func_id) in bodies_to_lower {
         let mut builder = FunctionLower::new(
             &mut module,
             func_id,
@@ -478,7 +567,7 @@ pub fn lower_program(
             &mut method_instances,
             &mut pending_method_work,
         )?;
-        builder.lower_method_body(method, *target_sym)?;
+        builder.lower_method_body(&method, target_sym)?;
     }
 
     // Drain both queues: generic functions and generic methods. We
@@ -522,7 +611,14 @@ pub fn lower_program(
         }
         while let Some(work) = pending_method_work.pop() {
             made_progress = true;
-            let template = generic_methods
+            // CONCRETE-IMPL Phase 2b: `generic_methods` is now
+            // `(target, method) -> Vec<MethodTemplateSpec>`. The
+            // pending work entry doesn't yet carry which spec to
+            // pick (Phase 2c may add that), so default to the lone
+            // spec when only one exists; otherwise pick the first
+            // (matches the pre-Phase-2b single-spec semantics for
+            // generic-parameterised impls).
+            let template_specs = generic_methods
                 .get(&(work.target_sym, work.method_sym))
                 .ok_or_else(|| {
                     format!(
@@ -530,8 +626,17 @@ pub fn lower_program(
                         interner.resolve(work.target_sym).unwrap_or("?"),
                         interner.resolve(work.method_sym).unwrap_or("?"),
                     )
-                })?
-                .clone();
+                })?;
+            let template = template_specs
+                .first()
+                .map(|s| Rc::clone(&s.method))
+                .ok_or_else(|| {
+                    format!(
+                        "internal error: empty generic method spec list for `{}::{}`",
+                        interner.resolve(work.target_sym).unwrap_or("?"),
+                        interner.resolve(work.method_sym).unwrap_or("?"),
+                    )
+                })?;
             let mut builder = FunctionLower::new(
                 &mut module,
                 work.func_id,
@@ -595,7 +700,7 @@ impl<'a> FunctionLower<'a> {
         contract_msgs: &'a crate::ContractMessages,
         release: bool,
         method_registry: &'a MethodRegistry,
-        method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
+        method_func_ids: &'a MethodFuncIds,
         generic_methods: &'a GenericMethods,
         method_instances: &'a mut MethodInstances,
         pending_method_work: &'a mut Vec<PendingMethodInstance>,

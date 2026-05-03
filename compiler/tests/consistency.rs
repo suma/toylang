@@ -760,19 +760,18 @@ fn stdout_narrow_int_dedicated_helpers() {
 
 #[test]
 fn concrete_impl_dispatch_by_receiver_type_args() {
-    // CONCRETE-IMPL Phase 2: two `impl MarkerName for Container<X>`
-    // blocks with different concrete `X` coexist in the interpreter
-    // method registry. Instance method dispatch picks the matching
-    // impl by reading the receiver's `Object::Struct.type_args` and
-    // looking up the `(struct, method)` spec list with that key.
+    // CONCRETE-IMPL Phase 2 (interpreter) + Phase 2b (compiler):
+    // two `impl MarkerName for Container<X>` blocks with different
+    // concrete `X` coexist in both interpreter and compiler method
+    // registries. Instance method dispatch picks the matching impl
+    // by reading the receiver's runtime / IR type args and looking
+    // up the `(struct, method)` spec list with that key. Both
+    // `Object::Struct.type_args` (interpreter) and
+    // `StructDef.type_args` (compiler) are consulted, and a 3-tier
+    // fallback (exact → empty-args → lone-spec) keeps the
+    // single-impl baseline working unchanged.
     //
-    // The compiler-side `collect_method_decls` still loud-errors on
-    // such a program (Phase 2 is interpreter-only), so this test
-    // runs interpreter-only — not via `assert_consistent`.
-    //
-    // Expected exit: 8 + 64 = 72 (the u8 impl returns 8u64, the i64
-    // impl returns 64u64; instance dispatch routes each receiver to
-    // its concrete-args impl).
+    // Expected exit: 8 + 64 = 72.
     let src = r#"
         struct Container<T> {
             value: u64
@@ -795,11 +794,7 @@ fn concrete_impl_dispatch_by_receiver_type_args() {
             a.marker_name() + b.marker_name()
         }
     "#;
-    let v = interpreter_value(src);
-    assert_eq!(
-        v, 72,
-        "expected dispatch to pick u8-impl (8) for Container<u8> + i64-impl (64) for Container<i64>"
-    );
+    assert_consistent(src, "concrete_impl_dispatch_by_receiver_type_args");
 }
 
 #[test]

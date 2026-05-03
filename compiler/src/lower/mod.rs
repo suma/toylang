@@ -52,7 +52,7 @@ mod bindings;
 use bindings::{Binding, EnumStorage, FieldBinding, TupleElementBinding};
 
 mod method_registry;
-use method_registry::{GenericMethods, MethodInstances, MethodRegistry, PendingMethodInstance};
+use method_registry::{GenericMethods, MethodFuncIds, MethodInstances, MethodRegistry, PendingMethodInstance};
 
 mod program;
 pub use program::lower_program;
@@ -146,9 +146,12 @@ struct FunctionLower<'a> {
     /// `lower_program` to declare each method's `FuncId`. Borrowed
     /// at call sites so `p.sum()` can resolve to the right method.
     method_registry: &'a MethodRegistry,
-    /// `(target_struct_symbol, method_name)` → `FuncId`. The lookup
-    /// table for non-generic method calls; pairs with `method_registry`.
-    method_func_ids: &'a HashMap<(DefaultSymbol, DefaultSymbol), FuncId>,
+    /// `(target_struct_symbol, method_name) → Vec<MethodFuncSpec>`.
+    /// CONCRETE-IMPL Phase 2b: each pair may have multiple specs
+    /// (one per concrete `target_type_args`). Use
+    /// `method_registry::lookup_method_func` to pick the matching
+    /// FuncId based on the receiver's IR type args.
+    method_func_ids: &'a MethodFuncIds,
     /// Generic-method templates. Lazily monomorphised at call
     /// sites — same flow as `generic_funcs` for top-level functions.
     generic_methods: &'a GenericMethods,

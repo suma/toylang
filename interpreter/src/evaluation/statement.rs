@@ -143,7 +143,23 @@ impl EvaluationContext<'_> {
                     last = None;
                 }
                 Stmt::While(cond, body) => {
-                    last = Some(self.handle_while_loop(&cond, &body)?);
+                    // DICT-RETURN-WHILE fix: the while-loop body
+                    // may produce a `Return` (an explicit
+                    // `return v` inside the loop). Storing the
+                    // result in `last` without propagating
+                    // swallows the signal — the function then
+                    // falls through to whatever expression
+                    // follows the loop. Mirror the `For` arm
+                    // immediately below: surface Return / Break
+                    // / Continue to the enclosing block instead
+                    // of treating them as a value.
+                    let result = self.handle_while_loop(&cond, &body)?;
+                    match result {
+                        EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
+                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
+                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                        _ => last = Some(EvaluationResult::Value((Object::Unit).into())),
+                    }
                 }
                 Stmt::For(identifier, start, end, block) => {
                     let result = self.handle_for_loop(identifier, &start, &end, &block)?;

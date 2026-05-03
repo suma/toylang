@@ -760,6 +760,62 @@ fn hash_trait_dispatch_on_all_primitives() {
 }
 
 #[test]
+fn return_inside_while_propagates() {
+    // DICT-RETURN-WHILE fix (`evaluate_block::While` arm now
+    // propagates Return / Break / Continue to the enclosing
+    // block; `call_method` / `call_struct_method` convert
+    // Return → Value at the function boundary so the signal
+    // doesn't unwind past the callee). The pre-fix shape:
+    //
+    //   fn early(n: u64) -> u64 {
+    //       var i = 0u64
+    //       while i < n {
+    //           if i == 5u64 { return 42u64 }
+    //           i = i + 1u64
+    //       }
+    //       99u64
+    //   }
+    //
+    // ...returned 99 (the post-loop value) instead of 42
+    // because the while-loop arm in `evaluate_block` stored
+    // the return result in `last` without surfacing it.
+    //
+    // The test exercises both paths the fix touches:
+    //   - return from a free function's while loop (`early`).
+    //   - return from a struct method's while loop (`Counter::find_first`).
+    let src = r#"
+        fn early(n: u64) -> u64 {
+            var i: u64 = 0u64
+            while i < n {
+                if i == 5u64 { return 42u64 }
+                i = i + 1u64
+            }
+            99u64
+        }
+
+        struct Counter { limit: u64 }
+        impl Counter {
+            fn find_first(self: Self, target: u64) -> u64 {
+                var i: u64 = 0u64
+                while i < self.limit {
+                    if i == target { return i + 100u64 }
+                    i = i + 1u64
+                }
+                999u64
+            }
+        }
+
+        fn main() -> u64 {
+            val a: u64 = early(10u64)         # 42
+            val c = Counter { limit: 20u64 }
+            val b: u64 = c.find_first(7u64)   # 107
+            a + b                              # 149
+        }
+    "#;
+    assert_consistent(src, "return_inside_while_propagates");
+}
+
+#[test]
 fn dict_typed_slot_survives_geometric_growth() {
     // DICT-TYPED-SLOT-REALLOC pin (`6f60fb0` already added the
     // `typed_slots` migration in `interpreter/src/heap.rs::realloc`,

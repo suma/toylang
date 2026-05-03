@@ -180,7 +180,17 @@ impl EvaluationContext<'_> {
                     self.environment.exit_block();
                     return Err(e);
                 }
-                Ok(EvaluationResult::Return(v))
+                // DICT-RETURN-WHILE follow-up: an explicit `return v`
+                // inside the method body bubbles up here as
+                // EvaluationResult::Return. Convert to Value at the
+                // method boundary — Return is a control-flow signal
+                // for the *callee's* enclosing control structure
+                // (loop, block) and shouldn't leak into the
+                // caller's scope. Without this, a `return` inside
+                // a callee's `while` loop (now propagating
+                // correctly per the `evaluate_block::While` arm
+                // fix) would also unwind the *caller's* function.
+                Ok(EvaluationResult::Value(v.unwrap_or(crate::value::Value::Unit)))
             }
             other => other,
         };
@@ -300,7 +310,10 @@ impl EvaluationContext<'_> {
                     self.environment.exit_block();
                     return Err(e);
                 }
-                Ok(EvaluationResult::Return(v))
+                // Same Return → Value boundary conversion as
+                // call_method above — see that comment for the
+                // full rationale (DICT-RETURN-WHILE follow-up).
+                Ok(EvaluationResult::Value(v.unwrap_or(crate::value::Value::Unit)))
             }
             other => other,
         };

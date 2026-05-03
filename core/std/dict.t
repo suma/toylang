@@ -17,12 +17,6 @@
 # integration bug is fixed, the MVP API uses
 # `get_or(key, default) -> V` (caller supplies the miss value)
 # plus `contains_key(key) -> bool` for explicit presence probes.
-#
-# Pre-existing language quirk worked around: `return` inside a
-# `while` loop body silently fails to exit the enclosing
-# function. Each method below uses a `found` / `replaced` flag
-# plus manual loop-exit (`i = self.count`) to leave the loop,
-# then handles the rest of the function body after the loop.
 
 struct Dict<K, V> {
     keys: ptr,
@@ -45,108 +39,90 @@ impl<K, V> Dict<K, V> {
         }
     }
 
+    # Insert or update. Linear scan; on hit, overwrite the
+    # value and return. On miss, fall through to the grow +
+    # append path below. The early `return` from inside the
+    # while loop relies on the DICT-RETURN-WHILE fix to the
+    # interpreter loop evaluator (`88d9af6` predecessor).
     fn insert(self: Self, key: K, value: V) {
         if self.key_size == 0u64 {
             self.key_size = __builtin_sizeof(key)
             self.val_size = __builtin_sizeof(value)
         }
-        var replaced: bool = false
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
             if existing == key {
                 __builtin_ptr_write(self.vals, i * self.val_size, value)
-                replaced = true
-                i = self.count
-            } else {
-                i = i + 1u64
+                return
             }
+            i = i + 1u64
         }
-        if replaced {
-            # Update done.
-        } else {
-            if self.cap == 0u64 {
-                self.cap = 4u64
-                self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
-                self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
-            } elif self.count >= self.cap {
-                self.cap = self.cap * 2u64
-                self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
-                self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
-            }
-            __builtin_ptr_write(self.keys, self.count * self.key_size, key)
-            __builtin_ptr_write(self.vals, self.count * self.val_size, value)
-            self.count = self.count + 1u64
+        if self.cap == 0u64 {
+            self.cap = 4u64
+            self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
+            self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
+        } elif self.count >= self.cap {
+            self.cap = self.cap * 2u64
+            self.keys = __builtin_heap_realloc(self.keys, self.cap * self.key_size)
+            self.vals = __builtin_heap_realloc(self.vals, self.cap * self.val_size)
         }
+        __builtin_ptr_write(self.keys, self.count * self.key_size, key)
+        __builtin_ptr_write(self.vals, self.count * self.val_size, value)
+        self.count = self.count + 1u64
     }
 
+    # Look up `key`; on hit return the stored value, on miss
+    # return `default`. Early-return from the loop body now
+    # works (DICT-RETURN-WHILE).
     fn get_or(self: Self, key: K, default: V) -> V {
-        var found: bool = false
-        var found_idx: u64 = 0u64
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
             if existing == key {
-                found = true
-                found_idx = i
-                i = self.count
-            } else {
-                i = i + 1u64
+                val v: V = __builtin_ptr_read(self.vals, i * self.val_size)
+                return v
             }
+            i = i + 1u64
         }
-        if found {
-            val v: V = __builtin_ptr_read(self.vals, found_idx * self.val_size)
-            v
-        } else {
-            default
-        }
+        default
     }
 
     fn contains_key(self: Self, key: K) -> bool {
-        var found: bool = false
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
             if existing == key {
-                found = true
-                i = self.count
-            } else {
-                i = i + 1u64
+                return true
             }
+            i = i + 1u64
         }
-        found
+        false
     }
 
     fn size(self: Self) -> u64 {
         self.count
     }
 
+    # Remove `key` if present. On hit: swap-remove with the
+    # last slot and return true. On miss: return false.
     fn remove(self: Self, key: K) -> bool {
-        var found: bool = false
-        var found_idx: u64 = 0u64
         var i: u64 = 0u64
         while i < self.count {
             val existing: K = __builtin_ptr_read(self.keys, i * self.key_size)
             if existing == key {
-                found = true
-                found_idx = i
-                i = self.count
-            } else {
-                i = i + 1u64
+                val last_idx: u64 = self.count - 1u64
+                if i != last_idx {
+                    val last_k: K = __builtin_ptr_read(self.keys, last_idx * self.key_size)
+                    val last_v: V = __builtin_ptr_read(self.vals, last_idx * self.val_size)
+                    __builtin_ptr_write(self.keys, i * self.key_size, last_k)
+                    __builtin_ptr_write(self.vals, i * self.val_size, last_v)
+                }
+                self.count = last_idx
+                return true
             }
+            i = i + 1u64
         }
-        if found {
-            val last_idx: u64 = self.count - 1u64
-            if found_idx != last_idx {
-                val last_k: K = __builtin_ptr_read(self.keys, last_idx * self.key_size)
-                val last_v: V = __builtin_ptr_read(self.vals, last_idx * self.val_size)
-                __builtin_ptr_write(self.keys, found_idx * self.key_size, last_k)
-                __builtin_ptr_write(self.vals, found_idx * self.val_size, last_v)
-            }
-            self.count = last_idx
-            true
-        } else {
-            false
-        }
+        false
     }
 }

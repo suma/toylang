@@ -655,6 +655,33 @@ fn narrow_int_arithmetic_and_cast_interpreter() {
 }
 
 #[test]
+fn narrow_int_hash_dispatch_interpreter() {
+    // NUM-W Phase 6: `core/std/hash.t` declares `impl Hash for {u8,
+    // u16, u32, i8, i16, i32}` so user code can dispatch
+    // `(7u8).hash()` etc. through the same extension-trait
+    // method-registry path the i64 / u64 impls already use. The
+    // AOT compiler silently skips registering the narrow-int impl
+    // bodies (the IR can't model the widths yet — see #161); the
+    // JIT silently falls back per Phase 4. Interpreter-only test.
+    //
+    // Sum of 7 (u8) + 100 (u16) + 100000 (u32) = 100107 — no
+    // signed widths included so the result fits in u64 without
+    // wrap-around (a follow-up commit can extend to signed widths
+    // once we have a saturating-style hash that doesn't propagate
+    // sign extension).
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8 = 7u8
+            val b: u16 = 100u16
+            val c: u32 = 100000u32
+            a.hash() + b.hash() + c.hash()
+        }
+    "#;
+    let interp = interpreter_value(src);
+    assert_eq!(interp, 100107, "interpreter expected 100107, got {interp}");
+}
+
+#[test]
 fn hash_trait_dispatch_on_all_primitives() {
     // Phase 1 of the user-space dict effort (`core/std/hash.t`):
     // verifies the auto-loaded `Hash` extension trait dispatches

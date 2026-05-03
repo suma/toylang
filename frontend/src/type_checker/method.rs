@@ -177,6 +177,12 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             match &resolved_type {
                 TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
                 TypeDecl::String | TypeDecl::Ptr |
+                // NUM-W: narrow ints valid as method param types so
+                // `impl Hash for u8 { fn hash(self: Self) -> u64 }`
+                // (and any user-defined inherent impl on a narrow
+                // primitive) survives validation.
+                TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
+                TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
                 TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
                 TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
                     // Valid parameter types — primitives, structs,
@@ -207,6 +213,9 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
             match &resolved_ret_type {
                 TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Float64 | TypeDecl::Bool |
                 TypeDecl::String | TypeDecl::Ptr |
+                // NUM-W: narrow ints valid as method return types.
+                TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
+                TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
                 TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
                 TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
                     // Valid return types — primitives, structs,

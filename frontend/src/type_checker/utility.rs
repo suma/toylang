@@ -81,6 +81,16 @@ impl<'a> TypeCheckerVisitor<'a> {
             TypeDecl::Bool => "bool",
             TypeDecl::Int64 => "i64",
             TypeDecl::UInt64 => "u64",
+            // NUM-W: narrow integer extension-trait dispatch.
+            // Mirror the i64 / u64 entries so user code can call
+            // e.g. `(7u8).hash()` and the type checker resolves
+            // it through the per-target method registry.
+            TypeDecl::Int8 => "i8",
+            TypeDecl::Int16 => "i16",
+            TypeDecl::Int32 => "i32",
+            TypeDecl::UInt8 => "u8",
+            TypeDecl::UInt16 => "u16",
+            TypeDecl::UInt32 => "u32",
             TypeDecl::Float64 => "f64",
             TypeDecl::String => "str",
             TypeDecl::Ptr => "ptr",
@@ -98,6 +108,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             // `usize` shares the `UInt64` representation in this
             // language; the parser maps both to the same TypeDecl.
             "usize" => TypeDecl::UInt64,
+            // NUM-W: narrow integer reverse mapping (impl-target
+            // symbol → TypeDecl). Mirrors
+            // `primitive_target_symbol_from_type` above.
+            "u8" => TypeDecl::UInt8,
+            "u16" => TypeDecl::UInt16,
+            "u32" => TypeDecl::UInt32,
+            "i8" => TypeDecl::Int8,
+            "i16" => TypeDecl::Int16,
+            "i32" => TypeDecl::Int32,
             "str" => TypeDecl::String,
             "ptr" => TypeDecl::Ptr,
             _ => return None,

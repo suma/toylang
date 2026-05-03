@@ -99,6 +99,20 @@ pub(super) fn primitive_type_decl_for_target_sym(
         // `core/std/hash.t`'s `Hash for str`) reach the same
         // method-lowering path the other primitive impls use.
         "str" => TypeDecl::String,
+        // NUM-W Phase 6: returning the matching narrow `TypeDecl`
+        // here lets the method-registration loop above identify
+        // the impl as targeting an unsupported width and skip it
+        // cleanly. Without an entry, `self_decl` would fall
+        // through to `TypeDecl::Identifier(sym)` and the
+        // skip-check would miss the impl, leading to a hard
+        // "cannot lower method parameter" error during the
+        // boundary lowering step.
+        "u8" => TypeDecl::UInt8,
+        "u16" => TypeDecl::UInt16,
+        "u32" => TypeDecl::UInt32,
+        "i8" => TypeDecl::Int8,
+        "i16" => TypeDecl::Int16,
+        "i32" => TypeDecl::Int32,
         _ => return None,
     })
 }
@@ -277,7 +291,7 @@ pub fn lower_program(
     let mut generic_methods: GenericMethods = HashMap::new();
     let mut method_instances: MethodInstances = HashMap::new();
     let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
-    for ((target_sym, method_sym), method) in method_registry.iter() {
+    'method_loop: for ((target_sym, method_sym), method) in method_registry.iter() {
         if !method.generic_params.is_empty() {
             generic_methods.insert((*target_sym, *method_sym), Rc::clone(method));
             continue;
@@ -290,6 +304,22 @@ pub fn lower_program(
         // `Identifier(target_sym)` path would silently fail.)
         let self_decl = primitive_type_decl_for_target_sym(*target_sym, interner)
             .unwrap_or(TypeDecl::Identifier(*target_sym));
+        // NUM-W Phase 6: when the target is a primitive type the
+        // AOT IR doesn't yet model (u8 / u16 / u32 / i8 / i16 /
+        // i32), silently skip the impl method. The user program
+        // can't actually call it through AOT — Phase 5 already
+        // rejects narrow-int literals at lowering time — but
+        // skipping registration here lets `core/std/hash.t` add
+        // `impl Hash for u8 { ... }` without breaking AOT
+        // compilation of programs that don't touch u8 at all.
+        // Same shape as the JIT precise-fallback policy from
+        // #204.
+        if matches!(self_decl,
+            TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32
+            | TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32)
+        {
+            continue 'method_loop;
+        }
         let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
         for (pname, pty) in &method.parameter {
             // `self: Self` — substitute Self for the impl's target.

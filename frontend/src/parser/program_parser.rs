@@ -24,6 +24,13 @@ fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
         Kind::USize => "usize",
         Kind::Str => "str",
         Kind::Ptr => "ptr",
+        // NUM-W: narrow primitive impl targets (`impl Hash for u8 { ... }`).
+        Kind::U8 => "u8",
+        Kind::U16 => "u16",
+        Kind::U32 => "u32",
+        Kind::I8 => "i8",
+        Kind::I16 => "i16",
+        Kind::I32 => "i32",
         _ => return None,
     })
 }

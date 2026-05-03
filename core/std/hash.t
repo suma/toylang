@@ -61,3 +61,44 @@ impl Hash for str {
         0u64
     }
 }
+
+# NUM-W Phase 6: narrow integer Hash impls. Each width casts
+# straight to u64; signed widths reinterpret two's complement
+# the same way `Hash for i64` does. The AOT compiler currently
+# can't lower these bodies (it doesn't model narrow ints in
+# its IR — see #161), so the registration loop in
+# `compiler/src/lower/program.rs` silently skips them when
+# integrating this file. Programs that use narrow ints fall
+# back to the interpreter on the AOT path; the JIT silently
+# falls back as well (see Phase 4). The interpreter executes
+# the casts directly through `evaluate_cast`'s NumForm matrix.
+impl Hash for u8 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}
+impl Hash for u16 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}
+impl Hash for u32 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}
+impl Hash for i8 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}
+impl Hash for i16 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}
+impl Hash for i32 {
+    fn hash(self: Self) -> u64 {
+        self as u64
+    }
+}

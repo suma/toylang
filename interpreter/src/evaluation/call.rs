@@ -28,6 +28,13 @@ fn primitive_target_symbol(
         Object::Bool(_) => "bool",
         Object::Int64(_) => "i64",
         Object::UInt64(_) => "u64",
+        // NUM-W: narrow primitive method dispatch.
+        Object::Int8(_) => "i8",
+        Object::Int16(_) => "i16",
+        Object::Int32(_) => "i32",
+        Object::UInt8(_) => "u8",
+        Object::UInt16(_) => "u16",
+        Object::UInt32(_) => "u32",
         Object::Float64(_) => "f64",
         Object::ConstString(_) | Object::String(_) => "str",
         Object::Pointer(_) => "ptr",

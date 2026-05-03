@@ -1798,7 +1798,8 @@ fn check_match_pattern(
         Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
             if !sub_pats.is_empty() {
                 note(reject_reason, || {
-                    "JIT match: enum variant with payload sub-patterns not yet supported (JE-2+)".to_string()
+                    "JIT match: enum variant with payload sub-patterns not yet supported \
+                     (JE-2+; see JIT-enum-1)".to_string()
                 });
                 return false;
             }
@@ -1814,7 +1815,8 @@ fn check_match_pattern(
                 Some(l) => l,
                 None => {
                     note(reject_reason, || {
-                        "JIT match: enum is not JIT-eligible (generic / has payloads)".to_string()
+                        "JIT match: enum is not JIT-eligible (generic / has payloads; \
+                     see JIT-enum-1)".to_string()
                     });
                     return false;
                 }
@@ -2580,7 +2582,7 @@ pub(crate) fn check_expr(
                                 .to_string()
                         } else {
                             "JIT does not yet model enum values \
-                             (constructors / match / methods)"
+                             (constructors / match / methods; see JIT-enum-1)"
                                 .to_string()
                         }
                     } else {

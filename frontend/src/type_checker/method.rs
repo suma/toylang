@@ -184,7 +184,12 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
                 TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
                 TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
-                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
+                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
+                // REF-Stage-2: `&T` parameter type is accepted as
+                // long as the inner type is one of the supported
+                // shapes; the impl-block validator only needs to
+                // know the wrapper exists (lowering peels it).
+                TypeDecl::Ref(_) => {
                     // Valid parameter types — primitives, structs,
                     // generics, and collections. `Float64` / `Ptr`
                     // were added when extension traits over

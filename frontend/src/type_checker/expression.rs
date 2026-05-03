@@ -668,10 +668,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.type_inference.type_hint = Some(expected_type.clone());
                     let arg_type = self.visit_expr(arg)?;
 
-                    // Check type compatibility — `is_equivalent` handles the
-                    // Identifier↔Struct and Identifier↔Enum cases so user-named
-                    // types unify with their resolved form.
-                    if !arg_type.is_equivalent(expected_type) && arg_type != TypeDecl::Unknown {
+                    // Check type compatibility — `is_arg_compatible` handles
+                    // the Identifier↔Struct and Identifier↔Enum cases so
+                    // user-named types unify with their resolved form, plus
+                    // the REF-Stage-2 auto-borrow (`T` → `&T` at call sites).
+                    if !TypeDecl::is_arg_compatible(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
                         // Restore hint before returning error
                         self.type_inference.type_hint = original_hint;
                         self.pop_context();

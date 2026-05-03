@@ -83,4 +83,16 @@ impl String {
     fn as_ptr(self: Self) -> ptr {
         self.vec.as_ptr()
     }
+
+    # Append the bytes of `other` to `self` in-place. `other` is
+    # taken by reference (`&String`) — REF-Stage-2 minimum subset:
+    # caller-side auto-borrow lets `s.push_str(b)` work with `b:
+    # String`, and at runtime / IR the reference is currently
+    # erased to a value (no semantic difference until the IR
+    # learns true pointer passing). Internally we delegate to
+    # `Vec<u8>::extend_bytes` so the geometric grow logic is
+    # shared.
+    fn push_str(&mut self, other: &String) {
+        self.vec.extend_bytes(other.as_ptr(), other.len())
+    }
 }

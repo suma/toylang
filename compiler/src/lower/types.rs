@@ -8,6 +8,15 @@ use frontend::type_decl::TypeDecl;
 /// caller routes those through dedicated paths because they don't
 /// fit a single SSA value.
 pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
+    // REF-Stage-2 (minimum subset): erase `&T` to its inner type
+    // at the IR layer. The frontend type checker enforces the
+    // call-by-reference vs call-by-value distinction; runtime /
+    // codegen pass the value through identically. A future phase
+    // can introduce a `Type::Ref(_)` variant for true pointer
+    // passing without copy.
+    if let TypeDecl::Ref(inner) = ty {
+        return lower_scalar(inner);
+    }
     match ty {
         TypeDecl::Int64 => Some(Type::I64),
         TypeDecl::UInt64 | TypeDecl::Number => Some(Type::U64),

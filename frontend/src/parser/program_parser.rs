@@ -385,12 +385,24 @@ impl<'a> Parser<'a> {
                             let first_ident_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
 
-                            // For now, we skip parsing generic arguments on
-                            // the (first) identifier — both inherent and
-                            // trait impls accept `Name<...>` after the name.
-                            if self.peek() == Some(&Kind::LT) {
-                                self.skip_until_matching_gt();
-                            }
+                            // CONCRETE-IMPL Phase 2 follow-up: capture
+                            // type args on the *first* identifier too so
+                            // inherent `impl Vec<u8>` (no `for`) ends up
+                            // with `target_type_args = [u8]`, parallel to
+                            // the trait-impl branch below. Without this,
+                            // the inherent path falls back to
+                            // `skip_until_matching_gt` and CONCRETE-IMPL
+                            // dispatch loses its key. Trait impls
+                            // overwrite this from the parsed `Type<...>`
+                            // following `for` (the first identifier was
+                            // the trait name, not the target).
+                            let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
+                            let first_target_args = if self.peek() == Some(&Kind::LT) {
+                                self.next(); // consume '<'
+                                self.parse_type_args_after_lt(&generic_params_set)?
+                            } else {
+                                Vec::new()
+                            };
 
                             // `impl Trait for Type` — the `for` keyword is
                             // contextually reused here. If present, the
@@ -403,7 +415,6 @@ impl<'a> Parser<'a> {
                             // type-checker / interpreter / compiler — they
                             // are reserved keywords so there's no clash with
                             // a user struct of the same name.
-                            let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
                             let (trait_name, target_type_symbol, target_type_args) = if matches!(self.peek(), Some(Kind::For)) {
                                 self.next(); // consume `for`
                                 let (target_sym, target_args) = match self.peek() {
@@ -433,7 +444,10 @@ impl<'a> Parser<'a> {
                                 };
                                 (Some(first_ident_symbol), target_sym, target_args)
                             } else {
-                                (None, first_ident_symbol, Vec::new())
+                                // Inherent impl: first identifier is the
+                                // target type; its `<...>` (if any) was
+                                // captured into `first_target_args` above.
+                                (None, first_ident_symbol, first_target_args)
                             };
 
                             self.expect_err(&Kind::BraceOpen)?;

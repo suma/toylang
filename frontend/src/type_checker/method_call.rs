@@ -84,7 +84,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // parser can't tell enums from structs at parse time, so this
         // post-decl refinement is needed for `val o: Option<u64>` to
         // route through the enum path.
-        let resolved_obj_type = match &obj_type {
+        // REF-Stage-2: peel `&T` before structural refinement so a
+        // method call on a `&String` receiver dispatches through
+        // `String`'s impl table the same as a `String` receiver
+        // would. Auto-deref is implicit for method receivers.
+        let obj_type_deref = obj_type.deref_ref().clone();
+        let resolved_obj_type = match &obj_type_deref {
             TypeDecl::Struct(name, args)
                 if self.context.enum_definitions.contains_key(name) =>
             {
@@ -106,7 +111,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             {
                 TypeDecl::Struct(*name, vec![])
             }
-            _ => obj_type.clone(),
+            _ => obj_type_deref.clone(),
         };
         
         // Type check arguments
@@ -432,7 +437,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         for (arg_expr, expected_ty) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
-            if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+            if !TypeDecl::is_arg_compatible(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),
                     actual_ty,
@@ -604,7 +609,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         for (arg_expr, (_, expected_ty)) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
-            if !actual_ty.is_equivalent(expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+            if !TypeDecl::is_arg_compatible(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),
                     actual_ty,

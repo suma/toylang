@@ -115,6 +115,30 @@ impl<T> Vec<T> {
     }
 }
 
+# Concrete-args impl: byte-vector helpers live here because the
+# inner `__builtin_ptr_read(...)` produces `u8` and `push(value)`
+# needs the receiver `Vec<T>`'s `T` to be `u8` for the push to
+# type-check. CONCRETE-IMPL Phase 2 lets this `impl Vec<u8>` and
+# the generic `impl<T> Vec<T>` above coexist in the registry.
+impl Vec<u8> {
+    # Append `count` bytes from `src` to the end of the vec.
+    # Used by `core/std/string.t::String::push_str` and any other
+    # caller that wants bulk-append from a pointer source. Body
+    # delegates to `push` per byte so the existing geometric grow
+    # logic kicks in without needing pointer-arithmetic builtins
+    # (no `__builtin_ptr_offset` exists today). For typical demo
+    # workloads this is fine; a future bulk-`mem_copy` form would
+    # be a perf optimisation.
+    fn extend_bytes(&mut self, src: ptr, count: u64) {
+        var i: u64 = 0u64
+        while i < count {
+            val b: u8 = __builtin_ptr_read(src, i)
+            self.push(b)
+            i = i + 1u64
+        }
+    }
+}
+
 # Note: `str → Vec<u8>` (heap-buffer) construction lives in
 # `core/std/string.t::String::from_str(s)`. The `String` struct
 # wraps a `Vec<u8>` and exposes the heap-managed-byte-buffer

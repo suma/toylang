@@ -31,6 +31,15 @@ pub enum TypeDecl {
     Allocator,  // Opaque allocator handle for `with allocator = ...` scoping
     Enum(DefaultSymbol, Vec<TypeDecl>),  // User-defined enum type with optional type parameters
     Range(Box<TypeDecl>),  // Half-open integer range: start..end
+    /// Reference type `&T` (REF-Stage-2 minimum subset). Distinct
+    /// from the inner `T` for type-checker purposes — assignments
+    /// don't accept `T` for `&T` and vice-versa, but argument
+    /// passing supports auto-borrow (`T` → `&T` at the call site).
+    /// At lowering, both interpreter and AOT compiler **erase**
+    /// the wrapper to the inner type — no separate runtime
+    /// representation. `&mut T`, explicit borrow expressions, and
+    /// IR-level pointer passing are all deferred to later phases.
+    Ref(Box<TypeDecl>),
 }
 
 impl TypeDecl {
@@ -91,6 +100,35 @@ impl TypeDecl {
         }
     }
     
+    /// Argument-passing compatibility: stricter than `is_equivalent`
+    /// (different reference / value types remain distinct everywhere
+    /// else) but with one relaxation — **auto-borrow**: an actual
+    /// argument of type `T` may be passed to a parameter of type
+    /// `&T`. The reverse (passing `&T` for `T`) is NOT allowed; the
+    /// type system has no auto-deref operation. Falls back to
+    /// `is_equivalent` for the same-shape case.
+    pub fn is_arg_compatible(actual: &TypeDecl, expected: &TypeDecl) -> bool {
+        if actual.is_equivalent(expected) {
+            return true;
+        }
+        if let TypeDecl::Ref(inner) = expected {
+            // `T` → `&T` auto-borrow at the call site.
+            return actual.is_equivalent(inner);
+        }
+        false
+    }
+
+    /// `&T → T` peel one reference layer (no-op for non-`Ref`).
+    /// Used by method dispatch sites that must look the inner
+    /// type's methods up regardless of whether the receiver is
+    /// a reference.
+    pub fn deref_ref(&self) -> &TypeDecl {
+        match self {
+            TypeDecl::Ref(inner) => inner,
+            other => other,
+        }
+    }
+
     /// Substitute generic type parameters with concrete types
     pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {
@@ -125,6 +163,9 @@ impl TypeDecl {
                     .collect();
                 TypeDecl::Struct(*name, new_params)
             },
+            TypeDecl::Ref(inner) => {
+                TypeDecl::Ref(Box::new(inner.substitute_generics(substitutions)))
+            }
             // For all other types, no substitution needed
             _ => self.clone(),
         }

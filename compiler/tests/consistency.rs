@@ -843,6 +843,56 @@ fn string_from_str_round_trip() {
 }
 
 #[test]
+fn string_push_str_round_trip() {
+    // REF-Stage-2 minimum subset: `String::push_str(&mut self,
+    // other: &String)` lets a caller append one heap-managed
+    // string onto another. The `&String` parameter type is parsed
+    // as `TypeDecl::Ref(...)`, distinct from `String` in the type
+    // system, but the call site can pass a bare `String` value
+    // via auto-borrow (`s.push_str(b)` where `b: String`).
+    //
+    // Internally `push_str` delegates to
+    // `Vec<u8>::extend_bytes(&mut self, src: ptr, count: u64)` —
+    // a concrete-args impl on `Vec<u8>` that loops `__builtin_ptr_read` +
+    // `self.push(b)`. That coexists with the generic
+    // `impl<T> Vec<T>` thanks to CONCRETE-IMPL Phase 2.
+    //
+    // Builds "hello" + " " + "world" = "hello world" (len 11) and
+    // spot-checks first / middle / last bytes via
+    // `__builtin_ptr_read(s.as_ptr(), i)`. 3-way `assert_consistent`
+    // pins interpreter / JIT silent fallback / AOT all see the
+    // same exit code (42 on success).
+    let src = r#"
+        fn main() -> u64 {
+            var s: String = String::from_str("hello")
+            val sp: String = String::from_str(" ")
+            val w: String = String::from_str("world")
+            s.push_str(sp)
+            s.push_str(w)
+            val n: u64 = s.len()
+            if n != 11u64 {
+                return 1u64
+            }
+            val p: ptr = s.as_ptr()
+            val first: u8 = __builtin_ptr_read(p, 0u64)
+            val mid: u8 = __builtin_ptr_read(p, 5u64)
+            val last: u8 = __builtin_ptr_read(p, 10u64)
+            if first != 104u8 {
+                return 2u64
+            }
+            if mid != 32u8 {
+                return 3u64
+            }
+            if last != 100u8 {
+                return 4u64
+            }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_push_str_round_trip");
+}
+
+#[test]
 fn vec_user_space_round_trip() {
     // `core/std/collections/vec.t::Vec<T>` is the user-space
     // dynamic array sibling to `core/std/dict.t::Dict<K, V>`.

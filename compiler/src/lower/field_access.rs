@@ -42,7 +42,7 @@ impl<'a> FunctionLower<'a> {
         // fields). Then look up `field` in that struct's bindings.
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
-            FieldChainResult::Struct { fields } => fields,
+            FieldChainResult::Struct { fields, .. } => fields,
             FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                 return Err("field access on a non-struct value".to_string());
             }
@@ -96,7 +96,8 @@ impl<'a> FunctionLower<'a> {
                     local: *local,
                     ty: *ty,
                 }),
-                Some(Binding::Struct { fields, .. }) => Ok(FieldChainResult::Struct {
+                Some(Binding::Struct { struct_id, fields }) => Ok(FieldChainResult::Struct {
+                    struct_id: *struct_id,
                     fields: fields.clone(),
                 }),
                 Some(Binding::Tuple { .. }) => Err(format!(
@@ -130,7 +131,8 @@ impl<'a> FunctionLower<'a> {
                         local: *local,
                         ty: *ty,
                     }),
-                    TupleElementShape::Struct { fields, .. } => Ok(FieldChainResult::Struct {
+                    TupleElementShape::Struct { struct_id, fields } => Ok(FieldChainResult::Struct {
+                        struct_id: *struct_id,
                         fields: fields.clone(),
                     }),
                     TupleElementShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
@@ -141,7 +143,7 @@ impl<'a> FunctionLower<'a> {
             Expr::FieldAccess(inner, field_sym) => {
                 let inner_ref = self.resolve_field_chain(&inner)?;
                 let fields = match inner_ref {
-                    FieldChainResult::Struct { fields } => fields,
+                    FieldChainResult::Struct { fields, .. } => fields,
                     FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                         return Err("field access on a non-struct value".to_string());
                     }
@@ -160,7 +162,8 @@ impl<'a> FunctionLower<'a> {
                         local: *local,
                         ty: *ty,
                     }),
-                    FieldShape::Struct { fields, .. } => Ok(FieldChainResult::Struct {
+                    FieldShape::Struct { struct_id, fields } => Ok(FieldChainResult::Struct {
+                        struct_id: *struct_id,
                         fields: fields.clone(),
                     }),
                     FieldShape::Tuple { elements, .. } => Ok(FieldChainResult::Tuple {
@@ -237,7 +240,7 @@ impl<'a> FunctionLower<'a> {
     ) -> Result<LocalId, String> {
         let inner = self.resolve_field_chain(obj)?;
         let fields = match inner {
-            FieldChainResult::Struct { fields } => fields,
+            FieldChainResult::Struct { fields, .. } => fields,
             FieldChainResult::Scalar { .. } | FieldChainResult::Tuple { .. } => {
                 return Err("field assignment on a non-struct value".to_string());
             }

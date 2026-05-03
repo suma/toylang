@@ -130,7 +130,13 @@ impl TupleElementBinding {
 pub(super) enum FieldChainResult {
     #[allow(dead_code)]
     Scalar { local: LocalId, ty: Type },
-    Struct { fields: Vec<FieldBinding> },
+    /// Inner struct sub-binding — `struct_id` carries the
+    /// monomorphised struct shape so callers can dispatch
+    /// methods on this nested struct without a separate lookup.
+    Struct {
+        struct_id: crate::ir::StructId,
+        fields: Vec<FieldBinding>,
+    },
     /// Inner tuple sub-binding — e.g. `outer.inner` where
     /// `inner: (i64, i64)`. Callers either step further with a
     /// `TupleAccess` or stash the elements as a pending tuple.

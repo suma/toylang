@@ -90,11 +90,12 @@ impl<'a> FunctionLower<'a> {
                         .ok_or_else(|| "struct field rhs missing".to_string())?;
                     let inner_literal = match inner_expr {
                         Expr::StructLiteral(_, inner_fs) => inner_fs,
-                        _ => {
+                        other => {
                             return Err(format!(
-                                "compiler MVP requires struct field `{}.{}` to be initialised by a struct literal",
+                                "compiler MVP requires struct field `{}.{}` to be initialised by a struct literal (got {:?})",
                                 self.interner.resolve(outer_base).unwrap_or("?"),
-                                field_str
+                                field_str,
+                                other
                             ));
                         }
                     };

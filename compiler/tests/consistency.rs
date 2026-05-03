@@ -798,12 +798,14 @@ fn concrete_impl_dispatch_by_receiver_type_args() {
 }
 
 #[test]
-fn vec_from_str_round_trip() {
-    // `core/std/collections/vec.t::FromStr::from_str(s) ->
-    // Vec<u8>` copies the UTF-8 bytes of `s` into a fresh
-    // `Vec<u8>` of size `s.len()`. The NUL terminator is
-    // intentionally NOT copied. Implementation uses
-    // `__builtin_mem_copy` for a single-call bulk copy:
+fn string_from_str_round_trip() {
+    // `core/std/string.t::String::from_str(s)` copies the UTF-8
+    // bytes of `s` into a fresh, heap-allocated `String` (a
+    // wrapper around `Vec<u8>`). The trailing NUL terminator is
+    // intentionally NOT copied. `String::len()` matches `s.len()`,
+    // and `String::as_ptr()` exposes the underlying byte buffer.
+    // Implementation uses `__builtin_mem_copy` for a single-call
+    // bulk copy:
     //
     //   - AOT: libc memcpy(dest, src, n) — `s.as_ptr()` is a
     //     pointer into `.rodata`'s `[bytes][NUL][u64 len]`
@@ -811,22 +813,23 @@ fn vec_from_str_round_trip() {
     //     `heap_realloc`'d buffer.
     //   - Interpreter: `s.as_ptr()` writes typed_slot u8 entries
     //     and `HeapManager::copy_memory` (called by
-    //     `__builtin_mem_copy`) is now typed_slots-aware so the
-    //     dest buffer ends up with the same per-byte u8 entries.
-    //   - JIT: silent fallback to interpreter (str scalar isn't
-    //     modelled in the JIT IR).
+    //     `__builtin_mem_copy`) is typed_slots-aware so the dest
+    //     buffer ends up with the same per-byte u8 entries.
+    //   - JIT: silent fallback (str scalar isn't modelled).
     //
-    // Walks "hello" byte-by-byte, checking
-    // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + size=5.
+    // Walks "hello" byte-by-byte via `__builtin_ptr_read` on the
+    // pointer returned by `String::as_ptr()`, checking
+    // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + len=5.
     let src = r#"
         fn main() -> u64 {
-            val v: Vec<u8> = Vec::from_str("hello")
-            val n: u64 = v.size()
-            val a: u8 = v.get(0u64)
-            val b: u8 = v.get(1u64)
-            val c: u8 = v.get(2u64)
-            val d: u8 = v.get(3u64)
-            val e: u8 = v.get(4u64)
+            val s: String = String::from_str("hello")
+            val n: u64 = s.len()
+            val p: ptr = s.as_ptr()
+            val a: u8 = __builtin_ptr_read(p, 0u64)
+            val b: u8 = __builtin_ptr_read(p, 1u64)
+            val c: u8 = __builtin_ptr_read(p, 2u64)
+            val d: u8 = __builtin_ptr_read(p, 3u64)
+            val e: u8 = __builtin_ptr_read(p, 4u64)
             if n != 5u64 { 1u64 }
             elif a != 104u8 { 2u64 }
             elif b != 101u8 { 3u64 }
@@ -836,7 +839,7 @@ fn vec_from_str_round_trip() {
             else { 42u64 }
         }
     "#;
-    assert_consistent(src, "vec_from_str_round_trip");
+    assert_consistent(src, "string_from_str_round_trip");
 }
 
 #[test]

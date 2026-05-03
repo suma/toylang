@@ -54,7 +54,7 @@ impl<'a> FunctionLower<'a> {
             Expr::FieldAccess(obj, field) => {
                 let inner = self.resolve_field_chain(&obj).ok()?;
                 let fields = match inner {
-                    FieldChainResult::Struct { fields } => fields,
+                    FieldChainResult::Struct { fields, .. } => fields,
                     FieldChainResult::Scalar { .. }
                     | FieldChainResult::Tuple { .. } => return None,
                 };

@@ -95,6 +95,17 @@ impl<'a> TypeCheckerVisitor<'a> {
             {
                 TypeDecl::Enum(*name, vec![])
             }
+            // Symmetric refinement for structs: a `val s: String`
+            // annotation parses as `Identifier(String)` because the
+            // parser doesn't know whether the bare name is a struct
+            // or an alias. If `String` is a registered struct, lift
+            // it to `Struct(String, [])` so the struct-method
+            // dispatch arm at line ~248 matches.
+            TypeDecl::Identifier(name)
+                if self.context.struct_definitions.contains_key(name) =>
+            {
+                TypeDecl::Struct(*name, vec![])
+            }
             _ => obj_type.clone(),
         };
         

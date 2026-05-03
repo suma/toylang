@@ -450,25 +450,49 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(obj)
             .ok_or_else(|| "method-call receiver missing".to_string())?;
-        let recv_sym = match obj_expr {
-            Expr::Identifier(sym) => sym,
+        // Receiver shapes accepted by the compiler MVP method
+        // dispatcher:
+        //   - bare identifier (`a.foo()`): look up the binding
+        //     directly.
+        //   - field access chain (`self.vec.size()`): resolve via
+        //     `resolve_field_chain` and synthesise a Binding::Struct
+        //     from the resulting FieldChainResult so the rest of
+        //     the dispatch / arg-loading code can run unchanged.
+        //     This keeps the `String` → `Vec` boundary clean —
+        //     `String` methods can call `self.vec.size()` instead
+        //     of reading `self.vec.len` directly.
+        let binding: Binding = match obj_expr {
+            Expr::Identifier(sym) => self
+                .bindings
+                .get(&sym)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "undefined receiver `{}` for method call",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    )
+                })?,
+            Expr::FieldAccess(_, _) => {
+                let chain = self.resolve_field_chain(obj)?;
+                match chain {
+                    super::bindings::FieldChainResult::Struct { struct_id, fields } => {
+                        Binding::Struct { struct_id, fields }
+                    }
+                    _ => {
+                        return Err(format!(
+                            "compiler MVP requires nested-field method receivers to resolve to a struct (got {:?})",
+                            chain
+                        ));
+                    }
+                }
+            }
             _ => {
                 return Err(format!(
-                    "compiler MVP only supports method calls on a bare identifier (got {:?})",
+                    "compiler MVP only supports method calls on a bare identifier or a field-access chain (got {:?})",
                     obj_expr
                 ));
             }
         };
-        let binding = self
-            .bindings
-            .get(&recv_sym)
-            .cloned()
-            .ok_or_else(|| {
-                format!(
-                    "undefined receiver `{}` for method call",
-                    self.interner.resolve(recv_sym).unwrap_or("?")
-                )
-            })?;
 
         // CONCRETE-IMPL Phase 2b: extract receiver's IR type args
         // for spec-aware dispatch.
@@ -482,10 +506,9 @@ impl<'a> FunctionLower<'a> {
                 (def.base_name, def.type_args.clone())
             }
             _ => {
-                return Err(format!(
-                    "compiler MVP requires the method receiver `{}` to be a struct or enum binding",
-                    self.interner.resolve(recv_sym).unwrap_or("?")
-                ));
+                return Err(
+                    "compiler MVP requires the method receiver to be a struct or enum binding".to_string()
+                );
             }
         };
         let target = if let Some(id) = super::method_registry::lookup_method_func(

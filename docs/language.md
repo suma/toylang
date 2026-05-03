@@ -14,7 +14,8 @@ implementation-side details, see the companion documents:
 
 - [Hello, world](#hello-world)
 - [Lexical structure](#lexical-structure)
-- [Types](#types)
+- [Types](#types) (incl. syntax + reference types)
+- [Type checker](#type-checker)
 - [Literals](#literals)
 - [Expressions](#expressions)
 - [Statements](#statements)
@@ -101,29 +102,80 @@ val a: i64 = 10i64
 
 ## Types
 
+### Syntax of Type
+
+Type annotations appear after a `:` in `val` / `var` / parameter / field
+declarations and after `->` in function / method return positions. The
+parser recognises the following grammar (see
+`frontend/src/parser/types.rs`); each form maps to a `TypeDecl` variant
+in `frontend/src/type_decl.rs`:
+
+```
+Type ::= '&' Type                      # reference (immutable)
+       | '[' Type (';' INT)? ']'       # array: [T; N] or dynamic [T]
+       | 'dict' '[' Type ',' Type ']'  # dict[K, V]
+       | '(' Type (',' Type)* ')'      # tuple
+       | '(' ')'                       # unit
+       | PrimitiveKeyword              # bool / u8..u64 / i8..i64 / f64 / str / ptr
+       | 'Allocator'                   # opaque allocator handle
+       | 'Self'                        # enclosing impl target
+       | Identifier ('<' Type (',' Type)* '>')?
+                                       # struct / enum / type alias, optionally generic
+```
+
+Primitive / built-in types:
+
 | Type | Description |
 |---|---|
 | `bool` | `true` / `false` |
-| `u64` | 64-bit unsigned integer |
-| `i64` | 64-bit signed integer |
+| `u8` / `u16` / `u32` / `u64` | unsigned integers (8/16/32/64-bit) |
+| `i8` / `i16` / `i32` / `i64` | signed integers (8/16/32/64-bit) |
 | `f64` | IEEE 754 double-precision float |
-| `str` | String (interned literal or runtime-built) |
+| `str` | UTF-8 string handle (interned literal or `.rodata` reference) |
 | `ptr` | Raw heap pointer (0 = null) |
 | `usize` | Reserved keyword, used in some builtin signatures |
+| `()` | Unit (no value); function with no return type produces this |
 | `dict[K, V]` | Hash dictionary, any `Object`-keyable type as `K` |
 | `[T; N]` | Fixed-size array of `T` with length `N` |
 | `[T]` | Dynamic-array slice (returned by slicing) |
 | `(T1, T2, ...)` | Tuple — heterogeneous, fixed-arity |
-| `Self` | The enclosing struct type within an `impl` block |
+| `Self` | The enclosing struct/enum type within an `impl` block |
 | `null` | Bottom type carried by `Object::Null(T)` for typed-null values |
+| `Allocator` | Opaque allocator handle (see [Allocators](#allocators)) |
 
-Composite/user-defined types:
+Composite / user-defined types:
 
 | Type | Description |
 |---|---|
-| `Name` | User-defined struct or enum |
+| `Name` | User-defined struct or enum (the parser emits `Identifier(name)`; the type checker resolves it to `Struct(name, [])` or `Enum(name, [])`) |
 | `Name<T1, ...>` | Generic struct or enum instantiation |
-| `Allocator` | Opaque allocator handle (see [Allocators](#allocators)) |
+| `&T` | Reference to `T`. Used in **parameter** positions (e.g. `fn push_str(&mut self, other: &String)`); see [Reference types](#reference-types) below |
+
+### Reference types
+
+A `&T` annotation marks a parameter as **call-by-reference**: the caller
+does not pay for a value copy. The current implementation is a minimum
+subset (REF-Stage-2-min):
+
+- `&T` is parsed as a distinct `TypeDecl::Ref(Box<TypeDecl>)` and is **not
+  equivalent** to `T` in the type system. `val a: &String = b` (where
+  `b: String`) is rejected; references are an argument-only construct.
+- At call sites, **auto-borrow** lets a caller pass a `T` value where a
+  `&T` is expected (`s.push_str(b)` for `b: String`). The reverse — passing
+  a `&T` where a `T` is expected — is not allowed.
+- Method dispatch on a `&T` receiver auto-derefs to `T` for impl-table
+  lookup (`(&s).len()` and `s.len()` resolve identically).
+- Currently `&T` is **erased** at lowering: both the interpreter and the
+  AOT backend pass references identically to values (struct receivers
+  still leaf-flatten). A future phase will introduce IR-level pointer
+  passing without a copy.
+- **Out of scope** for now: `&mut T` for non-self parameters, explicit
+  `&value` borrow expressions, borrow checking, lifetimes.
+
+The `&self` / `&mut self` receiver forms are part of the same family but
+predate `&T` (REF Stage 1) and live in their own parser path. Stdlib
+read-only methods (`String::len`, `Vec::size`, …) take `&self`; mutating
+ones (`Vec::push`, `String::push_str`) take `&mut self`.
 
 ### Type inference
 
@@ -137,6 +189,209 @@ val c = 3.14f64   # f64
 
 Without an annotation, integer literals default to `u64`. With an
 annotation that conflicts (`val x: bool = 42`), the type checker errors.
+
+For generic struct construction the val annotation also drives the
+generic argument when no field directly references the type parameter:
+
+```rust
+struct Container<T> { value: u64 }
+val c: Container<u8> = Container { value: 0u64 }   # T = u8 from annotation
+```
+
+The runtime / IR pick this up so concrete-args dispatch
+(`impl Trait for Container<u8>` vs `impl Trait for Container<i64>`)
+sees the right `[u8]` type-arg vector at the receiver.
+
+---
+
+## Type checker
+
+The frontend type checker runs once per program after parsing and
+module integration, before any execution or AOT lowering. It walks the
+AST via `frontend/src/type_checker/visitor.rs` and assigns a
+`TypeDecl` to every expression, validates declarations, and rejects
+programs that won't run safely.
+
+### Position in the pipeline
+
+```
+source ─► lexer ─► parser ─► AST + ExprPool/StmtPool
+                      │
+                      └──► auto-load / module integration
+                                    │
+                                    ▼
+                            ┌───────────────┐
+                            │ Type checker  │  ◄── this section
+                            └───────────────┘
+                                    │
+                            ┌───────┴───────┐
+                            ▼               ▼
+                       interpreter     AOT compiler
+                                       (Cranelift IR)
+```
+
+A type-check failure is fatal — the program is reported and not
+executed / not lowered. Errors carry source locations so the formatter
+can underline the offending token.
+
+### What it checks
+
+1. **Declarations** — every `struct` / `enum` / `trait` / `impl` block
+   is visited; field / variant / method types are validated. Trait
+   conformance is checked structurally: an `impl Trait for Type` must
+   provide every method the trait declared, with matching parameter
+   and return types (modulo `Self` / generic substitution).
+2. **Function bodies** — each `fn` is type-checked top-down. Parameter
+   types annotate the symbol table; the body's tail expression must
+   match the return type (or `()` if none).
+3. **Expressions** — arithmetic / comparison / logical / bitwise /
+   shift / cast / call / method-call / field / index / range — each
+   produces a typed value or fails. Branches of `if` / `match` /
+   blocks must agree on type.
+4. **Statements** — `val` / `var` annotation matching, `return` /
+   `break` / `continue` flow validity, `for` / `while` body returning
+   `()` outside its tail.
+5. **Patterns** — `match` arms must cover the scrutinee
+   exhaustively; literal / variant / nested patterns are checked
+   for shape and reachability (see
+   [Exhaustiveness and reachability](#exhaustiveness-and-reachability)).
+
+### Type equivalence and assignment
+
+Two distinct relations live on `TypeDecl`:
+
+- **`is_equivalent(a, b)`** — used for assignment, return-type
+  matching, trait conformance, and pattern equality. Treats
+  `Identifier(name)` as a stand-in for the registered `Struct(name, _)`
+  / `Enum(name, _)` so user-named types unify with their resolved
+  form. Generic-typed values (`Generic(T)`) and `Unknown` accept
+  anything during inference. **`&T` and `T` are NOT equivalent** —
+  the reference distinction is real.
+- **`is_arg_compatible(actual, expected)`** — used at every
+  argument-passing site (call / method-call / associated function /
+  module function). Falls back to `is_equivalent`, plus one
+  relaxation: an `actual` of type `T` may flow into an `expected` of
+  type `&T` via auto-borrow. The reverse direction is rejected.
+
+Assignment is strict on `is_equivalent`:
+
+```rust
+val a: String = ...
+val b: &String = a   # type error: &String and String are distinct
+```
+
+### Method dispatch
+
+When the type checker sees `obj.method(args)`:
+
+1. Compute `obj_type` via `visit_expr`. Auto-deref `&T → T` so the
+   inner type drives the lookup (`(&s).len()` resolves the same as
+   `s.len()`).
+2. Refine `Identifier(name)` → `Struct(name, [])` / `Enum(name, [])`
+   for any registered top-level type, since the parser cannot
+   distinguish bare names from aliases at parse time.
+3. Look the method up in `context.struct_methods` /
+   `enum_definitions` / primitive extension-trait registry.
+4. For generic structs / enums, build a substitution map from the
+   receiver's concrete type-args, then resolve `Self` and any
+   `Generic(P)` in the method's parameter / return types.
+5. Validate each actual argument with `is_arg_compatible`.
+
+Receiver kinds are summarised in the following table:
+
+| Receiver in `fn ...(<receiver>, ...)` | Mutability | Writeback (AOT) |
+|---|---|---|
+| `self: Self` | by-value | n/a (mutations are local) |
+| `&self` | by-reference, immutable | n/a |
+| `&mut self` | by-reference, mutable | yes — Self-out-parameter writeback (REF Stage 1) |
+
+### Concrete-args impl dispatch
+
+A `(struct, method)` pair may have **multiple impls** with distinct
+`target_type_args` (e.g. `impl Trait for Vec<u8>` and
+`impl Trait for Vec<i64>` coexist). Lookup picks the matching spec by
+the receiver's concrete type-args via a 3-tier fallback:
+
+1. exact match on `target_type_args`;
+2. generic-parameterised impl with empty `target_type_args` (matches
+   anything);
+3. lone-spec fallback (single spec wins regardless of args; preserved
+   for static-dispatch sites that don't yet thread an annotation
+   hint, e.g. `Vec::from_str(s)`).
+
+### `Self` resolution
+
+Inside an `impl` block, `Self` resolves to the impl's target type:
+
+| Impl form | `Self` resolves to |
+|---|---|
+| `impl Foo` | `Identifier(Foo)` (later refined to `Struct(Foo, [])` / `Enum(...)`) |
+| `impl<T> Foo<T>` | `Struct(Foo, [Generic(T)])` (T stays generic in the body) |
+| `impl Trait for Vec<u8>` | `Struct(Vec, [u8])` (concrete args propagated through Self) |
+| `impl Foo for i64` | `Int64` (primitive impl target) |
+
+### Trait conformance
+
+For `impl Trait for Type`, the type checker iterates the trait's
+declared method signatures and matches them against the impl's:
+
+- Method name must exist in the impl.
+- Receiver kind (`self: Self` / `&self` / `&mut self`) must match
+  exactly. (`self_is_mut` flag on `MethodFunction`.)
+- Parameter and return types must be `is_equivalent`, with `Self`
+  substituted to the impl target.
+- Generic params on the impl block (`impl<T> Trait for Foo<T>`) are
+  substituted before comparison.
+
+A mismatch produces a precise diagnostic naming the missing or
+non-conforming method.
+
+### Generics
+
+Generic functions, structs, enums, and methods are validated in
+template form (with `Generic(T)` placeholders). Concrete
+instantiations are produced lazily:
+
+- The interpreter uses runtime values to bind type parameters.
+- The AOT compiler monomorphises on demand: each call site infers
+  the substitution from the actual argument types, looks up the
+  cached `(name, type_args) → FuncId`, and lowers a fresh body if
+  needed.
+
+`<T: Trait>` bounds are validated when the type checker sees a
+generic call: the actual type must implement the trait. Bound
+inheritance through impl / struct / method levels is respected.
+
+### Built-in / extension dispatch
+
+Primitive receivers (`i64.abs()`, `u8.hash()`) dispatch through the
+same `struct_methods` registry, keyed by the canonical name symbol
+(`"i64"`, `"u8"`, …). Extension traits over primitives
+(`impl Hash for u8`) register their methods under that symbol; the
+type checker prefers user impls over the legacy hardcoded
+`BuiltinMethod` arms.
+
+### Pattern matching
+
+`match` expressions are checked for:
+
+- **Type agreement** — every pattern's binding shape must match the
+  scrutinee type.
+- **Exhaustiveness** — without a wildcard arm, every variant /
+  literal value must be covered. Nested enum payloads are
+  recursively checked.
+- **Reachability** — duplicate variants, literals, or arms after a
+  wildcard are rejected as unreachable.
+
+### Errors
+
+A type error is represented by `TypeCheckError`
+(`frontend/src/type_checker/error.rs`). The visitor accumulates
+errors with source locations rather than aborting on the first one
+when feasible, so the user sees multiple problems per run. The
+front-end driver (`interpreter::check_typing*` /
+`compile_file`) routes errors through `ErrorFormatter` for the
+caret-pointer formatting visible in test output.
 
 ---
 

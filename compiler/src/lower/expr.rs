@@ -302,6 +302,21 @@ impl<'a> FunctionLower<'a> {
             Expr::SliceAssign(obj, start, end, value) => {
                 self.lower_slice_assign(&obj, start.as_ref(), end.as_ref(), &value)
             }
+            // NUM-W Phase 5: narrow integer literals reach codegen
+            // but the AOT IR `Type` enum doesn't yet model the new
+            // widths (only I64 / U64 / F64 / Bool / Unit / Str /
+            // Struct / Tuple / Enum). Surface the limitation
+            // precisely so users see the right diagnostic instead
+            // of the generic "cannot lower expression yet" string;
+            // mirrors the same precise-fallback policy the JIT
+            // uses for enum constructors (#204).
+            Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_) => Err(format!(
+                "AOT compiler does not yet model narrow integer types \
+                 (u8/u16/u32/i8/i16/i32) — use the interpreter or i64/u64 \
+                 (NUM-W Phase 5 not yet implemented). Encountered: {:?}",
+                expr
+            )),
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other

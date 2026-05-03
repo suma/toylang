@@ -574,6 +574,50 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
+fn narrow_int_aot_emits_precise_diagnostic() {
+    // NUM-W Phase 5: the AOT compiler doesn't yet model the
+    // narrow integer types (the IR `Type` enum still tops out
+    // at I64 / U64 / F64 / Bool / Unit / Str / Struct / Tuple
+    // / Enum). Until the IR / codegen widening lands, any AOT
+    // attempt to lower a narrow-int literal must surface a
+    // *precise* diagnostic naming the missing phase, so users
+    // who hit it can find the todo entry rather than puzzling
+    // over a generic "cannot lower" string. Mirrors the JIT
+    // precise-fallback policy from #204.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val x: u8 = 5u8
+            x as u64
+        }
+    "#;
+    let stem = "narrow_int_aot_diag";
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, src).expect("write src");
+    let exe_path = unique_path(stem);
+    let options = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_path),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+        core_modules_dir: Some(core_modules_dir()),
+    };
+    let err = compile_file(&options).expect_err("AOT must reject narrow ints");
+    let _ = std::fs::remove_file(&src_path);
+    assert!(
+        err.contains("narrow integer types"),
+        "diagnostic should mention narrow integers; got: {err}"
+    );
+    assert!(
+        err.contains("NUM-W Phase 5"),
+        "diagnostic should reference the todo phase; got: {err}"
+    );
+}
+
+#[test]
 fn narrow_int_arithmetic_and_cast_interpreter() {
     // NUM-W Phase 3: exercises every narrow-int width through
     // arithmetic, comparison, the full cross-width cast matrix,

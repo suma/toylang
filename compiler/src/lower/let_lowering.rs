@@ -424,6 +424,110 @@ impl<'a> FunctionLower<'a> {
             self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
             return Ok(None);
         }
+        // DICT-AOT-NEW: `var d: Dict<i64, u64> = Dict::new()` —
+        // associated function call on a generic struct. The
+        // type args come from the val annotation; the method
+        // body is monomorphised through the same machinery
+        // `lower_method_call` uses for `obj.m()` (Phase R3 +
+        // X), with `self_type = Type::Struct(<resolved id>)`
+        // and an empty arg list (the function takes no
+        // receiver). Currently scoped to struct-returning
+        // associated functions (e.g. `new() -> Self`); scalar
+        // and other compound returns route through the regular
+        // `Expr::AssociatedFunctionCall` handling below.
+        if let Expr::AssociatedFunctionCall(struct_name, fn_name, ref args_vec) = rhs.clone() {
+            if self.struct_defs.contains_key(&struct_name) {
+                let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
+                let recv_type_args = self
+                    .module
+                    .struct_def(struct_id)
+                    .type_args
+                    .clone();
+                // Look up the associated function in the method
+                // registry. Generic templates live in
+                // `generic_methods`; non-generic ones in
+                // `method_func_ids`. The Dict::new path always
+                // hits the generic registry because dict.t's
+                // `impl<K, V> Dict<K, V>` carries (K, V) onto
+                // every method.
+                let template = self.generic_methods.get(&(struct_name, fn_name)).cloned();
+                if let Some(template) = template {
+                    let func_id = self.instantiate_generic_method_with_self_type(
+                        struct_name,
+                        fn_name,
+                        &template,
+                        Type::Struct(struct_id),
+                        recv_type_args,
+                        args_vec,
+                    )?;
+                    let target_ret = self.module.function(func_id).return_type;
+                    if let Type::Struct(ret_struct_id) = target_ret {
+                        let field_bindings = self.allocate_struct_fields(ret_struct_id);
+                        let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                            .into_iter()
+                            .map(|(l, _)| l)
+                            .collect();
+                        self.bindings.insert(
+                            name,
+                            Binding::Struct {
+                                struct_id: ret_struct_id,
+                                fields: field_bindings,
+                            },
+                        );
+                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                        for a in args_vec {
+                            let v = self.lower_expr(a)?
+                                .ok_or_else(|| {
+                                    "associated-function arg produced no value".to_string()
+                                })?;
+                            arg_values.push(v);
+                        }
+                        self.emit(
+                            InstKind::CallStruct {
+                                target: func_id,
+                                args: arg_values,
+                                dests,
+                            },
+                            None,
+                        );
+                        return Ok(None);
+                    }
+                    // Scalar return — emit a regular Call.
+                    if target_ret.produces_value() {
+                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                        for a in args_vec {
+                            let v = self.lower_expr(a)?
+                                .ok_or_else(|| {
+                                    "associated-function arg produced no value".to_string()
+                                })?;
+                            arg_values.push(v);
+                        }
+                        let v = self
+                            .emit(
+                                InstKind::Call {
+                                    target: func_id,
+                                    args: arg_values,
+                                },
+                                Some(target_ret),
+                            )
+                            .expect("Call returns a value");
+                        let local = self
+                            .module
+                            .function_mut(self.func_id)
+                            .add_local(target_ret);
+                        self.bindings.insert(
+                            name,
+                            Binding::Scalar { local, ty: target_ret },
+                        );
+                        self.emit(
+                            InstKind::StoreLocal { dst: local, src: v },
+                            None,
+                        );
+                        return Ok(None);
+                    }
+                }
+            }
+        }
         // Compound-returning method call RHS: `val q = p.swap()`.
         // Resolves the receiver / method target the same way
         // `lower_method_call` does, then routes the multi-result

@@ -283,6 +283,35 @@ fn aot_heap_alloc_round_trip() {
 }
 
 #[test]
+fn aot_dict_new_associated_function() {
+    // DICT-AOT-NEW Phase B: `var d: Dict<i64, u64> = Dict::new()`
+    // now compiles end-to-end on the AOT path. The associated
+    // function (`new() -> Self`) is monomorphised through the
+    // same generic-method machinery (Phase R3 / X) used for
+    // `obj.method()`, with the type args lifted from the val
+    // annotation (`Dict<i64, u64>`) and an empty arg list (no
+    // self / no formal args).
+    //
+    // The body of `Dict::new()` calls `__builtin_heap_alloc(0u64)`
+    // twice and zero-initialises the rest of the struct fields.
+    // The heap-builtin path landed in #121 Phase A; this test
+    // confirms the two pieces compose end-to-end.
+    //
+    // Subsequent methods (`insert` / `get_or` / `remove`) still
+    // need additional generic-substitution plumbing in the
+    // method body lowering (val annotations referencing generic
+    // params like `K` / `V` aren't substituted yet) — covered
+    // by a later phase.
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<i64, u64> = Dict::new()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "aot_dict_new_associated_function");
+}
+
+#[test]
 fn aot_heap_realloc_grows_buffer() {
     // #121 Phase A continued: realloc grows an existing buffer in
     // place (or moves it). After grow we write into the newly

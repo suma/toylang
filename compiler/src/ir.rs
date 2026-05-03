@@ -680,6 +680,32 @@ pub enum InstKind {
     /// `.rodata` blob; codegen interns by content so identical
     /// fragments share a single data symbol.
     PrintRaw { text: String, newline: bool },
+    // ---- #121: heap / pointer builtins (Phase A, default global
+    // allocator only — `with allocator = ...` scope plumbing comes
+    // later). Each lowers to a libc call (malloc / realloc / free)
+    // or a typed cranelift load / store. Pointers are passed as
+    // U64-typed values throughout the IR.
+    /// `__builtin_heap_alloc(size)` — allocate `size` bytes via libc
+    /// `malloc`. Returns the new address as a U64 value.
+    HeapAlloc { size: ValueId },
+    /// `__builtin_heap_realloc(ptr, new_size)` — resize the allocation
+    /// at `ptr` to `new_size` bytes via libc `realloc` (which accepts
+    /// a null `ptr` and behaves like `malloc`). Returns the (possibly
+    /// moved) address as U64.
+    HeapRealloc { ptr: ValueId, new_size: ValueId },
+    /// `__builtin_heap_free(ptr)` — release the allocation at `ptr`
+    /// via libc `free`. Returns no value.
+    HeapFree { ptr: ValueId },
+    /// `__builtin_ptr_read(ptr, offset) -> elem_ty` — typed load at
+    /// `ptr + offset`. The element type is fixed at lower time from
+    /// the surrounding `val`/`var` annotation (e.g.
+    /// `val existing: K = __builtin_ptr_read(...)`); codegen emits
+    /// `load.<cl_ty>` for that width.
+    PtrRead { ptr: ValueId, offset: ValueId, elem_ty: Type },
+    /// `__builtin_ptr_write(ptr, offset, value)` — typed store at
+    /// `ptr + offset`. The value's IR type is captured at lower
+    /// time so codegen picks the matching `store.<cl_ty>`.
+    PtrWrite { ptr: ValueId, offset: ValueId, value: ValueId, value_ty: Type },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1090,6 +1116,21 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::ArrayStore { slot, index, value, elem_ty } => {
                 write!(f, "array_store slot#{}, {index} <- {value}: {elem_ty}", slot.0)
+            }
+            InstKind::HeapAlloc { size } => {
+                write!(f, "{prefix}heap_alloc {size}")
+            }
+            InstKind::HeapRealloc { ptr, new_size } => {
+                write!(f, "{prefix}heap_realloc {ptr}, {new_size}")
+            }
+            InstKind::HeapFree { ptr } => {
+                write!(f, "heap_free {ptr}")
+            }
+            InstKind::PtrRead { ptr, offset, elem_ty } => {
+                write!(f, "{prefix}ptr_read {ptr}, {offset}: {elem_ty}")
+            }
+            InstKind::PtrWrite { ptr, offset, value, value_ty } => {
+                write!(f, "ptr_write {ptr}, {offset} <- {value}: {value_ty}")
             }
         }
     }

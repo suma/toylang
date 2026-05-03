@@ -24,6 +24,14 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),
         TypeDecl::String => Some(Type::Str),
+        // #121: pointer types (`ptr` keyword) used by user-space
+        // collections like `Dict<K, V>` (keys/vals fields). The
+        // pointer is just a host-width address, so it lowers to
+        // U64 in the IR — the heap builtin instructions
+        // (`HeapAlloc` / `HeapRealloc` / `HeapFree` / `PtrRead` /
+        // `PtrWrite`) all read and write through `i64`-typed
+        // values for the address.
+        TypeDecl::Ptr => Some(Type::U64),
         _ => None,
     }
 }

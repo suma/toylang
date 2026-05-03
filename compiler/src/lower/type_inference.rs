@@ -141,6 +141,11 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::Max => {
                     args.first().and_then(|a| self.value_scalar(a))
                 }
+                // #121 Phase A: heap_alloc / heap_realloc return a
+                // pointer-sized value. Pointer is U64 in the IR
+                // (matches the `ptr` keyword's lowering).
+                frontend::ast::BuiltinFunction::HeapAlloc
+                | frontend::ast::BuiltinFunction::HeapRealloc => Some(Type::U64),
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp
                 // /floor/ceil) used to be `BuiltinFunction` arms.
                 // Phase 4 moved them onto `extern fn`, so type

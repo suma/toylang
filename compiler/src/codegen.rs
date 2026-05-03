@@ -146,6 +146,10 @@ pub(crate) struct CodegenSession<M: Module> {
     /// branch-free.
     libc_puts: cranelift_module::FuncId,
     libc_exit: cranelift_module::FuncId,
+    // #121 Phase A: libc heap helpers for the global-allocator path.
+    libc_malloc: cranelift_module::FuncId,
+    libc_realloc: cranelift_module::FuncId,
+    libc_free: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -255,6 +259,32 @@ impl<M: Module> CodegenSession<M> {
             .declare_function("exit", CLinkage::Import, &exit_sig)
             .map_err(|e| format!("declare exit: {e}"))?;
 
+        // #121 Phase A: libc malloc / realloc / free for the
+        // global-allocator path. `__builtin_heap_alloc(size)` →
+        // `malloc(size_t)`, `__builtin_heap_realloc(p, n)` →
+        // `realloc(p, size_t)`, `__builtin_heap_free(p)` →
+        // `free(p)`. size_t is i64-sized on every supported host.
+        let mut malloc_sig = Signature::new(call_conv);
+        malloc_sig.params.push(AbiParam::new(types::I64));
+        malloc_sig.returns.push(AbiParam::new(types::I64));
+        let libc_malloc = module
+            .declare_function("malloc", CLinkage::Import, &malloc_sig)
+            .map_err(|e| format!("declare malloc: {e}"))?;
+
+        let mut realloc_sig = Signature::new(call_conv);
+        realloc_sig.params.push(AbiParam::new(types::I64));
+        realloc_sig.params.push(AbiParam::new(types::I64));
+        realloc_sig.returns.push(AbiParam::new(types::I64));
+        let libc_realloc = module
+            .declare_function("realloc", CLinkage::Import, &realloc_sig)
+            .map_err(|e| format!("declare realloc: {e}"))?;
+
+        let mut free_sig = Signature::new(call_conv);
+        free_sig.params.push(AbiParam::new(types::I64));
+        let libc_free = module
+            .declare_function("free", CLinkage::Import, &free_sig)
+            .map_err(|e| format!("declare free: {e}"))?;
+
         let mut pow_sig = Signature::new(call_conv);
         pow_sig.params.push(AbiParam::new(types::F64));
         pow_sig.params.push(AbiParam::new(types::F64));
@@ -354,6 +384,9 @@ impl<M: Module> CodegenSession<M> {
             fn_ids: HashMap::new(),
             libc_puts,
             libc_exit,
+            libc_malloc,
+            libc_realloc,
+            libc_free,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -782,6 +815,9 @@ impl<M: Module> CodegenSession<M> {
         RuntimeRefs {
             puts: self.module.declare_func_in_func(self.libc_puts, func),
             exit: self.module.declare_func_in_func(self.libc_exit, func),
+            malloc: self.module.declare_func_in_func(self.libc_malloc, func),
+            realloc: self.module.declare_func_in_func(self.libc_realloc, func),
+            free: self.module.declare_func_in_func(self.libc_free, func),
             print_i64: self.module.declare_func_in_func(self.rt_print_i64, func),
             println_i64: self.module.declare_func_in_func(self.rt_println_i64, func),
             print_u64: self.module.declare_func_in_func(self.rt_print_u64, func),
@@ -822,6 +858,10 @@ impl<M: Module> CodegenSession<M> {
 struct RuntimeRefs {
     puts: cranelift_codegen::ir::FuncRef,
     exit: cranelift_codegen::ir::FuncRef,
+    // #121 Phase A: libc malloc/realloc/free FuncRefs.
+    malloc: cranelift_codegen::ir::FuncRef,
+    realloc: cranelift_codegen::ir::FuncRef,
+    free: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,
@@ -1557,6 +1597,60 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let byte_off = self.builder.ins().imul(idx_v, stride_v);
                 let base = self.builder.ins().stack_addr(types::I64, stack_slot, 0);
                 let addr = self.builder.ins().iadd(base, byte_off);
+                self.builder.ins().store(
+                    cranelift_codegen::ir::MemFlags::new(),
+                    val_v,
+                    addr,
+                    0,
+                );
+            }
+            // #121 Phase A: heap / pointer builtins. malloc/realloc
+            // accept and return i64-sized pointers; free returns
+            // void. PtrRead / PtrWrite use the IR's recorded element
+            // type to pick the correct cranelift load / store width.
+            InstKind::HeapAlloc { size } => {
+                let size_v = self.value(*size);
+                let call = self.builder.ins().call(self.runtime.malloc, &[size_v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::HeapRealloc { ptr, new_size } => {
+                let ptr_v = self.value(*ptr);
+                let size_v = self.value(*new_size);
+                let call = self.builder.ins().call(self.runtime.realloc, &[ptr_v, size_v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::HeapFree { ptr } => {
+                let ptr_v = self.value(*ptr);
+                self.builder.ins().call(self.runtime.free, &[ptr_v]);
+            }
+            InstKind::PtrRead { ptr, offset, elem_ty } => {
+                let cl_ty = ir_to_cranelift_ty(*elem_ty)
+                    .ok_or_else(|| format!("PtrRead: unsupported elem_ty {elem_ty:?}"))?;
+                let ptr_v = self.value(*ptr);
+                let off_v = self.value(*offset);
+                let addr = self.builder.ins().iadd(ptr_v, off_v);
+                let v = self.builder.ins().load(
+                    cl_ty,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    addr,
+                    0,
+                );
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, v);
+                }
+            }
+            InstKind::PtrWrite { ptr, offset, value, value_ty } => {
+                let _ = value_ty;
+                let ptr_v = self.value(*ptr);
+                let off_v = self.value(*offset);
+                let val_v = self.value(*value);
+                let addr = self.builder.ins().iadd(ptr_v, off_v);
                 self.builder.ins().store(
                     cranelift_codegen::ir::MemFlags::new(),
                     val_v,

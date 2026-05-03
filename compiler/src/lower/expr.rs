@@ -417,25 +417,113 @@ impl<'a> FunctionLower<'a> {
                     Some(result_ty),
                 ))
             }
+            BuiltinFunction::HeapAlloc => {
+                // #121 Phase A: lower to InstKind::HeapAlloc which
+                // codegen turns into a libc malloc call. Default
+                // global allocator only — `with allocator = ...`
+                // scope plumbing comes in a later phase.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_heap_alloc takes 1 arg (size), got {}",
+                        args.len()
+                    ));
+                }
+                let size = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "heap_alloc size produced no value".to_string())?;
+                Ok(self.emit(InstKind::HeapAlloc { size }, Some(Type::U64)))
+            }
+            BuiltinFunction::HeapRealloc => {
+                if args.len() != 2 {
+                    return Err(format!(
+                        "__builtin_heap_realloc takes 2 args (ptr, new_size), got {}",
+                        args.len()
+                    ));
+                }
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "heap_realloc ptr produced no value".to_string())?;
+                let new_size = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "heap_realloc new_size produced no value".to_string())?;
+                Ok(self.emit(InstKind::HeapRealloc { ptr, new_size }, Some(Type::U64)))
+            }
+            BuiltinFunction::HeapFree => {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_heap_free takes 1 arg (ptr), got {}",
+                        args.len()
+                    ));
+                }
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "heap_free ptr produced no value".to_string())?;
+                Ok(self.emit(InstKind::HeapFree { ptr }, None))
+            }
+            BuiltinFunction::PtrWrite => {
+                // `__builtin_ptr_write(ptr, offset, value)` — the
+                // value's IR type is captured here so codegen can
+                // pick the matching `store.<cl_ty>`. The interpreter
+                // routes through a typed_slots map; the AOT path
+                // takes a direct address and trusts the type-checker
+                // to keep reads/writes type-consistent at the same
+                // offset (`Dict<K, V>` always reads/writes K-typed
+                // values to `keys` and V-typed values to `vals`, so
+                // there's no tag-mismatch worry in well-typed code).
+                if args.len() != 3 {
+                    return Err(format!(
+                        "__builtin_ptr_write takes 3 args (ptr, offset, value), got {}",
+                        args.len()
+                    ));
+                }
+                let ptr = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_write ptr produced no value".to_string())?;
+                let offset = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_write offset produced no value".to_string())?;
+                // Peek the value's IR type before lowering so the
+                // store width is preserved; lower the value as usual.
+                let value_ty = self
+                    .value_scalar(&args[2])
+                    .ok_or_else(|| {
+                        "__builtin_ptr_write value type unsupported (needs scalar)"
+                            .to_string()
+                    })?;
+                let value = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "ptr_write value produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::PtrWrite { ptr, offset, value, value_ty },
+                    None,
+                ))
+            }
+            BuiltinFunction::PtrRead => {
+                // `__builtin_ptr_read(ptr, offset)` — return type comes
+                // from the surrounding `val`/`var` annotation. The
+                // generic version (no annotation) is rejected here so
+                // the user gets a clear error pointing at the missing
+                // type hint. The let-binding lowering path
+                // (`let_lowering.rs::lower_let`) handles
+                // `val x: T = __builtin_ptr_read(...)` directly and
+                // never reaches this arm.
+                Err(
+                    "compiler MVP requires `val NAME: TYPE = __builtin_ptr_read(...)` \
+                     (the read width is taken from the annotation; bare expression-position \
+                     uses are not supported in AOT yet)"
+                        .to_string(),
+                )
+            }
             other => {
                 use frontend::ast::BuiltinFunction;
-                // Allocator system builtins (todo #121) need IR-level
-                // `AllocatorBinding` plus native codegen for the
-                // active-allocator stack and the heap-alloc family.
-                // Surface a precise message so users know it's tracked
-                // and not a generic "not implemented".
+                // Remaining allocator-system builtins (todo #121
+                // continued): `with allocator = ...` scope handling,
+                // ArenaAllocator / FixedBufferAllocator backed by
+                // their own runtime support, the active-allocator
+                // stack push/pop. The HeapAlloc / HeapRealloc /
+                // HeapFree / PtrRead / PtrWrite arms above cover
+                // the global-allocator path needed by user-space
+                // `Dict<K, V>` (DICT-AOT-NEW); the rest is queued.
                 let msg = match other {
                     BuiltinFunction::ArenaAllocator
                     | BuiltinFunction::FixedBufferAllocator
                     | BuiltinFunction::CurrentAllocator
-                    | BuiltinFunction::DefaultAllocator
-                    | BuiltinFunction::HeapAlloc
-                    | BuiltinFunction::HeapRealloc
-                    | BuiltinFunction::HeapFree
-                    | BuiltinFunction::PtrRead
-                    | BuiltinFunction::PtrWrite => format!(
+                    | BuiltinFunction::DefaultAllocator => format!(
                         "compiler MVP cannot lower allocator builtin {:?} yet \
-                         (todo #121: needs IR-level AllocatorBinding + native codegen)",
+                         (todo #121: needs runtime active-allocator stack)",
                         other
                     ),
                     _ => format!(

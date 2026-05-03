@@ -623,6 +623,46 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+        // #121 Phase A: `val name: T = __builtin_ptr_read(p, off)` —
+        // the read width is taken from the annotation. Without this
+        // intercept, lower_builtin_call's PtrRead arm rejects the
+        // call with a clear error pointing at the missing type
+        // hint, but a let-binding always supplies one.
+        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone() {
+            if args.len() == 2 {
+                let elem_ty = annotation.and_then(|a| {
+                    super::types::lower_scalar(a)
+                });
+                if let Some(elem_ty) = elem_ty {
+                    let ptr = self
+                        .lower_expr(&args[0])?
+                        .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
+                    let offset = self
+                        .lower_expr(&args[1])?
+                        .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                    let v = self.emit(
+                        InstKind::PtrRead { ptr, offset, elem_ty },
+                        Some(elem_ty),
+                    );
+                    let local = self
+                        .module
+                        .function_mut(self.func_id)
+                        .add_local(elem_ty);
+                    self.bindings.insert(
+                        name,
+                        Binding::Scalar { local, ty: elem_ty },
+                    );
+                    self.emit(
+                        InstKind::StoreLocal {
+                            dst: local,
+                            src: v.expect("PtrRead produces a value"),
+                        },
+                        None,
+                    );
+                    return Ok(None);
+                }
+            }
+        }
         // Scalar fallback (existing behaviour).
         let v = self
             .lower_expr(rhs_ref)?

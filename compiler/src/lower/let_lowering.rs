@@ -734,9 +734,15 @@ impl<'a> FunctionLower<'a> {
         // hint, but a let-binding always supplies one.
         if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone() {
             if args.len() == 2 {
-                let elem_ty = annotation.and_then(|a| {
-                    super::types::lower_scalar(a)
-                });
+                // Resolve the annotation type with the active
+                // monomorphisation substitution applied. Without
+                // the subst, an annotation that names a generic
+                // param (e.g. `K` in
+                // `core/std/dict.t::insert`'s
+                // `val existing: K = __builtin_ptr_read(...)`)
+                // wouldn't be reachable through `lower_scalar`,
+                // which only knows the leaf-primitive `TypeDecl`s.
+                let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));
                 if let Some(elem_ty) = elem_ty {
                     let ptr = self
                         .lower_expr(&args[0])?

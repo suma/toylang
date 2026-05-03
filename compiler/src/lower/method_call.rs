@@ -264,10 +264,22 @@ impl<'a> FunctionLower<'a> {
             .declare_function_anon(export_name, Linkage::Local, params, ret);
         self.method_instances
             .insert((target_sym, method_sym, inst_args), func_id);
+        // Capture the subst (including a synthetic `Self` entry when
+        // the symbol is already interned) so the body lowering of
+        // this monomorph can resolve val/var annotations that
+        // reference generic params or `Self`. The interner is
+        // borrowed immutably here; `Self` is virtually always
+        // pre-interned because the parser sees it in any impl
+        // block, so `get` is sufficient.
+        let mut subst_vec: Vec<(DefaultSymbol, Type)> = subst.into_iter().collect();
+        if let Some(self_sym) = self.interner.get("Self") {
+            subst_vec.push((self_sym, self_type));
+        }
         self.pending_method_work.push(PendingMethodInstance {
             func_id,
             target_sym,
             method_sym,
+            subst: subst_vec,
         });
         Ok(func_id)
     }

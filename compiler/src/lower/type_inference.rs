@@ -146,6 +146,8 @@ impl<'a> FunctionLower<'a> {
                 // (matches the `ptr` keyword's lowering).
                 frontend::ast::BuiltinFunction::HeapAlloc
                 | frontend::ast::BuiltinFunction::HeapRealloc => Some(Type::U64),
+                // DICT-AOT-NEW Phase C: __builtin_sizeof returns u64.
+                frontend::ast::BuiltinFunction::SizeOf => Some(Type::U64),
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp
                 // /floor/ceil) used to be `BuiltinFunction` arms.
                 // Phase 4 moved them onto `extern fn`, so type

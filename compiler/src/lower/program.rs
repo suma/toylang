@@ -526,6 +526,11 @@ pub fn lower_program(
                 &mut method_instances,
                 &mut pending_method_work,
             )?;
+            // Install the per-monomorph subst so val/var
+            // annotations inside the body that reference
+            // generic params (or `Self`) resolve to the
+            // concrete type for this instance.
+            builder.set_active_subst(work.subst.clone());
             builder.lower_method_body(&template, work.target_sym)?;
         }
         if !made_progress {
@@ -597,7 +602,16 @@ impl<'a> FunctionLower<'a> {
             generic_methods,
             method_instances,
             pending_method_work,
+            active_subst: HashMap::new(),
         })
+    }
+
+    /// Install a per-monomorph type substitution before lowering a
+    /// queued method body. Cleared automatically by re-construction
+    /// of `FunctionLower` between bodies; setting it explicitly here
+    /// keeps the fact that the body is monomorphised visible.
+    pub(super) fn set_active_subst(&mut self, subst: Vec<(DefaultSymbol, Type)>) {
+        self.active_subst = subst.into_iter().collect();
     }
 
     /// Method-flavoured entry to body lowering. Methods share

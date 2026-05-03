@@ -491,6 +491,42 @@ impl<'a> FunctionLower<'a> {
                     None,
                 ))
             }
+            BuiltinFunction::SizeOf => {
+                // `__builtin_sizeof(value) -> u64` — at AOT we
+                // resolve the byte size at lower time from the
+                // value's IR type via `value_scalar`. The active
+                // monomorph subst already shows on the value's
+                // type because parameter / let bindings store the
+                // substituted type. Compound types (struct /
+                // tuple / enum) aren't reached today by the
+                // user-space collections that drive this; reject
+                // them with a precise message rather than
+                // silently summing fields.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_sizeof takes 1 arg, got {}",
+                        args.len()
+                    ));
+                }
+                let arg_ty = self
+                    .value_scalar(&args[0])
+                    .ok_or_else(|| {
+                        "__builtin_sizeof: could not infer arg type at AOT".to_string()
+                    })?;
+                let size = match arg_ty {
+                    Type::I8 | Type::U8 | Type::Bool => 1u64,
+                    Type::I16 | Type::U16 => 2,
+                    Type::I32 | Type::U32 => 4,
+                    Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
+                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit => {
+                        return Err(format!(
+                            "compiler MVP cannot lower __builtin_sizeof of compound type \
+                             {arg_ty:?} yet"
+                        ));
+                    }
+                };
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
+            }
             BuiltinFunction::PtrRead => {
                 // `__builtin_ptr_read(ptr, offset)` — return type comes
                 // from the surrounding `val`/`var` annotation. The

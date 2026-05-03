@@ -32,14 +32,24 @@ pub(super) type MethodInstances =
     HashMap<(DefaultSymbol, DefaultSymbol, Vec<Type>), FuncId>;
 
 /// Queued generic-method body lowering. Holds the freshly declared
-/// `FuncId` plus the `(target, method)` pair to look up the template.
-/// The body is lowered against the pre-substituted FuncId signature, so
-/// no separate substitution table needs to ride along with the queue.
+/// `FuncId`, the `(target, method)` pair to look up the template,
+/// and the per-monomorph type substitution so val/var annotations
+/// inside the body that name a generic param (e.g.
+/// `val existing: K = __builtin_ptr_read(...)` in
+/// `core/std/dict.t::insert`) resolve to the concrete type for
+/// this instance. Without the substitution, the lowering layer
+/// would treat `K` as a fresh symbol with no scalar mapping and
+/// reject the binding.
 #[derive(Debug, Clone)]
 pub(super) struct PendingMethodInstance {
     pub(super) func_id: FuncId,
     pub(super) target_sym: DefaultSymbol,
     pub(super) method_sym: DefaultSymbol,
+    /// Generic-param symbol → concrete IR type for this monomorph.
+    /// `Self` is included as a regular entry pointing at
+    /// `Type::Struct(<recv id>)` so any `Self` references in the
+    /// body resolve identically to references to the receiver type.
+    pub(super) subst: Vec<(DefaultSymbol, Type)>,
 }
 
 /// Walk the program for impl blocks and collect every method into a

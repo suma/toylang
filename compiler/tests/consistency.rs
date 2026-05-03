@@ -283,6 +283,41 @@ fn aot_heap_alloc_round_trip() {
 }
 
 #[test]
+fn aot_dict_contains_key_empty_uses_per_monomorph_subst() {
+    // DICT-AOT-NEW Phase C: per-monomorph generic subst lets a
+    // method body's `val existing: K = __builtin_ptr_read(...)`
+    // resolve K to the concrete type for the active instance
+    // (`Type::I64` for `Dict<i64, u64>::contains_key`). Combined
+    // with the new `__builtin_sizeof(generic_param)` AOT lower,
+    // the read-only methods of `core/std/dict.t` now compile
+    // end-to-end.
+    //
+    // This test covers the still-no-mutation path: `Dict::new()`
+    // followed by `contains_key(1i64)` against an empty dict
+    // returns false (`self.count == 0` short-circuits the loop
+    // before any heap read). The test still exercises the
+    // monomorphised body in full because cranelift compiles the
+    // entire CFG including the never-taken loop body — any
+    // regression in the subst plumbing would surface as a
+    // type / size mismatch at AOT compile time, not a runtime
+    // error.
+    //
+    // Mutating methods (`insert`, `remove`) compile but do not
+    // round-trip yet because struct method calls pass `self` by
+    // value in the AOT path; mutations to `self.count` /
+    // `self.keys` etc. don't propagate back to the caller. That
+    // by-value-vs-by-reference gap is a separate, larger
+    // refactor (`DICT-AOT-NEW Phase D`).
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<i64, u64> = Dict::new()
+            if d.contains_key(1i64) { 99u64 } else { 42u64 }
+        }
+    "#;
+    assert_consistent(src, "aot_dict_contains_key_empty");
+}
+
+#[test]
 fn aot_dict_new_associated_function() {
     // DICT-AOT-NEW Phase B: `var d: Dict<i64, u64> = Dict::new()`
     // now compiles end-to-end on the AOT path. The associated

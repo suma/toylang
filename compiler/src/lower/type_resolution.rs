@@ -36,6 +36,28 @@ use super::FunctionLower;
 use crate::ir::{EnumId, StructId, Type};
 
 impl<'a> FunctionLower<'a> {
+    /// Like `super::types::lower_scalar` but consults the active
+    /// monomorphisation substitution first so a `Generic(P)` /
+    /// `Identifier(P)` referring to a generic param resolves to the
+    /// instance's concrete type. Used by the let-binding intercepts
+    /// (`__builtin_ptr_read`) and by `__builtin_sizeof` so the
+    /// generic-method body of `core/std/dict.t::insert` etc. can
+    /// reach a width when the annotation names `K` or `V`.
+    pub(super) fn lower_scalar_with_subst(
+        &self,
+        ty: &TypeDecl,
+    ) -> Option<Type> {
+        match ty {
+            TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
+                if let Some(t) = self.active_subst.get(p).copied() {
+                    return Some(t);
+                }
+                super::types::lower_scalar(ty)
+            }
+            _ => super::types::lower_scalar(ty),
+        }
+    }
+
     /// Pick the right `StructId` for a `base_name` + optional val/var
     /// type annotation. Same shape as `resolve_enum_instance`.
     pub(super) fn resolve_struct_instance(

@@ -188,6 +188,15 @@ struct FunctionLower<'a> {
     /// drains this after the non-generic pass; new entries can be
     /// added by an instantiation discovering a further generic call.
     pending_generic_work: &'a mut Vec<PendingGenericInstance>,
+    /// Per-monomorph type substitution: generic-param symbol →
+    /// concrete IR type for the instance currently being lowered
+    /// (also includes `Self` when applicable). Empty for non-
+    /// generic / non-method bodies. `lower_let`'s annotation
+    /// resolution and `__builtin_sizeof` consult this so
+    /// references to generic params resolve to the right width.
+    /// Set via `set_active_subst` from the program-level driver
+    /// when a `PendingMethodInstance` body is dequeued.
+    active_subst: HashMap<DefaultSymbol, Type>,
 }
 
 impl<'a> FunctionLower<'a> {

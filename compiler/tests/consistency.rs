@@ -1112,6 +1112,44 @@ fn aot_allocator_default_and_current_round_trip() {
 }
 
 #[test]
+fn aot_arena_drop_releases_and_reuses() {
+    // #121 Phase B-rest Item 2 follow-up:
+    // `__builtin_arena_drop(handle)` releases every allocation
+    // tracked by the arena slot. After drop the same arena
+    // handle remains valid — subsequent `with allocator = a`
+    // blocks can keep allocating.
+    //
+    // Coverage:
+    //   - arena alloc + scope exit (no auto-drop)
+    //   - explicit drop frees the in-flight allocations
+    //   - reuse the SAME handle for a fresh allocation
+    //   - second drop is also valid (idempotent on an
+    //     already-emptied arena)
+    //   - no-op behaviour for default / fixed_buffer is
+    //     covered by the trait default; this test focuses on
+    //     the arena-specific lifecycle
+    let src = r#"
+        fn main() -> u64 {
+            val a = __builtin_arena_allocator()
+            with allocator = a {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 1u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 2u64 }
+            }
+            __builtin_arena_drop(a)
+            with allocator = a {
+                val p3: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p3) { return 3u64 }
+            }
+            __builtin_arena_drop(a)
+            42u64
+        }
+    "#;
+    assert_consistent(src, "aot_arena_drop_releases_and_reuses");
+}
+
+#[test]
 fn aot_with_allocator_early_return_pops_stack() {
     // #121 Phase B-rest Item 2: an early `return` from inside a
     // `with allocator = ...` body must still emit `AllocPop` for

@@ -270,6 +270,32 @@ void toy_dispatched_free(uint64_t handle, void *p) {
     free(p);
 }
 
+/*
+ * #121 Phase B-rest Item 2 follow-up: explicit arena drop.
+ * Releases every allocation tracked by the arena slot and clears
+ * the tracking arrays. The slot itself stays in the registry
+ * (handles are stable u64 indices), but `used` is reset to 0
+ * conceptually — the tracked vectors are emptied. Calling
+ * `toy_arena_drop` on a fixed_buffer slot or the default
+ * sentinel is a no-op (defensive — releasing fixed-buffer
+ * allocations would silently invalidate ptrs the user might
+ * still hold).
+ */
+void toy_arena_drop(uint64_t handle) {
+    if (handle == 0) return;
+    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
+    if (slot->kind != TOY_ALLOC_KIND_ARENA) return;
+    for (size_t i = 0; i < slot->count; i++) {
+        free(slot->addrs[i]);
+    }
+    free(slot->addrs);
+    free(slot->sizes);
+    slot->addrs = NULL;
+    slot->sizes = NULL;
+    slot->count = 0;
+    slot->cap_array = 0;
+}
+
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
     if (handle == 0) {
         return realloc(p, (size_t)new_size);

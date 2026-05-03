@@ -646,6 +646,35 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Allocator(arena).into()))
             }
 
+            BuiltinFunction::ArenaDrop => {
+                // #121 Phase B-rest Item 2 follow-up: explicit
+                // arena bulk-free. Calls `Allocator::reset()` on
+                // the supplied handle. Default no-op for the
+                // global / fixed_buffer allocators (per the
+                // trait's default impl).
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "__builtin_arena_drop takes 1 argument (handle)".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let handle = self.evaluate(&args[0])?;
+                let handle = try_value!(Ok(handle));
+                let borrow = handle.borrow();
+                match &*borrow {
+                    Object::Allocator(rc) => {
+                        rc.reset();
+                    }
+                    other => {
+                        return Err(InterpreterError::InternalError(format!(
+                            "__builtin_arena_drop: expected Allocator handle, got {other:?}"
+                        )));
+                    }
+                }
+                Ok(EvaluationResult::Value(Object::Unit.into()))
+            }
+
             BuiltinFunction::SizeOf => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

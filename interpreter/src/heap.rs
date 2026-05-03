@@ -14,6 +14,15 @@ pub trait Allocator: fmt::Debug {
     fn alloc(&self, size: usize) -> usize;
     fn free(&self, addr: usize) -> bool;
     fn realloc(&self, addr: usize, new_size: usize) -> usize;
+
+    /// Bulk-release every tracked allocation. Default no-op for
+    /// allocators that don't carry their own free strategy
+    /// (`GlobalAllocator`) or that need explicit per-pointer
+    /// frees (`FixedBufferAllocator` — silently invalidating
+    /// caller-held pointers would be unsafe). Arena allocators
+    /// override this to free everything at once. Used by the
+    /// `__builtin_arena_drop(handle)` builtin.
+    fn reset(&self) {}
 }
 
 /// Default allocator backed by the process-wide `HeapManager`. Every
@@ -105,6 +114,10 @@ impl Allocator for ArenaAllocator {
             tracked.push(new_addr);
         }
         new_addr
+    }
+
+    fn reset(&self) {
+        ArenaAllocator::reset(self);
     }
 }
 

@@ -2911,6 +2911,17 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Allocator)
                 }
+                BuiltinFunction::ArenaDrop => {
+                    // #121 Phase B-rest Item 2 follow-up: explicit
+                    // arena drop. JIT path falls back to interpreter
+                    // since the JIT lowering for the user-callable
+                    // form isn't wired (the AOT path is). Reject
+                    // here so callers fall back cleanly.
+                    note(reject_reason, || {
+                        "JIT does not yet model __builtin_arena_drop".to_string()
+                    });
+                    None
+                }
                 BuiltinFunction::Abs => {
                     if args.len() != 1 {
                         note(reject_reason, || {

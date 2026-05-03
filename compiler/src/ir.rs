@@ -784,6 +784,11 @@ pub enum InstKind {
     /// allocations without comparing `ptr` to a `u64` literal
     /// (which the type checker rejects).
     PtrIsNull { ptr: ValueId },
+    /// `__builtin_arena_drop(handle) -> ()`. Releases every
+    /// allocation tracked by the arena slot. No-op for
+    /// fixed_buffer slots and the default sentinel — only the
+    /// arena lifecycle benefits from explicit bulk release.
+    AllocArenaDrop { handle: ValueId },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1233,6 +1238,7 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(f, "{prefix}alloc_fixed_buffer {capacity}")
             }
             InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
+            InstKind::AllocArenaDrop { handle } => write!(f, "alloc_arena_drop {handle}"),
         }
     }
 }

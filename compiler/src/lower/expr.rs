@@ -710,6 +710,22 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(self.emit(InstKind::AllocArena, Some(Type::U64)))
             }
+            BuiltinFunction::ArenaDrop => {
+                // #121 Phase B-rest Item 2 follow-up: explicit
+                // arena bulk-free. Caller hands in the handle
+                // returned by `__builtin_arena_allocator()`.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_arena_drop takes 1 arg (handle), got {}",
+                        args.len()
+                    ));
+                }
+                let h = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "arena_drop handle arg produced no value".to_string())?;
+                self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                Ok(None)
+            }
             BuiltinFunction::FixedBufferAllocator => {
                 // #121 Phase B-rest Item 1: capacity-limited allocator.
                 // Subsequent allocations through this handle that

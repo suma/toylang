@@ -574,6 +574,37 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
+fn stdout_narrow_int_dedicated_helpers() {
+    // NUM-W-AOT-pack Phase 2: AOT now calls
+    // `toy_print_{i,u}{8,16,32}` directly instead of routing
+    // through the wide helpers via sextend / uextend. Output must
+    // stay byte-identical across interpreter / JIT (silent
+    // fallback) / AOT for every narrow width, including the
+    // signed-edge cases where the previous wide path's
+    // sign-extension shaped the printed digits.
+    //
+    // Mixes positive + negative + max values across all six
+    // widths so a regression in the new per-width helper
+    // (wrong format string, missing `cast` in the JIT capture
+    // path, ABI width mismatch) would surface as a divergent
+    // line in the captured stdout.
+    let src = r#"
+        fn main() -> u64 {
+            println(7i8)
+            println(-5i8)
+            println(127i8)
+            println(255u8)
+            println(-1000i16)
+            println(50000u16)
+            println(-1000000i32)
+            println(4000000000u32)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_narrow_int_dedicated");
+}
+
+#[test]
 fn aot_allocator_builtin_emits_precise_diagnostic() {
     // T8 (#121 follow-up): full AOT native codegen for the
     // allocator family (`__builtin_heap_alloc` /

@@ -170,6 +170,26 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_println_str: cranelift_module::FuncId,
     rt_print_f64: cranelift_module::FuncId,
     rt_println_f64: cranelift_module::FuncId,
+    // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers. The
+    // AOT path now calls these directly instead of widening the
+    // value with sextend/uextend and routing through
+    // `rt_print_{i,u}64`. Output is byte-identical (the wide
+    // helpers print the same digits via `%lld` / `%llu` of an
+    // already-extended value); the win is that the codegen call
+    // site names the actual width and one cranelift extension
+    // instruction per print site is no longer emitted.
+    rt_print_i8: cranelift_module::FuncId,
+    rt_println_i8: cranelift_module::FuncId,
+    rt_print_u8: cranelift_module::FuncId,
+    rt_println_u8: cranelift_module::FuncId,
+    rt_print_i16: cranelift_module::FuncId,
+    rt_println_i16: cranelift_module::FuncId,
+    rt_print_u16: cranelift_module::FuncId,
+    rt_println_u16: cranelift_module::FuncId,
+    rt_print_i32: cranelift_module::FuncId,
+    rt_println_i32: cranelift_module::FuncId,
+    rt_print_u32: cranelift_module::FuncId,
+    rt_println_u32: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -294,6 +314,41 @@ impl<M: Module> CodegenSession<M> {
         let rt_print_f64 = declare_helper(&mut module, "toy_print_f64", &f64_sig)?;
         let rt_println_f64 = declare_helper(&mut module, "toy_println_f64", &f64_sig)?;
 
+        // NUM-W-AOT-pack Phase 2 narrow-int helper signatures.
+        // Each takes its native cranelift width (I8/I16/I32) so the
+        // codegen call site doesn't have to extend the value first
+        // — but the platform C ABI does still require the value to
+        // arrive in the arg register sign- or zero-extended to
+        // register width (otherwise the C compiler's promotion of
+        // `(int) v` reads garbage from the upper bits). Cranelift
+        // exposes that contract via `AbiParam::sext()` / `uext()`,
+        // which the backend then materialises as the appropriate
+        // platform extension on the caller side.
+        let mut i8s_sig = Signature::new(call_conv);
+        i8s_sig.params.push(AbiParam::new(types::I8).sext());
+        let mut i8u_sig = Signature::new(call_conv);
+        i8u_sig.params.push(AbiParam::new(types::I8).uext());
+        let mut i16s_sig = Signature::new(call_conv);
+        i16s_sig.params.push(AbiParam::new(types::I16).sext());
+        let mut i16u_sig = Signature::new(call_conv);
+        i16u_sig.params.push(AbiParam::new(types::I16).uext());
+        let mut i32s_sig = Signature::new(call_conv);
+        i32s_sig.params.push(AbiParam::new(types::I32).sext());
+        let mut i32u_sig = Signature::new(call_conv);
+        i32u_sig.params.push(AbiParam::new(types::I32).uext());
+        let rt_print_i8 = declare_helper(&mut module, "toy_print_i8", &i8s_sig)?;
+        let rt_println_i8 = declare_helper(&mut module, "toy_println_i8", &i8s_sig)?;
+        let rt_print_u8 = declare_helper(&mut module, "toy_print_u8", &i8u_sig)?;
+        let rt_println_u8 = declare_helper(&mut module, "toy_println_u8", &i8u_sig)?;
+        let rt_print_i16 = declare_helper(&mut module, "toy_print_i16", &i16s_sig)?;
+        let rt_println_i16 = declare_helper(&mut module, "toy_println_i16", &i16s_sig)?;
+        let rt_print_u16 = declare_helper(&mut module, "toy_print_u16", &i16u_sig)?;
+        let rt_println_u16 = declare_helper(&mut module, "toy_println_u16", &i16u_sig)?;
+        let rt_print_i32 = declare_helper(&mut module, "toy_print_i32", &i32s_sig)?;
+        let rt_println_i32 = declare_helper(&mut module, "toy_println_i32", &i32s_sig)?;
+        let rt_print_u32 = declare_helper(&mut module, "toy_print_u32", &i32u_sig)?;
+        let rt_println_u32 = declare_helper(&mut module, "toy_println_u32", &i32u_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -316,6 +371,18 @@ impl<M: Module> CodegenSession<M> {
             rt_println_str,
             rt_print_f64,
             rt_println_f64,
+            rt_print_i8,
+            rt_println_i8,
+            rt_print_u8,
+            rt_println_u8,
+            rt_print_i16,
+            rt_println_i16,
+            rt_print_u16,
+            rt_println_u16,
+            rt_print_i32,
+            rt_println_i32,
+            rt_print_u32,
+            rt_println_u32,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -725,6 +792,18 @@ impl<M: Module> CodegenSession<M> {
             println_str: self.module.declare_func_in_func(self.rt_println_str, func),
             print_f64: self.module.declare_func_in_func(self.rt_print_f64, func),
             println_f64: self.module.declare_func_in_func(self.rt_println_f64, func),
+            print_i8: self.module.declare_func_in_func(self.rt_print_i8, func),
+            println_i8: self.module.declare_func_in_func(self.rt_println_i8, func),
+            print_u8: self.module.declare_func_in_func(self.rt_print_u8, func),
+            println_u8: self.module.declare_func_in_func(self.rt_println_u8, func),
+            print_i16: self.module.declare_func_in_func(self.rt_print_i16, func),
+            println_i16: self.module.declare_func_in_func(self.rt_println_i16, func),
+            print_u16: self.module.declare_func_in_func(self.rt_print_u16, func),
+            println_u16: self.module.declare_func_in_func(self.rt_println_u16, func),
+            print_i32: self.module.declare_func_in_func(self.rt_print_i32, func),
+            println_i32: self.module.declare_func_in_func(self.rt_println_i32, func),
+            print_u32: self.module.declare_func_in_func(self.rt_print_u32, func),
+            println_u32: self.module.declare_func_in_func(self.rt_println_u32, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
             sin: self.module.declare_func_in_func(self.libm_sin, func),
             cos: self.module.declare_func_in_func(self.libm_cos, func),
@@ -753,6 +832,19 @@ struct RuntimeRefs {
     println_str: cranelift_codegen::ir::FuncRef,
     print_f64: cranelift_codegen::ir::FuncRef,
     println_f64: cranelift_codegen::ir::FuncRef,
+    // NUM-W-AOT-pack Phase 2: dedicated narrow-int print helpers.
+    print_i8: cranelift_codegen::ir::FuncRef,
+    println_i8: cranelift_codegen::ir::FuncRef,
+    print_u8: cranelift_codegen::ir::FuncRef,
+    println_u8: cranelift_codegen::ir::FuncRef,
+    print_i16: cranelift_codegen::ir::FuncRef,
+    println_i16: cranelift_codegen::ir::FuncRef,
+    print_u16: cranelift_codegen::ir::FuncRef,
+    println_u16: cranelift_codegen::ir::FuncRef,
+    print_i32: cranelift_codegen::ir::FuncRef,
+    println_i32: cranelift_codegen::ir::FuncRef,
+    print_u32: cranelift_codegen::ir::FuncRef,
+    println_u32: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,
@@ -1321,67 +1413,32 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
             InstKind::Print { value, value_ty, newline } => {
                 let v = self.value(*value);
-                // NUM-W-AOT: narrow integer print routes through
-                // the existing wide print helpers after extending
-                // to i64 / u64 (signed `sextend`, unsigned
-                // `uextend`). Adding dedicated `toy_print_{i,u}{8,
-                // 16,32}` helpers would be ideal but the runtime
-                // formatting (`%lld` / `%llu`) on the resulting
-                // value is identical for any value that fits, so
-                // the extension shape is sound for the common case.
+                // NUM-W-AOT-pack Phase 2: dedicated narrow-int
+                // helpers (`toy_print_{i,u}{8,16,32}`) take the
+                // value at its native cranelift width — no
+                // sextend / uextend needed at the call site.
+                // Decimal output is byte-identical to the prior
+                // wide-helper routing (the C runtime prints the
+                // same digits via `%d` / `%u` of an int / unsigned
+                // arg), so this is a codegen-aesthetics + one
+                // fewer extension instruction per print site.
                 let (helper, call_value) = match (value_ty, newline) {
                     (IrType::I64, false) => (self.runtime.print_i64, v),
                     (IrType::I64, true) => (self.runtime.println_i64, v),
                     (IrType::U64, false) => (self.runtime.print_u64, v),
                     (IrType::U64, true) => (self.runtime.println_u64, v),
-                    (IrType::I32, false) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.print_i64, ext)
-                    }
-                    (IrType::I32, true) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.println_i64, ext)
-                    }
-                    (IrType::U32, false) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.print_u64, ext)
-                    }
-                    (IrType::U32, true) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.println_u64, ext)
-                    }
-                    (IrType::I16, false) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.print_i64, ext)
-                    }
-                    (IrType::I16, true) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.println_i64, ext)
-                    }
-                    (IrType::U16, false) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.print_u64, ext)
-                    }
-                    (IrType::U16, true) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.println_u64, ext)
-                    }
-                    (IrType::I8, false) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.print_i64, ext)
-                    }
-                    (IrType::I8, true) => {
-                        let ext = self.builder.ins().sextend(types::I64, v);
-                        (self.runtime.println_i64, ext)
-                    }
-                    (IrType::U8, false) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.print_u64, ext)
-                    }
-                    (IrType::U8, true) => {
-                        let ext = self.builder.ins().uextend(types::I64, v);
-                        (self.runtime.println_u64, ext)
-                    }
+                    (IrType::I32, false) => (self.runtime.print_i32, v),
+                    (IrType::I32, true) => (self.runtime.println_i32, v),
+                    (IrType::U32, false) => (self.runtime.print_u32, v),
+                    (IrType::U32, true) => (self.runtime.println_u32, v),
+                    (IrType::I16, false) => (self.runtime.print_i16, v),
+                    (IrType::I16, true) => (self.runtime.println_i16, v),
+                    (IrType::U16, false) => (self.runtime.print_u16, v),
+                    (IrType::U16, true) => (self.runtime.println_u16, v),
+                    (IrType::I8, false) => (self.runtime.print_i8, v),
+                    (IrType::I8, true) => (self.runtime.println_i8, v),
+                    (IrType::U8, false) => (self.runtime.print_u8, v),
+                    (IrType::U8, true) => (self.runtime.println_u8, v),
                     (IrType::F64, false) => (self.runtime.print_f64, v),
                     (IrType::F64, true) => (self.runtime.println_f64, v),
                     (IrType::Bool, false) => (self.runtime.print_bool, v),

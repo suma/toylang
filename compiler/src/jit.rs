@@ -330,6 +330,23 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_println_str", toy_println_str as *const u8);
     jit_builder.symbol("toy_print_f64", toy_print_f64 as *const u8);
     jit_builder.symbol("toy_println_f64", toy_println_f64 as *const u8);
+    // NUM-W-AOT-pack Phase 2: dedicated narrow-int helpers so the
+    // JIT call site mirrors the AOT call site at the symbol level.
+    // The wide path (sextend/uextend → toy_print_{i,u}64) still
+    // produces the same decimal output, so this is purely a
+    // codegen / capture-buffer correctness alignment.
+    jit_builder.symbol("toy_print_i8", toy_print_i8 as *const u8);
+    jit_builder.symbol("toy_println_i8", toy_println_i8 as *const u8);
+    jit_builder.symbol("toy_print_u8", toy_print_u8 as *const u8);
+    jit_builder.symbol("toy_println_u8", toy_println_u8 as *const u8);
+    jit_builder.symbol("toy_print_i16", toy_print_i16 as *const u8);
+    jit_builder.symbol("toy_println_i16", toy_println_i16 as *const u8);
+    jit_builder.symbol("toy_print_u16", toy_print_u16 as *const u8);
+    jit_builder.symbol("toy_println_u16", toy_println_u16 as *const u8);
+    jit_builder.symbol("toy_print_i32", toy_print_i32 as *const u8);
+    jit_builder.symbol("toy_println_i32", toy_println_i32 as *const u8);
+    jit_builder.symbol("toy_print_u32", toy_print_u32 as *const u8);
+    jit_builder.symbol("toy_println_u32", toy_println_u32 as *const u8);
 }
 
 // All helpers below mirror `runtime/toylang_rt.c`. Use libc's
@@ -392,6 +409,145 @@ unsafe extern "C" fn toy_println_u64(v: u64) {
     }
     unsafe {
         printf(b"%llu\n\0".as_ptr(), v as std::ffi::c_ulonglong);
+    }
+}
+
+// NUM-W-AOT-pack Phase 2 narrow-int helpers. Each mirrors its C
+// twin in `runtime/toylang_rt.c` — captured-mode uses Rust's
+// default Display so the buffer matches `printf("%d"/"%u", ...)`
+// byte-for-byte for the supported value range. The wide helpers
+// above already produce the same digits via the sextend/uextend
+// path, so output equivalence holds across both code paths.
+
+unsafe extern "C" fn toy_print_i8(v: i8) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\0".as_ptr(), v as i32);
+    }
+}
+
+unsafe extern "C" fn toy_println_i8(v: i8) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\n\0".as_ptr(), v as i32);
+    }
+}
+
+unsafe extern "C" fn toy_print_u8(v: u8) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\0".as_ptr(), v as u32);
+    }
+}
+
+unsafe extern "C" fn toy_println_u8(v: u8) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\n\0".as_ptr(), v as u32);
+    }
+}
+
+unsafe extern "C" fn toy_print_i16(v: i16) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\0".as_ptr(), v as i32);
+    }
+}
+
+unsafe extern "C" fn toy_println_i16(v: i16) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\n\0".as_ptr(), v as i32);
+    }
+}
+
+unsafe extern "C" fn toy_print_u16(v: u16) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\0".as_ptr(), v as u32);
+    }
+}
+
+unsafe extern "C" fn toy_println_u16(v: u16) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\n\0".as_ptr(), v as u32);
+    }
+}
+
+unsafe extern "C" fn toy_print_i32(v: i32) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\0".as_ptr(), v);
+    }
+}
+
+unsafe extern "C" fn toy_println_i32(v: i32) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%d\n\0".as_ptr(), v);
+    }
+}
+
+unsafe extern "C" fn toy_print_u32(v: u32) {
+    if try_capture_with(|buf| {
+        let _ = write!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\0".as_ptr(), v);
+    }
+}
+
+unsafe extern "C" fn toy_println_u32(v: u32) {
+    if try_capture_with(|buf| {
+        let _ = writeln!(buf, "{v}");
+    }) {
+        return;
+    }
+    unsafe {
+        printf(b"%u\n\0".as_ptr(), v);
     }
 }
 

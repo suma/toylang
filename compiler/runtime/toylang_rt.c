@@ -33,6 +33,62 @@ void toy_println_u64(uint64_t v) {
     printf("%llu\n", (unsigned long long) v);
 }
 
+/* NUM-W-AOT-pack Phase 2: dedicated narrow-int printers so the
+ * codegen call site names the actual width instead of routing
+ * through `sextend`/`uextend` + the wide helper. The decimal
+ * output is byte-identical to the wide path (printf %lld/%llu of
+ * a sign- or zero-extended value lands on the same digits) — the
+ * Phase 2 win is purely codegen aesthetics + one fewer cranelift
+ * extension instruction per print site. */
+
+void toy_print_i8(int8_t v) {
+    printf("%d", (int) v);
+}
+
+void toy_println_i8(int8_t v) {
+    printf("%d\n", (int) v);
+}
+
+void toy_print_u8(uint8_t v) {
+    printf("%u", (unsigned) v);
+}
+
+void toy_println_u8(uint8_t v) {
+    printf("%u\n", (unsigned) v);
+}
+
+void toy_print_i16(int16_t v) {
+    printf("%d", (int) v);
+}
+
+void toy_println_i16(int16_t v) {
+    printf("%d\n", (int) v);
+}
+
+void toy_print_u16(uint16_t v) {
+    printf("%u", (unsigned) v);
+}
+
+void toy_println_u16(uint16_t v) {
+    printf("%u\n", (unsigned) v);
+}
+
+void toy_print_i32(int32_t v) {
+    printf("%d", (int) v);
+}
+
+void toy_println_i32(int32_t v) {
+    printf("%d\n", (int) v);
+}
+
+void toy_print_u32(uint32_t v) {
+    printf("%u", (unsigned) v);
+}
+
+void toy_println_u32(uint32_t v) {
+    printf("%u\n", (unsigned) v);
+}
+
 void toy_print_bool(uint8_t v) {
     /* Match the interpreter's display: lowercase `true`/`false`. */
     fputs(v ? "true" : "false", stdout);

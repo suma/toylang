@@ -62,16 +62,24 @@ impl Hash for str {
     }
 }
 
-# NUM-W Phase 6: narrow integer Hash impls. Each width casts
-# straight to u64; signed widths reinterpret two's complement
-# the same way `Hash for i64` does. The AOT compiler currently
-# can't lower these bodies (it doesn't model narrow ints in
-# its IR — see #161), so the registration loop in
-# `compiler/src/lower/program.rs` silently skips them when
-# integrating this file. Programs that use narrow ints fall
-# back to the interpreter on the AOT path; the JIT silently
-# falls back as well (see Phase 4). The interpreter executes
-# the casts directly through `evaluate_cast`'s NumForm matrix.
+# NUM-W narrow integer Hash impls.
+#
+# Unsigned widths cast straight to u64 — same pattern as
+# `Hash for u64` (identity).
+#
+# Signed widths first cast through the matching unsigned
+# width to avoid sign extension. `(-5_i8) as u64` would
+# sign-extend to 0xFF…FB (a huge unsigned value); routing
+# through u8 first gives `0xFB = 251`, which preserves the
+# 8 bits of information the value actually carries and
+# behaves the way a hash table's "the same byte hashes
+# the same way" intuition expects. Same trick for i16 → u16
+# → u64 and i32 → u32 → u64. Equality fallback in
+# `Dict<K,V>` uses `==` on the original signed value, so
+# correctness is preserved.
+#
+# Caveat: still not avalanching — a real open-addressing
+# table will want a Wyhash / FxHash mixer on top.
 impl Hash for u8 {
     fn hash(self: Self) -> u64 {
         self as u64
@@ -89,16 +97,16 @@ impl Hash for u32 {
 }
 impl Hash for i8 {
     fn hash(self: Self) -> u64 {
-        self as u64
+        (self as u8) as u64
     }
 }
 impl Hash for i16 {
     fn hash(self: Self) -> u64 {
-        self as u64
+        (self as u16) as u64
     }
 }
 impl Hash for i32 {
     fn hash(self: Self) -> u64 {
-        self as u64
+        (self as u32) as u64
     }
 }

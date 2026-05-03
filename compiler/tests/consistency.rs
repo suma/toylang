@@ -656,29 +656,41 @@ fn narrow_int_arithmetic_and_cast_interpreter() {
 
 #[test]
 fn narrow_int_hash_dispatch_interpreter() {
-    // NUM-W Phase 6: `core/std/hash.t` declares `impl Hash for {u8,
-    // u16, u32, i8, i16, i32}` so user code can dispatch
-    // `(7u8).hash()` etc. through the same extension-trait
-    // method-registry path the i64 / u64 impls already use. The
-    // AOT compiler silently skips registering the narrow-int impl
-    // bodies (the IR can't model the widths yet — see #161); the
-    // JIT silently falls back per Phase 4. Interpreter-only test.
+    // NUM-W Phase 6 (+ NUM-W-signed-hash follow-up):
+    // `core/std/hash.t` declares `impl Hash for {u8, u16, u32,
+    // i8, i16, i32}` so user code can dispatch `(7u8).hash()`
+    // etc. through the same extension-trait method-registry
+    // path the i64 / u64 impls already use. AOT silently skips
+    // registering these (#161 / NUM-W-AOT); JIT silently falls
+    // back (NUM-W-JIT). Interpreter-only here.
     //
-    // Sum of 7 (u8) + 100 (u16) + 100000 (u32) = 100107 — no
-    // signed widths included so the result fits in u64 without
-    // wrap-around (a follow-up commit can extend to signed widths
-    // once we have a saturating-style hash that doesn't propagate
-    // sign extension).
+    // Signed widths route through the matching unsigned width
+    // (e.g. `(self as u8) as u64`) to avoid sign extension —
+    // `(-5_i8).hash()` returns 251 (the byte pattern), not
+    // 0xFFFFFFFFFFFFFFFB. This keeps all six results in a
+    // sane range so the final sum doesn't depend on u64 wrap.
+    //
+    //   u8(7).hash()    = 7
+    //   u16(100).hash() = 100
+    //   u32(100000).hash() = 100000
+    //   i8(-5).hash()   = 251           (0xFB)
+    //   i16(-100).hash() = 65436         (0xFF9C)
+    //   i32(-1000).hash() = 4294966296   (0xFFFFFC18)
+    //   ----------------------------------
+    //   sum            = 4295132090
     let src = r#"
         fn main() -> u64 {
             val a: u8 = 7u8
             val b: u16 = 100u16
             val c: u32 = 100000u32
-            a.hash() + b.hash() + c.hash()
+            val d: i8 = -5i8
+            val e: i16 = -100i16
+            val f: i32 = -1000i32
+            a.hash() + b.hash() + c.hash() + d.hash() + e.hash() + f.hash()
         }
     "#;
     let interp = interpreter_value(src);
-    assert_eq!(interp, 100107, "interpreter expected 100107, got {interp}");
+    assert_eq!(interp, 4295132090, "interpreter expected 4295132090, got {interp}");
 }
 
 #[test]

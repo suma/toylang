@@ -302,26 +302,28 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 
    **2026-05-01: cast (`as`) / f64 / struct boundary crossing を追加** — IR に `Type::F64` / `Const::F64` / `InstKind::Cast { value, from, to }` / `InstKind::CallStruct { target, args, dests }` / `Module.struct_defs` を追加、`Terminator::Return` を `Vec<ValueId>` に変更（scalar / void / struct return を vec 長で表現）。lower で `Expr::Cast`、`Expr::Float64`、struct 引数 / 戻り値、`val x = struct_returning_call()` を扱う。tail-position の struct literal は `pending_struct_value` に貯めて implicit return が消費する設計（IR の SSA グラフに struct 値が流れない）。codegen で struct sig を per-field cranelift param / multi-return に展開、`Type::F64` 演算は cranelift の `fadd/fsub/fmul/fdiv/fcmp` + `fneg`、cast は `fcvt_from_sint/uint` / `fcvt_to_sint/uint_sat` で。runtime に `toy_print_f64` / `toy_println_f64`（`%g` / `%.1f` 切替）追加。e2e テスト 10 件追加（i64↔u64 cast、float-int round trip、float-int truncate、f64 算術 / unary neg / 関数呼び出し、struct return / param / round trip / 明示 return）。
 
-   **現在の制約（2026-05-01 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
+   **現在の制約（2026-05-03 時点、live state）** — 詳細は `compiler/README.md`。以下の機能は未対応で、検出時は明確なエラーで reject される:
 
-   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit`、scalar フィールドのみの struct、scalar 要素のみの tuple のみ。`str` は値としては未対応（リテラルのみ）、`ptr` 未対応、`Allocator` 未対応
-   - **文字列**: 任意の文字列値（`val s = "foo"` 等）は未対応。文字列リテラルは `panic` / `assert` / `print` / `println` 引数としてのみ受理
-   - **キャスト**: `as` で i64↔u64（identity）と {i64,u64}↔f64 はサポート。bool との cast、Unit との cast は不可
+   - **型**: `i64` / `u64` / `f64` / `bool` / `Unit` / `str` (Phase T) / `ptr` (#121 Phase A) / narrow int 全 6 width (`u8/u16/u32/i8/i16/i32`、NUM-W-AOT) を value として扱える。`Allocator` の handle 値生成 (arena/fixed_buffer/current/default) は未対応 (#121 Phase B+)、heap / pointer builtins (`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write`) は対応済み
+   - **文字列**: 値として `val s = "foo"` / 関数 param / return / struct field 等で扱える (Phase T)
+   - **キャスト**: `as` で全 13 type の cross-cast マトリクス対応 (i64/u64/f64/bool + 6 narrow int)、generic 2-phase で sext/uext + ireduce + fcvt_*_sat
    - **f64 制約**: `%` (mod) は cranelift に native fmod が無いため reject
-   - **tuple**: 局所バインディング・要素アクセス・要素書き込み・分解、関数引数 / 戻り値として tuple 値を渡せる（codegen が per-element 展開）、tuple-returning call も `val (a, b) = f()` で受けられる。ネストした tuple は未対応
-   - **コレクション**: 配列、dict 全般未対応（リテラル / アクセス いずれも reject）
-   - **enum / match (Phase A1 + A2 + B + C + D + E + F)**: 非ジェネリック enum + unit / tuple variant + `match` + **関数引数 / 戻り値として enum を渡せる** + **`print` / `println` で interpreter 互換出力** + **`if` / `match` の式位置で enum 構築可**。payload 型は `i64` / `u64` / `bool` / `f64` / 別 enum / struct / tuple をサポート。トップレベルパターンは `EnumVariant` / `Wildcard` / `Literal`（scalar scrutinee に対して）、サブパターンは `Name` / `_` / `Literal`、scrutinee は enum binding または scalar 値式、`Pat if cond => body` の guard も可。codegen は enum 値を `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param / 多値 Return に展開（caller / callee の local 割当が一致）。`print` / `println` は runtime tag dispatch で variant ごとの分岐を brif chain で生成し、interpreter と同形式に出力 (`Color::Red`、`Shape::Circle(5)`、`Shape::Rect(3, 7)`、`Pair::Both((3, 4))`)。`val s = if cond { Pick::A(n) } else { Pick::B }` のような複数分岐 enum 構築は `detect_enum_result` で静的判定し、各分岐が共有する tag/payload locals に書き込む（cranelift の `def_var` で SSA 化）。enum 戻り型の関数 body は tail が if-chain / match / 単一構築 / 既存 binding identifier いずれでも OK（`lower_body` が target locals を pre-allocate して body を `lower_into_enum_target` 経由でルーティング）、frontend type-checker の return-type 比較も `Identifier <-> Enum(name, [])` を unify。**ジェネリック enum + ネスト enum payload (Phase F + G + M + N + O)**: `enum Option<T> { None, Some(T) }` を宣言、`val x: Option<i64> = ...` のアノテーション・関数 param / return 型・`Option::Some(42i64)` の引数型からモノモル化を駆動。`(base_name, type_args)` で IR の `EnumId` を dedup。`Option<Option<i64>>` / `Option<Point>` / `Option<(i64, i64)>` 等のネストや compound payload も可、`Some(Some(v))` のネストパターン + 再帰 print も全て動作。**制約**: tuple 要素にネストした compound (struct / 別 tuple / enum) は不可
-   - **trait**: `trait` 宣言と `impl <Trait> for <Type>`、trait 経由の dispatch すべて未対応
-   - **allocator**: `with allocator = ...`、`<A: Allocator>` bound、heap / pointer builtins (`__builtin_heap_alloc` 系) すべて未対応
-   - **DbC**: `requires` / `ensures` 節は実行時チェックされ、違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値（struct は first field）に bind。`--release` フラグで全 contract チェックを skip（`INTERPRETER_CONTRACTS=off` 相当）
-   - **const**: top-level `const NAME: Type = expr` 対応。初期化式はリテラル / 既存 const 参照 / 単純な算術 fold のみ（文字列 const、関数呼び出し含む式は不可）
-   - **generics**: 型パラメータを持つ関数 / struct はいずれも reject
+   - **tuple**: 局所バインディング・要素アクセス・要素書き込み・分解、関数引数 / 戻り値として tuple 値を渡せる、ネストタプル + tuple-of-struct + struct-of-tuple サポート (Phase Q1+Q2)、enum payload に tuple も可 (Phase O)
+   - **コレクション**: array (Phase Y/Y2/Y3) 対応 — runtime index、constant-bound range slicing、scalar/struct/tuple 要素、narrow scalar の per-width packing (NUM-W-AOT-pack Phase 1)。dict は user-space `Dict<K, V>` 経由で利用 (`core/std/dict.t`、DICT-AOT-NEW Phase B/C/D)
+   - **enum / match**: 非ジェネリック / ジェネリック enum + unit / tuple variant + `match` + 全 backend boundary対応。payload 型は scalar / 別 enum / struct / tuple すべて可、ネストパターン + 再帰 print 動作。深い網羅性解析 (96残 前半) で nested EnumVariant の coverage を検証
+   - **trait**: `trait` 宣言と `impl <Trait> for <Type>` 対応 (Phase R)、trait method dispatch 動作、`<T: Trait>` bound 経由の generic 関数も対応
+   - **allocator (#121 Phase A 対応済み)**: 残: `with allocator = ...` scope syntax の native codegen、`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator` / `__builtin_current_allocator` / `__builtin_default_allocator` の handle 生成、`AllocatorBinding::Generic/Local/Ambient` 経由の non-Static path
+   - **DbC**: `requires` / `ensures` 節は実行時チェック、`--release` で全 contract skip
+   - **const**: top-level `const NAME: Type = expr` 対応 (リテラル / 既存 const 参照 / 算術 fold のみ)
+   - **generics**: 関数 (Phase L)、struct (Phase Q1/Q2)、impl method (Phase R3)、method-only `<U>` (Phase X)、associated function (DICT-AOT-NEW Phase B) 対応。per-monomorph subst で val annotation 内の generic param も解決 (DICT-AOT-NEW Phase C)
+   - **method receiver**: `self: Self` / `&self` / `&mut self` (MUT-SELF Stage 1) 対応。`&mut self` は Self-out-parameter convention で受信側 leaf locals に writeback
    - **struct の制約**:
-     - 関数引数 / 戻り値として struct 値は渡せる（codegen が per-field 展開）
+     - 関数引数 / 戻り値として struct 値を渡せる (per-field 展開)
      - struct-returning call は式位置で使えず、必ず `val x = ...` で受ける
-     - struct binding 全体の再代入 (`q = p`) は不可（field 単位の代入のみ）
-     - ネストした struct field とそれへの chain access (`a.b.c`) はサポート、ただし leaf scalar への代入のみ（`p.inner = Inner { ... }` 不可）
-     - struct binding を `print` / `println` に渡せる（field アルファベット順、ネスト struct 対応）
+     - struct binding 全体の再代入 (`q = p`) は不可 (field 単位の代入のみ)
+     - ネストした struct field と chain access (`a.b.c`) はサポート、ただし leaf scalar への代入のみ (`p.inner = Inner { ... }` 不可)
+     - struct binding を `print` / `println` に渡せる (field アルファベット順、ネスト struct 対応)
+     - generic struct 含めて全部対応 — `Dict<i64, u64> = Dict::new()` のような annotation 駆動の monomorphization が AOT で動作
    - **print / println**: `i64` / `u64` / `f64` / `bool` / 文字列リテラル / struct binding / tuple binding を受理。struct / tuple は **identifier（`val` / `var` 由来の binding）のみ** で、struct リテラル直接や struct-returning call の戻り値を直接 print することはできない（いったん `val` で受ける）。dict は不可
    - **panic / assert**: メッセージは文字列リテラル限定（const binding や concat 等は不可）
    - **その他**: 文字列ビルトインメソッド (`.len()` / `.concat()` 等)、associated function (`Foo::new()`)、メソッド呼び出し (`obj.method()`)、関数ポインタはいずれも未対応
@@ -390,7 +392,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - 固定配列: 型推論対応、インデックス型推論、境界チェック、要素に struct / tuple / 別配列も可
 - 配列スライス: `arr[start..end]`、`arr[..]`、負インデックス`arr[-1]`対応
 - 辞書（Dict）型: `dict{key: value}`リテラル、Object型キーサポート
-- 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`、ネストフィールド (`a.b.c`) chain access
+- 構造体: 宣言、implブロック、フィールドアクセス（read/write 両対応）、メソッド (`self: Self` / `&self` / **`&mut self`** — Stage 1 reference receiver、AOT で Self-out-parameter writeback)、非ジェネリック struct でも `Struct::new()` の associated function、`__getitem__`/`__setitem__`、ネストフィールド (`a.b.c`) chain access
 - タプル: 局所バインディング + 関数引数 / 戻り値、`val (a, b) = expr` 分解 (ネスト対応)、`t.0` access、ネストタプル + tuple-of-struct + struct-of-tuple
 - Trait: `trait Name { fn m(self: Self) -> T }` 宣言、`impl <Trait> for <Struct> { ... }` 実装、`<T: SomeTrait>` bound、conformance チェック（型不一致・欠落メソッド検出）。**プリミティブ型に対する extension trait** (`impl <Trait> for i64/f64/...`) も interpreter / JIT / AOT 全 backend で動作。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl 経由。chained primitive method call (`x.abs().abs()`) も 3 backend 全対応 (`#194`)
 - `extern fn` 宣言: `extern fn name(params) -> ret` で signature だけ宣言、body は backend (interpreter registry / JIT helper or native / AOT libm import) が提供。math intrinsic はすべてこの仕組み経由。generic params (`extern fn name<T>(x: T) -> T`) は parser で受理、interpreter で動作 (`#195`)
@@ -410,16 +412,18 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - Self キーワード: implブロック内での構造体参照、プリミティブ impl では対応する `TypeDecl` (i64 / f64 / ...) に解決
 - Trait bound: `<A: Allocator>` および `<T: UserTrait>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
 - method-only generic params: `impl Box { fn pick<U>(self, a: U, b: U) -> U }`
+- method receiver: `self: Self` (by-value) / `&self` / `&mut self` の 3 形式 (Stage 1 reference type)。trait conformance で receiver kind 完全一致を要求。AOT は `&mut self` を Self-out-parameter convention で writeback (一般 `&T` 一級型は Stage 2 = REF-Stage-2 で deferred)
+- pattern match の deep exhaustiveness: `Option<Option<T>>` 等の nested EnumVariant も payload position 単位で coverage 検証 (96残 前半)
 
 ### モジュール・その他
 - Go-styleモジュールシステム: package/import/qualified name resolution、3-segment 以上は alias 経由
 - **コア・モジュール auto-load**: `<repo>/core/` を起動時に再帰的に integrate (`<exe>/core/` / `<exe>/../share/toylang/core/` / `<exe>/../../core/` の順に探索、CLI flag `--core-modules <DIR>` と env var `TOYLANG_CORE_MODULES` で override)。`math::sin(x)` 等が import 行なしで呼べる
 - **per-module function namespacing**: IR / 型チェッカー / interpreter 実行時の関数テーブル全 3 層を `(Option<DefaultSymbol> qualifier, DefaultSymbol name)` キー化 (`#193` `#193b`)。同名 `pub fn` を複数モジュールが持っても安全に共存。bare 呼び出しは user-authored を優先、qualified 呼び出しは module qualifier 直接 lookup
-- stdlib: `core/std/math.t` (math 関数) / `core/std/i64.t` (Abs trait) / `core/std/f64.t` (Abs/Sqrt impl) / `core/std/option.t` (`enum Option<T>` + is_some/is_none/unwrap_or/expect) / `core/std/result.t` (`enum Result<T, E>` + is_ok/is_err/unwrap_or/expect)
+- stdlib: `core/std/math.t` (math 関数) / `core/std/i64.t` (Abs trait) / `core/std/f64.t` (Abs/Sqrt impl) / `core/std/option.t` (`enum Option<T>` + is_some/is_none/unwrap_or/expect) / `core/std/result.t` (`enum Result<T, E>` + is_ok/is_err/unwrap_or/expect) / `core/std/hash.t` (`Hash` trait + 全 primitive 型 impl) / `core/std/dict.t` (`Dict<K, V>` user-space hash table、`new`/`insert(&mut self)`/`get`/`get_or`/`contains_key`/`remove(&mut self)`/`size`、3 backend 一致動作 — DICT-AOT-NEW Phase D 完全対応)
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1261 テスト, 31 skipped（100% 成功率、2026-05-02 時点 — #194/#195/#160/#159 fixture で +6、#193b coexistence test で +1、#96 stdlib_option/result + JIT enum diag + str payload で +4）
+- 合計 1139 テスト, 31 skipped（100% 成功率、2026-05-03 時点 — DICT-CROSS-MODULE-OPTION / NUM-W-AOT-pack / #121 Phase A / DICT-AOT-NEW Phase B+C+D / `&mut self` Stage 1 / 96残 前半 で複数 regression test 追加。compiler/e2e は 191、consistency は 30 強）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (23) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

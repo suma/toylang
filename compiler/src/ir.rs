@@ -656,13 +656,20 @@ pub enum InstKind {
     /// out in `.rodata` by codegen and the helper is `toy_print_str` /
     /// `toy_println_str`.
     PrintStr { message: DefaultSymbol, newline: bool },
-    /// Materialise the address of a static string blob as a
-    /// `Type::Str` value. Used when a string literal appears in
-    /// value position (`val s = "hello"`, `f("hello")`); the
-    /// codegen layer reuses the same `.rodata` placement and
-    /// `print_imports` map as `PrintStr` — only the helper called
-    /// at the use site differs.
-    ConstStr { message: DefaultSymbol },
+    /// Materialise a `Type::Str` value pointing at the **u64 len
+    /// field** of the string's `.rodata` blob (layout
+    /// `[bytes][NUL][u64 len LE]`, see
+    /// `codegen.rs::declare_print_string`). The byte_start is
+    /// `symbol_value + 0`; the str runtime value is
+    /// `symbol_value + bytes_len + 1` so `__builtin_str_len(s)`
+    /// can read the stored length with a single
+    /// `load.i64(s, 0)` and `__builtin_str_to_ptr(s)` recovers
+    /// the byte_start with `s - 1 - load.i64(s, 0)`.
+    ///
+    /// `bytes_len` is captured at lower time (the lowering layer
+    /// has the interner; codegen does not) so the cranelift
+    /// `iadd_imm` offset is known statically.
+    ConstStr { message: DefaultSymbol, bytes_len: u64 },
     /// Read one element from an array stack slot at the given
     /// `index` value. Codegen emits `stack_addr` + offset
     /// arithmetic + `load.<elem_ty>`; constant indices fold into
@@ -1148,7 +1155,7 @@ impl fmt::Display for DisplayInst<'_> {
                 let kw = if *newline { "println_str" } else { "print_str" };
                 write!(f, "{kw} #{}", message.to_usize())
             }
-            InstKind::ConstStr { message } => {
+            InstKind::ConstStr { message, .. } => {
                 write!(f, "{prefix}const_str #{}", message.to_usize())
             }
             InstKind::PrintRaw { text, newline } => {

@@ -150,7 +150,6 @@ pub(crate) struct CodegenSession<M: Module> {
     libc_malloc: cranelift_module::FuncId,
     libc_realloc: cranelift_module::FuncId,
     libc_free: cranelift_module::FuncId,
-    libc_strlen: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -290,22 +289,11 @@ impl<M: Module> CodegenSession<M> {
             .declare_function("free", CLinkage::Import, &free_sig)
             .map_err(|e| format!("declare free: {e}"))?;
 
-        // libc `strlen(const char *) -> size_t` (size_t is i64 on
-        // every supported host). Used by `__builtin_str_len(s)` —
-        // the per-literal `.rodata` layout
-        // (`[bytes][NUL][u64 len]`, see `declare_print_string`)
-        // keeps the trailing NUL precisely so this helper can
-        // walk to the end without needing a side-table from the
-        // byte pointer to the stored len. The stored u64 len at
-        // the layout's tail is currently informational; future
-        // optimisation could cache it in the str value itself
-        // (e.g. via low-bit tagging) for true O(1) `str.len()`.
-        let mut strlen_sig = Signature::new(call_conv);
-        strlen_sig.params.push(AbiParam::new(types::I64));
-        strlen_sig.returns.push(AbiParam::new(types::I64));
-        let libc_strlen = module
-            .declare_function("strlen", CLinkage::Import, &strlen_sig)
-            .map_err(|e| format!("declare strlen: {e}"))?;
+        // (`libc_strlen` was used by an earlier draft of
+        // `__builtin_str_len`; the str runtime value now points at
+        // the stored u64 len field directly, so codegen reads it
+        // with a single `load.i64(s, 0)` and no libc helper is
+        // needed.)
 
         let mut pow_sig = Signature::new(call_conv);
         pow_sig.params.push(AbiParam::new(types::F64));
@@ -424,7 +412,6 @@ impl<M: Module> CodegenSession<M> {
             libc_malloc,
             libc_realloc,
             libc_free,
-            libc_strlen,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -514,7 +501,7 @@ impl<M: Module> CodegenSession<M> {
                     if let InstKind::PrintStr { message, .. } = &inst.kind {
                         print_needed.insert(*message);
                     }
-                    if let InstKind::ConstStr { message } = &inst.kind {
+                    if let InstKind::ConstStr { message, .. } = &inst.kind {
                         print_needed.insert(*message);
                     }
                 }
@@ -883,7 +870,7 @@ impl<M: Module> CodegenSession<M> {
             for inst in &blk.instructions {
                 let message = match &inst.kind {
                     InstKind::PrintStr { message, .. } => *message,
-                    InstKind::ConstStr { message } => *message,
+                    InstKind::ConstStr { message, .. } => *message,
                     _ => continue,
                 };
                 if imports.contains_key(&message) {
@@ -912,7 +899,6 @@ impl<M: Module> CodegenSession<M> {
             malloc: self.module.declare_func_in_func(self.libc_malloc, func),
             realloc: self.module.declare_func_in_func(self.libc_realloc, func),
             free: self.module.declare_func_in_func(self.libc_free, func),
-            strlen: self.module.declare_func_in_func(self.libc_strlen, func),
             print_i64: self.module.declare_func_in_func(self.rt_print_i64, func),
             println_i64: self.module.declare_func_in_func(self.rt_println_i64, func),
             print_u64: self.module.declare_func_in_func(self.rt_print_u64, func),
@@ -960,7 +946,6 @@ struct RuntimeRefs {
     malloc: cranelift_codegen::ir::FuncRef,
     realloc: cranelift_codegen::ir::FuncRef,
     free: cranelift_codegen::ir::FuncRef,
-    strlen: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,
@@ -1586,8 +1571,29 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     (IrType::F64, true) => (self.runtime.println_f64, v),
                     (IrType::Bool, false) => (self.runtime.print_bool, v),
                     (IrType::Bool, true) => (self.runtime.println_bool, v),
-                    (IrType::Str, false) => (self.runtime.print_str, v),
-                    (IrType::Str, true) => (self.runtime.println_str, v),
+                    (IrType::Str, _) => {
+                        // The str runtime value points at the u64
+                        // len field (see ConstStr codegen above);
+                        // toy_print_str / toy_println_str expect a
+                        // NUL-terminated cstring at the byte_start.
+                        // Compute byte_start = len_field_addr - 1
+                        // (NUL) - len.
+                        let len = self.builder.ins().load(
+                            types::I64,
+                            cranelift_codegen::ir::MemFlags::new(),
+                            v,
+                            0,
+                        );
+                        let one = self.builder.ins().iconst(types::I64, 1);
+                        let nul_offset = self.builder.ins().iadd(len, one);
+                        let byte_start = self.builder.ins().isub(v, nul_offset);
+                        let helper = if *newline {
+                            self.runtime.println_str
+                        } else {
+                            self.runtime.print_str
+                        };
+                        (helper, byte_start)
+                    }
                     (IrType::Unit, _) => {
                         return Err(
                             "internal error: Print of Unit reached codegen".to_string(),
@@ -1627,14 +1633,22 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 };
                 self.builder.ins().call(helper, &[addr]);
             }
-            InstKind::ConstStr { message } => {
+            InstKind::ConstStr { message, bytes_len } => {
                 let gv = *self
                     .print_imports
                     .get(message)
                     .ok_or_else(|| {
                         format!("missing print import for #{}", message.to_usize())
                     })?;
-                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                // The `.rodata` symbol points at the byte_start of
+                // the layout `[bytes][NUL][u64 len LE]`. The str
+                // runtime value points at the **u64 len field** so
+                // `__builtin_str_len(s)` is a single
+                // `load.i64(s, 0)`. Offset = bytes_len + 1 (the NUL
+                // byte sits between bytes and the len field).
+                let symbol_addr = self.builder.ins().symbol_value(types::I64, gv);
+                let len_field_offset = (*bytes_len as i64) + 1;
+                let addr = self.builder.ins().iadd_imm(symbol_addr, len_field_offset);
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, addr);
                 }
@@ -1762,9 +1776,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 );
             }
             InstKind::StrLen { value } => {
+                // O(1): the str runtime value points directly at
+                // the u64 len field (see ConstStr above).
+                // `load.i64(s, 0)` reads the stored byte length
+                // without walking the bytes.
                 let v = self.value(*value);
-                let call = self.builder.ins().call(self.runtime.strlen, &[v]);
-                let result = self.builder.inst_results(call)[0];
+                let result = self.builder.ins().load(
+                    types::I64,
+                    cranelift_codegen::ir::MemFlags::new(),
+                    v,
+                    0,
+                );
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
                 }

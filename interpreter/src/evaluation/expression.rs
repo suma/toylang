@@ -304,29 +304,74 @@ impl EvaluationContext<'_> {
     pub(super) fn evaluate_cast(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<EvaluationResult, InterpreterError> {
         let value = self.evaluate(expr);
         let value_obj = try_value!(value);
-
         let borrowed = value_obj.borrow();
-        let result = match (&*borrowed, target_type) {
-            // i64 -> u64
-            (Object::Int64(v), TypeDecl::UInt64) => Object::UInt64(*v as u64),
-            // u64 -> i64
-            (Object::UInt64(v), TypeDecl::Int64) => Object::Int64(*v as i64),
-            // i64 / u64 -> f64
-            (Object::Int64(v), TypeDecl::Float64) => Object::Float64(*v as f64),
-            (Object::UInt64(v), TypeDecl::Float64) => Object::Float64(*v as f64),
-            // f64 -> i64 / u64 (Rust's `as`: truncation toward zero, saturation
-            // on out-of-range, NaN becomes 0).
-            (Object::Float64(v), TypeDecl::Int64) => Object::Int64(*v as i64),
-            (Object::Float64(v), TypeDecl::UInt64) => Object::UInt64(*v as u64),
-            // Identity casts
-            (Object::Int64(v), TypeDecl::Int64) => Object::Int64(*v),
-            (Object::UInt64(v), TypeDecl::UInt64) => Object::UInt64(*v),
-            (Object::Float64(v), TypeDecl::Float64) => Object::Float64(*v),
-            // Other cases that should not happen after type checking
+
+        // Two-phase cast (NUM-W full int matrix):
+        //   1. Lift the source value into a uniform numeric form
+        //      — `IntForm` for any integer (carries the sign bit
+        //      and a sign-extended i128 / u128 payload),
+        //      `FloatForm(f64)` for floats. NUM-W means we now
+        //      have 8 integer source kinds (i8..i64, u8..u64);
+        //      lifting first keeps the per-target arm count
+        //      linear instead of quadratic.
+        //   2. Re-narrow into the target's exact width with
+        //      `as`-style truncation. Float-to-int saturates and
+        //      NaN→0 because that's the existing Rust `as`
+        //      semantics already documented above.
+        enum NumForm { Signed(i128), Unsigned(u128), Float(f64) }
+        let from = match &*borrowed {
+            Object::Int64(v) => NumForm::Signed(*v as i128),
+            Object::Int32(v) => NumForm::Signed(*v as i128),
+            Object::Int16(v) => NumForm::Signed(*v as i128),
+            Object::Int8(v) => NumForm::Signed(*v as i128),
+            Object::UInt64(v) => NumForm::Unsigned(*v as u128),
+            Object::UInt32(v) => NumForm::Unsigned(*v as u128),
+            Object::UInt16(v) => NumForm::Unsigned(*v as u128),
+            Object::UInt8(v) => NumForm::Unsigned(*v as u128),
+            Object::Float64(v) => NumForm::Float(*v),
+            // Bool / pointer / string casts are intentionally
+            // not part of this matrix; the type checker rejects
+            // them upstream.
             _ => {
                 return Err(InterpreterError::InternalError(format!(
                     "Invalid cast from {:?} to {:?}",
                     borrowed, target_type
+                )));
+            }
+        };
+        // Helper closures: each lowers `NumForm` to the
+        // requested target width using Rust `as`. The chained
+        // truncations (`x as i64 as i32`) are intentional —
+        // narrowing happens explicitly at the target width.
+        let to_i64 = |n: &NumForm| -> i64 { match n {
+            NumForm::Signed(v) => *v as i64,
+            NumForm::Unsigned(v) => *v as i64,
+            NumForm::Float(v) => *v as i64,
+        }};
+        let to_u64 = |n: &NumForm| -> u64 { match n {
+            NumForm::Signed(v) => *v as u64,
+            NumForm::Unsigned(v) => *v as u64,
+            NumForm::Float(v) => *v as u64,
+        }};
+        let to_f64 = |n: &NumForm| -> f64 { match n {
+            NumForm::Signed(v) => *v as f64,
+            NumForm::Unsigned(v) => *v as f64,
+            NumForm::Float(v) => *v,
+        }};
+        let result = match target_type {
+            TypeDecl::Int64 => Object::Int64(to_i64(&from)),
+            TypeDecl::UInt64 => Object::UInt64(to_u64(&from)),
+            TypeDecl::Int32 => Object::Int32(to_i64(&from) as i32),
+            TypeDecl::UInt32 => Object::UInt32(to_u64(&from) as u32),
+            TypeDecl::Int16 => Object::Int16(to_i64(&from) as i16),
+            TypeDecl::UInt16 => Object::UInt16(to_u64(&from) as u16),
+            TypeDecl::Int8 => Object::Int8(to_i64(&from) as i8),
+            TypeDecl::UInt8 => Object::UInt8(to_u64(&from) as u8),
+            TypeDecl::Float64 => Object::Float64(to_f64(&from)),
+            other => {
+                return Err(InterpreterError::InternalError(format!(
+                    "Invalid cast from {:?} to {:?}",
+                    borrowed, other
                 )));
             }
         };

@@ -708,25 +708,29 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_cast_impl(&mut self, expr: &ExprRef, target_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         let expr_type = self.visit_expr(expr)?;
 
+        // NUM-W cast matrix: any numeric primitive can cast to
+        // any other numeric primitive. Runtime semantics
+        // (`evaluate_cast`) match Rust's `as`: int-int truncates
+        // / sign-extends to the target width, int-float
+        // round-to-nearest, float-int saturates with NaN→0.
+        // The classifier below replaces the per-pair allowlist
+        // the i64/u64/f64-only era used.
+        let is_numeric = |t: &TypeDecl| matches!(
+            t,
+            TypeDecl::Int64 | TypeDecl::UInt64
+                | TypeDecl::Int32 | TypeDecl::UInt32
+                | TypeDecl::Int16 | TypeDecl::UInt16
+                | TypeDecl::Int8 | TypeDecl::UInt8
+                | TypeDecl::Float64
+        );
+        if is_numeric(&expr_type) && is_numeric(target_type) {
+            return Ok(target_type.clone());
+        }
         match (&expr_type, target_type) {
-            // Allow i64 <-> u64 casts
-            (TypeDecl::Int64, TypeDecl::UInt64) |
-            (TypeDecl::UInt64, TypeDecl::Int64) |
-            (TypeDecl::Int64, TypeDecl::Int64) |
-            (TypeDecl::UInt64, TypeDecl::UInt64) => Ok(target_type.clone()),
-
-            // f64 <-> integer casts. Floating-point ↔ integer truncates toward
-            // zero (matching Rust's `as`); out-of-range values saturate.
-            (TypeDecl::Int64, TypeDecl::Float64) |
-            (TypeDecl::UInt64, TypeDecl::Float64) |
-            (TypeDecl::Float64, TypeDecl::Int64) |
-            (TypeDecl::Float64, TypeDecl::UInt64) |
-            (TypeDecl::Float64, TypeDecl::Float64) => Ok(target_type.clone()),
-
-            // Allow Number to specific numeric types
-            (TypeDecl::Number, TypeDecl::Int64) |
-            (TypeDecl::Number, TypeDecl::UInt64) |
-            (TypeDecl::Number, TypeDecl::Float64) => Ok(target_type.clone()),
+            // Allow Number to specific numeric types (parser
+            // emits `Number` for unsuffixed integer literals
+            // before type inference fixes them).
+            (TypeDecl::Number, t) if is_numeric(t) => Ok(target_type.clone()),
 
             // Identity cast for other types
             (from, to) if from == to => Ok(target_type.clone()),

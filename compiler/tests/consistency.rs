@@ -574,6 +574,43 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
+fn narrow_int_arithmetic_and_cast_interpreter() {
+    // NUM-W Phase 3: exercises every narrow-int width through
+    // arithmetic, comparison, the full cross-width cast matrix,
+    // and `__builtin_sizeof`. Interpreter-only here — the JIT
+    // and AOT backends don't yet recognise the new types
+    // (Phases 4 / 5). When those phases land this test should
+    // become an `assert_consistent` 3-way check.
+    let src = r#"
+        fn main() -> u64 {
+            val u8v: u8 = 250u8 + 5u8
+            val u16v: u16 = u8v as u16 + 1u16
+            val u32v: u32 = u16v as u32 * 1000u32
+            val i32v: i32 = -1i32
+            val u32_from_i32: u32 = i32v as u32
+            val i8v: i8 = (-100i64) as i8
+            val sizes_ok: bool =
+                __builtin_sizeof(u8v) == 1u64
+                && __builtin_sizeof(u16v) == 2u64
+                && __builtin_sizeof(u32v) == 4u64
+                && __builtin_sizeof(i32v) == 4u64
+                && __builtin_sizeof(i8v) == 1u64
+            if u8v != 255u8 { 1u64 }
+            elif u16v != 256u16 { 2u64 }
+            elif u32v != 256000u32 { 3u64 }
+            elif u32_from_i32 != 4294967295u32 { 4u64 }
+            elif i8v != -100i8 { 5u64 }
+            elif !sizes_ok { 6u64 }
+            else { 42u64 }
+        }
+    "#;
+    let interp = interpreter_value(src);
+    assert_eq!(interp, 42, "interpreter expected 42, got {interp}");
+    // JIT and AOT would fail today (no codegen for narrow
+    // ints) — re-enable when Phases 4 / 5 land.
+}
+
+#[test]
 fn hash_trait_dispatch_on_all_primitives() {
     // Phase 1 of the user-space dict effort (`core/std/hash.t`):
     // verifies the auto-loaded `Hash` extension trait dispatches

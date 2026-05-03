@@ -893,6 +893,45 @@ fn string_push_str_round_trip() {
 }
 
 #[test]
+fn string_eq_clear_push_char_round_trip() {
+    // `String::eq` / `String::clear` / `String::push_char` —
+    // the byte-comparison + reset + 1-byte-append trio. Exercises:
+    //   - `eq(&self, other: &String) -> bool` with both
+    //     length-mismatch (early-return false) and length-equal
+    //     full-loop paths
+    //   - `clear(&mut self)` followed by `is_empty()` / `len()`
+    //   - `push_char(&mut self, c: u8)` filling a buffer that
+    //     was just cleared (cap was preserved by `clear`)
+    // Auto-borrow at the call sites: `s.eq(a)` passes `a:
+    // String` into the `&String` param thanks to REF-Stage-2-min.
+    // 3-way pin across interpreter / JIT silent fallback / AOT.
+    let src = r#"
+        fn main() -> u64 {
+            var s: String = String::from_str("hi")
+            s.push_char(33u8)
+
+            val a: String = String::from_str("hi!")
+            val b: String = String::from_str("hi?")
+
+            if !s.eq(a) { return 1u64 }
+            if s.eq(b) { return 2u64 }
+
+            s.clear()
+            if !s.is_empty() { return 3u64 }
+            if s.len() != 0u64 { return 4u64 }
+
+            s.push_char(120u8)
+            val x: String = String::from_str("x")
+            if !s.eq(x) { return 5u64 }
+            if s.len() != 1u64 { return 6u64 }
+
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_eq_clear_push_char_round_trip");
+}
+
+#[test]
 fn vec_user_space_round_trip() {
     // `core/std/collections/vec.t::Vec<T>` is the user-space
     // dynamic array sibling to `core/std/dict.t::Dict<K, V>`.

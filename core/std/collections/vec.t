@@ -113,6 +113,14 @@ impl<T> Vec<T> {
     fn as_ptr(&self) -> ptr {
         self.data
     }
+
+    # Logically clear the vec. Capacity / data buffer are kept so
+    # a subsequent series of `push`es doesn't pay for the first
+    # `heap_realloc`. To actually free the buffer the caller would
+    # drop the binding and let the active allocator reclaim it.
+    fn clear(&mut self) {
+        self.len = 0u64
+    }
 }
 
 # Concrete-args impl: byte-vector helpers live here because the

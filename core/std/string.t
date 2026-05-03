@@ -13,13 +13,18 @@
 # Auto-loaded from `<core>/std/string.t -> ["std", "string"]`.
 #
 # API:
-#   - `String::new() -> Self` — empty buffer
 #   - `String::from_str(s: str) -> Self` — copy `s`'s bytes onto
 #     the heap (NUL terminator NOT copied; size matches `s.len()`)
-#   - `String::len(self) -> u64` — byte count
-#   - `String::is_empty(self) -> bool`
-#   - `String::as_ptr(self) -> ptr` — pointer to the underlying
+#   - `String::len(&self) -> u64` — byte count
+#   - `String::is_empty(&self) -> bool`
+#   - `String::as_ptr(&self) -> ptr` — pointer to the underlying
 #     byte buffer (matches `Vec<u8>.data`)
+#   - `String::eq(&self, other: &String) -> bool` — byte-wise
+#     equality (length-then-loop)
+#   - `String::clear(&mut self)` — reset to empty (cap preserved)
+#   - `String::push_char(&mut self, c: u8)` — append one byte
+#   - `String::push_str(&mut self, other: &String)` — append
+#     all bytes of `other`
 
 pub struct String {
     vec: Vec<u8>,
@@ -96,5 +101,47 @@ impl String {
     # shared.
     fn push_str(&mut self, other: &String) {
         self.vec.extend_bytes(other.as_ptr(), other.len())
+    }
+
+    # Byte-wise equality. Two `String`s are equal iff they have
+    # the same length and every byte matches. Length check first
+    # so different-sized strings short-circuit without walking
+    # the buffer. Both receivers are immutable references —
+    # callers may pass either `String` or `&String` thanks to
+    # auto-borrow.
+    fn eq(&self, other: &String) -> bool {
+        val n: u64 = self.len()
+        if n != other.len() {
+            return false
+        }
+        val pa: ptr = self.as_ptr()
+        val pb: ptr = other.as_ptr()
+        var i: u64 = 0u64
+        while i < n {
+            val a: u8 = __builtin_ptr_read(pa, i)
+            val b: u8 = __builtin_ptr_read(pb, i)
+            if a != b {
+                return false
+            }
+            i = i + 1u64
+        }
+        true
+    }
+
+    # Reset to an empty `String` while keeping the underlying
+    # buffer. After `clear()`, `len() == 0` and `is_empty() ==
+    # true`; further `push_char` / `push_str` calls reuse the
+    # existing capacity until the geometric-grow threshold is
+    # hit again.
+    fn clear(&mut self) {
+        self.vec.clear()
+    }
+
+    # Append a single byte. Equivalent to `push_str` of a
+    # one-byte `String`, but skips the temporary `String`
+    # construction. The `c: u8` argument is by value — narrow
+    # integers are scalars and don't benefit from `&u8`.
+    fn push_char(&mut self, c: u8) {
+        self.vec.push(c)
     }
 }

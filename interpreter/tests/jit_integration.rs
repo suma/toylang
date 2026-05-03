@@ -117,6 +117,30 @@ fn jit_generic_struct_falls_back_cleanly() {
     assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
 }
 
+#[cfg(feature = "jit")]
+#[test]
+fn jit_skip_reason_for_generic_struct() {
+    // T6 (#159 follow-up): full JIT generic struct dispatch
+    // (per-monomorph struct_layouts keyed by (name, type_args))
+    // is genuine multi-thousand-line work that didn't fit in
+    // this session. The smaller win this commit *does* land is
+    // a precise skip diagnostic — the previous "struct layout
+    // missing in JIT analysis" message was indistinguishable
+    // from non-scalar-field rejections, so users couldn't tell
+    // which todo entry to grep. The new wording references
+    // #159 explicitly so a future contributor can find the
+    // implementation task from the diagnostic alone.
+    let r = run("example/jit_generic_struct_fallback.t", true, true);
+    assert_eq!(r.code, 42, "fallback exit code; stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT: skipped")
+            && r.stderr.contains("generic struct")
+            && r.stderr.contains("#159"),
+        "expected generic-struct-specific skip reason citing #159; stderr: {}",
+        r.stderr
+    );
+}
+
 #[test]
 fn narrow_int_jit_falls_back_cleanly() {
     // NUM-W Phase 4: u8 / u16 / u32 / i8 / i16 / i32 are not

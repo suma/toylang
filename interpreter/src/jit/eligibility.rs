@@ -1529,8 +1529,25 @@ fn struct_literal_target(
         _ => return None,
     };
     if !struct_layouts.contains_key(&lit_name) {
+        // Distinguish generic struct (todo #159 / T6) from
+        // other reject reasons (non-scalar field, etc.) so the
+        // diagnostic points users at the right todo entry.
+        let is_generic = (0..program.statement.len()).any(|i| {
+            if let Some(Stmt::StructDecl { name, generic_params, .. }) =
+                program.statement.get(&StmtRef(i as u32))
+            {
+                name == lit_name && !generic_params.is_empty()
+            } else {
+                false
+            }
+        });
         note(reject_reason, || {
-            "struct literal references a struct without a JIT-eligible scalar layout".to_string()
+            if is_generic {
+                "struct literal references a generic struct (JIT does not yet \
+                 model generic struct values; see #159)".to_string()
+            } else {
+                "struct literal references a struct without a JIT-eligible scalar layout".to_string()
+            }
         });
         return None;
     }
@@ -1652,8 +1669,29 @@ fn check_struct_literal_fields(
     let layout = match struct_layouts.get(&struct_name) {
         Some(l) => l.clone(),
         None => {
+            // Distinguish generic vs other reasons so the
+            // diagnostic points users at the right todo entry.
+            // `collect_struct_layouts` skips structs whose
+            // `generic_params` is non-empty (no per-monomorph
+            // layout yet — todo #159 / T6); a missing layout
+            // for a generic struct should say so.
+            let is_generic = (0..program.statement.len()).any(|i| {
+                if let Some(Stmt::StructDecl { name, generic_params, .. }) =
+                    program.statement.get(&StmtRef(i as u32))
+                {
+                    name == struct_name && !generic_params.is_empty()
+                } else {
+                    false
+                }
+            });
             note(reject_reason, || {
-                "struct layout missing in JIT analysis".to_string()
+                if is_generic {
+                    "JIT does not yet model generic struct values \
+                     (would need per-monomorph struct_layouts; see #159)"
+                        .to_string()
+                } else {
+                    "struct layout missing in JIT analysis".to_string()
+                }
             });
             return false;
         }

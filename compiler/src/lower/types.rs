@@ -11,6 +11,15 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
     match ty {
         TypeDecl::Int64 => Some(Type::I64),
         TypeDecl::UInt64 | TypeDecl::Number => Some(Type::U64),
+        // NUM-W-AOT: narrow integer scalar lowering. Each maps to
+        // the matching IR `Type` variant; cranelift codegen picks
+        // up the width via `ir_to_cranelift_ty`.
+        TypeDecl::Int8 => Some(Type::I8),
+        TypeDecl::UInt8 => Some(Type::U8),
+        TypeDecl::Int16 => Some(Type::I16),
+        TypeDecl::UInt16 => Some(Type::U16),
+        TypeDecl::Int32 => Some(Type::I32),
+        TypeDecl::UInt32 => Some(Type::U32),
         TypeDecl::Float64 => Some(Type::F64),
         TypeDecl::Bool => Some(Type::Bool),
         TypeDecl::Unit => Some(Type::Unit),

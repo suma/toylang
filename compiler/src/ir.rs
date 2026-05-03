@@ -450,6 +450,17 @@ impl Block {
 pub enum Type {
     I64,
     U64,
+    // NUM-W-AOT: narrow integer IR types. Each lowers to the
+    // matching cranelift integer type (I8 / I16 / I32). Values
+    // pass through cranelift's standard integer paths — same
+    // arithmetic / comparison ops, with sign / zero extension
+    // at function boundaries handled by `make_signature`.
+    I8,
+    U8,
+    I16,
+    U16,
+    I32,
+    U32,
     F64,
     Bool,
     Unit,
@@ -479,7 +490,7 @@ impl Type {
     /// for integer ops). `F64` is **not** "signed" in this sense — it
     /// dispatches to a separate float code path.
     pub fn is_signed(self) -> bool {
-        matches!(self, Type::I64)
+        matches!(self, Type::I64 | Type::I8 | Type::I16 | Type::I32)
     }
 
     pub fn is_float(self) -> bool {
@@ -675,6 +686,14 @@ pub enum InstKind {
 pub enum Const {
     I64(i64),
     U64(u64),
+    // NUM-W-AOT: narrow integer constants. Codegen emits an
+    // `iconst` with the matching cranelift integer type.
+    I8(i8),
+    U8(u8),
+    I16(i16),
+    U16(u16),
+    I32(i32),
+    U32(u32),
     /// IEEE-754 double. Stored as the underlying `f64`; codegen emits
     /// `f64const` directly. Bit-equality comparisons are deliberately
     /// avoided in the IR layer — the type-checker has already enforced
@@ -688,6 +707,12 @@ impl Const {
         match self {
             Const::I64(_) => Type::I64,
             Const::U64(_) => Type::U64,
+            Const::I8(_) => Type::I8,
+            Const::U8(_) => Type::U8,
+            Const::I16(_) => Type::I16,
+            Const::U16(_) => Type::U16,
+            Const::I32(_) => Type::I32,
+            Const::U32(_) => Type::U32,
             Const::F64(_) => Type::F64,
             Const::Bool(_) => Type::Bool,
         }
@@ -833,6 +858,12 @@ impl fmt::Display for Type {
         match self {
             Type::I64 => f.write_str("i64"),
             Type::U64 => f.write_str("u64"),
+            Type::I32 => f.write_str("i32"),
+            Type::U32 => f.write_str("u32"),
+            Type::I16 => f.write_str("i16"),
+            Type::U16 => f.write_str("u16"),
+            Type::I8 => f.write_str("i8"),
+            Type::U8 => f.write_str("u8"),
             Type::F64 => f.write_str("f64"),
             Type::Bool => f.write_str("bool"),
             Type::Unit => f.write_str("unit"),
@@ -876,6 +907,12 @@ impl fmt::Display for Const {
         match self {
             Const::I64(v) => write!(f, "{v}i64"),
             Const::U64(v) => write!(f, "{v}u64"),
+            Const::I32(v) => write!(f, "{v}i32"),
+            Const::U32(v) => write!(f, "{v}u32"),
+            Const::I16(v) => write!(f, "{v}i16"),
+            Const::U16(v) => write!(f, "{v}u16"),
+            Const::I8(v) => write!(f, "{v}i8"),
+            Const::U8(v) => write!(f, "{v}u8"),
             Const::F64(v) => write!(f, "{v}f64"),
             Const::Bool(true) => f.write_str("true"),
             Const::Bool(false) => f.write_str("false"),

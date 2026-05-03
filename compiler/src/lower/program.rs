@@ -291,7 +291,7 @@ pub fn lower_program(
     let mut generic_methods: GenericMethods = HashMap::new();
     let mut method_instances: MethodInstances = HashMap::new();
     let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
-    'method_loop: for ((target_sym, method_sym), method) in method_registry.iter() {
+    for ((target_sym, method_sym), method) in method_registry.iter() {
         if !method.generic_params.is_empty() {
             generic_methods.insert((*target_sym, *method_sym), Rc::clone(method));
             continue;
@@ -304,22 +304,11 @@ pub fn lower_program(
         // `Identifier(target_sym)` path would silently fail.)
         let self_decl = primitive_type_decl_for_target_sym(*target_sym, interner)
             .unwrap_or(TypeDecl::Identifier(*target_sym));
-        // NUM-W Phase 6: when the target is a primitive type the
-        // AOT IR doesn't yet model (u8 / u16 / u32 / i8 / i16 /
-        // i32), silently skip the impl method. The user program
-        // can't actually call it through AOT — Phase 5 already
-        // rejects narrow-int literals at lowering time — but
-        // skipping registration here lets `core/std/hash.t` add
-        // `impl Hash for u8 { ... }` without breaking AOT
-        // compilation of programs that don't touch u8 at all.
-        // Same shape as the JIT precise-fallback policy from
-        // #204.
-        if matches!(self_decl,
-            TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32
-            | TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32)
-        {
-            continue 'method_loop;
-        }
+        // NUM-W-AOT (T5): narrow-int impls now lower like any
+        // other primitive impl — `lower_scalar` recognises the
+        // widths and `ir_to_cranelift_ty` produces the matching
+        // I8 / I16 / I32 cranelift type. The Phase 6 silent-skip
+        // arm is no longer needed.
         let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
         for (pname, pty) in &method.parameter {
             // `self: Self` — substitute Self for the impl's target.
@@ -699,7 +688,9 @@ impl<'a> FunctionLower<'a> {
                     self.bindings
                         .insert(*name, Binding::Enum(storage));
                 }
-                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str) => {
+                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
+                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                    | Type::I32 | Type::U32) => {
                     let local = self.module.function_mut(self.func_id).add_local(scalar);
                     self.bindings.insert(
                         *name,

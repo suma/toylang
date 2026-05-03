@@ -765,6 +765,14 @@ struct RuntimeRefs {
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
     match t {
         IrType::I64 | IrType::U64 => Some(types::I64),
+        // NUM-W-AOT: narrow integer widths map to cranelift's
+        // matching integer types. Sign / zero extension at ABI
+        // boundaries is handled via `make_signature` /
+        // `flatten_struct_to_cranelift_tys` consumers; arithmetic
+        // ops use the operand width natively.
+        IrType::I8 | IrType::U8 => Some(types::I8),
+        IrType::I16 | IrType::U16 => Some(types::I16),
+        IrType::I32 | IrType::U32 => Some(types::I32),
         IrType::F64 => Some(types::F64),
         IrType::Bool => Some(types::I8),
         IrType::Unit => None,
@@ -1016,6 +1024,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let v = match c {
                     Const::I64(n) => self.builder.ins().iconst(types::I64, *n),
                     Const::U64(n) => self.builder.ins().iconst(types::I64, *n as i64),
+                    // NUM-W-AOT: narrow integer constants. cranelift's
+                    // `iconst` takes the width via the type argument;
+                    // the value is widened/narrowed at the cranelift
+                    // level by the immediate.
+                    Const::I32(n) => self.builder.ins().iconst(types::I32, *n as i64),
+                    Const::U32(n) => self.builder.ins().iconst(types::I32, *n as i64),
+                    Const::I16(n) => self.builder.ins().iconst(types::I16, *n as i64),
+                    Const::U16(n) => self.builder.ins().iconst(types::I16, *n as i64),
+                    Const::I8(n) => self.builder.ins().iconst(types::I8, *n as i64),
+                    Const::U8(n) => self.builder.ins().iconst(types::I8, *n as i64),
                     Const::F64(n) => self.builder.ins().f64const(*n),
                     Const::Bool(b) => self.builder.ins().iconst(types::I8, *b as i64),
                 };
@@ -1303,17 +1321,73 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
             InstKind::Print { value, value_ty, newline } => {
                 let v = self.value(*value);
-                let helper = match (value_ty, newline) {
-                    (IrType::I64, false) => self.runtime.print_i64,
-                    (IrType::I64, true) => self.runtime.println_i64,
-                    (IrType::U64, false) => self.runtime.print_u64,
-                    (IrType::U64, true) => self.runtime.println_u64,
-                    (IrType::F64, false) => self.runtime.print_f64,
-                    (IrType::F64, true) => self.runtime.println_f64,
-                    (IrType::Bool, false) => self.runtime.print_bool,
-                    (IrType::Bool, true) => self.runtime.println_bool,
-                    (IrType::Str, false) => self.runtime.print_str,
-                    (IrType::Str, true) => self.runtime.println_str,
+                // NUM-W-AOT: narrow integer print routes through
+                // the existing wide print helpers after extending
+                // to i64 / u64 (signed `sextend`, unsigned
+                // `uextend`). Adding dedicated `toy_print_{i,u}{8,
+                // 16,32}` helpers would be ideal but the runtime
+                // formatting (`%lld` / `%llu`) on the resulting
+                // value is identical for any value that fits, so
+                // the extension shape is sound for the common case.
+                let (helper, call_value) = match (value_ty, newline) {
+                    (IrType::I64, false) => (self.runtime.print_i64, v),
+                    (IrType::I64, true) => (self.runtime.println_i64, v),
+                    (IrType::U64, false) => (self.runtime.print_u64, v),
+                    (IrType::U64, true) => (self.runtime.println_u64, v),
+                    (IrType::I32, false) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.print_i64, ext)
+                    }
+                    (IrType::I32, true) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.println_i64, ext)
+                    }
+                    (IrType::U32, false) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.print_u64, ext)
+                    }
+                    (IrType::U32, true) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.println_u64, ext)
+                    }
+                    (IrType::I16, false) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.print_i64, ext)
+                    }
+                    (IrType::I16, true) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.println_i64, ext)
+                    }
+                    (IrType::U16, false) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.print_u64, ext)
+                    }
+                    (IrType::U16, true) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.println_u64, ext)
+                    }
+                    (IrType::I8, false) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.print_i64, ext)
+                    }
+                    (IrType::I8, true) => {
+                        let ext = self.builder.ins().sextend(types::I64, v);
+                        (self.runtime.println_i64, ext)
+                    }
+                    (IrType::U8, false) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.print_u64, ext)
+                    }
+                    (IrType::U8, true) => {
+                        let ext = self.builder.ins().uextend(types::I64, v);
+                        (self.runtime.println_u64, ext)
+                    }
+                    (IrType::F64, false) => (self.runtime.print_f64, v),
+                    (IrType::F64, true) => (self.runtime.println_f64, v),
+                    (IrType::Bool, false) => (self.runtime.print_bool, v),
+                    (IrType::Bool, true) => (self.runtime.println_bool, v),
+                    (IrType::Str, false) => (self.runtime.print_str, v),
+                    (IrType::Str, true) => (self.runtime.println_str, v),
                     (IrType::Unit, _) => {
                         return Err(
                             "internal error: Print of Unit reached codegen".to_string(),
@@ -1338,7 +1412,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         );
                     }
                 };
-                self.builder.ins().call(helper, &[v]);
+                self.builder.ins().call(helper, &[call_value]);
             }
             InstKind::PrintStr { message, newline } => {
                 let gv = *self
@@ -1540,24 +1614,102 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
     /// rejected up front.
     fn lower_cast(&mut self, v: Value, from: IrType, to: IrType) -> Result<Value, String> {
         use IrType::*;
-        Ok(match (from, to) {
-            // Identity at the bit level: both are `I64`.
-            (I64, I64) | (U64, U64) | (I64, U64) | (U64, I64) => v,
-            (F64, F64) => v,
-            (Bool, Bool) => v,
-            // Integer → float.
-            (I64, F64) => self.builder.ins().fcvt_from_sint(types::F64, v),
-            (U64, F64) => self.builder.ins().fcvt_from_uint(types::F64, v),
-            // Float → integer; saturating to match Rust's `as` cast.
-            (F64, I64) => self.builder.ins().fcvt_to_sint_sat(types::I64, v),
-            (F64, U64) => self.builder.ins().fcvt_to_uint_sat(types::I64, v),
-            // Bool conversions and Unit aren't meaningful; reject.
-            _ => {
-                return Err(format!(
-                    "compiler MVP does not support `as` cast from {:?} to {:?}",
-                    from, to
-                ));
+        // NUM-W-AOT cast matrix: any numeric primitive can cast to
+        // any other. Two-step lowering (matches the interpreter's
+        // NumForm approach):
+        //   1. Widen the source to the full register width
+        //      (I64 for ints, F64 for floats) using `sextend` /
+        //      `uextend` for ints based on signedness, identity
+        //      for I64 / U64 / F64, fcvt for float ↔ int.
+        //   2. Narrow the result to the target's exact width with
+        //      `ireduce` for ints, `fcvt_*_sat` for float ↔ int,
+        //      identity for matching widths.
+        // Bool and Unit are not part of the matrix; same-type
+        // casts pass through unchanged.
+        if from == to {
+            return Ok(v);
+        }
+        // Special case: F64 ↔ F64 already handled by from == to.
+        // Float-to-int and int-to-float go through directly to the
+        // target width to preserve cranelift's saturating /
+        // sign-aware behaviour.
+        if from == F64 {
+            // Float → integer. Saturating + sign-aware to match
+            // Rust's `as` semantics.
+            return Ok(match to {
+                I64 => self.builder.ins().fcvt_to_sint_sat(types::I64, v),
+                U64 => self.builder.ins().fcvt_to_uint_sat(types::I64, v),
+                I32 => self.builder.ins().fcvt_to_sint_sat(types::I32, v),
+                U32 => self.builder.ins().fcvt_to_uint_sat(types::I32, v),
+                I16 => self.builder.ins().fcvt_to_sint_sat(types::I16, v),
+                U16 => self.builder.ins().fcvt_to_uint_sat(types::I16, v),
+                I8 => self.builder.ins().fcvt_to_sint_sat(types::I8, v),
+                U8 => self.builder.ins().fcvt_to_uint_sat(types::I8, v),
+                _ => return Err(format!("invalid f64 → {:?} cast", to)),
+            });
+        }
+        if to == F64 {
+            // Integer → float. Sign vs unsign chosen by source.
+            return Ok(match from {
+                I64 | I32 | I16 | I8 => {
+                    // sextend to I64 first if needed, then fcvt.
+                    let widened = if from == I64 {
+                        v
+                    } else {
+                        self.builder.ins().sextend(types::I64, v)
+                    };
+                    self.builder.ins().fcvt_from_sint(types::F64, widened)
+                }
+                U64 | U32 | U16 | U8 => {
+                    let widened = if from == U64 {
+                        v
+                    } else {
+                        self.builder.ins().uextend(types::I64, v)
+                    };
+                    self.builder.ins().fcvt_from_uint(types::F64, widened)
+                }
+                _ => return Err(format!("invalid {:?} → f64 cast", from)),
+            });
+        }
+        // Integer ↔ integer matrix. Widening uses sextend or
+        // uextend based on the source's signedness; narrowing
+        // uses ireduce. Same-bit-width different-sign casts
+        // pass through identically.
+        let from_bits = match from {
+            I64 | U64 => 64,
+            I32 | U32 => 32,
+            I16 | U16 => 16,
+            I8 | U8 => 8,
+            _ => return Err(format!("non-integer source in cast: {:?}", from)),
+        };
+        let to_bits = match to {
+            I64 | U64 => 64,
+            I32 | U32 => 32,
+            I16 | U16 => 16,
+            I8 | U8 => 8,
+            _ => return Err(format!("non-integer target in cast: {:?}", to)),
+        };
+        let to_ty = match to {
+            I64 | U64 => types::I64,
+            I32 | U32 => types::I32,
+            I16 | U16 => types::I16,
+            I8 | U8 => types::I8,
+            _ => unreachable!(),
+        };
+        let result = if from_bits == to_bits {
+            // Same width — bit-identical reinterpretation.
+            v
+        } else if from_bits < to_bits {
+            // Widen: sign-extend if source is signed, else zero-extend.
+            if matches!(from, I64 | I32 | I16 | I8) {
+                self.builder.ins().sextend(to_ty, v)
+            } else {
+                self.builder.ins().uextend(to_ty, v)
             }
-        })
+        } else {
+            // Narrow.
+            self.builder.ins().ireduce(to_ty, v)
+        };
+        Ok(result)
     }
 }

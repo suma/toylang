@@ -25,6 +25,11 @@ pub(super) const ARRAY_LEAF_STRIDE: u32 = 8;
 pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
     match ty {
         Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 1,
+        // NUM-W-AOT: narrow ints occupy one leaf slot just like
+        // their wide siblings — they share the 8-byte stride
+        // currently hard-coded by `ARRAY_LEAF_STRIDE`. Future
+        // tighter packing would tweak the stride in concert.
+        Type::I8 | Type::U8 | Type::I16 | Type::U16 | Type::I32 | Type::U32 => 1,
         Type::Unit => 0,
         Type::Struct(id) => {
             let fields = module.struct_def(id).fields.clone();

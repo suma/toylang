@@ -30,6 +30,13 @@ impl<'a> FunctionLower<'a> {
         match e {
             Expr::Int64(_) => Some(Type::I64),
             Expr::UInt64(_) => Some(Type::U64),
+            // NUM-W-AOT: narrow integer literal types.
+            Expr::Int8(_) => Some(Type::I8),
+            Expr::UInt8(_) => Some(Type::U8),
+            Expr::Int16(_) => Some(Type::I16),
+            Expr::UInt16(_) => Some(Type::U16),
+            Expr::Int32(_) => Some(Type::I32),
+            Expr::UInt32(_) => Some(Type::U32),
             Expr::Float64(_) => Some(Type::F64),
             Expr::String(_) => Some(Type::Str),
             Expr::True | Expr::False => Some(Type::Bool),

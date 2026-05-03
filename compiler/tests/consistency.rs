@@ -574,47 +574,30 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
-fn narrow_int_aot_emits_precise_diagnostic() {
-    // NUM-W Phase 5: the AOT compiler doesn't yet model the
-    // narrow integer types (the IR `Type` enum still tops out
-    // at I64 / U64 / F64 / Bool / Unit / Str / Struct / Tuple
-    // / Enum). Until the IR / codegen widening lands, any AOT
-    // attempt to lower a narrow-int literal must surface a
-    // *precise* diagnostic naming the missing phase, so users
-    // who hit it can find the todo entry rather than puzzling
-    // over a generic "cannot lower" string. Mirrors the JIT
-    // precise-fallback policy from #204.
-    if skip_e2e() {
-        return;
-    }
+fn narrow_int_aot_round_trip() {
+    // NUM-W-AOT (T5 follow-up to Phase 5): the AOT compiler now
+    // models the narrow integer types. The previous version of
+    // this test asserted that AOT *rejected* narrow-int code
+    // with a precise diagnostic; since the IR / codegen
+    // widening landed (T5), narrow-int programs compile and
+    // run.
+    //
+    // Asserts AOT exit code matches the expected value (250 +
+    // -1000_as_u32 = 4294966546, & 0xff = 18). Interpreter
+    // path is also asserted via `assert_consistent` once that
+    // path tolerates the same arithmetic. JIT remains silent-
+    // fallback (NUM-W-JIT not yet done) — exit code through
+    // the JIT helper still matches because it lowers through
+    // the interpreter.
     let src = r#"
         fn main() -> u64 {
-            val x: u8 = 5u8
-            x as u64
+            val a: u8 = 200u8 + 50u8
+            val b: i32 = -1000i32
+            val c: u32 = b as u32
+            a as u64 + c as u64
         }
     "#;
-    let stem = "narrow_int_aot_diag";
-    let src_path = unique_path(&format!("{stem}.t"));
-    std::fs::write(&src_path, src).expect("write src");
-    let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        input: src_path.clone(),
-        output: Some(exe_path),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: Some(core_modules_dir()),
-    };
-    let err = compile_file(&options).expect_err("AOT must reject narrow ints");
-    let _ = std::fs::remove_file(&src_path);
-    assert!(
-        err.contains("narrow integer types"),
-        "diagnostic should mention narrow integers; got: {err}"
-    );
-    assert!(
-        err.contains("NUM-W Phase 5"),
-        "diagnostic should reference the todo phase; got: {err}"
-    );
+    assert_consistent(src, "narrow_int_aot_round_trip");
 }
 
 #[test]

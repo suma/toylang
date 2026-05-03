@@ -71,6 +71,19 @@ impl<'a> FunctionLower<'a> {
                     Type::U64 => self
                         .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
                         .unwrap(),
+                    // NUM-W-AOT: zero-init for narrow widths.
+                    Type::I32 => self
+                        .emit(InstKind::Const(Const::I32(0)), Some(Type::I32)).unwrap(),
+                    Type::U32 => self
+                        .emit(InstKind::Const(Const::U32(0)), Some(Type::U32)).unwrap(),
+                    Type::I16 => self
+                        .emit(InstKind::Const(Const::I16(0)), Some(Type::I16)).unwrap(),
+                    Type::U16 => self
+                        .emit(InstKind::Const(Const::U16(0)), Some(Type::U16)).unwrap(),
+                    Type::I8 => self
+                        .emit(InstKind::Const(Const::I8(0)), Some(Type::I8)).unwrap(),
+                    Type::U8 => self
+                        .emit(InstKind::Const(Const::U8(0)), Some(Type::U8)).unwrap(),
                     Type::F64 => self
                         .emit(InstKind::Const(Const::F64(0.0)), Some(Type::F64))
                         .unwrap(),

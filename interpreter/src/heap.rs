@@ -389,21 +389,54 @@ impl HeapManager {
         }
     }
     
-    /// Copy memory from src to dest
+    /// Copy memory from src to dest. Walks both the raw byte buffer
+    /// (the classic mem_copy semantic) **and** the typed_slots map
+    /// (so values stashed by `__builtin_str_to_ptr` /
+    /// `__builtin_ptr_write` survive a `mem_copy` into a fresh
+    /// destination buffer). The typed copy is offset-relative —
+    /// every entry under `(src_addr, off)` for `off < size` is
+    /// re-keyed under `(dest_addr, off)` so per-byte / per-element
+    /// reads at the destination see the same values as the source.
     pub fn copy_memory(&mut self, src_addr: usize, dest_addr: usize, size: usize) -> bool {
         if src_addr == 0 || dest_addr == 0 {
             return false; // null pointer access
         }
-        
-        // First get the source data to avoid borrowing conflicts
+
+        let mut copied_any = false;
+
+        // Raw byte buffer copy — covers AOT-style buffers built by
+        // `heap_alloc` + raw `ptr_write`.
         if let Some(src_slice) = self.get_memory_slice(src_addr, size) {
             let temp_data: Vec<u8> = src_slice.to_vec();
             if let Some(dest_slice) = self.get_memory_slice_mut(dest_addr, size) {
                 dest_slice.copy_from_slice(&temp_data);
-                return true;
+                copied_any = true;
             }
         }
-        false
+
+        // typed_slots range copy — covers buffers populated by
+        // `__builtin_str_to_ptr` (writes one `Object::U8` per byte)
+        // or by `__builtin_ptr_write(p, off, value)` for non-u64
+        // typed values. Without this, the AOT-style `mem_copy(src,
+        // dest, n)` over a `s.as_ptr()` source returns no data on
+        // the interpreter (the bytes only live in typed_slots).
+        let snapshot: Vec<(usize, crate::object::RcObject)> = self
+            .typed_slots
+            .iter()
+            .filter_map(|((a, off), v)| {
+                if *a == src_addr && *off < size {
+                    Some((*off, v.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (off, value) in snapshot {
+            self.typed_slots.insert((dest_addr, off), value);
+            copied_any = true;
+        }
+
+        copied_any
     }
     
     /// Move memory from src to dest (handles overlapping regions)

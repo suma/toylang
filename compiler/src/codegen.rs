@@ -150,6 +150,7 @@ pub(crate) struct CodegenSession<M: Module> {
     libc_malloc: cranelift_module::FuncId,
     libc_realloc: cranelift_module::FuncId,
     libc_free: cranelift_module::FuncId,
+    libc_memcpy: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -289,6 +290,19 @@ impl<M: Module> CodegenSession<M> {
             .declare_function("free", CLinkage::Import, &free_sig)
             .map_err(|e| format!("declare free: {e}"))?;
 
+        // libc `memcpy(void *dest, const void *src, size_t n) ->
+        // void *`. Used by `__builtin_mem_copy(src, dest, size)`
+        // — note the toylang arg order is (src, dest, size) so
+        // the codegen swaps them at the call site.
+        let mut memcpy_sig = Signature::new(call_conv);
+        memcpy_sig.params.push(AbiParam::new(types::I64)); // dest
+        memcpy_sig.params.push(AbiParam::new(types::I64)); // src
+        memcpy_sig.params.push(AbiParam::new(types::I64)); // n
+        memcpy_sig.returns.push(AbiParam::new(types::I64)); // returns dest, ignored
+        let libc_memcpy = module
+            .declare_function("memcpy", CLinkage::Import, &memcpy_sig)
+            .map_err(|e| format!("declare memcpy: {e}"))?;
+
         // (`libc_strlen` was used by an earlier draft of
         // `__builtin_str_len`; the str runtime value now points at
         // the stored u64 len field directly, so codegen reads it
@@ -412,6 +426,7 @@ impl<M: Module> CodegenSession<M> {
             libc_malloc,
             libc_realloc,
             libc_free,
+            libc_memcpy,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -899,6 +914,7 @@ impl<M: Module> CodegenSession<M> {
             malloc: self.module.declare_func_in_func(self.libc_malloc, func),
             realloc: self.module.declare_func_in_func(self.libc_realloc, func),
             free: self.module.declare_func_in_func(self.libc_free, func),
+            memcpy: self.module.declare_func_in_func(self.libc_memcpy, func),
             print_i64: self.module.declare_func_in_func(self.rt_print_i64, func),
             println_i64: self.module.declare_func_in_func(self.rt_println_i64, func),
             print_u64: self.module.declare_func_in_func(self.rt_print_u64, func),
@@ -946,6 +962,7 @@ struct RuntimeRefs {
     malloc: cranelift_codegen::ir::FuncRef,
     realloc: cranelift_codegen::ir::FuncRef,
     free: cranelift_codegen::ir::FuncRef,
+    memcpy: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,
@@ -1790,6 +1807,16 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
                 }
+            }
+            InstKind::MemCopy { src, dest, size } => {
+                // libc memcpy uses (dest, src, n) — swap from
+                // toylang's (src, dest, size) order.
+                let src_v = self.value(*src);
+                let dest_v = self.value(*dest);
+                let size_v = self.value(*size);
+                self.builder
+                    .ins()
+                    .call(self.runtime.memcpy, &[dest_v, src_v, size_v]);
             }
             // #121 Phase B-min: active-allocator stack ops.
             // `AllocPush(handle)` and `AllocPop` emit a libc call

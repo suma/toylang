@@ -554,6 +554,25 @@ impl<'a> FunctionLower<'a> {
                 };
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
+            BuiltinFunction::MemCopy => {
+                // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`
+                // — emit `InstKind::MemCopy` which codegen lowers
+                // to a libc memcpy call (with (dest, src, n)
+                // argument-order swap).
+                if args.len() != 3 {
+                    return Err(format!(
+                        "__builtin_mem_copy takes 3 args (src, dest, size), got {}",
+                        args.len()
+                    ));
+                }
+                let src = self.lower_expr(&args[0])?
+                    .ok_or_else(|| "mem_copy src produced no value".to_string())?;
+                let dest = self.lower_expr(&args[1])?
+                    .ok_or_else(|| "mem_copy dest produced no value".to_string())?;
+                let size = self.lower_expr(&args[2])?
+                    .ok_or_else(|| "mem_copy size produced no value".to_string())?;
+                Ok(self.emit(InstKind::MemCopy { src, dest, size }, None))
+            }
             BuiltinFunction::StrLen => {
                 // `__builtin_str_len(s: str) -> u64` — emits an
                 // `InstKind::StrLen` that codegen lowers to a libc

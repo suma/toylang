@@ -726,6 +726,10 @@ pub enum InstKind {
     /// str value's byte pointer. Returns the byte count (NOT the
     /// character count for multi-byte UTF-8).
     StrLen { value: ValueId },
+    /// `__builtin_mem_copy(src, dest, size)` — libc memcpy. Note
+    /// the toylang argument order is (src, dest, size); codegen
+    /// swaps to libc's `(dest, src, n)` at the call site.
+    MemCopy { src: ValueId, dest: ValueId, size: ValueId },
     /// Stage 1 of `&` references: call to a `&mut self` method.
     /// The cranelift call returns
     /// `(user_return_leaves..., self_writeback_leaves...)`; codegen
@@ -1188,6 +1192,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::StrLen { value } => {
                 write!(f, "{prefix}str_len {value}")
+            }
+            InstKind::MemCopy { src, dest, size } => {
+                write!(f, "mem_copy {src} -> {dest}, {size}")
             }
             InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
                 let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");

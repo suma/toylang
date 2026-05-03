@@ -450,8 +450,96 @@ impl<'a> FunctionLower<'a> {
                 // hits the generic registry because dict.t's
                 // `impl<K, V> Dict<K, V>` carries (K, V) onto
                 // every method.
+                //
+                // Non-generic impls of generic structs (e.g.
+                // `impl FromStr for Vec<u8>` in
+                // `core/std/collections/vec.t`) land in
+                // `method_func_ids` because the parser drops the
+                // `<u8>` type args from the impl target. The
+                // pre-declared FuncId already has its return
+                // type resolved at registration time (the
+                // `lower_program` non-generic loop substitutes
+                // `Self` to the bare struct symbol's `Identifier`
+                // resolution), so we can dispatch with a plain
+                // `Call` / `CallStruct` here without going
+                // through `instantiate_generic_method_with_self_type`.
+                if let Some(func_id) = self.method_func_ids.get(&(struct_name, fn_name)).copied() {
+                    let target_ret = self.module.function(func_id).return_type;
+                    if let Type::Struct(ret_struct_id) = target_ret {
+                        let field_bindings = self.allocate_struct_fields(ret_struct_id);
+                        let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                            .into_iter()
+                            .map(|(l, _)| l)
+                            .collect();
+                        self.bindings.insert(
+                            name,
+                            Binding::Struct {
+                                struct_id: ret_struct_id,
+                                fields: field_bindings,
+                            },
+                        );
+                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                        for a in args_vec {
+                            let v = self.lower_expr(a)?
+                                .ok_or_else(|| {
+                                    "associated-function arg produced no value".to_string()
+                                })?;
+                            arg_values.push(v);
+                        }
+                        self.emit(
+                            InstKind::CallStruct {
+                                target: func_id,
+                                args: arg_values,
+                                dests,
+                            },
+                            None,
+                        );
+                        return Ok(None);
+                    }
+                    if target_ret.produces_value() {
+                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                        for a in args_vec {
+                            let v = self.lower_expr(a)?
+                                .ok_or_else(|| {
+                                    "associated-function arg produced no value".to_string()
+                                })?;
+                            arg_values.push(v);
+                        }
+                        let v = self
+                            .emit(
+                                InstKind::Call { target: func_id, args: arg_values },
+                                Some(target_ret),
+                            )
+                            .expect("Call returns a value");
+                        let local = self
+                            .module
+                            .function_mut(self.func_id)
+                            .add_local(target_ret);
+                        self.bindings.insert(
+                            name,
+                            Binding::Scalar { local, ty: target_ret },
+                        );
+                        self.emit(
+                            InstKind::StoreLocal { dst: local, src: v },
+                            None,
+                        );
+                        return Ok(None);
+                    }
+                }
+                // Suppress unused warning when no generic_methods
+                // entry exists (older paths only cared about generics).
+                let _ = recv_type_args;
+                let _ = struct_id;
                 let template = self.generic_methods.get(&(struct_name, fn_name)).cloned();
                 if let Some(template) = template {
+                    // Re-resolve to use the right type_args path for
+                    // generic methods.
+                    let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
+                    let recv_type_args = self
+                        .module
+                        .struct_def(struct_id)
+                        .type_args
+                        .clone();
                     let func_id = self.instantiate_generic_method_with_self_type(
                         struct_name,
                         fn_name,

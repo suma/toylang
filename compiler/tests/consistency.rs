@@ -759,6 +759,48 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn vec_from_str_round_trip() {
+    // `core/std/collections/vec.t::FromStr::from_str(s) ->
+    // Vec<u8>` copies the UTF-8 bytes of `s` into a fresh
+    // `Vec<u8>` of size `s.len()`. The NUL terminator is
+    // intentionally NOT copied. Implementation uses
+    // `__builtin_mem_copy` for a single-call bulk copy:
+    //
+    //   - AOT: libc memcpy(dest, src, n) — `s.as_ptr()` is a
+    //     pointer into `.rodata`'s `[bytes][NUL][u64 len]`
+    //     layout, so the source is real bytes; dest is a
+    //     `heap_realloc`'d buffer.
+    //   - Interpreter: `s.as_ptr()` writes typed_slot u8 entries
+    //     and `HeapManager::copy_memory` (called by
+    //     `__builtin_mem_copy`) is now typed_slots-aware so the
+    //     dest buffer ends up with the same per-byte u8 entries.
+    //   - JIT: silent fallback to interpreter (str scalar isn't
+    //     modelled in the JIT IR).
+    //
+    // Walks "hello" byte-by-byte, checking
+    // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + size=5.
+    let src = r#"
+        fn main() -> u64 {
+            val v: Vec<u8> = Vec::from_str("hello")
+            val n: u64 = v.size()
+            val a: u8 = v.get(0u64)
+            val b: u8 = v.get(1u64)
+            val c: u8 = v.get(2u64)
+            val d: u8 = v.get(3u64)
+            val e: u8 = v.get(4u64)
+            if n != 5u64 { 1u64 }
+            elif a != 104u8 { 2u64 }
+            elif b != 101u8 { 3u64 }
+            elif c != 108u8 { 4u64 }
+            elif d != 108u8 { 5u64 }
+            elif e != 111u8 { 6u64 }
+            else { 42u64 }
+        }
+    "#;
+    assert_consistent(src, "vec_from_str_round_trip");
+}
+
+#[test]
 fn vec_user_space_round_trip() {
     // `core/std/collections/vec.t::Vec<T>` is the user-space
     // dynamic array sibling to `core/std/dict.t::Dict<K, V>`.

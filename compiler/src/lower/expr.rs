@@ -324,23 +324,25 @@ impl<'a> FunctionLower<'a> {
             Expr::UInt16(n) => Ok(self.emit(InstKind::Const(Const::U16(n)), Some(Type::U16))),
             Expr::Int32(n) => Ok(self.emit(InstKind::Const(Const::I32(n)), Some(Type::I32))),
             Expr::UInt32(n) => Ok(self.emit(InstKind::Const(Const::U32(n)), Some(Type::U32))),
-            // #121 Phase B-min: `with allocator = expr { body }` —
-            // push the allocator handle on entry, lower the body,
-            // pop on exit. The body can produce a value (the
-            // surrounding expression position) so we hand back
-            // whatever the body yielded. Only the linear exit path
-            // is supported in Phase B-min — early `return` /
-            // `break` / `continue` from inside a `with` body
-            // wouldn't pop the stack and would corrupt nesting; a
-            // future enhancement (interpreter / JIT already
-            // handle this) will install a panic-style cleanup hook.
+            // #121 Phase B-rest Item 2: `with allocator = expr { body }`.
+            // Push the allocator handle, increment the with-scope
+            // depth so `terminate_return` / `break` / `continue`
+            // know to emit cleanup pops, then lower the body. On
+            // a normal (linear) exit emit the matching pop here;
+            // on an early exit the cleanup helpers already
+            // emitted it before terminating, so we just decrement
+            // the depth without a duplicate pop.
             Expr::With(allocator_expr, body_expr) => {
                 let handle = self
                     .lower_expr(&allocator_expr)?
                     .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?;
                 self.emit(InstKind::AllocPush { handle }, None);
+                self.with_scope_depth += 1;
                 let body_value = self.lower_expr(&body_expr)?;
-                self.emit(InstKind::AllocPop, None);
+                if !self.is_unreachable() {
+                    self.emit(InstKind::AllocPop, None);
+                }
+                self.with_scope_depth -= 1;
                 Ok(body_value)
             }
             other => Err(format!(

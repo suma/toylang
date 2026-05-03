@@ -131,9 +131,22 @@ struct FunctionLower<'a> {
     result_sym: Option<DefaultSymbol>,
     /// Toylang binding name → storage shape.
     bindings: HashMap<DefaultSymbol, Binding>,
-    /// (continue, break) target blocks for `break` and `continue` inside
-    /// the innermost loop.
-    loop_stack: Vec<(BlockId, BlockId)>,
+    /// (continue, break, with_scope_depth_at_loop_entry) target blocks
+    /// for `break` and `continue` inside the innermost loop. The third
+    /// element is the `with_scope_depth` snapshot at loop entry —
+    /// `break` / `continue` need to emit `AllocPop` for any
+    /// `with allocator = ...` scopes opened *inside* the loop but
+    /// not yet closed at the break/continue point. (#121 Phase B-rest
+    /// Item 2.)
+    loop_stack: Vec<(BlockId, BlockId, usize)>,
+    /// #121 Phase B-rest Item 2: number of `with allocator = ...`
+    /// scopes currently open at this point in the lowering walk.
+    /// Incremented on entry to each `Expr::With` body, decremented
+    /// on normal exit. `terminate_return` and `break` / `continue`
+    /// emit `AllocPop` instructions for each currently-active scope
+    /// before terminating, so the runtime allocator stack stays
+    /// balanced even when control flow leaves the body early.
+    with_scope_depth: usize,
     /// Block we are currently appending instructions into. None means the
     /// previous block was just terminated and the lowering pass is in the
     /// "unreachable" state — code after a `return` / `break` / `continue`
@@ -287,5 +300,22 @@ impl<'a> FunctionLower<'a> {
 
     fn is_unreachable(&self) -> bool {
         self.current_block.is_none()
+    }
+
+    /// #121 Phase B-rest Item 2: emit `AllocPop` instructions to
+    /// unwind the runtime allocator stack down to the snapshot
+    /// `target_depth`. Used by `terminate_return` (target=0) and
+    /// `Stmt::Break` / `Stmt::Continue` (target=loop entry depth)
+    /// so control flow that exits a `with allocator = ...` body
+    /// early still leaves the stack balanced.
+    pub(super) fn emit_with_scope_cleanup(&mut self, target_depth: usize) {
+        if self.current_block.is_none() {
+            return;
+        }
+        let mut depth = self.with_scope_depth;
+        while depth > target_depth {
+            self.emit(crate::ir::InstKind::AllocPop, None);
+            depth -= 1;
+        }
     }
 }

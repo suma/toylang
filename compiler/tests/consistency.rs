@@ -1112,6 +1112,45 @@ fn aot_allocator_default_and_current_round_trip() {
 }
 
 #[test]
+fn aot_with_allocator_early_return_pops_stack() {
+    // #121 Phase B-rest Item 2: an early `return` from inside a
+    // `with allocator = ...` body must still emit `AllocPop` for
+    // every active scope. Without this cleanup the runtime
+    // allocator stack leaks the pushed handle and the caller
+    // observes the wrong `__builtin_current_allocator()` after
+    // the helper function returns.
+    //
+    // The test pins the contract: after `helper()` returns,
+    // `current_allocator()` must equal `default_allocator()`
+    // (sentinel 0), regardless of the arena handle pushed
+    // inside `helper`'s `with` body.
+    //
+    // Compares against `__builtin_default_allocator()` rather
+    // than the literal `0u64` so the interpreter's
+    // type-checker accepts the comparison (Allocator vs UInt64
+    // is rejected; Allocator vs Allocator is fine).
+    let src = r#"
+        fn helper() -> u64 {
+            val a = __builtin_arena_allocator()
+            with allocator = a {
+                return 7u64
+            }
+            0u64
+        }
+
+        fn main() -> u64 {
+            val r = helper()
+            val cur = __builtin_current_allocator()
+            val def = __builtin_default_allocator()
+            if cur != def { return 1u64 }
+            if r != 7u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "aot_with_allocator_early_return_pops_stack");
+}
+
+#[test]
 fn aot_arena_and_fixed_buffer_allocators_round_trip() {
     // #121 Phase B-rest Items 1+3: arena and fixed_buffer
     // allocator constructors return non-zero handles, and

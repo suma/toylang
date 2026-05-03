@@ -36,7 +36,11 @@ impl<'a> FunctionLower<'a> {
             else_blk: exit,
         });
         self.switch_to(body_blk);
-        self.loop_stack.push((header, exit));
+        // #121 Phase B-rest Item 2: snapshot the with-scope depth at
+        // loop entry so `break` / `continue` inside the loop body
+        // emit `AllocPop` only for `with` scopes opened *inside*
+        // the loop, not the outer ones.
+        self.loop_stack.push((header, exit, self.with_scope_depth));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {
@@ -106,7 +110,11 @@ impl<'a> FunctionLower<'a> {
 
         // Body, then increment + jump back.
         self.switch_to(body_blk);
-        self.loop_stack.push((header, exit));
+        // #121 Phase B-rest Item 2: snapshot the with-scope depth at
+        // loop entry so `break` / `continue` inside the loop body
+        // emit `AllocPop` only for `with` scopes opened *inside*
+        // the loop, not the outer ones.
+        self.loop_stack.push((header, exit, self.with_scope_depth));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {

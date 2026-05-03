@@ -719,6 +719,7 @@ impl<'a> FunctionLower<'a> {
             result_sym: interner.get("result"),
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
+            with_scope_depth: 0,
             current_block: None,
             next_value: 0,
             pending_struct_value: None,
@@ -760,6 +761,12 @@ impl<'a> FunctionLower<'a> {
                 values.push(v);
             }
         }
+        // #121 Phase B-rest Item 2: pop every `with allocator = ...`
+        // scope active at this point in the lowering walk before
+        // returning. Without this, an early `return` from inside a
+        // `with` body would leak its push and corrupt stack
+        // nesting for any subsequent `with` in the caller.
+        self.emit_with_scope_cleanup(0);
         self.terminate(crate::ir::Terminator::Return(values));
     }
 

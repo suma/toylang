@@ -271,18 +271,22 @@ impl<'a> FunctionLower<'a> {
                 Ok(None)
             }
             Stmt::Break => {
-                let (_cont, brk) = *self
+                let (_cont, brk, loop_depth) = *self
                     .loop_stack
                     .last()
                     .ok_or_else(|| "`break` outside of a loop".to_string())?;
+                // #121 Phase B-rest Item 2: pop any `with` scopes
+                // opened inside the loop body before exiting.
+                self.emit_with_scope_cleanup(loop_depth);
                 self.terminate(Terminator::Jump(brk));
                 Ok(None)
             }
             Stmt::Continue => {
-                let (cont, _brk) = *self
+                let (cont, _brk, loop_depth) = *self
                     .loop_stack
                     .last()
                     .ok_or_else(|| "`continue` outside of a loop".to_string())?;
+                self.emit_with_scope_cleanup(loop_depth);
                 self.terminate(Terminator::Jump(cont));
                 Ok(None)
             }

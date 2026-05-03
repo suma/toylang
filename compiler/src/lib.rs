@@ -29,9 +29,11 @@
 pub mod codegen;
 pub mod driver;
 pub mod ir;
+pub mod jit;
 pub mod lower;
 pub mod options;
 
+pub use jit::{compile_to_jit_main, compile_to_jit_main_with_options, JitMainFn, JitProgram};
 pub use options::{CompilerOptions, EmitKind};
 
 use std::path::Path;

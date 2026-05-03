@@ -20,7 +20,7 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
-use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module as _};
+use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use frontend::ast::Program;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
@@ -69,7 +69,8 @@ pub fn emit_clif_text(
     options: &CompilerOptions,
 ) -> Result<String, String> {
     let ir_module = lower::lower_program(program, interner, contract_msgs, options.release)?;
-    let mut session = CodegenSession::new()?;
+    let module = make_object_module()?;
+    let mut session = CodegenSession::new(module)?;
     session.declare_all(&ir_module, interner)?;
     let mut out = String::new();
     for func_id in 0..ir_module.functions.len() {
@@ -95,7 +96,8 @@ fn build_object_module(
     interner: &DefaultStringInterner,
     options: &CompilerOptions,
 ) -> Result<ObjectModule, String> {
-    let mut session = CodegenSession::new()?;
+    let module = make_object_module()?;
+    let mut session = CodegenSession::new(module)?;
     session.declare_all(ir_module, interner)?;
     for func_id in 0..ir_module.functions.len() {
         let func_id = FuncId(func_id as u32);
@@ -128,8 +130,15 @@ fn build_object_module(
 // reuse them without running the whole pipeline through finish().
 // ---------------------------------------------------------------------------
 
-struct CodegenSession {
-    module: ObjectModule,
+/// Codegen state parameterised over the cranelift `Module` impl. Same
+/// `declare_all` / `define_function` flow drives both the AOT object
+/// emission (ObjectModule) and the in-process JIT (JITModule); the
+/// only thing that changes between the two is the concrete module
+/// type and what the caller does with it after `define_function`
+/// finishes (object: `finish().emit()`; jit: `finalize_definitions()`
+/// + `get_finalized_function`).
+pub(crate) struct CodegenSession<M: Module> {
+    pub(crate) module: M,
     fn_ids: HashMap<FuncId, cranelift_module::FuncId>,
     /// Imported libc symbols used to lower `panic` / `assert`. Populated
     /// once at session-start; declaring them unconditionally is harmless
@@ -175,30 +184,36 @@ struct CodegenSession {
     raw_print_strings: HashMap<Vec<u8>, DataId>,
 }
 
-impl CodegenSession {
-    fn new() -> Result<Self, String> {
-        let isa_builder = cranelift_native::builder()
-            .map_err(|e| format!("host ISA detection failed: {e}"))?;
-        let mut flag_builder = settings::builder();
-        flag_builder
-            .set("opt_level", "speed")
-            .map_err(|e| format!("flag set: {e}"))?;
-        // PIC is required by some platform linkers (notably recent macOS)
-        // for relocatable objects feeding into PIE executables.
-        flag_builder
-            .set("is_pic", "true")
-            .map_err(|e| format!("flag set: {e}"))?;
-        let isa = isa_builder
-            .finish(settings::Flags::new(flag_builder))
-            .map_err(|e| format!("ISA finish: {e}"))?;
-        let builder = ObjectBuilder::new(
-            isa,
-            "toylang_compiled".to_string(),
-            cranelift_module::default_libcall_names(),
-        )
-        .map_err(|e| format!("ObjectBuilder: {e}"))?;
-        let mut module = ObjectModule::new(builder);
+/// Construct the host-targeted ObjectModule used by the AOT pipeline.
+/// Pulled out of `CodegenSession::new` so the JIT path can build a
+/// `JITModule` with its own ISA settings and still funnel into the
+/// same generic `CodegenSession::new(module)`.
+pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
+    let isa_builder = cranelift_native::builder()
+        .map_err(|e| format!("host ISA detection failed: {e}"))?;
+    let mut flag_builder = settings::builder();
+    flag_builder
+        .set("opt_level", "speed")
+        .map_err(|e| format!("flag set: {e}"))?;
+    // PIC is required by some platform linkers (notably recent macOS)
+    // for relocatable objects feeding into PIE executables.
+    flag_builder
+        .set("is_pic", "true")
+        .map_err(|e| format!("flag set: {e}"))?;
+    let isa = isa_builder
+        .finish(settings::Flags::new(flag_builder))
+        .map_err(|e| format!("ISA finish: {e}"))?;
+    let builder = ObjectBuilder::new(
+        isa,
+        "toylang_compiled".to_string(),
+        cranelift_module::default_libcall_names(),
+    )
+    .map_err(|e| format!("ObjectBuilder: {e}"))?;
+    Ok(ObjectModule::new(builder))
+}
 
+impl<M: Module> CodegenSession<M> {
+    pub(crate) fn new(mut module: M) -> Result<Self, String> {
         // Declare libc imports up front. `puts(const char*) -> int`
         // is universally available on any platform whose system C
         // compiler is also our linker driver, and gives us a one-call
@@ -236,7 +251,7 @@ impl CodegenSession {
         let mut f64_unary_sig = Signature::new(call_conv);
         f64_unary_sig.params.push(AbiParam::new(types::F64));
         f64_unary_sig.returns.push(AbiParam::new(types::F64));
-        let declare_libm = |module: &mut ObjectModule, name: &str| -> Result<cranelift_module::FuncId, String> {
+        let declare_libm = |module: &mut M, name: &str| -> Result<cranelift_module::FuncId, String> {
             module
                 .declare_function(name, CLinkage::Import, &f64_unary_sig)
                 .map_err(|e| format!("declare {name}: {e}"))
@@ -259,7 +274,7 @@ impl CodegenSession {
         ptr_sig.params.push(AbiParam::new(types::I64));
 
         let declare_helper =
-            |module: &mut ObjectModule, name: &str, sig: &Signature| -> Result<cranelift_module::FuncId, String> {
+            |module: &mut M, name: &str, sig: &Signature| -> Result<cranelift_module::FuncId, String> {
                 module
                     .declare_function(name, CLinkage::Import, sig)
                     .map_err(|e| format!("declare {name}: {e}"))
@@ -307,7 +322,14 @@ impl CodegenSession {
         })
     }
 
-    fn declare_all(
+    /// Look up the cranelift `FuncId` previously assigned to an IR
+    /// function during `declare_all`. The JIT entry point uses this
+    /// to fetch the finalized address of `main`.
+    pub(crate) fn fn_id(&self, ir_id: FuncId) -> Option<cranelift_module::FuncId> {
+        self.fn_ids.get(&ir_id).copied()
+    }
+
+    pub(crate) fn declare_all(
         &mut self,
         ir_module: &IrModule,
         interner: &DefaultStringInterner,
@@ -498,7 +520,7 @@ impl CodegenSession {
         }
     }
 
-    fn define_function(
+    pub(crate) fn define_function(
         &mut self,
         ir_module: &IrModule,
         func_id: FuncId,

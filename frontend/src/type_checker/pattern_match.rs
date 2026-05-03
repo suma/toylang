@@ -199,6 +199,16 @@ impl<'a> TypeCheckerVisitor<'a> {
         //    undecidable in our simple analysis.
         let mut fully_covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
         let mut seen_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        // Deep-exhaustiveness tracking (96残 前半): for each top-level
+        // variant that some arm matched without a guard, record the
+        // arm's payload binding list. After the simple
+        // `seen_variants` check passes, we recursively walk these
+        // bindings to confirm every nested case is also covered.
+        // Without this, `match opt: Option<Option<i64>> {
+        // Some(Some(v)) => ..., None => ... }` slipped through with
+        // a runtime "no matching arm" panic on `Some(None)`.
+        let mut variant_payload_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<crate::ast::Pattern>>> =
+            std::collections::HashMap::new();
         let mut covered_int64: std::collections::HashSet<i64> = std::collections::HashSet::new();
         let mut covered_uint64: std::collections::HashSet<u64> = std::collections::HashSet::new();
         let mut covered_bool: std::collections::HashSet<bool> = std::collections::HashSet::new();
@@ -418,6 +428,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                     if !is_guarded {
                         seen_variants.insert(*pat_variant);
+                        // Stash the arm's payload bindings so the
+                        // deep-exhaustiveness pass below can walk
+                        // them position-by-position. Guarded arms
+                        // are excluded for the same reason
+                        // `seen_variants` excludes them — a guard
+                        // can fail at runtime so the arm doesn't
+                        // contribute to compile-time coverage.
+                        variant_payload_arms
+                            .entry(*pat_variant)
+                            .or_insert_with(Vec::new)
+                            .push(bindings.clone());
                     }
                 }
             }
@@ -497,6 +518,49 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
+        // Deep exhaustiveness (96残 前半): for each top variant
+        // covered without a fully-irrefutable arm, walk the
+        // payload positions and confirm any nested enum sub-
+        // patterns are also exhaustive. The overall match is
+        // exhaustive only if every top variant is fully covered
+        // (has_wildcard catches the rest). Wildcard / Name arm
+        // earlier already shortcuts every check, so this only
+        // runs when the user spelled out the variant arms.
+        if !has_wildcard {
+            if let ScrutineeKind::Enum { name: enum_name, type_args, variants } = &kind {
+                for variant in variants.iter() {
+                    if fully_covered_variants.contains(&variant.name) {
+                        continue;
+                    }
+                    if !seen_variants.contains(&variant.name) {
+                        // Already reported by the simple
+                        // missing-variant check above.
+                        continue;
+                    }
+                    let arms_for_variant = match variant_payload_arms.get(&variant.name) {
+                        Some(v) => v.clone(),
+                        None => continue,
+                    };
+                    let generic_params = self.context.enum_generic_params.get(enum_name).cloned().unwrap_or_default();
+                    let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+                    for (param, arg) in generic_params.iter().zip(type_args.iter()) {
+                        substitutions.insert(*param, arg.clone());
+                    }
+                    for (pos, payload_ty) in variant.payload_types.iter().enumerate() {
+                        let resolved = payload_ty.substitute_generics(&substitutions);
+                        let subpatterns_at_pos: Vec<crate::ast::Pattern> = arms_for_variant
+                            .iter()
+                            .map(|bindings| bindings[pos].clone())
+                            .collect();
+                        let enum_str = self.core.string_interner.resolve(*enum_name).unwrap_or("?").to_string();
+                        let v_str = self.core.string_interner.resolve(variant.name).unwrap_or("?").to_string();
+                        let context = format!("inside `{}::{}` payload position {}", enum_str, v_str, pos);
+                        self.check_subpatterns_exhaustive(&subpatterns_at_pos, &resolved, &context)?;
+                    }
+                }
+            }
+        }
+
         // All arms must share a common type.
         let first = arm_types[0].clone();
         for (i, t) in arm_types.iter().enumerate().skip(1) {
@@ -508,5 +572,139 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
         Ok(first)
+    }
+
+    /// Recursive helper for deep exhaustiveness. Determines whether
+    /// the given patterns cover every value of `position_type`.
+    /// The `context` string is used in error messages to point at
+    /// the payload position being checked.
+    ///
+    /// Strategy:
+    /// - If any pattern is irrefutable (Wildcard / Name), the position
+    ///   is fully covered — return Ok.
+    /// - If `position_type` is an Enum, group EnumVariant patterns by
+    ///   variant name. For each variant of the enum:
+    ///     * If no arm covers it → missing, error.
+    ///     * If some arm covers it with all-irrefutable sub-bindings →
+    ///       fully covered, continue.
+    ///     * Otherwise: recursively check each payload position with
+    ///       the gathered sub-patterns.
+    /// - For other types (primitive / tuple / unsupported), require an
+    ///   irrefutable pattern — without one, conservatively error so
+    ///   the runtime never sees an unmatched value.
+    fn check_subpatterns_exhaustive(
+        &self,
+        patterns: &[crate::ast::Pattern],
+        position_type: &TypeDecl,
+        context: &str,
+    ) -> Result<(), TypeCheckError> {
+        use crate::ast::Pattern;
+        // Any irrefutable pattern (Wildcard, Name) at this position
+        // covers all values — short-circuit.
+        if patterns.iter().any(is_irrefutable_pattern) {
+            return Ok(());
+        }
+        // Resolve the position type. Generic substitution has already
+        // been applied at the call site, so this only re-shapes
+        // `Identifier(enum_name)` into the canonical Enum form when
+        // the type checker hasn't fully propagated it.
+        // The frontend sometimes carries generic enum types as
+        // `TypeDecl::Struct(name, args)` (the type checker hasn't
+        // yet promoted them to `Enum`). Treat both forms uniformly
+        // by consulting `enum_definitions` for any name-bearing
+        // shape.
+        let resolved = match position_type {
+            TypeDecl::Identifier(sym) if self.context.enum_definitions.contains_key(sym) => {
+                TypeDecl::Enum(*sym, Vec::new())
+            }
+            TypeDecl::Struct(sym, args) if self.context.enum_definitions.contains_key(sym) => {
+                TypeDecl::Enum(*sym, args.clone())
+            }
+            other => other.clone(),
+        };
+        let (enum_name, type_args, variants) = match &resolved {
+            TypeDecl::Enum(name, args) => {
+                let v = match self.context.enum_definitions.get(name) {
+                    Some(v) => v.clone(),
+                    None => return Ok(()), // Unknown enum — defer to other checks.
+                };
+                (*name, args.clone(), v)
+            }
+            _ => {
+                // Non-enum position with no irrefutable pattern means
+                // the position can hide unmatched values. Be
+                // conservative and reject.
+                return Err(TypeCheckError::new(format!(
+                    "non-exhaustive match {}: position type {:?} is not fully covered — add a wildcard `_` or a bare name",
+                    context, position_type
+                )));
+            }
+        };
+        // Group sub-patterns by variant name; collect refutability
+        // and per-arm payload bindings.
+        let mut covered_variants: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut fully_covered: std::collections::HashSet<DefaultSymbol> = std::collections::HashSet::new();
+        let mut variant_arms: std::collections::HashMap<DefaultSymbol, Vec<Vec<Pattern>>> =
+            std::collections::HashMap::new();
+        for pat in patterns {
+            if let Pattern::EnumVariant(p_enum, p_variant, bindings) = pat {
+                if *p_enum != enum_name {
+                    continue;
+                }
+                covered_variants.insert(*p_variant);
+                if bindings.iter().all(is_irrefutable_pattern) {
+                    fully_covered.insert(*p_variant);
+                } else {
+                    variant_arms
+                        .entry(*p_variant)
+                        .or_insert_with(Vec::new)
+                        .push(bindings.clone());
+                }
+            }
+        }
+        // Missing variants: any enum variant not covered at all.
+        let missing: Vec<DefaultSymbol> = variants
+            .iter()
+            .filter(|v| !covered_variants.contains(&v.name))
+            .map(|v| v.name)
+            .collect();
+        if !missing.is_empty() {
+            let enum_str = self.core.string_interner.resolve(enum_name).unwrap_or("?").to_string();
+            let missing_strs: Vec<String> = missing
+                .iter()
+                .map(|s| self.core.string_interner.resolve(*s).unwrap_or("?").to_string())
+                .collect();
+            return Err(TypeCheckError::new(format!(
+                "non-exhaustive match {}: missing nested variant(s) {}::{{{}}} — add an arm for each or a wildcard / bare name",
+                context,
+                enum_str,
+                missing_strs.join(", ")
+            )));
+        }
+        // For each refutable-only variant, recurse into each payload
+        // position to check the gathered sub-patterns.
+        let generic_params = self.context.enum_generic_params.get(&enum_name).cloned().unwrap_or_default();
+        let mut substitutions: std::collections::HashMap<DefaultSymbol, TypeDecl> = std::collections::HashMap::new();
+        for (param, arg) in generic_params.iter().zip(type_args.iter()) {
+            substitutions.insert(*param, arg.clone());
+        }
+        for variant in variants.iter() {
+            if fully_covered.contains(&variant.name) {
+                continue;
+            }
+            let arms = match variant_arms.get(&variant.name) {
+                Some(a) => a,
+                None => continue,
+            };
+            for (pos, payload_ty) in variant.payload_types.iter().enumerate() {
+                let resolved_pty = payload_ty.substitute_generics(&substitutions);
+                let subpatterns_at_pos: Vec<Pattern> =
+                    arms.iter().map(|b| b[pos].clone()).collect();
+                let v_str = self.core.string_interner.resolve(variant.name).unwrap_or("?").to_string();
+                let nested_context = format!("{} → `{}` payload position {}", context, v_str, pos);
+                self.check_subpatterns_exhaustive(&subpatterns_at_pos, &resolved_pty, &nested_context)?;
+            }
+        }
+        Ok(())
     }
 }

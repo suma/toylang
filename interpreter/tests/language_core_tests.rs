@@ -2213,6 +2213,35 @@ mod enum_and_match {
     }
 
     #[test]
+    fn test_nested_pattern_missing_inner_variant_rejected() {
+        // 96残 前半 (deep exhaustiveness): the type checker now
+        // walks into nested EnumVariant payload positions so a
+        // match like `Some(Some(v))` + `None` (forgetting
+        // `Some(None)`) is rejected at compile time. Previously
+        // this slipped through (top-level `seen_variants` had
+        // both `Some` and `None`) and runtime would panic with
+        // "no matching arm" on `Some(None)`.
+        let source = r#"
+            enum Option<T> { None, Some(T) }
+
+            fn main() -> i64 {
+                val b: Option<Option<i64>> = Option::Some(Option::None)
+                match b {
+                    Option::Some(Option::Some(v)) => v,
+                    Option::None => -1i64,
+                }
+            }
+        "#;
+        let result = execute_test_program(source);
+        let err = result.expect_err("expected non-exhaustive nested match error");
+        assert!(
+            err.contains("non-exhaustive") && err.contains("Option::Some")
+                && err.contains("Option::{None}"),
+            "expected nested-exhaustiveness diagnostic; got: {}", err
+        );
+    }
+
+    #[test]
     fn test_nested_pattern_partial_variant_allows_followup_arm() {
         // Having `Some(Some(v))` and `Some(None)` as separate arms is fine;
         // the first only covers part of the `Some` value space, so the

@@ -35,7 +35,7 @@ use frontend::ast::ExprRef;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::{
-    Block, BlockId, FuncId, InstKind, Instruction, Module, Terminator, Type, ValueId,
+    Block, BlockId, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type, ValueId,
 };
 
 mod consts;
@@ -197,6 +197,24 @@ struct FunctionLower<'a> {
     /// Set via `set_active_subst` from the program-level driver
     /// when a `PendingMethodInstance` body is dequeued.
     active_subst: HashMap<DefaultSymbol, Type>,
+    /// Stage 1 of `&` references: when lowering a `&mut self`
+    /// method body, holds the receiver's leaf scalar `(LocalId,
+    /// Type)` list (in declaration order). Every `Return`
+    /// terminator appends `LoadLocal` of these to the user-
+    /// visible return values so the caller can write the
+    /// updated leaves back into its own receiver locals (the
+    /// Self-out-parameter convention). `None` for every other
+    /// function body — `terminate_return` is a no-op overlay
+    /// in that case.
+    self_writeback_locals: Option<Vec<(LocalId, Type)>>,
+    /// Stage 1 of `&` references: when `lower_method_body`
+    /// recognises a `&mut self` method, it stashes the self
+    /// parameter symbol here. `lower_body` snapshots the
+    /// post-binding receiver leaves into `self_writeback_locals`
+    /// when this is `Some`. Cleared back to `None` once the
+    /// snapshot is taken so subsequent (non-method) bodies in
+    /// the same `FunctionLower` reuse cycle aren't affected.
+    pending_self_writeback_param: Option<DefaultSymbol>,
 }
 
 impl<'a> FunctionLower<'a> {

@@ -227,7 +227,20 @@ impl<'a> FunctionLower<'a> {
         // `self_type` is supplied by the caller (Type::Struct(...) or
         // Type::Enum(...)) so this branch works for both struct and
         // enum receivers.
-        let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len());
+        let mut params: Vec<Type> = Vec::with_capacity(template.parameter.len() + 1);
+        // Stage 1 of `&` references: implicit `&self` / `&mut self`
+        // receivers don't appear in `template.parameter`. Prepend
+        // the self_type so the IR signature has the same shape the
+        // body lowering will see (lower_method_body inserts a
+        // matching synthetic `(self, Self)` entry into its
+        // parameter list).
+        if template.has_self_param
+            && template.parameter.first().map(|(n, _)| {
+                self.interner.resolve(*n) != Some("self")
+            }).unwrap_or(true)
+        {
+            params.push(self_type);
+        }
         for (pname, pty) in &template.parameter {
             let lowered = self
                 .lower_method_param_type(pty, &subst, self_type)
@@ -549,6 +562,56 @@ impl<'a> FunctionLower<'a> {
                 .lower_expr(a)?
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
+        }
+        // Stage 1 of `&` references: if the method is `&mut self`,
+        // emit `CallWithSelfWriteback` so the cranelift call's
+        // trailing self-leaf return values are stored back into
+        // the receiver binding's leaf locals — propagating the
+        // mutation to the caller. Restricted to struct receivers
+        // because writeback for enum receivers needs additional
+        // tag/payload-slot plumbing (deferred). Falls through to
+        // a regular `Call` for `self: Self` / `&self` methods.
+        let template_self_is_mut = self
+            .method_registry
+            .get(&(target_sym, method))
+            .map(|m| m.self_is_mut && m.has_self_param)
+            .unwrap_or(false);
+        if template_self_is_mut {
+            if let Binding::Struct { fields, .. } = &binding {
+                let self_dests: Vec<crate::ir::LocalId> = flatten_struct_locals(fields)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                let ret_ty_opt = if ret_ty.produces_value() {
+                    Some(ret_ty)
+                } else {
+                    None
+                };
+                let ret_dest = ret_ty_opt.map(|ty| {
+                    self.module.function_mut(self.func_id).add_local(ty)
+                });
+                self.emit(
+                    InstKind::CallWithSelfWriteback {
+                        target,
+                        args: values,
+                        ret_dest,
+                        ret_ty: ret_ty_opt,
+                        self_dests,
+                    },
+                    None,
+                );
+                // Surface the user-return value (loaded from
+                // `ret_dest`) so the caller's expression-position
+                // consumer sees a regular ValueId.
+                let result = match (ret_dest, ret_ty_opt) {
+                    (Some(local), Some(ty)) => Some(
+                        self.emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value"),
+                    ),
+                    _ => None,
+                };
+                return Ok(result);
+            }
         }
         let inst = InstKind::Call { target, args: values };
         let result_ty = if ret_ty.produces_value() {

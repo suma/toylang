@@ -147,7 +147,7 @@ impl<'a> FunctionLower<'a> {
                             values.push(v);
                         }
                         self.emit_ensures_checks(&values)?;
-                        self.terminate(Terminator::Return(values));
+                        self.terminate_return(values);
                         return Ok(None);
                     }
                     // Tuple literal in explicit return: lower it
@@ -169,7 +169,7 @@ impl<'a> FunctionLower<'a> {
                             values.push(v);
                         }
                         self.emit_ensures_checks(&values)?;
-                        self.terminate(Terminator::Return(values));
+                        self.terminate_return(values);
                         return Ok(None);
                     }
                     return Err(
@@ -216,7 +216,7 @@ impl<'a> FunctionLower<'a> {
                         values.push(v);
                     }
                     self.emit_ensures_checks(&values)?;
-                    self.terminate(Terminator::Return(values));
+                    self.terminate_return(values);
                     return Ok(None);
                 }
                 // Enum returns: rhs must be a bare identifier of an
@@ -243,7 +243,7 @@ impl<'a> FunctionLower<'a> {
                         };
                         let values = self.load_enum_locals(&storage);
                         self.emit_ensures_checks(&values)?;
-                        self.terminate(Terminator::Return(values));
+                        self.terminate_return(values);
                         return Ok(None);
                     }
                     return Err(
@@ -258,11 +258,11 @@ impl<'a> FunctionLower<'a> {
                 match (ret_ty, val) {
                     (Type::Unit, _) => {
                         self.emit_ensures_checks(&[])?;
-                        self.terminate(Terminator::Return(vec![]));
+                        self.terminate_return(vec![]);
                     }
                     (_, Some(v)) => {
                         self.emit_ensures_checks(&[v])?;
-                        self.terminate(Terminator::Return(vec![v]));
+                        self.terminate_return(vec![v]);
                     }
                     (_, None) => {
                         return Err("return without value in non-Unit function".to_string());

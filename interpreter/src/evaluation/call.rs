@@ -138,17 +138,49 @@ impl EvaluationContext<'_> {
         // Create new scope for method execution
         self.environment.enter_block();
 
+        // Stage 1 of `&` references: implicit `&self` / `&mut self`
+        // receivers don't appear in `method.parameter` (the parser
+        // only flips `has_self_param=true`). Bind the `self`
+        // identifier explicitly to the same Rc the caller passed
+        // — RefCell semantics give reference behaviour for free,
+        // so `&self` / `&mut self` / `self: Self` are runtime-
+        // equivalent here. The frontend type checker enforces
+        // mutability at compile time.
+        let first_param_is_self = method
+            .parameter
+            .first()
+            .and_then(|(sym, _)| self.string_interner.resolve(*sym))
+            .map(|name| name == "self")
+            .unwrap_or(false);
+        let bind_implicit_self = method.has_self_param && !first_param_is_self;
+        if bind_implicit_self {
+            if let Some(self_sym) = self.string_interner.get("self") {
+                self.environment.set_val(self_sym, self_obj.clone().into());
+            }
+        }
+
         // Set up method parameters
         let mut param_index = 0;
 
         // Bind method parameters - first parameter should be self
+        // (when the source uses the `self: Self` form)
         for (param_symbol, _param_type) in &method.parameter {
-            if param_index == 0 {
-                // First parameter is 'self' - bind the object
+            if param_index == 0 && first_param_is_self {
+                // First parameter is `self: Self` - bind the object
                 self.environment.set_val(*param_symbol, self_obj.clone().into());
-            } else if param_index - 1 < args.len() {
-                // Subsequent parameters are regular args
-                self.environment.set_val(*param_symbol, args[param_index - 1].clone().into());
+            } else {
+                // Subsequent parameters are regular args. With
+                // an implicit self receiver the first method.parameter
+                // entry IS the first user arg, so use param_index
+                // directly when self isn't in the list.
+                let arg_idx = if first_param_is_self {
+                    if param_index == 0 { continue; } else { param_index - 1 }
+                } else {
+                    param_index
+                };
+                if arg_idx < args.len() {
+                    self.environment.set_val(*param_symbol, args[arg_idx].clone().into());
+                }
             }
             param_index += 1;
         }
@@ -267,9 +299,18 @@ impl EvaluationContext<'_> {
         // Create new scope for method execution
         self.environment.enter_block();
 
-        // Set up method parameters - skip self parameter for associated functions
+        // Set up method parameters - skip self parameter for associated functions.
+        // Stage 1 of `&` references: with `&self` / `&mut self` (the
+        // implicit form), `self` is not in `method.parameter`, so
+        // there is nothing to skip — every entry is a user arg.
+        let first_param_is_self = method
+            .parameter
+            .first()
+            .and_then(|(sym, _)| self.string_interner.resolve(*sym))
+            .map(|name| name == "self")
+            .unwrap_or(false);
+        let skip_self = method.has_self_param && first_param_is_self;
         let mut param_index = 0;
-        let skip_self = method.has_self_param;
 
         // Bind method parameters
         for (param_symbol, _param_type) in &method.parameter {

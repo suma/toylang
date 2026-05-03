@@ -283,6 +283,47 @@ fn aot_heap_alloc_round_trip() {
 }
 
 #[test]
+fn aot_mut_self_propagates_field_mutation() {
+    // Stage 1 of `&` references — `&mut self` Phase 1b: a method
+    // declared with `&mut self` mutates `self.field` and the
+    // change must propagate back to the caller's struct binding.
+    // Implementation: the method's IR signature gains trailing
+    // self-leaf return slots (Self-out-parameter convention),
+    // every Return appends LoadLocal-of-leaves, and the call
+    // site uses `InstKind::CallWithSelfWriteback` to store the
+    // returned leaves back into the receiver's leaf locals via
+    // `def_var`. Without the writeback (the prior behavior),
+    // `c.bump()` would leave `c.value` at 0 in the caller.
+    //
+    // Three `bump()` calls + a `read()` should observe value=3
+    // across interpreter / JIT (silent fallback) / AOT.
+    let src = r#"
+        struct Counter {
+            value: u64
+        }
+
+        impl Counter {
+            fn bump(&mut self) {
+                self.value = self.value + 1u64
+            }
+
+            fn read(self: Self) -> u64 {
+                self.value
+            }
+        }
+
+        fn main() -> u64 {
+            var c = Counter { value: 0u64 }
+            c.bump()
+            c.bump()
+            c.bump()
+            c.read()
+        }
+    "#;
+    assert_consistent(src, "aot_mut_self_propagates_field_mutation");
+}
+
+#[test]
 fn aot_dict_contains_key_empty_uses_per_monomorph_subst() {
     // DICT-AOT-NEW Phase C: per-monomorph generic subst lets a
     // method body's `val existing: K = __builtin_ptr_read(...)`

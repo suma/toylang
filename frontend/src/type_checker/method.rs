@@ -242,6 +242,26 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
     /// Setup method parameter context for type checking
     fn setup_method_parameter_context(&mut self, method: &Rc<MethodFunction>) {
         self.context.push_scope();
+        // Stage 1 of `&` references: implicit `&self` / `&mut self`
+        // receivers don't appear in `method.parameter` (the parser
+        // only sets `has_self_param=true` and tracks mutability via
+        // `self_is_mut`). Bind the `self` identifier to the
+        // resolved Self type explicitly so the method body can
+        // reference `self.field` without a per-form parser hack.
+        // The `self: Self` form continues to bind `self` through
+        // the regular parameter loop below.
+        if method.has_self_param {
+            let self_type = self.resolve_self_type(&TypeDecl::Self_);
+            // "self" is virtually always pre-interned because any
+            // method body that has `&self` / `&mut self` reaches
+            // here only after the parser has tokenised the
+            // identifier `self` at least once. `get` is sufficient
+            // for the same reason `instantiate_generic_method_with_self_type`
+            // uses it for the synthetic `Self` subst entry.
+            if let Some(self_sym) = self.core.string_interner.get("self") {
+                self.context.set_var(self_sym, self_type);
+            }
+        }
         for (param_name, param_type) in &method.parameter {
             let resolved_param_type = self.resolve_self_type(param_type);
             self.context.set_var(*param_name, resolved_param_type);

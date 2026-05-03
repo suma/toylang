@@ -167,6 +167,7 @@ impl Module {
             linkage,
             params,
             return_type,
+            self_writeback_types: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             blocks: Vec::new(),
@@ -208,6 +209,7 @@ impl Module {
             linkage,
             params,
             return_type,
+            self_writeback_types: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
             blocks: Vec::new(),
@@ -342,6 +344,13 @@ pub struct Function {
     /// are `LocalId(0)..LocalId(params.len())`.
     pub params: Vec<Type>,
     pub return_type: Type,
+    /// Stage 1 of `&` references: for `&mut self` methods only,
+    /// the leaf scalar types appended to the function's cranelift
+    /// return signature so a single `Call` returns
+    /// `(user_return_leaves..., self_leaves...)`. Empty for every
+    /// other function. The order matches `flatten_struct_locals`
+    /// of the receiver's struct.
+    pub self_writeback_types: Vec<Type>,
     /// Typed local slots. Indices `0..params.len()` are the parameters;
     /// later indices are the `val` / `var` bindings introduced by the
     /// function body. Locals are mutable cells in this IR; SSA construction
@@ -706,6 +715,28 @@ pub enum InstKind {
     /// `ptr + offset`. The value's IR type is captured at lower
     /// time so codegen picks the matching `store.<cl_ty>`.
     PtrWrite { ptr: ValueId, offset: ValueId, value: ValueId, value_ty: Type },
+    /// Stage 1 of `&` references: call to a `&mut self` method.
+    /// The cranelift call returns
+    /// `(user_return_leaves..., self_writeback_leaves...)`; codegen
+    /// stores the user-return part into `ret_dest` (when the method
+    /// produces a value) and the writeback part into `self_dests`
+    /// (the receiver's leaf locals). The two dest groups together
+    /// match the callee's `Function::self_writeback_types` shape.
+    /// The instruction's own `result` slot is unused — user-visible
+    /// return value flows through `ret_dest` so the caller's
+    /// scalar-binding path stays unchanged.
+    CallWithSelfWriteback {
+        target: FuncId,
+        args: Vec<ValueId>,
+        /// `Some(local)` when the method's user-visible return type
+        /// produces a single scalar/Unit-but-ignored value;
+        /// `None` for Unit returns that aren't bound.
+        ret_dest: Option<LocalId>,
+        ret_ty: Option<Type>,
+        /// One LocalId per receiver leaf, in declaration order
+        /// (matches `flatten_struct_locals`).
+        self_dests: Vec<LocalId>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1131,6 +1162,15 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::PtrWrite { ptr, offset, value, value_ty } => {
                 write!(f, "ptr_write {ptr}, {offset} <- {value}: {value_ty}")
+            }
+            InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
+                let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                let ret_str = match ret_dest {
+                    Some(l) => format!("ret={l}, "),
+                    None => String::new(),
+                };
+                let dest_str = self_dests.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+                write!(f, "call_mut_self {target:?}({arg_str}) -> {ret_str}self_dests=[{dest_str}]")
             }
         }
     }

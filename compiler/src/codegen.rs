@@ -436,7 +436,12 @@ impl<M: Module> CodegenSession<M> {
     ) -> Result<(), String> {
         for (i, func) in ir_module.functions.iter().enumerate() {
             let id = FuncId(i as u32);
-            let sig = self.cranelift_signature(ir_module, &func.params, func.return_type);
+            let sig = self.cranelift_signature_with_writeback(
+                ir_module,
+                &func.params,
+                func.return_type,
+                &func.self_writeback_types,
+            );
             let linkage = match func.linkage {
                 Linkage::Export => CLinkage::Export,
                 Linkage::Local => CLinkage::Local,
@@ -599,12 +604,31 @@ impl<M: Module> CodegenSession<M> {
         params: &[IrType],
         ret: IrType,
     ) -> Signature {
+        self.cranelift_signature_with_writeback(ir_module, params, ret, &[])
+    }
+
+    /// Stage 1 of `&` references: variant of `cranelift_signature`
+    /// that appends extra trailing return slots for `&mut self`
+    /// methods. Each entry in `writeback` is a single scalar
+    /// (compound writeback isn't supported in Phase 1) and lands as
+    /// one cranelift return slot in the same order so caller-side
+    /// `CallWithSelfWriteback` lowering can read them off.
+    fn cranelift_signature_with_writeback(
+        &self,
+        ir_module: &IrModule,
+        params: &[IrType],
+        ret: IrType,
+        writeback: &[IrType],
+    ) -> Signature {
         let call_conv = self.module.target_config().default_call_conv;
         let mut s = Signature::new(call_conv);
         for p in params {
             self.push_param(&mut s, ir_module, *p);
         }
         self.push_return(&mut s, ir_module, ret);
+        for w in writeback {
+            self.push_return(&mut s, ir_module, *w);
+        }
         s
     }
 
@@ -631,7 +655,12 @@ impl<M: Module> CodegenSession<M> {
             .get(&func_id)
             .ok_or_else(|| format!("function {} not declared", func.export_name))?;
         let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature(ir_module, &func.params, func.return_type);
+        ctx.func.signature = self.cranelift_signature_with_writeback(
+            ir_module,
+            &func.params,
+            func.return_type,
+            &func.self_writeback_types,
+        );
         // Pre-declare every same-module function as an import on this
         // function so `Call` lowering doesn't have to re-borrow the
         // module mid-emission.
@@ -674,7 +703,12 @@ impl<M: Module> CodegenSession<M> {
     ) -> Result<String, String> {
         let func = ir_module.function(func_id);
         let mut ctx = Context::new();
-        ctx.func.signature = self.cranelift_signature(ir_module, &func.params, func.return_type);
+        ctx.func.signature = self.cranelift_signature_with_writeback(
+            ir_module,
+            &func.params,
+            func.return_type,
+            &func.self_writeback_types,
+        );
         let imports = self.declare_imports(&mut ctx.func);
         let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
@@ -1657,6 +1691,41 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     addr,
                     0,
                 );
+            }
+            // Stage 1 of `&` references: call to a `&mut self`
+            // method. The cranelift call returns
+            // `(user_return_leaves..., self_writeback_leaves...)`
+            // — index 0 is the user-visible scalar return (when
+            // `ret_ty` is Some) and the trailing slots are the
+            // receiver leaves to store back into the caller's
+            // binding locals via `def_var`.
+            InstKind::CallWithSelfWriteback { target, args, ret_dest, ret_ty: _, self_dests } => {
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                let expected = ret_dest.map(|_| 1usize).unwrap_or(0) + self_dests.len();
+                if results.len() != expected {
+                    return Err(format!(
+                        "internal error: call_with_self_writeback returned {} value(s), expected {}",
+                        results.len(),
+                        expected,
+                    ));
+                }
+                let mut idx = 0usize;
+                if let Some(local) = ret_dest {
+                    let var = self.local(*local);
+                    self.builder.def_var(var, results[idx]);
+                    idx += 1;
+                }
+                for local in self_dests {
+                    let var = self.local(*local);
+                    self.builder.def_var(var, results[idx]);
+                    idx += 1;
+                }
             }
         }
         Ok(())

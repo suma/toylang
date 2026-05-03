@@ -309,7 +309,32 @@ pub fn lower_program(
         // widths and `ir_to_cranelift_ty` produces the matching
         // I8 / I16 / I32 cranelift type. The Phase 6 silent-skip
         // arm is no longer needed.
-        let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len());
+        let mut params: Vec<Type> = Vec::with_capacity(method.parameter.len() + 1);
+        // Stage 1 of `&` references: implicit `&self` / `&mut self`
+        // receivers don't appear in `method.parameter`. Prepend
+        // the lowered self type so the IR signature matches what
+        // `lower_method_body` will see (it inserts a synthetic
+        // `(self, Self)` entry into its parameter list).
+        if method.has_self_param
+            && method.parameter.first().map(|(n, _)| {
+                interner.resolve(*n) != Some("self")
+            }).unwrap_or(true)
+        {
+            let self_lowered = lower_param_or_return_type(
+                &self_decl,
+                &struct_defs,
+                &enum_defs,
+                &mut module,
+                interner,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "compiler MVP cannot lower implicit `&self` receiver type `{:?}`",
+                    self_decl
+                )
+            })?;
+            params.push(self_lowered);
+        }
         for (pname, pty) in &method.parameter {
             // `self: Self` — substitute Self for the impl's target.
             // The parser emits `TypeDecl::Self_` for the literal
@@ -603,6 +628,8 @@ impl<'a> FunctionLower<'a> {
             method_instances,
             pending_method_work,
             active_subst: HashMap::new(),
+            self_writeback_locals: None,
+            pending_self_writeback_param: None,
         })
     }
 
@@ -612,6 +639,23 @@ impl<'a> FunctionLower<'a> {
     /// keeps the fact that the body is monomorphised visible.
     pub(super) fn set_active_subst(&mut self, subst: Vec<(DefaultSymbol, Type)>) {
         self.active_subst = subst.into_iter().collect();
+    }
+
+    /// Centralised `Terminator::Return` emission. Appends the
+    /// `&mut self` receiver writeback leaves (when applicable)
+    /// after the user-visible return values. Use this in place of
+    /// `self.terminate(Terminator::Return(...))` everywhere — the
+    /// no-writeback case is a thin pass-through.
+    pub(super) fn terminate_return(&mut self, mut values: Vec<ValueId>) {
+        if let Some(locals) = self.self_writeback_locals.clone() {
+            for (local, ty) in locals {
+                let v = self
+                    .emit(InstKind::LoadLocal(local), Some(ty))
+                    .expect("LoadLocal returns a value");
+                values.push(v);
+            }
+        }
+        self.terminate(crate::ir::Terminator::Return(values));
     }
 
     /// Method-flavoured entry to body lowering. Methods share
@@ -635,7 +679,7 @@ impl<'a> FunctionLower<'a> {
         // `Identifier(target_struct)` fallback would fail downstream.
         let self_decl = primitive_type_decl_for_target_sym(target_struct, self.interner)
             .unwrap_or(TypeDecl::Identifier(target_struct));
-        let parameter: Vec<(DefaultSymbol, TypeDecl)> = method
+        let mut parameter: Vec<(DefaultSymbol, TypeDecl)> = method
             .parameter
             .iter()
             .map(|(n, t)| {
@@ -651,6 +695,23 @@ impl<'a> FunctionLower<'a> {
                 (*n, resolved)
             })
             .collect();
+        // Stage 1 of `&` references: implicit `&self` / `&mut self`
+        // receivers don't appear in `method.parameter` (the parser
+        // only flips `has_self_param=true` and stores the
+        // mutability separately). Materialise the missing entry
+        // here so `lower_body` allocates a binding for the `self`
+        // identifier just like it does for any normal parameter.
+        // The leading position matches how `instantiate_generic_method_with_self_type`
+        // already arranges params for receiver-pointer methods.
+        if method.has_self_param
+            && parameter.first().map(|(n, _)| {
+                self.interner.resolve(*n) != Some("self")
+            }).unwrap_or(true)
+        {
+            if let Some(self_sym) = self.interner.get("self") {
+                parameter.insert(0, (self_sym, self_decl.clone()));
+            }
+        }
         // Build a synthetic Function-shaped value and delegate. We
         // keep `name` / `generic_*` / `visibility` empty since
         // lower_body only reads parameter / requires / ensures / code.
@@ -667,6 +728,18 @@ impl<'a> FunctionLower<'a> {
             is_extern: false,
             visibility: method.visibility.clone(),
         };
+        // Stage 1 of `&` references: remember whether this body
+        // is a `&mut self` method. After parameter binding (in
+        // `lower_body`), we'll snapshot the receiver's leaf
+        // locals into `self_writeback_locals` so every `Return`
+        // appends them. The `pending_self_writeback_param` field
+        // carries the self parameter symbol across the call.
+        if method.self_is_mut
+            && method.has_self_param
+            && !synthetic.parameter.is_empty()
+        {
+            self.pending_self_writeback_param = Some(synthetic.parameter[0].0);
+        }
         self.lower_body(&synthetic)
     }
 
@@ -724,6 +797,25 @@ impl<'a> FunctionLower<'a> {
         let entry = self.module.function_mut(self.func_id).add_block();
         self.module.function_mut(self.func_id).entry = entry;
         self.current_block = Some(entry);
+
+        // Stage 1 of `&` references: snapshot the receiver's leaf
+        // locals into `self_writeback_locals` and store the type
+        // list onto the IR Function. From here on, every
+        // `terminate_return` call appends LoadLocal-of-leaf
+        // values to the user-visible return slot list, and the
+        // codegen layer extends the cranelift signature's return
+        // shape from `self_writeback_types`.
+        if let Some(self_sym) = self.pending_self_writeback_param.take() {
+            if let Some(super::bindings::Binding::Struct { fields, .. }) =
+                self.bindings.get(&self_sym).cloned()
+            {
+                let leaves = super::bindings::flatten_struct_locals(&fields);
+                let writeback_types: Vec<Type> = leaves.iter().map(|(_, t)| *t).collect();
+                self.module.function_mut(self.func_id).self_writeback_types =
+                    writeback_types;
+                self.self_writeback_locals = Some(leaves);
+            }
+        }
 
         // Emit `requires` checks at function entry. Each predicate
         // is evaluated; if false the function aborts via the same
@@ -788,7 +880,7 @@ impl<'a> FunctionLower<'a> {
         match (ret_ty, body_value) {
             (Type::Unit, _) => {
                 self.emit_ensures_checks(&[])?;
-                self.terminate(Terminator::Return(vec![]));
+                self.terminate_return(vec![]);
                 Ok(())
             }
             (Type::Tuple(_tuple_id), _) => {
@@ -808,7 +900,7 @@ impl<'a> FunctionLower<'a> {
                     values.push(v);
                 }
                 self.emit_ensures_checks(&values)?;
-                self.terminate(Terminator::Return(values));
+                self.terminate_return(values);
                 Ok(())
             }
             (Type::Struct(_struct_name), _) => {
@@ -840,7 +932,7 @@ impl<'a> FunctionLower<'a> {
                 // a single representative value is enough — and most
                 // contracts focus on scalar return values anyway.
                 self.emit_ensures_checks(&values)?;
-                self.terminate(Terminator::Return(values));
+                self.terminate_return(values);
                 Ok(())
             }
             (Type::Enum(_), _) => {
@@ -857,12 +949,12 @@ impl<'a> FunctionLower<'a> {
                 // can't dispatch on variants in this MVP anyway, so
                 // tag-as-result is good enough.
                 self.emit_ensures_checks(&values)?;
-                self.terminate(Terminator::Return(values));
+                self.terminate_return(values);
                 Ok(())
             }
             (_, Some(v)) => {
                 self.emit_ensures_checks(&[v])?;
-                self.terminate(Terminator::Return(vec![v]));
+                self.terminate_return(vec![v]);
                 Ok(())
             }
             (_, None) => Err(

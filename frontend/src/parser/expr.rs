@@ -1029,6 +1029,30 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                     let location = parser.current_source_location();
                     parser.ast_builder.int64_expr(num, Some(location))
                 },
+                Some(&Kind::UInt32(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.uint32_expr(num, Some(location))
+                },
+                Some(&Kind::Int32(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.int32_expr(num, Some(location))
+                },
+                Some(&Kind::UInt16(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.uint16_expr(num, Some(location))
+                },
+                Some(&Kind::Int16(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.int16_expr(num, Some(location))
+                },
+                Some(&Kind::UInt8(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.uint8_expr(num, Some(location))
+                },
+                Some(&Kind::Int8(num)) => {
+                    let location = parser.current_source_location();
+                    parser.ast_builder.int8_expr(num, Some(location))
+                },
                 Some(&Kind::Float64(num)) => {
                     let location = parser.current_source_location();
                     parser.ast_builder.float64_expr(num, Some(location))

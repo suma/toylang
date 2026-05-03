@@ -184,6 +184,12 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
         match type_decl {
             TypeDecl::Int64 => "i64".to_string(),
             TypeDecl::UInt64 => "u64".to_string(),
+            TypeDecl::Int32 => "i32".to_string(),
+            TypeDecl::UInt32 => "u32".to_string(),
+            TypeDecl::Int16 => "i16".to_string(),
+            TypeDecl::UInt16 => "u16".to_string(),
+            TypeDecl::Int8 => "i8".to_string(),
+            TypeDecl::UInt8 => "u8".to_string(),
             TypeDecl::Float64 => "f64".to_string(),
             TypeDecl::Bool => "bool".to_string(),
             TypeDecl::String => "str".to_string(),

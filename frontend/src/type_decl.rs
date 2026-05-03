@@ -8,6 +8,16 @@ pub enum TypeDecl {
     UInt64,
     Float64,
     Bool,
+    // NUM-W: narrow integer types. The lexer maps the keywords
+    // `u8` / `u16` / `u32` / `i8` / `i16` / `i32` to these
+    // variants and the parser threads them through the same
+    // type-annotation path the existing `i64` / `u64` use.
+    Int8,
+    Int16,
+    Int32,
+    UInt8,
+    UInt16,
+    UInt32,
     Identifier(DefaultSymbol),
     String,
     Number,  // Type-unspecified numeric literal for type inference

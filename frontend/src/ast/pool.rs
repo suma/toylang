@@ -62,6 +62,17 @@ pub enum ExprType {
     Match = 30,
     Range = 31,
     Float64 = 32,
+    // NUM-W narrow integer literal discriminants. Storage
+    // piggybacks on the existing `int64_val` / `uint64_val`
+    // arrays (the lexer already validates the value fits at the
+    // narrow width); the discriminant here is what subsequent
+    // passes use to recover the exact type.
+    Int8 = 33,
+    Int16 = 34,
+    Int32 = 35,
+    UInt8 = 36,
+    UInt16 = 37,
+    UInt32 = 38,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -262,6 +273,33 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::UInt64;
                 self.uint64_val[index] = Some(value);
             }
+            // NUM-W narrow ints share the int64_val / uint64_val
+            // storage; the discriminant captures the actual width
+            // so `get` can reconstruct the right Expr variant.
+            Expr::Int8(value) => {
+                self.expr_types[index] = ExprType::Int8;
+                self.int64_val[index] = Some(value as i64);
+            }
+            Expr::Int16(value) => {
+                self.expr_types[index] = ExprType::Int16;
+                self.int64_val[index] = Some(value as i64);
+            }
+            Expr::Int32(value) => {
+                self.expr_types[index] = ExprType::Int32;
+                self.int64_val[index] = Some(value as i64);
+            }
+            Expr::UInt8(value) => {
+                self.expr_types[index] = ExprType::UInt8;
+                self.uint64_val[index] = Some(value as u64);
+            }
+            Expr::UInt16(value) => {
+                self.expr_types[index] = ExprType::UInt16;
+                self.uint64_val[index] = Some(value as u64);
+            }
+            Expr::UInt32(value) => {
+                self.expr_types[index] = ExprType::UInt32;
+                self.uint64_val[index] = Some(value as u64);
+            }
             Expr::Number(symbol) => {
                 self.expr_types[index] = ExprType::Number;
                 self.symbol_val[index] = Some(symbol);
@@ -424,6 +462,15 @@ impl ExprPool {
             ExprType::UInt64 => {
                 Some(Expr::UInt64(self.uint64_val[index]?))
             }
+            // NUM-W narrow int reconstruction. Storage is the
+            // shared int64_val / uint64_val slot; we truncate
+            // back to the discriminant's width.
+            ExprType::Int8 => Some(Expr::Int8(self.int64_val[index]? as i8)),
+            ExprType::Int16 => Some(Expr::Int16(self.int64_val[index]? as i16)),
+            ExprType::Int32 => Some(Expr::Int32(self.int64_val[index]? as i32)),
+            ExprType::UInt8 => Some(Expr::UInt8(self.uint64_val[index]? as u8)),
+            ExprType::UInt16 => Some(Expr::UInt16(self.uint64_val[index]? as u16)),
+            ExprType::UInt32 => Some(Expr::UInt32(self.uint64_val[index]? as u32)),
             ExprType::Number => {
                 Some(Expr::Number(self.symbol_val[index]?))
             }
@@ -624,6 +671,30 @@ impl ExprPool {
             Expr::UInt64(val) => {
                 self.expr_types[index] = ExprType::UInt64;
                 self.uint64_val[index] = Some(val);
+            }
+            Expr::Int8(val) => {
+                self.expr_types[index] = ExprType::Int8;
+                self.int64_val[index] = Some(val as i64);
+            }
+            Expr::Int16(val) => {
+                self.expr_types[index] = ExprType::Int16;
+                self.int64_val[index] = Some(val as i64);
+            }
+            Expr::Int32(val) => {
+                self.expr_types[index] = ExprType::Int32;
+                self.int64_val[index] = Some(val as i64);
+            }
+            Expr::UInt8(val) => {
+                self.expr_types[index] = ExprType::UInt8;
+                self.uint64_val[index] = Some(val as u64);
+            }
+            Expr::UInt16(val) => {
+                self.expr_types[index] = ExprType::UInt16;
+                self.uint64_val[index] = Some(val as u64);
+            }
+            Expr::UInt32(val) => {
+                self.expr_types[index] = ExprType::UInt32;
+                self.uint64_val[index] = Some(val as u64);
             }
             Expr::Float64(val) => {
                 self.expr_types[index] = ExprType::Float64;

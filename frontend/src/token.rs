@@ -41,6 +41,15 @@ pub enum Kind {
     I64,
     F64,
     USize,
+    // Narrow integer keywords (NUM-W). Same surface shape as
+    // U64/I64 — keyword + literal-suffix + value-carrying token
+    // for parsed numeric literals (`42u8` / `0xFFi32`).
+    U8,
+    U16,
+    U32,
+    I8,
+    I16,
+    I32,
     Str,
     Ptr,
     Null,
@@ -101,6 +110,16 @@ pub enum Kind {
     Int64(i64),
     UInt64(u64),
     Float64(f64),
+    // Narrow numeric literal tokens (NUM-W). Each carries the
+    // already-parsed value at its native width; the lexer
+    // validates the suffixed text fits the range and falls back
+    // to `Integer(text)` on overflow (mirrors the U64/I64 path).
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     String(String),
     Integer(String),
 
@@ -122,6 +141,7 @@ impl Kind {
             Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
             Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
             Kind::Val | Kind::Var | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
+            Kind::U8 | Kind::U16 | Kind::U32 | Kind::I8 | Kind::I16 | Kind::I32 |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )
     }

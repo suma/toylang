@@ -140,6 +140,16 @@ pub enum Expr {
     False,
     Int64(i64),
     UInt64(u64),
+    // NUM-W narrow integer literals. Same shape as Int64 / UInt64;
+    // the parser produces these when the lexer hands back a typed
+    // literal token (`42u8` / `0xFFi32` / `7i16` ...). The
+    // values are pre-validated to fit by the lexer.
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     Float64(f64),
     Number(DefaultSymbol),
     Identifier(DefaultSymbol),

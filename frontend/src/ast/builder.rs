@@ -112,6 +112,40 @@ impl AstBuilder {
         expr_ref
     }
 
+    // NUM-W narrow-integer literal builders. Same shape as
+    // int64_expr / uint64_expr; the parser hands the lexer-validated
+    // value straight into the pool.
+    pub fn int8_expr(&mut self, value: i8, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Int8(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    pub fn int16_expr(&mut self, value: i16, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Int16(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    pub fn int32_expr(&mut self, value: i32, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Int32(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    pub fn uint8_expr(&mut self, value: u8, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::UInt8(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    pub fn uint16_expr(&mut self, value: u16, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::UInt16(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+    pub fn uint32_expr(&mut self, value: u32, location: Option<SourceLocation>) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::UInt32(value));
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn bool_true_expr(&mut self, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::True);
         self.location_pool.add_expr_location(location);

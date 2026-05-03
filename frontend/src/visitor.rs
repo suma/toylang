@@ -25,6 +25,28 @@ pub trait AstVisitor {
     fn visit_call(&mut self, fn_name: DefaultSymbol, args: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_int64_literal(&mut self, value: &i64) -> Result<TypeDecl, TypeCheckError>;
     fn visit_uint64_literal(&mut self, value: &u64) -> Result<TypeDecl, TypeCheckError>;
+    // NUM-W narrow integer literal visitors. Default impls just
+    // return the matching TypeDecl without consulting the value
+    // (the lexer already validated the range fit). Implementors
+    // can override if they need the actual numeric value.
+    fn visit_int8_literal(&mut self, _value: &i8) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Int8)
+    }
+    fn visit_int16_literal(&mut self, _value: &i16) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Int16)
+    }
+    fn visit_int32_literal(&mut self, _value: &i32) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Int32)
+    }
+    fn visit_uint8_literal(&mut self, _value: &u8) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::UInt8)
+    }
+    fn visit_uint16_literal(&mut self, _value: &u16) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::UInt16)
+    }
+    fn visit_uint32_literal(&mut self, _value: &u32) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::UInt32)
+    }
     fn visit_float64_literal(&mut self, value: &f64) -> Result<TypeDecl, TypeCheckError>;
     fn visit_number_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;
     fn visit_string_literal(&mut self, value: DefaultSymbol) -> Result<TypeDecl, TypeCheckError>;

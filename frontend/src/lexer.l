@@ -48,6 +48,12 @@ macro_rules! token {
 "u64"       return Ok(token!(self, Kind::U64));
 "i64"       return Ok(token!(self, Kind::I64));
 "f64"       return Ok(token!(self, Kind::F64));
+"u8"        return Ok(token!(self, Kind::U8));
+"u16"       return Ok(token!(self, Kind::U16));
+"u32"       return Ok(token!(self, Kind::U32));
+"i8"        return Ok(token!(self, Kind::I8));
+"i16"       return Ok(token!(self, Kind::I16));
+"i32"       return Ok(token!(self, Kind::I32));
 "str"       return Ok(token!(self, Kind::Str));
 "ptr"       return Ok(token!(self, Kind::Ptr));
 "usize"     return Ok(token!(self, Kind::USize));
@@ -145,6 +151,66 @@ macro_rules! token {
                         }
                     }
 
+-?[0-9]+"i32"       {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<i32>() {
+                            Ok(value) => return Ok(token!(self, Kind::Int32(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+[0-9]+"u32"         {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<u32>() {
+                            Ok(value) => return Ok(token!(self, Kind::UInt32(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+-?[0-9]+"i16"       {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<i16>() {
+                            Ok(value) => return Ok(token!(self, Kind::Int16(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+[0-9]+"u16"         {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        match s.parse::<u16>() {
+                            Ok(value) => return Ok(token!(self, Kind::UInt16(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+-?[0-9]+"i8"        {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 2));
+                        let s = drain.collect::<String>();
+                        match s.parse::<i8>() {
+                            Ok(value) => return Ok(token!(self, Kind::Int8(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+[0-9]+"u8"          {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 2));
+                        let s = drain.collect::<String>();
+                        match s.parse::<u8>() {
+                            Ok(value) => return Ok(token!(self, Kind::UInt8(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
 -?0[xX][0-9a-fA-F]+"i64"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
@@ -175,6 +241,93 @@ macro_rules! token {
                             Err(_) => {
                                 return Ok(token!(self, Kind::Integer(self.yytext())))
                             }
+                        }
+                    }
+
+0[xX][0-9a-fA-F]+"u32"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let hex_str = &s[2..];
+                        match u32::from_str_radix(hex_str, 16) {
+                            Ok(value) => return Ok(token!(self, Kind::UInt32(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+0[xX][0-9a-fA-F]+"u16"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let hex_str = &s[2..];
+                        match u16::from_str_radix(hex_str, 16) {
+                            Ok(value) => return Ok(token!(self, Kind::UInt16(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+0[xX][0-9a-fA-F]+"u8"   {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 2));
+                        let s = drain.collect::<String>();
+                        let hex_str = &s[2..];
+                        match u8::from_str_radix(hex_str, 16) {
+                            Ok(value) => return Ok(token!(self, Kind::UInt8(value))),
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+-?0[xX][0-9a-fA-F]+"i32"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let (is_negative, hex_str) = if s.starts_with("-") {
+                            (true, &s[3..])
+                        } else {
+                            (false, &s[2..])
+                        };
+                        match i32::from_str_radix(hex_str, 16) {
+                            Ok(value) => {
+                                let final_value = if is_negative { -value } else { value };
+                                return Ok(token!(self, Kind::Int32(final_value)))
+                            },
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+-?0[xX][0-9a-fA-F]+"i16"  {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 3));
+                        let s = drain.collect::<String>();
+                        let (is_negative, hex_str) = if s.starts_with("-") {
+                            (true, &s[3..])
+                        } else {
+                            (false, &s[2..])
+                        };
+                        match i16::from_str_radix(hex_str, 16) {
+                            Ok(value) => {
+                                let final_value = if is_negative { -value } else { value };
+                                return Ok(token!(self, Kind::Int16(final_value)))
+                            },
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
+                        }
+                    }
+
+-?0[xX][0-9a-fA-F]+"i8"   {
+                        let mut text = self.yytext();
+                        let drain = text.drain(0..(text.len() - 2));
+                        let s = drain.collect::<String>();
+                        let (is_negative, hex_str) = if s.starts_with("-") {
+                            (true, &s[3..])
+                        } else {
+                            (false, &s[2..])
+                        };
+                        match i8::from_str_radix(hex_str, 16) {
+                            Ok(value) => {
+                                let final_value = if is_negative { -value } else { value };
+                                return Ok(token!(self, Kind::Int8(final_value)))
+                            },
+                            Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 

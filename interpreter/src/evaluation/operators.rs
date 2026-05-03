@@ -16,6 +16,12 @@ fn object_ref_to_value(obj: &Object) -> Value {
         Object::Bool(b) => Value::Bool(*b),
         Object::Int64(v) => Value::Int64(*v),
         Object::UInt64(v) => Value::UInt64(*v),
+        Object::Int8(v) => Value::Int8(*v),
+        Object::Int16(v) => Value::Int16(*v),
+        Object::Int32(v) => Value::Int32(*v),
+        Object::UInt8(v) => Value::UInt8(*v),
+        Object::UInt16(v) => Value::UInt16(*v),
+        Object::UInt32(v) => Value::UInt32(*v),
         Object::Float64(v) => Value::Float64(*v),
         Object::ConstString(sym) => Value::ConstString(*sym),
         Object::Pointer(addr) => Value::Pointer(*addr),
@@ -37,6 +43,12 @@ fn value_to_object(v: Value) -> Object {
         Value::Bool(b) => Object::Bool(b),
         Value::Int64(v) => Object::Int64(v),
         Value::UInt64(v) => Object::UInt64(v),
+        Value::Int8(v) => Object::Int8(v),
+        Value::Int16(v) => Object::Int16(v),
+        Value::Int32(v) => Object::Int32(v),
+        Value::UInt8(v) => Object::UInt8(v),
+        Value::UInt16(v) => Object::UInt16(v),
+        Value::UInt32(v) => Object::UInt32(v),
         Value::Float64(v) => Object::Float64(v),
         Value::ConstString(sym) => Object::ConstString(sym),
         Value::Pointer(addr) => Object::Pointer(addr),
@@ -102,6 +114,65 @@ impl ArithmeticOp {
     }
 
     fn apply_u64(&self, l: u64, r: u64) -> u64 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+
+    // NUM-W narrow integer arithmetic. Each width has its own
+    // `wrapping_*` family in libcore, so the semantics match the
+    // i64 / u64 path: silent wrap on overflow, trap on
+    // div-by-zero (Rust's `wrapping_div` panics on rhs == 0).
+    fn apply_i32(&self, l: i32, r: i32) -> i32 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+    fn apply_u32(&self, l: u32, r: u32) -> u32 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+    fn apply_i16(&self, l: i16, r: i16) -> i16 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+    fn apply_u16(&self, l: u16, r: u16) -> u16 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+    fn apply_i8(&self, l: i8, r: i8) -> i8 {
+        match self {
+            ArithmeticOp::Add => l.wrapping_add(r),
+            ArithmeticOp::Sub => l.wrapping_sub(r),
+            ArithmeticOp::Mul => l.wrapping_mul(r),
+            ArithmeticOp::Div => l.wrapping_div(r),
+            ArithmeticOp::Mod => l.wrapping_rem(r),
+        }
+    }
+    fn apply_u8(&self, l: u8, r: u8) -> u8 {
         match self {
             ArithmeticOp::Add => l.wrapping_add(r),
             ArithmeticOp::Sub => l.wrapping_sub(r),
@@ -179,6 +250,51 @@ impl ComparisonOp {
         }
     }
 
+    // NUM-W narrow-int comparisons. Same shape as i64 / u64;
+    // each width compares natively in its own range.
+    fn apply_i32(&self, l: i32, r: i32) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+    fn apply_u32(&self, l: u32, r: u32) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+    fn apply_i16(&self, l: i16, r: i16) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+    fn apply_u16(&self, l: u16, r: u16) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+    fn apply_i8(&self, l: i8, r: i8) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+    fn apply_u8(&self, l: u8, r: u8) -> bool {
+        match self {
+            ComparisonOp::Eq => l == r, ComparisonOp::Ne => l != r,
+            ComparisonOp::Lt => l < r, ComparisonOp::Le => l <= r,
+            ComparisonOp::Gt => l > r, ComparisonOp::Ge => l >= r,
+        }
+    }
+
     fn apply_f64(&self, l: f64, r: f64) -> bool {
         // Standard IEEE 754 ordering: NaN compares false against everything.
         match self {
@@ -217,6 +333,12 @@ impl EvaluationContext<'_> {
         Ok(match (lhs, rhs) {
             (Value::Int64(l), Value::Int64(r)) => Value::Bool(op.apply_i64(*l, *r)),
             (Value::UInt64(l), Value::UInt64(r)) => Value::Bool(op.apply_u64(*l, *r)),
+            (Value::Int32(l), Value::Int32(r)) => Value::Bool(op.apply_i32(*l, *r)),
+            (Value::UInt32(l), Value::UInt32(r)) => Value::Bool(op.apply_u32(*l, *r)),
+            (Value::Int16(l), Value::Int16(r)) => Value::Bool(op.apply_i16(*l, *r)),
+            (Value::UInt16(l), Value::UInt16(r)) => Value::Bool(op.apply_u16(*l, *r)),
+            (Value::Int8(l), Value::Int8(r)) => Value::Bool(op.apply_i8(*l, *r)),
+            (Value::UInt8(l), Value::UInt8(r)) => Value::Bool(op.apply_u8(*l, *r)),
             (Value::Float64(l), Value::Float64(r)) => Value::Bool(op.apply_f64(*l, *r)),
             (Value::Bool(l), Value::Bool(r)) => match op {
                 ComparisonOp::Eq => Value::Bool(l == r),
@@ -305,6 +427,16 @@ impl EvaluationContext<'_> {
         Ok(match (lhs, rhs) {
             (Value::Int64(l), Value::Int64(r)) => Value::Int64(op.apply_i64(*l, *r)),
             (Value::UInt64(l), Value::UInt64(r)) => Value::UInt64(op.apply_u64(*l, *r)),
+            // NUM-W narrow integer arithmetic: same-width only
+            // (no implicit widening). Cast required to mix
+            // widths, mirroring Rust's discipline. Wrap-on-
+            // overflow semantics inherited from `apply_*`.
+            (Value::Int32(l), Value::Int32(r)) => Value::Int32(op.apply_i32(*l, *r)),
+            (Value::UInt32(l), Value::UInt32(r)) => Value::UInt32(op.apply_u32(*l, *r)),
+            (Value::Int16(l), Value::Int16(r)) => Value::Int16(op.apply_i16(*l, *r)),
+            (Value::UInt16(l), Value::UInt16(r)) => Value::UInt16(op.apply_u16(*l, *r)),
+            (Value::Int8(l), Value::Int8(r)) => Value::Int8(op.apply_i8(*l, *r)),
+            (Value::UInt8(l), Value::UInt8(r)) => Value::UInt8(op.apply_u8(*l, *r)),
             (Value::Float64(l), Value::Float64(r)) => Value::Float64(op.apply_f64(*l, *r)),
             _ => return Err(InterpreterError::TypeError {
                 expected: lhs.get_type(),

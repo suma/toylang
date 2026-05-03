@@ -37,6 +37,15 @@ pub enum Value {
     Bool(bool),
     Int64(i64),
     UInt64(u64),
+    // NUM-W narrow integer inline variants. Same fast-path
+    // shape as Int64 / UInt64 — operator dispatch reads them
+    // without ever touching the heap cell.
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     Float64(f64),
     /// Interned literal string. Cloning is a `DefaultSymbol` (u32) copy.
     ConstString(DefaultSymbol),
@@ -100,6 +109,12 @@ impl Value {
             Object::Bool(b) => Value::Bool(*b),
             Object::Int64(v) => Value::Int64(*v),
             Object::UInt64(v) => Value::UInt64(*v),
+            Object::Int8(v) => Value::Int8(*v),
+            Object::Int16(v) => Value::Int16(*v),
+            Object::Int32(v) => Value::Int32(*v),
+            Object::UInt8(v) => Value::UInt8(*v),
+            Object::UInt16(v) => Value::UInt16(*v),
+            Object::UInt32(v) => Value::UInt32(*v),
             Object::Float64(v) => Value::Float64(*v),
             Object::ConstString(sym) => Value::ConstString(*sym),
             Object::Pointer(addr) => Value::Pointer(*addr),
@@ -123,6 +138,12 @@ impl Value {
             Value::Bool(b) => Rc::new(RefCell::new(Object::Bool(b))),
             Value::Int64(v) => Rc::new(RefCell::new(Object::Int64(v))),
             Value::UInt64(v) => Rc::new(RefCell::new(Object::UInt64(v))),
+            Value::Int8(v) => Rc::new(RefCell::new(Object::Int8(v))),
+            Value::Int16(v) => Rc::new(RefCell::new(Object::Int16(v))),
+            Value::Int32(v) => Rc::new(RefCell::new(Object::Int32(v))),
+            Value::UInt8(v) => Rc::new(RefCell::new(Object::UInt8(v))),
+            Value::UInt16(v) => Rc::new(RefCell::new(Object::UInt16(v))),
+            Value::UInt32(v) => Rc::new(RefCell::new(Object::UInt32(v))),
             Value::Float64(v) => Rc::new(RefCell::new(Object::Float64(v))),
             Value::ConstString(sym) => Rc::new(RefCell::new(Object::ConstString(sym))),
             Value::Pointer(addr) => Rc::new(RefCell::new(Object::Pointer(addr))),
@@ -148,6 +169,12 @@ impl Value {
             Value::Bool(_) => TypeDecl::Bool,
             Value::UInt64(_) => TypeDecl::UInt64,
             Value::Int64(_) => TypeDecl::Int64,
+            Value::UInt32(_) => TypeDecl::UInt32,
+            Value::Int32(_) => TypeDecl::Int32,
+            Value::UInt16(_) => TypeDecl::UInt16,
+            Value::Int16(_) => TypeDecl::Int16,
+            Value::UInt8(_) => TypeDecl::UInt8,
+            Value::Int8(_) => TypeDecl::Int8,
             Value::Float64(_) => TypeDecl::Float64,
             Value::ConstString(_) => TypeDecl::String,
             Value::Pointer(_) => TypeDecl::Ptr,
@@ -258,6 +285,12 @@ impl From<Object> for Value {
             Object::Bool(b) => Value::Bool(*b),
             Object::Int64(v) => Value::Int64(*v),
             Object::UInt64(v) => Value::UInt64(*v),
+            Object::Int8(v) => Value::Int8(*v),
+            Object::Int16(v) => Value::Int16(*v),
+            Object::Int32(v) => Value::Int32(*v),
+            Object::UInt8(v) => Value::UInt8(*v),
+            Object::UInt16(v) => Value::UInt16(*v),
+            Object::UInt32(v) => Value::UInt32(*v),
             Object::Float64(v) => Value::Float64(*v),
             Object::ConstString(sym) => Value::ConstString(*sym),
             Object::Pointer(addr) => Value::Pointer(*addr),
@@ -274,6 +307,14 @@ fn is_primitive_variant(obj: &Object) -> bool {
         Object::Bool(_)
             | Object::Int64(_)
             | Object::UInt64(_)
+            // NUM-W narrow ints round-trip through the inline
+            // Value path the same way the wide ints do.
+            | Object::Int8(_)
+            | Object::Int16(_)
+            | Object::Int32(_)
+            | Object::UInt8(_)
+            | Object::UInt16(_)
+            | Object::UInt32(_)
             | Object::Float64(_)
             | Object::ConstString(_)
             | Object::Pointer(_)

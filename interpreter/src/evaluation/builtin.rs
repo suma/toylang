@@ -15,6 +15,12 @@ use super::{EvaluationContext, EvaluationResult};
 fn object_byte_size(value: &Object) -> Option<u64> {
     match value {
         Object::Int64(_) | Object::UInt64(_) | Object::Float64(_) | Object::Pointer(_) => Some(8),
+        // NUM-W narrow widths: 1 byte for u8/i8, 2 for u16/i16,
+        // 4 for u32/i32. Native sizes — packing into structs is
+        // the caller's concern.
+        Object::Int8(_) | Object::UInt8(_) => Some(1),
+        Object::Int16(_) | Object::UInt16(_) => Some(2),
+        Object::Int32(_) | Object::UInt32(_) => Some(4),
         Object::Bool(_) => Some(1),
         Object::Unit => Some(0),
         Object::Struct { fields, .. } => {

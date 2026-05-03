@@ -53,6 +53,8 @@ mod helpers {
                     "val" | "var" | "struct" | "impl" | "class" |
                     "true" | "false" | "null" |
                     "u64" | "i64" | "str" | "ptr" | "usize" | "bool" |
+                    // NUM-W: narrow integer keywords are reserved.
+                    "u8" | "u16" | "u32" | "i8" | "i16" | "i32" |
                     "pub" | "extern" | "package" | "import" | "as")
             })
     }

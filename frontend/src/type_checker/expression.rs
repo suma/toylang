@@ -190,6 +190,21 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                // NUM-W narrow integers — same-width only, mirrors
+                // the i64 / u64 rule. No implicit widening: `as`
+                // cast required to mix widths.
+                } else if resolved_lhs_ty == TypeDecl::UInt32 && resolved_rhs_ty == TypeDecl::UInt32 {
+                    TypeDecl::UInt32
+                } else if resolved_lhs_ty == TypeDecl::Int32 && resolved_rhs_ty == TypeDecl::Int32 {
+                    TypeDecl::Int32
+                } else if resolved_lhs_ty == TypeDecl::UInt16 && resolved_rhs_ty == TypeDecl::UInt16 {
+                    TypeDecl::UInt16
+                } else if resolved_lhs_ty == TypeDecl::Int16 && resolved_rhs_ty == TypeDecl::Int16 {
+                    TypeDecl::Int16
+                } else if resolved_lhs_ty == TypeDecl::UInt8 && resolved_rhs_ty == TypeDecl::UInt8 {
+                    TypeDecl::UInt8
+                } else if resolved_lhs_ty == TypeDecl::Int8 && resolved_rhs_ty == TypeDecl::Int8 {
+                    TypeDecl::Int8
                 } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
                     // f64 supports +, -, *, /, %. `%` follows Rust's `f64::rem`,
                     // matching the IEEE 754 remainder via fmod-style truncation.
@@ -212,8 +227,20 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
+                // NUM-W: same-width comparisons for narrow ints
+                // (mirrors the i64/u64 rule). Cross-width / cross-
+                // signedness compares need an explicit `as` cast.
+                let same_int_width = matches!((&resolved_lhs_ty, &resolved_rhs_ty),
+                    (TypeDecl::UInt32, TypeDecl::UInt32)
+                    | (TypeDecl::Int32, TypeDecl::Int32)
+                    | (TypeDecl::UInt16, TypeDecl::UInt16)
+                    | (TypeDecl::Int16, TypeDecl::Int16)
+                    | (TypeDecl::UInt8, TypeDecl::UInt8)
+                    | (TypeDecl::Int8, TypeDecl::Int8));
                 if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) &&
                    (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
+                    TypeDecl::Bool
+                } else if same_int_width {
                     TypeDecl::Bool
                 } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
                     // f64 comparisons use IEEE 754 semantics — NaN compares

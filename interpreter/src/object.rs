@@ -20,6 +20,16 @@ pub enum Object {
     Bool(bool),
     Int64(i64),
     UInt64(u64),
+    // NUM-W narrow integer runtime values. Wrapping arithmetic
+    // (matching the existing i64/u64 path after the
+    // wrapping-overflow migration) is implemented in
+    // `evaluation/operators.rs`.
+    Int8(i8),
+    Int16(i16),
+    Int32(i32),
+    UInt8(u8),
+    UInt16(u16),
+    UInt32(u32),
     Float64(f64),
     ConstString(DefaultSymbol),  // String literals and interned strings (immutable, memory efficient)
     String(String),              // Runtime generated strings (mutable, direct data storage)
@@ -159,6 +169,15 @@ impl Ord for ObjectKey {
             (Object::Bool(a), Object::Bool(b)) => a.cmp(b),
             (Object::Int64(a), Object::Int64(b)) => a.cmp(b),
             (Object::UInt64(a), Object::UInt64(b)) => a.cmp(b),
+            // NUM-W narrow ints — same-type cmp uses native ordering.
+            // Cross-type comparisons fall through to the type-bucket
+            // ordering below.
+            (Object::Int8(a), Object::Int8(b)) => a.cmp(b),
+            (Object::Int16(a), Object::Int16(b)) => a.cmp(b),
+            (Object::Int32(a), Object::Int32(b)) => a.cmp(b),
+            (Object::UInt8(a), Object::UInt8(b)) => a.cmp(b),
+            (Object::UInt16(a), Object::UInt16(b)) => a.cmp(b),
+            (Object::UInt32(a), Object::UInt32(b)) => a.cmp(b),
             // Bit-pattern ordering on f64 — gives a total order (consistent with `Eq` above)
             // so f64 can act as a Dict key. Not the same as numeric `<` ordering.
             (Object::Float64(a), Object::Float64(b)) => a.to_bits().cmp(&b.to_bits()),
@@ -174,6 +193,18 @@ impl Ord for ObjectKey {
             (_, Object::Int64(_)) => Ordering::Greater,
             (Object::UInt64(_), _) => Ordering::Less,
             (_, Object::UInt64(_)) => Ordering::Greater,
+            (Object::Int8(_), _) => Ordering::Less,
+            (_, Object::Int8(_)) => Ordering::Greater,
+            (Object::Int16(_), _) => Ordering::Less,
+            (_, Object::Int16(_)) => Ordering::Greater,
+            (Object::Int32(_), _) => Ordering::Less,
+            (_, Object::Int32(_)) => Ordering::Greater,
+            (Object::UInt8(_), _) => Ordering::Less,
+            (_, Object::UInt8(_)) => Ordering::Greater,
+            (Object::UInt16(_), _) => Ordering::Less,
+            (_, Object::UInt16(_)) => Ordering::Greater,
+            (Object::UInt32(_), _) => Ordering::Less,
+            (_, Object::UInt32(_)) => Ordering::Greater,
             (Object::Float64(_), _) => Ordering::Less,
             (_, Object::Float64(_)) => Ordering::Greater,
             (Object::ConstString(_), _) => Ordering::Less,
@@ -219,6 +250,12 @@ impl PartialEq for Object {
             (Object::Bool(a), Object::Bool(b)) => a == b,
             (Object::Int64(a), Object::Int64(b)) => a == b,
             (Object::UInt64(a), Object::UInt64(b)) => a == b,
+            (Object::Int8(a), Object::Int8(b)) => a == b,
+            (Object::Int16(a), Object::Int16(b)) => a == b,
+            (Object::Int32(a), Object::Int32(b)) => a == b,
+            (Object::UInt8(a), Object::UInt8(b)) => a == b,
+            (Object::UInt16(a), Object::UInt16(b)) => a == b,
+            (Object::UInt32(a), Object::UInt32(b)) => a == b,
             // Bit-equal comparison so f64 satisfies `Eq` for use as a Dict key.
             // Note this differs from IEEE 754 `==` (NaN bit patterns compare equal here);
             // arithmetic comparison via the Operator path uses IEEE 754 semantics.
@@ -279,6 +316,30 @@ impl Hash for Object {
             }
             Object::UInt64(v) => {
                 2u8.hash(state);
+                v.hash(state);
+            }
+            Object::Int8(v) => {
+                30u8.hash(state);
+                v.hash(state);
+            }
+            Object::Int16(v) => {
+                31u8.hash(state);
+                v.hash(state);
+            }
+            Object::Int32(v) => {
+                32u8.hash(state);
+                v.hash(state);
+            }
+            Object::UInt8(v) => {
+                33u8.hash(state);
+                v.hash(state);
+            }
+            Object::UInt16(v) => {
+                34u8.hash(state);
+                v.hash(state);
+            }
+            Object::UInt32(v) => {
+                35u8.hash(state);
                 v.hash(state);
             }
             Object::Float64(v) => {
@@ -445,6 +506,12 @@ impl Object {
             Object::Bool(_) => TypeDecl::Bool,
             Object::UInt64(_) => TypeDecl::UInt64,
             Object::Int64(_) => TypeDecl::Int64,
+            Object::UInt32(_) => TypeDecl::UInt32,
+            Object::Int32(_) => TypeDecl::Int32,
+            Object::UInt16(_) => TypeDecl::UInt16,
+            Object::Int16(_) => TypeDecl::Int16,
+            Object::UInt8(_) => TypeDecl::UInt8,
+            Object::Int8(_) => TypeDecl::Int8,
             Object::Float64(_) => TypeDecl::Float64,
             Object::ConstString(_) | Object::String(_) => TypeDecl::String,
             Object::Array(elements) => {
@@ -614,6 +681,12 @@ impl Object {
             Object::Bool(b) => b.to_string(),
             Object::Int64(v) => v.to_string(),
             Object::UInt64(v) => v.to_string(),
+            Object::Int8(v) => v.to_string(),
+            Object::Int16(v) => v.to_string(),
+            Object::Int32(v) => v.to_string(),
+            Object::UInt8(v) => v.to_string(),
+            Object::UInt16(v) => v.to_string(),
+            Object::UInt32(v) => v.to_string(),
             Object::Float64(v) => {
                 // Match Rust's default `{}` formatting except always show a
                 // decimal point so floats are visually distinct from ints

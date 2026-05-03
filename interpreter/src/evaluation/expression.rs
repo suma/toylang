@@ -34,7 +34,9 @@ impl EvaluationContext<'_> {
             Expr::Unary(op, operand) => {
                 self.evaluate_unary(&op, &operand)
             }
-            Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::String(_) | Expr::True | Expr::False => {
+            Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_) | Expr::String(_) | Expr::True | Expr::False
+            | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_) => {
                 self.evaluate_literal(&expr)
             }
             Expr::Number(_v) => {

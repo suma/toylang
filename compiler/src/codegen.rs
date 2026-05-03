@@ -194,6 +194,10 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_println_i32: cranelift_module::FuncId,
     rt_print_u32: cranelift_module::FuncId,
     rt_println_u32: cranelift_module::FuncId,
+    // #121 Phase B-min: active-allocator stack helpers.
+    rt_alloc_push: cranelift_module::FuncId,
+    rt_alloc_pop: cranelift_module::FuncId,
+    rt_alloc_current: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -379,6 +383,21 @@ impl<M: Module> CodegenSession<M> {
         let rt_print_u32 = declare_helper(&mut module, "toy_print_u32", &i32u_sig)?;
         let rt_println_u32 = declare_helper(&mut module, "toy_println_u32", &i32u_sig)?;
 
+        // #121 Phase B-min: active-allocator stack helpers. The stack
+        // lives in `runtime/toylang_rt.c` as a 64-deep fixed buffer
+        // of u64 handles. Default allocator handle is the sentinel
+        // 0 (which the heap path already routes to libc malloc).
+        let mut alloc_push_sig = Signature::new(call_conv);
+        alloc_push_sig.params.push(AbiParam::new(types::I64));
+        let rt_alloc_push = declare_helper(&mut module, "toy_alloc_push", &alloc_push_sig)?;
+
+        let alloc_pop_sig = Signature::new(call_conv);
+        let rt_alloc_pop = declare_helper(&mut module, "toy_alloc_pop", &alloc_pop_sig)?;
+
+        let mut alloc_current_sig = Signature::new(call_conv);
+        alloc_current_sig.returns.push(AbiParam::new(types::I64));
+        let rt_alloc_current = declare_helper(&mut module, "toy_alloc_current", &alloc_current_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -416,6 +435,9 @@ impl<M: Module> CodegenSession<M> {
             rt_println_i32,
             rt_print_u32,
             rt_println_u32,
+            rt_alloc_push,
+            rt_alloc_pop,
+            rt_alloc_current,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -874,6 +896,9 @@ impl<M: Module> CodegenSession<M> {
             println_i32: self.module.declare_func_in_func(self.rt_println_i32, func),
             print_u32: self.module.declare_func_in_func(self.rt_print_u32, func),
             println_u32: self.module.declare_func_in_func(self.rt_println_u32, func),
+            alloc_push: self.module.declare_func_in_func(self.rt_alloc_push, func),
+            alloc_pop: self.module.declare_func_in_func(self.rt_alloc_pop, func),
+            alloc_current: self.module.declare_func_in_func(self.rt_alloc_current, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
             sin: self.module.declare_func_in_func(self.libm_sin, func),
             cos: self.module.declare_func_in_func(self.libm_cos, func),
@@ -919,6 +944,10 @@ struct RuntimeRefs {
     println_i32: cranelift_codegen::ir::FuncRef,
     print_u32: cranelift_codegen::ir::FuncRef,
     println_u32: cranelift_codegen::ir::FuncRef,
+    // #121 Phase B-min: active-allocator stack FuncRefs.
+    alloc_push: cranelift_codegen::ir::FuncRef,
+    alloc_pop: cranelift_codegen::ir::FuncRef,
+    alloc_current: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,
@@ -1691,6 +1720,25 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     addr,
                     0,
                 );
+            }
+            // #121 Phase B-min: active-allocator stack ops.
+            // `AllocPush(handle)` and `AllocPop` emit a libc call
+            // to `toy_alloc_push(handle)` / `toy_alloc_pop()`.
+            // `AllocCurrent` returns the current top as a u64
+            // value (sentinel 0 when the stack is empty).
+            InstKind::AllocPush { handle } => {
+                let handle_v = self.value(*handle);
+                self.builder.ins().call(self.runtime.alloc_push, &[handle_v]);
+            }
+            InstKind::AllocPop => {
+                self.builder.ins().call(self.runtime.alloc_pop, &[]);
+            }
+            InstKind::AllocCurrent => {
+                let call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
             }
             // Stage 1 of `&` references: call to a `&mut self`
             // method. The cranelift call returns

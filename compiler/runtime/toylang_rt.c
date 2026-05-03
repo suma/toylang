@@ -16,6 +16,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>  /* exit() for the allocator-stack guard rails. */
 
 void toy_print_i64(int64_t v) {
     printf("%lld", (long long) v);
@@ -87,6 +88,46 @@ void toy_print_u32(uint32_t v) {
 
 void toy_println_u32(uint32_t v) {
     printf("%u\n", (unsigned) v);
+}
+
+/* #121 Phase B-min: active-allocator stack runtime.
+ *
+ * Allocator handles are u64 sentinel values:
+ *   0 — the default global allocator (routes to libc malloc/realloc/free).
+ *   non-zero — currently rejected at compile time (arena / fixed_buffer
+ *   would land here in a later phase with actual backend implementations).
+ *
+ * The stack is a single global fixed-size buffer to keep the runtime
+ * dependency-free. 64 nesting levels covers any realistic
+ * `with allocator = ... { with ... { ... } }` structure; overflow
+ * aborts via libc `exit(1)` since the only way to hit it is a codegen
+ * bug.
+ */
+#define TOY_ALLOC_STACK_CAP 64
+static uint64_t toy_alloc_stack[TOY_ALLOC_STACK_CAP];
+static int toy_alloc_stack_len = 0;
+
+void toy_alloc_push(uint64_t handle) {
+    if (toy_alloc_stack_len >= TOY_ALLOC_STACK_CAP) {
+        fputs("toylang runtime: allocator stack overflow\n", stderr);
+        exit(1);
+    }
+    toy_alloc_stack[toy_alloc_stack_len++] = handle;
+}
+
+void toy_alloc_pop(void) {
+    if (toy_alloc_stack_len <= 0) {
+        fputs("toylang runtime: allocator stack underflow\n", stderr);
+        exit(1);
+    }
+    toy_alloc_stack_len--;
+}
+
+uint64_t toy_alloc_current(void) {
+    if (toy_alloc_stack_len <= 0) {
+        return 0; /* Default global allocator sentinel. */
+    }
+    return toy_alloc_stack[toy_alloc_stack_len - 1];
 }
 
 void toy_print_bool(uint8_t v) {

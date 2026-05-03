@@ -737,6 +737,18 @@ pub enum InstKind {
         /// (matches `flatten_struct_locals`).
         self_dests: Vec<LocalId>,
     },
+    // #121 Phase B-min: active-allocator stack ops. The stack lives
+    // in `runtime/toylang_rt.c` as a 64-deep fixed buffer of u64
+    // handles; sentinel 0 means "default global allocator".
+    /// `with allocator = expr { body }` entry: push `handle` onto
+    /// the runtime allocator stack.
+    AllocPush { handle: ValueId },
+    /// `with allocator = expr { body }` exit: pop the top entry.
+    AllocPop,
+    /// `__builtin_current_allocator()` — returns the current top
+    /// of the stack as a u64 (returns 0 when the stack is empty,
+    /// matching `__builtin_default_allocator()`).
+    AllocCurrent,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1172,6 +1184,9 @@ impl fmt::Display for DisplayInst<'_> {
                 let dest_str = self_dests.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
                 write!(f, "call_mut_self {target:?}({arg_str}) -> {ret_str}self_dests=[{dest_str}]")
             }
+            InstKind::AllocPush { handle } => write!(f, "alloc_push {handle}"),
+            InstKind::AllocPop => write!(f, "alloc_pop"),
+            InstKind::AllocCurrent => write!(f, "{prefix}alloc_current"),
         }
     }
 }

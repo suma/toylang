@@ -316,6 +316,25 @@ impl<'a> FunctionLower<'a> {
             Expr::UInt16(n) => Ok(self.emit(InstKind::Const(Const::U16(n)), Some(Type::U16))),
             Expr::Int32(n) => Ok(self.emit(InstKind::Const(Const::I32(n)), Some(Type::I32))),
             Expr::UInt32(n) => Ok(self.emit(InstKind::Const(Const::U32(n)), Some(Type::U32))),
+            // #121 Phase B-min: `with allocator = expr { body }` —
+            // push the allocator handle on entry, lower the body,
+            // pop on exit. The body can produce a value (the
+            // surrounding expression position) so we hand back
+            // whatever the body yielded. Only the linear exit path
+            // is supported in Phase B-min — early `return` /
+            // `break` / `continue` from inside a `with` body
+            // wouldn't pop the stack and would corrupt nesting; a
+            // future enhancement (interpreter / JIT already
+            // handle this) will install a panic-style cleanup hook.
+            Expr::With(allocator_expr, body_expr) => {
+                let handle = self
+                    .lower_expr(&allocator_expr)?
+                    .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?;
+                self.emit(InstKind::AllocPush { handle }, None);
+                let body_value = self.lower_expr(&body_expr)?;
+                self.emit(InstKind::AllocPop, None);
+                Ok(body_value)
+            }
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other
@@ -543,23 +562,44 @@ impl<'a> FunctionLower<'a> {
                         .to_string(),
                 )
             }
+            BuiltinFunction::DefaultAllocator => {
+                // #121 Phase B-min: the default global allocator is
+                // represented as the sentinel u64 = 0. The heap path
+                // already routes 0-handles to libc malloc.
+                if !args.is_empty() {
+                    return Err(format!(
+                        "__builtin_default_allocator takes no args, got {}",
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
+            }
+            BuiltinFunction::CurrentAllocator => {
+                // #121 Phase B-min: read the top of the runtime
+                // active-allocator stack (or 0 when empty).
+                if !args.is_empty() {
+                    return Err(format!(
+                        "__builtin_current_allocator takes no args, got {}",
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::AllocCurrent, Some(Type::U64)))
+            }
             other => {
                 use frontend::ast::BuiltinFunction;
-                // Remaining allocator-system builtins (todo #121
-                // continued): `with allocator = ...` scope handling,
-                // ArenaAllocator / FixedBufferAllocator backed by
-                // their own runtime support, the active-allocator
-                // stack push/pop. The HeapAlloc / HeapRealloc /
-                // HeapFree / PtrRead / PtrWrite arms above cover
-                // the global-allocator path needed by user-space
-                // `Dict<K, V>` (DICT-AOT-NEW); the rest is queued.
+                // Remaining allocator-context builtins still need
+                // backing implementations (#121 Phase B+ continued):
+                // arena/fixed_buffer require runtime allocator
+                // backends with their own free strategy + quota
+                // tracking. The default and current allocators
+                // (above) and the heap / pointer builtins (Phase A)
+                // already cover the cases user-space `Dict<K, V>`
+                // needs.
                 let msg = match other {
                     BuiltinFunction::ArenaAllocator
-                    | BuiltinFunction::FixedBufferAllocator
-                    | BuiltinFunction::CurrentAllocator
-                    | BuiltinFunction::DefaultAllocator => format!(
+                    | BuiltinFunction::FixedBufferAllocator => format!(
                         "compiler MVP cannot lower allocator builtin {:?} yet \
-                         (todo #121: needs runtime active-allocator stack)",
+                         (todo #121: arena / fixed_buffer need runtime backends)",
                         other
                     ),
                     _ => format!(

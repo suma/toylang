@@ -347,6 +347,12 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_println_i32", toy_println_i32 as *const u8);
     jit_builder.symbol("toy_print_u32", toy_print_u32 as *const u8);
     jit_builder.symbol("toy_println_u32", toy_println_u32 as *const u8);
+    // #121 Phase B-min: active-allocator stack helpers. Match the
+    // C runtime's behaviour: a 64-deep fixed buffer of u64 handles
+    // with an `exit(1)` guard rail on overflow / underflow.
+    jit_builder.symbol("toy_alloc_push", toy_alloc_push as *const u8);
+    jit_builder.symbol("toy_alloc_pop", toy_alloc_pop as *const u8);
+    jit_builder.symbol("toy_alloc_current", toy_alloc_current as *const u8);
 }
 
 // All helpers below mirror `runtime/toylang_rt.c`. Use libc's
@@ -549,6 +555,38 @@ unsafe extern "C" fn toy_println_u32(v: u32) {
     unsafe {
         printf(b"%u\n\0".as_ptr(), v);
     }
+}
+
+// #121 Phase B-min: JIT mirror of the C runtime's allocator stack.
+// The 64-deep fixed-size buffer matches `runtime/toylang_rt.c`
+// byte-for-byte. We use a `Mutex<Vec<u64>>` instead of a static
+// array so the JIT path stays Rust-clean (the C path uses a
+// global because the runtime is single-translation-unit C).
+// Single-thread for now — both backends.
+use std::sync::Mutex;
+static JIT_ALLOC_STACK: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+unsafe extern "C" fn toy_alloc_push(handle: u64) {
+    let mut stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
+    if stack.len() >= 64 {
+        eprintln!("toylang JIT runtime: allocator stack overflow");
+        std::process::exit(1);
+    }
+    stack.push(handle);
+}
+
+unsafe extern "C" fn toy_alloc_pop() {
+    let mut stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
+    if stack.is_empty() {
+        eprintln!("toylang JIT runtime: allocator stack underflow");
+        std::process::exit(1);
+    }
+    stack.pop();
+}
+
+unsafe extern "C" fn toy_alloc_current() -> u64 {
+    let stack = JIT_ALLOC_STACK.lock().expect("alloc stack mutex poisoned");
+    stack.last().copied().unwrap_or(0)
 }
 
 unsafe extern "C" fn toy_print_bool(v: u8) {

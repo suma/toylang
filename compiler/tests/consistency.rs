@@ -759,21 +759,53 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn aot_allocator_default_and_current_round_trip() {
+    // #121 Phase B-min: `__builtin_default_allocator()` returns
+    // the sentinel u64 = 0; `__builtin_current_allocator()` reads
+    // the top of the runtime active-allocator stack
+    // (`runtime/toylang_rt.c::toy_alloc_*`). The
+    // `with allocator = expr { body }` scope emits push/pop calls
+    // around the body so a `__builtin_current_allocator()` call
+    // inside the body yields the pushed handle.
+    //
+    // Outside any `with`, default == current (both 0 = default
+    // sentinel). Inside `with allocator = a { ... }`, current
+    // equals a (the pushed handle). After the body exits, current
+    // returns to default. Final exit 42 means every check matched.
+    // Uses Allocator-to-Allocator `==` (the only comparison the
+    // interpreter accepts on the opaque handle type).
+    let src = r#"
+        fn main() -> u64 {
+            val outside_default = __builtin_default_allocator()
+            val outside_current = __builtin_current_allocator()
+            val inside_current = with allocator = outside_default {
+                __builtin_current_allocator()
+            }
+            val after_current = __builtin_current_allocator()
+            if outside_default == outside_current {
+                if inside_current == outside_default {
+                    if after_current == outside_default { 42u64 } else { 4u64 }
+                } else { 3u64 }
+            } else { 1u64 }
+        }
+    "#;
+    assert_consistent(src, "aot_allocator_default_and_current_round_trip");
+}
+
+#[test]
 fn aot_allocator_context_builtin_still_emits_precise_diagnostic() {
     // #121 Phase A landed support for `__builtin_heap_alloc` /
     // `__builtin_heap_realloc` / `__builtin_heap_free` /
     // `__builtin_ptr_read` / `__builtin_ptr_write` (default
-    // global-allocator path, libc malloc / realloc / free —
-    // see `aot_heap_alloc_round_trip` /
-    // `aot_heap_realloc_grows_buffer`). The remaining allocator-
-    // context family (`__builtin_arena_allocator` /
-    // `__builtin_fixed_buffer_allocator` /
-    // `__builtin_current_allocator` /
-    // `__builtin_default_allocator` plus `with allocator = ...`
-    // scope handling) still needs native codegen for the
-    // runtime active-allocator stack. This test pins the precise
-    // diagnostic for the still-deferred half so the next
-    // contributor can grep for the wording.
+    // global-allocator path, libc malloc / realloc / free).
+    // Phase B-min added `__builtin_default_allocator` /
+    // `__builtin_current_allocator` + `with allocator = ...`
+    // scope semantics. The remaining allocator-context family
+    // (`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator`)
+    // still needs runtime backends with their own free strategy
+    // and quota tracking. This test pins the precise diagnostic
+    // for the still-deferred half so the next contributor can
+    // grep for the wording.
     if skip_e2e() {
         return;
     }

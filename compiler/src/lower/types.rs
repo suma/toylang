@@ -32,6 +32,11 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         // `PtrWrite`) all read and write through `i64`-typed
         // values for the address.
         TypeDecl::Ptr => Some(Type::U64),
+        // #121 Phase B-min: `Allocator` handles are opaque
+        // pointer-sized values (u64 in the IR). Sentinel 0 means
+        // the default global allocator; other values would be
+        // backend handles for arena / fixed_buffer once those land.
+        TypeDecl::Allocator => Some(Type::U64),
         _ => None,
     }
 }

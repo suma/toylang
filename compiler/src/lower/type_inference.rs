@@ -40,6 +40,11 @@ impl<'a> FunctionLower<'a> {
             Expr::Float64(_) => Some(Type::F64),
             Expr::String(_) => Some(Type::Str),
             Expr::True | Expr::False => Some(Type::Bool),
+            // #121 Phase B-min: a `with allocator = ... { body }`
+            // expression takes its value from the body, so peek the
+            // body for type inference. This lets `val x = with ... { e }`
+            // bind to the right scalar type.
+            Expr::With(_, body) => self.value_scalar(&body),
             Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
@@ -148,6 +153,12 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::HeapRealloc => Some(Type::U64),
                 // DICT-AOT-NEW Phase C: __builtin_sizeof returns u64.
                 frontend::ast::BuiltinFunction::SizeOf => Some(Type::U64),
+                // #121 Phase B-min: allocator handles are u64
+                // sentinel values.
+                frontend::ast::BuiltinFunction::DefaultAllocator
+                | frontend::ast::BuiltinFunction::CurrentAllocator => Some(Type::U64),
+                // SizeOf handled above already; no other builtins
+                // currently route through value_scalar.
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp
                 // /floor/ceil) used to be `BuiltinFunction` arms.
                 // Phase 4 moved them onto `extern fn`, so type

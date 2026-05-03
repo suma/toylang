@@ -268,6 +268,82 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Expr::Match(new_scrutinee, new_arms))
             }
+            Expr::StructLiteral(name, fields) => {
+                // `Point { x: 10, y: 20 }` — both the struct's
+                // type symbol and each field name need re-interning,
+                // and the per-field value ExprRefs follow the
+                // standard expr_mapping path.
+                let new_name = self.remap_symbol(*name)?;
+                let mut new_fields = Vec::with_capacity(fields.len());
+                for (fname, fexpr) in fields {
+                    let new_fname = self.remap_symbol(*fname)?;
+                    let new_fexpr = self
+                        .expr_mapping
+                        .get(&fexpr.0)
+                        .ok_or("Cannot find StructLiteral field expression mapping")?
+                        .clone();
+                    new_fields.push((new_fname, new_fexpr));
+                }
+                Ok(Expr::StructLiteral(new_name, new_fields))
+            }
+            Expr::FieldAccess(receiver, field) => {
+                // `obj.field` — receiver ExprRef + field name symbol.
+                let new_receiver = self
+                    .expr_mapping
+                    .get(&receiver.0)
+                    .ok_or("Cannot find FieldAccess receiver mapping")?
+                    .clone();
+                let new_field = self.remap_symbol(*field)?;
+                Ok(Expr::FieldAccess(new_receiver, new_field))
+            }
+            Expr::TupleLiteral(elements) => {
+                let mut new_elements = Vec::with_capacity(elements.len());
+                for e in elements {
+                    let new_e = self
+                        .expr_mapping
+                        .get(&e.0)
+                        .ok_or("Cannot find TupleLiteral element mapping")?
+                        .clone();
+                    new_elements.push(new_e);
+                }
+                Ok(Expr::TupleLiteral(new_elements))
+            }
+            Expr::TupleAccess(obj, idx) => {
+                let new_obj = self
+                    .expr_mapping
+                    .get(&obj.0)
+                    .ok_or("Cannot find TupleAccess obj mapping")?
+                    .clone();
+                Ok(Expr::TupleAccess(new_obj, *idx))
+            }
+            Expr::Unary(op, operand) => {
+                let new_operand = self
+                    .expr_mapping
+                    .get(&operand.0)
+                    .ok_or("Cannot find Unary operand mapping")?
+                    .clone();
+                Ok(Expr::Unary(op.clone(), new_operand))
+            }
+            Expr::With(allocator_expr, body) => {
+                // `with allocator = expr { body }` — both child
+                // ExprRefs need remap. Used by user code in
+                // tests of `core/std/dict.t` (the Dict struct
+                // itself doesn't use `with`, but this remap arm
+                // is harmless for the moment and unlocks the
+                // wider universe of allocator-scope-using
+                // module code).
+                let new_alloc = self
+                    .expr_mapping
+                    .get(&allocator_expr.0)
+                    .ok_or("Cannot find With allocator expression mapping")?
+                    .clone();
+                let new_body = self
+                    .expr_mapping
+                    .get(&body.0)
+                    .ok_or("Cannot find With body expression mapping")?
+                    .clone();
+                Ok(Expr::With(new_alloc, new_body))
+            }
             Expr::Cast(value, ty) => {
                 // `expr as Type`. The inner ExprRef goes through the
                 // standard expr_mapping; the TypeDecl can carry struct
@@ -410,6 +486,10 @@ impl<'a> AstIntegrationContext<'a> {
             Stmt::Continue => Ok(Stmt::Continue),
             Stmt::Var(name, typ, value) => {
                 let new_name = self.remap_symbol(*name)?;
+                let new_typ = match typ {
+                    Some(t) => Some(self.remap_type_decl(t)?),
+                    None => None,
+                };
                 let new_value = if let Some(expr_ref) = value {
                     let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
                         .ok_or("Cannot find Var value expression mapping")?.clone();
@@ -417,13 +497,27 @@ impl<'a> AstIntegrationContext<'a> {
                 } else {
                     None
                 };
-                Ok(Stmt::Var(new_name, typ.clone(), new_value))
+                Ok(Stmt::Var(new_name, new_typ, new_value))
             }
             Stmt::Val(name, typ, value) => {
                 let new_name = self.remap_symbol(*name)?;
+                // The annotation `T` in `val x: T = ...` carries
+                // a module-interner symbol when written inside a
+                // generic method body (e.g.
+                // `val existing: K = __builtin_ptr_read(...)` in
+                // `core/std/dict.t`'s `impl<K, V> Dict<K, V>`). Without
+                // routing through remap_type_decl, the type
+                // checker sees `Identifier(<module interner sym>)`
+                // and rejects it as "not found" / type-mismatch
+                // when the rhs (e.g. the generic ptr_read return)
+                // resolves to a known type.
+                let new_typ = match typ {
+                    Some(t) => Some(self.remap_type_decl(t)?),
+                    None => None,
+                };
                 let new_value = self.expr_mapping.get(&value.0)
                     .ok_or("Cannot find Val value expression mapping")?.clone();
-                Ok(Stmt::Val(new_name, typ.clone(), new_value))
+                Ok(Stmt::Val(new_name, new_typ, new_value))
             }
             Stmt::For(variable, start, end, body) => {
                 let new_variable = self.remap_symbol(*variable)?;
@@ -442,14 +536,50 @@ impl<'a> AstIntegrationContext<'a> {
                     .ok_or("Cannot find While body expression mapping")?.clone();
                 Ok(Stmt::While(new_condition, new_body))
             }
-            // StructDecl and ImplBlock statements - preserve as string-based (no symbol remapping needed)
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
+                // Every DefaultSymbol carried here was minted by the
+                // module's own `DefaultStringInterner`; without
+                // routing them through `main_string_interner` the
+                // type checker can't match a user `Dict<i64, u64>`
+                // annotation against the integrated declaration
+                // (the user's `Dict` symbol differs from the
+                // module's). Field names are plain `String` so they
+                // cross interners cleanly, but each `type_decl` can
+                // hold struct / enum / generic-param symbols that
+                // need remap.
+                //
+                // User-defined struct of the same name takes
+                // precedence: leave the placeholder so the user's
+                // shape wins (mirrors how `EnumDecl` handles
+                // collisions for `enum Option<T>` etc.).
+                let new_name = self.remap_symbol(*name)?;
+                if self.existing_struct_names.contains(&new_name) {
+                    return Ok(Stmt::Break);
+                }
+                let mut new_generic_params = Vec::with_capacity(generic_params.len());
+                for g in generic_params {
+                    new_generic_params.push(self.remap_symbol(*g)?);
+                }
+                let mut new_generic_bounds: std::collections::HashMap<DefaultSymbol, TypeDecl> =
+                    std::collections::HashMap::with_capacity(generic_bounds.len());
+                for (sym, bound) in generic_bounds {
+                    new_generic_bounds
+                        .insert(self.remap_symbol(*sym)?, self.remap_type_decl(bound)?);
+                }
+                let mut new_fields: Vec<StructField> = Vec::with_capacity(fields.len());
+                for f in fields {
+                    new_fields.push(StructField {
+                        name: f.name.clone(),
+                        type_decl: self.remap_type_decl(&f.type_decl)?,
+                        visibility: f.visibility.clone(),
+                    });
+                }
                 Ok(Stmt::StructDecl {
-                    name: name.clone(),
-                    generic_params: generic_params.clone(), // Copy generic parameters
-                    generic_bounds: generic_bounds.clone(), // Copy generic parameter bounds
-                    fields: fields.clone(),
-                    visibility: visibility.clone()
+                    name: new_name,
+                    generic_params: new_generic_params,
+                    generic_bounds: new_generic_bounds,
+                    fields: new_fields,
+                    visibility: visibility.clone(),
                 })
             }
             Stmt::ImplBlock { target_type, methods, trait_name } => {
@@ -551,15 +681,33 @@ impl<'a> AstIntegrationContext<'a> {
                     let remapped_method_name = self.remap_symbol(sig.name)?;
                     let mut remapped_params = Vec::with_capacity(sig.parameter.len());
                     for (pname, pty) in &sig.parameter {
-                        remapped_params.push((self.remap_symbol(*pname)?, pty.clone()));
+                        remapped_params
+                            .push((self.remap_symbol(*pname)?, self.remap_type_decl(pty)?));
                     }
+                    let mut remapped_generic_params =
+                        Vec::with_capacity(sig.generic_params.len());
+                    for g in &sig.generic_params {
+                        remapped_generic_params.push(self.remap_symbol(*g)?);
+                    }
+                    let mut remapped_generic_bounds: std::collections::HashMap<
+                        DefaultSymbol,
+                        TypeDecl,
+                    > = std::collections::HashMap::with_capacity(sig.generic_bounds.len());
+                    for (gsym, bound) in &sig.generic_bounds {
+                        remapped_generic_bounds
+                            .insert(self.remap_symbol(*gsym)?, self.remap_type_decl(bound)?);
+                    }
+                    let remapped_return_type = match &sig.return_type {
+                        Some(t) => Some(self.remap_type_decl(t)?),
+                        None => None,
+                    };
                     new_methods.push(TraitMethodSignature {
                         node: sig.node.clone(),
                         name: remapped_method_name,
-                        generic_params: sig.generic_params.clone(),
-                        generic_bounds: sig.generic_bounds.clone(),
+                        generic_params: remapped_generic_params,
+                        generic_bounds: remapped_generic_bounds,
                         parameter: remapped_params,
-                        return_type: sig.return_type.clone(),
+                        return_type: remapped_return_type,
                         requires: sig.requires.clone(),
                         ensures: sig.ensures.clone(),
                         has_self_param: sig.has_self_param,
@@ -585,11 +733,14 @@ impl<'a> AstIntegrationContext<'a> {
     fn remap_function(&mut self, function: &Function) -> Result<Function, String> {
         let new_name = self.remap_symbol(function.name)?;
 
-        // Remap parameters
+        // Remap parameters — each parameter type can carry struct /
+        // enum / generic-param symbols that need to point at the main
+        // interner's IDs, otherwise the type checker can't compare
+        // them against argument types resolved from the user's call.
         let mut new_parameters = Vec::new();
         for (param_symbol, param_type) in &function.parameter {
             let new_param_symbol = self.remap_symbol(*param_symbol)?;
-            new_parameters.push((new_param_symbol, param_type.clone()));
+            new_parameters.push((new_param_symbol, self.remap_type_decl(param_type)?));
         }
 
         // Remap function body statement reference
@@ -608,13 +759,33 @@ impl<'a> AstIntegrationContext<'a> {
                 .ok_or_else(|| "Cannot find ensures-clause expr mapping".to_string()))
             .collect::<Result<Vec<_>, _>>()?;
 
+        // Remap generic params and bounds — same reason as the
+        // parameter / return-type remap above. Without this, a
+        // function declared `fn f<A: Allocator>(...)` in a module
+        // keeps `A` and `Allocator` symbols pointing at the module
+        // interner and the type checker can't resolve the bound.
+        let mut new_generic_params = Vec::with_capacity(function.generic_params.len());
+        for g in &function.generic_params {
+            new_generic_params.push(self.remap_symbol(*g)?);
+        }
+        let mut new_generic_bounds: std::collections::HashMap<DefaultSymbol, TypeDecl> =
+            std::collections::HashMap::with_capacity(function.generic_bounds.len());
+        for (gsym, bound) in &function.generic_bounds {
+            new_generic_bounds
+                .insert(self.remap_symbol(*gsym)?, self.remap_type_decl(bound)?);
+        }
+        let new_return_type = match &function.return_type {
+            Some(t) => Some(self.remap_type_decl(t)?),
+            None => None,
+        };
+
         Ok(Function {
             node: function.node.clone(),
             name: new_name,
-            generic_params: function.generic_params.clone(), // Copy generic parameters
-            generic_bounds: function.generic_bounds.clone(), // Copy generic bounds (e.g. <A: Allocator>)
+            generic_params: new_generic_params,
+            generic_bounds: new_generic_bounds,
             parameter: new_parameters,
-            return_type: function.return_type.clone(),
+            return_type: new_return_type,
             requires: new_requires,
             ensures: new_ensures,
             code: new_code,
@@ -683,27 +854,6 @@ impl<'a> AstIntegrationContext<'a> {
         }))
     }
 
-    /// Copy struct declarations from module to main program
-    fn copy_struct_declarations(&mut self) -> Result<(), String> {
-        for i in 0..self.module_program.statement.len() {
-            let stmt_ref = StmtRef(i as u32);
-            if let Some(stmt) = self.module_program.statement.get(&stmt_ref) {
-                if let Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } = stmt {
-                    // StructDecl uses String names, no symbol remapping needed
-                    let new_struct_stmt = Stmt::StructDecl {
-                        name: name.clone(),
-                        generic_params: generic_params.clone(),
-                        generic_bounds: generic_bounds.clone(),
-                        fields: fields.clone(),
-                        visibility: visibility.clone()
-                    };
-                    self.main_program.statement.add(new_struct_stmt);
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Copy functions from module to main program with proper AST integration
     fn copy_functions(&mut self) -> Result<Vec<Rc<Function>>, String> {
         let mut integrated_functions = Vec::new();
@@ -725,8 +875,16 @@ impl<'a> AstIntegrationContext<'a> {
         // Phase 2: Replace placeholders with actual remapped content
         self.update_with_remapped_content()?;
 
-        // Phase 3: Copy struct declarations and functions
-        self.copy_struct_declarations()?;
+        // Phase 3: Functions only. StructDecl statements are
+        // already added during phase 2's `update_with_remapped_content`
+        // (the placeholder slots reserved in phase 1 get overwritten
+        // with the remapped Stmt::StructDecl). Calling
+        // copy_struct_declarations afterwards would re-add the same
+        // struct under a fresh StmtRef, making the type-checker walk
+        // it twice; with two registrations sharing the same name
+        // symbol the second overwrites the first, but the duplicate
+        // walk also confuses generic-method lookup paths that key on
+        // the first declaration site.
         let integrated_functions = self.copy_functions()?;
 
         Ok(integrated_functions)

@@ -1112,50 +1112,52 @@ fn aot_allocator_default_and_current_round_trip() {
 }
 
 #[test]
-fn aot_allocator_context_builtin_still_emits_precise_diagnostic() {
-    // #121 Phase A landed support for `__builtin_heap_alloc` /
-    // `__builtin_heap_realloc` / `__builtin_heap_free` /
-    // `__builtin_ptr_read` / `__builtin_ptr_write` (default
-    // global-allocator path, libc malloc / realloc / free).
-    // Phase B-min added `__builtin_default_allocator` /
-    // `__builtin_current_allocator` + `with allocator = ...`
-    // scope semantics. The remaining allocator-context family
-    // (`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator`)
-    // still needs runtime backends with their own free strategy
-    // and quota tracking. This test pins the precise diagnostic
-    // for the still-deferred half so the next contributor can
-    // grep for the wording.
-    if skip_e2e() {
-        return;
-    }
+fn aot_arena_and_fixed_buffer_allocators_round_trip() {
+    // #121 Phase B-rest Items 1+3: arena and fixed_buffer
+    // allocator constructors return non-zero handles, and
+    // `__builtin_heap_alloc / _realloc / _free` route through
+    // the active allocator on the runtime stack rather than
+    // always hitting libc directly.
+    //
+    // Coverage:
+    //   - Arena: two allocations under `with allocator = arena`
+    //     both succeed (no quota); free is a no-op (no double-free
+    //     panic because the arena slot ignores it).
+    //   - FixedBuffer (capacity 16): two 8-byte allocations
+    //     succeed, a third 1-byte allocation must return null
+    //     (quota exceeded). `__builtin_ptr_is_null` is the
+    //     null-detection primitive — added in this same commit
+    //     so the AOT path can compare a `ptr` without coercing
+    //     to `u64`.
+    //
+    // The previous `aot_allocator_context_builtin_still_emits_precise_diagnostic`
+    // test that pinned the rejection message is replaced by this
+    // positive round-trip — Phase B-rest delivers what the older
+    // test was guarding against.
     let src = r#"
         fn main() -> u64 {
             val a = __builtin_arena_allocator()
+            val fb = __builtin_fixed_buffer_allocator(16u64)
+
+            with allocator = a {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 1u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 2u64 }
+            }
+
+            with allocator = fb {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 3u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 4u64 }
+                val p3: ptr = __builtin_heap_alloc(1u64)
+                if !__builtin_ptr_is_null(p3) { return 5u64 }
+            }
             42u64
         }
     "#;
-    let stem = "aot_allocator_context_diag";
-    let src_path = unique_path(&format!("{stem}.t"));
-    std::fs::write(&src_path, src).expect("write src");
-    let exe_path = unique_path(stem);
-    let options = CompilerOptions {
-        input: src_path.clone(),
-        output: Some(exe_path),
-        emit: EmitKind::Executable,
-        verbose: false,
-        release: false,
-        core_modules_dir: Some(core_modules_dir()),
-    };
-    let err = compile_file(&options).expect_err("AOT must still reject allocator-context builtins");
-    let _ = std::fs::remove_file(&src_path);
-    assert!(
-        err.contains("allocator builtin"),
-        "diagnostic should mention allocator builtin; got: {err}"
-    );
-    assert!(
-        err.contains("todo #121"),
-        "diagnostic should reference the todo entry; got: {err}"
-    );
+    assert_consistent(src, "aot_arena_and_fixed_buffer_allocators_round_trip");
 }
 
 #[test]

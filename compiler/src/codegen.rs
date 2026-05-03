@@ -199,6 +199,15 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_alloc_push: cranelift_module::FuncId,
     rt_alloc_pop: cranelift_module::FuncId,
     rt_alloc_current: cranelift_module::FuncId,
+    // #121 Phase B-rest Item 1: arena / fixed_buffer constructors.
+    rt_arena_new: cranelift_module::FuncId,
+    rt_fixed_buffer_new: cranelift_module::FuncId,
+    // #121 Phase B-rest Item 3: dispatched alloc / realloc / free
+    // that consult the active allocator handle (sentinel 0 = libc
+    // direct path; non-zero = registry slot).
+    rt_dispatched_alloc: cranelift_module::FuncId,
+    rt_dispatched_realloc: cranelift_module::FuncId,
+    rt_dispatched_free: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -418,6 +427,38 @@ impl<M: Module> CodegenSession<M> {
         alloc_current_sig.returns.push(AbiParam::new(types::I64));
         let rt_alloc_current = declare_helper(&mut module, "toy_alloc_current", &alloc_current_sig)?;
 
+        // #121 Phase B-rest Item 1: arena / fixed_buffer constructors.
+        // Both return a non-zero u64 handle that subsequent
+        // dispatched_alloc / _free / _realloc consult.
+        let mut arena_new_sig = Signature::new(call_conv);
+        arena_new_sig.returns.push(AbiParam::new(types::I64));
+        let rt_arena_new = declare_helper(&mut module, "toy_arena_new", &arena_new_sig)?;
+
+        let mut fixed_buffer_new_sig = Signature::new(call_conv);
+        fixed_buffer_new_sig.params.push(AbiParam::new(types::I64));
+        fixed_buffer_new_sig.returns.push(AbiParam::new(types::I64));
+        let rt_fixed_buffer_new = declare_helper(&mut module, "toy_fixed_buffer_new", &fixed_buffer_new_sig)?;
+
+        // #121 Phase B-rest Item 3: dispatched alloc / realloc / free.
+        // Signatures: (handle: u64, ...) -> ptr (or void for free).
+        let mut dispatched_alloc_sig = Signature::new(call_conv);
+        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_alloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_alloc_sig.returns.push(AbiParam::new(types::I64));
+        let rt_dispatched_alloc = declare_helper(&mut module, "toy_dispatched_alloc", &dispatched_alloc_sig)?;
+
+        let mut dispatched_realloc_sig = Signature::new(call_conv);
+        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_realloc_sig.params.push(AbiParam::new(types::I64));
+        dispatched_realloc_sig.returns.push(AbiParam::new(types::I64));
+        let rt_dispatched_realloc = declare_helper(&mut module, "toy_dispatched_realloc", &dispatched_realloc_sig)?;
+
+        let mut dispatched_free_sig = Signature::new(call_conv);
+        dispatched_free_sig.params.push(AbiParam::new(types::I64));
+        dispatched_free_sig.params.push(AbiParam::new(types::I64));
+        let rt_dispatched_free = declare_helper(&mut module, "toy_dispatched_free", &dispatched_free_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -459,6 +500,11 @@ impl<M: Module> CodegenSession<M> {
             rt_alloc_push,
             rt_alloc_pop,
             rt_alloc_current,
+            rt_arena_new,
+            rt_fixed_buffer_new,
+            rt_dispatched_alloc,
+            rt_dispatched_realloc,
+            rt_dispatched_free,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -940,6 +986,19 @@ impl<M: Module> CodegenSession<M> {
             alloc_push: self.module.declare_func_in_func(self.rt_alloc_push, func),
             alloc_pop: self.module.declare_func_in_func(self.rt_alloc_pop, func),
             alloc_current: self.module.declare_func_in_func(self.rt_alloc_current, func),
+            arena_new: self.module.declare_func_in_func(self.rt_arena_new, func),
+            fixed_buffer_new: self
+                .module
+                .declare_func_in_func(self.rt_fixed_buffer_new, func),
+            dispatched_alloc: self
+                .module
+                .declare_func_in_func(self.rt_dispatched_alloc, func),
+            dispatched_realloc: self
+                .module
+                .declare_func_in_func(self.rt_dispatched_realloc, func),
+            dispatched_free: self
+                .module
+                .declare_func_in_func(self.rt_dispatched_free, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
             sin: self.module.declare_func_in_func(self.libm_sin, func),
             cos: self.module.declare_func_in_func(self.libm_cos, func),
@@ -990,6 +1049,11 @@ struct RuntimeRefs {
     alloc_push: cranelift_codegen::ir::FuncRef,
     alloc_pop: cranelift_codegen::ir::FuncRef,
     alloc_current: cranelift_codegen::ir::FuncRef,
+    arena_new: cranelift_codegen::ir::FuncRef,
+    fixed_buffer_new: cranelift_codegen::ir::FuncRef,
+    dispatched_alloc: cranelift_codegen::ir::FuncRef,
+    dispatched_realloc: cranelift_codegen::ir::FuncRef,
+    dispatched_free: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,
@@ -1742,9 +1806,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // accept and return i64-sized pointers; free returns
             // void. PtrRead / PtrWrite use the IR's recorded element
             // type to pick the correct cranelift load / store width.
+            // #121 Phase B-rest Item 3: heap_alloc / realloc / free
+            // route through the active allocator. We read the
+            // current handle (sentinel 0 = default global / libc
+            // direct path) and pass it as the first arg to
+            // `toy_dispatched_*` which handles the dispatch.
             InstKind::HeapAlloc { size } => {
                 let size_v = self.value(*size);
-                let call = self.builder.ins().call(self.runtime.malloc, &[size_v]);
+                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let handle_v = self.builder.inst_results(handle_call)[0];
+                let call = self
+                    .builder
+                    .ins()
+                    .call(self.runtime.dispatched_alloc, &[handle_v, size_v]);
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1753,7 +1827,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::HeapRealloc { ptr, new_size } => {
                 let ptr_v = self.value(*ptr);
                 let size_v = self.value(*new_size);
-                let call = self.builder.ins().call(self.runtime.realloc, &[ptr_v, size_v]);
+                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let handle_v = self.builder.inst_results(handle_call)[0];
+                let call = self.builder.ins().call(
+                    self.runtime.dispatched_realloc,
+                    &[handle_v, ptr_v, size_v],
+                );
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
@@ -1761,7 +1840,11 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             }
             InstKind::HeapFree { ptr } => {
                 let ptr_v = self.value(*ptr);
-                self.builder.ins().call(self.runtime.free, &[ptr_v]);
+                let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
+                let handle_v = self.builder.inst_results(handle_call)[0];
+                self.builder
+                    .ins()
+                    .call(self.runtime.dispatched_free, &[handle_v, ptr_v]);
             }
             InstKind::PtrRead { ptr, offset, elem_ty } => {
                 let cl_ty = ir_to_cranelift_ty(*elem_ty)
@@ -1835,6 +1918,37 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let result = self.builder.inst_results(call)[0];
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, result);
+                }
+            }
+            // #121 Phase B-rest Item 1: arena / fixed_buffer
+            // constructors. Both return a non-zero u64 handle
+            // that goes onto the allocator stack via `with`.
+            InstKind::AllocArena => {
+                let call = self.builder.ins().call(self.runtime.arena_new, &[]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::AllocFixedBuffer { capacity } => {
+                let cap_v = self.value(*capacity);
+                let call = self
+                    .builder
+                    .ins()
+                    .call(self.runtime.fixed_buffer_new, &[cap_v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::PtrIsNull { ptr } => {
+                let p = self.value(*ptr);
+                let cmp = self
+                    .builder
+                    .ins()
+                    .icmp_imm(cranelift_codegen::ir::condcodes::IntCC::Equal, p, 0);
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, cmp);
                 }
             }
             // Stage 1 of `&` references: call to a `&mut self`

@@ -683,30 +683,53 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(self.emit(InstKind::AllocCurrent, Some(Type::U64)))
             }
-            other => {
-                use frontend::ast::BuiltinFunction;
-                // Remaining allocator-context builtins still need
-                // backing implementations (#121 Phase B+ continued):
-                // arena/fixed_buffer require runtime allocator
-                // backends with their own free strategy + quota
-                // tracking. The default and current allocators
-                // (above) and the heap / pointer builtins (Phase A)
-                // already cover the cases user-space `Dict<K, V>`
-                // needs.
-                let msg = match other {
-                    BuiltinFunction::ArenaAllocator
-                    | BuiltinFunction::FixedBufferAllocator => format!(
-                        "compiler MVP cannot lower allocator builtin {:?} yet \
-                         (todo #121: arena / fixed_buffer need runtime backends)",
-                        other
-                    ),
-                    _ => format!(
-                        "compiler MVP cannot lower builtin yet: {:?}",
-                        other
-                    ),
-                };
-                Err(msg)
+            BuiltinFunction::PtrIsNull => {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_ptr_is_null takes 1 arg (ptr), got {}",
+                        args.len()
+                    ));
+                }
+                let p = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_is_null arg produced no value".to_string())?;
+                Ok(self.emit(InstKind::PtrIsNull { ptr: p }, Some(Type::Bool)))
             }
+            BuiltinFunction::ArenaAllocator => {
+                // #121 Phase B-rest Item 1: allocate an arena slot
+                // in the runtime registry and return its handle.
+                // The handle is a non-zero u64 so heap_alloc /
+                // realloc / free can dispatch on it.
+                if !args.is_empty() {
+                    return Err(format!(
+                        "__builtin_arena_allocator takes no args, got {}",
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::AllocArena, Some(Type::U64)))
+            }
+            BuiltinFunction::FixedBufferAllocator => {
+                // #121 Phase B-rest Item 1: capacity-limited allocator.
+                // Subsequent allocations through this handle that
+                // would exceed `capacity` return 0 (null).
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_fixed_buffer_allocator takes 1 arg (capacity), got {}",
+                        args.len()
+                    ));
+                }
+                let cap = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "fixed_buffer capacity arg produced no value".to_string())?;
+                Ok(self.emit(
+                    InstKind::AllocFixedBuffer { capacity: cap },
+                    Some(Type::U64),
+                ))
+            }
+            other => Err(format!(
+                "compiler MVP cannot lower builtin yet: {:?}",
+                other
+            )),
         }
     }
 

@@ -764,6 +764,26 @@ pub enum InstKind {
     /// of the stack as a u64 (returns 0 when the stack is empty,
     /// matching `__builtin_default_allocator()`).
     AllocCurrent,
+    /// #121 Phase B-rest Item 1: `__builtin_arena_allocator()` —
+    /// allocate a fresh arena slot in the runtime registry and
+    /// return its handle (a non-zero u64). Codegen lowers this
+    /// to a call to `toy_arena_new()`. Arena `free` is a no-op
+    /// at the runtime level; allocations live until the arena
+    /// itself is dropped (out of scope for this phase).
+    AllocArena,
+    /// #121 Phase B-rest Item 1: `__builtin_fixed_buffer_allocator(capacity)` —
+    /// allocate a fresh fixed-buffer slot with `capacity` bytes
+    /// of quota. Codegen lowers to `toy_fixed_buffer_new(capacity)`.
+    /// Subsequent `heap_alloc` calls under this allocator return
+    /// 0 (null) when the cumulative `used + size` would exceed
+    /// `capacity`.
+    AllocFixedBuffer { capacity: ValueId },
+    /// `__builtin_ptr_is_null(p) -> bool`. Codegen lowers to
+    /// `icmp_imm eq, ptr, 0`. Needed alongside the dispatched
+    /// alloc family so callers can detect quota-exceeded
+    /// allocations without comparing `ptr` to a `u64` literal
+    /// (which the type checker rejects).
+    PtrIsNull { ptr: ValueId },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1208,6 +1228,11 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::AllocPush { handle } => write!(f, "alloc_push {handle}"),
             InstKind::AllocPop => write!(f, "alloc_pop"),
             InstKind::AllocCurrent => write!(f, "{prefix}alloc_current"),
+            InstKind::AllocArena => write!(f, "{prefix}alloc_arena"),
+            InstKind::AllocFixedBuffer { capacity } => {
+                write!(f, "{prefix}alloc_fixed_buffer {capacity}")
+            }
+            InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
         }
     }
 }

@@ -656,6 +656,57 @@ fn narrow_int_aot_round_trip() {
 }
 
 #[test]
+fn narrow_int_array_packing_round_trip() {
+    // NUM-W-AOT-pack Phase 1: homogeneous scalar element arrays
+    // pack to the actual scalar byte size — `[u8; N]` to N
+    // bytes, `[u16; N]` to 2N, `[u32; N]` to 4N, instead of the
+    // previous uniform 8N. The lowering's leaf-index addressing
+    // (byte_offset = leaf_idx * elem_stride_bytes) lands on the
+    // correct narrow slot because `elem_stride_bytes` now
+    // returns the per-width size for scalar element types.
+    //
+    // This test exercises read + write + loop sum across all six
+    // narrow widths with const + runtime indexing through
+    // interpreter / JIT (silent fallback) / AOT. Each backend
+    // must agree on exit 42; any address-arithmetic regression
+    // would surface as a wrong sum (the AOT cranelift `load.I8`
+    // / `load.I16` / `load.I32` reads at a wrong offset and the
+    // checksum wouldn't land on 42).
+    let src = r#"
+        fn main() -> u64 {
+            var u8a: [u8; 4] = [10u8, 20u8, 30u8, 40u8]
+            u8a[1] = 50u8
+            var u16a: [u16; 4] = [100u16, 200u16, 300u16, 400u16]
+            u16a[2] = 999u16
+            var u32a: [u32; 4] = [1000u32, 2000u32, 3000u32, 4000u32]
+            u32a[3] = 9999u32
+
+            var i8a: [i8; 4] = [-1i8, -2i8, -3i8, -4i8]
+            var i16a: [i16; 4] = [-100i16, -200i16, -300i16, -400i16]
+            var i32a: [i32; 4] = [-1000i32, -2000i32, -3000i32, -4000i32]
+
+            var su8: u64 = 0u64
+            var i: u64 = 0u64
+            while i < 4u64 {
+                su8 = su8 + (u8a[i] as u64)
+                i = i + 1u64
+            }
+            # 10 + 50 + 30 + 40 = 130
+            if su8 != 130u64 { return 1u64 }
+
+            if u16a[2] != 999u16 { return 2u64 }
+            if u32a[3] != 9999u32 { return 3u64 }
+            if i8a[0] != -1i8 { return 4u64 }
+            if i16a[3] != -400i16 { return 5u64 }
+            if i32a[1] != -2000i32 { return 6u64 }
+
+            42u64
+        }
+    "#;
+    assert_consistent(src, "narrow_int_array_packing_round_trip");
+}
+
+#[test]
 fn narrow_int_arithmetic_and_cast_interpreter() {
     // NUM-W Phase 3: exercises every narrow-int width through
     // arithmetic, comparison, the full cross-width cast matrix,

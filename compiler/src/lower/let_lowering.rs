@@ -275,6 +275,12 @@ impl<'a> FunctionLower<'a> {
                     | Type::U64
                     | Type::F64
                     | Type::Bool
+                    | Type::I8
+                    | Type::U8
+                    | Type::I16
+                    | Type::U16
+                    | Type::I32
+                    | Type::U32
                     | Type::Struct(_)
                     | Type::Tuple(_)
             ) {
@@ -282,10 +288,12 @@ impl<'a> FunctionLower<'a> {
                     "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
                 ));
             }
-            // Stride is uniform 8 bytes per leaf scalar; compound
-            // elements occupy `leaf_count` consecutive leaf slots
-            // in the same buffer. The slot's `length` therefore
-            // counts leaves, not elements.
+            // For homogeneous scalar element arrays the stride is
+            // the scalar's actual byte size (1/2/4/8 — see
+            // `array_layout::elem_stride_bytes`); for compound
+            // elements each leaf gets a uniform 8-byte slot in the
+            // same buffer. The slot's `length` therefore counts
+            // leaves, not elements.
             let leaf_count = leaf_scalar_count(self.module, elem_ty);
             let stride = elem_stride_bytes(elem_ty, self.module);
             let slot_len = elems.len() * leaf_count;

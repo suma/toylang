@@ -13,10 +13,21 @@
 
 use crate::ir::{Module, Type};
 
-/// Per-leaf scalar byte stride. Uniform 8 bytes for every
-/// supported scalar so the runtime address arithmetic stays a
-/// single `imul` by a constant. Bool stores 1 actual byte but
-/// reserves 8 to keep the stride uniform.
+/// Per-leaf byte stride for *compound* element arrays
+/// (`[Point; N]`, `[(i64, bool); N]`). Each leaf scalar in a
+/// compound element occupies one slot of this width regardless of
+/// the leaf's actual byte size, so the address arithmetic for
+/// `arr[i].field_j` stays a single `imul` by a constant
+/// (`leaf_idx * 8`) and the per-leaf type info is re-attached at
+/// the cranelift `load`/`store` site via the `elem_ty` field of
+/// `InstKind::ArrayLoad`/`ArrayStore`. Phase 2 of NUM-W-AOT-pack
+/// will replace this with per-leaf strides for tighter struct
+/// element layout (`[PackedRgba; N]` packing 4 u8 leaves into 4
+/// bytes instead of 32).
+///
+/// Homogeneous scalar element arrays (`[u8; N]`, `[u32; N]`,
+/// `[i64; N]`, `[f64; N]`, ...) already pack to the actual scalar
+/// size — see `elem_stride_bytes`.
 pub(super) const ARRAY_LEAF_STRIDE: u32 = 8;
 
 /// How many leaf scalar slots one element of `ty` occupies in an
@@ -46,11 +57,37 @@ pub(super) fn leaf_scalar_count(module: &Module, ty: Type) -> usize {
     }
 }
 
-/// Per-leaf stride stored in `ArraySlotInfo`. Compound elements
-/// occupy `leaf_count` consecutive slots; the element-to-leaf
-/// index translation happens at the lowering layer, not here.
-pub(super) fn elem_stride_bytes(_ty: Type, _module: &Module) -> u32 {
-    ARRAY_LEAF_STRIDE
+/// Per-leaf stride stored in `ArraySlotInfo`.
+///
+/// For *homogeneous scalar* element arrays the stride is the
+/// scalar's actual byte size — `[u8; N]` packs to 1 byte per
+/// leaf, `[u16; N]` to 2, `[u32; N]` to 4, `[u64; N]` /
+/// `[i64; N]` / `[f64; N]` to 8. This shaves the per-element
+/// memory cost of narrow-int arrays by up to 8× without changing
+/// any of the lowering's leaf-index addressing math: the leaf
+/// index for a homogeneous scalar element is just the element
+/// index, and `byte_offset = leaf_idx * stride` lands on the
+/// correct narrow slot.
+///
+/// For *compound* (struct / tuple) elements the stride stays at
+/// `ARRAY_LEAF_STRIDE` (8 bytes per leaf) so the existing
+/// per-leaf addressing for `arr[i].field_j` keeps working
+/// unchanged. NUM-W-AOT-pack Phase 2 will revisit struct element
+/// layout to pack narrow leaves tightly within each element.
+pub(super) fn elem_stride_bytes(ty: Type, _module: &Module) -> u32 {
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 => 4,
+        Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
+        // Compound element arrays still use the uniform 8-byte
+        // per-leaf slot — see Phase 2 plan above.
+        Type::Struct(_) | Type::Tuple(_) => ARRAY_LEAF_STRIDE,
+        // Unit / enum aren't valid array element types today; if
+        // they ever reach here, the conservative 8-byte slot
+        // stays correct.
+        Type::Unit | Type::Enum(_) => ARRAY_LEAF_STRIDE,
+    }
 }
 
 /// The IR type of leaf `j` (0-indexed) within an array element of

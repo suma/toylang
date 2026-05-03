@@ -760,6 +760,51 @@ fn hash_trait_dispatch_on_all_primitives() {
 }
 
 #[test]
+fn dict_typed_slot_survives_geometric_growth() {
+    // DICT-TYPED-SLOT-REALLOC pin (`6f60fb0` already added the
+    // `typed_slots` migration in `interpreter/src/heap.rs::realloc`,
+    // but the dict.t Phase 2 work flagged it as still-suspect
+    // because the workaround had only ever exercised the first
+    // `realloc(null, ...)` = `alloc()` path). This test forces
+    // the dict past every geometric grow boundary (initial cap
+    // 4, then 8, then 16, then 32) by inserting 33 typed
+    // values (Object::Int64 keys + Object::UInt64 vals) and
+    // reading every one back. If the migration were missing,
+    // the post-growth `__builtin_ptr_read` would fall through
+    // to the byte-buffer u64 path and the keys (Int64) would
+    // come back as UInt64 — equality on the original signed
+    // values would fail and `get_or` would return the default,
+    // producing exit ≠ 42.
+    //
+    // Interpreter + JIT (silent fallback) only — AOT can't
+    // currently lower `Dict::new()` (#159 / DICT-AOT-NEW).
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<i64, u64> = Dict::new()
+            var i: i64 = 0i64
+            while i < 33i64 {
+                d.insert(i, (i as u64) * 10u64)
+                i = i + 1i64
+            }
+            # Verify all 33 keys read back through the post-grow buffer.
+            var j: i64 = 0i64
+            var bad: bool = false
+            while j < 33i64 {
+                val expected: u64 = (j as u64) * 10u64
+                val got: u64 = d.get_or(j, 99999u64)
+                if got != expected { bad = true }
+                j = j + 1i64
+            }
+            if bad { 1u64 } else { 42u64 }
+        }
+    "#;
+    let interp = interpreter_value(src);
+    assert_eq!(interp, 42, "interpreter expected 42 (typed_slots migrated through grow), got {interp}");
+    let jit = jit_exit_code(src, "dict_typed_slot_growth_jit");
+    assert_eq!(jit as u64, 42, "JIT expected 42, got {jit}");
+}
+
+#[test]
 fn dict_user_space_round_trip() {
     // Phase 2 of the user-space dict effort
     // (`core/std/dict.t`): exercises insert / get_or / overwrite

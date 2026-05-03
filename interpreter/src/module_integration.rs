@@ -764,6 +764,7 @@ impl<'a> AstIntegrationContext<'a> {
                         requires: sig.requires.clone(),
                         ensures: sig.ensures.clone(),
                         has_self_param: sig.has_self_param,
+                        self_is_mut: sig.self_is_mut,
                     });
                 }
                 Ok(Stmt::TraitDecl {
@@ -903,6 +904,7 @@ impl<'a> AstIntegrationContext<'a> {
             ensures: new_ensures,
             code: new_code,
             has_self_param: method.has_self_param,
+            self_is_mut: method.self_is_mut,
             visibility: method.visibility.clone()
         }))
     }

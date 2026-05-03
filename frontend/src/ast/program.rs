@@ -137,6 +137,12 @@ pub struct TraitMethodSignature {
     pub requires: Vec<ExprRef>,
     pub ensures: Vec<ExprRef>,
     pub has_self_param: bool,
+    /// `true` when the receiver was written `&mut self` (mutable
+    /// reference). Only meaningful when `has_self_param == true`.
+    /// Stage 1 of the `&` references work — used by trait
+    /// conformance to require matching kinds and by the AOT
+    /// codegen to emit a Self-out-parameter writeback.
+    pub self_is_mut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,6 +159,13 @@ pub struct MethodFunction {
     pub ensures: Vec<ExprRef>,
     pub code: StmtRef,
     pub has_self_param: bool, // true if first parameter is &self
+    /// `true` when the receiver was written `&mut self` (mutable
+    /// reference). Only meaningful when `has_self_param == true`.
+    /// Drives the AOT Self-out-parameter writeback path that lets
+    /// `core/std/dict.t::insert` mutations propagate to the caller.
+    /// Interpreter ignores this (RefCell already gives reference
+    /// semantics on every receiver kind).
+    pub self_is_mut: bool,
     pub visibility: Visibility,
 }
 

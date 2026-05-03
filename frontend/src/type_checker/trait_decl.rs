@@ -90,6 +90,23 @@ impl<'a> TypeCheckerVisitor<'a> {
                     "impl {t_str} for {s_str}: method '{m_str}' self-parameter mismatch"
                 )));
             }
+            // Stage 1 of `&` references: receiver kind (`&mut self`
+            // vs `self` / `&self`) must match exactly between the
+            // trait declaration and its impl. The trait writes the
+            // contract; an impl that promises less mutation
+            // (`&self`) when the trait demands more (`&mut self`),
+            // or vice versa, is rejected here so users can't
+            // silently subvert the trait's mutability promise.
+            if m.has_self_param && m.self_is_mut != sig.self_is_mut {
+                let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
+                let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();
+                let m_str = self.core.string_interner.resolve(sig.name).unwrap_or("?").to_string();
+                let want = if sig.self_is_mut { "&mut self" } else { "self / &self" };
+                let got = if m.self_is_mut { "&mut self" } else { "self / &self" };
+                return Err(TypeCheckError::new(format!(
+                    "impl {t_str} for {s_str}: method '{m_str}' receiver kind mismatch (trait expects {want}, impl uses {got})"
+                )));
+            }
             if m.parameter.len() != sig.parameter.len() {
                 let t_str = self.core.string_interner.resolve(trait_symbol).unwrap_or("?").to_string();
                 let s_str = self.core.string_interner.resolve(struct_symbol).unwrap_or("?").to_string();

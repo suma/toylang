@@ -127,6 +127,42 @@ mod self_type_resolution {
         "#;
         assert!(parse_and_check(source).is_ok());
     }
+
+    #[test]
+    fn test_method_with_mut_self_param_parses_and_type_checks() {
+        // Stage 1 of `&` references — `&mut self` is the new
+        // receiver kind that drives the AOT Self-out-parameter
+        // writeback. Frontend just needs to parse it and store
+        // the receiver kind on the AST. Interpreter / AOT
+        // semantics are unchanged at this phase.
+        let source = r#"
+            struct Counter {
+                value: u64
+            }
+
+            impl Counter {
+                fn bump(&mut self) {
+                    self.value = self.value + 1u64
+                }
+
+                fn read(self: Self) -> u64 {
+                    self.value
+                }
+            }
+
+            fn main() -> u64 {
+                var c = Counter { value: 0u64 }
+                c.bump()
+                c.read()
+            }
+        "#;
+        assert!(parse_and_check(source).is_ok(), "parse_and_check failed for &mut self");
+    }
+
+    // Trait + impl receiver-kind mismatch is exercised in the
+    // interpreter test suite (`trait_tests.rs::test_trait_with_mut_self_rejects_non_mut_impl`)
+    // because the frontend-only `parse_and_check` helper here
+    // does not visit `Stmt::TraitDecl` statements.
 }
 
 mod argument_checking {

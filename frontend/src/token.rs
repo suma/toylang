@@ -28,6 +28,12 @@ pub enum Kind {
     As,
     Val,
     Var,
+    /// `mut` keyword. Reserved for the `&mut self` method receiver
+    /// (Phase 1 of `&` references) and any future mutability
+    /// annotations. Prior to its introduction the lexer treated
+    /// `mut` as a regular identifier; a workspace grep confirmed
+    /// no toylang source uses it that way before reservation.
+    Mut,
     Const,
     With,
     Ambient,
@@ -140,7 +146,7 @@ impl Kind {
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
             Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
             Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
-            Kind::Val | Kind::Var | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
+            Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
             Kind::U8 | Kind::U16 | Kind::U32 | Kind::I8 | Kind::I16 | Kind::I32 |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )

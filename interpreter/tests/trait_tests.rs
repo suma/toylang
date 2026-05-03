@@ -225,6 +225,33 @@ mod errors {
     }
 
     #[test]
+    fn test_trait_with_mut_self_rejects_non_mut_impl() {
+        // Stage 1 of `&` references: the trait writes the receiver
+        // contract; an impl that promises less mutation
+        // (`self: Self`) when the trait demands `&mut self` is
+        // rejected so users can't silently subvert the trait's
+        // mutability promise.
+        let source = r#"
+            trait Bumpable {
+                fn bump(&mut self)
+            }
+            struct Counter { value: u64 }
+            impl Bumpable for Counter {
+                fn bump(self: Self) {
+                    self.value = self.value + 1u64
+                }
+            }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("receiver kind mismatch")
+                || err.contains("self-parameter mismatch"),
+            "expected receiver-kind diagnostic; got: {}", err
+        );
+    }
+
+    #[test]
     fn test_signature_mismatch_in_impl_is_rejected() {
         // The impl returns u64 instead of the trait's str, so conformance
         // should fail.

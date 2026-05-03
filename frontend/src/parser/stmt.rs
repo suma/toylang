@@ -458,7 +458,7 @@ pub fn parse_trait_method_signatures(
                     skip_until_matching_gt(parser);
                 }
                 parser.expect_err(&Kind::ParenOpen)?;
-                let (params, has_self) = parse_method_param_list_with_generic_context(parser, vec![], &[])?;
+                let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(parser, vec![], &[])?;
                 parser.expect_err(&Kind::ParenClose)?;
 
                 let mut ret_ty: Option<TypeDecl> = None;
@@ -480,6 +480,7 @@ pub fn parse_trait_method_signatures(
                     requires,
                     ensures,
                     has_self_param: has_self,
+                    self_is_mut,
                 });
                 parser.skip_newlines();
             }
@@ -550,7 +551,7 @@ pub fn parse_impl_methods_with_generic_context(
                         combined_generic_params.extend(method_only_params.iter().copied());
 
                         parser.expect_err(&Kind::ParenOpen)?;
-                        let (params, has_self) = parse_method_param_list_with_generic_context(
+                        let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(
                             parser,
                             vec![],
                             &combined_generic_params,
@@ -590,6 +591,7 @@ pub fn parse_impl_methods_with_generic_context(
                             ensures,
                             code: parser.ast_builder.expression_stmt(block, Some(location)),
                             has_self_param: has_self,
+                            self_is_mut,
                             visibility,
                         }));
                         
@@ -610,35 +612,59 @@ pub fn parse_impl_methods_with_generic_context(
     }
 }
 
-pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {
+pub fn parse_method_param_list(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool, bool)> {
     parse_method_param_list_with_generic_context(parser, args, &[])
 }
 
-pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: Vec<Parameter>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<(Vec<Parameter>, bool)> {
+/// Parse a method parameter list. Returns
+/// `(parameters, has_self, self_is_mut)` where `self_is_mut` is
+/// only meaningful when `has_self == true`.
+///
+/// Receiver forms accepted (Stage 1 of `&` references):
+///   - `self`           → `(has_self=true,  self_is_mut=false)`
+///   - `&self`          → `(has_self=true,  self_is_mut=false)`  (today's behavior; `&` informational only)
+///   - `&mut self`      → `(has_self=true,  self_is_mut=true)`   (NEW — drives the AOT Self-out-parameter writeback)
+pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: Vec<Parameter>, generic_params: &[string_interner::DefaultSymbol]) -> ParserResult<(Vec<Parameter>, bool, bool)> {
     let mut has_self = false;
-    
+    let mut self_is_mut = false;
+
     match parser.peek() {
-        Some(Kind::ParenClose) => return Ok((args, has_self)),
+        Some(Kind::ParenClose) => return Ok((args, has_self, self_is_mut)),
         _ => (),
     }
 
     if let Some(Kind::And) = parser.peek() {
-        if let Some(Kind::Identifier(name)) = parser.peek_n(1) {
+        // `& [mut] self [, ...]`: peek for an optional `mut` between
+        // the `&` and the `self` identifier. The `mut` token was
+        // reserved in `frontend/src/lexer.l` specifically for this
+        // form; rejecting `& mut foo` (where `foo != self`) keeps
+        // the surface unambiguous.
+        let (mut_offset, self_offset) = if matches!(parser.peek_n(1), Some(Kind::Mut)) {
+            (Some(1usize), 2usize)
+        } else {
+            (None, 1usize)
+        };
+        if let Some(Kind::Identifier(name)) = parser.peek_n(self_offset) {
             if name == "self" {
-                parser.next();
-                parser.next();
+                parser.next(); // consume `&`
+                if mut_offset.is_some() {
+                    parser.next(); // consume `mut`
+                    self_is_mut = true;
+                }
+                parser.next(); // consume `self`
                 has_self = true;
-                
+
                 match parser.peek() {
                     Some(Kind::Comma) => {
                         parser.next();
                         let (rest_params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;
-                        return Ok((rest_params, has_self));
+                        return Ok((rest_params, has_self, self_is_mut));
                     }
-                    Some(Kind::ParenClose) => return Ok((args, has_self)),
+                    Some(Kind::ParenClose) => return Ok((args, has_self, self_is_mut)),
                     _ => {
                         let location = parser.current_source_location();
-                        return Err(ParserError::generic_error(location, "expected comma or closing paren after &self".to_string()))
+                        let receiver = if self_is_mut { "&mut self" } else { "&self" };
+                        return Err(ParserError::generic_error(location, format!("expected comma or closing paren after {receiver}")))
                     },
                 }
             }
@@ -646,7 +672,7 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
     }
 
     let (params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;
-    Ok((params, has_self))
+    Ok((params, has_self, self_is_mut))
 }
 
 pub fn parse_param_def_list_impl(parser: &mut Parser, args: Vec<Parameter>) -> ParserResult<(Vec<Parameter>, bool)> {

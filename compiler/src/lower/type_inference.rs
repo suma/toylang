@@ -157,6 +157,9 @@ impl<'a> FunctionLower<'a> {
                 // sentinel values.
                 frontend::ast::BuiltinFunction::DefaultAllocator
                 | frontend::ast::BuiltinFunction::CurrentAllocator => Some(Type::U64),
+                // `__builtin_str_to_ptr(s) -> ptr` returns a u64-sized
+                // pointer value.
+                frontend::ast::BuiltinFunction::StrToPtr => Some(Type::U64),
                 // SizeOf handled above already; no other builtins
                 // currently route through value_scalar.
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp

@@ -546,6 +546,47 @@ impl<'a> FunctionLower<'a> {
                 };
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
+            BuiltinFunction::StrToPtr => {
+                // `__builtin_str_to_ptr(s: str) -> ptr`. AOT
+                // representation: `Type::Str` is already a pointer-
+                // sized handle (i64) into the `.rodata` blob (or a
+                // heap-allocated copy). Returning the same value
+                // with a `Type::U64` annotation is identity at
+                // cranelift level (`ir_to_cranelift_ty(Str)` = I64
+                // = `ir_to_cranelift_ty(U64)`); the user's `ptr`
+                // can then be fed into `__builtin_ptr_read(p, i)`
+                // with a `val: u8` annotation to walk the bytes.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_str_to_ptr takes 1 arg (str), got {}",
+                        args.len()
+                    ));
+                }
+                let v = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_to_ptr arg produced no value".to_string())?;
+                // Identity at cranelift level: both `Type::Str` and
+                // `Type::U64` lower to `I64` (see
+                // `ir_to_cranelift_ty`). We surface the value with a
+                // U64 result type via a no-op `BinOp::Add` against
+                // `Const::U64(0)` so the IR's value-id → type table
+                // sees the right entry without needing a dedicated
+                // identity opcode.
+                let zero = self
+                    .emit(
+                        InstKind::Const(crate::ir::Const::U64(0)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value");
+                Ok(self.emit(
+                    InstKind::BinOp {
+                        op: crate::ir::BinOp::Add,
+                        lhs: v,
+                        rhs: zero,
+                    },
+                    Some(Type::U64),
+                ))
+            }
             BuiltinFunction::PtrRead => {
                 // `__builtin_ptr_read(ptr, offset)` — return type comes
                 // from the surrounding `val`/`var` annotation. The

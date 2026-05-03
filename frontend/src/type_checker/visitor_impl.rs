@@ -495,7 +495,14 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
             if let Some(hint) = &self.type_inference.type_hint {
                 if matches!(hint,
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool
-                    | TypeDecl::Ptr | TypeDecl::String
+                    | TypeDecl::Float64
+                    // NUM-W: narrow int hints so `val b: u8 =
+                    // __builtin_ptr_read(p, i)` (Phase B-min
+                    // `__builtin_str_to_ptr` byte-walk pattern) works.
+                    | TypeDecl::Int8 | TypeDecl::UInt8
+                    | TypeDecl::Int16 | TypeDecl::UInt16
+                    | TypeDecl::Int32 | TypeDecl::UInt32
+                    | TypeDecl::Ptr | TypeDecl::String | TypeDecl::Allocator
                     | TypeDecl::Struct(_, _) | TypeDecl::Enum(_, _)
                     | TypeDecl::Generic(_)
                 ) {

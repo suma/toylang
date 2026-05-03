@@ -194,6 +194,23 @@ pub enum BuiltinFunction {
     PtrWrite,     // __builtin_ptr_write(pointer: ptr, offset: u64, value: u64) -> unit
     PtrIsNull,    // __builtin_ptr_is_null(pointer: ptr) -> bool
 
+    // String → pointer conversion. Returns a pointer to the string's
+    // UTF-8 bytes (NUL-terminated). The pointer is valid for the
+    // lifetime of the string. Backend semantics:
+    //   - AOT: identity — `Type::Str` is already an i64-sized pointer
+    //     to a NUL-terminated `.rodata` blob (or heap copy).
+    //   - JIT: identity, same as AOT.
+    //   - Interpreter: allocates a heap buffer via `heap_manager`,
+    //     stores each byte as `Object::U8` in `typed_slots` so
+    //     `__builtin_ptr_read(p, i)` with a `val: u8` annotation
+    //     returns the byte at offset i. NUL terminator at index `len`.
+    //
+    // Use case: low-level FFI / interop where the user needs to walk
+    // the bytes of a string with `__builtin_ptr_read` (and counterpart
+    // `__builtin_ptr_write` / `mem_copy` for buffers built from
+    // `__builtin_heap_alloc`).
+    StrToPtr,     // __builtin_str_to_ptr(s: str) -> ptr
+
     // Memory operations
     MemCopy,      // __builtin_mem_copy(src: ptr, dest: ptr, size: u64) -> unit
     MemMove,      // __builtin_mem_move(src: ptr, dest: ptr, size: u64) -> unit
@@ -261,6 +278,9 @@ pub struct BuiltinFunctionSymbols {
     pub ptr_write: DefaultSymbol,
     pub ptr_is_null: DefaultSymbol,
 
+    // String → pointer conversion (interop with raw byte access).
+    pub str_to_ptr: DefaultSymbol,
+
     // Memory operations
     pub mem_copy: DefaultSymbol,
     pub mem_move: DefaultSymbol,
@@ -305,6 +325,7 @@ impl BuiltinFunctionSymbols {
             ptr_read: interner.get_or_intern("__builtin_ptr_read"),
             ptr_write: interner.get_or_intern("__builtin_ptr_write"),
             ptr_is_null: interner.get_or_intern("__builtin_ptr_is_null"),
+            str_to_ptr: interner.get_or_intern("__builtin_str_to_ptr"),
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
             mem_move: interner.get_or_intern("__builtin_mem_move"),
             mem_set: interner.get_or_intern("__builtin_mem_set"),
@@ -340,6 +361,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.ptr_read { Some(BuiltinFunction::PtrRead) }
         else if symbol == self.ptr_write { Some(BuiltinFunction::PtrWrite) }
         else if symbol == self.ptr_is_null { Some(BuiltinFunction::PtrIsNull) }
+        else if symbol == self.str_to_ptr { Some(BuiltinFunction::StrToPtr) }
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }
         else if symbol == self.mem_move { Some(BuiltinFunction::MemMove) }
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }

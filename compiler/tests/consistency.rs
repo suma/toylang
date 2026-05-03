@@ -759,6 +759,41 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn str_to_ptr_byte_walk_round_trip() {
+    // `__builtin_str_to_ptr(s: str) -> ptr` returns a pointer to
+    // the string's UTF-8 bytes (NUL-terminated). 3-way
+    // `assert_consistent`:
+    //   - AOT: identity — `Type::Str` already lowers to a
+    //     pointer-sized handle into `.rodata`, so the cast is a
+    //     no-op at the cranelift level.
+    //   - JIT: silent fallback (eligibility rejects, interpreter
+    //     handles it).
+    //   - Interpreter: heap-allocates `len + 1` bytes via the
+    //     active allocator, stores each byte as `Object::U8` in
+    //     typed_slots so `__builtin_ptr_read(p, i)` with a
+    //     `val: u8 = ...` annotation returns the byte at offset i,
+    //     plus the NUL terminator at offset `len`.
+    //
+    // Walks "hi" byte-by-byte, checking 'h'=104, 'i'=105, NUL=0.
+    // Exit 42 means every byte matched.
+    let src = r#"
+        fn main() -> u64 {
+            val s = "hi"
+            val p: ptr = __builtin_str_to_ptr(s)
+            val a: u8 = __builtin_ptr_read(p, 0u64)
+            val b: u8 = __builtin_ptr_read(p, 1u64)
+            val nul: u8 = __builtin_ptr_read(p, 2u64)
+            if a == 104u8 {
+                if b == 105u8 {
+                    if nul == 0u8 { 42u64 } else { 3u64 }
+                } else { 2u64 }
+            } else { 1u64 }
+        }
+    "#;
+    assert_consistent(src, "str_to_ptr_byte_walk_round_trip");
+}
+
+#[test]
 fn aot_allocator_default_and_current_round_trip() {
     // #121 Phase B-min: `__builtin_default_allocator()` returns
     // the sentinel u64 = 0; `__builtin_current_allocator()` reads

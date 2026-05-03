@@ -863,6 +863,13 @@ impl<'a, 'b> State<'a, 'b> {
                             .ok_or_else(|| "ptr_is_null arg".to_string())?;
                         Ok(Some(self.builder.ins().icmp_imm(IntCC::Equal, v, 0)))
                     }
+                    BuiltinFunction::StrToPtr => {
+                        // Eligibility (`jit/eligibility.rs::StrToPtr`)
+                        // already rejects this for the JIT hot path —
+                        // string scalars aren't modelled. The arm
+                        // exists here only for match exhaustiveness.
+                        Err("__builtin_str_to_ptr unreachable in JIT codegen (eligibility should reject)".into())
+                    }
                     BuiltinFunction::HeapAlloc => {
                         let size = self
                             .gen_expr(&args[0])?

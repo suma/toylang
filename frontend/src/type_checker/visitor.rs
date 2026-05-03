@@ -169,6 +169,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Ptr],
                 return_type: TypeDecl::Bool,
             },
+            // String → pointer conversion. The pointer's lifetime is
+            // tied to the input string; backends differ on the pointee
+            // representation (raw NUL-terminated bytes for AOT/JIT,
+            // typed-slot Object::U8 entries for the interpreter).
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::StrToPtr,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::Ptr,
+            },
             BuiltinFunctionSignature {
                 func: BuiltinFunction::MemCopy,
                 arg_count: 3,

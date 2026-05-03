@@ -2741,6 +2741,17 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Bool)
                 }
+                BuiltinFunction::StrToPtr => {
+                    // `__builtin_str_to_ptr(s: str) -> ptr` is not yet
+                    // hot-path JIT-eligible: the JIT has no `ScalarTy::Str`
+                    // yet (string values aren't modelled as scalars in the
+                    // JIT IR), so the call falls back to the interpreter
+                    // path where the helper does its work.
+                    *reject_reason = Some(
+                        "__builtin_str_to_ptr (JIT does not yet model str scalar values)".to_string(),
+                    );
+                    None
+                }
                 BuiltinFunction::MemCopy | BuiltinFunction::MemMove => {
                     if !check_args(
                         &[ScalarTy::Ptr, ScalarTy::Ptr, ScalarTy::U64],

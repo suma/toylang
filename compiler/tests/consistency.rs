@@ -574,6 +574,61 @@ fn stdout_loop_with_print_match() {
 }
 
 #[test]
+fn aot_allocator_builtin_emits_precise_diagnostic() {
+    // T8 (#121 follow-up): full AOT native codegen for the
+    // allocator family (`__builtin_heap_alloc` /
+    // `__builtin_heap_realloc` / `__builtin_heap_free` /
+    // `__builtin_ptr_read` / `__builtin_ptr_write` /
+    // `__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator`
+    // / `__builtin_current_allocator` / `__builtin_default_allocator`)
+    // is genuine multi-thousand-line work — needs IR-level
+    // `AllocatorBinding` variants wired into every heap
+    // instruction, native codegen for the active-allocator
+    // stack (push/pop tracked across call boundaries), and
+    // libc-level alloc/free helpers in the runtime. That is
+    // multi-week implementation effort and didn't fit
+    // autonomously in this session.
+    //
+    // The smaller win that already landed (#200) is a precise
+    // diagnostic so users hitting the AOT path with allocator
+    // builtins see "todo #121" cited explicitly. This test
+    // pins that diagnostic so the next contributor can grep
+    // for the wording before changing it.
+    if skip_e2e() {
+        return;
+    }
+    let src = r#"
+        fn main() -> u64 {
+            val p = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(p, 0u64, 42u64)
+            __builtin_ptr_read(p, 0u64)
+        }
+    "#;
+    let stem = "aot_allocator_diag";
+    let src_path = unique_path(&format!("{stem}.t"));
+    std::fs::write(&src_path, src).expect("write src");
+    let exe_path = unique_path(stem);
+    let options = CompilerOptions {
+        input: src_path.clone(),
+        output: Some(exe_path),
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+        core_modules_dir: Some(core_modules_dir()),
+    };
+    let err = compile_file(&options).expect_err("AOT must reject allocator builtins");
+    let _ = std::fs::remove_file(&src_path);
+    assert!(
+        err.contains("allocator builtin"),
+        "diagnostic should mention allocator builtin; got: {err}"
+    );
+    assert!(
+        err.contains("todo #121"),
+        "diagnostic should reference the todo entry; got: {err}"
+    );
+}
+
+#[test]
 fn narrow_int_aot_round_trip() {
     // NUM-W-AOT (T5 follow-up to Phase 5): the AOT compiler now
     // models the narrow integer types. The previous version of

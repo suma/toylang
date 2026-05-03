@@ -71,16 +71,18 @@ impl String {
     # `self.vec`'s fields directly. The `vec` field is private to
     # `String`; from outside the impl it must be opaque, and from
     # inside it should still be treated as such so the `Vec` /
-    # `String` boundary stays clean.
-    fn len(self: Self) -> u64 {
+    # `String` boundary stays clean. All three are read-only and
+    # take `&self` so callers don't pay the cost of cloning the
+    # underlying `Vec<u8>` handle just to query it.
+    fn len(&self) -> u64 {
         self.vec.size()
     }
 
-    fn is_empty(self: Self) -> bool {
+    fn is_empty(&self) -> bool {
         self.vec.is_empty()
     }
 
-    fn as_ptr(self: Self) -> ptr {
+    fn as_ptr(&self) -> ptr {
         self.vec.as_ptr()
     }
 

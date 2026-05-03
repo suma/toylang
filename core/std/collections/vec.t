@@ -84,7 +84,7 @@ impl<T> Vec<T> {
     # Random-access read. No bounds check — caller is responsible
     # for `index < self.len`. Returns whatever bytes happen to live
     # at the slot when called out-of-range.
-    fn get(self: Self, index: u64) -> T {
+    fn get(&self, index: u64) -> T {
         val v: T = __builtin_ptr_read(self.data, index * self.elem_size)
         v
     }
@@ -94,15 +94,15 @@ impl<T> Vec<T> {
         __builtin_ptr_write(self.data, index * self.elem_size, value)
     }
 
-    fn size(self: Self) -> u64 {
+    fn size(&self) -> u64 {
         self.len
     }
 
-    fn capacity(self: Self) -> u64 {
+    fn capacity(&self) -> u64 {
         self.cap
     }
 
-    fn is_empty(self: Self) -> bool {
+    fn is_empty(&self) -> bool {
         self.len == 0u64
     }
 
@@ -110,7 +110,7 @@ impl<T> Vec<T> {
     # callers (e.g. `core/std/string.t::String::as_ptr`) that need
     # to read raw bytes through the active allocator's `ptr_read`
     # without crossing the `Vec` field-access privacy line.
-    fn as_ptr(self: Self) -> ptr {
+    fn as_ptr(&self) -> ptr {
         self.data
     }
 }

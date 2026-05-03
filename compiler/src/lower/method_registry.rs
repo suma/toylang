@@ -58,26 +58,39 @@ pub(super) struct PendingMethodInstance {
 /// given target type.
 pub(super) fn collect_method_decls(program: &Program) -> Result<MethodRegistry, String> {
     let mut registry: MethodRegistry = HashMap::new();
+    // CONCRETE-IMPL: track which type_args registered each
+    // `(target, method)`. A second impl with different concrete args
+    // (e.g. `impl FromStr for Vec<u8>` + `impl FromStr for Vec<i64>`)
+    // returns a CONCRETE-IMPL-specific diagnostic so users know the
+    // limitation; same-args duplicates fall through to the legacy
+    // generic message.
+    let mut seen_args: HashMap<
+        (DefaultSymbol, DefaultSymbol),
+        Vec<frontend::type_decl::TypeDecl>,
+    > = HashMap::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         let stmt = match program.statement.get(&stmt_ref) {
             Some(s) => s,
             None => continue,
         };
-        if let Stmt::ImplBlock { target_type, methods, .. } = stmt {
+        if let Stmt::ImplBlock { target_type, target_type_args, methods, .. } = stmt {
             for m in &methods {
-                if registry
-                    .insert((target_type, m.name), Rc::clone(&m))
-                    .is_some()
-                {
-                    // Duplicate (target, method) — front-end type-checker
-                    // already rejects this; defensive guard so we don't
-                    // silently drop one impl.
+                let key = (target_type, m.name);
+                if let Some(prev_args) = seen_args.get(&key) {
+                    if prev_args != &target_type_args {
+                        return Err(format!(
+                            "CONCRETE-IMPL: multiple `impl` blocks for the same type provide method `{:?}` with different concrete type arguments ({:?} vs {:?}). Dispatch on concrete type args is not yet supported (see CONCRETE-IMPL in todo.md). Workaround: keep only one such impl, or factor the differing logic into separately-named methods.",
+                            m.name, prev_args, target_type_args
+                        ));
+                    }
                     return Err(
                         "duplicate method definition in impl blocks for the same type"
                             .to_string(),
                     );
                 }
+                seen_args.insert(key, target_type_args.clone());
+                registry.insert(key, Rc::clone(&m));
             }
         }
     }

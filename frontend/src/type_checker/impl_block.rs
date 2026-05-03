@@ -17,11 +17,17 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_impl_block_impl(
         &mut self,
         target_type: DefaultSymbol,
+        target_type_args: &Vec<TypeDecl>,
         methods: &Vec<Rc<MethodFunction>>,
         trait_name: Option<DefaultSymbol>,
     ) -> Result<TypeDecl, TypeCheckError> {
         // target_type is already a symbol
         let struct_symbol = target_type;
+        // CONCRETE-IMPL: type args are captured for the registry but not
+        // yet consumed by Self-type resolution at this layer (callers
+        // provide explicit return types like `Vec<u8>` instead of `Self`
+        // for concrete-args impls).
+        let _ = target_type_args;
 
         // For `impl <Trait> for <Struct>`, validate that the trait exists
         // and that this block satisfies every required method signature.

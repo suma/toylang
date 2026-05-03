@@ -642,7 +642,7 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone(),
                 })
             }
-            Stmt::ImplBlock { target_type, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
                 // Remap target / trait symbols and each method body
                 // through the module's interner. Without the symbol
                 // remap, `target_type` and `trait_name` would still
@@ -671,8 +671,16 @@ impl<'a> AstIntegrationContext<'a> {
                     let new_method = self.remap_method_function(method)?;
                     new_methods.push(new_method);
                 }
+                // CONCRETE-IMPL: target_type_args' TypeDecls carry symbols
+                // (struct names, generic param names) interned in the
+                // module's interner; route them through remap_type_decl.
+                let mut new_target_type_args = Vec::with_capacity(target_type_args.len());
+                for arg in target_type_args {
+                    new_target_type_args.push(self.remap_type_decl(arg)?);
+                }
                 Ok(Stmt::ImplBlock {
                     target_type: new_target,
+                    target_type_args: new_target_type_args,
                     methods: new_methods,
                     trait_name: new_trait,
                 })

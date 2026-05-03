@@ -759,6 +759,56 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn concrete_impl_conflict_emits_loud_error() {
+    // CONCRETE-IMPL: until full dispatch on concrete type args
+    // lands, having both `impl Foo for Container<u8>` and
+    // `impl Foo for Container<i64>` (different concrete args for
+    // the same trait + struct) used to silently overwrite the
+    // first impl. The parser now captures `<u8>` / `<i64>` into
+    // `ImplBlock.target_type_args` and the registry collectors
+    // (interpreter `build_method_registry`, compiler
+    // `collect_method_decls`) emit a loud, CONCRETE-IMPL-tagged
+    // diagnostic when conflicting target_type_args show up under
+    // the same `(target, method)` pair.
+    let src = r#"
+        struct Container<T> {
+            value: u64
+        }
+        trait MarkerName {
+            fn marker_name() -> u64
+        }
+        impl MarkerName for Container<u8> {
+            fn marker_name() -> u64 { 8u64 }
+        }
+        impl MarkerName for Container<i64> {
+            fn marker_name() -> u64 { 64u64 }
+        }
+        fn main() -> u64 {
+            0u64
+        }
+    "#;
+    let mut parser = frontend::ParserWithInterner::new(src);
+    let mut program = parser.parse_program().expect("parse");
+    let interner = parser.get_string_interner();
+    // Type-checking is not strict enough to catch the conflict
+    // (the registry is only built at execute time), so let the TC
+    // pass succeed and assert the loud error from execute_program.
+    let _ = interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(src),
+        Some("test.t"),
+        Some(&core_modules_dir()),
+    );
+    let err = interpreter::execute_program(&program, interner, Some(src), Some("test.t"))
+        .expect_err("two impls with different concrete type args must error");
+    assert!(
+        err.contains("CONCRETE-IMPL"),
+        "expected CONCRETE-IMPL diagnostic, got: {err}"
+    );
+}
+
+#[test]
 fn vec_from_str_round_trip() {
     // `core/std/collections/vec.t::FromStr::from_str(s) ->
     // Vec<u8>` copies the UTF-8 bytes of `s` into a fresh

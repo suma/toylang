@@ -72,7 +72,7 @@ impl Acceptable for Stmt {
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
-            Stmt::ImplBlock { target_type, methods, trait_name } => visitor.visit_impl_block(*target_type, methods, *trait_name),
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => visitor.visit_impl_block(*target_type, target_type_args, methods, *trait_name),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
             Stmt::TraitDecl { name, methods, visibility } => visitor.visit_trait_decl(*name, methods, visibility),
         }
@@ -373,8 +373,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_struct_decl_impl(name, generic_params, generic_bounds, fields, visibility)
     }
 
-    fn visit_impl_block(&mut self, target_type: DefaultSymbol, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_impl_block_impl(target_type, methods, trait_name)
+    fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name)
     }
 
     fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {

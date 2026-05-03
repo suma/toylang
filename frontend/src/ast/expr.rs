@@ -65,6 +65,14 @@ pub enum Stmt {
     },
     ImplBlock {
         target_type: DefaultSymbol,
+        /// Concrete type arguments on the impl target (e.g. `<u8>` in
+        /// `impl FromStr for Vec<u8>`). Empty for both inherent impls
+        /// `impl Foo` and generic-parameterised impls `impl<T> Foo<T>`
+        /// where `T` is a generic parameter, not a concrete type.
+        /// Disambiguates multiple `impl Trait for Generic<T>` blocks
+        /// with different `T` so the registry can store them as
+        /// separate specialisations.
+        target_type_args: Vec<TypeDecl>,
         methods: Vec<Rc<MethodFunction>>,
         /// `Some(trait_name)` for `impl <Trait> for <Type>`, `None` for an
         /// inherent `impl <Type>`. Trait conformance is recorded by the

@@ -294,13 +294,13 @@ fn integrate_modules(
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
-    impl_blocks: &[(DefaultSymbol, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>)],
+    impl_blocks: &[(DefaultSymbol, Vec<frontend::type_decl::TypeDecl>, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>)],
     formatter: &Option<ErrorFormatter>
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
-    for (target_type, methods, trait_name) in impl_blocks {
-        if let Err(err) = tc.visit_impl_block(*target_type, methods, *trait_name) {
+    for (target_type, target_type_args, methods, trait_name) in impl_blocks {
+        if let Err(err) = tc.visit_impl_block(*target_type, target_type_args, methods, *trait_name) {
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
@@ -368,8 +368,8 @@ pub fn check_typing_with_core_modules(
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, methods, trait_name } = &stmt {
-                impl_blocks.push((*target_type, methods.clone(), *trait_name));
+            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } = &stmt {
+                impl_blocks.push((*target_type, target_type_args.clone(), methods.clone(), *trait_name));
             }
         }
     }
@@ -564,17 +564,47 @@ fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program
 }
 
 fn build_method_registry(
-    program: &Program
-) -> HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> {
-    let mut method_registry = HashMap::new();
-    
+    program: &Program,
+    string_interner: &DefaultStringInterner,
+) -> Result<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>>, String> {
+    let mut method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Rc<MethodFunction>>> = HashMap::new();
+    // CONCRETE-IMPL: track which (struct, method) pairs were already
+    // registered and the type-args that registered them. A second impl
+    // with a *different* target_type_args (e.g. `impl FromStr for Vec<u8>`
+    // alongside `impl FromStr for Vec<i64>`) used to silently overwrite
+    // the first; now it errors. Same args is a duplicate registration
+    // (also rejected). True dispatch by type_args is a follow-up.
+    let mut seen_args: HashMap<(DefaultSymbol, DefaultSymbol), Vec<frontend::type_decl::TypeDecl>> = HashMap::new();
+
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, methods, .. } = &stmt {
+            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, .. } = &stmt {
                 let struct_name_symbol = *target_type;
                 for method in methods {
                     let method_name_symbol = method.name;
+                    let key = (struct_name_symbol, method_name_symbol);
+                    if let Some(prev_args) = seen_args.get(&key) {
+                        if prev_args != target_type_args {
+                            let struct_name = string_interner.resolve(struct_name_symbol).unwrap_or("<unknown>");
+                            let method_name = string_interner.resolve(method_name_symbol).unwrap_or("<unknown>");
+                            return Err(format!(
+                                "CONCRETE-IMPL: multiple `impl` blocks for `{}` provide method `{}` with different concrete type arguments \
+({:?} vs {:?}). Dispatch on concrete type args is not yet supported \
+(see CONCRETE-IMPL in todo.md). Workaround: keep only one such impl, or \
+factor the differing logic into separately-named methods.",
+                                struct_name, method_name, prev_args, target_type_args
+                            ));
+                        }
+                        // Same args = exact duplicate, also reject loudly
+                        let struct_name = string_interner.resolve(struct_name_symbol).unwrap_or("<unknown>");
+                        let method_name = string_interner.resolve(method_name_symbol).unwrap_or("<unknown>");
+                        return Err(format!(
+                            "duplicate `impl` registration for `{}::{}` with same target type args",
+                            struct_name, method_name
+                        ));
+                    }
+                    seen_args.insert(key, target_type_args.clone());
                     method_registry
                         .entry(struct_name_symbol)
                         .or_insert_with(HashMap::new)
@@ -583,8 +613,8 @@ fn build_method_registry(
             }
         }
     }
-    
-    method_registry
+
+    Ok(method_registry)
 }
 
 fn register_methods(
@@ -607,7 +637,8 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     let func_map = build_function_map(program, string_interner);
     let func_qualified = build_function_qualified_map(program);
     let mut string_interner_mut = string_interner.clone();
-    let method_registry = build_method_registry(program);
+    let method_registry = build_method_registry(program, string_interner)
+        .map_err(|e| format!("Runtime Error: {}", e))?;
 
     let mut eval = EvaluationContext::new_with_qualified(
         &program.statement,

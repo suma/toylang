@@ -403,23 +403,27 @@ impl<'a> Parser<'a> {
                             // type-checker / interpreter / compiler — they
                             // are reserved keywords so there's no clash with
                             // a user struct of the same name.
-                            let (trait_name, target_type_symbol) = if matches!(self.peek(), Some(Kind::For)) {
+                            let generic_params_set: std::collections::HashSet<DefaultSymbol> = generic_params.iter().copied().collect();
+                            let (trait_name, target_type_symbol, target_type_args) = if matches!(self.peek(), Some(Kind::For)) {
                                 self.next(); // consume `for`
-                                let target_sym = match self.peek() {
+                                let (target_sym, target_args) = match self.peek() {
                                     Some(Kind::Identifier(name)) => {
                                         let name_copy = name.clone();
                                         let sym = self.string_interner.get_or_intern(&name_copy);
                                         self.next();
-                                        if self.peek() == Some(&Kind::LT) {
-                                            self.skip_until_matching_gt();
-                                        }
-                                        sym
+                                        let args = if self.peek() == Some(&Kind::LT) {
+                                            self.next(); // consume '<'
+                                            self.parse_type_args_after_lt(&generic_params_set)?
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        (sym, args)
                                     }
                                     Some(kind) if primitive_type_canonical_name(kind).is_some() => {
                                         let name = primitive_type_canonical_name(kind).unwrap();
                                         let sym = self.string_interner.get_or_intern(name);
                                         self.next();
-                                        sym
+                                        (sym, Vec::new())
                                     }
                                     _ => {
                                         self.collect_error("expected target type after `for` in impl-trait");
@@ -427,9 +431,9 @@ impl<'a> Parser<'a> {
                                         continue;
                                     }
                                 };
-                                (Some(first_ident_symbol), target_sym)
+                                (Some(first_ident_symbol), target_sym, target_args)
                             } else {
-                                (None, first_ident_symbol)
+                                (None, first_ident_symbol, Vec::new())
                             };
 
                             self.expect_err(&Kind::BraceOpen)?;
@@ -438,7 +442,7 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(impl_end_pos);
 
-                            self.ast_builder.impl_block_stmt_with_trait(target_type_symbol, methods, trait_name, Some(location));
+                            self.ast_builder.impl_block_stmt_with_trait(target_type_symbol, target_type_args, methods, trait_name, Some(location));
                         }
                         _ => {
                             self.collect_error("expected type name for impl block");

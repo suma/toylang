@@ -213,6 +213,42 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse `T1, T2, ...>` after the opening `<` has been consumed.
+    /// Used by impl-target parsing to capture concrete type args
+    /// (e.g., `<u8>` in `impl FromStr for Vec<u8>`).
+    pub(super) fn parse_type_args_after_lt(
+        &mut self,
+        generic_params: &HashSet<DefaultSymbol>,
+    ) -> ParserResult<Vec<TypeDecl>> {
+        let mut type_args = Vec::new();
+        loop {
+            let type_arg = self.parse_type_declaration_with_generic_context(generic_params)?;
+            type_args.push(type_arg);
+            match self.peek() {
+                Some(Kind::Comma) => {
+                    self.next();
+                }
+                Some(Kind::GT) => {
+                    self.next(); // consume '>'
+                    break;
+                }
+                Some(Kind::RightShift) => {
+                    self.next(); // consume '>>'
+                    self.insert_token(Kind::GT); // outer level
+                    break;
+                }
+                _ => {
+                    let location = self.current_source_location();
+                    return Err(ParserError::generic_error(
+                        location,
+                        "Expected ',' or '>' in impl-target type arguments".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(type_args)
+    }
+
     /// Skip tokens until matching '>' is found (for generic argument parsing)
     pub(super) fn skip_until_matching_gt(&mut self) {
         let mut depth = 1;

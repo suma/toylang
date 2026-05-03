@@ -852,6 +852,9 @@ pub struct StmtPool {
     pub visibility: Vec<Option<Visibility>>,                 // For struct/impl visibility
     pub impl_methods: Vec<Option<Vec<Rc<MethodFunction>>>>,  // For impl block methods
     pub impl_trait_name: Vec<Option<DefaultSymbol>>,          // `Some(name)` for `impl Trait for Type`
+    /// Concrete type args on the impl target (e.g. `<u8>` in `impl FromStr for Vec<u8>`).
+    /// Empty for inherent / generic-parameterised impls. CONCRETE-IMPL.
+    pub impl_target_type_args: Vec<Option<Vec<TypeDecl>>>,
     pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
     pub enum_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For enum generic parameters
     pub trait_methods: Vec<Option<Vec<TraitMethodSignature>>>, // For trait declarations
@@ -881,6 +884,7 @@ impl StmtPool {
             visibility: Vec::new(),
             impl_methods: Vec::new(),
             impl_trait_name: Vec::new(),
+            impl_target_type_args: Vec::new(),
             enum_variants: Vec::new(),
             enum_generic_params: Vec::new(),
             trait_methods: Vec::new(),
@@ -904,6 +908,7 @@ impl StmtPool {
             visibility: Vec::with_capacity(cap),
             impl_methods: Vec::with_capacity(cap),
             impl_trait_name: Vec::with_capacity(cap),
+            impl_target_type_args: Vec::with_capacity(cap),
             enum_variants: Vec::with_capacity(cap),
             enum_generic_params: Vec::with_capacity(cap),
             trait_methods: Vec::with_capacity(cap),
@@ -929,6 +934,7 @@ impl StmtPool {
             self.visibility.resize(current_len + extend_count, None);
             self.impl_methods.resize(current_len + extend_count, None);
             self.impl_trait_name.resize(current_len + extend_count, None);
+            self.impl_target_type_args.resize(current_len + extend_count, None);
             self.enum_variants.resize(current_len + extend_count, None);
             self.enum_generic_params.resize(current_len + extend_count, None);
             self.trait_methods.resize(current_len + extend_count, None);
@@ -986,11 +992,12 @@ impl StmtPool {
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::ImplBlock { target_type, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
                 self.stmt_types[index] = StmtType::ImplBlock;
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
                 self.impl_trait_name[index] = trait_name;
+                self.impl_target_type_args[index] = Some(target_type_args);
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 self.stmt_types[index] = StmtType::EnumDecl;
@@ -1038,6 +1045,7 @@ impl StmtPool {
         self.visibility[index] = None;
         self.impl_methods[index] = None;
         self.impl_trait_name[index] = None;
+        self.impl_target_type_args[index] = None;
         self.enum_variants[index] = None;
         self.enum_generic_params[index] = None;
         self.trait_methods[index] = None;
@@ -1090,11 +1098,12 @@ impl StmtPool {
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::ImplBlock { target_type, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
                 self.stmt_types[index] = StmtType::ImplBlock;
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
                 self.impl_trait_name[index] = trait_name;
+                self.impl_target_type_args[index] = Some(target_type_args);
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 self.stmt_types[index] = StmtType::EnumDecl;
@@ -1167,6 +1176,7 @@ impl StmtPool {
             StmtType::ImplBlock => {
                 Some(Stmt::ImplBlock {
                     target_type: self.struct_name[index]?,
+                    target_type_args: self.impl_target_type_args[index].clone().unwrap_or_default(),
                     methods: self.impl_methods[index].clone()?,
                     trait_name: self.impl_trait_name[index],
                 })

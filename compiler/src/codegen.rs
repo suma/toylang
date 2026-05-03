@@ -150,6 +150,7 @@ pub(crate) struct CodegenSession<M: Module> {
     libc_malloc: cranelift_module::FuncId,
     libc_realloc: cranelift_module::FuncId,
     libc_free: cranelift_module::FuncId,
+    libc_strlen: cranelift_module::FuncId,
     /// libm `double pow(double, double)` — used by `BinOp::Pow`.
     libm_pow: cranelift_module::FuncId,
     /// libm transcendentals — `double sin(double)` etc. Used by the
@@ -289,6 +290,23 @@ impl<M: Module> CodegenSession<M> {
             .declare_function("free", CLinkage::Import, &free_sig)
             .map_err(|e| format!("declare free: {e}"))?;
 
+        // libc `strlen(const char *) -> size_t` (size_t is i64 on
+        // every supported host). Used by `__builtin_str_len(s)` —
+        // the per-literal `.rodata` layout
+        // (`[bytes][NUL][u64 len]`, see `declare_print_string`)
+        // keeps the trailing NUL precisely so this helper can
+        // walk to the end without needing a side-table from the
+        // byte pointer to the stored len. The stored u64 len at
+        // the layout's tail is currently informational; future
+        // optimisation could cache it in the str value itself
+        // (e.g. via low-bit tagging) for true O(1) `str.len()`.
+        let mut strlen_sig = Signature::new(call_conv);
+        strlen_sig.params.push(AbiParam::new(types::I64));
+        strlen_sig.returns.push(AbiParam::new(types::I64));
+        let libc_strlen = module
+            .declare_function("strlen", CLinkage::Import, &strlen_sig)
+            .map_err(|e| format!("declare strlen: {e}"))?;
+
         let mut pow_sig = Signature::new(call_conv);
         pow_sig.params.push(AbiParam::new(types::F64));
         pow_sig.params.push(AbiParam::new(types::F64));
@@ -406,6 +424,7 @@ impl<M: Module> CodegenSession<M> {
             libc_malloc,
             libc_realloc,
             libc_free,
+            libc_strlen,
             libm_pow,
             libm_sin,
             libm_cos,
@@ -567,9 +586,28 @@ impl<M: Module> CodegenSession<M> {
             return Ok(());
         }
         let msg = interner.resolve(sym).unwrap_or("");
-        let mut bytes = Vec::with_capacity(msg.len() + 1);
+        // Per-literal `.rodata` layout for `str` values:
+        //
+        //   [N bytes (UTF-8)] [1 byte NUL] [u64 len (8 bytes, LE)]
+        //
+        // The runtime str value is the address of the **len field**
+        // at the end of the layout. From there:
+        //   - `__builtin_str_len(s)` → `load.i64(s, 0)`
+        //   - `__builtin_str_to_ptr(s)` → `s - 1 - len`
+        //     (`-1` for the NUL byte, `-len` for the bytes)
+        //   - `Print { value, value_ty: Str }` reads the same len +
+        //     computes byte_ptr the same way, then calls
+        //     `toy_print_str(byte_ptr, len)` (runtime now uses
+        //     `fwrite` instead of `puts`/`fputs`).
+        //
+        // The trailing NUL is preserved so legacy C interop that
+        // wants a cstring (e.g. `puts` callers) still works against
+        // the byte_ptr we hand back from `as_ptr()`.
+        let bytes_len = msg.as_bytes().len();
+        let mut bytes = Vec::with_capacity(bytes_len + 1 + 8);
         bytes.extend_from_slice(msg.as_bytes());
         bytes.push(0);
+        bytes.extend_from_slice(&(bytes_len as u64).to_le_bytes());
         let name = format!("toy_print_str_{}", sym.to_usize());
         let data_id = self
             .module
@@ -874,6 +912,7 @@ impl<M: Module> CodegenSession<M> {
             malloc: self.module.declare_func_in_func(self.libc_malloc, func),
             realloc: self.module.declare_func_in_func(self.libc_realloc, func),
             free: self.module.declare_func_in_func(self.libc_free, func),
+            strlen: self.module.declare_func_in_func(self.libc_strlen, func),
             print_i64: self.module.declare_func_in_func(self.rt_print_i64, func),
             println_i64: self.module.declare_func_in_func(self.rt_println_i64, func),
             print_u64: self.module.declare_func_in_func(self.rt_print_u64, func),
@@ -921,6 +960,7 @@ struct RuntimeRefs {
     malloc: cranelift_codegen::ir::FuncRef,
     realloc: cranelift_codegen::ir::FuncRef,
     free: cranelift_codegen::ir::FuncRef,
+    strlen: cranelift_codegen::ir::FuncRef,
     print_i64: cranelift_codegen::ir::FuncRef,
     println_i64: cranelift_codegen::ir::FuncRef,
     print_u64: cranelift_codegen::ir::FuncRef,
@@ -1720,6 +1760,14 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     addr,
                     0,
                 );
+            }
+            InstKind::StrLen { value } => {
+                let v = self.value(*value);
+                let call = self.builder.ins().call(self.runtime.strlen, &[v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
             }
             // #121 Phase B-min: active-allocator stack ops.
             // `AllocPush(handle)` and `AllocPop` emit a libc call

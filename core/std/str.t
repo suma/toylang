@@ -37,3 +37,25 @@ impl AsPtr for str {
         __builtin_str_to_ptr(self)
     }
 }
+
+# `str` byte length. Returns the number of UTF-8 bytes (NOT the
+# character count for multi-byte sequences).
+#
+# Backend semantics:
+#   - AOT: calls libc `strlen` on the str's byte pointer. The
+#     per-literal `.rodata` layout (`[bytes][NUL][u64 len]`)
+#     keeps the trailing NUL precisely so this walk terminates
+#     at the right position.
+#   - Interpreter: returns `s.bytes().len()` directly.
+#
+# `Length` rather than `Len` to avoid conflicting with any future
+# user `trait Len { fn len() }` they may want for collections.
+trait Length {
+    fn len(self: Self) -> u64
+}
+
+impl Length for str {
+    fn len(self: Self) -> u64 {
+        __builtin_str_len(self)
+    }
+}

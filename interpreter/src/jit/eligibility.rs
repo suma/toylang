@@ -2752,6 +2752,12 @@ pub(crate) fn check_expr(
                     );
                     None
                 }
+                BuiltinFunction::StrLen => {
+                    *reject_reason = Some(
+                        "__builtin_str_len (JIT does not yet model str scalar values)".to_string(),
+                    );
+                    None
+                }
                 BuiltinFunction::MemCopy | BuiltinFunction::MemMove => {
                     if !check_args(
                         &[ScalarTy::Ptr, ScalarTy::Ptr, ScalarTy::U64],

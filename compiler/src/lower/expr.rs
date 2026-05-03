@@ -546,6 +546,25 @@ impl<'a> FunctionLower<'a> {
                 };
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
+            BuiltinFunction::StrLen => {
+                // `__builtin_str_len(s: str) -> u64` — emits an
+                // `InstKind::StrLen` that codegen lowers to a libc
+                // `strlen` call. The per-literal `.rodata` layout
+                // (`[bytes][NUL][u64 len]`) keeps the trailing NUL
+                // so strlen's walk terminates correctly; the stored
+                // u64 len at the layout's tail is informational
+                // for now.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_str_len takes 1 arg (str), got {}",
+                        args.len()
+                    ));
+                }
+                let v = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str_len arg produced no value".to_string())?;
+                Ok(self.emit(InstKind::StrLen { value: v }, Some(Type::U64)))
+            }
             BuiltinFunction::StrToPtr => {
                 // `__builtin_str_to_ptr(s: str) -> ptr`. AOT
                 // representation: `Type::Str` is already a pointer-

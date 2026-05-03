@@ -211,6 +211,18 @@ pub enum BuiltinFunction {
     // `__builtin_heap_alloc`).
     StrToPtr,     // __builtin_str_to_ptr(s: str) -> ptr
 
+    // String → byte length. Returns the number of UTF-8 bytes in
+    // the string (not the character count). O(1) at every backend:
+    //   - AOT: loads the 8-byte length header that
+    //     `declare_print_string` lays out immediately before the
+    //     string's UTF-8 bytes (str values point at the byte start;
+    //     the length lives at offset -8).
+    //   - JIT: silent fallback to interpreter (no `ScalarTy::Str`
+    //     in the JIT IR yet).
+    //   - Interpreter: returns `s.bytes().len() as u64` from the
+    //     underlying `Object::String` / `Object::ConstString`.
+    StrLen,       // __builtin_str_len(s: str) -> u64
+
     // Memory operations
     MemCopy,      // __builtin_mem_copy(src: ptr, dest: ptr, size: u64) -> unit
     MemMove,      // __builtin_mem_move(src: ptr, dest: ptr, size: u64) -> unit
@@ -280,6 +292,7 @@ pub struct BuiltinFunctionSymbols {
 
     // String → pointer conversion (interop with raw byte access).
     pub str_to_ptr: DefaultSymbol,
+    pub str_len: DefaultSymbol,
 
     // Memory operations
     pub mem_copy: DefaultSymbol,
@@ -326,6 +339,7 @@ impl BuiltinFunctionSymbols {
             ptr_write: interner.get_or_intern("__builtin_ptr_write"),
             ptr_is_null: interner.get_or_intern("__builtin_ptr_is_null"),
             str_to_ptr: interner.get_or_intern("__builtin_str_to_ptr"),
+            str_len: interner.get_or_intern("__builtin_str_len"),
             mem_copy: interner.get_or_intern("__builtin_mem_copy"),
             mem_move: interner.get_or_intern("__builtin_mem_move"),
             mem_set: interner.get_or_intern("__builtin_mem_set"),
@@ -362,6 +376,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.ptr_write { Some(BuiltinFunction::PtrWrite) }
         else if symbol == self.ptr_is_null { Some(BuiltinFunction::PtrIsNull) }
         else if symbol == self.str_to_ptr { Some(BuiltinFunction::StrToPtr) }
+        else if symbol == self.str_len { Some(BuiltinFunction::StrLen) }
         else if symbol == self.mem_copy { Some(BuiltinFunction::MemCopy) }
         else if symbol == self.mem_move { Some(BuiltinFunction::MemMove) }
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }

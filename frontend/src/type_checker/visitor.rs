@@ -179,6 +179,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::String],
                 return_type: TypeDecl::Ptr,
             },
+            // String → byte length. AOT loads the 8-byte length field
+            // that lives at the str value's address (the .rodata
+            // layout per literal is `[bytes][NUL][u64 len]`); the
+            // str runtime value points at the len field). Interpreter
+            // returns the underlying String's `.bytes().len()`.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::StrLen,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::String],
+                return_type: TypeDecl::UInt64,
+            },
             BuiltinFunctionSignature {
                 func: BuiltinFunction::MemCopy,
                 arg_count: 3,

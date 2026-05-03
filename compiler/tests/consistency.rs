@@ -759,6 +759,30 @@ fn stdout_narrow_int_dedicated_helpers() {
 }
 
 #[test]
+fn str_len_extension_method_round_trip() {
+    // `core/std/str.t::Length::len(self) -> u64` returns the byte
+    // count of the string. AOT lowers to a libc `strlen` call;
+    // the `.rodata` per-literal layout
+    // (`[bytes][NUL][u64 len]` per `declare_print_string`) keeps
+    // the trailing NUL precisely so the strlen walk terminates
+    // at the right position. Interpreter / JIT (silent fallback)
+    // return `s.bytes().len()` directly.
+    //
+    // Mixes empty, ASCII, and short literals to confirm the
+    // length matches across all three backends (interpreter,
+    // JIT silent fallback, AOT).
+    let src = r#"
+        fn main() -> u64 {
+            val empty = ""
+            val short = "hi"
+            val mid = "hello"
+            empty.len() + short.len() + mid.len()
+        }
+    "#;
+    assert_consistent(src, "str_len_extension_method_round_trip");
+}
+
+#[test]
 fn str_as_ptr_extension_method_round_trip() {
     // `core/std/str.t::AsPtr::as_ptr(self) -> ptr` is the user-
     // facing entry point for the byte-pointer view of a string;

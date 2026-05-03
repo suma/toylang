@@ -715,6 +715,10 @@ pub enum InstKind {
     /// `ptr + offset`. The value's IR type is captured at lower
     /// time so codegen picks the matching `store.<cl_ty>`.
     PtrWrite { ptr: ValueId, offset: ValueId, value: ValueId, value_ty: Type },
+    /// `__builtin_str_len(s) -> u64` — call into libc `strlen` on the
+    /// str value's byte pointer. Returns the byte count (NOT the
+    /// character count for multi-byte UTF-8).
+    StrLen { value: ValueId },
     /// Stage 1 of `&` references: call to a `&mut self` method.
     /// The cranelift call returns
     /// `(user_return_leaves..., self_writeback_leaves...)`; codegen
@@ -1174,6 +1178,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::PtrWrite { ptr, offset, value, value_ty } => {
                 write!(f, "ptr_write {ptr}, {offset} <- {value}: {value_ty}")
+            }
+            InstKind::StrLen { value } => {
+                write!(f, "{prefix}str_len {value}")
             }
             InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
                 let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");

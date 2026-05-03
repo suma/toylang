@@ -870,6 +870,9 @@ impl<'a, 'b> State<'a, 'b> {
                         // exists here only for match exhaustiveness.
                         Err("__builtin_str_to_ptr unreachable in JIT codegen (eligibility should reject)".into())
                     }
+                    BuiltinFunction::StrLen => {
+                        Err("__builtin_str_len unreachable in JIT codegen (eligibility should reject)".into())
+                    }
                     BuiltinFunction::HeapAlloc => {
                         let size = self
                             .gen_expr(&args[0])?

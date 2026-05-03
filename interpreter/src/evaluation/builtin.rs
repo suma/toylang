@@ -406,6 +406,36 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::Unit).into()))
             }
 
+            BuiltinFunction::StrLen => {
+                // `__builtin_str_len(s: str) -> u64` — interpreter
+                // semantic: just return `s.bytes().len()`. Object
+                // strings already know their length natively.
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "str_len takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let s_result = self.evaluate(&args[0])?;
+                let s_obj = try_value!(Ok(s_result));
+                let len: u64 = match &*s_obj.borrow() {
+                    Object::String(s) => s.as_bytes().len() as u64,
+                    Object::ConstString(sym) => self
+                        .string_interner
+                        .resolve(*sym)
+                        .map(|s| s.as_bytes().len() as u64)
+                        .unwrap_or(0),
+                    other => {
+                        return Err(InterpreterError::InternalError(format!(
+                            "str_len expects str arg, got {:?}",
+                            other
+                        )));
+                    }
+                };
+                Ok(EvaluationResult::Value((Object::UInt64(len)).into()))
+            }
+
             BuiltinFunction::StrToPtr => {
                 // `__builtin_str_to_ptr(s: str) -> ptr` — interpreter
                 // semantic: allocate a heap buffer of (len + 1) bytes

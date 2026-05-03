@@ -55,13 +55,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Apply type transformations
         self.apply_type_transformations_for_expr(&type_decl, &expr_ty, &expr_ref)?;
         
-        // Check type compatibility if explicit type is declared
+        // Check type compatibility if explicit type is declared.
+        // Normalize `Identifier(s)` to `Generic(s)` when `s` is in
+        // the impl's generic-param scope — the parser emits Identifier
+        // for any annotation in a method body (it doesn't thread
+        // generic context that far), and Identifier vs UInt64 fails
+        // even though Generic vs UInt64 succeeds.
         if let Some(declared_type) = &type_decl {
-            if !self.are_types_compatible(declared_type, &expr_ty) {
-                let declared_name = self.type_name_for_error(declared_type);
+            let normalized = self.normalize_generic_identifier(declared_type);
+            if !self.are_types_compatible(&normalized, &expr_ty) {
+                let declared_name = self.type_name_for_error(&normalized);
                 let expr_name = self.type_name_for_error(&expr_ty);
                 return Err(TypeCheckError::type_mismatch(
-                    declared_type.clone(), 
+                    normalized,
                     expr_ty.clone()
                 ).with_context(&format!("Cannot convert '{}' to '{}'", expr_name, declared_name)));
             }

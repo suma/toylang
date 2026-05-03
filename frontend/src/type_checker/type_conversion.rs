@@ -5,11 +5,40 @@ use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 
 /// Type conversion and transformation implementation
 impl<'a> TypeCheckerVisitor<'a> {
+    /// Rewrite a `TypeDecl::Identifier(s)` to `TypeDecl::Generic(s)`
+    /// when `s` is one of the generic params currently in scope
+    /// (impl-level params from `current_impl_generic_params`).
+    /// The parser produces `Identifier(s)` for any annotation
+    /// inside a method body because it doesn't thread the impl's
+    /// generic context that far; the type checker sees the same
+    /// symbol reach the val/var validation step where
+    /// `are_types_compatible(Identifier(V), UInt64)` would fail
+    /// even though `Generic(V)` matches anything. This helper
+    /// patches the form so downstream comparisons see the right
+    /// variant.
+    pub fn normalize_generic_identifier(&self, ty: &TypeDecl) -> TypeDecl {
+        if let TypeDecl::Identifier(sym) = ty {
+            if let Some(params) = &self.context.current_impl_generic_params {
+                if params.contains(sym) {
+                    return TypeDecl::Generic(*sym);
+                }
+            }
+        }
+        ty.clone()
+    }
+
     /// Set up type hint for variable declarations based on explicit type annotation
     pub fn setup_type_hint_for_val(&mut self, type_decl: &Option<TypeDecl>) -> Option<TypeDecl> {
         let old_hint = self.type_inference.type_hint.clone();
-        
-        if let Some(decl) = type_decl {
+
+        if let Some(decl_in) = type_decl {
+            // If the annotation is an Identifier that names an
+            // impl-level generic param, treat it as Generic so
+            // downstream consumers (PtrRead's `Generic(_)` hint
+            // match, type-compat) see it as the generic it
+            // semantically is.
+            let normalized = self.normalize_generic_identifier(decl_in);
+            let decl = &normalized;
             match decl {
                 TypeDecl::Array(element_types, _) => {
                     // For array types (including struct arrays), set the array type as hint for array literal processing

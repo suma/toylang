@@ -602,6 +602,61 @@ fn hash_trait_dispatch_on_all_primitives() {
 }
 
 #[test]
+fn dict_user_space_round_trip() {
+    // Phase 2 of the user-space dict effort
+    // (`core/std/dict.t`): exercises insert / get_or / overwrite
+    // / contains_key / remove on the auto-loaded `Dict<i64, u64>`
+    // through interpreter and JIT (silent fallback to interpreter
+    // — Dict::new is a generic-struct associated function the
+    // JIT path doesn't yet eligibility-check). AOT is excluded
+    // because `Dict::new()` requires generic-struct
+    // associated-function lowering (#159) which the AOT
+    // compiler doesn't ship yet; this test compares interp + JIT
+    // directly without going through `assert_consistent`.
+    //
+    // Coverage:
+    //   - insert into empty dict (allocation)
+    //   - insert beyond initial capacity (geometric growth via
+    //     heap_realloc)
+    //   - update an existing key (overwrite branch)
+    //   - get_or hit / miss
+    //   - contains_key true / false
+    //   - remove (swap-remove)
+    //
+    // Exit code 42 means every step matched the expected value.
+    // Any digit 1..6 names the step that failed first.
+    let src = r#"
+        fn main() -> u64 {
+            var d: Dict<i64, u64> = Dict::new()
+            d.insert(1i64, 10u64)
+            d.insert(2i64, 20u64)
+            d.insert(3i64, 30u64)
+            d.insert(4i64, 40u64)
+            d.insert(5i64, 50u64)
+            d.insert(2i64, 222u64)
+            val a: u64 = d.get_or(1i64, 0u64)
+            val b: u64 = d.get_or(2i64, 0u64)
+            val c: u64 = d.get_or(5i64, 0u64)
+            val miss: u64 = d.get_or(99i64, 7u64)
+            val has: bool = d.contains_key(3i64)
+            val no: bool = d.contains_key(99i64)
+            val removed: bool = d.remove(3i64)
+            val after_remove: bool = d.contains_key(3i64)
+            if a != 10u64 { 1u64 }
+            elif b != 222u64 { 2u64 }
+            elif c != 50u64 { 3u64 }
+            elif miss != 7u64 { 4u64 }
+            elif has { if no { 5u64 } else { if removed { if after_remove { 6u64 } else { 42u64 } } else { 7u64 } } }
+            else { 8u64 }
+        }
+    "#;
+    let interp = interpreter_value(src);
+    assert_eq!(interp, 42, "interpreter expected 42, got {interp}");
+    let jit = jit_exit_code(src, "dict_user_space_jit");
+    assert_eq!(jit as u64, 42, "JIT expected 42, got {jit}");
+}
+
+#[test]
 fn enum_str_payload_round_trip() {
     // Result<u64, str> exercises the new str-payload enum support
     // in the AOT compiler. Previously rejected with "unsupported

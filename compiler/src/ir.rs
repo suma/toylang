@@ -818,6 +818,19 @@ pub enum InstKind {
     /// assignments to `&mut T` parameter bindings (they propagate
     /// the mutation back to the caller's storage).
     StoreRef { ptr: ValueId, value: ValueId, ty: Type },
+    /// REF-Stage-2 (iii-index): pointer-sized address of array
+    /// element `slot[index]`. Codegen emits
+    /// `iadd(stack_addr(slot, 0), index * elem_stride_bytes)`.
+    /// `elem_ty` mirrors `ArrayLoad/Store` so the codegen layer
+    /// has the same per-element width information available.
+    /// Result is `Type::U64` (pointer-sized handle) — hands off
+    /// to the same `LoadRef` / `StoreRef` machinery as scalar
+    /// `AddressOf`.
+    ArrayElemAddr {
+        slot: ArraySlotId,
+        index: ValueId,
+        elem_ty: Type,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1272,6 +1285,9 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),
             InstKind::StoreRef { ptr, value, ty } => {
                 write!(f, "store_ref {ptr}, {value} : {ty}")
+            }
+            InstKind::ArrayElemAddr { slot, index, elem_ty } => {
+                write!(f, "{prefix}array_elem_addr slot{}[{index}] : {elem_ty}", slot.0)
             }
         }
     }

@@ -1635,6 +1635,19 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 use cranelift_codegen::ir::MemFlags;
                 self.builder.ins().store(MemFlags::new(), v, p, 0);
             }
+            InstKind::ArrayElemAddr { slot, index, elem_ty: _ } => {
+                let stack_slot = *self
+                    .array_slots
+                    .get(&slot.0)
+                    .ok_or_else(|| format!("array slot {slot:?} missing"))?;
+                let info = &self.ir_module.function(self.func_id).array_slots[slot.0 as usize];
+                let stride = info.elem_stride_bytes as i64;
+                let base = self.builder.ins().stack_addr(types::I64, stack_slot, 0);
+                let idx = self.value(*index);
+                let off = self.builder.ins().imul_imm(idx, stride);
+                let addr = self.builder.ins().iadd(base, off);
+                self.record_result(inst, addr);
+            }
             InstKind::Call { target, args } => {
                 let func_ref = *self
                     .imports

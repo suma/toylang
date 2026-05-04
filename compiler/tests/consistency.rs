@@ -1144,6 +1144,38 @@ fn ref_stage2_nested_chain_mut_borrow_round_trip() {
 }
 
 #[test]
+fn ref_stage2_array_index_mut_borrow_round_trip() {
+    // REF-Stage-2 (iii-index): array element mutable borrow
+    // `&mut arr[i]`. The AOT path uses a new
+    // `InstKind::ArrayElemAddr { slot, index, elem_ty }` that
+    // codegens to `iadd(stack_addr(slot, 0), index *
+    // elem_stride_bytes)` against the per-array stack slot;
+    // the resulting `Type::U64` pointer hands off to the same
+    // `LoadRef` / `StoreRef` machinery scalar address-of uses.
+    // The interpreter writeback captures the parent
+    // `Object::Array` Rc + the resolved usize index at call
+    // time, then `borrow_mut` + indexed assignment after the
+    // call.
+    //
+    // Mutates index 1 twice (one accumulating delta) and pins
+    // that the unrelated indices 0/2 stayed put.
+    let src = r#"
+        fn add_in_place(target: &mut u64, delta: u64) {
+            target = target + delta
+        }
+        fn main() -> u64 {
+            var arr = [10u64, 20u64, 30u64]
+            add_in_place(&mut arr[1u64], 20u64)
+            add_in_place(&mut arr[1u64], 2u64)
+            if arr[0u64] != 10u64 { return 1u64 }
+            if arr[2u64] != 30u64 { return 2u64 }
+            arr[1u64]
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_array_index_mut_borrow_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

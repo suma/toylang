@@ -10,12 +10,14 @@ use crate::type_checker::generics::GenericTypeChecking;
 /// Expression type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
     /// REF-Stage-2 (iii): walk a `&mut <expr>` operand down through
-    /// field- and tuple-access chains to the root binding name.
-    /// Accepts shapes:
+    /// field-, tuple-, and (single-element) index-access chains to
+    /// the root binding name. Accepts shapes:
     ///   - `Expr::Identifier(s)` -> `s`
     ///   - `Expr::FieldAccess(obj, _)` -> recurse on `obj`
     ///   - `Expr::TupleAccess(obj, _)` -> recurse on `obj`
-    /// Anything else is a non-place expression and is rejected.
+    ///   - `Expr::SliceAccess(obj, SingleElement{..})` -> recurse on `obj`
+    /// Range-slice access (`&mut arr[a..b]`) and other non-place
+    /// shapes are rejected.
     fn find_borrow_lvalue_root(
         &self,
         expr: &ExprRef,
@@ -29,10 +31,20 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Expr::Identifier(sym) => return Ok(sym),
                 Expr::FieldAccess(obj, _) => cur = obj,
                 Expr::TupleAccess(obj, _) => cur = obj,
+                Expr::SliceAccess(obj, info) => {
+                    if !matches!(info.slice_type, crate::ast::SliceType::SingleElement) {
+                        return Err(TypeCheckError::generic_error(
+                            "cannot take a mutable borrow of a range-slice expression; \
+                             only single-element index borrow is supported",
+                        ));
+                    }
+                    cur = obj;
+                }
                 _ => {
                     return Err(TypeCheckError::generic_error(
                         "cannot take a mutable borrow of a non-place expression; \
-                         only `&mut <name>`, `&mut <name>.field`, or `&mut <name>.0` are supported in REF-Stage-2",
+                         only `&mut <name>`, `&mut <name>.field`, `&mut <name>.0`, or \
+                         `&mut <name>[i]` are supported in REF-Stage-2",
                     ));
                 }
             }

@@ -118,6 +118,53 @@ impl<'a> FunctionLower<'a> {
                             }
                         }
                     }
+                    // REF-Stage-2 (iii-index): `&mut <name>[i]` —
+                    // resolve the array binding's slot and emit
+                    // `ArrayElemAddr`, which is the canonical
+                    // pointer to the element in the per-array
+                    // stack slot. Index expression is lowered
+                    // first so any side effect inside it stays
+                    // visible.
+                    if let Some(Expr::SliceAccess(arr_expr, info)) =
+                        self.program.expression.get(&inner)
+                    {
+                        if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                            if let Some(Expr::Identifier(arr_sym)) =
+                                self.program.expression.get(&arr_expr)
+                            {
+                                if let Some(Binding::Array { element_ty, slot, .. }) =
+                                    self.bindings.get(&arr_sym).cloned()
+                                {
+                                    if matches!(
+                                        element_ty,
+                                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                            | Type::I32 | Type::U32
+                                    ) {
+                                        if let Some(idx_ref) = info.start {
+                                            let idx_v = self
+                                                .lower_expr(&idx_ref)?
+                                                .ok_or_else(|| {
+                                                    "array index produced no value".to_string()
+                                                })?;
+                                            let v = self
+                                                .emit(
+                                                    InstKind::ArrayElemAddr {
+                                                        slot,
+                                                        index: idx_v,
+                                                        elem_ty: element_ty,
+                                                    },
+                                                    Some(Type::U64),
+                                                )
+                                                .expect("ArrayElemAddr returns a value");
+                                            values.push(v);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             // REF-Stage-2: fall back — peel an explicit borrow so the

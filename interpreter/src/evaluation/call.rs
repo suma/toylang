@@ -160,6 +160,13 @@ pub(super) enum WritebackTarget {
         obj: RcObject,
         index: usize,
     },
+    /// `&mut <name>[i]` — `obj` is the parent array value
+    /// (captured Rc to the `Object::Array` cell); `index` is
+    /// the position to overwrite via `borrow_mut`.
+    ArrayElement {
+        obj: RcObject,
+        index: usize,
+    },
 }
 
 impl EvaluationContext<'_> {
@@ -204,6 +211,41 @@ impl EvaluationContext<'_> {
                     Err(e) => return Err(e),
                 };
                 Ok(WritebackTarget::TupleElement {
+                    obj: obj_value.clone_to_rc(),
+                    index,
+                })
+            }
+            Expr::SliceAccess(obj, info) => {
+                if !matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                    return Ok(WritebackTarget::None);
+                }
+                let idx_expr = match info.start {
+                    Some(e) => e,
+                    None => return Ok(WritebackTarget::None),
+                };
+                // Evaluate the array (parent) and the index in
+                // user order so any side effects in the index
+                // expression run exactly once at the call site.
+                let obj_value = match self.evaluate(&obj)? {
+                    EvaluationResult::Value(v) => v,
+                    _ => return Ok(WritebackTarget::None),
+                };
+                let idx_value = match self.evaluate(&idx_expr)? {
+                    EvaluationResult::Value(v) => v,
+                    _ => return Ok(WritebackTarget::None),
+                };
+                let index = match idx_value {
+                    crate::value::Value::UInt64(n) => n as usize,
+                    crate::value::Value::Int64(n) => n as usize,
+                    crate::value::Value::UInt8(n) => n as usize,
+                    crate::value::Value::UInt16(n) => n as usize,
+                    crate::value::Value::UInt32(n) => n as usize,
+                    crate::value::Value::Int8(n) => n as usize,
+                    crate::value::Value::Int16(n) => n as usize,
+                    crate::value::Value::Int32(n) => n as usize,
+                    _ => return Ok(WritebackTarget::None),
+                };
+                Ok(WritebackTarget::ArrayElement {
                     obj: obj_value.clone_to_rc(),
                     index,
                 })
@@ -271,6 +313,25 @@ impl EvaluationContext<'_> {
                     }
                     other => Err(InterpreterError::InternalError(format!(
                         "writeback: parent is not a tuple: {:?}", other
+                    ))),
+                }
+            }
+            WritebackTarget::ArrayElement { obj, index } => {
+                let new_value: RcObject = value.clone_to_rc();
+                let mut obj_borrowed = obj.borrow_mut();
+                match &mut *obj_borrowed {
+                    Object::Array(elements) => {
+                        if *index >= elements.len() {
+                            return Err(InterpreterError::IndexOutOfBounds {
+                                index: *index as isize,
+                                size: elements.len(),
+                            });
+                        }
+                        elements[*index] = new_value;
+                        Ok(())
+                    }
+                    other => Err(InterpreterError::InternalError(format!(
+                        "writeback: parent is not an array: {:?}", other
                     ))),
                 }
             }

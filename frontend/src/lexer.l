@@ -352,6 +352,43 @@ macro_rules! token {
                         return Ok(token!(self, Kind::String(drain.collect::<String>())));
                     }
 
+'\\.'               {
+                        // char literal escape — `'\n'` / `'\t'` / `'\r'`
+                        // / `'\0'` / `'\\'` / `'\''` / `'\"'`. Lexes
+                        // straight to `Kind::UInt32(<code point>)` so
+                        // every downstream layer (parser / type
+                        // checker / IR / 3 backends) reuses the
+                        // existing `u32` literal pipeline. Unknown
+                        // escapes (e.g. `'\x'`) bail out with
+                        // `Error::Unmatch`.
+                        let text = self.yytext();
+                        let escape_byte = text.as_bytes()[2];
+                        let value: u32 = match escape_byte {
+                            b'n'  => 10,
+                            b't'  => 9,
+                            b'r'  => 13,
+                            b'0'  => 0,
+                            b'\\' => 92,
+                            b'\'' => 39,
+                            b'"'  => 34,
+                            _ => return Err(Error::Unmatch),
+                        };
+                        return Ok(token!(self, Kind::UInt32(value)));
+                    }
+
+'[ -&(-~]'          {
+                        // char literal — single ASCII printable byte
+                        // (space 0x20 .. ~ 0x7E excluding `'` 0x27,
+                        // which is covered by the escape rule above).
+                        // Multi-byte UTF-8 chars and arbitrary
+                        // control bytes are deferred to a later
+                        // phase. Value is the byte's code point as
+                        // `u32` — same shape as `<n>u32` literals.
+                        let text = self.yytext();
+                        let value = text.as_bytes()[1] as u32;
+                        return Ok(token!(self, Kind::UInt32(value)));
+                    }
+
 [0-9][A-Za-z_0-9]*      return Err(Error::Unmatch);
 [A-Za-z_][A-Za-z_0-9]*  return Ok(token!(self, Kind::Identifier(self.yytext())));
 

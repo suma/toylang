@@ -106,6 +106,63 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_char_literals_parse_as_uint32() {
+        // Single ASCII char between single quotes lexes to a
+        // `Kind::UInt32(<code point>)` so the parser surfaces it
+        // through the existing integer-literal path. We verify
+        // each form parses successfully and that downstream
+        // type-checking sees a `u32` (the consistency test below
+        // exercises the end-to-end value).
+        for input in [
+            "'A'",
+            "'a'",
+            "'0'",
+            "' '",
+            "'~'",
+            "'!'",
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(result.is_ok(), "Failed to parse char literal: {input}");
+        }
+    }
+
+    #[test]
+    fn test_char_literal_escapes_parse() {
+        // Common escape sequences supported by the char-literal
+        // lexer rule. Each lexes to its escaped byte's u32 code
+        // point.
+        for input in [
+            r"'\n'",
+            r"'\t'",
+            r"'\r'",
+            r"'\0'",
+            r"'\\'",
+            r"'\''",
+            r#"'\"'"#,
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(result.is_ok(), "Failed to parse char escape: {input}");
+        }
+    }
+
+    #[test]
+    fn test_char_literal_empty_or_multibyte_rejected() {
+        // `''` (empty) and `'ab'` (multi-char) shouldn't lex
+        // cleanly — the lexer falls back to an Unmatch error
+        // which surfaces as a parse failure.
+        for input in ["''", "'ab'", r"'\x'"] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected error parsing malformed char literal: {input}"
+            );
+        }
+    }
+
+    #[test]
     fn test_boolean_literals() {
         let true_input = "true";
         let false_input = "false";

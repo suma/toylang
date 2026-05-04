@@ -1443,6 +1443,43 @@ fn generic_raii_drop_on_early_return_round_trip() {
 }
 
 #[test]
+fn char_literal_round_trip() {
+    // char literal `'X'` lexes to `Kind::UInt32(<code point>)` so
+    // the parser / type checker / IR / 3 backends all see a
+    // standard `u32` value.  Test both plain ASCII chars and
+    // the supported escapes (`\n` / `\t` / `\r` / `\0` / `\\`
+    // / `\'` / `\"`).
+    let src = r#"
+        fn main() -> u64 {
+            val a: u32 = 'A'
+            val z: u32 = 'z'
+            val zero: u32 = '0'
+            val space: u32 = ' '
+            if a != 65u32 { return 1u64 }
+            if z != 122u32 { return 2u64 }
+            if zero != 48u32 { return 3u64 }
+            if space != 32u32 { return 4u64 }
+            val nl: u32 = '\n'
+            val tab: u32 = '\t'
+            val cr: u32 = '\r'
+            val nul: u32 = '\0'
+            val bs: u32 = '\\'
+            val sq: u32 = '\''
+            val dq: u32 = '\"'
+            if nl != 10u32 { return 5u64 }
+            if tab != 9u32 { return 6u64 }
+            if cr != 13u32 { return 7u64 }
+            if nul != 0u32 { return 8u64 }
+            if bs != 92u32 { return 9u64 }
+            if sq != 39u32 { return 10u64 }
+            if dq != 34u32 { return 11u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "char_literal_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

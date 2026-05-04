@@ -129,14 +129,47 @@ impl<T> Vec<T> {
 # type-check. CONCRETE-IMPL Phase 2 lets this `impl Vec<u8>` and
 # the generic `impl<T> Vec<T>` above coexist in the registry.
 impl Vec<u8> {
+    # Bulk-copy a `str`'s UTF-8 bytes onto a fresh heap-allocated
+    # `Vec<u8>`. Migration target for callers that used to
+    # construct a `String` from a string literal — `String` is
+    # now a `type` alias for `Vec<u8>`, so this is *the*
+    # constructor for byte-string values.
+    #
+    # The trailing NUL terminator is intentionally NOT copied
+    # (`size()` matches `s.len()` exactly). Bulk allocate +
+    # memcpy:
+    #   - AOT: `s.as_ptr()` is the byte_start of the `.rodata`
+    #     `[bytes][NUL][u64 len]` layout; `__builtin_mem_copy`
+    #     lowers to libc memcpy(3).
+    #   - Interpreter: `s.as_ptr()` populates typed-slot `u8`
+    #     entries; `HeapManager::copy_memory` is typed-slots-aware
+    #     and propagates them to the destination buffer.
+    #
+    # The `heap_alloc(0) + heap_realloc(p, n)` pair handles
+    # `n == 0` gracefully (realloc(p, 0) returns a freed/null-
+    # equivalent pointer; mem_copy with size 0 is a no-op).
+    fn from_str(s: str) -> Self {
+        val n: u64 = s.len()
+        val raw: ptr = __builtin_heap_alloc(0u64)
+        val data: ptr = __builtin_heap_realloc(raw, n)
+        __builtin_mem_copy(s.as_ptr(), data, n)
+        val result: Vec<u8> = Vec {
+            data: data,
+            len: n,
+            cap: n,
+            elem_size: 1u64,
+        }
+        result
+    }
+
     # Append `count` bytes from `src` to the end of the vec.
-    # Used by `core/std/string.t::String::push_str` and any other
-    # caller that wants bulk-append from a pointer source. Body
-    # delegates to `push` per byte so the existing geometric grow
-    # logic kicks in without needing pointer-arithmetic builtins
-    # (no `__builtin_ptr_offset` exists today). For typical demo
-    # workloads this is fine; a future bulk-`mem_copy` form would
-    # be a perf optimisation.
+    # Used by `push_str` below and any other caller that wants
+    # bulk-append from a pointer source. Body delegates to `push`
+    # per byte so the existing geometric grow logic kicks in
+    # without needing pointer-arithmetic builtins (no
+    # `__builtin_ptr_offset` exists today). For typical demo
+    # workloads this is fine; a future bulk-`mem_copy` form
+    # would be a perf optimisation.
     fn extend_bytes(&mut self, src: ptr, count: u64) {
         var i: u64 = 0u64
         while i < count {
@@ -145,9 +178,50 @@ impl Vec<u8> {
             i = i + 1u64
         }
     }
-}
 
-# Note: `str → Vec<u8>` (heap-buffer) construction lives in
-# `core/std/string.t::String::from_str(s)`. The `String` struct
-# wraps a `Vec<u8>` and exposes the heap-managed-byte-buffer
-# operations (`String::new`, `String::from_str`, `len`, `as_ptr`).
+    # Append the bytes of another `Vec<u8>` (i.e. `String`) to
+    # `self` in-place. `other` is taken by reference (`&Vec<u8>`)
+    # — REF-Stage-2 minimum subset: caller-side auto-borrow lets
+    # `s.push_str(b)` work with `b: Vec<u8>`.
+    fn push_str(&mut self, other: &Vec<u8>) {
+        self.extend_bytes(other.as_ptr(), other.size())
+    }
+
+    # Append a single byte. Equivalent to `push` but the named
+    # variant documents intent (and parallels the legacy
+    # `String::push_char` API). `c: u8` rather than `c: char`
+    # because type aliases (from `core/std/char.t`) live inside
+    # the per-file parser's `type_aliases` map and do NOT cross
+    # module boundaries — vec.t can't see char.t's alias. User
+    # code that imports both can still write `c: char` at call
+    # sites; the alias resolves to `u8` and the dispatch lands
+    # here.
+    fn push_char(&mut self, c: u8) {
+        self.push(c)
+    }
+
+    # Byte-wise equality. Two byte vectors are equal iff they
+    # have the same length and every byte matches. Length check
+    # first so different-sized vectors short-circuit without
+    # walking the buffer. Both receivers are immutable references
+    # — callers may pass either `Vec<u8>` (i.e. `String`) or
+    # `&Vec<u8>` thanks to auto-borrow.
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        val n: u64 = self.size()
+        if n != other.size() {
+            return false
+        }
+        val pa: ptr = self.as_ptr()
+        val pb: ptr = other.as_ptr()
+        var i: u64 = 0u64
+        while i < n {
+            val a: u8 = __builtin_ptr_read(pa, i)
+            val b: u8 = __builtin_ptr_read(pb, i)
+            if a != b {
+                return false
+            }
+            i = i + 1u64
+        }
+        true
+    }
+}

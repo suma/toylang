@@ -94,6 +94,29 @@ impl EvaluationContext<'_> {
     }
 
     pub fn evaluate_block(&mut self, statements: &[StmtRef] ) -> Result<EvaluationResult, InterpreterError> {
+        // Phase 5 (汎用 RAII): every block opens a fresh auto-drop
+        // scope. `Drop`-impling bindings registered inside the
+        // body get drained at exit (linear / Return / Break /
+        // Continue) in reverse declaration order. Errors from
+        // the body skip the drop calls — the process is heading
+        // toward exit / panic so running drops would risk
+        // double-faulting. The inner method holds the body so
+        // the scope mgmt sits cleanly around it.
+        self.enter_drop_scope();
+        let result = self.evaluate_block_body(statements);
+        match result {
+            Ok(v) => {
+                self.run_and_pop_drop_scope()?;
+                Ok(v)
+            }
+            Err(e) => {
+                self.discard_drop_scope();
+                Err(e)
+            }
+        }
+    }
+
+    fn evaluate_block_body(&mut self, statements: &[StmtRef]) -> Result<EvaluationResult, InterpreterError> {
         let to_stmt = |s: &StmtRef| -> Result<Stmt, InterpreterError> {
             self.stmt_pool.get(&s)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
@@ -215,6 +238,9 @@ impl EvaluationContext<'_> {
         let value = self.evaluate(expr);
         let value = try_value_v!(value);
         let value = apply_annotation_type_args(value, annotation);
+        // Phase 5 (汎用 RAII): record the binding for auto-drop
+        // before consuming `value` into the environment.
+        self.register_drop_if_needed(name, &value);
         self.environment.set_val(name, value);
         Ok(EvaluationResult::None)
     }
@@ -235,6 +261,12 @@ impl EvaluationContext<'_> {
             self.null_object.clone().into()
         };
         let value = apply_annotation_type_args(value, annotation);
+        // Phase 5 (汎用 RAII): same as val — `var` bindings are
+        // also auto-dropped at scope exit when the type impls
+        // Drop. (Reassignment via `var x = ...` later in scope
+        // doesn't re-trigger registration; the original Rc is
+        // shared so the drop record stays valid.)
+        self.register_drop_if_needed(name, &value);
         self.environment.set_var(name, value, VariableSetType::Insert, self.string_interner)?;
         Ok(EvaluationResult::None)
     }

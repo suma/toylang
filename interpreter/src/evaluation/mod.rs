@@ -184,6 +184,34 @@ pub struct EvaluationContext<'a> {
     /// `evaluation/builtin.rs` for any function the user declares as
     /// `extern fn`.
     pub(super) extern_registry: HashMap<&'static str, ExternFn>,
+    /// Phase 5 (汎用 RAII): set of struct symbols that have an
+    /// `impl Drop for <Struct>` block. Populated at startup from
+    /// `build_method_registry` (we record the trait_name field of
+    /// each impl block and pick out the ones whose trait resolves
+    /// to "Drop"). Consumed by `register_drop_if_needed` at val /
+    /// var binding time — bindings whose runtime value is a
+    /// struct in this set get pushed onto `drop_scopes` and
+    /// `Drop::drop` is auto-called when the scope exits.
+    pub(super) drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    /// Phase 5 (汎用 RAII): per-active-scope LIFO list of bindings
+    /// awaiting auto-drop. Each `enter_drop_scope` pushes a fresh
+    /// Vec, `register_drop` appends, `exit_drop_scope` runs the
+    /// entries in reverse declaration order before popping the
+    /// scope. The depth mirrors `Environment::var` so block enter
+    /// / exit and function call boundaries stay in lock-step.
+    pub(super) drop_scopes: Vec<Vec<DropEntry>>,
+}
+
+/// Phase 5 (汎用 RAII): one auto-drop record. `name` is just for
+/// diagnostics; `value` is the `Rc<RefCell<Object>>` that backs
+/// the binding — the auto-drop call goes against this Rc so
+/// mutations the body made via field access (`s.field = ...`)
+/// are visible inside the synthesized `drop(&mut self)` body.
+#[derive(Debug, Clone)]
+pub(super) struct DropEntry {
+    pub(super) name: DefaultSymbol,
+    pub(super) struct_sym: DefaultSymbol,
+    pub(super) value: RcObject,
 }
 
 impl<'a> EvaluationContext<'a> {
@@ -226,6 +254,8 @@ impl<'a> EvaluationContext<'a> {
             contract_mode: ContractMode::from_env(),
             result_symbol,
             extern_registry: extern_math::build_default_registry(),
+            drop_trait_structs: std::collections::HashSet::new(),
+            drop_scopes: vec![Vec::new()],
         }
     }
 
@@ -346,6 +376,103 @@ impl<'a> EvaluationContext<'a> {
             return Some(specs[0].method.clone());
         }
         None
+    }
+
+    // -------------------------------------------------------------
+    // Phase 5 (汎用 RAII): scope-bound auto-drop.
+    // -------------------------------------------------------------
+
+    /// Push a fresh auto-drop scope on entry to a `{ ... }` block.
+    /// Mirrors `Environment::enter_block` — every block that
+    /// introduces bindings gets a paired drop scope so its
+    /// `Drop`-impling values can be cleaned up at exit.
+    pub(super) fn enter_drop_scope(&mut self) {
+        self.drop_scopes.push(Vec::new());
+    }
+
+    /// Pop the current auto-drop scope and run each `Drop::drop`
+    /// in reverse declaration order (LIFO — last-bound drops
+    /// first). Errors from any drop call abort the unwind and
+    /// surface to the caller. Called on every successful exit
+    /// path of a block (linear / `Return` / `Break` / `Continue`);
+    /// errors from the body itself skip the drop calls (the
+    /// process is going to die anyway, similar to a panic in
+    /// Rust where unwind = no second pass on `Drop`).
+    pub(super) fn run_and_pop_drop_scope(&mut self) -> Result<(), InterpreterError> {
+        let scope = self.drop_scopes.pop().unwrap_or_default();
+        for entry in scope.into_iter().rev() {
+            self.invoke_drop(&entry)?;
+        }
+        Ok(())
+    }
+
+    /// Drop without running — used by error-path bailouts where
+    /// we want to discard the pending drops without executing
+    /// them (the process is exiting via panic / a parser-side
+    /// error / an IR codegen error, etc.).
+    pub(super) fn discard_drop_scope(&mut self) {
+        self.drop_scopes.pop();
+    }
+
+    /// Inspect a freshly bound value and, if its runtime type is
+    /// a struct registered in `drop_trait_structs`, append a
+    /// matching `DropEntry` to the current top scope. The Rc
+    /// captured here is the same one the binding holds, so
+    /// mutations through the binding (`s.field = ...`) are
+    /// visible inside the synthesized `drop(&mut self)` call.
+    pub(super) fn register_drop_if_needed(
+        &mut self,
+        name: DefaultSymbol,
+        value: &crate::value::Value,
+    ) {
+        if self.drop_trait_structs.is_empty() {
+            return;
+        }
+        let rc = match value {
+            crate::value::Value::Heap(rc) => rc.clone(),
+            _ => return, // Primitives have no Drop impl by definition.
+        };
+        let struct_sym = match &*rc.borrow() {
+            Object::Struct { type_name, .. } => *type_name,
+            _ => return,
+        };
+        if !self.drop_trait_structs.contains(&struct_sym) {
+            return;
+        }
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            scope.push(DropEntry {
+                name,
+                struct_sym,
+                value: rc,
+            });
+        }
+    }
+
+    /// Synthesize the equivalent of `value.drop()` and invoke it
+    /// via the regular method-dispatch path. The receiver is
+    /// `&mut`, but the interpreter's value model is Rc-shared so
+    /// mutations against the cell are visible without any
+    /// out-parameter writeback dance.
+    fn invoke_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
+        let drop_sym = self.string_interner.get_or_intern("drop");
+        let method = match self.get_method(entry.struct_sym, drop_sym, &[]) {
+            Some(m) => m,
+            None => {
+                // The struct was registered as Drop-impl-bearing
+                // at startup but the method went missing — flag
+                // it as an internal error rather than silently
+                // skipping (which could mask a registry bug).
+                let s = self.string_interner.resolve(entry.struct_sym).unwrap_or("?");
+                return Err(InterpreterError::InternalError(format!(
+                    "auto-drop: no `drop` method registered for struct `{s}`"
+                )));
+            }
+        };
+        // call_method takes (method, self_obj, args). No extra args
+        // for `Drop::drop`. Result envelope is discarded — drop is
+        // unit-returning by convention.
+        self.call_method(method, entry.value.clone(), Vec::new())?;
+        Ok(())
     }
 
     /// Drop the `EvaluationResult` envelope of a successful evaluation,

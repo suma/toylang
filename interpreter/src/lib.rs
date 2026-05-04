@@ -573,6 +573,32 @@ struct CollectedMethod {
     method: Rc<MethodFunction>,
 }
 
+/// Phase 5 (汎用 RAII): scan every `impl Drop for <Struct>` block
+/// and collect the target struct symbols. The interpreter uses
+/// this set at val / var binding time to decide whether to
+/// register the binding for auto-drop at scope exit.
+fn collect_drop_trait_structs(
+    program: &Program,
+    string_interner: &DefaultStringInterner,
+) -> std::collections::HashSet<DefaultSymbol> {
+    let drop_sym = match string_interner.get("Drop") {
+        Some(s) => s,
+        None => return std::collections::HashSet::new(),
+    };
+    let mut out = std::collections::HashSet::new();
+    for i in 0..program.statement.len() {
+        let stmt_ref = StmtRef(i as u32);
+        if let Some(stmt) = program.statement.get(&stmt_ref) {
+            if let frontend::ast::Stmt::ImplBlock { target_type, trait_name: Some(trait_sym), .. } = &stmt {
+                if *trait_sym == drop_sym {
+                    out.insert(*target_type);
+                }
+            }
+        }
+    }
+    out
+}
+
 fn build_method_registry(
     program: &Program,
     string_interner: &DefaultStringInterner,
@@ -648,6 +674,7 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
     let mut string_interner_mut = string_interner.clone();
     let method_registry = build_method_registry(program, string_interner)
         .map_err(|e| format!("Runtime Error: {}", e))?;
+    let drop_trait_structs = collect_drop_trait_structs(program, string_interner);
 
     let mut eval = EvaluationContext::new_with_qualified(
         &program.statement,
@@ -656,11 +683,12 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
         func_map,
         func_qualified,
     );
-    
+
     // Initialize module system
     initialize_module_environment(&mut eval, program);
-    
+
     register_methods(&mut eval, method_registry);
+    eval.drop_trait_structs = drop_trait_structs;
 
     // Register enum and struct declarations so runtime lookup of
     // `Enum::Variant` paths works and so `Object::{Struct,EnumVariant}`

@@ -440,7 +440,8 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - Self キーワード: implブロック内での構造体参照、プリミティブ impl では対応する `TypeDecl` (i64 / f64 / ...) に解決
 - Trait bound: `<A: Allocator>` および `<T: UserTrait>` を関数・struct・impl に付与、呼び出し側で検証、bound 連鎖
 - method-only generic params: `impl Box { fn pick<U>(self, a: U, b: U) -> U }`
-- method receiver: `self: Self` (by-value) / `&self` / `&mut self` の 3 形式 (Stage 1 reference type)。trait conformance で receiver kind 完全一致を要求。AOT は `&mut self` を Self-out-parameter convention で writeback (一般 `&T` 一級型は Stage 2 = REF-Stage-2 で deferred)
+- method receiver: `self: Self` (by-value) / `&self` / `&mut self` の 3 形式 (Stage 1 reference type)。trait conformance で receiver kind 完全一致を要求。AOT は `&mut self` を Self-out-parameter convention で writeback
+- references (REF-Stage-2 (a)+(d)+(e)+(f)): `&T` / `&mut T` 引数型、explicit `&value` / `&mut value` borrow 式、`is_arg_compatible` で `T → &T` auto-borrow + `&mut T → &T` downgrade (auto-borrow `T → &mut T` は意図的に不許可)、`&mut <name>` は `var`-declared bare identifier のみ受理、syntactic escape rule (戻り型 / val-var binding / struct field に Ref 不可)。runtime / IR は erasure (true mutation 伝播は (b)/(c)/(g) で deferred)
 - pattern match の deep exhaustiveness: `Option<Option<T>>` 等の nested EnumVariant も payload position 単位で coverage 検証 (96残 前半)
 
 ### モジュール・その他
@@ -451,7 +452,7 @@ REF-Stage-2. **一般 `&T` reference を一級型として導入 (Stage 2)** —
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1145 テスト, 31 skipped（100% 成功率、2026-05-03 時点 — DICT-CROSS-MODULE-OPTION / NUM-W-AOT-pack / #121 Phase A+B-min / DICT-AOT-NEW Phase B+C+D / `&mut self` Stage 1 / 96残 前半 / STR-PTR-LEN / STR-LEN-O1 / VEC-collection で複数 regression test 追加。compiler/e2e は 191、consistency は 30 強）
+- 合計 1158 テスト, 31 skipped（100% 成功率、2026-05-04 時点 — DICT-CROSS-MODULE-OPTION / NUM-W-AOT-pack / #121 Phase A+B-min/B-rest / DICT-AOT-NEW Phase B+C+D / `&mut self` Stage 1 / 96残 前半 / STR-PTR-LEN / STR-LEN-O1 / VEC-collection / STDLIB-alloc-trait / REF-Stage-2 (a)(d)(e)(f) で複数 regression test 追加。compiler/e2e は 191、consistency は 30 強）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (23) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

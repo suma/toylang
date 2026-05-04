@@ -111,7 +111,7 @@ parser recognises the following grammar (see
 in `frontend/src/type_decl.rs`:
 
 ```
-Type ::= '&' Type                      # reference (immutable)
+Type ::= '&' ('mut')? Type             # reference (immutable / mutable)
        | '[' Type (';' INT)? ']'       # array: [T; N] or dynamic [T]
        | 'dict' '[' Type ',' Type ']'  # dict[K, V]
        | '(' Type (',' Type)* ')'      # tuple
@@ -149,33 +149,89 @@ Composite / user-defined types:
 |---|---|
 | `Name` | User-defined struct or enum (the parser emits `Identifier(name)`; the type checker resolves it to `Struct(name, [])` or `Enum(name, [])`) |
 | `Name<T1, ...>` | Generic struct or enum instantiation |
-| `&T` | Reference to `T`. Used in **parameter** positions (e.g. `fn push_str(&mut self, other: &String)`); see [Reference types](#reference-types) below |
+| `&T` / `&mut T` | Immutable / mutable reference to `T`. Used in **parameter** positions (`fn push_str(&mut self, other: &String)`) and in explicit-borrow expressions (`f(&mut s)`). See [Reference types](#reference-types) below |
 
 ### Reference types
 
-A `&T` annotation marks a parameter as **call-by-reference**: the caller
-does not pay for a value copy. The current implementation is a minimum
-subset (REF-Stage-2-min):
+A `&T` (immutable) / `&mut T` (mutable) annotation marks a parameter as
+**call-by-reference**: the caller does not pay for a value copy. The
+current implementation (REF-Stage-2 (a)+(d)+(e)+(f)) covers the
+type-system surface; the borrow checker is **escape-only** — there are
+no lifetimes, no aliasing rules, no field-level borrow, no iterator
+invalidation.
 
-- `&T` is parsed as a distinct `TypeDecl::Ref(Box<TypeDecl>)` and is **not
-  equivalent** to `T` in the type system. `val a: &String = b` (where
-  `b: String`) is rejected; references are an argument-only construct.
-- At call sites, **auto-borrow** lets a caller pass a `T` value where a
-  `&T` is expected (`s.push_str(b)` for `b: String`). The reverse — passing
-  a `&T` where a `T` is expected — is not allowed.
-- Method dispatch on a `&T` receiver auto-derefs to `T` for impl-table
-  lookup (`(&s).len()` and `s.len()` resolve identically).
-- Currently `&T` is **erased** at lowering: both the interpreter and the
-  AOT backend pass references identically to values (struct receivers
-  still leaf-flatten). A future phase will introduce IR-level pointer
-  passing without a copy.
-- **Out of scope** for now: `&mut T` for non-self parameters, explicit
-  `&value` borrow expressions, borrow checking, lifetimes.
+Type system:
 
-The `&self` / `&mut self` receiver forms are part of the same family but
-predate `&T` (REF Stage 1) and live in their own parser path. Stdlib
-read-only methods (`String::len`, `Vec::size`, …) take `&self`; mutating
-ones (`Vec::push`, `String::push_str`) take `&mut self`.
+- `&T` and `&mut T` are parsed as `TypeDecl::Ref { is_mut, inner }` and
+  are **not equivalent** to `T`. The two forms are also distinct from
+  each other.
+- Argument compatibility (`is_arg_compatible`):
+  - `T` → `&T` is allowed via **auto-borrow** at the call site
+    (`s.push_str(b)` for `b: String`).
+  - `T` → `&mut T` is **not** auto-borrowed; the caller must write
+    `&mut <var>` so the mutability is visible at the call site
+    (Rust-style discipline).
+  - `&mut T` → `&T` is allowed (a mutable reference satisfies an
+    immutable expectation).
+  - The reverse direction (`&T` / `&mut T` flowing into `T`) is
+    rejected; there is no auto-deref.
+- Method dispatch on a `&T` / `&mut T` receiver auto-derefs to `T` for
+  impl-table lookup (`(&s).len()` and `s.len()` resolve identically).
+
+Explicit borrow expressions (`UnaryOp::Borrow` / `UnaryOp::BorrowMut`):
+
+- Prefix `& expr` produces `&T`; prefix `&mut expr` produces `&mut T`.
+- `&mut <name>` is the **only** accepted shape for a mutable borrow:
+  - The operand must be a bare identifier (no `&mut s.field`,
+    `&mut arr[i]`, etc.; field-level borrow is intentionally out of
+    scope).
+  - The named binding must be `var`-declared. Borrowing a `val` (or
+    a top-level `const`) mutably is rejected with a precise diagnostic
+    naming the binding.
+- Binary `&` (bitwise AND) remains unambiguous since it is reached only
+  after a primary; prefix `&` lives at the start of an expression.
+
+Escape rule (REF-Stage-2 (e)) — references can only flow into a
+function via parameters / method receivers and cannot **escape** the
+referent's frame:
+
+- Returning a reference is rejected: `fn f(x: &u64) -> &u64` is a
+  compile-time error.
+- Storing a reference in a `val` / `var` binding is rejected — both an
+  explicit annotation (`val r: &u64 = &a`) and an inferred type
+  (`val r = &a`) trip the rule.
+- Storing a reference in a struct field is rejected
+  (`struct S { r: &u64 }`).
+- Compound types containing a reference (e.g. `(u64, &u64)`,
+  `[&u64; 4]`) are caught the same way via `TypeDecl::contains_ref()`.
+
+Without lifetimes, this conservative escape rule is the only protection
+against dangling references. Once IR-level pointer passing lands the
+escape rule will still hold; the borrow check has no "promotion" path.
+
+Lowering — references are currently **erased**: both the interpreter
+and the AOT backend pass references identically to values (struct
+receivers still leaf-flatten). The frontend type checker is the one
+enforcing call-by-reference semantics; a future phase will introduce
+`Type::Ref` + `AddressOf` so `&mut T` argument types can propagate true
+mutation back to the caller (today only `&mut self` mutates the
+caller's binding, via the Self-out-parameter convention from REF Stage
+1).
+
+Out of scope (deferred):
+
+- IR-level pointer passing (`Type::Ref`, `AddressOf`); true mutation
+  propagation through `&mut T` non-self parameters.
+- Aliasing / borrow exclusion rules (multiple `&mut` to the same
+  binding remain allowed at runtime).
+- Lifetimes / scope inference.
+- `&mut s.field` / `&mut arr[i]` and similar non-identifier lvalues.
+- Iterator invalidation checks.
+
+The `&self` / `&mut self` receiver forms are part of the same family
+but predate `&T` (REF Stage 1) and live in their own parser path.
+Stdlib read-only methods (`String::len`, `Vec::size`, …) take `&self`;
+mutating ones (`Vec::push`, `String::push_str`) take `&mut self`.
 
 ### Type inference
 
@@ -265,20 +321,23 @@ Two distinct relations live on `TypeDecl`:
   `Identifier(name)` as a stand-in for the registered `Struct(name, _)`
   / `Enum(name, _)` so user-named types unify with their resolved
   form. Generic-typed values (`Generic(T)`) and `Unknown` accept
-  anything during inference. **`&T` and `T` are NOT equivalent** —
-  the reference distinction is real.
+  anything during inference. **`&T` and `T` are NOT equivalent**, and
+  `&T` ≠ `&mut T` — the reference distinctions are real.
 - **`is_arg_compatible(actual, expected)`** — used at every
   argument-passing site (call / method-call / associated function /
-  module function). Falls back to `is_equivalent`, plus one
-  relaxation: an `actual` of type `T` may flow into an `expected` of
-  type `&T` via auto-borrow. The reverse direction is rejected.
+  module function). Falls back to `is_equivalent`, plus two narrow
+  relaxations:
+  - `T` → `&T` auto-borrow (the immutable case only).
+  - `&mut T` → `&T` downgrade (a mutable reference satisfies an
+    immutable expectation).
+  Importantly, `T` → `&mut T` auto-borrow is **rejected** — the caller
+  must write `&mut <name>` explicitly so the mutability is visible
+  at the call site.
 
-Assignment is strict on `is_equivalent`:
-
-```rust
-val a: String = ...
-val b: &String = a   # type error: &String and String are distinct
-```
+Assignment is also rejected for any reference type: `val r: &T = ...`
+is a [REF-Stage-2 (e)](#reference-types) escape error — references
+cannot be stored in `val` / `var` bindings at all, regardless of the
+rhs's type.
 
 ### Method dispatch
 
@@ -476,6 +535,7 @@ Listed lowest precedence first:
 | Unary `-` | Negation (`i64`, `f64` only) |
 | Unary `!` | Logical not (`bool`) |
 | Unary `~` | Bitwise not (`u64`, `i64`) |
+| Unary `&` / `&mut` | Borrow expression — produces `&T` / `&mut T`. `&mut` requires the operand to be a bare `var`-declared identifier; see [Reference types](#reference-types) |
 | `as` | Type cast (i64 ↔ u64, i64/u64 ↔ f64) |
 | `.field` `.0` `.method(...)` | Field / tuple-index / method access |
 | `[...]` | Indexing / slicing (arrays, dicts, structs with `__getitem__`) |

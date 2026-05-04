@@ -1128,9 +1128,25 @@ pub struct DiscoveredCoreModule {
 pub fn discover_core_modules(
     dir: &std::path::Path,
 ) -> Result<Vec<DiscoveredCoreModule>, String> {
+    // Cache by canonical path so test suites that call back into this
+    // function for every sub-test (e2e_batched.rs, consistency.rs,
+    // every interpreter integration test) only pay the filesystem
+    // walk + read once per process. Each consumer still gets its own
+    // owned Vec via clone; mutating a discovered module's source is
+    // not exposed in the public API.
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<std::path::PathBuf, Vec<DiscoveredCoreModule>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    if let Some(hit) = cache.lock().unwrap().get(&key).cloned() {
+        return Ok(hit);
+    }
     let mut out: Vec<DiscoveredCoreModule> = Vec::new();
     walk_core_dir(dir, &mut Vec::new(), &mut out)?;
     out.sort_by(|a, b| a.segments.cmp(&b.segments));
+    cache.lock().unwrap().insert(key, out.clone());
     Ok(out)
 }
 

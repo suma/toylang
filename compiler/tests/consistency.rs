@@ -51,29 +51,43 @@ fn unique_path(stem: &str) -> PathBuf {
 /// produced. Numeric programs are reduced to `u64` (with i64 sign-cast
 /// folded into u64 via the same `as` semantics the interpreter exposes).
 fn interpreter_value(source: &str) -> u64 {
+    // Try without auto-loading core modules first. Most consistency
+    // sub-tests are pure user code (no stdlib references); skipping
+    // the ~150 ms type-check pass over `core/std/*.t` shaves a
+    // measurable amount off every such test. Fall back to the full
+    // core-aware path if the lite path fails (e.g. the source
+    // references `Vec`, `Dict`, `String`, `Option`, ...).
+    if let Some(v) = interpreter_value_with_core(source, None) {
+        return v;
+    }
+    interpreter_value_with_core(source, Some(core_modules_dir()))
+        .expect("interpreter type-check / execute (with core)")
+}
+
+fn interpreter_value_with_core(
+    source: &str,
+    core_dir: Option<PathBuf>,
+) -> Option<u64> {
     let mut parser = frontend::ParserWithInterner::new(source);
-    let mut program = parser.parse_program().expect("interpreter parse");
+    let mut program = parser.parse_program().ok()?;
     let interner = parser.get_string_interner();
-    // Auto-load the same `core/std/*.t` modules the JIT and AOT
-    // paths see so a test that uses `Result<...>` / `Option<...>`
-    // resolves identically across all three backends.
     interpreter::check_typing_with_core_modules(
         &mut program,
         interner,
         Some(source),
         Some("test.t"),
-        Some(&core_modules_dir()),
+        core_dir.as_deref(),
     )
-    .expect("interpreter type-check");
+    .ok()?;
     let result = interpreter::execute_program(&program, interner, Some(source), Some("test.t"))
-        .expect("interpreter execute");
+        .ok()?;
     let v = match &*result.borrow() {
         Object::UInt64(n) => *n,
         Object::Int64(n) => *n as u64,
         Object::Bool(b) => *b as u64,
         other => panic!("unexpected interpreter result: {other:?}"),
     };
-    v
+    Some(v)
 }
 
 /// Build the interpreter binary once per test run and return its
@@ -117,24 +131,41 @@ fn interpreter_bin() -> PathBuf {
 
 /// Run `source` through the interpreter binary with `INTERPRETER_JIT=1`
 /// set, forcing the Cranelift JIT path. Returns the observed exit
-/// code (already `& 0xff`).
-fn jit_exit_code(source: &str, stem: &str) -> i32 {
+/// code (already `& 0xff`). When `with_core` is false the spawn
+/// gets `TOYLANG_CORE_MODULES=""` so the binary skips auto-loading
+/// the ~11 stdlib modules (~150 ms savings per spawn in debug
+/// builds). Callers should set `with_core=false` only after the
+/// in-process interpreter check has confirmed the program compiles
+/// without the core modules.
+fn jit_exit_code(source: &str, stem: &str, with_core: bool) -> i32 {
     let bin = interpreter_bin();
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
-    let status = Command::new(&bin)
-        .arg(&src_path)
-        .env("INTERPRETER_JIT", "1")
-        .status()
-        .expect("spawn interpreter+jit");
+    let mut cmd = Command::new(&bin);
+    cmd.arg(&src_path).env("INTERPRETER_JIT", "1");
+    if !with_core {
+        // Empty value disables auto-load (see `interpreter::main::resolve_core_modules_dir`).
+        cmd.env("TOYLANG_CORE_MODULES", "");
+    }
+    let status = cmd.status().expect("spawn interpreter+jit");
     let code = status.code().expect("exit code");
     let _ = std::fs::remove_file(&src_path);
     code
 }
 
 /// Compile `source` into a fresh executable, run it, and return the
-/// observed exit code (already `& 0xff` from the OS).
-fn compiler_exit_code(source: &str, stem: &str) -> i32 {
+/// observed exit code (already `& 0xff` from the OS). `with_core`
+/// follows the same convention as `jit_exit_code`.
+fn compiler_exit_code(source: &str, stem: &str, with_core: bool) -> i32 {
+    try_compiler_exit_code(source, stem, with_core)
+        .expect("compile_file: compile failed")
+}
+
+/// Try-compile variant for the lazy-core fast path. Returns `None`
+/// if `compile_file` fails (typically a type-check error from a
+/// stdlib symbol the no-core path can't resolve), letting the
+/// caller fall back to the full core-aware path without panicking.
+fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i32> {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
@@ -144,27 +175,57 @@ fn compiler_exit_code(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: Some(core_modules_dir()),
+        core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
     };
-    compile_file(&options).expect("compile_file");
-    let status = Command::new(&exe_path).status().expect("spawn binary");
-    let code = status.code().expect("exit code");
+    let compile_ok = compile_file(&options).is_ok();
+    let result = if compile_ok {
+        let status = Command::new(&exe_path).status().expect("spawn binary");
+        Some(status.code().expect("exit code"))
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
-    code
+    result
 }
 
 /// Assert that the interpreter result, the JIT-compiled binary's exit
 /// code, and the AOT-compiled binary's exit code all agree, with `&
 /// 0xff` shell truncation applied uniformly so test programs need not
 /// stay below 256 to pass. Any divergence pinpoints which pair drifted.
+///
+/// Each path tries to compile / run *without* auto-loading the core
+/// modules first. When all three paths agree under that lite
+/// configuration the test stays on the fast path and saves roughly
+/// 150 ms × 3 spawns per sub-test. Any failure (e.g. the source
+/// references a stdlib symbol) falls back to the full core-aware
+/// path, so the visible semantics never change.
 fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
+    // Fast path: if both the in-process interpreter AND the AOT
+    // compiler succeed without auto-loading core modules, the
+    // program is pure user code (or only uses interpreter built-in
+    // methods that AOT also handles natively). In that case the
+    // JIT spawn can also skip core auto-load. Each `with_core =
+    // false` skip saves ~150 ms of stdlib type-checking.
+    if let Some(interp) = interpreter_value_with_core(source, None) {
+        if let Some(compiled) = try_compiler_exit_code(source, stem, false) {
+            let jit = jit_exit_code(source, stem, false) as u64;
+            let compiled = compiled as u64;
+            if interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff {
+                return;
+            }
+            // Disagreement on the lite path falls through to the
+            // canonical full path below, so the diagnostic the
+            // user sees is the one from the configuration that
+            // matches the production binaries.
+        }
+    }
     let interp = interpreter_value(source);
-    let compiled = compiler_exit_code(source, stem) as u64;
-    let jit = jit_exit_code(source, stem) as u64;
+    let compiled = compiler_exit_code(source, stem, true) as u64;
+    let jit = jit_exit_code(source, stem, true) as u64;
     assert_eq!(
         interp & 0xff,
         compiled & 0xff,
@@ -1645,7 +1706,7 @@ fn dict_typed_slot_survives_geometric_growth() {
     "#;
     let interp = interpreter_value(src);
     assert_eq!(interp, 42, "interpreter expected 42 (typed_slots migrated through grow), got {interp}");
-    let jit = jit_exit_code(src, "dict_typed_slot_growth_jit");
+    let jit = jit_exit_code(src, "dict_typed_slot_growth_jit", true);
     assert_eq!(jit as u64, 42, "JIT expected 42, got {jit}");
 }
 
@@ -1752,7 +1813,7 @@ fn dict_get_with_user_option_shadow() {
         interp, 7,
         "interpreter expected 7 (user Option.value, gated on stdlib Option::is_some hit), got {interp}"
     );
-    let jit = jit_exit_code(src, "dict_get_with_user_option_shadow_jit");
+    let jit = jit_exit_code(src, "dict_get_with_user_option_shadow_jit", true);
     assert_eq!(jit as u64, 7, "JIT expected 7, got {jit}");
 }
 

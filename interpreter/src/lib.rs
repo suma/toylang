@@ -7,7 +7,7 @@ pub mod error_formatter;
 pub mod heap;
 #[cfg(feature = "jit")]
 pub mod jit;
-mod module_integration;
+pub mod module_integration;
 
 use std::rc::Rc;
 use std::collections::HashMap;

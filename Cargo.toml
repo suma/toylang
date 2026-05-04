@@ -15,3 +15,18 @@ string-interner = "0.19.0"
 edition = "2024"
 license = "MIT"
 authors = ["Shuzo Kashihara <suman.orega.warukatta@gmail.com>"]
+
+# Build third-party dependencies with full optimization even in dev /
+# test profiles. Cranelift / cranelift-codegen / cranelift-jit
+# dominate the wall-clock of `e2e_batched.rs` and the `consistency`
+# suite (each test JIT-compiles or AOT-compiles a small program);
+# unoptimized cranelift is roughly 20x slower than its optimized
+# build. Workspace-local crates (frontend / interpreter / compiler /
+# compiler_core) stay at opt-level=0 so test compile times and
+# debugger ergonomics for the code we actually iterate on are
+# unchanged.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.test.package."*"]
+opt-level = 3

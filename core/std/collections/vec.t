@@ -189,14 +189,12 @@ impl Vec<u8> {
 
     # Append a single byte. Equivalent to `push` but the named
     # variant documents intent (and parallels the legacy
-    # `String::push_char` API). `c: u8` rather than `c: char`
-    # because type aliases (from `core/std/char.t`) live inside
-    # the per-file parser's `type_aliases` map and do NOT cross
-    # module boundaries — vec.t can't see char.t's alias. User
-    # code that imports both can still write `c: char` at call
-    # sites; the alias resolves to `u8` and the dispatch lands
-    # here.
-    fn push_char(&mut self, c: u8) {
+    # `String::push_char` API). `c: char` uses the alias from
+    # `core/std/char.t` — the cross-module alias-resolution pass
+    # (`frontend::resolve_type_aliases`) substitutes it to `u8`
+    # at type-check time so dispatch picks up the existing
+    # generic `Vec<T>::push` body.
+    fn push_char(&mut self, c: char) {
         self.push(c)
     }
 

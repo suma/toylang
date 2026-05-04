@@ -1677,6 +1677,33 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn cross_module_char_alias_round_trip() {
+    // `core/std/char.t::type char = u8` is resolved by the
+    // cross-module alias pass — annotation positions in user
+    // code (`val a: char`, `c: char` parameter, `-> char` return)
+    // all substitute to `u8`. Used in conjunction with the
+    // recently-added `Vec<u8>::push_char(&mut self, c: char)`
+    // declaration in `core/std/collections/vec.t` which itself
+    // depends on the cross-module substitution to compile.
+    let src = r#"
+        fn id_char(c: char) -> char {
+            c
+        }
+
+        fn main() -> u64 {
+            val a: char = 65u8
+            val b: char = id_char(a)
+            if b != 65u8 { return 1u64 }
+            var s: String = Vec::from_str("x")
+            s.push_char(a)
+            if s.size() != 2u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "cross_module_char_alias_round_trip");
+}
+
+#[test]
 fn cross_module_type_alias_round_trip() {
     // `type String = Vec<u8>` lives in `core/std/string.t` and is
     // resolved by `frontend::resolve_type_aliases` after module

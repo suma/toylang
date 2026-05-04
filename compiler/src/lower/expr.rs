@@ -333,9 +333,73 @@ impl<'a> FunctionLower<'a> {
             // emitted it before terminating, so we just decrement
             // the depth without a duplicate pop.
             Expr::With(allocator_expr, body_expr) => {
-                let handle = self
-                    .lower_expr(&allocator_expr)?
-                    .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?;
+                // STDLIB-alloc-trait: when the allocator expression
+                // resolves to a struct value (a wrapper that impls
+                // `Alloc`), look up its single `Allocator`-typed
+                // field and emit a LoadLocal of that field instead
+                // of trying to lower the struct as a single value.
+                // The type checker (`visit_with`) has already
+                // verified the conformance + uniqueness.
+                //
+                // Detection: `value_scalar` returns None for struct
+                // bindings (struct values aren't single SSA scalars),
+                // so probe via `resolve_field_chain` — if it returns
+                // a Struct chain result, take the auto-extract path;
+                // otherwise fall through to the scalar handle path.
+                let chain_opt = self.resolve_field_chain(&allocator_expr).ok();
+                let handle = if let Some(super::bindings::FieldChainResult::Struct { struct_id, fields }) = chain_opt {
+                    // Identify the `Allocator`-typed field by walking
+                    // the *frontend* StructTemplate (which preserves
+                    // the source-level `TypeDecl::Allocator`)
+                    // rather than the IR-level `StructDef.fields`
+                    // (where `Allocator` and other `u64` fields both
+                    // lower to `Type::U64` and become indistinguishable).
+                    // The type checker has already verified there's
+                    // exactly one such field.
+                    let base_name = self.module.struct_def(struct_id).base_name;
+                    let template = self.struct_defs.get(&base_name).ok_or_else(|| {
+                        format!(
+                            "with-allocator: missing frontend template for struct `{}`",
+                            self.interner.resolve(base_name).unwrap_or("?")
+                        )
+                    })?;
+                    let mut alloc_field_name: Option<String> = None;
+                    let mut alloc_field_count = 0;
+                    for (fname, fty) in &template.fields {
+                        if matches!(fty, frontend::type_decl::TypeDecl::Allocator) {
+                            alloc_field_count += 1;
+                            alloc_field_name = Some(fname.clone());
+                        }
+                    }
+                    if alloc_field_count != 1 {
+                        return Err(format!(
+                            "with-allocator: struct `{}` must have exactly one Allocator-typed field, got {}",
+                            self.interner.resolve(base_name).unwrap_or("?"),
+                            alloc_field_count
+                        ));
+                    }
+                    let fname = alloc_field_name.unwrap();
+                    let fb = fields
+                        .iter()
+                        .find(|f| f.name == fname)
+                        .ok_or_else(|| format!(
+                            "with-allocator: struct binding missing field `{}`",
+                            fname
+                        ))?;
+                    let local = match &fb.shape {
+                        super::bindings::FieldShape::Scalar { local, .. } => *local,
+                        other => return Err(format!(
+                            "with-allocator: Allocator field has unexpected shape {:?}",
+                            other
+                        )),
+                    };
+                    self.emit(InstKind::LoadLocal(local), Some(crate::ir::Type::U64))
+                        .expect("LoadLocal returns a value")
+                } else {
+                    self
+                        .lower_expr(&allocator_expr)?
+                        .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?
+                };
                 self.emit(InstKind::AllocPush { handle }, None);
                 self.with_scope_depth += 1;
                 let body_value = self.lower_expr(&body_expr)?;

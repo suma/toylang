@@ -111,15 +111,43 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((obj).into()))
             }
             Expr::With(allocator, body) => {
-                // Evaluate the allocator expression. The type checker already ensures
-                // the value is of type Allocator; extract the underlying Rc<dyn Allocator>
-                // and push it onto the scope stack for the duration of the body. The
-                // pop must happen on every exit path (value, return, break, continue,
-                // error) so nested `with` blocks always restore the outer binding.
+                // Evaluate the allocator expression. The type checker
+                // already ensures the value is either:
+                //   - `Object::Allocator(Rc<dyn Allocator>)` (primitive
+                //     handle path, original behaviour), or
+                //   - `Object::Struct { ... }` whose struct impls
+                //     `core/std/allocator.t::Alloc` and carries
+                //     exactly one `Allocator`-typed field
+                //     (STDLIB-alloc-trait — auto-extract the field).
+                // Pop must happen on every exit path so nested `with`
+                // blocks always restore the outer binding.
                 let allocator_val = self.evaluate(&allocator);
                 let allocator_val = try_value!(allocator_val);
                 let allocator_rc = match &*allocator_val.borrow() {
                     Object::Allocator(rc) => rc.clone(),
+                    Object::Struct { fields, .. } => {
+                        // STDLIB-alloc-trait: scan struct fields for
+                        // the unique `Object::Allocator` value and use
+                        // it as the handle. The type checker already
+                        // verified `Alloc` conformance + single
+                        // Allocator-typed field, so we expect to find
+                        // exactly one — but be defensive against
+                        // codegen drift.
+                        let mut found: Option<std::rc::Rc<dyn crate::heap::Allocator>> = None;
+                        for v in fields.values() {
+                            if let Object::Allocator(rc) = &*v.borrow() {
+                                if found.is_some() {
+                                    return Err(InterpreterError::InternalError(
+                                        "with: struct has multiple Allocator fields (type checker bug)".to_string()
+                                    ));
+                                }
+                                found = Some(rc.clone());
+                            }
+                        }
+                        found.ok_or_else(|| InterpreterError::InternalError(
+                            "with: struct has no Allocator field (type checker bug)".to_string()
+                        ))?
+                    }
                     other => return Err(InterpreterError::InternalError(format!(
                         "with: allocator expression did not produce an Allocator value: {:?}",
                         other

@@ -304,16 +304,64 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
 
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // The RHS of `with allocator = ...` must evaluate to an Allocator handle.
-        // A bare `TypeDecl::Allocator` is the obvious case, but a generic parameter
-        // bounded by `Allocator` (e.g. `fn f<A: Allocator>(a: A) { with allocator = a {...} }`)
-        // must also be accepted so the body can use the allocator it was handed.
+        // Three accept paths:
+        //   1. Bare `TypeDecl::Allocator` (the primitive runtime handle).
+        //   2. Generic param bounded by `Allocator`
+        //      (`fn f<A: Allocator>(a: A) { with allocator = a {...} }`).
+        //   3. STDLIB-alloc-trait: a struct value that impls
+        //      `core/std/allocator.t::Alloc` and carries exactly one
+        //      `Allocator`-typed field. The `with` site auto-extracts
+        //      that field at lowering time, so user code can write
+        //      `with allocator = arena { ... }` for `arena: Arena`.
         let allocator_ty = self.visit_expr(allocator)?;
-        let is_allocator = match &allocator_ty {
+        // Resolve `Identifier(name)` to `Struct(name, [])` for the
+        // is-it-a-struct check below — the parser emits `Identifier`
+        // for bare type names because it can't distinguish struct from
+        // alias at parse time. Same refinement the method-call site
+        // does (commit `ea0c0cd`).
+        let resolved_ty = match &allocator_ty {
+            TypeDecl::Identifier(name)
+                if self.context.struct_definitions.contains_key(name) =>
+            {
+                TypeDecl::Struct(*name, vec![])
+            }
+            other => other.clone(),
+        };
+        let is_allocator = match &resolved_ty {
             TypeDecl::Allocator => true,
             TypeDecl::Generic(sym) => matches!(
                 self.context.current_fn_generic_bounds.get(sym),
                 Some(TypeDecl::Allocator)
             ),
+            TypeDecl::Struct(struct_name, _) => {
+                // Look up the `Alloc` trait by interner symbol. If the
+                // trait isn't registered (e.g. the program doesn't use
+                // any stdlib that declares `Alloc`), this branch falls
+                // through to the error path — matches the previous
+                // behaviour for unregistered names.
+                let alloc_trait = self.core.string_interner.get("Alloc");
+                let conforms = alloc_trait
+                    .map(|t| self.context.struct_implements_trait(*struct_name, t))
+                    .unwrap_or(false);
+                if !conforms {
+                    false
+                } else {
+                    // STDLIB-alloc-trait: also require exactly one
+                    // `Allocator`-typed field so the lowering pass
+                    // has an unambiguous field to extract. Zero or
+                    // multiple → reject.
+                    let fields = self
+                        .context
+                        .get_struct_fields(*struct_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    let alloc_field_count = fields
+                        .iter()
+                        .filter(|f| matches!(f.type_decl, TypeDecl::Allocator))
+                        .count();
+                    alloc_field_count == 1
+                }
+            }
             _ => false,
         };
         if !is_allocator {

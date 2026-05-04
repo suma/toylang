@@ -1112,6 +1112,78 @@ fn aot_allocator_default_and_current_round_trip() {
 }
 
 #[test]
+fn stdlib_alloc_with_struct() {
+    // STDLIB-alloc-trait: `core/std/allocator.t` defines wrapper
+    // structs (`Global` / `Arena` / `FixedBuffer`) over the
+    // primitive `Allocator` handle, plus `trait Alloc` that they
+    // all impl. `with allocator = arena { ... }` accepts a
+    // wrapper struct and auto-extracts its single
+    // `Allocator`-typed field at lowering time, so user code
+    // doesn't have to write `with allocator = arena.h { ... }`
+    // (or call any `handle()` method).
+    //
+    // Coverage:
+    //   - Arena: two-allocation `with` body, then `arena.drop()`
+    //   - FixedBuffer(16): two 8-byte allocations succeed,
+    //     third 1-byte allocation hits the quota → null
+    //   - both wrapper kinds exercise the auto-extract path
+    let src = r#"
+        fn main() -> u64 {
+            val arena = Arena::new()
+            with allocator = arena {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 1u64 }
+            }
+            arena.drop()
+
+            val fb = FixedBuffer::new(16u64)
+            with allocator = fb {
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 2u64 }
+                val p3: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p3) { return 3u64 }
+                val p4: ptr = __builtin_heap_alloc(1u64)
+                if !__builtin_ptr_is_null(p4) { return 4u64 }
+            }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "stdlib_alloc_with_struct");
+}
+
+#[test]
+fn stdlib_alloc_trait_methods() {
+    // STDLIB-alloc-trait: `arena.alloc(8u64)` / `fb.alloc(...)`
+    // dispatch through the `Alloc` trait. Each method body
+    // delegates via `with allocator = self.h { __builtin_heap_alloc(size) }`,
+    // so the actual allocation routes through the runtime
+    // active-allocator stack and hits the right backend.
+    //
+    // Verifies arena unrestricted alloc + fixed_buffer quota
+    // rejection through the trait method path (parallel to
+    // `stdlib_alloc_with_struct` which exercises the `with`
+    // path).
+    let src = r#"
+        fn main() -> u64 {
+            val arena = Arena::new()
+            val p1: ptr = arena.alloc(8u64)
+            if __builtin_ptr_is_null(p1) { return 1u64 }
+            val p2: ptr = arena.alloc(8u64)
+            if __builtin_ptr_is_null(p2) { return 2u64 }
+            arena.drop()
+
+            val fb = FixedBuffer::new(8u64)
+            val q1: ptr = fb.alloc(8u64)
+            if __builtin_ptr_is_null(q1) { return 3u64 }
+            val q2: ptr = fb.alloc(1u64)
+            if !__builtin_ptr_is_null(q2) { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "stdlib_alloc_trait_methods");
+}
+
+#[test]
 fn aot_arena_drop_releases_and_reuses() {
     // #121 Phase B-rest Item 2 follow-up:
     // `__builtin_arena_drop(handle)` releases every allocation

@@ -2935,7 +2935,9 @@ pub(crate) fn check_expr(
                     if !matches!(
                         t,
                         ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool | ScalarTy::Ptr
-                    ) {
+                            | ScalarTy::F64
+                    ) && !t.is_narrow_int()
+                    {
                         note(reject_reason, || {
                             format!("__builtin_sizeof of {t:?} is not supported in JIT")
                         });
@@ -3504,15 +3506,30 @@ pub(crate) fn check_expr(
             Some(shape[idx])
         }
         Expr::Cast(inner, target) => {
-            // Casts allowed: i64 ↔ u64 (identity at the cranelift layer),
-            // and i64/u64 ↔ f64 (real fcvt instructions). bool casts are
-            // intentionally excluded.
+            // Casts allowed: any-width int ↔ any-width int (sextend /
+            // uextend / ireduce in codegen), and i64/u64 ↔ f64 (real
+            // fcvt instructions). bool casts are intentionally
+            // excluded.
             let inner_ty = check_expr(program, &inner, locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
-            if !matches!(inner_ty, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
+            let int_or_float = |t: ScalarTy| {
+                matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) || t.is_narrow_int()
+            };
+            if !int_or_float(inner_ty) {
                 return None;
             }
-            if !matches!(target_ty, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
+            if !int_or_float(target_ty) {
+                return None;
+            }
+            // Reject narrow-int <-> f64 for now: those require fcvt
+            // pre-extending the narrow side, which the cast codegen
+            // doesn't yet handle. Stay safe and fall back.
+            let narrow_to_float = inner_ty.is_narrow_int() && target_ty == ScalarTy::F64;
+            let float_to_narrow = inner_ty == ScalarTy::F64 && target_ty.is_narrow_int();
+            if narrow_to_float || float_to_narrow {
+                note(reject_reason, || {
+                    "JIT cast between narrow int and f64 is not yet supported".to_string()
+                });
                 return None;
             }
             Some(target_ty)

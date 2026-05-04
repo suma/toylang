@@ -142,24 +142,38 @@ fn jit_skip_reason_for_generic_struct() {
 }
 
 #[test]
-fn narrow_int_jit_falls_back_cleanly() {
-    // NUM-W Phase 4: u8 / u16 / u32 / i8 / i16 / i32 are not
-    // (yet) recognised by `ScalarTy::from_type_decl` in the JIT
-    // eligibility layer. Any function that uses one of the new
-    // widths therefore falls eligibility and the interpreter
-    // takes over. This test pins the fallback by running the
-    // same source with and without `INTERPRETER_JIT=1` and
-    // asserting both produce 142 (the success exit code from
-    // example/narrow_int_jit_fallback.t). When real JIT codegen
-    // for narrow ints lands, the fallback path will go away
-    // and this test should be promoted to assert that JIT
-    // actually compiled the function (e.g. by checking the
-    // verbose log contains a `compiled` line for `main`).
+fn narrow_int_jit_compiles_natively() {
+    // NUM-W-JIT Phases A-C have landed: ScalarTy gained the six
+    // narrow widths, literal codegen + arithmetic + cast +
+    // `__builtin_sizeof` all go through the cranelift JIT
+    // pipeline. This test pins that
+    // `example/narrow_int_jit_fallback.t` (which exercises
+    // every one of those features) NOW compiles natively
+    // instead of silently falling back to the interpreter.
+    //
+    // The exit-code assertion is unchanged from the prior
+    // fallback version (still 142); the new bit is the
+    // `JIT compiled: main` substring check on the verbose
+    // log, which proves cranelift took the function instead
+    // of the eligibility pass rejecting it.
     assert_match("example/narrow_int_jit_fallback.t");
     let r = run("example/narrow_int_jit_fallback.t", false, false);
     assert_eq!(r.code, 142, "interpreter exit; stderr: {}", r.stderr);
     let jit = run("example/narrow_int_jit_fallback.t", true, false);
     assert_eq!(jit.code, 142, "JIT-mode exit; stderr: {}", jit.stderr);
+    let verbose = run("example/narrow_int_jit_fallback.t", true, true);
+    assert_eq!(verbose.code, 142, "JIT verbose exit; stderr: {}", verbose.stderr);
+    assert!(
+        verbose.stderr.contains("JIT compiled: main")
+            || verbose.stderr.contains("compiled: main"),
+        "expected `JIT compiled: main` line in verbose log, got stderr: {}",
+        verbose.stderr,
+    );
+    assert!(
+        !verbose.stderr.contains("JIT: skipped"),
+        "function should JIT-compile, not fall back; stderr: {}",
+        verbose.stderr,
+    );
 }
 
 #[test]

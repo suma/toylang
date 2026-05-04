@@ -1677,6 +1677,34 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn narrow_int_jit_phase_c_cast_sizeof_round_trip() {
+    // NUM-W-JIT Phase C: integer-width casts (`u8 as u16`,
+    // `i32 as u32`, `u8 as u64`) lower to cranelift `sextend` /
+    // `uextend` / `ireduce`, and `__builtin_sizeof` over a narrow
+    // value returns the byte count (1 / 2 / 4). This shape used
+    // to silently fall back to the interpreter; now it
+    // JIT-compiles end-to-end.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8 = 200u8 + 50u8
+            val b: u16 = a as u16 - 100u16
+            val c: i32 = -1i32
+            val d: u32 = c as u32
+            val sized: u64 = __builtin_sizeof(a)
+                + __builtin_sizeof(b)
+                + __builtin_sizeof(c)
+                + __builtin_sizeof(d)
+            if a != 250u8 { return 1u64 }
+            if b != 150u16 { return 2u64 }
+            if d != 4294967295u32 { return 3u64 }
+            if sized != 11u64 { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "narrow_int_jit_phase_c_cast_sizeof_round_trip");
+}
+
+#[test]
 fn narrow_int_jit_phase_a_round_trip() {
     // NUM-W-JIT Phase A: u8 / u16 / u32 / i8 / i16 / i32 are now
     // recognised at the JIT eligibility + literal-codegen layer,

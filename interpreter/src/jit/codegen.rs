@@ -951,7 +951,10 @@ impl<'a, 'b> State<'a, 'b> {
                         let _ = self.gen_expr(&args[0])?;
                         let bytes: i64 = match arg_ty {
                             ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr => 8,
-                            ScalarTy::Bool => 1,
+                            ScalarTy::F64 => 8,
+                            ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => 1,
+                            ScalarTy::I16 | ScalarTy::U16 => 2,
+                            ScalarTy::I32 | ScalarTy::U32 => 4,
                             _ => {
                                 return Err(
                                     "__builtin_sizeof for this type is not supported in JIT"
@@ -1096,8 +1099,34 @@ impl<'a, 'b> State<'a, 'b> {
                     (ScalarTy::F64, ScalarTy::U64) => {
                         self.builder.ins().fcvt_to_uint_sat(types::I64, v)
                     }
-                    // i64 ↔ u64 (and identity casts) require no instruction.
-                    _ => v,
+                    _ => {
+                        // NUM-W: integer-width casts. Three cases:
+                        //   - same width (e.g. i64<->u64, u8<->i8) — no-op
+                        //   - wider target (u8 -> u64, i32 -> i64, ...)
+                        //     — sextend if source is signed, uextend
+                        //     if unsigned. Matches Rust's `as` for
+                        //     narrow→wide (sign extend signed, zero
+                        //     extend unsigned).
+                        //   - narrower target (u64 -> u8, i32 -> u8,
+                        //     ...) — `ireduce` truncates the low bits.
+                        //     Matches Rust's `as` for wide→narrow.
+                        let src_ir = ir_type(inner_ty);
+                        let dst_ir = ir_type(target_ty);
+                        match (src_ir, dst_ir) {
+                            (Some(s), Some(d)) if s.bits() == d.bits() => v,
+                            (Some(s), Some(d)) if s.bits() < d.bits() => {
+                                if inner_ty.is_signed_int() {
+                                    self.builder.ins().sextend(d, v)
+                                } else {
+                                    self.builder.ins().uextend(d, v)
+                                }
+                            }
+                            (Some(_), Some(d)) => {
+                                self.builder.ins().ireduce(d, v)
+                            }
+                            _ => v,
+                        }
+                    }
                 };
                 Ok(Some(result))
             }

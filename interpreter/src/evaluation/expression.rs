@@ -131,17 +131,29 @@ impl EvaluationContext<'_> {
                 // every tracked allocation; the `Allocator` trait's
                 // default impl is a no-op so wrapper structs / raw
                 // global handle / named bindings are unaffected.
-                let inline_temporary = if let Some(Expr::AssociatedFunctionCall(s, f, args)) =
-                    self.expr_pool.get(&allocator)
-                {
-                    let is_new = self.string_interner.resolve(f) == Some("new");
-                    let is_arena =
-                        is_new && self.string_interner.resolve(s) == Some("Arena") && args.is_empty();
-                    let is_fb =
-                        is_new && self.string_interner.resolve(s) == Some("FixedBuffer") && args.len() == 1;
-                    is_arena || is_fb
-                } else {
-                    false
+                let inline_temporary = match self.expr_pool.get(&allocator) {
+                    Some(Expr::AssociatedFunctionCall(s, f, args)) => {
+                        let is_new = self.string_interner.resolve(f) == Some("new");
+                        let is_arena = is_new
+                            && self.string_interner.resolve(s) == Some("Arena")
+                            && args.is_empty();
+                        let is_fb = is_new
+                            && self.string_interner.resolve(s) == Some("FixedBuffer")
+                            && args.len() == 1;
+                        is_arena || is_fb
+                    }
+                    // #121 Phase B-rest leftover (1): the raw builtin
+                    // forms also count as inline-temporary so
+                    // `with allocator = __builtin_arena_allocator() { … }`
+                    // auto-drops on scope exit, parallel to the
+                    // wrapper-struct shorthand above.
+                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args)) => {
+                        args.is_empty()
+                    }
+                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args)) => {
+                        args.len() == 1
+                    }
+                    _ => false,
                 };
                 let allocator_val = self.evaluate(&allocator);
                 let allocator_val = try_value!(allocator_val);

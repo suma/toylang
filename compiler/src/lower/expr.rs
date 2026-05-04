@@ -511,10 +511,8 @@ impl<'a> FunctionLower<'a> {
                     Arena,
                     FixedBuffer(frontend::ast::ExprRef),
                 }
-                let inline_kind: Option<InlineAlloc> =
-                    if let Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) =
-                        self.program.expression.get(&allocator_expr)
-                    {
+                let inline_kind: Option<InlineAlloc> = match self.program.expression.get(&allocator_expr) {
+                    Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) => {
                         let s = self.interner.resolve(struct_sym);
                         let f = self.interner.resolve(fn_sym);
                         if f == Some("new") && s == Some("Arena") && args.is_empty() {
@@ -524,9 +522,25 @@ impl<'a> FunctionLower<'a> {
                         } else {
                             None
                         }
-                    } else {
-                        None
-                    };
+                    }
+                    // #121 Phase B-rest leftover (1): the **raw builtin**
+                    // forms `__builtin_arena_allocator()` and
+                    // `__builtin_fixed_buffer_allocator(cap)` are
+                    // shorthand for `Arena::new()` / `FixedBuffer::new()`
+                    // — let them auto-drop too so users don't have to
+                    // call `__builtin_arena_drop` manually.
+                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args))
+                        if args.is_empty() =>
+                    {
+                        Some(InlineAlloc::Arena)
+                    }
+                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args))
+                        if args.len() == 1 =>
+                    {
+                        Some(InlineAlloc::FixedBuffer(args[0]))
+                    }
+                    _ => None,
+                };
                 if let Some(kind) = inline_kind {
                     // Construct the handle inline so we don't have
                     // to lower the associated-function call as a

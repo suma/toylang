@@ -1290,6 +1290,42 @@ fn arena_temporary_auto_cleanup_round_trip() {
 }
 
 #[test]
+fn raw_builtin_arena_auto_cleanup_round_trip() {
+    // #121 Phase B-rest leftover (1): the **raw builtin** form
+    // `__builtin_arena_allocator()` is recognised as an inline
+    // temporary too, so its tracked allocations get released at
+    // scope exit without an explicit `__builtin_arena_drop` call.
+    // Symmetric with the wrapper-struct form covered above.
+    //
+    // Verifies that:
+    //   - the body completes (heap_alloc through the inline arena
+    //     handle works on every backend)
+    //   - the active allocator returns to default after the `with`
+    //     ends (i.e. the AllocPop fired)
+    //   - the same shape works for `__builtin_fixed_buffer_allocator(cap)`
+    let src = r#"
+        fn main() -> u64 {
+            with allocator = __builtin_arena_allocator() {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 1u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 2u64 }
+            }
+            val mid: Allocator = __builtin_current_allocator()
+            if mid != __builtin_default_allocator() { return 3u64 }
+            with allocator = __builtin_fixed_buffer_allocator(64u64) {
+                val p3: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p3) { return 4u64 }
+            }
+            val end: Allocator = __builtin_current_allocator()
+            if end != __builtin_default_allocator() { return 5u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "raw_builtin_arena_auto_cleanup_round_trip");
+}
+
+#[test]
 fn arena_temporary_auto_cleanup_early_return_round_trip() {
     // Phase 5: early `return` from inside `with allocator =
     // Arena::new() { ... }` still pops the active stack AND

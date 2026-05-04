@@ -18,7 +18,7 @@
 //!   invocations. Routes `print` / `println` / `panic` /
 //!   `assert` / `__builtin_*` to the matching helper.
 
-use frontend::ast::{BuiltinFunction, Expr, ExprRef};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, UnaryOp};
 
 use super::bindings::{flatten_struct_locals, flatten_tuple_element_locals, Binding};
 use super::FunctionLower;
@@ -37,10 +37,21 @@ impl<'a> FunctionLower<'a> {
         };
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
         for a in &items {
+            // REF-Stage-2: peel an explicit `&value` / `&mut value`
+            // borrow expression so the same identifier-expansion path
+            // below can run. Borrow is type-erased at the IR layer.
+            let arg_expr_ref = match self.program.expression.get(a) {
+                Some(Expr::Unary(op, inner))
+                    if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) =>
+                {
+                    inner
+                }
+                _ => *a,
+            };
             // Struct-typed identifier argument: expand into per-field
             // values in declaration order. Anything else flows through
             // `lower_expr`.
-            if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
+            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
                     let leaves = flatten_struct_locals(&fields);
                     for (local, ty) in &leaves {
@@ -73,8 +84,10 @@ impl<'a> FunctionLower<'a> {
                     continue;
                 }
             }
+            // Note: pass the borrow-peeled ref so explicit `&v` /
+            // `&mut v` lowers via the inner expr's normal path.
             let v = self
-                .lower_expr(a)?
+                .lower_expr(&arg_expr_ref)?
                 .ok_or_else(|| "call argument produced no value".to_string())?;
             values.push(v);
         }

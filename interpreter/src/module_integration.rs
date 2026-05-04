@@ -480,7 +480,10 @@ impl<'a> AstIntegrationContext<'a> {
             // REF-Stage-2: peel and recurse so the inner symbol gets
             // properly remapped (e.g. `&String` from a stdlib module
             // resolves to the main interner's `String` symbol).
-            TypeDecl::Ref(inner) => TypeDecl::Ref(Box::new(self.remap_type_decl(inner)?)),
+            TypeDecl::Ref { is_mut, inner } => TypeDecl::Ref {
+                is_mut: *is_mut,
+                inner: Box::new(self.remap_type_decl(inner)?),
+            },
             // Symbol-free leaf cases pass through.
             other => other.clone(),
         })

@@ -248,7 +248,10 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                 }
             },
             TypeDecl::Range(inner) => format!("Range<{}>", self.format_type_for_error(inner)),
-            TypeDecl::Ref(inner) => format!("&{}", self.format_type_for_error(inner)),
+            TypeDecl::Ref { is_mut, inner } => {
+                let prefix = if *is_mut { "&mut " } else { "&" };
+                format!("{}{}", prefix, self.format_type_for_error(inner))
+            }
         }
     }
     

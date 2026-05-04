@@ -779,6 +779,22 @@ pub fn parse_unary(parser: &mut Parser) -> ParserResult<ExprRef> {
             let operand = parse_unary(parser)?;
             Ok(parser.ast_builder.unary_expr(UnaryOp::Negate, operand, Some(location)))
         }
+        // REF-Stage-2: prefix `&` / `&mut` at expression start is an
+        // explicit borrow. Binary `&` (bitwise AND) appears only after
+        // an operand and is reached via parse_bitwise_and -> ... ->
+        // parse_unary, so there is no ambiguity here.
+        Some(Kind::And) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let op = if parser.peek() == Some(&Kind::Mut) {
+                parser.next();
+                UnaryOp::BorrowMut
+            } else {
+                UnaryOp::Borrow
+            };
+            let operand = parse_unary(parser)?;
+            Ok(parser.ast_builder.unary_expr(op, operand, Some(location)))
+        }
         _ => parse_postfix(parser)
     }
 }

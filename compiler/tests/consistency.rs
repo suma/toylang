@@ -893,6 +893,63 @@ fn string_push_str_round_trip() {
 }
 
 #[test]
+fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
+    // REF-Stage-2 (a)+(d): explicit `&value` / `&mut value`
+    // borrow expressions + `&T` / `&mut T` parameter types
+    // outside the `&self` receiver position.
+    //
+    //   - `len_of(&String)` is called both with auto-borrow
+    //     (`len_of(s)`) and with explicit borrow (`len_of(&s)`),
+    //     pinning that the type system accepts both forms.
+    //   - `swap_first(&mut String, &String)` declares a `&mut`
+    //     argument annotation. With erasure semantics still in
+    //     place at lowering, the function body cannot actually
+    //     mutate the caller's binding through the parameter —
+    //     so the body intentionally only reads the buffer. The
+    //     test pins that parsing + type-check + lowering all
+    //     accept the new annotation form, including the
+    //     explicit `&mut s` borrow at the call site.
+    //   - `&mut T` actual passed to a `&T` parameter (downgrade)
+    //     is also exercised via `len_of(&mut s)`.
+    //
+    // 3-way `assert_consistent` across interpreter / JIT /
+    // AOT — all should agree on exit code 42.
+    let src = r#"
+        fn len_of(s: &String) -> u64 {
+            s.len()
+        }
+
+        fn first_byte(s: &String) -> u8 {
+            val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
+            b
+        }
+
+        fn first_byte_mut(s: &mut String) -> u8 {
+            val b: u8 = __builtin_ptr_read(s.as_ptr(), 0u64)
+            b
+        }
+
+        fn main() -> u64 {
+            var s: String = String::from_str("hello")
+            # auto-borrow: bare String -> &String
+            if len_of(s) != 5u64 { return 1u64 }
+            # explicit borrow expression
+            if len_of(&s) != 5u64 { return 2u64 }
+            # &mut T actual downgraded to &T expected
+            if len_of(&mut s) != 5u64 { return 3u64 }
+            # &mut T parameter, called with explicit &mut value
+            if first_byte_mut(&mut s) != 104u8 { return 4u64 }
+            # auto-borrow into &mut T parameter (also accepted)
+            if first_byte_mut(s) != 104u8 { return 5u64 }
+            # nested: explicit &expr in a chain
+            if first_byte(&s) != 104u8 { return 6u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_explicit_borrow_and_mut_ref_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

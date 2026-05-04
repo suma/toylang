@@ -58,6 +58,20 @@ impl<'a> TypeCheckerVisitor<'a> {
             operand_obj.clone().accept(self)?
         };
         
+        // REF-Stage-2: explicit `&expr` / `&mut expr` short-circuit
+        // before the Number/coercion logic runs, since wrapping an
+        // unresolved Number literal in a borrow doesn't make sense.
+        if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
+            let is_mut = matches!(op, UnaryOp::BorrowMut);
+            // If the operand is itself already a reference, just
+            // pass it through (no double-borrow).
+            let inner_ty = match operand_ty {
+                TypeDecl::Ref { inner, .. } => *inner,
+                other => other,
+            };
+            return Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner_ty) });
+        }
+
         // Resolve type with automatic conversion for Number type. Negation
         // implies a signed result, so coerce an unspecified Number to Int64
         // the same way an explicit `-3i64` literal would land.
@@ -66,6 +80,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 UnaryOp::BitwiseNot => TypeDecl::UInt64,
                 UnaryOp::Negate => TypeDecl::Int64,
                 UnaryOp::LogicalNot => TypeDecl::Bool,
+                UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("borrow handled above"),
             }
         } else {
             operand_ty.clone()
@@ -115,6 +130,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     ));
                 }
             }
+            UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("borrow handled above"),
         };
         
         Ok(result_type)

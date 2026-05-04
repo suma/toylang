@@ -437,6 +437,13 @@ pub enum UnaryOp {
     BitwiseNot,  // ~
     LogicalNot,  // !
     Negate,      // -expr (sign flip for signed integer types)
+    // REF-Stage-2: explicit borrow expressions. `&expr` produces
+    // `&T`, `&mut expr` produces `&mut T`. Both are erased to the
+    // inner expression at lower level (interpreter / AOT) — they
+    // exist purely to satisfy the type-checker when call sites
+    // don't want to rely on auto-borrow.
+    Borrow,      // &expr
+    BorrowMut,   // &mut expr
 }
 
 #[derive(Debug, Clone, PartialEq)]

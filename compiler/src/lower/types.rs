@@ -14,7 +14,7 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
     // codegen pass the value through identically. A future phase
     // can introduce a `Type::Ref(_)` variant for true pointer
     // passing without copy.
-    if let TypeDecl::Ref(inner) = ty {
+    if let TypeDecl::Ref { inner, .. } = ty {
         return lower_scalar(inner);
     }
     match ty {

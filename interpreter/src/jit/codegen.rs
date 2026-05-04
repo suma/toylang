@@ -657,6 +657,9 @@ impl<'a, 'b> State<'a, 'b> {
                         let one = self.builder.ins().iconst(types::I8, 1);
                         self.builder.ins().bxor(v, one)
                     }
+                    // REF-Stage-2: borrow ops are erased — return
+                    // the operand value unchanged.
+                    UnaryOp::Borrow | UnaryOp::BorrowMut => v,
                 };
                 Ok(Some(result))
             }

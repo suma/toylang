@@ -2426,6 +2426,10 @@ pub(crate) fn check_expr(
                         None
                     }
                 }
+                // REF-Stage-2: borrow ops are erased — eligibility
+                // simply forwards the operand type, codegen emits
+                // the operand value.
+                UnaryOp::Borrow | UnaryOp::BorrowMut => Some(t),
             }
         }
         Expr::Block(stmts) => {

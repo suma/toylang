@@ -137,6 +137,13 @@ impl<'a> FunctionLower<'a> {
         op: &UnaryOp,
         operand: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
+        // REF-Stage-2: borrow ops are erased at the IR layer.
+        // Just lower the operand and pass the value through; the
+        // frontend type checker is the one that already enforced
+        // the `&T` / `&mut T` distinction at call sites.
+        if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
+            return self.lower_expr(operand);
+        }
         let operand_ty = self.value_scalar(operand).unwrap_or(Type::U64);
         let v = self
             .lower_expr(operand)?
@@ -145,6 +152,7 @@ impl<'a> FunctionLower<'a> {
             UnaryOp::Negate => (IrUnaryOp::Neg, operand_ty),
             UnaryOp::BitwiseNot => (IrUnaryOp::BitNot, operand_ty),
             UnaryOp::LogicalNot => (IrUnaryOp::LogicalNot, Type::Bool),
+            UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("handled above"),
         };
         Ok(self.emit(
             InstKind::UnaryOp {

@@ -12,17 +12,22 @@ impl<'a> Parser<'a> {
 
     pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
         match self.peek() {
-            // REF-Stage-2 minimum subset: `&T` reference type at any
+            // REF-Stage-2: `&T` and `&mut T` reference types at any
             // type-annotation position (parameter type, val annotation,
             // return type, struct field type, ...). The `&self` /
             // `&mut self` receiver path lives in
             // `parser/stmt.rs::parse_method_signature` and is not
             // reached from here, so the two arms don't conflict.
-            // `&mut T` is intentionally deferred to a later phase.
             Some(Kind::And) => {
                 self.next(); // consume `&`
+                let is_mut = if self.peek() == Some(&Kind::Mut) {
+                    self.next(); // consume `mut`
+                    true
+                } else {
+                    false
+                };
                 let inner = self.parse_type_declaration_with_generic_context(generic_params)?;
-                Ok(TypeDecl::Ref(Box::new(inner)))
+                Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner) })
             }
             Some(Kind::BracketOpen) => {
                 self.next();

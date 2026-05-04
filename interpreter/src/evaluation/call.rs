@@ -422,8 +422,11 @@ impl EvaluationContext<'_> {
                         let arg_value = try_value_v!(arg_result);
                         let actual_type = arg_value.get_type();
 
-                        // Skip type checking for generic functions since type checking was already done
-                        if !is_generic_function && !actual_type.is_equivalent(expected_type) {
+                        // Skip type checking for generic functions since type checking was already done.
+                        // REF-Stage-2: use is_arg_compatible so `T` can be passed to a `&T` / `&mut T`
+                        // parameter via auto-borrow at the call site (the runtime value type is the
+                        // bare inner type — references are erased here).
+                        if !is_generic_function && !TypeDecl::is_arg_compatible(&actual_type, expected_type) {
                             let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
                             return Err(InterpreterError::TypeError {
                                 expected: expected_type.clone(),

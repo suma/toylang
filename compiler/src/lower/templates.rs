@@ -500,7 +500,7 @@ pub(super) fn lower_param_or_return_type(
     // `&String` lowers to the same IR signature shape as a `String`
     // parameter (struct leaf-flatten). True pointer passing is a
     // future phase.
-    if let TypeDecl::Ref(inner) = ty {
+    if let TypeDecl::Ref { inner, .. } = ty {
         return lower_param_or_return_type(inner, struct_defs, enum_defs, module, interner);
     }
     if let Some(t) = lower_scalar(ty) {

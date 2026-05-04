@@ -498,6 +498,11 @@ impl EvaluationContext<'_> {
                     message: format!("Unary minus requires i64 or f64, got {:?}", operand_v),
                 }),
             },
+            // REF-Stage-2: explicit borrow expressions are erased at
+            // runtime — there is no `Ref` `Value` variant. The type
+            // checker enforces caller / callee distinction; the
+            // interpreter just passes the value through.
+            UnaryOp::Borrow | UnaryOp::BorrowMut => operand_v,
         };
 
         Ok(EvaluationResult::Value(result_v))

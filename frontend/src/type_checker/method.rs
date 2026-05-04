@@ -189,7 +189,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 // long as the inner type is one of the supported
                 // shapes; the impl-block validator only needs to
                 // know the wrapper exists (lowering peels it).
-                TypeDecl::Ref(_) => {
+                TypeDecl::Ref { .. } => {
                     // Valid parameter types — primitives, structs,
                     // generics, and collections. `Float64` / `Ptr`
                     // were added when extension traits over

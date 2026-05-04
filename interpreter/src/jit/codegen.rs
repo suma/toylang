@@ -918,6 +918,10 @@ impl<'a, 'b> State<'a, 'b> {
                         // bug surfaces immediately.
                         Err("internal error: __builtin_arena_drop reached JIT codegen (eligibility should have rejected)".to_string())
                     }
+                    BuiltinFunction::FixedBufferDrop => {
+                        // Eligibility rejects, codegen unreachable.
+                        Err("internal error: __builtin_fixed_buffer_drop reached JIT codegen (eligibility should have rejected)".to_string())
+                    }
                     BuiltinFunction::CurrentAllocator => {
                         Ok(Some(self.call_helper(HelperKind::CurrentAllocator, &[])?))
                     }

@@ -64,9 +64,15 @@ impl Arena {
     fn new() -> Self {
         Arena { h: __builtin_arena_allocator() }
     }
+}
 
-    # Release every allocation tracked by this arena. Idempotent;
-    # the arena handle remains valid for further use.
+# Phase 5: `Drop` impl. Releases every allocation tracked by this
+# arena. Idempotent; the arena handle remains valid for further
+# use. The temporary form
+# `with allocator = Arena::new() { ... }` calls this implicitly
+# at scope exit; named bindings (`val a = Arena::new()` then
+# `a.drop()`) call it explicitly.
+impl Drop for Arena {
     fn drop(&mut self) {
         __builtin_arena_drop(self.h)
     }
@@ -111,6 +117,16 @@ impl FixedBuffer {
 
     fn capacity(&self) -> u64 {
         self.cap
+    }
+}
+
+# Phase 5: `Drop` impl. Releases every allocation tracked by this
+# fixed_buffer slot and resets the quota. The temporary form
+# `with allocator = FixedBuffer::new(cap) { ... }` calls this
+# implicitly at scope exit.
+impl Drop for FixedBuffer {
+    fn drop(&mut self) {
+        __builtin_fixed_buffer_drop(self.h)
     }
 }
 

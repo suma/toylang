@@ -713,17 +713,24 @@ pub enum InstKind {
     // later). Each lowers to a libc call (malloc / realloc / free)
     // or a typed cranelift load / store. Pointers are passed as
     // U64-typed values throughout the IR.
-    /// `__builtin_heap_alloc(size)` — allocate `size` bytes via libc
-    /// `malloc`. Returns the new address as a U64 value.
-    HeapAlloc { size: ValueId },
+    /// `__builtin_heap_alloc(size)` — allocate `size` bytes through
+    /// the active allocator. Returns the new address as a U64
+    /// value. `binding` annotates which allocator the call site
+    /// resolves to (Static / Generic / Local / Ambient) — codegen
+    /// today routes every variant through the active-stack
+    /// dispatch (`toy_alloc_current` + `toy_dispatched_alloc`),
+    /// but the field is preserved so a future devirt pass can
+    /// emit a direct `libc malloc` call when the binding is
+    /// known statically.
+    HeapAlloc { size: ValueId, binding: AllocatorBinding },
     /// `__builtin_heap_realloc(ptr, new_size)` — resize the allocation
-    /// at `ptr` to `new_size` bytes via libc `realloc` (which accepts
-    /// a null `ptr` and behaves like `malloc`). Returns the (possibly
-    /// moved) address as U64.
-    HeapRealloc { ptr: ValueId, new_size: ValueId },
+    /// at `ptr` to `new_size` bytes through the active allocator
+    /// (which accepts a null `ptr` and behaves like `malloc`).
+    /// Returns the (possibly moved) address as U64.
+    HeapRealloc { ptr: ValueId, new_size: ValueId, binding: AllocatorBinding },
     /// `__builtin_heap_free(ptr)` — release the allocation at `ptr`
-    /// via libc `free`. Returns no value.
-    HeapFree { ptr: ValueId },
+    /// through the active allocator. Returns no value.
+    HeapFree { ptr: ValueId, binding: AllocatorBinding },
     /// `__builtin_ptr_read(ptr, offset) -> elem_ty` — typed load at
     /// `ptr + offset`. The element type is fixed at lower time from
     /// the surrounding `val`/`var` annotation (e.g.
@@ -1251,14 +1258,14 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::ArrayStore { slot, index, value, elem_ty } => {
                 write!(f, "array_store slot#{}, {index} <- {value}: {elem_ty}", slot.0)
             }
-            InstKind::HeapAlloc { size } => {
-                write!(f, "{prefix}heap_alloc {size}")
+            InstKind::HeapAlloc { size, binding } => {
+                write!(f, "{prefix}heap_alloc {size}  ; {binding}")
             }
-            InstKind::HeapRealloc { ptr, new_size } => {
-                write!(f, "{prefix}heap_realloc {ptr}, {new_size}")
+            InstKind::HeapRealloc { ptr, new_size, binding } => {
+                write!(f, "{prefix}heap_realloc {ptr}, {new_size}  ; {binding}")
             }
-            InstKind::HeapFree { ptr } => {
-                write!(f, "heap_free {ptr}")
+            InstKind::HeapFree { ptr, binding } => {
+                write!(f, "heap_free {ptr}  ; {binding}")
             }
             InstKind::PtrRead { ptr, offset, elem_ty } => {
                 write!(f, "{prefix}ptr_read {ptr}, {offset}: {elem_ty}")

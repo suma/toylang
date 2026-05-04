@@ -2926,6 +2926,15 @@ pub(crate) fn check_expr(
                     });
                     None
                 }
+                BuiltinFunction::FixedBufferDrop => {
+                    // Phase 5: explicit fixed_buffer drop, same JIT
+                    // story as ArenaDrop — silent fallback to
+                    // interpreter (the AOT path is wired).
+                    note(reject_reason, || {
+                        "JIT does not yet model __builtin_fixed_buffer_drop".to_string()
+                    });
+                    None
+                }
                 BuiltinFunction::Abs => {
                     if args.len() != 1 {
                         note(reject_reason, || {

@@ -1339,6 +1339,38 @@ fn fixed_buffer_temporary_auto_cleanup_early_return_round_trip() {
 }
 
 #[test]
+fn drop_trait_named_binding_round_trip() {
+    // Phase 5 (Drop trait): both `Arena` and `FixedBuffer` impl
+    // the stdlib `Drop` trait now (`core/std/drop.t`). Calling
+    // `arena.drop()` / `fb.drop()` on a named binding dispatches
+    // through the trait method table; the body still emits the
+    // matching `__builtin_arena_drop` / `__builtin_fixed_buffer_drop`
+    // builtin so the runtime semantics are unchanged. The
+    // `with allocator = Arena::new() { ... }` temporary auto-
+    // cleanup sits on a separate syntactic-sniff path and is
+    // not affected by this change.
+    let src = r#"
+        fn main() -> u64 {
+            val arena = Arena::new()
+            with allocator = arena {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p) { return 1u64 }
+            }
+            arena.drop()
+
+            val fb = FixedBuffer::new(8u64)
+            with allocator = fb {
+                val q: ptr = __builtin_heap_alloc(4u64)
+                if __builtin_ptr_is_null(q) { return 2u64 }
+            }
+            fb.drop()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "drop_trait_named_binding_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

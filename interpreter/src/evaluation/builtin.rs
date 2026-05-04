@@ -675,6 +675,36 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Unit.into()))
             }
 
+            BuiltinFunction::FixedBufferDrop => {
+                // Phase 5: explicit fixed_buffer bulk-free. Same
+                // dispatch as `ArenaDrop` — `Allocator::reset()`
+                // — relying on `FixedBufferAllocator::reset` to
+                // free tracked addrs + zero the quota. Default
+                // no-op for non-fixed_buffer handles via the
+                // trait's default impl.
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "__builtin_fixed_buffer_drop takes 1 argument (handle)".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                let handle = self.evaluate(&args[0])?;
+                let handle = try_value!(Ok(handle));
+                let borrow = handle.borrow();
+                match &*borrow {
+                    Object::Allocator(rc) => {
+                        rc.reset();
+                    }
+                    other => {
+                        return Err(InterpreterError::InternalError(format!(
+                            "__builtin_fixed_buffer_drop: expected Allocator handle, got {other:?}"
+                        )));
+                    }
+                }
+                Ok(EvaluationResult::Value(Object::Unit.into()))
+            }
+
             BuiltinFunction::SizeOf => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

@@ -1938,7 +1938,12 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             // current handle (sentinel 0 = default global / libc
             // direct path) and pass it as the first arg to
             // `toy_dispatched_*` which handles the dispatch.
-            InstKind::HeapAlloc { size } => {
+            // Phase 5: `binding` is informational today — codegen
+            // routes every variant through the active-stack
+            // dispatch. A future devirt pass can branch on
+            // `Static` to emit a direct libc malloc / free without
+            // reading `toy_alloc_current`.
+            InstKind::HeapAlloc { size, binding: _ } => {
                 let size_v = self.value(*size);
                 let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
                 let handle_v = self.builder.inst_results(handle_call)[0];
@@ -1951,7 +1956,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
-            InstKind::HeapRealloc { ptr, new_size } => {
+            InstKind::HeapRealloc { ptr, new_size, binding: _ } => {
                 let ptr_v = self.value(*ptr);
                 let size_v = self.value(*new_size);
                 let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
@@ -1965,7 +1970,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
-            InstKind::HeapFree { ptr } => {
+            InstKind::HeapFree { ptr, binding: _ } => {
                 let ptr_v = self.value(*ptr);
                 let handle_call = self.builder.ins().call(self.runtime.alloc_current, &[]);
                 let handle_v = self.builder.inst_results(handle_call)[0];

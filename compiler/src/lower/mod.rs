@@ -365,4 +365,35 @@ impl<'a> FunctionLower<'a> {
             depth -= 1;
         }
     }
+
+    /// Phase 5 (AllocatorBinding wiring): classify the allocator
+    /// the next `__builtin_heap_alloc` / `_realloc` / `_free`
+    /// call will route through. The classification is encoded
+    /// onto each `Heap*` `InstKind` so a future devirt pass can
+    /// turn `Static` calls into direct libc malloc / free emits
+    /// instead of going through `toy_alloc_current` +
+    /// `toy_dispatched_*`. Codegen today still uses the active-
+    /// stack dispatch unconditionally — the tag is informational.
+    ///
+    /// Today the dispatch is conservative: any open `with` scope
+    /// reports `Ambient` regardless of how the handle was
+    /// produced (inline `Arena::new()` / named binding /
+    /// wrapper-struct field), and outside any `with` we also
+    /// report `Ambient` (the runtime treats the empty stack as
+    /// the default sentinel, so the user-visible behaviour is
+    /// the same as `Static(0)` would be — but we don't fold to
+    /// `Static` here because the runtime model is "stack top",
+    /// not "compile-time constant"). A future enrichment can
+    /// detect the `Arena::new()` temporary by walking the
+    /// `with_scope_arena_drops` snapshot and emit a `Local` /
+    /// `Static` annotation.
+    pub(super) fn classify_active_allocator_binding(
+        &self,
+    ) -> crate::ir::AllocatorBinding {
+        // Future-friendly hook — for now everything is Ambient.
+        // Keeping the helper in place so call sites already
+        // route through the right API and a single change here
+        // will pick up the tag refinement.
+        crate::ir::AllocatorBinding::Ambient
+    }
 }

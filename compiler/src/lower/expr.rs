@@ -758,7 +758,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 let size = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_alloc size produced no value".to_string())?;
-                Ok(self.emit(InstKind::HeapAlloc { size }, Some(Type::U64)))
+                let binding = self.classify_active_allocator_binding();
+                Ok(self.emit(InstKind::HeapAlloc { size, binding }, Some(Type::U64)))
             }
             BuiltinFunction::HeapRealloc => {
                 if args.len() != 2 {
@@ -771,7 +772,8 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| "heap_realloc ptr produced no value".to_string())?;
                 let new_size = self.lower_expr(&args[1])?
                     .ok_or_else(|| "heap_realloc new_size produced no value".to_string())?;
-                Ok(self.emit(InstKind::HeapRealloc { ptr, new_size }, Some(Type::U64)))
+                let binding = self.classify_active_allocator_binding();
+                Ok(self.emit(InstKind::HeapRealloc { ptr, new_size, binding }, Some(Type::U64)))
             }
             BuiltinFunction::HeapFree => {
                 if args.len() != 1 {
@@ -782,7 +784,8 @@ impl<'a> FunctionLower<'a> {
                 }
                 let ptr = self.lower_expr(&args[0])?
                     .ok_or_else(|| "heap_free ptr produced no value".to_string())?;
-                Ok(self.emit(InstKind::HeapFree { ptr }, None))
+                let binding = self.classify_active_allocator_binding();
+                Ok(self.emit(InstKind::HeapFree { ptr, binding }, None))
             }
             BuiltinFunction::PtrWrite => {
                 // `__builtin_ptr_write(ptr, offset, value)` — the
@@ -1023,6 +1026,22 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(&args[0])?
                     .ok_or_else(|| "arena_drop handle arg produced no value".to_string())?;
                 self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                Ok(None)
+            }
+            BuiltinFunction::FixedBufferDrop => {
+                // Phase 5: explicit fixed_buffer bulk-free.
+                // Caller hands in the handle returned by
+                // `__builtin_fixed_buffer_allocator(cap)`.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_fixed_buffer_drop takes 1 arg (handle), got {}",
+                        args.len()
+                    ));
+                }
+                let h = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "fixed_buffer_drop handle arg produced no value".to_string())?;
+                self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
                 Ok(None)
             }
             BuiltinFunction::FixedBufferAllocator => {

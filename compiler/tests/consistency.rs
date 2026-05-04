@@ -1677,6 +1677,40 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn type_alias_forward_reference_round_trip() {
+    // Forward references to type aliases. The cross-module
+    // alias resolution pass (`frontend::resolve_type_aliases`,
+    // `c6a6d20`) runs after the entire AST is built, so it
+    // doesn't matter where in the file an alias is declared
+    // relative to its uses. Per-file parser-time substitution
+    // still requires "before-use" ordering, but anything the
+    // parser couldn't resolve falls through to the post-pass
+    // and gets fixed up there.
+    //
+    // Covers:
+    //   - non-generic alias used before declaration (`Foo`)
+    //   - alias chain (`B -> A -> u64`) where `B` precedes `A`
+    //   - generic alias used before declaration (`Pair<T>`)
+    let src = r#"
+        fn main() -> u64 {
+            val a: A = 42u64
+            val b: B = 7u64
+            val p: Pair<u64> = Box { v: 5u64 }
+            if a != 42u64 { return 1u64 }
+            if b != 7u64 { return 2u64 }
+            if p.v != 5u64 { return 3u64 }
+            42u64
+        }
+
+        struct Box<T> { v: T }
+        type Pair<T> = Box<T>
+        type B = A
+        type A = u64
+    "#;
+    assert_consistent(src, "type_alias_forward_reference_round_trip");
+}
+
+#[test]
 fn cross_module_char_alias_round_trip() {
     // `core/std/char.t::type char = u8` is resolved by the
     // cross-module alias pass — annotation positions in user

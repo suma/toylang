@@ -421,11 +421,16 @@ mod lexer_tests {
     }
 
     #[test]
-    fn test_type_alias_forward_reference_unsupported() {
-        // Aliases are eagerly substituted, so forward references must
-        // fail at type-check time (the parser keeps `Identifier(Foo)`
-        // unresolved). The parser itself accepts the source — the
-        // failure surfaces later. We only check parser cleanliness.
+    fn test_type_alias_forward_reference_parses() {
+        // Forward references parse cleanly. The per-file parser
+        // does NOT eagerly substitute (`Byte` in `val x: Byte` is
+        // unknown when parsed), but the post-integration alias
+        // resolution pass (`frontend::resolve_type_aliases`,
+        // `c6a6d20`) sees both the use and the declaration and
+        // substitutes them in the merged AST. This test only
+        // covers the parser surface; the end-to-end forward-ref
+        // path is exercised by
+        // `compiler::consistency::type_alias_forward_reference_round_trip`.
         let input = r#"
             fn main() -> u64 {
                 val x: Byte = 7u32
@@ -434,9 +439,12 @@ mod lexer_tests {
             type Byte = u32
         "#;
         let mut parser = ParserWithInterner::new(input);
-        let _ = parser.parse_program();
-        // Parser accepts; the unresolved Identifier(Byte) is the
-        // type-checker's concern, not the parser's.
+        let result = parser.parse_program();
+        assert!(
+            result.is_ok(),
+            "Failed to parse forward-reference type alias: {:?}",
+            parser.errors,
+        );
     }
 
     #[test]

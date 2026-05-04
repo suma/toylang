@@ -19,6 +19,37 @@ fn hex_digit(b: u8) -> Option<u8> {
     }
 }
 
+/// Parse the body of a `\u{HEX}` Unicode escape. `bytes[start]`
+/// must point at the `{`. Returns `(code_point, end_index)`
+/// where `end_index` is the index *after* the closing `}`.
+/// Errors on missing `{` / `}`, no digits, non-hex, overflow,
+/// or out-of-range / surrogate code points.
+#[allow(dead_code)]
+fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)> {
+    if start >= bytes.len() || bytes[start] != b'{' {
+        return None;
+    }
+    let mut i = start + 1;
+    let mut value: u32 = 0;
+    let mut digits = 0;
+    while i < bytes.len() && bytes[i] != b'}' {
+        let nib = hex_digit(bytes[i])?;
+        // Cap at 6 hex digits — anything beyond can't fit in a
+        // valid Unicode scalar (max is 0x10FFFF).
+        if digits >= 6 {
+            return None;
+        }
+        value = (value << 4) | (nib as u32);
+        digits += 1;
+        i += 1;
+    }
+    if digits == 0 || i >= bytes.len() {
+        return None;
+    }
+    // i points at `}`; consume it.
+    Some((value, i + 1))
+}
+
 %%
 %class Lexer
 %result_type Token
@@ -398,6 +429,19 @@ fn hex_digit(b: u8) -> Option<u8> {
                                     i += 4;
                                     continue;
                                 }
+                                // `\u{HEX}` — Unicode code point,
+                                // encoded into the string as 1-4 UTF-8
+                                // bytes. Out-of-range or surrogate
+                                // code points (which `char::from_u32`
+                                // rejects) bail as `Unmatch`.
+                                if bytes[i + 1] == b'u' {
+                                    let (cp, end) = parse_unicode_escape_body(bytes, i + 2)
+                                        .ok_or(Error::Unmatch)?;
+                                    let c = char::from_u32(cp).ok_or(Error::Unmatch)?;
+                                    out.push(c);
+                                    i = end;
+                                    continue;
+                                }
                                 let escaped = match bytes[i + 1] {
                                     b'n'  => b'\n',
                                     b't'  => b'\t',
@@ -422,6 +466,26 @@ fn hex_digit(b: u8) -> Option<u8> {
                             }
                         }
                         return Ok(token!(self, Kind::String(out)));
+                    }
+
+'\\u"{"[0-9a-fA-F]+"}"'            {
+                        // char literal Unicode escape `'\u{HEX}'` —
+                        // 1 to 6 hex digits encoding a Unicode code
+                        // point (max 0x10FFFF). Lexes to
+                        // `Kind::UInt32(<code point>)` so the value
+                        // travels through the existing u32 literal
+                        // pipeline. Out-of-range / surrogate code
+                        // points (which `char::from_u32` rejects)
+                        // bail as `Unmatch` so the user gets a parse
+                        // error rather than a corrupted value.
+                        let text = self.yytext();
+                        let bytes = text.as_bytes();
+                        // Layout: ' \ u { HEX } ' — body starts at
+                        // index 3 (after `\u{`).
+                        let (cp, _end) = parse_unicode_escape_body(bytes, 3)
+                            .ok_or(Error::Unmatch)?;
+                        char::from_u32(cp).ok_or(Error::Unmatch)?;
+                        return Ok(token!(self, Kind::UInt32(cp)));
                     }
 
 '\\x[0-9a-fA-F][0-9a-fA-F]'      {

@@ -710,6 +710,46 @@ fn stdout_string_literal_and_var_match() {
 }
 
 #[test]
+fn unicode_escape_round_trip() {
+    // `\u{HEX}` Unicode escape — char literal lexes the code point
+    // as `u32`, and string literal encodes it as 1-4 UTF-8 bytes.
+    // This test pins the char-literal half across all 3 backends;
+    // the string-literal half is exercised by the stdout test
+    // below (interpreter / JIT / AOT must produce identical bytes,
+    // including for multi-byte UTF-8 sequences).
+    let src = r#"
+        fn main() -> u64 {
+            val ascii: u32 = '\u{41}'
+            val bmp: u32 = '\u{3042}'
+            val astral: u32 = '\u{1F600}'
+            if ascii != 65u32 { return 1u64 }
+            if bmp != 12354u32 { return 2u64 }
+            if astral != 128512u32 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "unicode_escape_round_trip");
+}
+
+#[test]
+fn stdout_string_unicode_escape_match() {
+    // String-literal `\u{HEX}` encodes the code point into UTF-8
+    // bytes once at lex time. The 3 backends each just emit the
+    // bytes verbatim through `println`. Stdout-equality across
+    // interpreter / JIT / AOT pins that the encoding is done
+    // exactly once and isn't double-handled downstream.
+    let src = r#"
+        fn main() -> u64 {
+            println("ascii \u{41}")
+            println("bmp \u{3042}")
+            println("astral \u{1F600}")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_unicode_escape");
+}
+
+#[test]
 fn hex_escape_round_trip() {
     // `\xHH` 2-digit hex escape in both char and string literals.
     // The lexer decodes it once (handler in `lexer.l`) and downstream

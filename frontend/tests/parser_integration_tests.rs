@@ -206,6 +206,89 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_string_literal_unicode_escapes_decode() {
+        // `\u{HEX}` Unicode escape inside string literals. ASCII
+        // code points (<= 0x7F) encode to 1 byte; BMP code points
+        // (<= 0xFFFF) encode to 2-3 bytes; supplementary plane
+        // code points (<= 0x10FFFF) encode to 4 bytes.
+        for input in [
+            r#""ascii\u{41}""#,        // 'A' (1 byte UTF-8)
+            r#""bmp\u{3042}""#,        // 'あ' (3 bytes UTF-8)
+            r#""astral\u{1F600}""#,    // '😀' (4 bytes UTF-8)
+            r#""one\u{1}two""#,        // single hex digit, embedded
+            r#""\u{0}""#,              // NUL
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok(),
+                "Failed to parse Unicode escape {:?}: {:?}",
+                input,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn test_string_literal_malformed_unicode_escape_rejected() {
+        // Unfinished, empty, non-hex, surrogate, or out-of-range
+        // code points all surface as `Unmatch`.
+        for input in [
+            r#""\u{}""#,         // no digits
+            r#""\u41""#,         // missing braces
+            r#""\u{D800}""#,     // surrogate (rejected by char::from_u32)
+            r#""\u{110000}""#,   // > 0x10FFFF
+            r#""\u{ZZZ}""#,      // non-hex
+            r#""\u{1234567}""#,  // 7 hex digits — impossible
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected error parsing malformed Unicode escape: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_char_literal_unicode_escape_decodes() {
+        // `'\u{HEX}'` lexes to the code point as a u32.
+        for input in [
+            r"'\u{41}'",     // 'A'
+            r"'\u{3042}'",   // 'あ'
+            r"'\u{1F600}'",  // '😀'
+            r"'\u{0}'",      // NUL
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok(),
+                "Failed to parse char Unicode escape {:?}: {:?}",
+                input,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn test_char_literal_malformed_unicode_escape_rejected() {
+        for input in [
+            r"'\u{}'",        // no digits
+            r"'\u41'",        // missing braces
+            r"'\u{D800}'",    // surrogate
+            r"'\u{110000}'",  // out of range
+            r"'\u{ZZ}'",      // non-hex
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected error parsing malformed char Unicode escape: {input}"
+            );
+        }
+    }
+
+    #[test]
     fn test_string_literal_unknown_escape_rejected() {
         // Unknown escape (`\x`) should bail with `Error::Unmatch` —
         // surfaces as a parse failure or recorded error.

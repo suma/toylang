@@ -162,7 +162,17 @@ impl<'a> Parser<'a> {
                     self.expect_err(&Kind::GT)?;
                     Ok(TypeDecl::Struct(ident, type_args))
                 } else {
-                    // No type arguments, just an identifier
+                    // No type arguments, just an identifier — first
+                    // check if a top-level `type Name = ...` alias
+                    // resolves it. Aliases are eagerly substituted so
+                    // downstream layers see the fully-expanded type and
+                    // need no special handling. Generic positional
+                    // aliases (`type Pair<T> = (T, T)`) are out of scope;
+                    // we only substitute when the identifier appears
+                    // bare (no `<...>`).
+                    if let Some(target) = self.type_aliases.get(&ident) {
+                        return Ok(target.clone());
+                    }
                     Ok(TypeDecl::Identifier(ident))
                 }
             }

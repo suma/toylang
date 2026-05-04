@@ -303,6 +303,8 @@ impl<'a> FunctionLower<'a> {
             // would be a no-op here. The same goes for trait / enum /
             // impl declarations until those features land in codegen.
             Stmt::StructDecl { .. } => Ok(None),
+            // Type aliases are resolved at parse time; nothing to lower.
+            Stmt::TypeAlias { .. } => Ok(None),
             Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => Err(
                 "compiler MVP cannot lower impl / enum / trait declarations yet".to_string(),
             ),

@@ -2265,6 +2265,10 @@ fn check_stmt(
         // eligible function body. Top-level decls live outside of any
         // function so they don't affect us here.
         Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => false,
+        // Type aliases are resolved at parse time; their presence inside
+        // a function body (which the parser doesn't actually allow) is
+        // a no-op and would not disqualify the body either way.
+        Stmt::TypeAlias { .. } => true,
     }
 }
 

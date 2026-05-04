@@ -41,6 +41,11 @@ pub enum Kind {
     Match,
     Requires,
     Ensures,
+    /// `type Name = Type` — top-level type alias declaration.
+    /// The parser eagerly substitutes occurrences of `Name` in type
+    /// positions with the alias target, so downstream layers see the
+    /// fully-expanded type and need no special handling.
+    Type,
 
     Bool,
     U64,
@@ -146,7 +151,7 @@ impl Kind {
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
             Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
             Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
-            Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
+            Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Type | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
             Kind::U8 | Kind::U16 | Kind::U32 | Kind::I8 | Kind::I16 | Kind::I32 |
             Kind::Str | Kind::Ptr | Kind::Null | Kind::Dict | Kind::Self_ | Kind::True | Kind::False
         )

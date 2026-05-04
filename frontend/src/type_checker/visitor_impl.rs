@@ -75,6 +75,9 @@ impl Acceptable for Stmt {
             Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => visitor.visit_impl_block(*target_type, target_type_args, methods, *trait_name),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
             Stmt::TraitDecl { name, methods, visibility } => visitor.visit_trait_decl(*name, methods, visibility),
+            // Aliases were already substituted during parsing; nothing
+            // for the type checker to do here.
+            Stmt::TypeAlias { .. } => Ok(TypeDecl::Unit),
         }
     }
 }

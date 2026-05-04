@@ -1480,6 +1480,51 @@ fn char_literal_round_trip() {
 }
 
 #[test]
+fn type_alias_round_trip() {
+    // `type Name = TargetType` aliases are eagerly substituted by the
+    // parser, so the type checker / IR / 3 backends see only the
+    // expanded target. The test pins:
+    //   - primitive alias (Byte = u32) used in a val annotation,
+    //     a function return type, and as a parameter type
+    //   - alias chain (Word = Byte) — both names must resolve to u32
+    //   - struct alias inside a generic — `Pair = Box<Byte>` so the
+    //     parser substitutes `Byte` *inside* the type-arg list
+    //   - nested usage of one alias inside another's target type
+    let src = r#"
+        type Byte = u32
+        type Word = Byte
+        type Score = i64
+
+        struct Box<T> { v: T }
+        type ByteBox = Box<Byte>
+
+        fn id_byte(b: Byte) -> Byte {
+            b
+        }
+
+        fn double(s: Score) -> Score {
+            s + s
+        }
+
+        fn make_byte_box(b: Byte) -> ByteBox {
+            Box { v: b }
+        }
+
+        fn main() -> u64 {
+            val w: Word = 7u32
+            val b: Byte = id_byte(w)
+            if b != 7u32 { return 1u64 }
+            val s: Score = double(21i64)
+            if s != 42i64 { return 2u64 }
+            val bb: ByteBox = make_byte_box(99u32)
+            if bb.v != 99u32 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "type_alias_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

@@ -1,5 +1,9 @@
+use std::collections::HashMap;
+use string_interner::DefaultSymbol;
+
 use crate::ast::*;
 use crate::token::Kind;
+use crate::type_decl::TypeDecl;
 use crate::type_checker::SourceLocation;
 use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationContext};
 
@@ -164,6 +168,13 @@ pub struct Parser<'a> {
     /// Counter feeding fresh synthetic identifiers (e.g.
     /// `__tuple_tmp_0`, `__tuple_tmp_1`) during desugaring.
     pub synthetic_counter: u32,
+    /// Top-level `type Name = TargetType` aliases. Populated as the
+    /// parser encounters each declaration; consulted in
+    /// `parse_type_declaration` so that any subsequent occurrence of
+    /// `Name` in a type position is replaced with `TargetType`. Forward
+    /// references are NOT supported — the alias must be declared before
+    /// its first use.
+    pub type_aliases: HashMap<DefaultSymbol, TypeDecl>,
 }
 
 impl<'a> Parser<'a> {
@@ -186,6 +197,7 @@ impl<'a> Parser<'a> {
             context_stack: vec![ParseContext::Expression],
             pending_prelude_stmts: Vec::new(),
             synthetic_counter: 0,
+            type_aliases: HashMap::new(),
         }
     }
 

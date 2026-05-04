@@ -89,6 +89,7 @@ pub enum StmtType {
     ImplBlock = 9,
     EnumDecl = 10,
     TraitDecl = 11,
+    TypeAlias = 12,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -1012,6 +1013,12 @@ impl StmtPool {
                 self.trait_methods[index] = Some(methods);
                 self.visibility[index] = Some(visibility);
             }
+            Stmt::TypeAlias { name, target, visibility } => {
+                self.stmt_types[index] = StmtType::TypeAlias;
+                self.symbol_val[index] = Some(name);
+                self.type_decl[index] = Some(target);
+                self.visibility[index] = Some(visibility);
+            }
         }
 
         StmtRef(index as u32)
@@ -1118,6 +1125,12 @@ impl StmtPool {
                 self.trait_methods[index] = Some(methods);
                 self.visibility[index] = Some(visibility);
             }
+            Stmt::TypeAlias { name, target, visibility } => {
+                self.stmt_types[index] = StmtType::TypeAlias;
+                self.symbol_val[index] = Some(name);
+                self.type_decl[index] = Some(target);
+                self.visibility[index] = Some(visibility);
+            }
         }
     }
 
@@ -1193,6 +1206,13 @@ impl StmtPool {
                 Some(Stmt::TraitDecl {
                     name: self.struct_name[index]?,
                     methods: self.trait_methods[index].clone()?,
+                    visibility: self.visibility[index].clone()?,
+                })
+            }
+            StmtType::TypeAlias => {
+                Some(Stmt::TypeAlias {
+                    name: self.symbol_val[index]?,
+                    target: self.type_decl[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })
             }

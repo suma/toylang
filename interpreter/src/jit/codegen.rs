@@ -1368,6 +1368,11 @@ impl<'a, 'b> State<'a, 'b> {
                 Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
                     return Err("decl inside JIT body".into());
                 }
+                Stmt::TypeAlias { .. } => {
+                    // Type aliases are resolved at parse time and have
+                    // no runtime effect — safe to skip in the JIT body.
+                    last_value = None;
+                }
             }
             if self.terminated {
                 return Ok(None);

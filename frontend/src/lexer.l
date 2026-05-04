@@ -42,6 +42,7 @@ macro_rules! token {
 "match"     return Ok(token!(self, Kind::Match));
 "requires"  return Ok(token!(self, Kind::Requires));
 "ensures"   return Ok(token!(self, Kind::Ensures));
+"type"      return Ok(token!(self, Kind::Type));
 
 "true"      return Ok(token!(self, Kind::True));
 "false"     return Ok(token!(self, Kind::False));

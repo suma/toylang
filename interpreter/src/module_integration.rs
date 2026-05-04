@@ -788,6 +788,18 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone(),
                 })
             }
+            Stmt::TypeAlias { name, target, visibility } => {
+                // Type aliases are resolved by the parser; remapping
+                // primarily preserves the historical AST node so module
+                // tooling can introspect it.
+                let new_name = self.remap_symbol(*name)?;
+                let new_target = self.remap_type_decl(target)?;
+                Ok(Stmt::TypeAlias {
+                    name: new_name,
+                    target: new_target,
+                    visibility: visibility.clone(),
+                })
+            }
         }
     }
 

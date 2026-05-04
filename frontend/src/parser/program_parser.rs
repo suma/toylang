@@ -248,6 +248,45 @@ impl<'a> Parser<'a> {
                         visibility,
                     });
                 }
+                Some(Kind::Type) => {
+                    // `type Name = TargetType` — top-level alias. The
+                    // alias is registered in the parser's `type_aliases`
+                    // map so that subsequent occurrences of `Name` in any
+                    // type position get substituted with `TargetType` at
+                    // parse time. Forward references are not supported.
+                    let alias_start_pos = self.peek_position_n(0).unwrap().start;
+                    let location = self.current_source_location();
+                    update_start_pos(alias_start_pos);
+                    self.next(); // consume `type`
+
+                    let alias_name = match self.peek().cloned() {
+                        Some(Kind::Identifier(s)) => {
+                            let sym = self.string_interner.get_or_intern(s);
+                            self.next();
+                            sym
+                        }
+                        _ => {
+                            self.collect_error("expected identifier after `type`");
+                            self.next();
+                            continue;
+                        }
+                    };
+
+                    self.expect_err(&Kind::Equal)?;
+                    let target_ty = self.parse_type_declaration()?;
+                    let alias_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                    update_end_pos(alias_end_pos);
+
+                    // Register before emitting so the AST node carries the
+                    // already-resolved target (anonymous alias chains —
+                    // `type A = u8; type B = A` — collapse to the leaf).
+                    self.type_aliases.insert(alias_name, target_ty.clone());
+                    self.ast_builder.add_stmt_with_location(Stmt::TypeAlias {
+                        name: alias_name,
+                        target: target_ty,
+                        visibility: visibility.clone(),
+                    }, Some(location));
+                }
                 Some(Kind::Struct) => {
                     let struct_start_pos = self.peek_position_n(0).unwrap().start;
                     let location = self.current_source_location();

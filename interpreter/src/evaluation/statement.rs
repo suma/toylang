@@ -174,6 +174,11 @@ impl EvaluationContext<'_> {
                     // do not produce a runtime value.
                     last = None;
                 }
+                Stmt::TypeAlias { .. } => {
+                    // Type aliases are resolved by the parser; they have no
+                    // runtime effect.
+                    last = None;
+                }
                 Stmt::While(cond, body) => {
                     // DICT-RETURN-WHILE fix: the while-loop body
                     // may produce a `Return` (an explicit

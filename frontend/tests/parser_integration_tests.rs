@@ -163,6 +163,43 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_type_alias_parses() {
+        // `type Name = TargetType` at top-level. Parser registers the
+        // alias in `type_aliases` and emits a `Stmt::TypeAlias` node.
+        // Subsequent uses of `Name` in type positions get substituted
+        // with the target.
+        let input = r#"
+            type Byte = u32
+            fn main() -> u64 {
+                val b: Byte = 7u32
+                42u64
+            }
+        "#;
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+        assert!(result.is_ok(), "Failed to parse type alias: {:?}", parser.errors);
+    }
+
+    #[test]
+    fn test_type_alias_forward_reference_unsupported() {
+        // Aliases are eagerly substituted, so forward references must
+        // fail at type-check time (the parser keeps `Identifier(Foo)`
+        // unresolved). The parser itself accepts the source — the
+        // failure surfaces later. We only check parser cleanliness.
+        let input = r#"
+            fn main() -> u64 {
+                val x: Byte = 7u32
+                42u64
+            }
+            type Byte = u32
+        "#;
+        let mut parser = ParserWithInterner::new(input);
+        let _ = parser.parse_program();
+        // Parser accepts; the unresolved Identifier(Byte) is the
+        // type-checker's concern, not the parser's.
+    }
+
+    #[test]
     fn test_boolean_literals() {
         let true_input = "true";
         let false_input = "false";

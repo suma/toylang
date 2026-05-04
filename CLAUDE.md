@@ -246,7 +246,7 @@ fn main() -> u64 {
 | `__builtin_arena_allocator()` | 新規 arena（drop で一括解放） |
 | `__builtin_fixed_buffer_allocator(capacity: u64)` | バイト数 quota 付き（超過で null） |
 | `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ enum（1-byte タグ + payload）/ tuple / array をサポート。generic `T` の実体サイズ取得に使う |
-| `fn f<A: Allocator>(a: A)` | allocator をジェネリックに受け取る関数 |
+| `with allocator = a { ... }` | scope 内で allocator を有効化、内部の `__builtin_heap_alloc` 等が経由する |
 
 ### 典型的な使い方
 
@@ -258,19 +258,17 @@ fn main() -> u64 {
 
 - `with` は lexical scope。ネストは push/pop、body の exit path（値・return・break・error）すべてで必ず pop される
 - `Allocator` 値は `Rc::ptr_eq` で同値性を判定。`==` / `!=` のみサポート（順序比較は不可）
-- `<A: Allocator>` の**末尾**パラメータが省略された呼び出しは、型チェック時に `ambient`（= `__builtin_current_allocator()`）が自動挿入される
-- bound は関数・struct・impl の各レベルで伝播。呼び出し側 generic の bound が一致すれば連鎖通過
+- 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
 - arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す
 - `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin が自動で現在の allocator を通るため、`with allocator = arena { ... }` で囲むだけで arena 経由になる
-- `struct List<T, A: Allocator>` のように allocator を型パラメータにも取れる。フィールドに直接現れない `T` はメソッド戻り値型（`Self`）や val 注釈（`val list: List<u64, Allocator> = ...`）をヒントに推論。要素サイズが必要な場合は `__builtin_sizeof(probe)` を使う
 - `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する
 
-### 進捗（2026-04-19 現在）
+### 進捗
 
-- Phase 1a/1b/1c: 構文・ランタイム・`Allocator` trait・`GlobalAllocator`・`ArenaAllocator`・`FixedBufferAllocator` 完了
-- Phase 2a/2b: `<A: Allocator>` bound（関数・struct・impl）、呼び出し時 bound 検証、bound 連鎖 完了
-- Phase 3 部分: `ambient` 糖衣、自動 ambient 挿入、ユーザ空間 `List<u64>` 完了
-- 未完: ジェネリック `List<T>` 一般化、IR レベルの `AllocatorBinding`、native codegen（Phase 4 以降）
+- 構文・ランタイム・`GlobalAllocator`・`ArenaAllocator`・`FixedBufferAllocator` 完了
+- `ambient` 糖衣、`with allocator = ...` 経由の active stack dispatch 完了
+- stdlib (`core/std/allocator.t`) に `trait Alloc` + Wrapper 構造体 (`Global` / `Arena` / `FixedBuffer`) 完了
+- AOT native codegen 完了 (#121 Phase A / B-min / B-rest Items 1+3 + Item 2 cleanup + arena_drop)
 
 ## テスト計画
 

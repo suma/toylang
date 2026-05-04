@@ -626,23 +626,18 @@ fn divide(a: i64, b: i64) -> i64 {
 
 ```rust
 fn identity<T>(x: T) -> T { x }
-
-fn run<A: Allocator>(a: A) -> u64 {
-    with allocator = a { ... }
-    0u64
-}
 ```
 
 Generic parameters appear in `<...>` after the function name. Bounds use
-the `<T: Bound>` syntax. The only bound currently recognised is
-`Allocator` (see [Allocators](#allocators)). Bound propagation:
+the `<T: Bound>` syntax (currently no bound has documented behaviour at
+the language level — they parse but the type checker doesn't enforce
+any specific contract for them).
 
-- Function-level bounds are visible inside the body.
-- `struct Name<T: Allocator>` propagates `T: Allocator` into every `impl`
-  method.
-- `impl<T: Allocator> Name<T>` likewise.
-- Calls verify the caller's argument type satisfies any callee bound;
-  bounded generic parameters compose transitively.
+Functions that need to allocate read the active allocator off the
+runtime stack — callers wrap the call in `with allocator = ... { ... }`
+and the body's `__builtin_heap_alloc` (and related builtins) routes
+through that allocator automatically. No allocator parameter on the
+function signature is needed.
 
 ### Visibility
 
@@ -708,20 +703,6 @@ Arguments are evaluated left-to-right. All values are passed by
 `Rc<RefCell<Object>>` reference at runtime — the language has no
 explicit reference / pointer to a binding (`ptr` is for raw heap
 addresses, not for taking the address of a local).
-
-### Trailing-allocator inference
-
-When a function takes a final parameter of type `Allocator` (or a
-generic bounded by `Allocator`), the caller may omit it and the type
-checker injects `ambient` (i.e. `__builtin_current_allocator()`):
-
-```rust
-fn alloc_block<A: Allocator>(size: u64, a: A) -> ptr { ... }
-
-# Caller:
-val p = alloc_block(64u64)            # `a` filled by ambient
-val q = alloc_block(64u64, my_arena)  # explicit allocator
-```
 
 ### Design-by-Contract clauses
 
@@ -1020,8 +1001,10 @@ val p = pair(1u64, true)              # T = u64, U = bool
 val q: (str, str) = pair("a", "b")    # T, U from annotation
 ```
 
-The bound system currently recognises `<A: Allocator>` only; trait/
-interface declarations are not yet supported.
+Bound syntax (`<T: SomeBound>`) parses but the type checker does not
+currently enforce any specific bound for user-declared traits. The
+allocator system doesn't use generic-bound parameters at all — see
+[Allocators](#allocators) for the active-stack convention.
 
 ---
 
@@ -1156,18 +1139,24 @@ the same `Rc` (`==` and `!=` only — no ordering).
 | `__builtin_current_allocator()` | The allocator at the top of the active stack |
 | `ambient` | Sugar for `__builtin_current_allocator()` |
 
-### `<A: Allocator>` bound
+### Allocator-aware functions
 
-Functions, structs, and impl blocks may take a generic parameter
-bounded by `Allocator`. The bound is checked at the call site and
-propagated transitively.
+Functions don't need to thread an allocator through their parameters.
+Wrap the call site in `with allocator = ... { ... }` and the body's
+`__builtin_heap_alloc` (and `realloc` / `free`) reads the active
+allocator off the runtime stack:
 
 ```rust
-fn collect<A: Allocator>(items: [u64; 4], a: A) -> ptr {
-    with allocator = a {
-        __builtin_heap_alloc(32u64)
-    }
+fn collect(items: [u64; 4]) -> ptr {
+    __builtin_heap_alloc(32u64)
 }
+
+# Caller:
+val arena = Arena::new()
+with allocator = arena {
+    val p = collect([1u64, 2u64, 3u64, 4u64])
+}
+arena.drop()
 ```
 
 ### `with` semantics
@@ -1391,8 +1380,8 @@ Both enums live in `core/std/option.t` and `core/std/result.t` and
 are auto-loaded into every program (no `import` line needed). The
 implementations carry a small set of stack-only methods — Option
 and Result are tagged unions, not heap-allocated containers, so
-they don't take an `Allocator` type parameter (heap responsibility
-belongs to whatever T or E carries).
+they don't deal with allocators (heap responsibility belongs to
+whatever T or E carries).
 
 ```rust
 val o: Option<u64> = Option::Some(42u64)

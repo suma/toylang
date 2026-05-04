@@ -1073,6 +1073,32 @@ fn ref_stage2_field_mut_borrow_propagates_round_trip() {
 }
 
 #[test]
+fn ref_stage2_tuple_mut_borrow_propagates_round_trip() {
+    // REF-Stage-2 (iii) — tuple variant. `&mut t.0` resolves to
+    // the leaf scalar local of element 0 in AOT
+    // (`AddressOf` against the per-element local) and to the
+    // captured parent tuple's `Rc<RefCell<Object::Tuple>>` in
+    // the interpreter (post-call `borrow_mut` overwrites
+    // `elements[index]`).
+    //
+    // Mutates element 0 twice and checks element 1 stayed put,
+    // mirroring the struct-field test for parity.
+    let src = r#"
+        fn add_in_place(target: &mut u64, delta: u64) {
+            target = target + delta
+        }
+        fn main() -> u64 {
+            var t: (u64, u64) = (10u64, 20u64)
+            add_in_place(&mut t.0, 30u64)
+            add_in_place(&mut t.0, 2u64)
+            if t.1 != 20u64 { return 1u64 }
+            t.0
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_tuple_mut_borrow_propagates_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

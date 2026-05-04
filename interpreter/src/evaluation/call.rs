@@ -152,6 +152,14 @@ pub(super) enum WritebackTarget {
         obj: RcObject,
         field: DefaultSymbol,
     },
+    /// `&mut <expr>.<index>` — `obj` is the parent tuple value
+    /// (captured Rc to the `Object::Tuple` cell); `index` is
+    /// the element position to overwrite via `borrow_mut` +
+    /// indexed assignment.
+    TupleElement {
+        obj: RcObject,
+        index: usize,
+    },
 }
 
 impl EvaluationContext<'_> {
@@ -186,6 +194,18 @@ impl EvaluationContext<'_> {
                 Ok(WritebackTarget::StructField {
                     obj: obj_value.clone_to_rc(),
                     field,
+                })
+            }
+            Expr::TupleAccess(obj, index) => {
+                let obj_value = self.evaluate(&obj);
+                let obj_value = match obj_value {
+                    Ok(EvaluationResult::Value(v)) => v,
+                    Ok(_) => return Ok(WritebackTarget::None),
+                    Err(e) => return Err(e),
+                };
+                Ok(WritebackTarget::TupleElement {
+                    obj: obj_value.clone_to_rc(),
+                    index,
                 })
             }
             _ => Ok(WritebackTarget::None),
@@ -232,6 +252,25 @@ impl EvaluationContext<'_> {
                     }
                     other => Err(InterpreterError::InternalError(format!(
                         "writeback: parent is not a struct: {:?}", other
+                    ))),
+                }
+            }
+            WritebackTarget::TupleElement { obj, index } => {
+                let new_value: RcObject = value.clone_to_rc();
+                let mut obj_borrowed = obj.borrow_mut();
+                match &mut *obj_borrowed {
+                    Object::Tuple(elements) => {
+                        if *index >= elements.len() {
+                            return Err(InterpreterError::IndexOutOfBounds {
+                                index: *index as isize,
+                                size: elements.len(),
+                            });
+                        }
+                        elements[*index] = new_value;
+                        Ok(())
+                    }
+                    other => Err(InterpreterError::InternalError(format!(
+                        "writeback: parent is not a tuple: {:?}", other
                     ))),
                 }
             }

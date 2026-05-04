@@ -423,10 +423,14 @@ impl EvaluationContext<'_> {
                         let actual_type = arg_value.get_type();
 
                         // Skip type checking for generic functions since type checking was already done.
-                        // REF-Stage-2: use is_arg_compatible so `T` can be passed to a `&T` / `&mut T`
-                        // parameter via auto-borrow at the call site (the runtime value type is the
-                        // bare inner type — references are erased here).
-                        if !is_generic_function && !TypeDecl::is_arg_compatible(&actual_type, expected_type) {
+                        // REF-Stage-2: references are erased at runtime, so peel the
+                        // expected `&T` / `&mut T` to `T` before comparing — the static
+                        // type checker already enforced the call-site mut/borrow rules
+                        // (REF-Stage-2 (f) requires explicit `&mut <var>` for `&mut T`
+                        // parameters), so this runtime check is purely defence-in-depth
+                        // against the inner value type.
+                        let expected_runtime = expected_type.deref_ref();
+                        if !is_generic_function && !actual_type.is_equivalent(expected_runtime) {
                             let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
                             return Err(InterpreterError::TypeError {
                                 expected: expected_type.clone(),

@@ -104,10 +104,14 @@ impl TypeDecl {
     /// (different reference / value types remain distinct everywhere
     /// else) but with one relaxation — **auto-borrow**: an actual
     /// argument of type `T` may be passed to a parameter of type
-    /// `&T` or `&mut T`. The reverse (passing `&T` for `T`) is NOT
-    /// allowed; the type system has no auto-deref operation. Also
-    /// allows `&mut T` actual to be passed to a `&T` parameter
-    /// (mutable reference satisfies an immutable expectation).
+    /// `&T`. The reverse (passing `&T` for `T`) is NOT allowed; the
+    /// type system has no auto-deref operation. Also allows `&mut T`
+    /// actual to be passed to a `&T` parameter (mutable reference
+    /// satisfies an immutable expectation). REF-Stage-2 (f):
+    /// **`T` -> `&mut T` auto-borrow is intentionally NOT allowed**
+    /// — callers must write `&mut <name>` explicitly so that the
+    /// mutability is visible at the call site, and the type checker
+    /// can additionally enforce that the binding is `var`.
     /// Falls back to `is_equivalent` for the same-shape case.
     pub fn is_arg_compatible(actual: &TypeDecl, expected: &TypeDecl) -> bool {
         if actual.is_equivalent(expected) {
@@ -126,8 +130,9 @@ impl TypeDecl {
                 }
                 false
             }
-            (_, TypeDecl::Ref { inner: e_inner, .. }) => {
-                // `T` → `&T` / `&mut T` auto-borrow at the call site.
+            (_, TypeDecl::Ref { is_mut: false, inner: e_inner }) => {
+                // `T` -> `&T` auto-borrow only. `&mut T` requires
+                // an explicit borrow expression at the call site.
                 actual.is_equivalent(e_inner)
             }
             _ => false,

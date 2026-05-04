@@ -9,6 +9,12 @@ use crate::type_checker::core::CoreReferences;
 #[derive(Debug)]
 pub struct VarState {
     pub ty: TypeDecl,
+    /// Whether the binding was declared as `var` (mutable). Function
+    /// parameters, `val` bindings, and pattern bindings default to
+    /// `false`. REF-Stage-2 (f) consults this when type-checking
+    /// `&mut <expr>` borrow expressions to reject borrowing from
+    /// an immutable binding.
+    pub is_mut: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -94,12 +100,23 @@ impl TypeCheckContext {
 
     pub fn set_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
         let last = self.vars.last_mut().expect("Variable stack should not be empty");
-        last.insert(name, VarState { ty });
+        last.insert(name, VarState { ty, is_mut: false });
     }
 
     pub fn set_mutable_var(&mut self, name: DefaultSymbol, ty: TypeDecl) {
         let last = self.vars.last_mut().expect("Variable stack should not be empty");
-        last.insert(name, VarState { ty });
+        last.insert(name, VarState { ty, is_mut: true });
+    }
+
+    /// Returns whether the named binding is mutable (`var` declaration).
+    /// Returns `None` if the binding does not exist in any active scope.
+    pub fn is_var_mutable(&self, name: DefaultSymbol) -> Option<bool> {
+        for scope in self.vars.iter().rev() {
+            if let Some(state) = scope.get(&name) {
+                return Some(state.is_mut);
+            }
+        }
+        None
     }
 
     /// Backwards-compatible: registers under `(None, name)` (the

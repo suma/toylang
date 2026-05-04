@@ -342,6 +342,12 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     pub(super) fn process_val_type(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        // Backwards-compatible default: an unspecified caller is the
+        // for-loop iterator path, which is immutable.
+        self.process_val_type_with_mut(name, type_decl, expr, false)
+    }
+
+    pub(super) fn process_val_type_with_mut(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>, is_mut: bool) -> Result<TypeDecl, TypeCheckError> {
         let expr_ty = match expr {
             Some(e) => {
                 // Set type hint for proper type inference
@@ -362,27 +368,35 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => None,
         };
 
+        let setter = |ctx: &mut TypeCheckContext, name: DefaultSymbol, ty: TypeDecl| {
+            if is_mut {
+                ctx.set_mutable_var(name, ty);
+            } else {
+                ctx.set_var(name, ty);
+            }
+        };
+
         match (type_decl, expr_ty.as_ref()) {
             (Some(TypeDecl::Unknown), Some(ty)) => {
-                self.context.set_var(name, ty.clone());
+                setter(&mut self.context, name, ty.clone());
             }
             (Some(decl), Some(ty)) => {
                 if decl != ty {
                     return Err(TypeCheckError::type_mismatch(decl.clone(), ty.clone()));
                 }
-                self.context.set_var(name, ty.clone());
+                setter(&mut self.context, name, ty.clone());
             }
             (None, Some(ty)) => {
                 // No explicit type declaration - store the inferred type
-                self.context.set_var(name, ty.clone());
+                setter(&mut self.context, name, ty.clone());
             }
             (Some(decl), None) => {
                 // Explicit type but no initial value - register with declared type
-                self.context.set_var(name, decl.clone());
+                setter(&mut self.context, name, decl.clone());
             }
             (None, None) => {
                 // No type declaration and no initial value - use Unknown type
-                self.context.set_var(name, TypeDecl::Unknown);
+                setter(&mut self.context, name, TypeDecl::Unknown);
             }
         }
 

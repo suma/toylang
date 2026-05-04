@@ -328,6 +328,46 @@ mod errors {
             "expected duplicate-method error, got: {}", err
         );
     }
+
+    #[test]
+    fn test_mut_borrow_of_val_binding_is_rejected() {
+        // REF-Stage-2 (f): `&mut <name>` is only valid against a
+        // `var`-declared local. Attempting to borrow a `val` binding
+        // mutably must be a type error so the source location stays
+        // honest about which bindings can be mutated through a ref.
+        let source = r#"
+            fn take(x: &mut u64) -> u64 { 0u64 }
+            fn main() -> u64 {
+                val a: u64 = 1u64
+                take(&mut a)
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("cannot borrow") && err.contains("mutable"),
+            "expected immutable-binding-borrow error, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_auto_borrow_into_mut_ref_is_rejected() {
+        // REF-Stage-2 (f): `T -> &mut T` auto-borrow is intentionally
+        // not allowed. The caller must write `&mut <name>` so the
+        // mutability is visible at the call site (mirrors Rust).
+        let source = r#"
+            fn take(x: &mut u64) -> u64 { 0u64 }
+            fn main() -> u64 {
+                var a: u64 = 1u64
+                # Missing explicit `&mut`; auto-borrow into &mut T is rejected.
+                take(a)
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("type mismatch") || err.contains("Type") || err.contains("argument"),
+            "expected arg-type error for missing `&mut`, got: {}", err
+        );
+    }
 }
 
 mod multi_method {

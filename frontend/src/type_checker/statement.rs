@@ -36,7 +36,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_var_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let type_decl = type_decl.clone();
         let expr = expr.clone();
-        self.process_val_type(name, &type_decl, &expr)?;
+        // REF-Stage-2 (f): `var` bindings are mutable, so subsequent
+        // `&mut <name>` borrow expressions are accepted by the type
+        // checker.
+        self.process_val_type_with_mut(name, &type_decl, &expr, true)?;
         Ok(TypeDecl::Unit)
     }
 

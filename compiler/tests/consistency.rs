@@ -894,21 +894,22 @@ fn string_push_str_round_trip() {
 
 #[test]
 fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
-    // REF-Stage-2 (a)+(d): explicit `&value` / `&mut value`
+    // REF-Stage-2 (a)+(d)+(f): explicit `&value` / `&mut value`
     // borrow expressions + `&T` / `&mut T` parameter types
-    // outside the `&self` receiver position.
+    // outside the `&self` receiver position. With (f) landed,
+    // `&mut T` parameters require an **explicit** `&mut <var>`
+    // at the call site (no auto-borrow into `&mut`), and the
+    // operand of `&mut` must itself be a `var`-declared local.
     //
     //   - `len_of(&String)` is called both with auto-borrow
     //     (`len_of(s)`) and with explicit borrow (`len_of(&s)`),
-    //     pinning that the type system accepts both forms.
-    //   - `swap_first(&mut String, &String)` declares a `&mut`
-    //     argument annotation. With erasure semantics still in
-    //     place at lowering, the function body cannot actually
-    //     mutate the caller's binding through the parameter —
-    //     so the body intentionally only reads the buffer. The
-    //     test pins that parsing + type-check + lowering all
-    //     accept the new annotation form, including the
-    //     explicit `&mut s` borrow at the call site.
+    //     pinning that the type system accepts both forms for
+    //     immutable references.
+    //   - `first_byte_mut(&mut String)` exercises the new
+    //     annotation; the explicit `&mut s` borrow is the only
+    //     accepted call form. With erasure still in place at
+    //     lowering, the body intentionally only reads the
+    //     buffer (true mutation propagation is a future phase).
     //   - `&mut T` actual passed to a `&T` parameter (downgrade)
     //     is also exercised via `len_of(&mut s)`.
     //
@@ -931,18 +932,17 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
 
         fn main() -> u64 {
             var s: String = String::from_str("hello")
-            # auto-borrow: bare String -> &String
+            # auto-borrow: bare String -> &String (immutable only)
             if len_of(s) != 5u64 { return 1u64 }
             # explicit borrow expression
             if len_of(&s) != 5u64 { return 2u64 }
             # &mut T actual downgraded to &T expected
             if len_of(&mut s) != 5u64 { return 3u64 }
-            # &mut T parameter, called with explicit &mut value
+            # &mut T parameter, called with explicit &mut value (the
+            # only accepted form post-(f); auto-borrow into &mut is rejected)
             if first_byte_mut(&mut s) != 104u8 { return 4u64 }
-            # auto-borrow into &mut T parameter (also accepted)
-            if first_byte_mut(s) != 104u8 { return 5u64 }
             # nested: explicit &expr in a chain
-            if first_byte(&s) != 104u8 { return 6u64 }
+            if first_byte(&s) != 104u8 { return 5u64 }
             42u64
         }
     "#;

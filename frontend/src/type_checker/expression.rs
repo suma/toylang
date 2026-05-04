@@ -63,6 +63,53 @@ impl<'a> TypeCheckerVisitor<'a> {
         // unresolved Number literal in a borrow doesn't make sense.
         if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
             let is_mut = matches!(op, UnaryOp::BorrowMut);
+            // REF-Stage-2 (f): `&mut <expr>` is only valid against a
+            // mutable lvalue. Today the only lvalue shape we recognise
+            // is a bare identifier — borrowing field accesses / index
+            // accesses mutably is a future-phase concern. Reject if
+            // the operand is not a bare identifier OR the named
+            // binding is not `var`-declared.
+            if is_mut {
+                let operand_obj = self.core.expr_pool.get(&operand)
+                    .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
+                match operand_obj {
+                    Expr::Identifier(sym) => match self.context.is_var_mutable(sym) {
+                        Some(true) => {}
+                        Some(false) => {
+                            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+                            return Err(self.error_with_location(
+                                TypeCheckError::generic_error(&format!(
+                                    "cannot borrow `{}` as mutable: binding is not declared `var`",
+                                    name
+                                )),
+                                &operand,
+                            ));
+                        }
+                        None => {
+                            // Identifier resolves to something other than a
+                            // local binding (e.g. a top-level const). Those
+                            // are also not mutable lvalues.
+                            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
+                            return Err(self.error_with_location(
+                                TypeCheckError::generic_error(&format!(
+                                    "cannot take a mutable borrow of `{}`: not a mutable local binding",
+                                    name
+                                )),
+                                &operand,
+                            ));
+                        }
+                    },
+                    _ => {
+                        return Err(self.error_with_location(
+                            TypeCheckError::generic_error(
+                                "cannot take a mutable borrow of a non-place expression; \
+                                 only `&mut <var-name>` is supported in REF-Stage-2",
+                            ),
+                            &operand,
+                        ));
+                    }
+                }
+            }
             // If the operand is itself already a reference, just
             // pass it through (no double-borrow).
             let inner_ty = match operand_ty {

@@ -1044,6 +1044,35 @@ fn ref_stage2_scalar_mut_ref_propagates_mutation_round_trip() {
 }
 
 #[test]
+fn ref_stage2_field_mut_borrow_propagates_round_trip() {
+    // REF-Stage-2 (iii): field-level mutable borrow.
+    // `&mut p.x` resolves to the leaf scalar local of `Point.x`
+    // in AOT (`AddressOf` against the per-field local) and to
+    // the captured parent struct's `Rc<RefCell<Object::Struct>>`
+    // in the interpreter (post-call `borrow_mut` overwrites the
+    // field). The type-checker accepts the new lvalue shape now
+    // that `find_borrow_lvalue_root` walks `FieldAccess` chains
+    // to the root binding.
+    //
+    // The test mutates one field (x) twice and reads back both
+    // x and y to pin that the unrelated field stayed put.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+        fn add_in_place(target: &mut u64, delta: u64) {
+            target = target + delta
+        }
+        fn main() -> u64 {
+            var p: Point = Point { x: 10u64, y: 20u64 }
+            add_in_place(&mut p.x, 30u64)
+            add_in_place(&mut p.x, 2u64)
+            if p.y != 20u64 { return 1u64 }
+            p.x
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_field_mut_borrow_propagates_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

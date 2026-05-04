@@ -133,7 +133,111 @@ fn collect_generic_bindings(
     }
 }
 
+/// REF-Stage-2 (i)+(iii): caller-side target of an explicit
+/// `&mut <lvalue>` borrow argument. Captured at the call site so
+/// the post-body parameter value can flow back into the caller's
+/// storage with the right shape.
+#[derive(Debug, Clone)]
+pub(super) enum WritebackTarget {
+    /// The argument was not `&mut <lvalue>`, or the lvalue shape
+    /// isn't supported yet (e.g. `&mut arr[i]`).
+    None,
+    /// `&mut <name>` — write back into the local binding `name`.
+    Name(DefaultSymbol),
+    /// `&mut <expr>.<field>` — `obj` is the parent struct value
+    /// (captured at call time so we keep a stable Rc to the
+    /// underlying `Object::Struct`); `field` is the field symbol
+    /// to overwrite via `borrow_mut`.
+    StructField {
+        obj: RcObject,
+        field: DefaultSymbol,
+    },
+}
+
 impl EvaluationContext<'_> {
+    /// Classify a `&mut <lvalue>` operand into a `WritebackTarget`.
+    /// Walks `Expr::Identifier` and `Expr::FieldAccess` (one level
+    /// from the root) — anything else (deeper chains, tuple
+    /// access, index access) currently falls back to `None` so
+    /// the call still runs but no writeback fires. Future phases
+    /// can broaden the supported lvalue shapes.
+    pub(super) fn classify_writeback_target(
+        &mut self,
+        operand: &ExprRef,
+    ) -> Result<WritebackTarget, InterpreterError> {
+        let expr = self
+            .expr_pool
+            .get(operand)
+            .ok_or_else(|| InterpreterError::InternalError("classify_writeback_target: unbound operand".to_string()))?;
+        match expr {
+            Expr::Identifier(sym) => Ok(WritebackTarget::Name(sym)),
+            Expr::FieldAccess(obj, field) => {
+                let obj_value = self.evaluate(&obj);
+                let obj_value = match obj_value {
+                    Ok(EvaluationResult::Value(v)) => v,
+                    Ok(_) => return Ok(WritebackTarget::None),
+                    Err(e) => return Err(e),
+                };
+                // Coerce the Value to a `RcObject` (no-op when it
+                // was already `Heap(_)`; primitives wrap into a
+                // fresh cell, but field-target writeback only
+                // makes sense for struct values, which always
+                // ride `Heap`).
+                Ok(WritebackTarget::StructField {
+                    obj: obj_value.clone_to_rc(),
+                    field,
+                })
+            }
+            _ => Ok(WritebackTarget::None),
+        }
+    }
+
+    /// Apply a captured `WritebackTarget` with the post-body
+    /// `value`. Identifier targets go through `set_var` /
+    /// `Overwrite` (mirroring `var` reassignment); struct field
+    /// targets borrow the captured `Rc` and overwrite the field
+    /// in place (mirroring `obj.field = value` user code).
+    pub(super) fn apply_writeback(
+        &mut self,
+        target: &WritebackTarget,
+        value: crate::value::Value,
+    ) -> Result<(), InterpreterError> {
+        match target {
+            WritebackTarget::None => Ok(()),
+            WritebackTarget::Name(sym) => {
+                let _ = self.environment.set_var(
+                    *sym,
+                    value,
+                    crate::environment::VariableSetType::Overwrite,
+                    self.string_interner,
+                );
+                Ok(())
+            }
+            WritebackTarget::StructField { obj, field } => {
+                let new_value: RcObject = value.clone_to_rc();
+                let mut obj_borrowed = obj.borrow_mut();
+                match &mut *obj_borrowed {
+                    Object::Struct { fields, .. } => {
+                        if !fields.contains_key(field) {
+                            let field_name = self
+                                .string_interner
+                                .resolve(*field)
+                                .unwrap_or("<unknown>");
+                            return Err(InterpreterError::InternalError(format!(
+                                "writeback: unknown field '{}'", field_name
+                            )));
+                        }
+                        fields.insert(*field, new_value);
+                        Ok(())
+                    }
+                    other => Err(InterpreterError::InternalError(format!(
+                        "writeback: parent is not a struct: {:?}", other
+                    ))),
+                }
+            }
+        }
+    }
+
     pub(super) fn call_method(&mut self, method: Rc<MethodFunction>, self_obj: RcObject, args: Vec<RcObject>) -> Result<EvaluationResult, InterpreterError> {
         // Create new scope for method execution
         self.environment.enter_block();
@@ -422,19 +526,17 @@ impl EvaluationContext<'_> {
                     // to the caller's binding once the call returns.
                     // Other arg shapes contribute `None` (no
                     // writeback target).
-                    let mut writeback_targets: Vec<Option<DefaultSymbol>> = Vec::with_capacity(args.len());
+                    let mut writeback_targets: Vec<WritebackTarget> = Vec::with_capacity(args.len());
 
                     for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
-                        // Detect `&mut <Identifier>` arg shape before
-                        // evaluating, so the caller name is captured
-                        // even when the argument expression itself
-                        // mutates other state during evaluation.
-                        let mut target: Option<DefaultSymbol> = None;
+                        // Detect `&mut <lvalue>` arg shape before
+                        // evaluating, so the caller-side target is
+                        // captured even when the argument expression
+                        // itself mutates other state during evaluation.
+                        let mut target = WritebackTarget::None;
                         if let Some(Expr::Unary(op, inner)) = self.expr_pool.get(arg_expr) {
                             if matches!(op, UnaryOp::BorrowMut) {
-                                if let Some(Expr::Identifier(name_sym)) = self.expr_pool.get(&inner) {
-                                    target = Some(name_sym);
-                                }
+                                target = self.classify_writeback_target(&inner)?;
                             }
                         }
                         writeback_targets.push(target);
@@ -468,20 +570,18 @@ impl EvaluationContext<'_> {
                     let (ret_val, writebacks) = self
                         .evaluate_function_with_values_writeback(func, &evaluated_args)?;
 
-                    // REF-Stage-2 (i): apply writebacks. Each entry pairs
-                    // the caller-side identifier (target) with the
-                    // post-body value of the corresponding `&mut T`
-                    // parameter. The type checker has already
-                    // enforced that the caller name is `var` (so
-                    // `set_var` w/ Replace succeeds).
+                    // REF-Stage-2 (i)+(iii): apply writebacks. Each
+                    // entry pairs the caller-side target (identifier
+                    // or struct field) with the post-body value of
+                    // the corresponding `&mut T` parameter. The type
+                    // checker has already enforced that the root
+                    // binding is `var` (so `set_var` w/ Overwrite
+                    // succeeds, and field assignment via `borrow_mut`
+                    // mirrors the semantics of `obj.field = x` in
+                    // user code).
                     for (target, modified) in writeback_targets.iter().zip(writebacks.iter()) {
-                        if let (Some(sym), Some(val)) = (target, modified) {
-                            let _ = self.environment.set_var(
-                                *sym,
-                                val.clone(),
-                                crate::environment::VariableSetType::Overwrite,
-                                self.string_interner,
-                            );
+                        if let Some(val) = modified {
+                            self.apply_writeback(target, val.clone())?;
                         }
                     }
 

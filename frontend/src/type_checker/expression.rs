@@ -9,6 +9,36 @@ use crate::type_checker::generics::GenericTypeChecking;
 
 /// Expression type checking implementation
 impl<'a> TypeCheckerVisitor<'a> {
+    /// REF-Stage-2 (iii): walk a `&mut <expr>` operand down through
+    /// field- and tuple-access chains to the root binding name.
+    /// Accepts shapes:
+    ///   - `Expr::Identifier(s)` -> `s`
+    ///   - `Expr::FieldAccess(obj, _)` -> recurse on `obj`
+    ///   - `Expr::TupleAccess(obj, _)` -> recurse on `obj`
+    /// Anything else is a non-place expression and is rejected.
+    fn find_borrow_lvalue_root(
+        &self,
+        expr: &ExprRef,
+    ) -> Result<DefaultSymbol, TypeCheckError> {
+        let mut cur = *expr;
+        loop {
+            let obj = self.core.expr_pool.get(&cur).ok_or_else(|| {
+                TypeCheckError::generic_error("Invalid lvalue expression reference")
+            })?;
+            match obj {
+                Expr::Identifier(sym) => return Ok(sym),
+                Expr::FieldAccess(obj, _) => cur = obj,
+                Expr::TupleAccess(obj, _) => cur = obj,
+                _ => {
+                    return Err(TypeCheckError::generic_error(
+                        "cannot take a mutable borrow of a non-place expression; \
+                         only `&mut <name>`, `&mut <name>.field`, or `&mut <name>.0` are supported in REF-Stage-2",
+                    ));
+                }
+            }
+        }
+    }
+
     /// Main entry point for expression type checking
     pub fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Check cache first
@@ -63,48 +93,37 @@ impl<'a> TypeCheckerVisitor<'a> {
         // unresolved Number literal in a borrow doesn't make sense.
         if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
             let is_mut = matches!(op, UnaryOp::BorrowMut);
-            // REF-Stage-2 (f): `&mut <expr>` is only valid against a
-            // mutable lvalue. Today the only lvalue shape we recognise
-            // is a bare identifier — borrowing field accesses / index
-            // accesses mutably is a future-phase concern. Reject if
-            // the operand is not a bare identifier OR the named
-            // binding is not `var`-declared.
+            // REF-Stage-2 (f) + (iii): `&mut <expr>` is only valid
+            // against a mutable lvalue. Recognised lvalue shapes:
+            //   - bare identifier (`&mut name`)
+            //   - field-access chain (`&mut s.field`, `&mut s.a.b`)
+            //   - tuple-access chain (`&mut t.0`, `&mut t.0.1`)
+            // The root binding of the chain must be `var`-declared.
+            // Index-borrow (`&mut arr[i]`) is still future work.
             if is_mut {
-                let operand_obj = self.core.expr_pool.get(&operand)
-                    .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
-                match operand_obj {
-                    Expr::Identifier(sym) => match self.context.is_var_mutable(sym) {
-                        Some(true) => {}
-                        Some(false) => {
-                            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
-                            return Err(self.error_with_location(
-                                TypeCheckError::generic_error(&format!(
-                                    "cannot borrow `{}` as mutable: binding is not declared `var`",
-                                    name
-                                )),
-                                &operand,
-                            ));
-                        }
-                        None => {
-                            // Identifier resolves to something other than a
-                            // local binding (e.g. a top-level const). Those
-                            // are also not mutable lvalues.
-                            let name = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
-                            return Err(self.error_with_location(
-                                TypeCheckError::generic_error(&format!(
-                                    "cannot take a mutable borrow of `{}`: not a mutable local binding",
-                                    name
-                                )),
-                                &operand,
-                            ));
-                        }
-                    },
-                    _ => {
+                let root = self.find_borrow_lvalue_root(&operand)?;
+                match self.context.is_var_mutable(root) {
+                    Some(true) => {}
+                    Some(false) => {
+                        let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
                         return Err(self.error_with_location(
-                            TypeCheckError::generic_error(
-                                "cannot take a mutable borrow of a non-place expression; \
-                                 only `&mut <var-name>` is supported in REF-Stage-2",
-                            ),
+                            TypeCheckError::generic_error(&format!(
+                                "cannot borrow `{}` as mutable: binding is not declared `var`",
+                                name
+                            )),
+                            &operand,
+                        ));
+                    }
+                    None => {
+                        // Identifier resolves to something other than a
+                        // local binding (e.g. a top-level const). Those
+                        // are also not mutable lvalues.
+                        let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
+                        return Err(self.error_with_location(
+                            TypeCheckError::generic_error(&format!(
+                                "cannot take a mutable borrow of `{}`: not a mutable local binding",
+                                name
+                            )),
                             &operand,
                         ));
                     }

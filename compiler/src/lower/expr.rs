@@ -83,6 +83,59 @@ impl<'a> FunctionLower<'a> {
                             continue;
                         }
                     }
+                    // REF-Stage-2 (iii): `&mut s.field` /
+                    // `&mut s.0` (and nested chains) — resolve the
+                    // chain to a leaf scalar local and AddressOf
+                    // it. The leaf is one of the per-field /
+                    // per-element locals laid out by struct /
+                    // tuple expansion, so the existing
+                    // address-taken machinery just works.
+                    if let Some(Expr::FieldAccess(obj, field_sym)) =
+                        self.program.expression.get(&inner)
+                    {
+                        if let Ok(local) = self.resolve_field_local(&obj, field_sym) {
+                            let ty = self.module.function(self.func_id).locals[local.0 as usize];
+                            if matches!(
+                                ty,
+                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                    | Type::I32 | Type::U32
+                            ) {
+                                self.module
+                                    .function_mut(self.func_id)
+                                    .address_taken_locals
+                                    .insert(local);
+                                let v = self
+                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                                    .expect("AddressOf returns a value");
+                                values.push(v);
+                                continue;
+                            }
+                        }
+                    }
+                    if let Some(Expr::TupleAccess(obj, idx)) =
+                        self.program.expression.get(&inner)
+                    {
+                        if let Ok(local) = self.resolve_tuple_element_local(&obj, idx) {
+                            let ty = self.module.function(self.func_id).locals[local.0 as usize];
+                            if matches!(
+                                ty,
+                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                    | Type::I32 | Type::U32
+                            ) {
+                                self.module
+                                    .function_mut(self.func_id)
+                                    .address_taken_locals
+                                    .insert(local);
+                                let v = self
+                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                                    .expect("AddressOf returns a value");
+                                values.push(v);
+                                continue;
+                            }
+                        }
+                    }
                 }
             }
             // REF-Stage-2: fall back — peel an explicit borrow so the

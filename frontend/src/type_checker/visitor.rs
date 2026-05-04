@@ -348,6 +348,22 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     pub(super) fn process_val_type_with_mut(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>, is_mut: bool) -> Result<TypeDecl, TypeCheckError> {
+        // REF-Stage-2 (e): a `val` / `var` binding cannot have a
+        // reference type. The annotation gets checked here; the
+        // inferred type from the rhs gets checked after evaluation
+        // below. This prevents references from outliving their
+        // referents via name binding.
+        if let Some(decl) = type_decl.as_ref() {
+            if decl.contains_ref() {
+                let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+                return Err(TypeCheckError::generic_error(&format!(
+                    "binding `{}` annotates a reference type; references cannot be \
+                     stored in val / var bindings (REF-Stage-2 (e))",
+                    var_name
+                )));
+            }
+        }
+
         let expr_ty = match expr {
             Some(e) => {
                 // Set type hint for proper type inference
@@ -362,6 +378,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_inference.type_hint = old_hint;
                 if final_ty == TypeDecl::Unit {
                     return Err(TypeCheckError::type_mismatch(TypeDecl::Unknown, final_ty.clone()));
+                }
+                // REF-Stage-2 (e): same escape rule — even without an
+                // annotation, an inferred reference type for the rhs
+                // is rejected.
+                if final_ty.contains_ref() {
+                    let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "binding `{}` is inferred to a reference type; references cannot be \
+                         stored in val / var bindings (REF-Stage-2 (e))",
+                        var_name
+                    )));
                 }
                 Some(final_ty)
             }
@@ -412,6 +439,22 @@ impl<'a> TypeCheckerVisitor<'a> {
             Some(Some(result_ty)) => return Ok(result_ty.clone()),  // already checked
             Some(None) => return Ok(TypeDecl::Unknown), // now checking
             None => (),
+        }
+
+        // REF-Stage-2 (e): syntactic escape rule — references can
+        // only flow into a function via parameters and out via
+        // method-receiver writeback (`&mut self`). They cannot
+        // escape via the return type. Without lifetimes this is
+        // the simplest defence against dangling references.
+        if let Some(ret) = func.return_type.as_ref() {
+            if ret.contains_ref() {
+                let fn_name = self.core.string_interner.resolve(func.name).unwrap_or("?").to_string();
+                return Err(TypeCheckError::generic_error(&format!(
+                    "function `{}` declares a reference type in its return position; \
+                     references cannot escape their referent's frame (REF-Stage-2 (e))",
+                    fn_name
+                )));
+            }
         }
 
         // `extern fn` declarations have no body to walk — the

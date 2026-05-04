@@ -150,6 +150,28 @@ impl TypeDecl {
         }
     }
 
+    /// REF-Stage-2 (e): walks a type tree and returns `true` if
+    /// any leaf is a `Ref` (`&T` / `&mut T`). Used by the
+    /// type checker to enforce a simple syntactic escape rule —
+    /// references are only allowed in **function parameter**
+    /// positions and as method receivers (`&self` / `&mut self`).
+    /// They cannot be returned, stored in `val` / `var` bindings,
+    /// nor stored in struct / tuple / array / dict fields. With
+    /// no lifetime system, this prevents references from
+    /// outliving their referents.
+    pub fn contains_ref(&self) -> bool {
+        match self {
+            TypeDecl::Ref { .. } => true,
+            TypeDecl::Array(elems, _) => elems.iter().any(|t| t.contains_ref()),
+            TypeDecl::Dict(k, v) => k.contains_ref() || v.contains_ref(),
+            TypeDecl::Tuple(elems) => elems.iter().any(|t| t.contains_ref()),
+            TypeDecl::Struct(_, args) => args.iter().any(|t| t.contains_ref()),
+            TypeDecl::Enum(_, args) => args.iter().any(|t| t.contains_ref()),
+            TypeDecl::Range(t) => t.contains_ref(),
+            _ => false,
+        }
+    }
+
     /// Substitute generic type parameters with concrete types
     pub fn substitute_generics(&self, substitutions: &std::collections::HashMap<DefaultSymbol, TypeDecl>) -> TypeDecl {
         match self {

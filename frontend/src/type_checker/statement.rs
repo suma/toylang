@@ -47,7 +47,21 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_val_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_ref = expr.clone();
         let type_decl = type_decl.clone();
-        
+
+        // REF-Stage-2 (e): syntactic escape rule — a `val` binding
+        // cannot annotate a reference type. The inferred-type form
+        // is also rejected after evaluation below.
+        if let Some(decl) = type_decl.as_ref() {
+            if decl.contains_ref() {
+                let var_name = self.resolve_symbol_name(name);
+                return Err(TypeCheckError::generic_error(&format!(
+                    "binding `{}` annotates a reference type; references cannot be \
+                     stored in val / var bindings (REF-Stage-2 (e))",
+                    var_name
+                )));
+            }
+        }
+
         // Set type hint and evaluate expression
         let old_hint = self.setup_type_hint_for_val(&type_decl);
         let expr_ty = self.visit_expr(&expr_ref)?;
@@ -78,6 +92,17 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Determine final type and store variable
         let final_type = self.determine_final_type_for_expr(&type_decl, &expr_ty);
+
+        // REF-Stage-2 (e): same escape rule for the inferred-type
+        // case (no annotation, rhs evaluated to a reference type).
+        if final_type.contains_ref() {
+            let var_name = self.resolve_symbol_name(name);
+            return Err(TypeCheckError::generic_error(&format!(
+                "binding `{}` is inferred to a reference type; references cannot be \
+                 stored in val / var bindings (REF-Stage-2 (e))",
+                var_name
+            )));
+        }
 
         // Debug: Print variable type information
         let _var_name_str = self.resolve_symbol_name(name);

@@ -350,6 +350,60 @@ mod errors {
     }
 
     #[test]
+    fn test_function_returning_ref_is_rejected() {
+        // REF-Stage-2 (e): syntactic escape rule — a function
+        // cannot return `&T` / `&mut T`. Without lifetimes the
+        // referent's frame would die at the return, so the rule
+        // is enforced unconditionally.
+        let source = r#"
+            fn dangling(x: &u64) -> &u64 { x }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("references cannot escape") || err.contains("return position"),
+            "expected return-ref escape error, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_val_binding_of_ref_is_rejected() {
+        // REF-Stage-2 (e): a `val` / `var` binding cannot have a
+        // reference type. Either an explicit annotation OR an
+        // inferred ref type triggers the reject.
+        let source = r#"
+            fn main() -> u64 {
+                var a: u64 = 1u64
+                val r: &u64 = &a
+                0u64
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("references cannot be stored in val")
+                || err.contains("annotates a reference"),
+            "expected val-ref escape error, got: {}", err
+        );
+    }
+
+    #[test]
+    fn test_struct_field_of_ref_is_rejected() {
+        // REF-Stage-2 (e): struct fields cannot hold references.
+        // Without lifetimes a stored `&T` could outlive its
+        // referent.
+        let source = r#"
+            struct Bad { r: &u64 }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("references cannot be stored in struct fields")
+                || err.contains("declares a reference type"),
+            "expected struct-field-ref escape error, got: {}", err
+        );
+    }
+
+    #[test]
     fn test_auto_borrow_into_mut_ref_is_rejected() {
         // REF-Stage-2 (f): `T -> &mut T` auto-borrow is intentionally
         // not allowed. The caller must write `&mut <name>` so the

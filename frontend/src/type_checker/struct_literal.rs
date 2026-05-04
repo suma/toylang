@@ -33,6 +33,19 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // 2. Validate field types
         for field in fields {
+            // REF-Stage-2 (e): a struct field cannot have a reference
+            // type. Without lifetimes a stored `&T` could outlive its
+            // referent; reject the declaration up front.
+            if field.type_decl.contains_ref() {
+                if !generic_params.is_empty() {
+                    self.type_inference.pop_generic_scope();
+                }
+                return Err(TypeCheckError::generic_error(&format!(
+                    "struct field `{}` declares a reference type; references cannot be \
+                     stored in struct fields (REF-Stage-2 (e))",
+                    field.name
+                )));
+            }
             match &field.type_decl {
                 TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool | TypeDecl::String
                 | TypeDecl::Ptr | TypeDecl::Allocator => {

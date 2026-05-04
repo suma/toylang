@@ -967,8 +967,8 @@ fn string_from_str_round_trip() {
     // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + len=5.
     let src = r#"
         fn main() -> u64 {
-            val s: String = String::from_str("hello")
-            val n: u64 = s.len()
+            val s: String = Vec::from_str("hello")
+            val n: u64 = s.size()
             val p: ptr = s.as_ptr()
             val a: u8 = __builtin_ptr_read(p, 0u64)
             val b: u8 = __builtin_ptr_read(p, 1u64)
@@ -1009,12 +1009,12 @@ fn string_push_str_round_trip() {
     // same exit code (42 on success).
     let src = r#"
         fn main() -> u64 {
-            var s: String = String::from_str("hello")
-            val sp: String = String::from_str(" ")
-            val w: String = String::from_str("world")
+            var s: String = Vec::from_str("hello")
+            val sp: String = Vec::from_str(" ")
+            val w: String = Vec::from_str("world")
             s.push_str(sp)
             s.push_str(w)
-            val n: u64 = s.len()
+            val n: u64 = s.size()
             if n != 11u64 {
                 return 1u64
             }
@@ -1062,7 +1062,7 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
     // AOT — all should agree on exit code 42.
     let src = r#"
         fn len_of(s: &String) -> u64 {
-            s.len()
+            s.size()
         }
 
         fn first_byte(s: &String) -> u8 {
@@ -1076,7 +1076,7 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
         }
 
         fn main() -> u64 {
-            var s: String = String::from_str("hello")
+            var s: String = Vec::from_str("hello")
             # auto-borrow: bare String -> &String (immutable only)
             if len_of(s) != 5u64 { return 1u64 }
             # explicit borrow expression
@@ -1677,6 +1677,38 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn cross_module_type_alias_round_trip() {
+    // `type String = Vec<u8>` lives in `core/std/string.t` and is
+    // resolved by `frontend::resolve_type_aliases` after module
+    // integration. This test confirms the alias propagates from the
+    // stdlib file into user code: type annotations (`val s: String`,
+    // `&String` parameters) and the `Vec<u8>` method dispatch
+    // (`.size()`, `.eq(other)`, `.push_str(other)`) all work
+    // through the alias.
+    //
+    // Pinned across all 3 backends — the resolution pass runs in
+    // both `interpreter::check_typing_with_core_modules` (which
+    // the AOT compiler also delegates to via `compiler::compile_file`)
+    // and the JIT pipeline (silent fallback).
+    let src = r#"
+        fn len_of(s: &String) -> u64 {
+            s.size()
+        }
+
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str("hello")
+            val c: String = Vec::from_str("world")
+            if len_of(a) != 5u64 { return 1u64 }
+            if !a.eq(b) { return 2u64 }
+            if a.eq(c) { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "cross_module_type_alias_round_trip");
+}
+
+#[test]
 fn type_alias_round_trip() {
     // `type Name = TargetType` aliases are eagerly substituted by the
     // parser, so the type checker / IR / 3 backends see only the
@@ -1736,23 +1768,23 @@ fn string_eq_clear_push_char_round_trip() {
     // 3-way pin across interpreter / JIT silent fallback / AOT.
     let src = r#"
         fn main() -> u64 {
-            var s: String = String::from_str("hi")
+            var s: String = Vec::from_str("hi")
             s.push_char(33u8)
 
-            val a: String = String::from_str("hi!")
-            val b: String = String::from_str("hi?")
+            val a: String = Vec::from_str("hi!")
+            val b: String = Vec::from_str("hi?")
 
             if !s.eq(a) { return 1u64 }
             if s.eq(b) { return 2u64 }
 
             s.clear()
             if !s.is_empty() { return 3u64 }
-            if s.len() != 0u64 { return 4u64 }
+            if s.size() != 0u64 { return 4u64 }
 
             s.push_char(120u8)
-            val x: String = String::from_str("x")
+            val x: String = Vec::from_str("x")
             if !s.eq(x) { return 5u64 }
-            if s.len() != 1u64 { return 6u64 }
+            if s.size() != 1u64 { return 6u64 }
 
             42u64
         }

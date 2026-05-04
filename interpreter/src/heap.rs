@@ -426,6 +426,15 @@ impl HeapManager {
     /// re-keyed under `(dest_addr, off)` so per-byte / per-element
     /// reads at the destination see the same values as the source.
     pub fn copy_memory(&mut self, src_addr: usize, dest_addr: usize, size: usize) -> bool {
+        if size == 0 {
+            // Zero-byte copy is a no-op success — including when
+            // either pointer is null. Matches the AOT path's call
+            // into libc memcpy(3), which is also a no-op for n==0,
+            // and unblocks the `Vec::from_str("")` /
+            // `heap_alloc(0)` + `heap_realloc(p, 0)` chain in
+            // `core/std/collections/vec.t::from_str`.
+            return true;
+        }
         if src_addr == 0 || dest_addr == 0 {
             return false; // null pointer access
         }
@@ -469,6 +478,9 @@ impl HeapManager {
     
     /// Move memory from src to dest (handles overlapping regions)
     pub fn move_memory(&mut self, src_addr: usize, dest_addr: usize, size: usize) -> bool {
+        if size == 0 {
+            return true; // no-op success — mirrors libc memmove(3)
+        }
         if src_addr == 0 || dest_addr == 0 {
             return false; // null pointer access
         }
@@ -486,6 +498,9 @@ impl HeapManager {
     
     /// Set memory region to a specific byte value
     pub fn set_memory(&mut self, addr: usize, value: u8, size: usize) -> bool {
+        if size == 0 {
+            return true; // no-op success — mirrors libc memset(3)
+        }
         if addr == 0 {
             return false; // null pointer access
         }

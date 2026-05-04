@@ -1677,6 +1677,31 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn vec_from_str_empty_string_round_trip() {
+    // `Vec::from_str("")` previously hit a "Invalid memory access
+    // in mem_copy" interpreter error: `core/std/collections/vec.t::from_str`
+    // calls `__builtin_heap_alloc(0u64)` then
+    // `__builtin_heap_realloc(p, 0u64)` followed by
+    // `__builtin_mem_copy(s.as_ptr(), data, 0u64)`. The mem_copy
+    // happily accepts size==0 in the AOT path (libc memcpy(3) is
+    // a no-op for n=0) but the interpreter's `HeapManager::copy_memory`
+    // returned `false` on size==0 (no slices / typed_slots matched
+    // the empty range), and the builtin treated `false` as a hard
+    // error. Fixed by adding an early-return for size==0 in
+    // copy_memory / move_memory / set_memory so all three are
+    // consistent with their libc counterparts.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("")
+            if s.size() != 0u64 { return 1u64 }
+            if !s.is_empty() { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "vec_from_str_empty_string_round_trip");
+}
+
+#[test]
 fn type_alias_forward_reference_round_trip() {
     // Forward references to type aliases. The cross-module
     // alias resolution pass (`frontend::resolve_type_aliases`,

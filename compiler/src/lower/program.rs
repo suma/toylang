@@ -38,7 +38,7 @@ use super::templates::{
     collect_enum_defs, collect_struct_defs, lower_param_or_return_type, EnumDefs, StructDefs,
 };
 use super::FunctionLower;
-use crate::ir::{FuncId, InstKind, Linkage, Module, Terminator, Type, ValueId};
+use crate::ir::{FuncId, InstKind, Linkage, LocalId, Module, Terminator, Type, ValueId};
 
 /// Map a source-level `extern fn` identifier to the libm symbol name
 /// the AOT compiler should emit as a `Linkage::Import`. Returns `None`
@@ -116,6 +116,53 @@ pub(super) fn primitive_type_decl_for_target_sym(
         "i32" => TypeDecl::Int32,
         _ => return None,
     })
+}
+
+/// REF-Stage-2 (ii): flatten an IR `Type` (struct / tuple / enum
+/// / scalar) to the leaf scalar types in canonical declaration
+/// order. Mirrors `flatten_struct_to_cranelift_tys` but stays in
+/// IR `Type` space so we can pre-populate
+/// `Function::self_writeback_types` before any body is lowered.
+fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type>) {
+    match ty {
+        Type::Struct(id) => {
+            let def = module.struct_def(id);
+            let field_tys: Vec<Type> = def.fields.iter().map(|(_, t)| *t).collect();
+            for ft in field_tys {
+                flatten_compound_leaf_types(module, ft, out);
+            }
+        }
+        Type::Tuple(id) => {
+            let elem_tys: Vec<Type> = module
+                .tuple_defs
+                .get(id.0 as usize)
+                .cloned()
+                .unwrap_or_default();
+            for et in elem_tys {
+                flatten_compound_leaf_types(module, et, out);
+            }
+        }
+        Type::Enum(id) => {
+            // Tag (U64) + each variant's payload leaves, mirroring
+            // codegen's enum boundary layout. Compound `&mut Enum`
+            // isn't expected here today (only struct / tuple) but
+            // the recursion stays consistent for future support.
+            out.push(Type::U64);
+            let def = module.enum_def(id);
+            let payload_tys: Vec<Type> = def
+                .variants
+                .iter()
+                .flat_map(|v| v.payload_types.iter().copied())
+                .collect();
+            for pt in payload_tys {
+                flatten_compound_leaf_types(module, pt, out);
+            }
+        }
+        // Scalars contribute themselves directly.
+        Type::I64 | Type::U64 | Type::I8 | Type::U8 | Type::I16 | Type::U16
+        | Type::I32 | Type::U32 | Type::F64 | Type::Bool | Type::Str => out.push(ty),
+        Type::Unit => {} // skip
+    }
 }
 
 pub fn lower_program(
@@ -272,7 +319,7 @@ pub fn lower_program(
             };
             (mangled, Linkage::Local)
         };
-        module.declare_function_with_module(
+        let func_id = module.declare_function_with_module(
             func.name,
             module_qualifier,
             export_name,
@@ -280,6 +327,33 @@ pub fn lower_program(
             params,
             ret,
         );
+        // REF-Stage-2 (ii): pre-populate the writeback shape from
+        // the parameter types so callers see the correct number
+        // of trailing return values regardless of whether the
+        // callee's body has been lowered yet (forward-call
+        // ordering safety). Each `&mut <compound>` param
+        // contributes its leaf scalar types in declaration order;
+        // scalar `&mut T` doesn't (handled by `RefScalar`).
+        let mut writeback_types: Vec<Type> = Vec::new();
+        for (pi, (_, decl_ty)) in func.parameter.iter().enumerate() {
+            if !matches!(
+                decl_ty,
+                TypeDecl::Ref { is_mut: true, .. }
+            ) {
+                continue;
+            }
+            // Skip scalar — scalar Ref already handled by AddressOf.
+            if let TypeDecl::Ref { inner, .. } = decl_ty {
+                if super::types::lower_scalar(inner).is_some() {
+                    continue;
+                }
+            }
+            let param_ty = module.function(func_id).params[pi];
+            flatten_compound_leaf_types(&module, param_ty, &mut writeback_types);
+        }
+        if !writeback_types.is_empty() {
+            module.function_mut(func_id).self_writeback_types = writeback_types;
+        }
     }
 
     // Declare each non-generic method as a regular IR function. The
@@ -946,16 +1020,61 @@ impl<'a> FunctionLower<'a> {
         // values to the user-visible return slot list, and the
         // codegen layer extends the cranelift signature's return
         // shape from `self_writeback_types`.
+        let mut writeback_leaves: Vec<(LocalId, Type)> = Vec::new();
         if let Some(self_sym) = self.pending_self_writeback_param.take() {
             if let Some(super::bindings::Binding::Struct { fields, .. }) =
                 self.bindings.get(&self_sym).cloned()
             {
                 let leaves = super::bindings::flatten_struct_locals(&fields);
-                let writeback_types: Vec<Type> = leaves.iter().map(|(_, t)| *t).collect();
-                self.module.function_mut(self.func_id).self_writeback_types =
-                    writeback_types;
-                self.self_writeback_locals = Some(leaves);
+                writeback_leaves.extend(leaves);
             }
+        }
+        // REF-Stage-2 (ii): every `&mut <compound>` parameter
+        // contributes its leaf locals to the function's writeback
+        // shape. The function returns those leaves alongside the
+        // user return value so the caller can store the modified
+        // values back into its own bindings — same convention
+        // `&mut self` uses, just generalised over multiple non-self
+        // parameters. Scalar `&mut T` already flows through
+        // `Binding::RefScalar` + `AddressOf` / `LoadRef` /
+        // `StoreRef`, so it stays out of this list.
+        for (name, decl_ty) in &func.parameter {
+            if !matches!(
+                decl_ty,
+                frontend::type_decl::TypeDecl::Ref { is_mut: true, .. }
+            ) {
+                continue;
+            }
+            // Skip the receiver — already handled above so we don't
+            // double-append its leaves.
+            if let Some(self_sym) = self.interner.get("self") {
+                if *name == self_sym {
+                    continue;
+                }
+            }
+            match self.bindings.get(name).cloned() {
+                Some(super::bindings::Binding::Struct { fields, .. }) => {
+                    writeback_leaves.extend(super::bindings::flatten_struct_locals(&fields));
+                }
+                Some(super::bindings::Binding::Tuple { elements }) => {
+                    writeback_leaves.extend(super::bindings::flatten_tuple_element_locals(&elements));
+                }
+                _ => {} // Scalar (RefScalar) and other shapes don't contribute.
+            }
+        }
+        if !writeback_leaves.is_empty() {
+            // Body-time path always wins: it knows the actual
+            // leaf locals after binding. The declaration-time
+            // pre-populate of `self_writeback_types` is the
+            // forward-reference safety net for callers that
+            // resolve us before our body has been lowered;
+            // synced here so methods (whose decl phase doesn't
+            // pre-populate) also get the right shape.
+            let writeback_types: Vec<Type> =
+                writeback_leaves.iter().map(|(_, t)| *t).collect();
+            self.module.function_mut(self.func_id).self_writeback_types =
+                writeback_types;
+            self.self_writeback_locals = Some(writeback_leaves);
         }
 
         // Emit `requires` checks at function entry. Each predicate

@@ -1176,6 +1176,45 @@ fn ref_stage2_array_index_mut_borrow_round_trip() {
 }
 
 #[test]
+fn ref_stage2_compound_mut_ref_propagates_round_trip() {
+    // REF-Stage-2 (ii): compound `&mut T` parameter mutation
+    // propagates back to the caller's binding across all three
+    // backends.
+    //   - AOT generalises the Stage-1 self-writeback convention:
+    //     each `&mut <compound>` parameter contributes its leaf
+    //     scalar types to `Function::self_writeback_types` at
+    //     declaration time (forward-call safety) and matching
+    //     leaf locals at body lowering. The call site emits
+    //     `CallWithSelfWriteback` with caller-side leaves as
+    //     `self_dests` so the trailing return values flow back
+    //     into the caller's `Binding::Struct` fields.
+    //   - Interpreter / JIT need no extra wiring: struct values
+    //     ride `Rc<RefCell<Object::Struct>>`, so the parameter
+    //     binding shares the cell with the caller's local and
+    //     `p.x = ...` inside the body is observable on both
+    //     sides.
+    //
+    // The test mutates one field through the `&mut Point`
+    // parameter twice (once with an early return / no-op
+    // branch to make sure unrelated control flow doesn't kill
+    // the writeback path) and pins both fields after.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+        fn shift_x(p: &mut Point, dx: u64) {
+            p.x = p.x + dx
+        }
+        fn main() -> u64 {
+            var p: Point = Point { x: 10u64, y: 20u64 }
+            shift_x(&mut p, 30u64)
+            shift_x(&mut p, 2u64)
+            if p.y != 20u64 { return 1u64 }
+            p.x
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_compound_mut_ref_propagates_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

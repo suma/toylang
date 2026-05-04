@@ -36,7 +36,7 @@ use super::bindings::Binding;
 use super::templates::{instantiate_enum, instantiate_struct};
 use super::types::lower_scalar;
 use super::{FunctionLower, PendingGenericInstance};
-use crate::ir::{FuncId, InstKind, Linkage, Type, ValueId};
+use crate::ir::{FuncId, InstKind, Linkage, LocalId, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     /// Find (or instantiate) a `FuncId` for `fn_name`. Non-generic
@@ -333,6 +333,56 @@ impl<'a> FunctionLower<'a> {
             ));
         }
         let arg_values = self.lower_call_args(args_ref)?;
+        // REF-Stage-2 (ii): if the callee declares writeback
+        // returns (`&mut <compound>` parameters contributed leaf
+        // types to `self_writeback_types`), gather the caller-
+        // side leaf locals from the matching `&mut <var>` args
+        // and emit `CallWithSelfWriteback` so the call's trailing
+        // returns flow back into the caller's bindings.
+        let writeback_dests = if !self.module.function(target).self_writeback_types.is_empty() {
+            self.collect_compound_writeback_dests(args_ref)?
+        } else {
+            Vec::new()
+        };
+        if !writeback_dests.is_empty() {
+            // Sanity: caller dest count must match callee writeback type count.
+            let expected_writeback = self.module.function(target).self_writeback_types.len();
+            if writeback_dests.len() != expected_writeback {
+                return Err(format!(
+                    "internal error: call to `{}` has {} writeback dests but callee declared {} writeback returns",
+                    self.interner.resolve(fn_name).unwrap_or("?"),
+                    writeback_dests.len(),
+                    expected_writeback,
+                ));
+            }
+            let ret_ty_opt = if ret_ty.produces_value() {
+                Some(ret_ty)
+            } else {
+                None
+            };
+            let ret_dest = ret_ty_opt.map(|ty| {
+                self.module.function_mut(self.func_id).add_local(ty)
+            });
+            self.emit(
+                InstKind::CallWithSelfWriteback {
+                    target,
+                    args: arg_values,
+                    ret_dest,
+                    ret_ty: ret_ty_opt,
+                    self_dests: writeback_dests,
+                },
+                None,
+            );
+            // Surface the user-return value (loaded from the
+            // ret_dest local) so the caller's expression-position
+            // consumer sees a normal ValueId.
+            return match (ret_dest, ret_ty_opt) {
+                (Some(local), Some(ty)) => {
+                    Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+                }
+                _ => Ok(None),
+            };
+        }
         let inst = InstKind::Call {
             target,
             args: arg_values,
@@ -343,5 +393,53 @@ impl<'a> FunctionLower<'a> {
             None
         };
         Ok(self.emit(inst, result_ty))
+    }
+
+    /// REF-Stage-2 (ii): walk a call's argument list, collect the
+    /// caller-side leaf locals for every `&mut <compound-var>`
+    /// argument. The order matches `Function.self_writeback_types`
+    /// (each compound `&mut T` parameter contributed its leaves
+    /// in declaration order during the callee's `lower_body`).
+    /// Returns an empty Vec when no writeback args are present.
+    pub(super) fn collect_compound_writeback_dests(
+        &self,
+        args_ref: &ExprRef,
+    ) -> Result<Vec<LocalId>, String> {
+        let items = match self.program.expression.get(args_ref) {
+            Some(frontend::ast::Expr::ExprList(items)) => items,
+            _ => return Ok(Vec::new()),
+        };
+        let mut dests: Vec<LocalId> = Vec::new();
+        for a in &items {
+            let inner = match self.program.expression.get(a) {
+                Some(frontend::ast::Expr::Unary(op, inner))
+                    if matches!(
+                        op,
+                        frontend::ast::UnaryOp::BorrowMut
+                    ) =>
+                {
+                    inner
+                }
+                _ => continue,
+            };
+            let sym = match self.program.expression.get(&inner) {
+                Some(frontend::ast::Expr::Identifier(s)) => s,
+                _ => continue,
+            };
+            match self.bindings.get(&sym) {
+                Some(super::bindings::Binding::Struct { fields, .. }) => {
+                    for (l, _) in super::bindings::flatten_struct_locals(fields) {
+                        dests.push(l);
+                    }
+                }
+                Some(super::bindings::Binding::Tuple { elements }) => {
+                    for (l, _) in super::bindings::flatten_tuple_element_locals(elements) {
+                        dests.push(l);
+                    }
+                }
+                _ => {} // Scalar bindings handled by AddressOf path; not a writeback dest.
+            }
+        }
+        Ok(dests)
     }
 }

@@ -872,6 +872,22 @@ impl<'a, 'b> State<'a, 'b> {
                             (true, ScalarTy::Bool) => HelperKind::PrintlnBool,
                             (false, ScalarTy::F64) => HelperKind::PrintF64,
                             (true, ScalarTy::F64) => HelperKind::PrintlnF64,
+                            // NUM-W: per-width narrow int print/println.
+                            // The cranelift signature uses the matching
+                            // narrow type so the value flows in without
+                            // any extension dance.
+                            (false, ScalarTy::I8) => HelperKind::PrintI8,
+                            (true, ScalarTy::I8) => HelperKind::PrintlnI8,
+                            (false, ScalarTy::I16) => HelperKind::PrintI16,
+                            (true, ScalarTy::I16) => HelperKind::PrintlnI16,
+                            (false, ScalarTy::I32) => HelperKind::PrintI32,
+                            (true, ScalarTy::I32) => HelperKind::PrintlnI32,
+                            (false, ScalarTy::U8) => HelperKind::PrintU8,
+                            (true, ScalarTy::U8) => HelperKind::PrintlnU8,
+                            (false, ScalarTy::U16) => HelperKind::PrintU16,
+                            (true, ScalarTy::U16) => HelperKind::PrintlnU16,
+                            (false, ScalarTy::U32) => HelperKind::PrintU32,
+                            (true, ScalarTy::U32) => HelperKind::PrintlnU32,
                             _ => return Err("print arg type unsupported in JIT".into()),
                         };
                         self.call_helper(kind, &[v])?;

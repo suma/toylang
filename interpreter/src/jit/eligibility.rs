@@ -2807,7 +2807,9 @@ pub(crate) fn check_expr(
                         return None;
                     }
                     let t = check_expr(program, &args[0], locals, struct_locals, tuple_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool) {
+                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool)
+                        && !t.is_narrow_int()
+                    {
                         return None;
                     }
                     Some(ScalarTy::Unit)

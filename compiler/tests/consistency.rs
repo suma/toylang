@@ -1705,6 +1705,37 @@ fn narrow_int_jit_phase_c_cast_sizeof_round_trip() {
 }
 
 #[test]
+fn stdout_narrow_int_jit_print_match() {
+    // NUM-W-JIT Phase B: `print(narrow_val)` /
+    // `println(narrow_val)` go through per-width helper symbols
+    // (`jit_print_u8`, `jit_println_i32`, ...) registered with the
+    // JIT runtime. Each helper formats with the native Rust width's
+    // `Display` impl, which matches the AOT pipeline (libc printf
+    // via `toy_print_u8` / etc.) and the tree-walking interpreter
+    // (`Object::to_display_string`). Stdout-equality across all 3
+    // backends pins that no width drops a sign bit or zero-extends
+    // wrong on its way to the helper.
+    let src = r#"
+        fn main() -> u64 {
+            val a: u8 = 100u8
+            val b: i8 = -42i8
+            val c: u16 = 1000u16
+            val d: i16 = -1234i16
+            val e: u32 = 4294967290u32
+            val f: i32 = -7i32
+            println(a)
+            println(b)
+            println(c)
+            println(d)
+            println(e)
+            println(f)
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_narrow_int_jit_print");
+}
+
+#[test]
 fn narrow_int_jit_phase_a_round_trip() {
     // NUM-W-JIT Phase A: u8 / u16 / u32 / i8 / i16 / i32 are now
     // recognised at the JIT eligibility + literal-codegen layer,

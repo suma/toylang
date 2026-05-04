@@ -133,6 +133,25 @@ extern "C" fn jit_println_f64(v: f64) {
         &string_interner::DefaultStringInterner::new(),
     ));
 }
+// NUM-W: narrow integer print helpers. Each width has its own
+// extern "C" entry point so cranelift can pick a `Signature`
+// whose only parameter is the right `types::I8` / `I16` / `I32`,
+// avoiding any sign-extension dance at the call site. The host
+// side then formats with the native Rust width's `Display` impl
+// — matches the AOT print helpers (`compiler/src/jit.rs`) and
+// the tree-walking interpreter's `Object::to_display_string`.
+extern "C" fn jit_print_i8(v: i8) { print!("{v}"); }
+extern "C" fn jit_println_i8(v: i8) { println!("{v}"); }
+extern "C" fn jit_print_i16(v: i16) { print!("{v}"); }
+extern "C" fn jit_println_i16(v: i16) { println!("{v}"); }
+extern "C" fn jit_print_i32(v: i32) { print!("{v}"); }
+extern "C" fn jit_println_i32(v: i32) { println!("{v}"); }
+extern "C" fn jit_print_u8(v: u8) { print!("{v}"); }
+extern "C" fn jit_println_u8(v: u8) { println!("{v}"); }
+extern "C" fn jit_print_u16(v: u16) { print!("{v}"); }
+extern "C" fn jit_println_u16(v: u16) { println!("{v}"); }
+extern "C" fn jit_print_u32(v: u32) { print!("{v}"); }
+extern "C" fn jit_println_u32(v: u32) { println!("{v}"); }
 
 extern "C" fn jit_heap_alloc(size: u64) -> u64 {
     with_active_allocator(|a| a.alloc(size as usize) as u64).unwrap_or(0)
@@ -384,6 +403,22 @@ pub(crate) enum HelperKind {
     PrintlnBool,
     PrintF64,
     PrintlnF64,
+    // NUM-W: per-width narrow-int print helpers. Each call site
+    // picks the variant that matches the operand's `ScalarTy`,
+    // and the cranelift signature uses the matching narrow type
+    // so no sign / zero extension dance is needed.
+    PrintI8,
+    PrintlnI8,
+    PrintI16,
+    PrintlnI16,
+    PrintI32,
+    PrintlnI32,
+    PrintU8,
+    PrintlnU8,
+    PrintU16,
+    PrintlnU16,
+    PrintU32,
+    PrintlnU32,
     Panic,
     HeapAlloc,
     HeapFree,
@@ -434,6 +469,18 @@ impl HelperKind {
             HelperKind::PrintlnBool => "jit_println_bool",
             HelperKind::PrintF64 => "jit_print_f64",
             HelperKind::PrintlnF64 => "jit_println_f64",
+            HelperKind::PrintI8 => "jit_print_i8",
+            HelperKind::PrintlnI8 => "jit_println_i8",
+            HelperKind::PrintI16 => "jit_print_i16",
+            HelperKind::PrintlnI16 => "jit_println_i16",
+            HelperKind::PrintI32 => "jit_print_i32",
+            HelperKind::PrintlnI32 => "jit_println_i32",
+            HelperKind::PrintU8 => "jit_print_u8",
+            HelperKind::PrintlnU8 => "jit_println_u8",
+            HelperKind::PrintU16 => "jit_print_u16",
+            HelperKind::PrintlnU16 => "jit_println_u16",
+            HelperKind::PrintU32 => "jit_print_u32",
+            HelperKind::PrintlnU32 => "jit_println_u32",
             HelperKind::Panic => "jit_panic",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
@@ -475,6 +522,18 @@ impl HelperKind {
             HelperKind::PrintlnBool => jit_println_bool as *const u8,
             HelperKind::PrintF64 => jit_print_f64 as *const u8,
             HelperKind::PrintlnF64 => jit_println_f64 as *const u8,
+            HelperKind::PrintI8 => jit_print_i8 as *const u8,
+            HelperKind::PrintlnI8 => jit_println_i8 as *const u8,
+            HelperKind::PrintI16 => jit_print_i16 as *const u8,
+            HelperKind::PrintlnI16 => jit_println_i16 as *const u8,
+            HelperKind::PrintI32 => jit_print_i32 as *const u8,
+            HelperKind::PrintlnI32 => jit_println_i32 as *const u8,
+            HelperKind::PrintU8 => jit_print_u8 as *const u8,
+            HelperKind::PrintlnU8 => jit_println_u8 as *const u8,
+            HelperKind::PrintU16 => jit_print_u16 as *const u8,
+            HelperKind::PrintlnU16 => jit_println_u16 as *const u8,
+            HelperKind::PrintU32 => jit_print_u32 as *const u8,
+            HelperKind::PrintlnU32 => jit_println_u32 as *const u8,
             HelperKind::Panic => jit_panic as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
@@ -513,6 +572,12 @@ impl HelperKind {
             HelperKind::PrintU64 | HelperKind::PrintlnU64 => (vec![types::I64], None),
             HelperKind::PrintBool | HelperKind::PrintlnBool => (vec![types::I8], None),
             HelperKind::PrintF64 | HelperKind::PrintlnF64 => (vec![types::F64], None),
+            HelperKind::PrintI8 | HelperKind::PrintlnI8 => (vec![types::I8], None),
+            HelperKind::PrintU8 | HelperKind::PrintlnU8 => (vec![types::I8], None),
+            HelperKind::PrintI16 | HelperKind::PrintlnI16 => (vec![types::I16], None),
+            HelperKind::PrintU16 | HelperKind::PrintlnU16 => (vec![types::I16], None),
+            HelperKind::PrintI32 | HelperKind::PrintlnI32 => (vec![types::I32], None),
+            HelperKind::PrintU32 | HelperKind::PrintlnU32 => (vec![types::I32], None),
             HelperKind::Panic => (vec![types::I64], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
@@ -545,7 +610,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 36] = [
+    pub(crate) const ALL: [HelperKind; 48] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -554,6 +619,18 @@ impl HelperKind {
         HelperKind::PrintlnBool,
         HelperKind::PrintF64,
         HelperKind::PrintlnF64,
+        HelperKind::PrintI8,
+        HelperKind::PrintlnI8,
+        HelperKind::PrintI16,
+        HelperKind::PrintlnI16,
+        HelperKind::PrintI32,
+        HelperKind::PrintlnI32,
+        HelperKind::PrintU8,
+        HelperKind::PrintlnU8,
+        HelperKind::PrintU16,
+        HelperKind::PrintlnU16,
+        HelperKind::PrintU32,
+        HelperKind::PrintlnU32,
         HelperKind::Panic,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,

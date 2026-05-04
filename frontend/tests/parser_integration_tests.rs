@@ -106,6 +106,44 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_string_literal_escapes_decode() {
+        // Lexer-level pass: the handler walks the inner bytes and
+        // decodes 6 escapes (`\n` / `\t` / `\r` / `\0` / `\\` / `\'`).
+        // We verify by parsing each as a stmt, which lexes the string
+        // and fails-loudly on unknown escapes.
+        for input in [
+            r#""hello""#,                  // no escape
+            r#""line1\nline2""#,           // \n
+            r#""tab\there""#,              // \t
+            r#""back\\slash""#,            // \\
+            r#""quote\'mark""#,            // \'
+            r#""carriage\rreturn""#,       // \r
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok(),
+                "Failed to parse string literal {:?}: {:?}",
+                input,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn test_string_literal_unknown_escape_rejected() {
+        // Unknown escape (`\x`) should bail with `Error::Unmatch` —
+        // surfaces as a parse failure or recorded error.
+        let input = r#""bad\xescape""#;
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_stmt();
+        assert!(
+            result.is_err() || !parser.errors.is_empty(),
+            "Expected error parsing unknown string escape: {input}"
+        );
+    }
+
+    #[test]
     fn test_char_literals_parse_as_uint32() {
         // Single ASCII char between single quotes lexes to a
         // `Kind::UInt32(<code point>)` so the parser surfaces it

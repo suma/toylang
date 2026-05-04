@@ -348,9 +348,53 @@ macro_rules! token {
 -?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
 
 \"[^"]*\"              {
-                        let mut text = self.yytext();
-                        let drain = text.drain(1..(text.len()-1));
-                        return Ok(token!(self, Kind::String(drain.collect::<String>())));
+                        // String literal with escape support in the
+                        // handler (the regex itself stays simple so the
+                        // closing `"` always wins; `\"` inside a string
+                        // is therefore not yet supported and would
+                        // terminate the literal early — same constraint
+                        // as before this rule grew escapes). The 6
+                        // escapes `\n` / `\t` / `\r` / `\0` / `\\` /
+                        // `\'` are converted in the byte-by-byte pass
+                        // below. Unknown escapes bail out via
+                        // `Error::Unmatch`. Symmetric with the `'\\.'`
+                        // char literal handler so `"hello\n"` and
+                        // `'\n'` agree on the byte produced.
+                        let text = self.yytext();
+                        let inner = &text[1..text.len() - 1];
+                        let mut out = String::with_capacity(inner.len());
+                        let bytes = inner.as_bytes();
+                        let mut i = 0;
+                        while i < bytes.len() {
+                            let b = bytes[i];
+                            if b == b'\\' {
+                                if i + 1 >= bytes.len() {
+                                    return Err(Error::Unmatch);
+                                }
+                                let escaped = match bytes[i + 1] {
+                                    b'n'  => b'\n',
+                                    b't'  => b'\t',
+                                    b'r'  => b'\r',
+                                    b'0'  => 0u8,
+                                    b'\\' => b'\\',
+                                    b'\'' => b'\'',
+                                    // `\"` would terminate the regex
+                                    // early today — unreachable until
+                                    // the regex grows multi-char
+                                    // matching, but listed so the
+                                    // handler stays symmetric with the
+                                    // char literal escape table.
+                                    b'"'  => b'"',
+                                    _ => return Err(Error::Unmatch),
+                                };
+                                out.push(escaped as char);
+                                i += 2;
+                            } else {
+                                out.push(b as char);
+                                i += 1;
+                            }
+                        }
+                        return Ok(token!(self, Kind::String(out)));
                     }
 
 '\\.'               {

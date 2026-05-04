@@ -710,6 +710,29 @@ fn stdout_string_literal_and_var_match() {
 }
 
 #[test]
+fn stdout_string_literal_escape_sequences_match() {
+    // String escape sequences are processed by the lexer once and then
+    // travel as raw bytes through the type checker, IR, and all 3
+    // backends. Stdout-equality across interpreter / JIT / AOT pins
+    // that nobody re-escapes or double-decodes the body.
+    //
+    // Covered escapes: `\n` (LF=10) / `\t` (HT=9) / `\\` (literal
+    // backslash) / `\'` (literal single quote). `\r` and `\0` are
+    // not exercised here — `\0` would terminate downstream C printf
+    // helpers, and `\r` makes diffs harder to read.
+    let src = r#"
+        fn main() -> u64 {
+            println("line1\nline2")
+            println("tab\there")
+            println("backslash\\done")
+            println("quote\'done")
+            0u64
+        }
+    "#;
+    assert_stdout_consistent(src, "stdout_string_escapes");
+}
+
+#[test]
 fn stdout_struct_println_match() {
     let src = r#"
         struct Point { x: i64, y: i64 }

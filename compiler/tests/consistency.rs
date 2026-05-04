@@ -1215,6 +1215,68 @@ fn ref_stage2_compound_mut_ref_propagates_round_trip() {
 }
 
 #[test]
+fn arena_temporary_auto_cleanup_round_trip() {
+    // Phase 5 (Design A scope-bound): `with allocator =
+    // Arena::new() { ... }` releases the inline arena's tracked
+    // allocations at scope exit — no explicit `arena.drop()`.
+    // Linear exit, opening + closing two separate inline arenas,
+    // and a `__builtin_current_allocator()` round-trip back to
+    // the default sentinel after each `with` block. Pinned across
+    // interpreter / JIT silent fallback / AOT.
+    let src = r#"
+        fn main() -> u64 {
+            with allocator = Arena::new() {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p1) { return 1u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p2) { return 2u64 }
+            }
+            val mid: Allocator = __builtin_current_allocator()
+            if mid != __builtin_default_allocator() { return 3u64 }
+            with allocator = Arena::new() {
+                val p3: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p3) { return 4u64 }
+            }
+            val end: Allocator = __builtin_current_allocator()
+            if end != __builtin_default_allocator() { return 5u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "arena_temporary_auto_cleanup_round_trip");
+}
+
+#[test]
+fn arena_temporary_auto_cleanup_early_return_round_trip() {
+    // Phase 5: early `return` from inside `with allocator =
+    // Arena::new() { ... }` still pops the active stack AND
+    // releases the inline arena slot. The AOT path emits the
+    // matching `AllocPop` + `AllocArenaDrop` via
+    // `emit_with_scope_cleanup` walking the
+    // `with_scope_arena_drops` stack; the interpreter's `with`
+    // arm runs `reset()` after the body returned (regardless of
+    // whether the body returned an error or a value).
+    let src = r#"
+        fn helper() -> u64 {
+            with allocator = Arena::new() {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p) { return 9u64 }
+                # Early return from inside the with-arena body.
+                return 7u64
+            }
+            100u64
+        }
+        fn main() -> u64 {
+            val r: u64 = helper()
+            val cur: Allocator = __builtin_current_allocator()
+            if cur != __builtin_default_allocator() { return 1u64 }
+            if r != 7u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "arena_temporary_auto_cleanup_early_return_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

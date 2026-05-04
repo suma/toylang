@@ -794,6 +794,7 @@ impl<'a> FunctionLower<'a> {
             bindings: HashMap::new(),
             loop_stack: Vec::new(),
             with_scope_depth: 0,
+            with_scope_arena_drops: Vec::new(),
             current_block: None,
             next_value: 0,
             pending_struct_value: None,

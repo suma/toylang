@@ -121,6 +121,24 @@ impl EvaluationContext<'_> {
                 //     (STDLIB-alloc-trait — auto-extract the field).
                 // Pop must happen on every exit path so nested `with`
                 // blocks always restore the outer binding.
+                //
+                // Phase 5 (Design A scope-bound): when the allocator
+                // expression is the `Arena::new()` temporary form,
+                // remember that the resulting handle should be
+                // auto-released at scope exit (`reset()` on the arena
+                // backend frees every allocation tracked by the slot).
+                // Only the syntactic temporary fires — `val a =
+                // Arena::new()` followed by `with allocator = a {}`
+                // stays under user control via `a.drop()`.
+                let inline_arena = if let Some(Expr::AssociatedFunctionCall(s, f, args)) =
+                    self.expr_pool.get(&allocator)
+                {
+                    args.is_empty()
+                        && self.string_interner.resolve(s) == Some("Arena")
+                        && self.string_interner.resolve(f) == Some("new")
+                } else {
+                    false
+                };
                 let allocator_val = self.evaluate(&allocator);
                 let allocator_val = try_value!(allocator_val);
                 let allocator_rc = match &*allocator_val.borrow() {
@@ -153,7 +171,7 @@ impl EvaluationContext<'_> {
                         other
                     ))),
                 };
-                self.allocator_stack.push(allocator_rc);
+                self.allocator_stack.push(allocator_rc.clone());
                 let body_expr = self.expr_pool.get(&body)
                     .ok_or_else(|| InterpreterError::InternalError("Invalid with-body reference".to_string()))?;
                 let result = if let Expr::Block(statements) = body_expr {
@@ -165,6 +183,18 @@ impl EvaluationContext<'_> {
                     Err(InterpreterError::InternalError("with body is not a block".to_string()))
                 };
                 self.allocator_stack.pop();
+                if inline_arena {
+                    // Phase 5 auto-cleanup: release every
+                    // allocation the inline arena tracked. The
+                    // `Allocator` trait's default `reset` is a
+                    // no-op; `ArenaAllocator::reset` clears its
+                    // tracked addrs (matches `__builtin_arena_drop`
+                    // semantics on the runtime side). Runs even
+                    // when the body returned an error so the
+                    // arena slot doesn't leak on panic / early
+                    // exit paths.
+                    allocator_rc.reset();
+                }
                 result
             }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),

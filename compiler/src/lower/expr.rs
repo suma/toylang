@@ -488,6 +488,56 @@ impl<'a> FunctionLower<'a> {
             // emitted it before terminating, so we just decrement
             // the depth without a duplicate pop.
             Expr::With(allocator_expr, body_expr) => {
+                // Phase 5 (Design A scope-bound): detect the
+                // **temporary form** `with allocator = Arena::new() { ... }`.
+                // The allocator handle is created inline and the
+                // arena slot is auto-released at scope exit (no
+                // explicit `arena.drop()`). Today only `Arena::new()`
+                // is recognised — `FixedBuffer` lacks a runtime
+                // drop hook, `Global` aliases the process-wide
+                // default and never needs one. Other temporaries
+                // fall through to the existing wrapper-struct
+                // auto-extract path below.
+                let mut auto_drop_handle: Option<crate::ir::ValueId> = None;
+                let inline_arena = if let Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) =
+                    self.program.expression.get(&allocator_expr)
+                {
+                    args.is_empty()
+                        && self.interner.resolve(struct_sym) == Some("Arena")
+                        && self.interner.resolve(fn_sym) == Some("new")
+                } else {
+                    false
+                };
+                if inline_arena {
+                    // Synthesize `__builtin_arena_allocator()` —
+                    // bypasses the `Arena::new` method dispatch
+                    // (which would require lowering an
+                    // associated-function call returning a struct
+                    // value into a temporary binding).
+                    let handle = self
+                        .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
+                        .expect("AllocArena returns a value");
+                    self.emit(InstKind::AllocPush { handle }, None);
+                    self.with_scope_depth += 1;
+                    self.with_scope_arena_drops.push(Some(handle));
+                    auto_drop_handle = Some(handle);
+                    let body_value = self.lower_expr(&body_expr)?;
+                    if !self.is_unreachable() {
+                        // Linear exit: matching pop + drop here.
+                        // Early exits (`return` / `break` /
+                        // `continue`) already issued both via
+                        // `emit_with_scope_cleanup` so we don't
+                        // duplicate.
+                        self.emit(InstKind::AllocPop, None);
+                        if let Some(h) = auto_drop_handle {
+                            self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                        }
+                    }
+                    self.with_scope_depth -= 1;
+                    self.with_scope_arena_drops.pop();
+                    return Ok(body_value);
+                }
+
                 // STDLIB-alloc-trait: when the allocator expression
                 // resolves to a struct value (a wrapper that impls
                 // `Alloc`), look up its single `Allocator`-typed
@@ -557,11 +607,13 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.emit(InstKind::AllocPush { handle }, None);
                 self.with_scope_depth += 1;
+                self.with_scope_arena_drops.push(None);
                 let body_value = self.lower_expr(&body_expr)?;
                 if !self.is_unreachable() {
                     self.emit(InstKind::AllocPop, None);
                 }
                 self.with_scope_depth -= 1;
+                self.with_scope_arena_drops.pop();
                 Ok(body_value)
             }
             other => Err(format!(

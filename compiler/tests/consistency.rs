@@ -1011,6 +1011,39 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
 }
 
 #[test]
+fn ref_stage2_scalar_mut_ref_propagates_mutation_round_trip() {
+    // REF-Stage-2 (b)+(c)+(g)+(i): scalar `&mut T` parameter
+    // mutation propagates back to the caller's `var` binding
+    // across all three backends.
+    //   - AOT: pointer-passing via `AddressOf` + `LoadRef` /
+    //     `StoreRef`; the caller's local lives in a cranelift
+    //     `StackSlot` so the callee writes through the address.
+    //   - Interpreter: post-call writeback. Each `&mut <name>`
+    //     call argument records the caller-side identifier, the
+    //     function body runs against a mutable parameter binding,
+    //     and `evaluate_function_call` snapshots the post-body
+    //     value before `exit_block` and copies it back into the
+    //     caller's binding.
+    //   - JIT: the JIT skips on `&mut T` parameter functions
+    //     (no `Type::Ref` modelling yet) and falls back to the
+    //     interpreter, so it inherits the writeback path.
+    //
+    // Returns 42 (= 41 + 1).
+    let src = r#"
+        fn inc(x: &mut u64) {
+            x = x + 1u64
+        }
+        fn main() -> u64 {
+            var n: u64 = 41u64
+            inc(&mut n)
+            inc(&mut n)
+            n - 1u64
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_scalar_mut_ref_propagates_mutation_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

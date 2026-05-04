@@ -416,8 +416,29 @@ impl EvaluationContext<'_> {
                     use crate::try_value_v;
                     let mut evaluated_args: Vec<crate::value::Value> = Vec::new();
                     let is_generic_function = !func.generic_params.is_empty();
+                    // REF-Stage-2 (i): track which positional args are
+                    // an explicit `&mut <name>` borrow expression so
+                    // we can write the post-body parameter value back
+                    // to the caller's binding once the call returns.
+                    // Other arg shapes contribute `None` (no
+                    // writeback target).
+                    let mut writeback_targets: Vec<Option<DefaultSymbol>> = Vec::with_capacity(args.len());
 
                     for (i, (arg_expr, (_param_name, expected_type))) in args.iter().zip(func.parameter.iter()).enumerate() {
+                        // Detect `&mut <Identifier>` arg shape before
+                        // evaluating, so the caller name is captured
+                        // even when the argument expression itself
+                        // mutates other state during evaluation.
+                        let mut target: Option<DefaultSymbol> = None;
+                        if let Some(Expr::Unary(op, inner)) = self.expr_pool.get(arg_expr) {
+                            if matches!(op, UnaryOp::BorrowMut) {
+                                if let Some(Expr::Identifier(name_sym)) = self.expr_pool.get(&inner) {
+                                    target = Some(name_sym);
+                                }
+                            }
+                        }
+                        writeback_targets.push(target);
+
                         let arg_result = self.evaluate(arg_expr);
                         let arg_value = try_value_v!(arg_result);
                         let actual_type = arg_value.get_type();
@@ -442,8 +463,29 @@ impl EvaluationContext<'_> {
                         evaluated_args.push(arg_value);
                     }
 
-                    // Call function with pre-evaluated arguments
-                    Ok(EvaluationResult::Value(self.evaluate_function_with_values(func, &evaluated_args)?.into()))
+                    // Call function with pre-evaluated arguments and collect
+                    // post-body `&mut T` parameter values.
+                    let (ret_val, writebacks) = self
+                        .evaluate_function_with_values_writeback(func, &evaluated_args)?;
+
+                    // REF-Stage-2 (i): apply writebacks. Each entry pairs
+                    // the caller-side identifier (target) with the
+                    // post-body value of the corresponding `&mut T`
+                    // parameter. The type checker has already
+                    // enforced that the caller name is `var` (so
+                    // `set_var` w/ Replace succeeds).
+                    for (target, modified) in writeback_targets.iter().zip(writebacks.iter()) {
+                        if let (Some(sym), Some(val)) = (target, modified) {
+                            let _ = self.environment.set_var(
+                                *sym,
+                                val.clone(),
+                                crate::environment::VariableSetType::Overwrite,
+                                self.string_interner,
+                            );
+                        }
+                    }
+
+                    Ok(EvaluationResult::Value(ret_val.into()))
                 }
                 _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
             }
@@ -922,8 +964,34 @@ impl EvaluationContext<'_> {
     /// Phase 5: takes `&[Value]` and returns `Value` so primitive arguments
     /// and return values stay inline through the call boundary.
     pub fn evaluate_function_with_values(&mut self, function: Rc<Function>, args: &[crate::value::Value]) -> Result<crate::value::Value, InterpreterError> {
+        // Forwarding form for callers that don't care about the
+        // post-body value of `&mut T` parameters. The full form
+        // (used by `evaluate_function_call`) collects writebacks
+        // so the caller can propagate mutations back to the
+        // borrowed locals (REF-Stage-2 (i)).
+        let (val, _writebacks) = self.evaluate_function_with_values_writeback(function, args)?;
+        Ok(val)
+    }
+
+    /// Like `evaluate_function_with_values` but also returns the
+    /// post-body value of every `&mut T` parameter, indexed by
+    /// parameter position. The returned Vec has the same length
+    /// as `function.parameter`; entries for non-mut-ref params are
+    /// `None`. The caller (`evaluate_function_call`) pairs these
+    /// with the original `&mut <name>` arg expression to write
+    /// the modified value back to the caller's binding —
+    /// REF-Stage-2 (i) interpreter mutation propagation.
+    pub fn evaluate_function_with_values_writeback(
+        &mut self,
+        function: Rc<Function>,
+        args: &[crate::value::Value],
+    ) -> Result<(crate::value::Value, Vec<Option<crate::value::Value>>), InterpreterError> {
         if function.is_extern {
-            return self.dispatch_extern_fn(&function, args);
+            // Extern fns can't take `&mut T` parameters that need
+            // writeback (the runtime registry signature doesn't
+            // expose them), so an empty writeback list is correct.
+            let v = self.dispatch_extern_fn(&function, args)?;
+            return Ok((v, vec![None; function.parameter.len()]));
         }
         let block = match self.stmt_pool.get(&function.code) {
             Some(Stmt::Expression(e)) => {
@@ -936,23 +1004,23 @@ impl EvaluationContext<'_> {
         };
 
         self.environment.enter_block();
+        // Track which params are `&mut T` so we can snapshot their
+        // post-body values just before `exit_block` clears the
+        // function's scope.
+        let mut mut_ref_params: Vec<Option<DefaultSymbol>> = Vec::with_capacity(args.len());
         for (i, value) in args.iter().enumerate() {
             let param = function.parameter.get(i)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?;
-            // REF-Stage-2: `&mut T` parameter bindings must be
-            // mutable so the body's `x = ...` assignment runs.
-            // Mutation propagation back to the caller is the AOT
-            // backend's job (true `AddressOf` + `StoreRef`); the
-            // interpreter today just accepts the assignment so the
-            // body completes without error.
             let is_mut_ref = matches!(
                 &param.1,
                 frontend::type_decl::TypeDecl::Ref { is_mut: true, .. }
             );
             if is_mut_ref {
                 self.environment.set_val_mutable(param.0, value.clone());
+                mut_ref_params.push(Some(param.0));
             } else {
                 self.environment.set_val(param.0, value.clone());
+                mut_ref_params.push(None);
             }
         }
 
@@ -984,8 +1052,17 @@ impl EvaluationContext<'_> {
             return Err(e);
         }
 
+        // REF-Stage-2 (i): snapshot the post-body value of each
+        // `&mut T` parameter BEFORE `exit_block` discards the
+        // function scope. The caller (`evaluate_function_call`)
+        // applies these to the corresponding caller-side bindings.
+        let writebacks: Vec<Option<crate::value::Value>> = mut_ref_params
+            .iter()
+            .map(|maybe_sym| maybe_sym.and_then(|s| self.environment.get_val(s)))
+            .collect();
+
         self.environment.exit_block();
-        Ok(return_value)
+        Ok((return_value, writebacks))
     }
 
     /// Call a struct method by name

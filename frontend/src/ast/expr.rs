@@ -94,14 +94,18 @@ pub enum Stmt {
         variants: Vec<EnumVariantDef>,
         visibility: Visibility,
     },
-    /// `type Name = Type` — top-level type alias. The parser
-    /// eagerly substitutes uses of `name` in subsequent type
-    /// positions with `target`, so this Stmt is essentially a
-    /// historical record: downstream lowering / type-checking
-    /// treat it as a no-op. Forward references are not supported
-    /// (the alias must be declared before its first use).
+    /// `type Name = Type` or `type Name<T1, T2> = Type` —
+    /// top-level type alias. The defining parser eagerly
+    /// substitutes uses of `name` *within the same file*; this
+    /// Stmt also drives a post-integration cross-module
+    /// substitution pass that resolves alias references in any
+    /// auto-loaded / imported module. `generic_params` is empty
+    /// for non-generic aliases; otherwise it lists the
+    /// parameter symbols that appear as `Generic(P)` markers
+    /// in `target`.
     TypeAlias {
         name: DefaultSymbol,
+        generic_params: Vec<DefaultSymbol>,
         target: TypeDecl,
         visibility: Visibility,
     },

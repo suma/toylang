@@ -301,6 +301,7 @@ impl<'a> Parser<'a> {
                     self.type_aliases.insert(alias_name, (alias_generic_params.clone(), target_ty.clone()));
                     self.ast_builder.add_stmt_with_location(Stmt::TypeAlias {
                         name: alias_name,
+                        generic_params: alias_generic_params,
                         target: target_ty,
                         visibility: visibility.clone(),
                     }, Some(location));

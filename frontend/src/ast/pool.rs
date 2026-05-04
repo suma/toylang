@@ -1013,11 +1013,16 @@ impl StmtPool {
                 self.trait_methods[index] = Some(methods);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::TypeAlias { name, target, visibility } => {
+            Stmt::TypeAlias { name, generic_params, target, visibility } => {
                 self.stmt_types[index] = StmtType::TypeAlias;
                 self.symbol_val[index] = Some(name);
                 self.type_decl[index] = Some(target);
                 self.visibility[index] = Some(visibility);
+                // Reuse the existing struct_generic_params slot —
+                // it already stores `Vec<DefaultSymbol>` for the
+                // generic-struct case and we only need one entry
+                // per stmt index.
+                self.struct_generic_params[index] = Some(generic_params);
             }
         }
 
@@ -1125,11 +1130,12 @@ impl StmtPool {
                 self.trait_methods[index] = Some(methods);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::TypeAlias { name, target, visibility } => {
+            Stmt::TypeAlias { name, generic_params, target, visibility } => {
                 self.stmt_types[index] = StmtType::TypeAlias;
                 self.symbol_val[index] = Some(name);
                 self.type_decl[index] = Some(target);
                 self.visibility[index] = Some(visibility);
+                self.struct_generic_params[index] = Some(generic_params);
             }
         }
     }
@@ -1212,6 +1218,7 @@ impl StmtPool {
             StmtType::TypeAlias => {
                 Some(Stmt::TypeAlias {
                     name: self.symbol_val[index]?,
+                    generic_params: self.struct_generic_params[index].clone().unwrap_or_default(),
                     target: self.type_decl[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })

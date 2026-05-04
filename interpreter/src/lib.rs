@@ -342,13 +342,13 @@ pub fn check_typing_with_core_modules(
     // Clone string_interner for later use
     let string_interner_for_names = string_interner.clone();
 
-    // Capture user-authored functions BEFORE integration so the type-
-    // checker only walks bodies the user wrote, not bodies that come
-    // from `import math` etc. — those modules were already type-
-    // checked when they were authored, and re-checking them here
-    // would trip the namespace-only enforcement on their internal
-    // bare calls.
-    let functions = program.function.clone();
+    // Snapshot user-function count BEFORE integration so we can
+    // re-extract the user-authored slice once integration + alias
+    // resolution have run. The type-checker only walks bodies the
+    // user wrote — imported modules were already type-checked when
+    // they were authored, and re-checking would trip the namespace
+    // enforcement on their internal bare calls.
+    let user_func_count = program.function.len();
     let consts: Vec<frontend::ast::ConstDecl> = program.consts.clone();
 
     // Integrate user imports + the always-loaded prelude *before* we
@@ -360,6 +360,25 @@ pub fn check_typing_with_core_modules(
         errors.extend(module_errors);
         return Err(errors);
     }
+
+    // Cross-module type-alias resolution. A `type String = Vec<u8>`
+    // declaration in `core/std/string.t` is parsed by that file's
+    // own `Parser` instance, which substitutes the alias only
+    // within string.t. Without this pass, alias references in
+    // other modules (or in user code) would survive as bare
+    // `TypeDecl::Identifier(String)` and fail the type checker.
+    // The resolution pass walks the now-integrated AST and
+    // substitutes every alias reference (chains and generic
+    // aliases included) before any type-check work runs.
+    frontend::resolve_type_aliases(program);
+
+    // Pull the user-authored function slice from the resolved
+    // `program.function`. Integration appends stdlib functions
+    // after the user ones, so the first `user_func_count` entries
+    // are the user-authored bodies — with alias substitution
+    // already applied via `Rc::make_mut`.
+    let functions: Vec<std::rc::Rc<frontend::ast::Function>> =
+        program.function.iter().take(user_func_count).cloned().collect();
 
     // The impl_blocks walk runs over all statements (user +
     // integrated module + prelude) so impl blocks from every source

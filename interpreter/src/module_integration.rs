@@ -788,14 +788,22 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone(),
                 })
             }
-            Stmt::TypeAlias { name, target, visibility } => {
-                // Type aliases are resolved by the parser; remapping
-                // primarily preserves the historical AST node so module
-                // tooling can introspect it.
+            Stmt::TypeAlias { name, generic_params, target, visibility } => {
+                // Type aliases are resolved by the parser at file
+                // scope; the post-integration alias-resolution pass
+                // (in `frontend::resolve_type_aliases`) consumes the
+                // remapped Stmt::TypeAlias entries to substitute
+                // alias references that survived parsing in other
+                // modules.
                 let new_name = self.remap_symbol(*name)?;
+                let mut new_params = Vec::with_capacity(generic_params.len());
+                for p in generic_params {
+                    new_params.push(self.remap_symbol(*p)?);
+                }
                 let new_target = self.remap_type_decl(target)?;
                 Ok(Stmt::TypeAlias {
                     name: new_name,
+                    generic_params: new_params,
                     target: new_target,
                     visibility: visibility.clone(),
                 })

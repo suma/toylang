@@ -5,10 +5,12 @@ pub mod type_checker;
 pub mod parser;
 pub mod visitor;
 pub mod module_resolver;
+pub mod alias_resolution;
 
 #[cfg(test)]
 mod tuple_tests;
 
+pub use alias_resolution::resolve_type_aliases;
 pub use parser::{Parser, ParserWithInterner};
 pub use parser::error::{MultipleParserResult, ParserError};
 pub use type_checker::error::{MultipleTypeCheckResult, TypeCheckError};

@@ -6,6 +6,19 @@ macro_rules! token {
     }
 }
 
+/// One ASCII hex digit `0-9 a-f A-F` -> nibble value `0..=15`.
+/// Used by both the `'\xHH'` char literal rule and the `\xHH`
+/// escape inside string literals.
+#[allow(dead_code)]
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 %%
 %class Lexer
 %result_type Token
@@ -371,6 +384,20 @@ macro_rules! token {
                                 if i + 1 >= bytes.len() {
                                     return Err(Error::Unmatch);
                                 }
+                                // `\xHH` — 2-digit hex byte. Consumes
+                                // 4 input bytes and produces 1 output
+                                // byte. Either hex digit being missing
+                                // or non-hex bails as `Unmatch`.
+                                if bytes[i + 1] == b'x' {
+                                    if i + 3 >= bytes.len() {
+                                        return Err(Error::Unmatch);
+                                    }
+                                    let hi = hex_digit(bytes[i + 2]).ok_or(Error::Unmatch)?;
+                                    let lo = hex_digit(bytes[i + 3]).ok_or(Error::Unmatch)?;
+                                    out.push(((hi << 4) | lo) as char);
+                                    i += 4;
+                                    continue;
+                                }
                                 let escaped = match bytes[i + 1] {
                                     b'n'  => b'\n',
                                     b't'  => b'\t',
@@ -397,6 +424,18 @@ macro_rules! token {
                         return Ok(token!(self, Kind::String(out)));
                     }
 
+'\\x[0-9a-fA-F][0-9a-fA-F]'      {
+                        // char literal hex escape `'\xHH'` — exactly
+                        // 2 hex digits encode a u8 byte. The match
+                        // length is fixed at 6 so no fall-through to
+                        // the single-char escape rule below.
+                        let bytes = self.yytext().into_bytes();
+                        let hi = hex_digit(bytes[3]).ok_or(Error::Unmatch)?;
+                        let lo = hex_digit(bytes[4]).ok_or(Error::Unmatch)?;
+                        let value: u32 = ((hi << 4) | lo) as u32;
+                        return Ok(token!(self, Kind::UInt32(value)));
+                    }
+
 '\\.'               {
                         // char literal escape — `'\n'` / `'\t'` / `'\r'`
                         // / `'\0'` / `'\\'` / `'\''` / `'\"'`. Lexes
@@ -404,8 +443,8 @@ macro_rules! token {
                         // every downstream layer (parser / type
                         // checker / IR / 3 backends) reuses the
                         // existing `u32` literal pipeline. Unknown
-                        // escapes (e.g. `'\x'`) bail out with
-                        // `Error::Unmatch`.
+                        // escapes (e.g. `'\x'` without 2 digits) bail
+                        // out with `Error::Unmatch`.
                         let text = self.yytext();
                         let escape_byte = text.as_bytes()[2];
                         let value: u32 = match escape_byte {

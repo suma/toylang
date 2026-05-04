@@ -131,6 +131,81 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_string_literal_hex_escapes_decode() {
+        // `\xHH` two-digit hex escape inside string literals.
+        // Each one consumes 4 input bytes and produces 1 output byte.
+        for input in [
+            r#""hex\x41""#,                // 'A'
+            r#""hex\x7a""#,                // 'z' lowercase hex
+            r#""hex\x7A""#,                // 'z' uppercase hex
+            r#""hex\x00""#,                // NUL
+            r#""hex\xff""#,                // 0xff (high byte)
+            r#""\x48\x69""#,               // "Hi"
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok(),
+                "Failed to parse hex escape {:?}: {:?}",
+                input,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn test_string_literal_malformed_hex_escape_rejected() {
+        // Unfinished or non-hex `\x` should bail with `Unmatch`.
+        for input in [
+            r#""\x""#,        // no digits
+            r#""\x4""#,       // one digit
+            r#""\xZZ""#,      // non-hex
+            r#""\xG1""#,      // non-hex first
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected error parsing malformed hex escape: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_char_literal_hex_escape_decodes() {
+        // `'\xHH'` lexes to `Kind::UInt32(byte_value)`.
+        for input in [
+            r"'\x41'",   // 'A'
+            r"'\x7a'",   // 'z'
+            r"'\x00'",   // NUL
+            r"'\xff'",   // 0xff
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok(),
+                "Failed to parse char hex escape {:?}: {:?}",
+                input,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn test_char_literal_malformed_hex_escape_rejected() {
+        // Wrong digit count or non-hex digits — the rule requires
+        // exactly 2 hex digits between `\x` and the closing `'`.
+        for input in [r"'\x'", r"'\x4'", r"'\xZZ'", r"'\x123'"] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected error parsing malformed char hex escape: {input}"
+            );
+        }
+    }
+
+    #[test]
     fn test_string_literal_unknown_escape_rejected() {
         // Unknown escape (`\x`) should bail with `Error::Unmatch` —
         // surfaces as a parse failure or recorded error.

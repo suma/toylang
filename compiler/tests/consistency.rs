@@ -710,6 +710,27 @@ fn stdout_string_literal_and_var_match() {
 }
 
 #[test]
+fn hex_escape_round_trip() {
+    // `\xHH` 2-digit hex escape in both char and string literals.
+    // The lexer decodes it once (handler in `lexer.l`) and downstream
+    // sees a plain `u32` value (char) / decoded byte (string).
+    let src = r#"
+        fn main() -> u64 {
+            val a: u32 = '\x41'
+            val z: u32 = '\x7A'
+            val nul: u32 = '\x00'
+            val high: u32 = '\xff'
+            if a != 65u32 { return 1u64 }
+            if z != 122u32 { return 2u64 }
+            if nul != 0u32 { return 3u64 }
+            if high != 255u32 { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "hex_escape_round_trip");
+}
+
+#[test]
 fn stdout_string_literal_escape_sequences_match() {
     // String escape sequences are processed by the lexer once and then
     // travel as raw bytes through the type checker, IR, and all 3

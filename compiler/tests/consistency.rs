@@ -1099,6 +1099,51 @@ fn ref_stage2_tuple_mut_borrow_propagates_round_trip() {
 }
 
 #[test]
+fn ref_stage2_nested_chain_mut_borrow_round_trip() {
+    // REF-Stage-2 (iii-deep): nested field / tuple chains as
+    // `&mut <chain>` operands. Three flavours in one program:
+    //   1. `&mut o.inner.value` — struct -> struct -> scalar
+    //   2. `&mut p.a.0`         — struct -> tuple -> scalar
+    //   3. `&mut t.0.x`         — tuple  -> struct -> scalar
+    // The AOT path uses `resolve_field_chain` (not the older
+    // bare-identifier-only `resolve_tuple_element_local`) to
+    // walk to the leaf scalar local. The interpreter writeback
+    // works automatically because `evaluate(<chain>.0)` /
+    // `evaluate(<chain>.field)` already returns the parent's
+    // shared `Rc<RefCell<Object>>`, and the existing field /
+    // tuple writeback arms then store into it.
+    let src = r#"
+        struct Inner { value: u64 }
+        struct Outer { inner: Inner, tag: u64 }
+        struct Pair { a: (u64, u64), tag: u64 }
+        struct Point { x: u64, y: u64 }
+        fn add_in_place(target: &mut u64, delta: u64) {
+            target = target + delta
+        }
+        fn main() -> u64 {
+            var o: Outer = Outer { inner: Inner { value: 5u64 }, tag: 100u64 }
+            add_in_place(&mut o.inner.value, 7u64)
+            if o.tag != 100u64 { return 1u64 }
+            if o.inner.value != 12u64 { return 2u64 }
+
+            var p: Pair = Pair { a: (3u64, 8u64), tag: 999u64 }
+            add_in_place(&mut p.a.0, 10u64)
+            if p.tag != 999u64 { return 3u64 }
+            if p.a.0 != 13u64 { return 4u64 }
+
+            var t: (Point, u64) = (Point { x: 1u64, y: 200u64 }, 777u64)
+            add_in_place(&mut t.0.x, 16u64)
+            if t.1 != 777u64 { return 5u64 }
+            if t.0.y != 200u64 { return 6u64 }
+            if t.0.x != 17u64 { return 7u64 }
+
+            42u64
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_nested_chain_mut_borrow_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

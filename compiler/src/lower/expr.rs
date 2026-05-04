@@ -83,41 +83,23 @@ impl<'a> FunctionLower<'a> {
                             continue;
                         }
                     }
-                    // REF-Stage-2 (iii): `&mut s.field` /
-                    // `&mut s.0` (and nested chains) — resolve the
-                    // chain to a leaf scalar local and AddressOf
-                    // it. The leaf is one of the per-field /
-                    // per-element locals laid out by struct /
-                    // tuple expansion, so the existing
-                    // address-taken machinery just works.
-                    if let Some(Expr::FieldAccess(obj, field_sym)) =
-                        self.program.expression.get(&inner)
-                    {
-                        if let Ok(local) = self.resolve_field_local(&obj, field_sym) {
-                            let ty = self.module.function(self.func_id).locals[local.0 as usize];
-                            if matches!(
-                                ty,
-                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
-                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
-                                    | Type::I32 | Type::U32
-                            ) {
-                                self.module
-                                    .function_mut(self.func_id)
-                                    .address_taken_locals
-                                    .insert(local);
-                                let v = self
-                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
-                                    .expect("AddressOf returns a value");
-                                values.push(v);
-                                continue;
-                            }
-                        }
-                    }
-                    if let Some(Expr::TupleAccess(obj, idx)) =
-                        self.program.expression.get(&inner)
-                    {
-                        if let Ok(local) = self.resolve_tuple_element_local(&obj, idx) {
-                            let ty = self.module.function(self.func_id).locals[local.0 as usize];
+                    // REF-Stage-2 (iii): `&mut <chain>` where the
+                    // operand is any field- / tuple-access chain
+                    // ending in a scalar leaf (e.g. `&mut s.field`,
+                    // `&mut t.0`, `&mut p.a.0`, `&mut o.inner.value`).
+                    // `resolve_field_chain` walks both kinds of
+                    // accesses and returns the leaf scalar's local;
+                    // we then mark it address-taken and emit
+                    // `AddressOf`. Compound leaves (struct / tuple
+                    // mid-chain) fall through to the regular
+                    // erasure path below.
+                    if matches!(
+                        self.program.expression.get(&inner),
+                        Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
+                    ) {
+                        if let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
+                            self.resolve_field_chain(&inner)
+                        {
                             if matches!(
                                 ty,
                                 Type::I64 | Type::U64 | Type::F64 | Type::Bool

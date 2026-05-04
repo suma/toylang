@@ -801,6 +801,15 @@ pub enum InstKind {
     /// fixed_buffer slots and the default sentinel — only the
     /// arena lifecycle benefits from explicit bulk release.
     AllocArenaDrop { handle: ValueId },
+    /// Phase 5 (FixedBuffer auto-cleanup): symmetric to
+    /// `AllocArenaDrop` but specific to fixed_buffer slots.
+    /// Releases every tracked allocation, frees the bookkeeping
+    /// arrays, and resets the quota. No-op for non-fixed_buffer
+    /// slots (defensive — keeps the existing arena drop
+    /// semantics intact). Emitted at scope exit for the
+    /// `with allocator = FixedBuffer::new(cap) { ... }` temporary
+    /// form.
+    AllocFixedBufferDrop { handle: ValueId },
     /// REF-Stage-2 (b): produce a pointer-sized value that
     /// addresses the canonical storage of an IR local. The local
     /// must be in `Function.address_taken_locals`; codegen emits
@@ -1288,6 +1297,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::ArrayElemAddr { slot, index, elem_ty } => {
                 write!(f, "{prefix}array_elem_addr slot{}[{index}] : {elem_ty}", slot.0)
+            }
+            InstKind::AllocFixedBufferDrop { handle } => {
+                write!(f, "alloc_fixed_buffer_drop {handle}")
             }
         }
     }

@@ -236,6 +236,21 @@ impl Allocator for FixedBufferAllocator {
         *self.used.borrow_mut() = projected;
         new_addr
     }
+
+    /// Phase 5 (FixedBuffer auto-cleanup): bulk-release every
+    /// tracked allocation and reset the quota. The allocator
+    /// stays valid for further use after `reset`. Mirrors
+    /// `ArenaAllocator::reset` so the interpreter's
+    /// `Expr::With` arm can call `allocator_rc.reset()`
+    /// uniformly for both inline-temporary forms.
+    fn reset(&self) {
+        let mut heap = self.heap.borrow_mut();
+        for (addr, _) in self.tracked.borrow().iter() {
+            heap.free(*addr);
+        }
+        self.tracked.borrow_mut().clear();
+        *self.used.borrow_mut() = 0;
+    }
 }
 
 impl Drop for FixedBufferAllocator {

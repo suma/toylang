@@ -488,39 +488,61 @@ impl<'a> FunctionLower<'a> {
             // emitted it before terminating, so we just decrement
             // the depth without a duplicate pop.
             Expr::With(allocator_expr, body_expr) => {
-                // Phase 5 (Design A scope-bound): detect the
-                // **temporary form** `with allocator = Arena::new() { ... }`.
-                // The allocator handle is created inline and the
-                // arena slot is auto-released at scope exit (no
-                // explicit `arena.drop()`). Today only `Arena::new()`
-                // is recognised — `FixedBuffer` lacks a runtime
-                // drop hook, `Global` aliases the process-wide
-                // default and never needs one. Other temporaries
-                // fall through to the existing wrapper-struct
-                // auto-extract path below.
-                let mut auto_drop_handle: Option<crate::ir::ValueId> = None;
-                let inline_arena = if let Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) =
-                    self.program.expression.get(&allocator_expr)
-                {
-                    args.is_empty()
-                        && self.interner.resolve(struct_sym) == Some("Arena")
-                        && self.interner.resolve(fn_sym) == Some("new")
-                } else {
-                    false
-                };
-                if inline_arena {
-                    // Synthesize `__builtin_arena_allocator()` —
-                    // bypasses the `Arena::new` method dispatch
-                    // (which would require lowering an
-                    // associated-function call returning a struct
-                    // value into a temporary binding).
-                    let handle = self
-                        .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
-                        .expect("AllocArena returns a value");
+                // Phase 5 (Design A scope-bound): detect a
+                // **temporary form** for an inline allocator and
+                // auto-release the slot at scope exit. Today the
+                // recognised forms are `Arena::new()` (no args) and
+                // `FixedBuffer::new(<capacity>)` (1 arg). `Global`
+                // aliases the process-wide default and needs no
+                // drop. Other shapes fall through to the existing
+                // wrapper-struct auto-extract path below.
+                enum InlineAlloc {
+                    Arena,
+                    FixedBuffer(frontend::ast::ExprRef),
+                }
+                let inline_kind: Option<InlineAlloc> =
+                    if let Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) =
+                        self.program.expression.get(&allocator_expr)
+                    {
+                        let s = self.interner.resolve(struct_sym);
+                        let f = self.interner.resolve(fn_sym);
+                        if f == Some("new") && s == Some("Arena") && args.is_empty() {
+                            Some(InlineAlloc::Arena)
+                        } else if f == Some("new") && s == Some("FixedBuffer") && args.len() == 1 {
+                            Some(InlineAlloc::FixedBuffer(args[0]))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                if let Some(kind) = inline_kind {
+                    // Construct the handle inline so we don't have
+                    // to lower the associated-function call as a
+                    // struct-returning temporary binding.
+                    let (handle, cleanup) = match kind {
+                        InlineAlloc::Arena => {
+                            let h = self
+                                .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
+                                .expect("AllocArena returns a value");
+                            (h, super::WithScopeCleanup::ArenaDrop(h))
+                        }
+                        InlineAlloc::FixedBuffer(cap_ref) => {
+                            let cap_v = self
+                                .lower_expr(&cap_ref)?
+                                .ok_or_else(|| "FixedBuffer::new(cap): capacity produced no value".to_string())?;
+                            let h = self
+                                .emit(
+                                    InstKind::AllocFixedBuffer { capacity: cap_v },
+                                    Some(crate::ir::Type::U64),
+                                )
+                                .expect("AllocFixedBuffer returns a value");
+                            (h, super::WithScopeCleanup::FixedBufferDrop(h))
+                        }
+                    };
                     self.emit(InstKind::AllocPush { handle }, None);
                     self.with_scope_depth += 1;
-                    self.with_scope_arena_drops.push(Some(handle));
-                    auto_drop_handle = Some(handle);
+                    self.with_scope_arena_drops.push(cleanup);
                     let body_value = self.lower_expr(&body_expr)?;
                     if !self.is_unreachable() {
                         // Linear exit: matching pop + drop here.
@@ -529,8 +551,14 @@ impl<'a> FunctionLower<'a> {
                         // `emit_with_scope_cleanup` so we don't
                         // duplicate.
                         self.emit(InstKind::AllocPop, None);
-                        if let Some(h) = auto_drop_handle {
-                            self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                        match cleanup {
+                            super::WithScopeCleanup::ArenaDrop(h) => {
+                                self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                            }
+                            super::WithScopeCleanup::FixedBufferDrop(h) => {
+                                self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
+                            }
+                            super::WithScopeCleanup::None => {}
                         }
                     }
                     self.with_scope_depth -= 1;
@@ -607,7 +635,7 @@ impl<'a> FunctionLower<'a> {
                 };
                 self.emit(InstKind::AllocPush { handle }, None);
                 self.with_scope_depth += 1;
-                self.with_scope_arena_drops.push(None);
+                self.with_scope_arena_drops.push(super::WithScopeCleanup::None);
                 let body_value = self.lower_expr(&body_expr)?;
                 if !self.is_unreachable() {
                     self.emit(InstKind::AllocPop, None);

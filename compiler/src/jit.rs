@@ -361,6 +361,7 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_realloc", toy_dispatched_realloc as *const u8);
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
     jit_builder.symbol("toy_arena_drop", toy_arena_drop as *const u8);
+    jit_builder.symbol("toy_fixed_buffer_drop", toy_fixed_buffer_drop as *const u8);
 }
 
 // All helpers below mirror `runtime/toylang_rt.c`. Use libc's
@@ -734,6 +735,30 @@ unsafe extern "C" fn toy_arena_drop(handle: u64) {
     }
     slot.addrs.clear();
     slot.sizes.clear();
+}
+
+unsafe extern "C" fn toy_fixed_buffer_drop(handle: u64) {
+    if handle == 0 {
+        return;
+    }
+    let mut reg = JIT_ALLOC_REGISTRY
+        .lock()
+        .expect("alloc registry mutex poisoned");
+    let idx = (handle - 1) as usize;
+    if idx >= reg.len() {
+        eprintln!("toylang JIT runtime: invalid allocator handle");
+        std::process::exit(1);
+    }
+    let slot = &mut reg[idx];
+    if slot.kind != JitAllocKind::FixedBuffer {
+        return; // No-op for arena / default.
+    }
+    for &p in &slot.addrs {
+        unsafe { free(p) };
+    }
+    slot.addrs.clear();
+    slot.sizes.clear();
+    slot.used = 0;
 }
 
 unsafe extern "C" fn toy_dispatched_realloc(handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {

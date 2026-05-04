@@ -296,6 +296,32 @@ void toy_arena_drop(uint64_t handle) {
     slot->cap_array = 0;
 }
 
+/*
+ * Phase 5 (FixedBuffer auto-cleanup): symmetric to toy_arena_drop
+ * but specific to fixed_buffer slots. Releases every tracked
+ * allocation, frees the bookkeeping arrays, and resets the quota.
+ * No-op for non-fixed_buffer slots (default sentinel / arena) so
+ * callers don't accidentally invalidate arena pointers via the
+ * wrong builtin. Used by the temporary-form `with allocator =
+ * FixedBuffer::new(cap) { ... }` auto-cleanup wiring (the lower
+ * layer emits `AllocFixedBufferDrop` at scope exit).
+ */
+void toy_fixed_buffer_drop(uint64_t handle) {
+    if (handle == 0) return;
+    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
+    if (slot->kind != TOY_ALLOC_KIND_FIXED_BUFFER) return;
+    for (size_t i = 0; i < slot->count; i++) {
+        free(slot->addrs[i]);
+    }
+    free(slot->addrs);
+    free(slot->sizes);
+    slot->addrs = NULL;
+    slot->sizes = NULL;
+    slot->count = 0;
+    slot->cap_array = 0;
+    slot->used = 0;
+}
+
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
     if (handle == 0) {
         return realloc(p, (size_t)new_size);

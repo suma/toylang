@@ -1277,6 +1277,68 @@ fn arena_temporary_auto_cleanup_early_return_round_trip() {
 }
 
 #[test]
+fn fixed_buffer_temporary_auto_cleanup_round_trip() {
+    // Phase 5 (FixedBuffer auto-cleanup): symmetric to the
+    // Arena variant. `with allocator = FixedBuffer::new(16u64) {
+    // ... }` returns a 16-byte quota allocator, and the slot is
+    // released at scope exit (no explicit drop method needed).
+    //
+    // The body here exercises the quota:
+    //   - first 8-byte alloc fits (8 used / 16)
+    //   - second 8-byte alloc fits (16 used / 16)
+    //   - third 1-byte alloc would push past the quota -> NULL
+    // sum = 1 + 1 + 40 = 42 confirms all three branches fired.
+    let src = r#"
+        fn main() -> u64 {
+            var sum: u64 = 0u64
+            with allocator = FixedBuffer::new(16u64) {
+                val p1: ptr = __builtin_heap_alloc(8u64)
+                if !__builtin_ptr_is_null(p1) { sum = sum + 1u64 }
+                val p2: ptr = __builtin_heap_alloc(8u64)
+                if !__builtin_ptr_is_null(p2) { sum = sum + 1u64 }
+                val p3: ptr = __builtin_heap_alloc(1u64)
+                if __builtin_ptr_is_null(p3) { sum = sum + 40u64 }
+            }
+            val cur: Allocator = __builtin_current_allocator()
+            if cur != __builtin_default_allocator() { return 99u64 }
+            sum
+        }
+    "#;
+    assert_consistent(src, "fixed_buffer_temporary_auto_cleanup_round_trip");
+}
+
+#[test]
+fn fixed_buffer_temporary_auto_cleanup_early_return_round_trip() {
+    // Phase 5: early `return` from inside `with allocator =
+    // FixedBuffer::new(cap) { ... }` still pops the active stack
+    // and releases the fixed_buffer slot. AOT routes through
+    // `emit_with_scope_cleanup` walking
+    // `with_scope_arena_drops` (now `WithScopeCleanup` enum-
+    // typed) and emits `AllocPop` + `AllocFixedBufferDrop` on
+    // the `return` path; interpreter's `Expr::With` arm runs
+    // `reset()` after the body completes regardless of the exit
+    // mode.
+    let src = r#"
+        fn helper() -> u64 {
+            with allocator = FixedBuffer::new(8u64) {
+                val p: ptr = __builtin_heap_alloc(8u64)
+                if __builtin_ptr_is_null(p) { return 9u64 }
+                return 7u64
+            }
+            100u64
+        }
+        fn main() -> u64 {
+            val r: u64 = helper()
+            val cur: Allocator = __builtin_current_allocator()
+            if cur != __builtin_default_allocator() { return 1u64 }
+            if r != 7u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "fixed_buffer_temporary_auto_cleanup_early_return_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

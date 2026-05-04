@@ -210,6 +210,10 @@ pub(crate) struct CodegenSession<M: Module> {
     rt_dispatched_free: cranelift_module::FuncId,
     // #121 Phase B-rest Item 2 follow-up: explicit arena bulk-free.
     rt_arena_drop: cranelift_module::FuncId,
+    // Phase 5 (FixedBuffer auto-cleanup): explicit fixed_buffer
+    // bulk-free, symmetric to `toy_arena_drop` but specific to
+    // fixed_buffer slots.
+    rt_fixed_buffer_drop: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -466,6 +470,11 @@ impl<M: Module> CodegenSession<M> {
         arena_drop_sig.params.push(AbiParam::new(types::I64));
         let rt_arena_drop = declare_helper(&mut module, "toy_arena_drop", &arena_drop_sig)?;
 
+        // Phase 5 (FixedBuffer auto-cleanup): explicit fixed_buffer drop.
+        let mut fixed_buffer_drop_sig = Signature::new(call_conv);
+        fixed_buffer_drop_sig.params.push(AbiParam::new(types::I64));
+        let rt_fixed_buffer_drop = declare_helper(&mut module, "toy_fixed_buffer_drop", &fixed_buffer_drop_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -513,6 +522,7 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_realloc,
             rt_dispatched_free,
             rt_arena_drop,
+            rt_fixed_buffer_drop,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -1008,6 +1018,7 @@ impl<M: Module> CodegenSession<M> {
                 .module
                 .declare_func_in_func(self.rt_dispatched_free, func),
             arena_drop: self.module.declare_func_in_func(self.rt_arena_drop, func),
+            fixed_buffer_drop: self.module.declare_func_in_func(self.rt_fixed_buffer_drop, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
             sin: self.module.declare_func_in_func(self.libm_sin, func),
             cos: self.module.declare_func_in_func(self.libm_cos, func),
@@ -1064,6 +1075,7 @@ struct RuntimeRefs {
     dispatched_realloc: cranelift_codegen::ir::FuncRef,
     dispatched_free: cranelift_codegen::ir::FuncRef,
     arena_drop: cranelift_codegen::ir::FuncRef,
+    fixed_buffer_drop: cranelift_codegen::ir::FuncRef,
     pow: cranelift_codegen::ir::FuncRef,
     sin: cranelift_codegen::ir::FuncRef,
     cos: cranelift_codegen::ir::FuncRef,
@@ -2069,6 +2081,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             InstKind::AllocArenaDrop { handle } => {
                 let h = self.value(*handle);
                 self.builder.ins().call(self.runtime.arena_drop, &[h]);
+            }
+            InstKind::AllocFixedBufferDrop { handle } => {
+                let h = self.value(*handle);
+                self.builder.ins().call(self.runtime.fixed_buffer_drop, &[h]);
             }
             // Stage 1 of `&` references: call to a `&mut self`
             // method. The cranelift call returns

@@ -90,6 +90,26 @@ mod stmt;
 
 mod expr;
 
+/// Phase 5 (Design A): per-`with` scope auto-cleanup classification.
+/// Recorded by `Expr::With` lowering when entering a scope, consumed
+/// by `emit_with_scope_cleanup` on every exit path so the matching
+/// drop instruction (`AllocArenaDrop` / `AllocFixedBufferDrop`) fires
+/// after each `AllocPop`. `None` covers all non-temporary forms
+/// (named binding, wrapper-struct field-extract, raw builtin handle,
+/// `Global::new()` — global default needs no drop).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum WithScopeCleanup {
+    None,
+    /// `with allocator = Arena::new() { ... }` — handle came from
+    /// `__builtin_arena_allocator()` and is released via
+    /// `__builtin_arena_drop` at scope exit.
+    ArenaDrop(ValueId),
+    /// `with allocator = FixedBuffer::new(cap) { ... }` — handle came
+    /// from `__builtin_fixed_buffer_allocator(cap)` and is released
+    /// via `__builtin_fixed_buffer_drop` at scope exit.
+    FixedBufferDrop(ValueId),
+}
+
 // ---------------------------------------------------------------------------
 // Per-function state. Owns a mutable reference to the module so it can mint
 // new local ids / block ids / value ids as it walks the AST.
@@ -147,17 +167,17 @@ struct FunctionLower<'a> {
     /// before terminating, so the runtime allocator stack stays
     /// balanced even when control flow leaves the body early.
     with_scope_depth: usize,
-    /// Phase 5 (Design A): per-`with` scope handle that needs a
-    /// matching `__builtin_arena_drop` when the scope exits. One
-    /// entry per active `with` scope, in entry order. `Some(h)`
-    /// means the scope's allocator was created by an inline
-    /// `Arena::new()` temporary — dropping the handle releases
-    /// the arena slot. `None` means no auto-cleanup (named
-    /// binding form, `Global::new()`, FixedBuffer wrapper, raw
-    /// builtin handle, etc.). `emit_with_scope_cleanup` walks
-    /// from the current depth down to a target depth and emits
-    /// the drop alongside the `AllocPop`.
-    with_scope_arena_drops: Vec<Option<ValueId>>,
+    /// Phase 5 (Design A): per-`with` scope auto-cleanup record.
+    /// One entry per active `with` scope, in entry order.
+    /// `WithScopeCleanup::None` means no auto-cleanup (named
+    /// binding form, `Global::new()`, raw builtin handle, etc.);
+    /// the temporary forms (`Arena::new()` /
+    /// `FixedBuffer::new(cap)`) install the matching variant so
+    /// `emit_with_scope_cleanup` can emit the right drop
+    /// instruction (`AllocArenaDrop` / `AllocFixedBufferDrop`)
+    /// after each `AllocPop` on every exit path (linear or
+    /// early `return` / `break` / `continue`).
+    with_scope_arena_drops: Vec<WithScopeCleanup>,
     /// Block we are currently appending instructions into. None means the
     /// previous block was just terminated and the lowering pass is in the
     /// "unreachable" state — code after a `return` / `break` / `continue`
@@ -326,17 +346,21 @@ impl<'a> FunctionLower<'a> {
         let mut depth = self.with_scope_depth;
         while depth > target_depth {
             self.emit(crate::ir::InstKind::AllocPop, None);
-            // Phase 5: if the leaving scope owns an inline-arena
-            // handle, drop it after the pop so the registry slot
-            // is released even on early-exit paths
-            // (`return` / `break` / `continue`). Index is
-            // `depth - 1` because the stack mirrors
-            // `with_scope_depth`: scope #1 lives at index 0.
-            if let Some(Some(handle)) = self.with_scope_arena_drops.get(depth - 1).copied() {
-                self.emit(
-                    crate::ir::InstKind::AllocArenaDrop { handle },
-                    None,
-                );
+            // Phase 5: if the leaving scope owns an inline
+            // allocator handle (Arena or FixedBuffer), drop it
+            // after the pop so the registry slot is released
+            // even on early-exit paths (`return` / `break` /
+            // `continue`). Index is `depth - 1` because the
+            // stack mirrors `with_scope_depth`: scope #1 lives
+            // at index 0.
+            match self.with_scope_arena_drops.get(depth - 1).copied() {
+                Some(WithScopeCleanup::ArenaDrop(handle)) => {
+                    self.emit(crate::ir::InstKind::AllocArenaDrop { handle }, None);
+                }
+                Some(WithScopeCleanup::FixedBufferDrop(handle)) => {
+                    self.emit(crate::ir::InstKind::AllocFixedBufferDrop { handle }, None);
+                }
+                _ => {}
             }
             depth -= 1;
         }

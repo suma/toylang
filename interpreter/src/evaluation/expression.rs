@@ -123,19 +123,23 @@ impl EvaluationContext<'_> {
                 // blocks always restore the outer binding.
                 //
                 // Phase 5 (Design A scope-bound): when the allocator
-                // expression is the `Arena::new()` temporary form,
-                // remember that the resulting handle should be
-                // auto-released at scope exit (`reset()` on the arena
-                // backend frees every allocation tracked by the slot).
-                // Only the syntactic temporary fires — `val a =
-                // Arena::new()` followed by `with allocator = a {}`
-                // stays under user control via `a.drop()`.
-                let inline_arena = if let Some(Expr::AssociatedFunctionCall(s, f, args)) =
+                // expression is one of the **temporary forms**
+                // (`Arena::new()` / `FixedBuffer::new(cap)`), remember
+                // that the resulting handle should be auto-released
+                // at scope exit. `reset()` on each backend
+                // (`ArenaAllocator` / `FixedBufferAllocator`) frees
+                // every tracked allocation; the `Allocator` trait's
+                // default impl is a no-op so wrapper structs / raw
+                // global handle / named bindings are unaffected.
+                let inline_temporary = if let Some(Expr::AssociatedFunctionCall(s, f, args)) =
                     self.expr_pool.get(&allocator)
                 {
-                    args.is_empty()
-                        && self.string_interner.resolve(s) == Some("Arena")
-                        && self.string_interner.resolve(f) == Some("new")
+                    let is_new = self.string_interner.resolve(f) == Some("new");
+                    let is_arena =
+                        is_new && self.string_interner.resolve(s) == Some("Arena") && args.is_empty();
+                    let is_fb =
+                        is_new && self.string_interner.resolve(s) == Some("FixedBuffer") && args.len() == 1;
+                    is_arena || is_fb
                 } else {
                     false
                 };
@@ -183,16 +187,16 @@ impl EvaluationContext<'_> {
                     Err(InterpreterError::InternalError("with body is not a block".to_string()))
                 };
                 self.allocator_stack.pop();
-                if inline_arena {
+                if inline_temporary {
                     // Phase 5 auto-cleanup: release every
-                    // allocation the inline arena tracked. The
-                    // `Allocator` trait's default `reset` is a
-                    // no-op; `ArenaAllocator::reset` clears its
-                    // tracked addrs (matches `__builtin_arena_drop`
-                    // semantics on the runtime side). Runs even
-                    // when the body returned an error so the
-                    // arena slot doesn't leak on panic / early
-                    // exit paths.
+                    // allocation the inline allocator tracked.
+                    // `Allocator::reset`'s default is a no-op;
+                    // `ArenaAllocator::reset` and
+                    // `FixedBufferAllocator::reset` each free
+                    // tracked addrs (matches the corresponding
+                    // `__builtin_*_drop` runtime helpers). Runs
+                    // even when the body returned an error so
+                    // the slot doesn't leak on early-exit paths.
                     allocator_rc.reset();
                 }
                 result

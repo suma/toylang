@@ -87,10 +87,23 @@ impl TypeDecl {
                 p1.len() == p2.len()
                     && p1.iter().zip(p2.iter()).all(|(a, b)| a.is_equivalent(b))
             }
-            // Two structs are equivalent if they have the same name and compatible type parameters
+            // Two structs are equivalent if they have the same name and
+            // compatible type parameters. Mirroring the `Enum/Enum` case
+            // above, when either side carries no type params we accept
+            // the pair: `is_equivalent` is also called at runtime to
+            // compare an annotated `Struct(name, [Int64])` against a
+            // value's bare `Struct(name, [])` — runtime values don't
+            // track type args, and the static type checker has already
+            // verified the parameter shape upstream.
             (TypeDecl::Struct(s1, params1), TypeDecl::Struct(s2, params2)) => {
-                s1 == s2 && params1.len() == params2.len() &&
-                params1.iter().zip(params2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
+                if s1 != s2 {
+                    return false;
+                }
+                if params1.is_empty() || params2.is_empty() {
+                    return true;
+                }
+                params1.len() == params2.len()
+                    && params1.iter().zip(params2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
             // Generic types are compatible with any type during inference
             (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,

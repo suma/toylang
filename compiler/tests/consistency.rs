@@ -1560,6 +1560,42 @@ fn char_literal_round_trip() {
 }
 
 #[test]
+fn generic_struct_value_passing_round_trip() {
+    // Pre-existing limitation now fixed: passing a generic-struct
+    // value across a function boundary used to fail in the
+    // interpreter with `Struct(name, []) != Struct(name, [Int64])`
+    // because runtime values don't carry type args. Static type
+    // checking already passes; this is the runtime defence-in-depth
+    // check that was too strict. `is_equivalent` for `Struct/Struct`
+    // now accepts an empty params side, mirroring the existing
+    // `Enum/Enum` and `Identifier/Struct` relaxations.
+    //
+    // Pin the fix across all 3 backends.
+    let src = r#"
+        struct Box<T> { v: T }
+
+        fn unwrap_int(p: Box<i64>) -> i64 {
+            p.v
+        }
+
+        fn double_pair(p: Box<u64>) -> u64 {
+            p.v + p.v
+        }
+
+        fn main() -> u64 {
+            val a: Box<i64> = Box { v: 21i64 }
+            val b: Box<u64> = Box { v: 7u64 }
+            val ai: i64 = unwrap_int(a)
+            val bi: u64 = double_pair(b)
+            if ai != 21i64 { return 1u64 }
+            if bi != 14u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "generic_struct_value_passing_round_trip");
+}
+
+#[test]
 fn generic_type_alias_round_trip() {
     // `type Pair<T> = Box<T>` — a parameterised alias. Use sites
     // `Pair<i64>` and `Pair<u64>` substitute the type arg into the
@@ -1572,20 +1608,27 @@ fn generic_type_alias_round_trip() {
     //     Pair<i64>`) — chains a substituted form into another
     //     alias name
     //
-    // Note: passing struct values across function boundaries is
-    // intentionally avoided here because of a pre-existing
-    // interpreter limitation around generic-arg propagation on
-    // struct literals — uses below stick to direct field access /
-    // construction.
+    // The earlier `Struct(name, []) vs Struct(name, [...])` runtime
+    // limitation was lifted in the same series, so we can now also
+    // pass alias-typed struct values across function boundaries.
     let src = r#"
         struct Box<T> { v: T }
         type Pair<T> = Box<T>
         type IntPair = Pair<i64>
 
+        fn unwrap_int(p: IntPair) -> i64 {
+            p.v
+        }
+
+        fn make_u64_pair(n: u64) -> Pair<u64> {
+            Box { v: n }
+        }
+
         fn main() -> u64 {
             val a: IntPair = Box { v: 21i64 }
-            val b: Pair<u64> = Box { v: 7u64 }
-            if a.v != 21i64 { return 1u64 }
+            val b: Pair<u64> = make_u64_pair(7u64)
+            val ai: i64 = unwrap_int(a)
+            if ai != 21i64 { return 1u64 }
             if b.v != 7u64 { return 2u64 }
             42u64
         }

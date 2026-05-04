@@ -72,6 +72,26 @@ impl Environment {
         }
     }
 
+    /// Like `set_val` but flags the binding as mutable. Used for
+    /// REF-Stage-2 `&mut T` parameter bindings: the body needs to
+    /// assign through the parameter name (the type checker sees
+    /// auto-deref'd `T` and emits an `Assign(Identifier, ...)`).
+    /// True mutation propagation back to the caller's binding is
+    /// out of scope for this minimal phase — the AOT backend has
+    /// it via `AddressOf` + `StoreRef`, the interpreter for now
+    /// just lets the body run without rejecting the assignment.
+    pub fn set_val_mutable(&mut self, name: DefaultSymbol, value: Value) {
+        if let Some(last) = self.var.last_mut() {
+            last.insert(
+                name,
+                VariableValue {
+                    mutable: true,
+                    value,
+                },
+            );
+        }
+    }
+
     pub fn set_var(&mut self, name: DefaultSymbol, value: Value, set_type: VariableSetType, string_interner: &DefaultStringInterner) -> Result<(), InterpreterError> {
         let current = self.var.iter_mut().rfind(|v| v.contains_key(&name));
 

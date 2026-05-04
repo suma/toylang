@@ -490,6 +490,18 @@ impl<'a> FunctionLower<'a> {
                             .expect("LoadLocal returns a value");
                         return Ok(MatchScrutinee::Scalar { value: v, ty });
                     }
+                    Binding::RefScalar { local, pointee_ty, .. } => {
+                        // `match &mut <ref>` — auto-dereference the
+                        // pointer first so the scalar match path
+                        // operates on the pointee's value.
+                        let ptr = self
+                            .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                            .expect("LoadLocal returns a value");
+                        let v = self
+                            .emit(InstKind::LoadRef { ptr, ty: pointee_ty }, Some(pointee_ty))
+                            .expect("LoadRef returns a value");
+                        return Ok(MatchScrutinee::Scalar { value: v, ty: pointee_ty });
+                    }
                     Binding::Struct { .. } | Binding::Tuple { .. } | Binding::Array { .. } => {
                         return Err(format!(
                             "compiler MVP does not support `match` on struct / tuple / array \

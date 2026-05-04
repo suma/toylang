@@ -96,6 +96,10 @@ impl<'a> FunctionLower<'a> {
                     local: *local,
                     ty: *ty,
                 }),
+                Some(Binding::RefScalar { .. }) => Err(format!(
+                    "compiler MVP cannot use reference scalar `{}` as a field-access chain root",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
                 Some(Binding::Struct { struct_id, fields }) => Ok(FieldChainResult::Struct {
                     struct_id: *struct_id,
                     fields: fields.clone(),

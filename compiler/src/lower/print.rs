@@ -63,6 +63,12 @@ impl<'a> FunctionLower<'a> {
                         return Ok(None);
                     }
                     Binding::Scalar { .. } => {}
+                    Binding::RefScalar { .. } => {
+                        // Fall through to the regular scalar path —
+                        // `lower_expr(Identifier)` for a RefScalar
+                        // already emits the LoadRef so the pointee
+                        // value flows into the print helper.
+                    }
                     Binding::Enum(storage) => {
                         self.emit_print_enum(&storage, newline)?;
                         return Ok(None);

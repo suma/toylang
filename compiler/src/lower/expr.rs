@@ -37,9 +37,57 @@ impl<'a> FunctionLower<'a> {
         };
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
         for a in &items {
-            // REF-Stage-2: peel an explicit `&value` / `&mut value`
-            // borrow expression so the same identifier-expansion path
-            // below can run. Borrow is type-erased at the IR layer.
+            // REF-Stage-2 (b)+(c)+(g): explicit `&<var>` / `&mut <var>`
+            // borrow of a SCALAR local emits an `AddressOf` and marks
+            // the local as address-taken so codegen allocates it in a
+            // stack slot. The function's `&T` / `&mut T` parameter on
+            // the other side reads / writes through this pointer via
+            // LoadRef / StoreRef.
+            //
+            // Compound borrows (struct / tuple / enum) still go through
+            // the leaf-flatten erasure path — those are out of scope
+            // for the scalar-only true-pointer phase.
+            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a) {
+                if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
+                    if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
+                        if let Some(Binding::Scalar { local, ty }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            if matches!(
+                                ty,
+                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                    | Type::I32 | Type::U32
+                            ) {
+                                self.module
+                                    .function_mut(self.func_id)
+                                    .address_taken_locals
+                                    .insert(local);
+                                let v = self
+                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                                    .expect("AddressOf returns a value");
+                                values.push(v);
+                                continue;
+                            }
+                        }
+                        // RefScalar binding: just forward the
+                        // pointer (the binding's local already
+                        // holds the U64 ptr).
+                        if let Some(Binding::RefScalar { local, .. }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                                .expect("LoadLocal returns a value");
+                            values.push(v);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // REF-Stage-2: fall back — peel an explicit borrow so the
+            // same identifier-expansion path below runs (compound
+            // borrows / non-identifier operands).
             let arg_expr_ref = match self.program.expression.get(a) {
                 Some(Expr::Unary(op, inner))
                     if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) =>
@@ -145,6 +193,18 @@ impl<'a> FunctionLower<'a> {
                     Some(Binding::Scalar { local, ty }) => {
                         self.pending_struct_value = None;
                         Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+                    }
+                    Some(Binding::RefScalar { local, pointee_ty, .. }) => {
+                        // REF-Stage-2 (g): a `&T` / `&mut T` parameter
+                        // binding is auto-dereferenced when read in
+                        // value position. Load the pointer from the
+                        // local, then dereference it via LoadRef to
+                        // the pointee scalar.
+                        self.pending_struct_value = None;
+                        let ptr = self
+                            .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                            .ok_or_else(|| "RefScalar load: LoadLocal returned no value".to_string())?;
+                        Ok(self.emit(InstKind::LoadRef { ptr, ty: pointee_ty }, Some(pointee_ty)))
                     }
                     Some(Binding::Struct { fields, .. }) => {
                         // Tail-position use: stash the struct's field

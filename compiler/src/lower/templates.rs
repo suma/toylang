@@ -496,11 +496,24 @@ pub(super) fn lower_param_or_return_type(
     module: &mut Module,
     interner: &DefaultStringInterner,
 ) -> Option<Type> {
-    // REF-Stage-2: peel `&T` and recurse so a parameter of type
-    // `&String` lowers to the same IR signature shape as a `String`
-    // parameter (struct leaf-flatten). True pointer passing is a
-    // future phase.
+    // REF-Stage-2 (b)+(c)+(g): scalar `&T` / `&mut T` parameter
+    // lowers to a single pointer-sized IR slot (`Type::U64`).
+    // Compound `&T` (struct / tuple / enum) still leaf-flattens
+    // through erasure for now — `Type::Ref` for compound pointees
+    // would require stack-slot allocation for every leaf, which
+    // is out of scope until the codegen layer learns to flatten
+    // ref-of-struct.
     if let TypeDecl::Ref { inner, .. } = ty {
+        if let Some(scalar) = lower_scalar(inner) {
+            if matches!(
+                scalar,
+                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                    | Type::I32 | Type::U32
+            ) {
+                return Some(Type::U64);
+            }
+        }
         return lower_param_or_return_type(inner, struct_defs, enum_defs, module, interner);
     }
     if let Some(t) = lower_scalar(ty) {

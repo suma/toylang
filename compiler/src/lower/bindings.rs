@@ -22,6 +22,19 @@ pub(super) enum Binding {
         local: LocalId,
         ty: Type,
     },
+    /// REF-Stage-2 (b)+(c)+(g): `&mut T` or `&T` parameter binding.
+    /// The IR `local` holds a U64-sized pointer (incoming
+    /// `stack_addr` value from the caller's `AddressOf`); reads of
+    /// the binding emit `LoadLocal` + `LoadRef`, and assignments to
+    /// the binding (only allowed when `is_mut`) emit `LoadLocal` +
+    /// `StoreRef` so the mutation propagates back to the caller's
+    /// storage. Today only created for scalar `pointee_ty` —
+    /// struct / tuple / enum `&mut T` is a future phase.
+    RefScalar {
+        local: LocalId,
+        pointee_ty: Type,
+        is_mut: bool,
+    },
     Struct {
         /// Identifies the monomorphised struct instance this binding
         /// belongs to. Codegen uses it to look up the field type list

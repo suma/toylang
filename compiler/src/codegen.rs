@@ -1073,6 +1073,24 @@ struct RuntimeRefs {
     exp: cranelift_codegen::ir::FuncRef,
 }
 
+/// REF-Stage-2: byte size of a scalar IR type for stack-slot
+/// allocation. Used by the address-taken-locals path to decide
+/// the slot width. Compound types must not reach this helper —
+/// the only call site is for scalar locals whose address was
+/// taken (today: `&mut <var>` borrow expressions, which only
+/// work against scalar bindings).
+fn ir_type_byte_size(t: IrType) -> u32 {
+    match t {
+        IrType::I64 | IrType::U64 | IrType::F64 | IrType::Str => 8,
+        IrType::I32 | IrType::U32 => 4,
+        IrType::I16 | IrType::U16 => 2,
+        IrType::I8 | IrType::U8 | IrType::Bool => 1,
+        IrType::Unit | IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {
+            panic!("ir_type_byte_size: compound type {:?} cannot back an address-taken local (REF-Stage-2 scalar-only)", t)
+        }
+    }
+}
+
 fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
     match t {
         IrType::I64 | IrType::U64 => Some(types::I64),
@@ -1180,6 +1198,12 @@ struct LowerCtx<'a, 'b> {
     /// stack allocation we can address with `stack_addr` /
     /// `stack_load` / `stack_store`.
     array_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
+    /// REF-Stage-2 (b)+(c): per-LocalId cranelift `StackSlot` for
+    /// scalar locals whose address is taken (the IR's
+    /// `Function.address_taken_locals` set). LoadLocal /
+    /// StoreLocal route through `stack_load` / `stack_store` for
+    /// these so the storage AddressOf points at stays canonical.
+    addr_taken_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
 }
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
@@ -1239,6 +1263,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             locals: HashMap::new(),
             values: HashMap::new(),
             array_slots: HashMap::new(),
+            addr_taken_slots: HashMap::new(),
         }
     }
 
@@ -1266,6 +1291,24 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.locals.insert(i as u32, var);
             }
         }
+        // 2a-bis. REF-Stage-2 (c): allocate a cranelift StackSlot for
+        //         every scalar local whose address is taken. The slot
+        //         size matches the local's IR type byte width.
+        //         LoadLocal / StoreLocal will route through this slot
+        //         for address-taken locals so the canonical storage
+        //         is the one AddressOf yields a `stack_addr` for.
+        for &local in &func.address_taken_locals {
+            let ir_ty = func.locals[local.0 as usize];
+            let bytes = ir_type_byte_size(ir_ty);
+            let slot = self.builder.create_sized_stack_slot(
+                cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    bytes,
+                    0,
+                ),
+            );
+            self.addr_taken_slots.insert(local.0, slot);
+        }
         // 2b. Allocate one cranelift StackSlot per IR array slot.
         // Size = length * stride (stride is uniform 8 bytes for the
         // scalar element types this MVP supports). Codegen later
@@ -1286,6 +1329,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         // params were structs.
         let block_params: Vec<Value> = self.builder.block_params(entry).to_vec();
         for (i, val) in block_params.iter().enumerate() {
+            // REF-Stage-2 (c): if a parameter local is address-taken,
+            // its incoming block-param value must be stored into the
+            // explicit stack slot rather than def_var'd into a SSA
+            // Variable, so subsequent LoadLocal / AddressOf reads see
+            // the canonical storage.
+            if let Some(slot) = self.addr_taken_slots.get(&(i as u32)).copied() {
+                self.builder.ins().stack_store(*val, slot, 0);
+                continue;
+            }
             let var = self
                 .locals
                 .get(&(i as u32))
@@ -1534,14 +1586,54 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.record_result(inst, result);
             }
             InstKind::LoadLocal(local) => {
-                let var = self.local(*local);
-                let v = self.builder.use_var(var);
-                self.record_result(inst, v);
+                // REF-Stage-2 (c): address-taken locals are stored in
+                // an explicit `StackSlot` rather than a SSA `Variable`.
+                // Read them via `stack_load` so the canonical storage
+                // (the one `AddressOf` returns a `stack_addr` for) is
+                // the source of truth.
+                if let Some(slot) = self.addr_taken_slots.get(&local.0).copied() {
+                    let ir_ty = self.ir_module.function(self.func_id).locals[local.0 as usize];
+                    let cl_ty = ir_to_cranelift_ty(ir_ty)
+                        .ok_or_else(|| format!("LoadLocal: address-taken local {local:?} has unsupported type {ir_ty:?}"))?;
+                    let v = self.builder.ins().stack_load(cl_ty, slot, 0);
+                    self.record_result(inst, v);
+                } else {
+                    let var = self.local(*local);
+                    let v = self.builder.use_var(var);
+                    self.record_result(inst, v);
+                }
             }
             InstKind::StoreLocal { dst, src } => {
-                let var = self.local(*dst);
                 let v = self.value(*src);
-                self.builder.def_var(var, v);
+                if let Some(slot) = self.addr_taken_slots.get(&dst.0).copied() {
+                    self.builder.ins().stack_store(v, slot, 0);
+                } else {
+                    let var = self.local(*dst);
+                    self.builder.def_var(var, v);
+                }
+            }
+            InstKind::AddressOf { local } => {
+                let slot = *self.addr_taken_slots.get(&local.0).ok_or_else(|| {
+                    format!(
+                        "AddressOf {local:?}: local was not registered in `address_taken_locals`",
+                    )
+                })?;
+                let v = self.builder.ins().stack_addr(types::I64, slot, 0);
+                self.record_result(inst, v);
+            }
+            InstKind::LoadRef { ptr, ty } => {
+                let p = self.value(*ptr);
+                let cl_ty = ir_to_cranelift_ty(*ty)
+                    .ok_or_else(|| format!("LoadRef: unsupported pointee type {ty:?}"))?;
+                use cranelift_codegen::ir::MemFlags;
+                let v = self.builder.ins().load(cl_ty, MemFlags::new(), p, 0);
+                self.record_result(inst, v);
+            }
+            InstKind::StoreRef { ptr, value, ty: _ } => {
+                let p = self.value(*ptr);
+                let v = self.value(*value);
+                use cranelift_codegen::ir::MemFlags;
+                self.builder.ins().store(MemFlags::new(), v, p, 0);
             }
             InstKind::Call { target, args } => {
                 let func_ref = *self

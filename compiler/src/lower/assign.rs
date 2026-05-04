@@ -102,11 +102,40 @@ impl<'a> FunctionLower<'a> {
                     self.lower_into_enum_storage(rhs, &storage)?;
                     return Ok(None);
                 }
+                // REF-Stage-2 (g): assignment to a `&mut T` parameter
+                // binding writes through the pointer. Reads of the
+                // pointer happen first (via LoadLocal) so the rhs
+                // can side-effect freely. `&T` (immutable) bindings
+                // reject assignment here — the type checker also
+                // catches this earlier, so this is a defence-in-depth.
+                if let Some(Binding::RefScalar { local, pointee_ty, is_mut }) =
+                    self.bindings.get(&sym).cloned()
+                {
+                    if !is_mut {
+                        return Err(format!(
+                            "cannot assign through immutable reference binding `{}`",
+                            self.interner.resolve(sym).unwrap_or("?"),
+                        ));
+                    }
+                    let rhs_val = self
+                        .lower_expr(rhs)?
+                        .ok_or_else(|| "assignment rhs produced no value".to_string())?;
+                    let ptr = self
+                        .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                        .ok_or_else(|| "RefScalar assign: LoadLocal returned no value".to_string())?;
+                    self.emit(InstKind::StoreRef { ptr, value: rhs_val, ty: pointee_ty }, None);
+                    return Ok(None);
+                }
                 let rhs_val = self
                     .lower_expr(rhs)?
                     .ok_or_else(|| "assignment rhs produced no value".to_string())?;
                 let local = match self.bindings.get(&sym) {
                     Some(Binding::Scalar { local, .. }) => *local,
+                    Some(Binding::RefScalar { .. }) => {
+                        // Already handled above; the early-return
+                        // above means we never reach here.
+                        unreachable!("RefScalar assign was peeked");
+                    }
                     Some(Binding::Struct { .. }) => {
                         return Err(format!(
                             "compiler MVP cannot reassign a struct binding `{}` whole (assign individual fields instead)",

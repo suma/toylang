@@ -555,8 +555,21 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check identifiers
     pub fn visit_identifier(&mut self, name: DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         if let Some(val_type) = self.context.get_var(name) {
-            // Return the stored type, which may be Number for type inference
+            // Return the stored type, which may be Number for type inference.
+            // REF-Stage-2 (g): auto-dereference reference bindings in value
+            // position. Reads of a `&mut T` / `&T` parameter behave as
+            // reads of `T`; the lowering layer emits the LoadRef for the
+            // scalar pointee. Method dispatch (`obj.method`) and explicit
+            // borrow (`&x`) sit on different paths so their type-checker
+            // arms don't see the auto-deref and can still inspect the
+            // ref-ness directly. Forwarding a ref binding to a `&mut T`
+            // parameter today requires `&mut x` — which is rejected on
+            // a `&mut T` binding because the operand isn't a `var`-
+            // declared local; a future phase can add ref forwarding.
             let _name_str = self.resolve_symbol_name(name);
+            if let TypeDecl::Ref { inner, .. } = &val_type {
+                return Ok((**inner).clone());
+            }
             Ok(val_type.clone())
         } else if let Some(fun) = self.context.get_fn(name) {
             Ok(fun.return_type.clone().unwrap_or(TypeDecl::Unknown))

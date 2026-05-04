@@ -896,6 +896,39 @@ fn struct_with_tuple_field_read_and_print() {
         "Outer { inner: (3, 7), tag: 1 }\n",
     );
 }
+#[test]
+fn ref_stage2_scalar_mut_ref_propagates_mutation() {
+    // REF-Stage-2 (b)+(c)+(g) scalar minimum: a `&mut u64`
+    // parameter actually mutates the caller's binding through the
+    // pointer.  IR-level pieces wired up by this test:
+    //   - frontend: `&mut T` parameter binding registers as
+    //     mutable + body assignments lower via `StoreRef`.
+    //   - lowering: caller `&mut n` emits `AddressOf(n_local)` and
+    //     marks `n_local` as address-taken; param binding is a
+    //     `Binding::RefScalar` whose reads / writes emit
+    //     `LoadLocal`+`LoadRef` / `LoadLocal`+`StoreRef`.
+    //   - codegen: address-taken locals get a real cranelift
+    //     `StackSlot`; `AddressOf` returns `stack_addr`, `LoadRef`
+    //     becomes `load.<ty>`, `StoreRef` becomes `store.<ty>`.
+    //
+    // Interpreter / JIT mutation propagation is intentionally
+    // deferred (interpreter's by-value semantics + JIT silent
+    // fallback both need separate work), so this test is AOT-only
+    // — the in-process consistency harness would diverge otherwise.
+    let src = r#"
+        fn inc(x: &mut u64) {
+            x = x + 1u64
+        }
+        fn main() -> u64 {
+            var n: u64 = 41u64
+            inc(&mut n)
+            n
+        }
+    "#;
+    let code = compile_and_run(src, "ref_stage2_scalar_mut_ref");
+    assert_eq!(code, 42);
+}
+
 // ----------------------------------------------------------------------------
 // math/abs edge cases and compositional tests.
 // ----------------------------------------------------------------------------

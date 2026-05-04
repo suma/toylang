@@ -863,7 +863,36 @@ impl<'a> FunctionLower<'a> {
         // must agree with this expansion; codegen mirrors the same
         // walk to assign block params to locals.
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
-        for (i, (name, _decl_ty)) in func.parameter.iter().enumerate() {
+        for (i, (name, decl_ty)) in func.parameter.iter().enumerate() {
+            // REF-Stage-2 (b)+(c)+(g): `&T` / `&mut T` scalar parameter
+            // binds as `Binding::RefScalar` so reads / assignments
+            // emit LoadRef / StoreRef against the pointer the
+            // caller passed via `AddressOf`. The IR-level param
+            // type stays U64 (pointer-sized handle).
+            if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty {
+                if let Some(pointee_ty) = super::types::lower_scalar(inner) {
+                    if matches!(
+                        pointee_ty,
+                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                            | Type::I32 | Type::U32
+                    ) {
+                        // The IR Type for the local that holds the
+                        // pointer is U64 regardless of the pointee.
+                        let local = self.module.function_mut(self.func_id).add_local(Type::U64);
+                        self.bindings.insert(
+                            *name,
+                            Binding::RefScalar { local, pointee_ty, is_mut: *is_mut },
+                        );
+                        continue;
+                    }
+                }
+                // Compound &T / &mut T parameter — leave it to fall
+                // through to the existing struct/tuple/enum paths
+                // below (handled via leaf-flatten erasure for now;
+                // the struct &mut T true-pointer path is future
+                // work).
+            }
             match param_types[i] {
                 Type::Struct(struct_id) => {
                     let field_bindings = self.allocate_struct_fields(struct_id);

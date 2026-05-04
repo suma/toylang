@@ -500,9 +500,22 @@ impl<'a> TypeCheckerVisitor<'a> {
             &mut self.context.current_fn_generic_bounds,
             func.generic_bounds.clone(),
         );
-        // Define variable of argument for this `func`
+        // Define variable of argument for this `func`. REF-Stage-2:
+        // a `&mut T` parameter is mutable through the reference —
+        // use `set_mutable_var` so assignments inside the body
+        // (which lower to `StoreRef` on the underlying pointer)
+        // pass the mut-binding check. Plain value params and `&T`
+        // params stay immutable.
         func.parameter.iter().for_each(|(name, type_decl)| {
-            self.context.set_var(*name, type_decl.clone());
+            let is_mut_ref = matches!(
+                type_decl,
+                TypeDecl::Ref { is_mut: true, .. }
+            );
+            if is_mut_ref {
+                self.context.set_mutable_var(*name, type_decl.clone());
+            } else {
+                self.context.set_var(*name, type_decl.clone());
+            }
         });
 
         // `requires` clauses see only the parameters, not `result`. Each must

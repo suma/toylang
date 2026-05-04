@@ -170,6 +170,7 @@ impl Module {
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
+            address_taken_locals: std::collections::HashSet::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -212,6 +213,7 @@ impl Module {
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
             array_slots: Vec::new(),
+            address_taken_locals: std::collections::HashSet::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -362,6 +364,16 @@ pub struct Function {
     /// codegen materialises one cranelift `StackSlot` per entry and
     /// dispatches `ArrayLoad` / `ArrayStore` against it.
     pub array_slots: Vec<ArraySlotInfo>,
+    /// REF-Stage-2 (b)+(c): scalar locals whose address is taken
+    /// somewhere in the function body (today only via the
+    /// `&mut <var>` borrow expression in a call argument). Codegen
+    /// allocates a cranelift `StackSlot` for each one instead of
+    /// the default register-only `Variable`, and routes `LoadLocal`
+    /// / `StoreLocal` through `stack_load` / `stack_store` so the
+    /// `AddressOf` instruction's `stack_addr` value points at the
+    /// canonical storage. Locals not in this set keep the original
+    /// SSA `Variable` path.
+    pub address_taken_locals: std::collections::HashSet<LocalId>,
     pub blocks: Vec<Block>,
     pub entry: BlockId,
 }
@@ -789,6 +801,23 @@ pub enum InstKind {
     /// fixed_buffer slots and the default sentinel — only the
     /// arena lifecycle benefits from explicit bulk release.
     AllocArenaDrop { handle: ValueId },
+    /// REF-Stage-2 (b): produce a pointer-sized value that
+    /// addresses the canonical storage of an IR local. The local
+    /// must be in `Function.address_taken_locals`; codegen emits
+    /// `stack_addr` against the cranelift `StackSlot` it
+    /// allocated for that local. Result type is `U64` (pointer-
+    /// sized).
+    AddressOf { local: LocalId },
+    /// REF-Stage-2 (b): dereference a pointer value to read a
+    /// scalar of `ty`. Codegen emits `load.<cl_ty(ty)>` against
+    /// the pointer. Used to lower reads of `&mut T` parameters
+    /// and (eventually) general `&T` value reads.
+    LoadRef { ptr: ValueId, ty: Type },
+    /// REF-Stage-2 (b): write a scalar `value` through a pointer.
+    /// Codegen emits `store.<cl_ty(value)>`. Used to lower
+    /// assignments to `&mut T` parameter bindings (they propagate
+    /// the mutation back to the caller's storage).
+    StoreRef { ptr: ValueId, value: ValueId, ty: Type },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1239,6 +1268,11 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
             InstKind::AllocArenaDrop { handle } => write!(f, "alloc_arena_drop {handle}"),
+            InstKind::AddressOf { local } => write!(f, "{prefix}address_of {local}"),
+            InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),
+            InstKind::StoreRef { ptr, value, ty } => {
+                write!(f, "store_ref {ptr}, {value} : {ty}")
+            }
         }
     }
 }

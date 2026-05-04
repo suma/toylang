@@ -232,6 +232,7 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
+                Some(Binding::RefScalar { pointee_ty, .. }) => Some(*pointee_ty),
                 Some(Binding::Struct { struct_id, .. }) => Some(Type::Struct(*struct_id)),
                 Some(Binding::Tuple { elements }) => {
                     let element_tys: Vec<Type> = elements

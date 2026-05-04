@@ -937,9 +937,23 @@ impl EvaluationContext<'_> {
 
         self.environment.enter_block();
         for (i, value) in args.iter().enumerate() {
-            let name = function.parameter.get(i)
-                .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?.0;
-            self.environment.set_val(name, value.clone());
+            let param = function.parameter.get(i)
+                .ok_or_else(|| InterpreterError::InternalError("Invalid parameter index".to_string()))?;
+            // REF-Stage-2: `&mut T` parameter bindings must be
+            // mutable so the body's `x = ...` assignment runs.
+            // Mutation propagation back to the caller is the AOT
+            // backend's job (true `AddressOf` + `StoreRef`); the
+            // interpreter today just accepts the assignment so the
+            // body completes without error.
+            let is_mut_ref = matches!(
+                &param.1,
+                frontend::type_decl::TypeDecl::Ref { is_mut: true, .. }
+            );
+            if is_mut_ref {
+                self.environment.set_val_mutable(param.0, value.clone());
+            } else {
+                self.environment.set_val(param.0, value.clone());
+            }
         }
 
         // Pre-body `requires` checks. Shares the same helper as the method

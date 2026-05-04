@@ -40,7 +40,7 @@ impl<'a> FunctionLower<'a> {
         // loop entry so `break` / `continue` inside the loop body
         // emit `AllocPop` only for `with` scopes opened *inside*
         // the loop, not the outer ones.
-        self.loop_stack.push((header, exit, self.with_scope_depth));
+        self.loop_stack.push((header, exit, self.with_scope_depth, self.drop_scopes.len()));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {
@@ -114,7 +114,7 @@ impl<'a> FunctionLower<'a> {
         // loop entry so `break` / `continue` inside the loop body
         // emit `AllocPop` only for `with` scopes opened *inside*
         // the loop, not the outer ones.
-        self.loop_stack.push((header, exit, self.with_scope_depth));
+        self.loop_stack.push((header, exit, self.with_scope_depth, self.drop_scopes.len()));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {

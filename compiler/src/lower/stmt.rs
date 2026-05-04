@@ -271,22 +271,27 @@ impl<'a> FunctionLower<'a> {
                 Ok(None)
             }
             Stmt::Break => {
-                let (_cont, brk, loop_depth) = *self
+                let (_cont, brk, with_depth, drop_depth) = *self
                     .loop_stack
                     .last()
                     .ok_or_else(|| "`break` outside of a loop".to_string())?;
+                // Phase 5 (汎用 RAII): emit auto-drops for any
+                // user-Drop bindings introduced inside the loop
+                // body before jumping to the exit block.
+                self.emit_drop_scopes_to_depth(drop_depth)?;
                 // #121 Phase B-rest Item 2: pop any `with` scopes
                 // opened inside the loop body before exiting.
-                self.emit_with_scope_cleanup(loop_depth);
+                self.emit_with_scope_cleanup(with_depth);
                 self.terminate(Terminator::Jump(brk));
                 Ok(None)
             }
             Stmt::Continue => {
-                let (cont, _brk, loop_depth) = *self
+                let (cont, _brk, with_depth, drop_depth) = *self
                     .loop_stack
                     .last()
                     .ok_or_else(|| "`continue` outside of a loop".to_string())?;
-                self.emit_with_scope_cleanup(loop_depth);
+                self.emit_drop_scopes_to_depth(drop_depth)?;
+                self.emit_with_scope_cleanup(with_depth);
                 self.terminate(Terminator::Jump(cont));
                 Ok(None)
             }

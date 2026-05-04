@@ -93,6 +93,16 @@ pub struct Module {
     /// the same entry. `type_args` is an empty vec for non-generic
     /// enums.
     pub enum_index: HashMap<(DefaultSymbol, Vec<Type>), EnumId>,
+    /// Phase 5 (汎用 RAII): set of struct base-name symbols that
+    /// have an `impl Drop for <Struct>` block in the program.
+    /// Lowering consults this set when registering each
+    /// `Binding::Struct` to decide whether to track the binding for
+    /// scope-exit auto-drop. Populated once at the top of
+    /// `lower_program` (before any function body is lowered) by
+    /// scanning `program.statement` for `Stmt::ImplBlock { trait_name:
+    /// Some("Drop"), .. }`. Empty for programs that don't reference
+    /// the stdlib `Drop` trait.
+    pub drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
 }
 
 /// One struct's full shape — fields keep their declared order

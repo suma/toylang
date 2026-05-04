@@ -173,6 +173,41 @@ pub fn lower_program(
 ) -> Result<Module, String> {
     let mut module = Module::new();
 
+    // Phase 5 (汎用 RAII): collect every struct that has an
+    // `impl Drop for <Struct>` block. The lowering pass uses
+    // this set when registering each `Binding::Struct` to
+    // decide whether to track the binding for scope-exit
+    // auto-drop. Stored on the IR `Module` so all `FunctionLower`
+    // instances see it through `module.drop_trait_structs`.
+    //
+    // Stdlib `Arena` / `FixedBuffer` impl `Drop` for trait
+    // dispatch (`arena.drop()` named-binding form) but their
+    // auto-cleanup uses the syntactic-sniff path on the
+    // temporary form (`with allocator = Arena::new() { ... }`).
+    // Excluding them here keeps both stories coherent and
+    // avoids double-drop for code that calls `arena.drop()`
+    // explicitly.
+    if let Some(drop_sym) = interner.get("Drop") {
+        let arena_sym = interner.get("Arena");
+        let fixed_buffer_sym = interner.get("FixedBuffer");
+        for i in 0..program.statement.len() {
+            let stmt_ref = frontend::ast::StmtRef(i as u32);
+            if let Some(frontend::ast::Stmt::ImplBlock {
+                target_type,
+                trait_name: Some(trait_sym),
+                ..
+            }) = program.statement.get(&stmt_ref)
+            {
+                if trait_sym == drop_sym
+                    && Some(target_type) != arena_sym
+                    && Some(target_type) != fixed_buffer_sym
+                {
+                    module.drop_trait_structs.insert(target_type);
+                }
+            }
+        }
+    }
+
     // Collect struct definitions before lowering any function bodies.
     // The compiler MVP supports only struct fields whose declared types
     // are scalars (`i64`, `u64`, `bool`); nested / generic struct fields
@@ -795,6 +830,7 @@ impl<'a> FunctionLower<'a> {
             loop_stack: Vec::new(),
             with_scope_depth: 0,
             with_scope_arena_drops: Vec::new(),
+            drop_scopes: Vec::new(),
             current_block: None,
             next_value: 0,
             pending_struct_value: None,
@@ -828,6 +864,23 @@ impl<'a> FunctionLower<'a> {
     /// `self.terminate(Terminator::Return(...))` everywhere — the
     /// no-writeback case is a thin pass-through.
     pub(super) fn terminate_return(&mut self, mut values: Vec<ValueId>) {
+        // Phase 5 (汎用 RAII): emit `<binding>.drop()` for every
+        // user-struct binding whose `impl Drop` is in scope at
+        // the return point, in LIFO order (innermost scope's
+        // last-declared binding fires first). Mirrors the
+        // interpreter's `run_and_pop_drop_scope` cascading
+        // behaviour and runs **before** the writeback /
+        // allocator cleanup so any field mutation inside `Drop`
+        // settles first. Doesn't pop the scope stack — the
+        // linear-exit path's `pop_and_emit_drops` is the
+        // authoritative pop point.
+        if let Err(e) = self.emit_drop_scopes_to_depth(0) {
+            // Surfacing as a panic keeps the lowering API
+            // (`fn terminate_return(&mut self)`) infallible
+            // while still loud-failing on internal-error
+            // paths (missing Drop FuncId, etc.).
+            panic!("auto-drop emission failed: {e}");
+        }
         if let Some(locals) = self.self_writeback_locals.clone() {
             for (local, ty) in locals {
                 let v = self

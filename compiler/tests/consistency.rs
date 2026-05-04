@@ -1371,6 +1371,78 @@ fn drop_trait_named_binding_round_trip() {
 }
 
 #[test]
+fn generic_raii_drop_lifo_round_trip() {
+    // Phase 5 (汎用 RAII, AOT補完): user struct with `impl Drop`
+    // gets `drop()` auto-called at scope exit in LIFO order
+    // across all three backends. The Marker.drop body mutates a
+    // shared cell via `__builtin_ptr_write` so the drop order
+    // is encoded as a base-10 sequence (last-bound drops first
+    // → its id ends up in the most-significant digit at exit).
+    //
+    // - 21 = b(2) dropped before a(1) — function exit linear
+    //   path runs LIFO drops via `pop_and_emit_drops` (AOT)
+    //   / `run_and_pop_drop_scope` (interp).
+    // - JIT silent fallback to interpreter inherits the same
+    //   semantics.
+    let src = r#"
+        struct Marker { id: u64, log: ptr }
+        impl Drop for Marker {
+            fn drop(&mut self) {
+                val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+                __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
+            }
+        }
+        fn run(log: ptr) {
+            val a = Marker { id: 1u64, log: log }
+            val b = Marker { id: 2u64, log: log }
+        }
+        fn main() -> u64 {
+            val log: ptr = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(log, 0u64, 0u64)
+            run(log)
+            val recorded: u64 = __builtin_ptr_read(log, 0u64)
+            recorded
+        }
+    "#;
+    assert_consistent(src, "generic_raii_drop_lifo_round_trip");
+}
+
+#[test]
+fn generic_raii_drop_on_early_return_round_trip() {
+    // Phase 5 (汎用 RAII): early `return` from inside the
+    // function body triggers auto-drop of bindings introduced
+    // before the return, in LIFO order.  Result `43` =
+    // b(4) → a(3).  AOT path goes through `terminate_return`
+    // calling `emit_drop_scopes_to_depth(0)` before the return
+    // is materialised; interpreter path goes through
+    // `evaluate_block`'s `run_and_pop_drop_scope` on the
+    // `Ok(Return(_))` path.
+    let src = r#"
+        struct Marker { id: u64, log: ptr }
+        impl Drop for Marker {
+            fn drop(&mut self) {
+                val cur: u64 = __builtin_ptr_read(self.log, 0u64)
+                __builtin_ptr_write(self.log, 0u64, cur * 10u64 + self.id)
+            }
+        }
+        fn run(log: ptr) -> u64 {
+            val a = Marker { id: 3u64, log: log }
+            val b = Marker { id: 4u64, log: log }
+            return 7u64
+        }
+        fn main() -> u64 {
+            val log: ptr = __builtin_heap_alloc(8u64)
+            __builtin_ptr_write(log, 0u64, 0u64)
+            val r: u64 = run(log)
+            val recorded: u64 = __builtin_ptr_read(log, 0u64)
+            if r != 7u64 { return 1u64 }
+            recorded
+        }
+    "#;
+    assert_consistent(src, "generic_raii_drop_on_early_return_round_trip");
+}
+
+#[test]
 fn string_eq_clear_push_char_round_trip() {
     // `String::eq` / `String::clear` / `String::push_char` —
     // the byte-comparison + reset + 1-byte-append trio. Exercises:

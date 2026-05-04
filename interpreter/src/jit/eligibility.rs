@@ -491,6 +491,37 @@ pub fn analyze(
 ) -> Result<EligibleSet, String> {
     install_extern_dispatch(interner);
     install_primitive_target_symbols(interner);
+    // Phase 5 (汎用 RAII): the JIT codegen doesn't model the
+    // user-Drop scope-bound auto-call. When the program has a
+    // **user-defined** `impl Drop for ...` (i.e. excluding the
+    // stdlib `Arena` / `FixedBuffer` impls, which use a
+    // syntactic-sniff path the interpreter / AOT both wire
+    // without a Drop trait dispatch), fall back to the tree-
+    // walking interpreter so the auto-drop machinery runs.
+    // Cheap pre-check before the main eligibility walk.
+    if let Some(drop_sym) = interner.get("Drop") {
+        let arena_sym = interner.get("Arena");
+        let fixed_buffer_sym = interner.get("FixedBuffer");
+        for i in 0..program.statement.len() {
+            let stmt_ref = frontend::ast::StmtRef(i as u32);
+            if let Some(frontend::ast::Stmt::ImplBlock {
+                target_type,
+                trait_name: Some(t),
+                ..
+            }) = program.statement.get(&stmt_ref)
+            {
+                if t == drop_sym
+                    && Some(target_type) != arena_sym
+                    && Some(target_type) != fixed_buffer_sym
+                {
+                    return Err(
+                        "program has a user-defined `impl Drop for ...` block (JIT delegates to interpreter for auto-drop)"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+    }
     let mut function_map: HashMap<DefaultSymbol, Rc<Function>> = HashMap::new();
     for f in &program.function {
         function_map.insert(f.name, f.clone());

@@ -233,6 +233,7 @@ impl<'a> FunctionLower<'a> {
                                 if let Some(fields) =
                                     self.pending_struct_value.take()
                                 {
+                                    self.register_drop_for_struct_binding(struct_id, &fields);
                                     self.bindings.insert(
                                         name,
                                         Binding::Struct { struct_id, fields },
@@ -414,6 +415,7 @@ impl<'a> FunctionLower<'a> {
             // expressions so an inner literal that walks back to the
             // same name (currently unsupported but defensive) doesn't
             // see a missing binding.
+            self.register_drop_for_struct_binding(struct_id, &field_bindings);
             self.bindings.insert(
                 name,
                 Binding::Struct {
@@ -473,6 +475,7 @@ impl<'a> FunctionLower<'a> {
                             .into_iter()
                             .map(|(l, _)| l)
                             .collect();
+                        self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
                         self.bindings.insert(
                             name,
                             Binding::Struct {
@@ -559,6 +562,7 @@ impl<'a> FunctionLower<'a> {
                             .into_iter()
                             .map(|(l, _)| l)
                             .collect();
+                        self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
                         self.bindings.insert(
                             name,
                             Binding::Struct {
@@ -672,6 +676,7 @@ impl<'a> FunctionLower<'a> {
                                     .into_iter()
                                     .map(|(l, _)| l)
                                     .collect();
+                            self.register_drop_for_struct_binding(struct_id, &fields);
                             self.bindings.insert(
                                 name,
                                 Binding::Struct { struct_id, fields },
@@ -793,6 +798,7 @@ impl<'a> FunctionLower<'a> {
                         .into_iter()
                         .map(|(l, _)| l)
                         .collect();
+                    self.register_drop_for_struct_binding(struct_id, &field_bindings);
                     self.bindings.insert(
                         name,
                         Binding::Struct {

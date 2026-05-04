@@ -238,6 +238,16 @@ impl<'a> FunctionLower<'a> {
         }
         match expr {
             Expr::Block(stmts) => {
+                // Phase 5 (汎用 RAII): every block opens a fresh
+                // drop scope. `Drop`-impling bindings registered
+                // in the body get drained at exit (linear here;
+                // early `return` / `break` / `continue` paths
+                // emit drops via `terminate_return` /
+                // `Stmt::Break` / `Stmt::Continue` before
+                // terminating). Errors propagate without running
+                // drops — same panic-safety policy the
+                // interpreter uses.
+                self.enter_drop_scope();
                 let mut last: Option<ValueId> = None;
                 for s in &stmts {
                     last = self.lower_stmt(s)?;
@@ -245,6 +255,7 @@ impl<'a> FunctionLower<'a> {
                         break;
                     }
                 }
+                self.pop_and_emit_drops()?;
                 Ok(last)
             }
             Expr::Int64(v) => Ok(self.emit(InstKind::Const(Const::I64(v)), Some(Type::I64))),

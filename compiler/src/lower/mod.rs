@@ -90,6 +90,17 @@ mod stmt;
 
 mod expr;
 
+/// Phase 5 (汎用 RAII): one per-binding auto-drop record kept on
+/// the `FunctionLower::drop_scopes` stack. Captures the struct
+/// id (so we can look up the Drop method) and the leaf scalar
+/// locals (so we can emit the matching `CallWithSelfWriteback`
+/// pattern that `&mut self` method calls already use).
+#[derive(Debug, Clone)]
+pub(super) struct DropTarget {
+    pub(super) struct_id: crate::ir::StructId,
+    pub(super) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
+}
+
 /// Phase 5 (Design A): per-`with` scope auto-cleanup classification.
 /// Recorded by `Expr::With` lowering when entering a scope, consumed
 /// by `emit_with_scope_cleanup` on every exit path so the matching
@@ -158,7 +169,14 @@ struct FunctionLower<'a> {
     /// `with allocator = ...` scopes opened *inside* the loop but
     /// not yet closed at the break/continue point. (#121 Phase B-rest
     /// Item 2.)
-    loop_stack: Vec<(BlockId, BlockId, usize)>,
+    /// Each entry is `(continue_block, break_block,
+    /// with_scope_depth_at_loop_entry,
+    /// drop_scope_depth_at_loop_entry)`. The two depth snapshots
+    /// let `Stmt::Break` / `Stmt::Continue` emit cleanup
+    /// (`AllocPop` + auto-drops) for any scopes opened *inside*
+    /// the loop body but not yet closed, mirroring the
+    /// linear-exit teardown.
+    loop_stack: Vec<(BlockId, BlockId, usize, usize)>,
     /// #121 Phase B-rest Item 2: number of `with allocator = ...`
     /// scopes currently open at this point in the lowering walk.
     /// Incremented on entry to each `Expr::With` body, decremented
@@ -178,6 +196,14 @@ struct FunctionLower<'a> {
     /// after each `AllocPop` on every exit path (linear or
     /// early `return` / `break` / `continue`).
     with_scope_arena_drops: Vec<WithScopeCleanup>,
+    /// Phase 5 (汎用 RAII): per-block drop scope stack. Each
+    /// entry is a Vec of `DropTarget`s declared in that block,
+    /// in declaration order. `Expr::Block` lowering pushes a
+    /// fresh Vec on entry and emits the drops in reverse on
+    /// every exit path (linear or via `terminate_return` /
+    /// `Stmt::Break` / `Stmt::Continue`). Mirrors the
+    /// interpreter's `EvaluationContext::drop_scopes`.
+    drop_scopes: Vec<Vec<DropTarget>>,
     /// Block we are currently appending instructions into. None means the
     /// previous block was just terminated and the lowering pass is in the
     /// "unreachable" state — code after a `return` / `break` / `continue`
@@ -364,6 +390,152 @@ impl<'a> FunctionLower<'a> {
             }
             depth -= 1;
         }
+    }
+
+    // -------------------------------------------------------------
+    // Phase 5 (汎用 RAII): user-struct auto-drop wiring.
+    // -------------------------------------------------------------
+
+    /// Push a fresh drop scope on entry to a `{ ... }` block.
+    /// Mirrors `with_scope_arena_drops` for `with` blocks but
+    /// scoped to user-struct `Binding`s.
+    pub(super) fn enter_drop_scope(&mut self) {
+        self.drop_scopes.push(Vec::new());
+    }
+
+    /// Pop the current drop scope and emit `CallWithSelfWriteback`
+    /// for each registered binding in reverse declaration order.
+    /// Used on **linear** block exit (the body fell through
+    /// without `return` / `break` / `continue`); the early-exit
+    /// paths emit drops via `emit_drop_scopes_to_depth` before
+    /// terminating.
+    pub(super) fn pop_and_emit_drops(&mut self) -> Result<(), String> {
+        let targets = self.drop_scopes.pop().unwrap_or_default();
+        if self.is_unreachable() {
+            return Ok(());
+        }
+        for target in targets.into_iter().rev() {
+            self.emit_drop_call(&target)?;
+        }
+        Ok(())
+    }
+
+    /// Emit drops for every scope from the current top down to
+    /// (but not including) `target_depth`. `terminate_return`
+    /// uses `target_depth = 0` (drop everything in scope at the
+    /// time of the return); `Stmt::Break` / `Stmt::Continue`
+    /// use the loop-entry depth (drop scopes opened *inside*
+    /// the loop body but not yet closed). Doesn't pop the stack
+    /// — the linear-exit path's `pop_and_emit_drops` is the
+    /// authoritative pop point.
+    pub(super) fn emit_drop_scopes_to_depth(
+        &mut self,
+        target_depth: usize,
+    ) -> Result<(), String> {
+        if self.is_unreachable() {
+            return Ok(());
+        }
+        let depth = self.drop_scopes.len();
+        if target_depth >= depth {
+            return Ok(());
+        }
+        // Snapshot the targets we're about to emit so we can
+        // borrow `self` mutably inside the loop without holding
+        // a borrow of `drop_scopes`.
+        let mut snapshot: Vec<DropTarget> = Vec::new();
+        for scope_idx in (target_depth..depth).rev() {
+            for target in self.drop_scopes[scope_idx].iter().rev() {
+                snapshot.push(target.clone());
+            }
+        }
+        for target in snapshot {
+            self.emit_drop_call(&target)?;
+        }
+        Ok(())
+    }
+
+    /// Phase 5 (汎用 RAII): inspect a freshly created
+    /// `Binding::Struct` and, if its struct base-name is in
+    /// `Module::drop_trait_structs`, append a matching
+    /// `DropTarget` to the current top scope. Called from
+    /// `lower_let`'s struct-binding paths right after
+    /// `self.bindings.insert`.
+    pub(super) fn register_drop_for_struct_binding(
+        &mut self,
+        struct_id: crate::ir::StructId,
+        fields: &[bindings::FieldBinding],
+    ) {
+        if self.module.drop_trait_structs.is_empty() {
+            return;
+        }
+        let base_name = self.module.struct_def(struct_id).base_name;
+        if !self.module.drop_trait_structs.contains(&base_name) {
+            return;
+        }
+        let leaves = bindings::flatten_struct_locals(fields);
+        if let Some(scope) = self.drop_scopes.last_mut() {
+            scope.push(DropTarget {
+                struct_id,
+                field_locals: leaves,
+            });
+        }
+    }
+
+    /// Synthesize and emit `<binding>.drop()` for an auto-drop
+    /// target. Looks the Drop method's `FuncId` up in the per-
+    /// `(struct, "drop")` registry, builds the receiver-leaf arg
+    /// list, and emits `CallWithSelfWriteback` so the `&mut
+    /// self` writeback semantics propagate any field mutation
+    /// the body made.
+    fn emit_drop_call(&mut self, target: &DropTarget) -> Result<(), String> {
+        let struct_def = self.module.struct_def(target.struct_id);
+        let struct_sym = struct_def.base_name;
+        let drop_sym = match self.interner.get("drop") {
+            Some(s) => s,
+            None => return Err("auto-drop: `drop` symbol missing from interner".to_string()),
+        };
+        // Look up the Drop method's FuncId. Use the receiver's
+        // type-args so generic-struct Drop impls dispatch
+        // correctly (matches the regular method-call path).
+        let type_args: Vec<crate::ir::Type> = struct_def.type_args.clone();
+        let func_id = match method_registry::lookup_method_func(
+            self.method_func_ids,
+            struct_sym,
+            drop_sym,
+            &type_args,
+        ) {
+            Some(id) => id,
+            None => {
+                let s = self.interner.resolve(struct_sym).unwrap_or("?");
+                return Err(format!(
+                    "auto-drop: no `drop` FuncId registered for struct `{s}`"
+                ));
+            }
+        };
+        // Receiver leaves are passed as args (mirroring
+        // `lower_method_call` for `&mut self`); the same locals
+        // also serve as `self_dests` so any field mutation in
+        // the drop body lands back in the caller's binding.
+        let mut args: Vec<crate::ir::ValueId> = Vec::new();
+        let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
+        for (local, ty) in &target.field_locals {
+            let v = self
+                .emit(crate::ir::InstKind::LoadLocal(*local), Some(*ty))
+                .ok_or_else(|| "auto-drop: LoadLocal returned no value".to_string())?;
+            args.push(v);
+            self_dests.push(*local);
+        }
+        self.emit(
+            crate::ir::InstKind::CallWithSelfWriteback {
+                target: func_id,
+                args,
+                ret_dest: None,
+                ret_ty: None,
+                self_dests,
+            },
+            None,
+        );
+        Ok(())
     }
 
     /// Phase 5 (AllocatorBinding wiring): classify the allocator

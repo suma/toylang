@@ -135,6 +135,7 @@ fn main() -> u64 {
 - **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
 - **`assert(cond, "msg")` ビルトイン**: `cond` が false のときだけ `panic(msg)` する糖衣。`(bool, str) -> ()`。message は false 時にのみ評価される。JIT は `brif cond, cont, fail; fail: call jit_panic; trap` で lower（success path はオーバヘッド最小、failure path は panic と同じ helper）
+- **実行時例外 (try/catch/throw) は導入しない**: 言語仕様として例外機構を持たない。回復不能な失敗は `panic("...")` で即時停止 (process exit)、回復可能な失敗は `enum Result<T, E>` / `enum Option<T>` を戻り値で返して呼び出し側で `match` する。例外用の予約語 (`try` / `catch` / `throw` / `finally`) は parser で受理しない。`requires` / `ensures` 違反も `panic` 経路で停止する (例外として伝播しない)
 - **OOP・モジュール関連キーワード**: `class`, `struct`, `trait`, `impl`, `Self`, `enum`, `match`
 - **`trait` 宣言と `impl <Trait> for <Type>`**: 共通インターフェースを定義する仕組み。
   ```rust

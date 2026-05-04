@@ -1594,6 +1594,34 @@ possible. Categories include: `TypeError`, `UndefinedVariable`,
 `ContractViolation`, and a generic `InternalError` reserved for
 interpreter bugs.
 
+### No exception machinery
+
+The language deliberately does **not** have runtime exceptions. There is
+no `try` / `catch` / `throw` / `finally`, no exception type, and no
+unwinding-style control flow that user code can intercept. The reserved
+words for those keywords are not part of the grammar — the parser
+rejects them.
+
+Failures fall into two buckets, with separate idioms:
+
+- **Unrecoverable failures** — surfaced via `panic("msg")` (or the
+  `assert(cond, msg)` sugar). Execution stops immediately and the
+  process exits with a non-zero status. `requires` / `ensures`
+  violations route through the same panic path; they are not
+  catchable from user code. `panic` is always active — there is no
+  release-mode flag that disables it (see *Known limitations*).
+- **Recoverable failures** — represented as values. The stdlib
+  `enum Result<T, E>` and `enum Option<T>` are the canonical shapes;
+  the call site `match`es on the variant or threads it through a
+  helper (`unwrap_or` / `is_some` / `is_ok`). Generic enums + the
+  pattern matcher's exhaustiveness check make this ergonomic.
+
+Rationale: exception machinery imposes an implicit control-flow graph
+(every call edge can throw) on every backend. Keeping the language
+free of it lets the AOT compiler emit straight-line code, lets the
+type checker reason locally, and forces error-handling to be visible
+at the call site.
+
 ### Recursion
 
 The interpreter limits recursion depth to 1000 frames to prevent stack

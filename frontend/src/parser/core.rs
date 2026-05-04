@@ -173,8 +173,12 @@ pub struct Parser<'a> {
     /// `parse_type_declaration` so that any subsequent occurrence of
     /// `Name` in a type position is replaced with `TargetType`. Forward
     /// references are NOT supported — the alias must be declared before
-    /// its first use.
-    pub type_aliases: HashMap<DefaultSymbol, TypeDecl>,
+    /// its first use. Each entry stores `(generic_params, target)`:
+    /// non-generic aliases have an empty params vector; generic aliases
+    /// like `type Pair<T> = (T, T)` carry the parameter symbols and the
+    /// target keeps `Generic(T)` placeholders that get substituted at
+    /// the use site via `substitute_generics`.
+    pub type_aliases: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>,
 }
 
 impl<'a> Parser<'a> {

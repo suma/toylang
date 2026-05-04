@@ -294,6 +294,50 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_generic_type_alias_parses_and_substitutes() {
+        // `type Pair<T> = Box<T>` is parsed as a parameterised alias.
+        // Use sites `Pair<i64>` substitute T -> i64 at parse time.
+        let input = r#"
+            struct Box<T> { v: T }
+            type Pair<T> = Box<T>
+            fn main() -> u64 {
+                val a: Pair<i64> = Box { v: 21i64 }
+                val b: Pair<u64> = Box { v: 7u64 }
+                42u64
+            }
+        "#;
+        let mut parser = ParserWithInterner::new(input);
+        let result = parser.parse_program();
+        assert!(
+            result.is_ok(),
+            "Failed to parse generic type alias: {:?}",
+            parser.errors
+        );
+    }
+
+    #[test]
+    fn test_generic_type_alias_arity_mismatch_rejected() {
+        // `type Pair<T> = ...` requires exactly one type arg at
+        // each use site. Zero / two / non-generic-with-args all
+        // surface as parser errors.
+        for input in [
+            // Zero args supplied to a generic alias.
+            "struct Box<T> { v: T } type Pair<T> = Box<T> fn main() -> u64 { val a: Pair = Box { v: 1u64 } 0u64 }",
+            // Two args supplied to a single-param alias.
+            "struct Box<T> { v: T } type Pair<T> = Box<T> fn main() -> u64 { val a: Pair<i64, u64> = Box { v: 1u64 } 0u64 }",
+            // Non-generic alias used with type args.
+            "type Byte = u32 fn main() -> u64 { val a: Byte<i64> = 0u32 0u64 }",
+        ] {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_program();
+            assert!(
+                result.is_err() || !parser.errors.is_empty(),
+                "Expected parser error for {input:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_type_alias_forward_reference_unsupported() {
         // Aliases are eagerly substituted, so forward references must
         // fail at type-check time (the parser keeps `Identifier(Foo)`

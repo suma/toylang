@@ -249,11 +249,13 @@ impl<'a> Parser<'a> {
                     });
                 }
                 Some(Kind::Type) => {
-                    // `type Name = TargetType` — top-level alias. The
-                    // alias is registered in the parser's `type_aliases`
-                    // map so that subsequent occurrences of `Name` in any
-                    // type position get substituted with `TargetType` at
-                    // parse time. Forward references are not supported.
+                    // `type Name = TargetType` — top-level alias.
+                    // Optional generic parameters `type Name<T, U> = ...`
+                    // turn the alias parameterised: occurrences of
+                    // `Name<i64>` substitute `T` -> `i64` in the target
+                    // at parse time. Bounds on the parameters are
+                    // accepted but ignored — they don't make sense for
+                    // a pure substitution alias.
                     let alias_start_pos = self.peek_position_n(0).unwrap().start;
                     let location = self.current_source_location();
                     update_start_pos(alias_start_pos);
@@ -272,15 +274,31 @@ impl<'a> Parser<'a> {
                         }
                     };
 
+                    let alias_generic_params: Vec<DefaultSymbol> = if matches!(self.peek(), Some(Kind::LT)) {
+                        // `parse_generic_params` consumes the leading
+                        // `<` and the trailing `>` itself, so no
+                        // bracket-balancing required here.
+                        let (params, _bounds) = self.parse_generic_params()?;
+                        params
+                    } else {
+                        Vec::new()
+                    };
+
                     self.expect_err(&Kind::Equal)?;
-                    let target_ty = self.parse_type_declaration()?;
+                    let generic_context: HashSet<DefaultSymbol> =
+                        alias_generic_params.iter().copied().collect();
+                    let target_ty =
+                        self.parse_type_declaration_with_generic_context(&generic_context)?;
                     let alias_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                     update_end_pos(alias_end_pos);
 
-                    // Register before emitting so the AST node carries the
-                    // already-resolved target (anonymous alias chains —
-                    // `type A = u8; type B = A` — collapse to the leaf).
-                    self.type_aliases.insert(alias_name, target_ty.clone());
+                    // Register before emitting so the AST node carries
+                    // the already-resolved target (anonymous alias chains
+                    // — `type A = u8; type B = A` — collapse to the
+                    // leaf). Generic aliases keep `Generic(T)` markers
+                    // in the target; the substitution happens at the
+                    // use site.
+                    self.type_aliases.insert(alias_name, (alias_generic_params.clone(), target_ty.clone()));
                     self.ast_builder.add_stmt_with_location(Stmt::TypeAlias {
                         name: alias_name,
                         target: target_ty,

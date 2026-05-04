@@ -1560,6 +1560,40 @@ fn char_literal_round_trip() {
 }
 
 #[test]
+fn generic_type_alias_round_trip() {
+    // `type Pair<T> = Box<T>` — a parameterised alias. Use sites
+    // `Pair<i64>` and `Pair<u64>` substitute the type arg into the
+    // alias target at parse time, so downstream sees the
+    // fully-monomorphised struct type. Two different concrete
+    // instantiations co-exist in the same program.
+    //
+    // Also covers:
+    //   - non-generic alias of a generic alias (`type IntPair =
+    //     Pair<i64>`) — chains a substituted form into another
+    //     alias name
+    //
+    // Note: passing struct values across function boundaries is
+    // intentionally avoided here because of a pre-existing
+    // interpreter limitation around generic-arg propagation on
+    // struct literals — uses below stick to direct field access /
+    // construction.
+    let src = r#"
+        struct Box<T> { v: T }
+        type Pair<T> = Box<T>
+        type IntPair = Pair<i64>
+
+        fn main() -> u64 {
+            val a: IntPair = Box { v: 21i64 }
+            val b: Pair<u64> = Box { v: 7u64 }
+            if a.v != 21i64 { return 1u64 }
+            if b.v != 7u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "generic_type_alias_round_trip");
+}
+
+#[test]
 fn type_alias_round_trip() {
     // `type Name = TargetType` aliases are eagerly substituted by the
     // parser, so the type checker / IR / 3 backends see only the

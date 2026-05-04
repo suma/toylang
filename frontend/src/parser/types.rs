@@ -160,18 +160,65 @@ impl<'a> Parser<'a> {
                     }
 
                     self.expect_err(&Kind::GT)?;
+                    // If `ident` names a generic alias (`type Pair<T>
+                    // = ...`), substitute the parsed type args into
+                    // the alias target. Arity mismatches surface as
+                    // a parser error here — the substitution is a
+                    // pure rewrite, not a type-check, so we want the
+                    // diagnostic close to the source position.
+                    if let Some((params, target)) = self.type_aliases.get(&ident).cloned() {
+                        if params.is_empty() {
+                            // Non-generic alias used with `<...>` —
+                            // surface a clear error rather than
+                            // silently dropping the args.
+                            let location = self.current_source_location();
+                            return Err(ParserError::generic_error(
+                                location,
+                                format!(
+                                    "type alias `{}` takes no type parameters but {} were supplied",
+                                    self.string_interner.resolve(ident).unwrap_or("?"),
+                                    type_args.len()
+                                ),
+                            ));
+                        }
+                        if params.len() != type_args.len() {
+                            let location = self.current_source_location();
+                            return Err(ParserError::generic_error(
+                                location,
+                                format!(
+                                    "type alias `{}` expects {} type parameter(s), got {}",
+                                    self.string_interner.resolve(ident).unwrap_or("?"),
+                                    params.len(),
+                                    type_args.len()
+                                ),
+                            ));
+                        }
+                        let mut subst = std::collections::HashMap::new();
+                        for (p, a) in params.iter().zip(type_args.iter()) {
+                            subst.insert(*p, a.clone());
+                        }
+                        return Ok(target.substitute_generics(&subst));
+                    }
                     Ok(TypeDecl::Struct(ident, type_args))
                 } else {
                     // No type arguments, just an identifier — first
                     // check if a top-level `type Name = ...` alias
-                    // resolves it. Aliases are eagerly substituted so
-                    // downstream layers see the fully-expanded type and
-                    // need no special handling. Generic positional
-                    // aliases (`type Pair<T> = (T, T)`) are out of scope;
-                    // we only substitute when the identifier appears
-                    // bare (no `<...>`).
-                    if let Some(target) = self.type_aliases.get(&ident) {
-                        return Ok(target.clone());
+                    // resolves it. A generic alias used without
+                    // `<...>` is an error; non-generic aliases
+                    // substitute their (already-resolved) target.
+                    if let Some((params, target)) = self.type_aliases.get(&ident).cloned() {
+                        if !params.is_empty() {
+                            let location = self.current_source_location();
+                            return Err(ParserError::generic_error(
+                                location,
+                                format!(
+                                    "type alias `{}` requires {} type parameter(s) but none were supplied",
+                                    self.string_interner.resolve(ident).unwrap_or("?"),
+                                    params.len()
+                                ),
+                            ));
+                        }
+                        return Ok(target);
                     }
                     Ok(TypeDecl::Identifier(ident))
                 }

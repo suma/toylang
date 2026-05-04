@@ -906,6 +906,34 @@ fn execute_cached(
                 f();
                 unreachable!("Never-returning main reached the dispatch return path")
             }
+            // NUM-W: narrow-int returns. Each width transmutes the
+            // function pointer to its native Rust type and rebuilds
+            // the corresponding `Object` variant so non-JIT and JIT
+            // paths produce byte-identical Object trees.
+            ScalarTy::I8 => {
+                let f: extern "C" fn() -> i8 = std::mem::transmute(main_ptr);
+                Object::Int8(f())
+            }
+            ScalarTy::I16 => {
+                let f: extern "C" fn() -> i16 = std::mem::transmute(main_ptr);
+                Object::Int16(f())
+            }
+            ScalarTy::I32 => {
+                let f: extern "C" fn() -> i32 = std::mem::transmute(main_ptr);
+                Object::Int32(f())
+            }
+            ScalarTy::U8 => {
+                let f: extern "C" fn() -> u8 = std::mem::transmute(main_ptr);
+                Object::UInt8(f())
+            }
+            ScalarTy::U16 => {
+                let f: extern "C" fn() -> u16 = std::mem::transmute(main_ptr);
+                Object::UInt16(f())
+            }
+            ScalarTy::U32 => {
+                let f: extern "C" fn() -> u32 = std::mem::transmute(main_ptr);
+                Object::UInt32(f())
+            }
         }
     };
 

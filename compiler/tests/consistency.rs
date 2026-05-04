@@ -1677,6 +1677,45 @@ fn generic_type_alias_round_trip() {
 }
 
 #[test]
+fn narrow_int_jit_phase_a_round_trip() {
+    // NUM-W-JIT Phase A: u8 / u16 / u32 / i8 / i16 / i32 are now
+    // recognised at the JIT eligibility + literal-codegen layer,
+    // and `iadd` / `isub` etc. are width-polymorphic in cranelift
+    // so arithmetic between two same-width narrow operands
+    // compiles end-to-end. Cross-function narrow calls also work
+    // — `add_u8(a, b)` flows args through cranelift's calling
+    // convention with the appropriate `I8` / `I16` / `I32` ABI
+    // type.
+    //
+    // Cast-to-wider (`r as u64`) and `__builtin_sizeof` of a
+    // narrow value still fall back; later phases add them.
+    let src = r#"
+        fn add_u8(a: u8, b: u8) -> u8 {
+            a + b
+        }
+
+        fn double_u16(x: u16) -> u16 {
+            x + x
+        }
+
+        fn neg_i32(x: i32) -> i32 {
+            0i32 - x
+        }
+
+        fn main() -> u64 {
+            val r1: u8 = add_u8(100u8, 50u8)
+            val r2: u16 = double_u16(1000u16)
+            val r3: i32 = neg_i32(-7i32)
+            if r1 != 150u8 { return 1u64 }
+            if r2 != 2000u16 { return 2u64 }
+            if r3 != 7i32 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "narrow_int_jit_phase_a_round_trip");
+}
+
+#[test]
 fn vec_from_str_empty_string_round_trip() {
     // `Vec::from_str("")` previously hit a "Invalid memory access
     // in mem_copy" interpreter error: `core/std/collections/vec.t::from_str`

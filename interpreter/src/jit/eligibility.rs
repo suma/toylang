@@ -249,6 +249,17 @@ pub enum ScalarTy {
     /// allocator registry; `with allocator = expr { … }` pushes / pops
     /// the corresponding allocator on the active stack.
     Allocator,
+    /// NUM-W: narrow integer types. Each maps to a cranelift `I8` /
+    /// `I16` / `I32` value type. ABI-level argument extension (sign
+    /// for the I-prefixed variants, zero for the U-prefixed) is added
+    /// in `make_signature` so calls across the function boundary
+    /// match the platform's calling convention.
+    I8,
+    I16,
+    I32,
+    U8,
+    U16,
+    U32,
     /// Bottom type for diverging expressions (currently only `panic`).
     /// Compatible with any other `ScalarTy` in branch unification, since
     /// a diverging branch never produces a value at runtime. No
@@ -280,8 +291,39 @@ impl ScalarTy {
             TypeDecl::Unit => Some(ScalarTy::Unit),
             TypeDecl::Ptr => Some(ScalarTy::Ptr),
             TypeDecl::Allocator => Some(ScalarTy::Allocator),
+            // NUM-W: narrow integer types. Mirror the same shape as
+            // U64 / I64 so call sites that construct a `ParamTy::Scalar`
+            // for any of them flow through the existing eligibility
+            // path.
+            TypeDecl::Int8 => Some(ScalarTy::I8),
+            TypeDecl::Int16 => Some(ScalarTy::I16),
+            TypeDecl::Int32 => Some(ScalarTy::I32),
+            TypeDecl::UInt8 => Some(ScalarTy::U8),
+            TypeDecl::UInt16 => Some(ScalarTy::U16),
+            TypeDecl::UInt32 => Some(ScalarTy::U32),
             _ => None,
         }
+    }
+
+    /// `true` for the narrow integer widths (NUM-W). Used at codegen
+    /// boundaries that need per-width logic (printer dispatch, ABI
+    /// extension, cast lowering).
+    pub fn is_narrow_int(self) -> bool {
+        matches!(
+            self,
+            ScalarTy::I8 | ScalarTy::I16 | ScalarTy::I32
+                | ScalarTy::U8 | ScalarTy::U16 | ScalarTy::U32
+        )
+    }
+
+    /// `true` for the signed integer scalar types (i8/i16/i32/i64).
+    /// Drives `Sext` vs `Zext` ABI extension and signed/unsigned
+    /// cmp predicate selection.
+    pub fn is_signed_int(self) -> bool {
+        matches!(
+            self,
+            ScalarTy::I8 | ScalarTy::I16 | ScalarTy::I32 | ScalarTy::I64
+        )
     }
 }
 
@@ -2311,6 +2353,13 @@ pub(crate) fn check_expr(
     match expr {
         Expr::Int64(_) => Some(ScalarTy::I64),
         Expr::UInt64(_) => Some(ScalarTy::U64),
+        // NUM-W narrow integer literals.
+        Expr::Int8(_) => Some(ScalarTy::I8),
+        Expr::Int16(_) => Some(ScalarTy::I16),
+        Expr::Int32(_) => Some(ScalarTy::I32),
+        Expr::UInt8(_) => Some(ScalarTy::U8),
+        Expr::UInt16(_) => Some(ScalarTy::U16),
+        Expr::UInt32(_) => Some(ScalarTy::U32),
         Expr::Float64(_) => Some(ScalarTy::F64),
         Expr::True | Expr::False => Some(ScalarTy::Bool),
         Expr::Identifier(sym) => locals.get(&sym).copied(),
@@ -2381,9 +2430,16 @@ pub(crate) fn check_expr(
             if lt != rt {
                 return None;
             }
+            // NUM-W: narrow integers (I8/I16/I32/U8/U16/U32) accept
+            // the same operator set as their I64/U64 cousins. cranelift's
+            // `iadd` / `isub` / `imul` / `udiv` / `sdiv` / `urem` /
+            // `srem` are all width-polymorphic on operand type, and
+            // `icmp` likewise picks the right width from the operands.
+            let int_like = lt.is_narrow_int()
+                || matches!(lt, ScalarTy::I64 | ScalarTy::U64);
             match op {
                 Operator::IAdd | Operator::ISub | Operator::IMul | Operator::IDiv => {
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
+                    if int_like || lt == ScalarTy::F64 {
                         Some(lt)
                     } else {
                         None
@@ -2392,7 +2448,7 @@ pub(crate) fn check_expr(
                 Operator::IMod => {
                     // Cranelift exposes srem/urem for ints but no native f64
                     // remainder; reject f64 mod here so codegen never sees it.
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64) {
+                    if int_like {
                         Some(lt)
                     } else {
                         None
@@ -2406,7 +2462,7 @@ pub(crate) fn check_expr(
                     }
                 }
                 Operator::LT | Operator::LE | Operator::GT | Operator::GE => {
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) {
+                    if int_like || lt == ScalarTy::F64 {
                         Some(ScalarTy::Bool)
                     } else {
                         None
@@ -2420,14 +2476,14 @@ pub(crate) fn check_expr(
                     }
                 }
                 Operator::BitwiseAnd | Operator::BitwiseOr | Operator::BitwiseXor => {
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
+                    if int_like || lt == ScalarTy::Bool {
                         Some(lt)
                     } else {
                         None
                     }
                 }
                 Operator::LeftShift | Operator::RightShift => {
-                    if matches!(lt, ScalarTy::I64 | ScalarTy::U64) {
+                    if int_like {
                         Some(lt)
                     } else {
                         None

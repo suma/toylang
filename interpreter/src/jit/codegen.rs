@@ -25,6 +25,13 @@ pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
         }
         ScalarTy::F64 => Some(types::F64),
         ScalarTy::Bool => Some(types::I8),
+        // NUM-W: narrow integer widths each get their own cranelift
+        // type. Sign-vs-zero distinction is encoded at the ABI
+        // boundary (see `make_signature`) and at cast / cmp sites,
+        // not in the cranelift type itself.
+        ScalarTy::I8 | ScalarTy::U8 => Some(types::I8),
+        ScalarTy::I16 | ScalarTy::U16 => Some(types::I16),
+        ScalarTy::I32 | ScalarTy::U32 => Some(types::I32),
         // Unit and Never both produce no IR value: Unit because there's
         // nothing to materialise; Never because the expression diverges
         // before any value can be observed.
@@ -544,6 +551,16 @@ impl<'a, 'b> State<'a, 'b> {
         match expr {
             Expr::Int64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v))),
             Expr::UInt64(v) => Ok(Some(self.builder.ins().iconst(types::I64, v as i64))),
+            // NUM-W: narrow integer literals. cranelift `iconst` takes
+            // an `i64`-sized immediate and the explicit `Type` decides
+            // the actual operand width — so each narrow literal needs
+            // its own (`type`, `value`) pair.
+            Expr::Int8(v) => Ok(Some(self.builder.ins().iconst(types::I8, v as i64))),
+            Expr::Int16(v) => Ok(Some(self.builder.ins().iconst(types::I16, v as i64))),
+            Expr::Int32(v) => Ok(Some(self.builder.ins().iconst(types::I32, v as i64))),
+            Expr::UInt8(v) => Ok(Some(self.builder.ins().iconst(types::I8, v as i64))),
+            Expr::UInt16(v) => Ok(Some(self.builder.ins().iconst(types::I16, v as i64))),
+            Expr::UInt32(v) => Ok(Some(self.builder.ins().iconst(types::I32, v as i64))),
             Expr::Float64(v) => Ok(Some(self.builder.ins().f64const(v))),
             Expr::True => Ok(Some(self.builder.ins().iconst(types::I8, 1))),
             Expr::False => Ok(Some(self.builder.ins().iconst(types::I8, 0))),

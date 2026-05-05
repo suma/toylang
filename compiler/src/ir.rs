@@ -176,6 +176,7 @@ impl Module {
             export_name,
             linkage,
             params,
+            param_is_ref: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
@@ -219,6 +220,7 @@ impl Module {
             export_name,
             linkage,
             params,
+            param_is_ref: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
@@ -355,6 +357,16 @@ pub struct Function {
     /// Parameter types in declaration order. The corresponding `LocalId`s
     /// are `LocalId(0)..LocalId(params.len())`.
     pub params: Vec<Type>,
+    /// REF-Stage-2 (iv): per-parameter `&T` flag. `true` means the
+    /// caller is required to forward a pointer (the param's IR
+    /// type is `U64` for scalars regardless), `false` means the
+    /// caller passes the value (or leaf-flatten leaves for compound
+    /// types). Lets call sites disambiguate "bare identifier of a
+    /// `RefScalar` binding" — forward the pointer when true, emit
+    /// LoadRef when false (callee wants the dereferenced value).
+    /// Empty `Vec` is treated as "all false" so older code paths
+    /// stay sound.
+    pub param_is_ref: Vec<bool>,
     pub return_type: Type,
     /// Stage 1 of `&` references: for `&mut self` methods only,
     /// the leaf scalar types appended to the function's cranelift

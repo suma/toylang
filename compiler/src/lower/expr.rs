@@ -26,6 +26,22 @@ use crate::ir::{Const, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
+        self.lower_call_args_with_target(args_ref, None)
+    }
+
+    /// Variant that knows the callee's `param_is_ref` flags so it
+    /// can forward the pointer when a bare `RefScalar` identifier
+    /// is passed to a `&T` parameter (instead of dereferencing —
+    /// the default path that would corrupt
+    /// `outer(x: &u64) -> u64 { inner(x) }`-style chains).
+    pub(super) fn lower_call_args_with_target(
+        &mut self,
+        args_ref: &ExprRef,
+        target: Option<crate::ir::FuncId>,
+    ) -> Result<Vec<ValueId>, String> {
+        let param_is_ref: Vec<bool> = target
+            .map(|t| self.module.function(t).param_is_ref.clone())
+            .unwrap_or_default();
         let args_expr = self
             .program
             .expression
@@ -36,7 +52,7 @@ impl<'a> FunctionLower<'a> {
             _ => return Err("call arguments must be an ExprList".to_string()),
         };
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
-        for a in &items {
+        for (arg_idx, a) in items.iter().enumerate() {
             // REF-Stage-2 (b)+(c)+(g): explicit `&<var>` / `&mut <var>`
             // borrow of a SCALAR local emits an `AddressOf` and marks
             // the local as address-taken so codegen allocates it in a
@@ -212,6 +228,52 @@ impl<'a> FunctionLower<'a> {
                     let vs = self.load_enum_locals(&storage);
                     values.extend(vs);
                     continue;
+                }
+                // REF-Stage-2 (iv): bare identifier of a `RefScalar`
+                // binding being passed to a `&T` parameter — forward
+                // the pointer (not the dereferenced value). Without
+                // this, `outer(x: &u64) { inner(x) }` would `LoadRef`
+                // x to a u64 value and pass it where `inner` expects
+                // a pointer, segfaulting at the next `LoadRef`.
+                if let Some(Binding::RefScalar { local, .. }) =
+                    self.bindings.get(&sym).cloned()
+                {
+                    if param_is_ref.get(arg_idx).copied().unwrap_or(false) {
+                        let v = self
+                            .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                            .expect("LoadLocal returns a value");
+                        values.push(v);
+                        continue;
+                    }
+                }
+                // REF-Stage-2 (iv): T -> &T auto-borrow at the AOT
+                // boundary. The frontend type checker already
+                // approved the conversion (passing a `T` value to a
+                // `&T` parameter); the lowering needs to materialise
+                // the address. Same shape as the explicit `&<var>`
+                // path: mark the local address-taken and emit
+                // `AddressOf`.
+                if let Some(Binding::Scalar { local, ty }) =
+                    self.bindings.get(&sym).cloned()
+                {
+                    if param_is_ref.get(arg_idx).copied().unwrap_or(false)
+                        && matches!(
+                            ty,
+                            Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                | Type::I32 | Type::U32
+                        )
+                    {
+                        self.module
+                            .function_mut(self.func_id)
+                            .address_taken_locals
+                            .insert(local);
+                        let v = self
+                            .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                            .expect("AddressOf returns a value");
+                        values.push(v);
+                        continue;
+                    }
                 }
             }
             // Note: pass the borrow-peeled ref so explicit `&v` /

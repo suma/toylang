@@ -199,6 +199,25 @@ pub(super) fn populate_method_writeback_types(
     if !wb_types.is_empty() {
         module.function_mut(func_id).self_writeback_types = wb_types;
     }
+    // REF-Stage-2 (iv): mirror the function-side `param_is_ref`
+    // wiring for method params. The IR `params` list has self
+    // prepended for implicit-self methods, so we flag the
+    // self slot as ref iff the method is `&self`/`&mut self`
+    // and only then walk the user-declared params.
+    let mut param_is_ref: Vec<bool> = Vec::new();
+    let has_implicit_self = module.function(func_id).params.len() == method.parameter.len() + 1;
+    if has_implicit_self {
+        // Implicit self prepended by the declare loop. The
+        // receiver is logically a reference whenever the method
+        // has any kind of self (`&self` / `&mut self` are
+        // refs; `self: Self` here would mean explicit, which
+        // takes the other branch).
+        param_is_ref.push(true);
+    }
+    for (_, decl_ty) in method.parameter.iter() {
+        param_is_ref.push(matches!(decl_ty, TypeDecl::Ref { .. }));
+    }
+    module.function_mut(func_id).param_is_ref = param_is_ref;
 }
 
 /// REF-Stage-2 (ii): flatten an IR `Type` (struct / tuple / enum
@@ -445,6 +464,19 @@ pub fn lower_program(
             params,
             ret,
         );
+        // REF-Stage-2 (iv): mark every `&T` / `&mut T` scalar
+        // parameter as ref-passed so call sites can forward
+        // pointers (instead of dereferencing) when the caller
+        // already holds a `RefScalar` binding for the arg
+        // identifier — fixes ref-of-ref chains like
+        // `fn outer(x: &u64) -> u64 { inner(x) }` where `inner`
+        // also takes `&u64`.
+        let param_is_ref: Vec<bool> = func
+            .parameter
+            .iter()
+            .map(|(_, t)| matches!(t, TypeDecl::Ref { .. }))
+            .collect();
+        module.function_mut(func_id).param_is_ref = param_is_ref;
         // REF-Stage-2 (ii): pre-populate the writeback shape from
         // the parameter types so callers see the correct number
         // of trailing return values regardless of whether the

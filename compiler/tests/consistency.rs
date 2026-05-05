@@ -1475,6 +1475,52 @@ fn ref_stage2_method_mut_arg_writeback_round_trip() {
 }
 
 #[test]
+fn ref_stage2_immutable_ref_scalar_chain_round_trip() {
+    // REF-Stage-2 (iv): ref-of-ref scalar chains and `T -> &T`
+    // auto-borrow at the AOT call boundary.
+    //
+    // Two failure modes the new `param_is_ref`-aware
+    // `lower_call_args_with_target` fixes:
+    //   1. Forwarding `RefScalar` bindings: in
+    //      `outer(x: &u64) { inner(x) }`, `x` is a RefScalar
+    //      holding a pointer. The frontend auto-derefs `x` in
+    //      value position, so before the fix lowering emitted
+    //      LoadRef(x) and passed the dereferenced value where
+    //      `inner` expected a pointer (segfault).
+    //   2. T -> &T auto-borrow: passing a `T` value (`Scalar`
+    //      binding) to a `&T` parameter previously emitted
+    //      LoadLocal of the value; codegen handed it to the
+    //      callee as if it were a pointer (segfault).
+    //
+    // The fix marks `&T` / `&mut T` params on every Function in
+    // the IR via `param_is_ref`, then `lower_call_args_with_target`
+    // peeks the flag per-arg and emits AddressOf (for Scalar) or
+    // forwards the existing pointer (for RefScalar) instead of
+    // dereferencing.
+    let src = r#"
+        fn double(x: &u64) -> u64 {
+            x + x
+        }
+
+        fn read_via_chain(x: &u64) -> u64 {
+            double(x) + 0u64
+        }
+
+        fn main() -> u64 {
+            val n = 21u64
+            val a = double(&n)
+            val b = double(n)
+            val c = read_via_chain(&n)
+            if a != 42u64 { return 1u64 }
+            if b != 42u64 { return 2u64 }
+            if c != 42u64 { return 3u64 }
+            a
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_immutable_ref_scalar_chain_round_trip");
+}
+
+#[test]
 fn arena_temporary_auto_cleanup_round_trip() {
     // Phase 5 (Design A scope-bound): `with allocator =
     // Arena::new() { ... }` releases the inline arena's tracked

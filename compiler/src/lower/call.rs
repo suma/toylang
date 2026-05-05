@@ -215,6 +215,15 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function(template_name, export_name, Linkage::Local, params, ret);
+        // REF-Stage-2 (iv): mark `&T` / `&mut T` parameters so
+        // call sites can forward pointers when passing a
+        // `RefScalar` binding through unmodified.
+        let param_is_ref: Vec<bool> = template
+            .parameter
+            .iter()
+            .map(|(_, t)| matches!(t, frontend::type_decl::TypeDecl::Ref { .. }))
+            .collect();
+        self.module.function_mut(func_id).param_is_ref = param_is_ref;
         self.generic_instances
             .insert((template_name, type_args), func_id);
         self.pending_generic_work.push(PendingGenericInstance {
@@ -332,7 +341,7 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }
-        let arg_values = self.lower_call_args(args_ref)?;
+        let arg_values = self.lower_call_args_with_target(args_ref, Some(target))?;
         // REF-Stage-2 (ii): if the callee declares writeback
         // returns (`&mut <compound>` parameters contributed leaf
         // types to `self_writeback_types`), gather the caller-

@@ -740,10 +740,18 @@ impl<'a> FunctionLower<'a> {
                 let target_ret = self.module.function(target_id).return_type;
                 if let Type::Tuple(tuple_id) = target_ret {
                     let element_bindings = self.allocate_tuple_elements(tuple_id)?;
-                    let dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
+                    let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
                         .into_iter()
                         .map(|(local, _)| local)
                         .collect();
+                    // REF-Stage-2 (ii-let-rhs): if the callee declares
+                    // writeback returns from compound `&mut T` params,
+                    // append those dests so the caller-side bindings
+                    // receive the modified leaves alongside the
+                    // tuple result.
+                    if !self.module.function(target_id).self_writeback_types.is_empty() {
+                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
+                    }
                     self.bindings.insert(
                         name,
                         Binding::Tuple { elements: element_bindings },
@@ -767,7 +775,11 @@ impl<'a> FunctionLower<'a> {
                     // enum slots). Codegen then routes the multi-
                     // return slots straight into our locals.
                     let storage = self.allocate_enum_storage(enum_id);
-                    let dests = Self::flatten_enum_dests(&storage);
+                    let mut dests = Self::flatten_enum_dests(&storage);
+                    // REF-Stage-2 (ii-let-rhs): see Tuple branch.
+                    if !self.module.function(target_id).self_writeback_types.is_empty() {
+                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
+                    }
                     self.bindings
                         .insert(name, Binding::Enum(storage));
                     let arg_values = self.lower_call_args(&args_ref)?;
@@ -794,10 +806,20 @@ impl<'a> FunctionLower<'a> {
                     // CallStruct dests are the leaf scalar locals in
                     // declaration order — exactly what the cranelift
                     // multi-result call gives us back.
-                    let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                    let mut dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
                         .into_iter()
                         .map(|(l, _)| l)
                         .collect();
+                    // REF-Stage-2 (ii-let-rhs): if the callee declares
+                    // writeback returns from compound `&mut T` params,
+                    // append those dests after the struct fields so
+                    // the caller-side `&mut <var>` bindings absorb
+                    // the modified leaves in the canonical order
+                    // (`flatten_compound_leaf_types` ensures both
+                    // sides use the same shape).
+                    if !self.module.function(target_id).self_writeback_types.is_empty() {
+                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
+                    }
                     self.register_drop_for_struct_binding(struct_id, &field_bindings);
                     self.bindings.insert(
                         name,

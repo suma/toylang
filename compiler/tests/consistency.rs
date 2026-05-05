@@ -1347,6 +1347,98 @@ fn ref_stage2_enum_mut_ref_propagates_round_trip() {
 }
 
 #[test]
+fn ref_stage2_let_rhs_struct_return_with_mut_writeback_round_trip() {
+    // REF-Stage-2 (ii-let-rhs / struct return): a struct-returning
+    // call that also takes a `&mut <compound>` parameter.
+    //
+    // Previously the let-rhs Call->Struct path emitted a bare
+    // `CallStruct` with only the struct field dests, while the
+    // callee's cranelift signature already had the writeback
+    // leaves appended — the mismatch tripped a `block0 is not
+    // sealed` panic at codegen time. Now `lower_let` appends
+    // `collect_compound_writeback_dests` to the CallStruct dests
+    // so the trailing writeback values flow back into the
+    // caller's `&mut <var>` binding.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+
+        fn shift_x(p: &mut Point, dx: u64) -> Point {
+            p.x = p.x + dx
+            Point { x: p.x, y: p.y }
+        }
+
+        fn main() -> u64 {
+            var p = Point { x: 10u64, y: 5u64 }
+            val snap: Point = shift_x(&mut p, 32u64)
+            if p.x != 42u64 { return 1u64 }
+            if snap.x != 42u64 { return 2u64 }
+            if snap.y != 5u64 { return 3u64 }
+            p.x
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_let_rhs_struct_return_with_mut_writeback_round_trip");
+}
+
+#[test]
+fn ref_stage2_let_rhs_tuple_return_with_mut_writeback_round_trip() {
+    // REF-Stage-2 (ii-let-rhs / tuple return): same shape as the
+    // struct-return case but for tuple-returning calls. Pinned
+    // separately because CallTuple uses its own lower path.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+
+        fn shift_and_pair(p: &mut Point, dx: u64) -> (u64, u64) {
+            p.x = p.x + dx
+            val out: (u64, u64) = (p.x, p.y)
+            out
+        }
+
+        fn main() -> u64 {
+            var p = Point { x: 10u64, y: 32u64 }
+            val pair: (u64, u64) = shift_and_pair(&mut p, 30u64)
+            if p.x != 40u64 { return 1u64 }
+            if pair.0 != 40u64 { return 2u64 }
+            if pair.1 != 32u64 { return 3u64 }
+            pair.0 + pair.1 - 30u64
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_let_rhs_tuple_return_with_mut_writeback_round_trip");
+}
+
+#[test]
+fn ref_stage2_let_rhs_enum_return_with_mut_writeback_round_trip() {
+    // REF-Stage-2 (ii-let-rhs / enum return): same shape as the
+    // struct/tuple cases but for enum-returning calls. CallEnum
+    // dests cover (tag, payload-leaves...), with writeback leaves
+    // appended so both the enum return and the &mut Point param
+    // make it back into the caller's bindings.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+
+        enum Status {
+            Ok(u64),
+            Bad,
+        }
+
+        fn shift_and_status(p: &mut Point, dx: u64) -> Status {
+            p.x = p.x + dx
+            Status::Ok(p.x)
+        }
+
+        fn main() -> u64 {
+            var p = Point { x: 10u64, y: 0u64 }
+            val st: Status = shift_and_status(&mut p, 32u64)
+            if p.x != 42u64 { return 1u64 }
+            match st {
+                Status::Ok(v) => v,
+                Status::Bad => 99u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_let_rhs_enum_return_with_mut_writeback_round_trip");
+}
+
+#[test]
 fn arena_temporary_auto_cleanup_round_trip() {
     // Phase 5 (Design A scope-bound): `with allocator =
     // Arena::new() { ... }` releases the inline arena's tracked

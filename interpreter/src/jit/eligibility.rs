@@ -461,12 +461,30 @@ impl StructLayout {
 /// `base_name` / `variants` / `variant_tag` are read from JE-1b
 /// onward; the `#[allow(dead_code)]` keeps the build clean while
 /// only the diagnostic in `enum_layout_for` consumes the layout.
+///
+/// Phase JE-2a: `payload_ty` carries the (uniform) scalar type
+/// shared by every tuple variant's single payload slot. `None`
+/// means the enum has no payload across any variant (unit-only,
+/// JE-1b's original shape). `payload_ty: Some(T)` means each
+/// variant either has zero payloads (unit) or exactly one payload
+/// of type `T`. Mixed payload widths / multi-payload variants are
+/// silently rejected by `collect_enum_layouts`; `variant_has_payload`
+/// records which variants do carry the payload so the constructor
+/// codegen can zero-init the payload slot for unit variants.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct EnumLayout {
     pub base_name: DefaultSymbol,
     /// Variant names in declaration order. Index = tag value.
     pub variants: Vec<DefaultSymbol>,
+    /// Uniform payload scalar type when any variant has a payload;
+    /// `None` for unit-only enums (JE-1b shape).
+    pub payload_ty: Option<ScalarTy>,
+    /// Per-variant `true` iff the variant has a payload (always
+    /// false when `payload_ty == None`; mixed when `payload_ty` is
+    /// `Some(T)` because a unit variant can coexist with tuple
+    /// variants of payload type `T`).
+    pub variant_has_payload: Vec<bool>,
 }
 
 impl EnumLayout {
@@ -476,6 +494,13 @@ impl EnumLayout {
             .iter()
             .position(|n| *n == name)
             .map(|i| i as u64)
+    }
+
+    /// Number of cranelift slots the enum value occupies. `1` for
+    /// unit-only (just the tag); `2` when any variant carries a
+    /// payload (tag + payload).
+    pub fn slot_count(&self) -> usize {
+        1 + if self.payload_ty.is_some() { 1 } else { 0 }
     }
 }
 
@@ -832,21 +857,58 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
             if !generic_params.is_empty() {
                 continue;
             }
+            // Phase JE-2a: accept enums where every tuple variant has
+            // exactly one payload of the same scalar type. Unit
+            // variants are still allowed alongside tuple variants
+            // (the tag-only branch of an otherwise-payload enum).
+            // Multi-payload variants and mixed payload types stay
+            // rejected — they require the bigger boundary refactor.
             let mut variant_names: Vec<DefaultSymbol> = Vec::with_capacity(variants.len());
-            let mut all_unit = true;
+            let mut variant_has_payload: Vec<bool> = Vec::with_capacity(variants.len());
+            let mut payload_ty: Option<ScalarTy> = None;
+            let mut accept = true;
             for v in &variants {
-                if !v.payload_types.is_empty() {
-                    all_unit = false;
-                    break;
-                }
                 variant_names.push(v.name);
+                match v.payload_types.as_slice() {
+                    [] => variant_has_payload.push(false),
+                    [single] => {
+                        let sty = match ScalarTy::from_type_decl(single) {
+                            Some(s) => s,
+                            None => {
+                                accept = false;
+                                break;
+                            }
+                        };
+                        // Reject unsupported payload widths up front.
+                        if matches!(sty, ScalarTy::Unit | ScalarTy::Allocator | ScalarTy::Never) {
+                            accept = false;
+                            break;
+                        }
+                        match payload_ty {
+                            Some(existing) if existing != sty => {
+                                accept = false;
+                                break;
+                            }
+                            _ => payload_ty = Some(sty),
+                        }
+                        variant_has_payload.push(true);
+                    }
+                    _ => {
+                        // Multi-payload tuple variant — JE-2a scope
+                        // is single-payload only.
+                        accept = false;
+                        break;
+                    }
+                }
             }
-            if all_unit {
+            if accept {
                 out.insert(
                     name,
                     EnumLayout {
                         base_name: name,
                         variants: variant_names,
+                        payload_ty,
+                        variant_has_payload,
                     },
                 );
             }

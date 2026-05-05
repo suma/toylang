@@ -275,6 +275,16 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, Linkage::Local, params, ret);
+        // REF-Stage-2 (ii-method): pre-populate the writeback shape
+        // for this generic method instance so callers compiled
+        // before the body see the correct trailing-return layout.
+        // Same shape as the non-generic decl-time pre-populate in
+        // `lower_program`.
+        super::program::populate_method_writeback_types(
+            &mut self.module,
+            func_id,
+            template,
+        );
         self.method_instances
             .insert((target_sym, method_sym, inst_args), func_id);
         // Capture the subst (including a synthetic `Self` entry when
@@ -590,7 +600,133 @@ impl<'a> FunctionLower<'a> {
             _ => unreachable!("receiver shape already validated"),
         }
         for a in args {
-            if let Some(Expr::Identifier(sym)) = self.program.expression.get(a) {
+            // REF-Stage-2: scalar `&` / `&mut` borrow of a local
+            // emits an `AddressOf` (with the local marked
+            // address-taken so codegen places it in a stack slot).
+            // Compound borrows fall through to identifier expansion
+            // below so the leaf-flatten erasure continues at the
+            // boundary.
+            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a) {
+                if matches!(
+                    op,
+                    frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut
+                ) {
+                    if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
+                        if let Some(Binding::Scalar { local, ty }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            if matches!(
+                                ty,
+                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                    | Type::I32 | Type::U32
+                            ) {
+                                self.module
+                                    .function_mut(self.func_id)
+                                    .address_taken_locals
+                                    .insert(local);
+                                let v = self
+                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                                    .expect("AddressOf returns a value");
+                                values.push(v);
+                                continue;
+                            }
+                        }
+                        if let Some(Binding::RefScalar { local, .. }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                                .expect("LoadLocal returns a value");
+                            values.push(v);
+                            continue;
+                        }
+                    }
+                    // Field/tuple chain ending in a scalar leaf —
+                    // emit `AddressOf` of the leaf local.
+                    if matches!(
+                        self.program.expression.get(&inner),
+                        Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
+                    ) {
+                        if let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
+                            self.resolve_field_chain(&inner)
+                        {
+                            if matches!(
+                                ty,
+                                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                    | Type::I32 | Type::U32
+                            ) {
+                                self.module
+                                    .function_mut(self.func_id)
+                                    .address_taken_locals
+                                    .insert(local);
+                                let v = self
+                                    .emit(InstKind::AddressOf { local }, Some(Type::U64))
+                                    .expect("AddressOf returns a value");
+                                values.push(v);
+                                continue;
+                            }
+                        }
+                    }
+                    // `&mut <name>[i]` — array element address.
+                    if let Some(Expr::SliceAccess(arr_expr, info)) =
+                        self.program.expression.get(&inner)
+                    {
+                        if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
+                            if let Some(Expr::Identifier(arr_sym)) =
+                                self.program.expression.get(&arr_expr)
+                            {
+                                if let Some(Binding::Array { element_ty, slot, .. }) =
+                                    self.bindings.get(&arr_sym).cloned()
+                                {
+                                    if matches!(
+                                        element_ty,
+                                        Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                                            | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                                            | Type::I32 | Type::U32
+                                    ) {
+                                        if let Some(idx_ref) = info.start {
+                                            let idx_v = self
+                                                .lower_expr(&idx_ref)?
+                                                .ok_or_else(|| {
+                                                    "array index produced no value".to_string()
+                                                })?;
+                                            let v = self
+                                                .emit(
+                                                    InstKind::ArrayElemAddr {
+                                                        slot,
+                                                        index: idx_v,
+                                                        elem_ty: element_ty,
+                                                    },
+                                                    Some(Type::U64),
+                                                )
+                                                .expect("ArrayElemAddr returns a value");
+                                            values.push(v);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Peel any explicit borrow so compound borrows
+            // (`&p` / `&mut p` of a struct/tuple/enum binding) flow
+            // through the identifier-expansion path below.
+            let arg_expr_ref = match self.program.expression.get(a) {
+                Some(Expr::Unary(op, inner))
+                    if matches!(
+                        op,
+                        frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut
+                    ) =>
+                {
+                    inner
+                }
+                _ => *a,
+            };
+            if let Some(Expr::Identifier(sym)) = self.program.expression.get(&arg_expr_ref) {
                 if let Some(Binding::Struct { fields, .. }) = self.bindings.get(&sym).cloned() {
                     for (local, ty) in flatten_struct_locals(&fields) {
                         let v = self
@@ -616,7 +752,7 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             let v = self
-                .lower_expr(a)?
+                .lower_expr(&arg_expr_ref)?
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
         }
@@ -635,12 +771,33 @@ impl<'a> FunctionLower<'a> {
         )
             .map(|m| m.self_is_mut && m.has_self_param)
             .unwrap_or(false);
-        if template_self_is_mut {
-            if let Binding::Struct { fields, .. } = &binding {
-                let self_dests: Vec<crate::ir::LocalId> = flatten_struct_locals(fields)
-                    .into_iter()
-                    .map(|(l, _)| l)
-                    .collect();
+        // REF-Stage-2 (ii-method): the callee may declare writeback
+        // returns from `&mut self` AND/OR compound `&mut T` arg
+        // params. Pull the receiver-leaf dests when the method is
+        // `&mut self`, then append any compound-`&mut T` arg dests.
+        // The combined order must match the callee's
+        // `self_writeback_types` (which is built body-time as
+        // receiver leaves first, then args in declaration order).
+        let needs_writeback = !self.module.function(target).self_writeback_types.is_empty();
+        if needs_writeback {
+            let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
+            if template_self_is_mut {
+                match &binding {
+                    Binding::Struct { fields, .. } => {
+                        for (l, _) in flatten_struct_locals(fields) {
+                            self_dests.push(l);
+                        }
+                    }
+                    Binding::Enum(storage) => {
+                        Self::flatten_enum_dests_into(storage, &mut self_dests);
+                    }
+                    _ => {}
+                }
+            }
+            self_dests.extend(self.collect_compound_writeback_dests_slice(args)?);
+            // Sanity: caller dest count must match callee writeback type count.
+            let expected = self.module.function(target).self_writeback_types.len();
+            if self_dests.len() == expected {
                 let ret_ty_opt = if ret_ty.produces_value() {
                     Some(ret_ty)
                 } else {
@@ -659,9 +816,6 @@ impl<'a> FunctionLower<'a> {
                     },
                     None,
                 );
-                // Surface the user-return value (loaded from
-                // `ret_dest`) so the caller's expression-position
-                // consumer sees a regular ValueId.
                 let result = match (ret_dest, ret_ty_opt) {
                     (Some(local), Some(ty)) => Some(
                         self.emit(InstKind::LoadLocal(local), Some(ty))
@@ -671,6 +825,9 @@ impl<'a> FunctionLower<'a> {
                 };
                 return Ok(result);
             }
+            // Fall through to plain Call when the dest count is
+            // wrong — surfaces via the codegen mismatch error
+            // (rare; means we missed an arg shape).
         }
         let inst = InstKind::Call { target, args: values };
         let result_ty = if ret_ty.produces_value() {

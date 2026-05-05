@@ -118,6 +118,89 @@ pub(super) fn primitive_type_decl_for_target_sym(
     })
 }
 
+/// REF-Stage-2 (ii-method): pre-populate the writeback shape for
+/// a method whose body has not yet been lowered. Walks the IR
+/// `params` list of the already-declared FuncId, identifying the
+/// receiver slot (when `&mut self`) and any `&mut <compound>`
+/// user params, and writes the leaf-flattened types onto
+/// `Function::self_writeback_types`. Body-time lowering re-derives
+/// the same shape from the actual leaf locals; the two should
+/// always agree.
+pub(super) fn populate_method_writeback_types(
+    module: &mut Module,
+    func_id: FuncId,
+    method: &frontend::ast::MethodFunction,
+) {
+    let mut wb_types: Vec<Type> = Vec::new();
+    let receiver_idx = if method.has_self_param
+        && method.parameter.first().map(|(n, _)| {
+            // Check name without an interner — caller supplies the
+            // method which has already been resolved by the parser
+            // so the receiver-name distinction (implicit vs
+            // explicit) is encoded in `has_self_param`. Implicit:
+            // `method.parameter` contains user params only.
+            // Explicit: `method.parameter[0]` is the explicit
+            // self entry (named "self").
+            let _ = n;
+            // We treat "first param matches the implicit-self
+            // case" iff `has_self_param` is true AND the first AST
+            // param either doesn't exist or its name isn't "self".
+            // The IR-side prepended self type sits at params[0].
+            true
+        }).unwrap_or(true)
+    {
+        // We need to peek the AST parameter name to disambiguate
+        // implicit vs explicit. Caller passes the method, but we
+        // don't have an interner here — fall back on the layout:
+        // when the IR `params` is exactly one longer than
+        // `method.parameter`, an implicit self was prepended.
+        if module.function(func_id).params.len() == method.parameter.len() + 1 {
+            if method.self_is_mut {
+                let self_ty = module.function(func_id).params[0];
+                flatten_compound_leaf_types(module, self_ty, &mut wb_types);
+            }
+            1
+        } else {
+            // Explicit `(self: ...)` — IR `params[0]` IS the self
+            // entry, and `method.parameter[0]` is the same.
+            if let Some((_, ty)) = method.parameter.first() {
+                if matches!(ty, TypeDecl::Ref { is_mut: true, .. }) {
+                    let self_ty = module.function(func_id).params[0];
+                    flatten_compound_leaf_types(module, self_ty, &mut wb_types);
+                }
+            }
+            0
+        }
+    } else {
+        0
+    };
+    for (param_pos, (_, decl_ty)) in method.parameter.iter().enumerate() {
+        if receiver_idx == 0 && param_pos == 0 {
+            continue;
+        }
+        if !matches!(decl_ty, TypeDecl::Ref { is_mut: true, .. }) {
+            continue;
+        }
+        if let TypeDecl::Ref { inner, .. } = decl_ty {
+            if super::types::lower_scalar(inner).is_some() {
+                continue;
+            }
+        }
+        let ir_param_idx = if receiver_idx == 0 {
+            param_pos
+        } else {
+            receiver_idx + param_pos
+        };
+        if ir_param_idx < module.function(func_id).params.len() {
+            let param_ty = module.function(func_id).params[ir_param_idx];
+            flatten_compound_leaf_types(module, param_ty, &mut wb_types);
+        }
+    }
+    if !wb_types.is_empty() {
+        module.function_mut(func_id).self_writeback_types = wb_types;
+    }
+}
+
 /// REF-Stage-2 (ii): flatten an IR `Type` (struct / tuple / enum
 /// / scalar) to the leaf scalar types in canonical declaration
 /// order. Mirrors `flatten_struct_to_cranelift_tys` but stays in
@@ -561,6 +644,11 @@ pub fn lower_program(
         let export_name = format!("toy_{}{}__{}", target_str, args_suffix, method_str);
         let func_id =
             module.declare_function_anon(export_name, Linkage::Local, params, ret);
+        // REF-Stage-2 (ii-method): pre-populate the method's
+        // writeback shape so callers compiled before the method's
+        // body see the correct trailing-return layout. Same
+        // helper used by generic-method instantiation.
+        populate_method_writeback_types(&mut module, func_id, method);
         method_func_ids
             .entry((*target_sym, *method_sym))
             .or_insert_with(Vec::new)

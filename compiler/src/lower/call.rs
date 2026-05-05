@@ -409,8 +409,17 @@ impl<'a> FunctionLower<'a> {
             Some(frontend::ast::Expr::ExprList(items)) => items,
             _ => return Ok(Vec::new()),
         };
+        self.collect_compound_writeback_dests_slice(&items)
+    }
+
+    /// Slice-based variant for `MethodCall` (which carries args as
+    /// a `Vec<ExprRef>` instead of an `ExprList` reference).
+    pub(super) fn collect_compound_writeback_dests_slice(
+        &self,
+        items: &[ExprRef],
+    ) -> Result<Vec<LocalId>, String> {
         let mut dests: Vec<LocalId> = Vec::new();
-        for a in &items {
+        for a in items {
             let inner = match self.program.expression.get(a) {
                 Some(frontend::ast::Expr::Unary(op, inner))
                     if matches!(

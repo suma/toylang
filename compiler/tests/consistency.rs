@@ -1439,6 +1439,42 @@ fn ref_stage2_let_rhs_enum_return_with_mut_writeback_round_trip() {
 }
 
 #[test]
+fn ref_stage2_method_mut_arg_writeback_round_trip() {
+    // REF-Stage-2 (ii-method): method-call passing `&mut <var>`
+    // for a compound parameter. Previously the AOT method-call
+    // path emitted a plain `Call` (no writeback) so the
+    // mutation never made it back to the caller. Now
+    // `lower_method_call` builds `self_dests` from the receiver
+    // (when `&mut self`) plus `collect_compound_writeback_dests_slice`
+    // for compound-`&mut T` args and emits
+    // `CallWithSelfWriteback`. Pre-population of method
+    // `self_writeback_types` (in both the eager and the
+    // generic-method instantiation path) lets the call site see
+    // the right shape even when the method body hasn't been
+    // lowered yet.
+    let src = r#"
+        struct Point { x: u64, y: u64 }
+        struct Mover { delta: u64 }
+
+        impl Mover {
+            fn shift(self: Self, p: &mut Point) {
+                p.x = p.x + self.delta
+            }
+        }
+
+        fn main() -> u64 {
+            var p = Point { x: 10u64, y: 0u64 }
+            val m = Mover { delta: 30u64 }
+            m.shift(&mut p)
+            val m2 = Mover { delta: 2u64 }
+            m2.shift(&mut p)
+            p.x
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_method_mut_arg_writeback_round_trip");
+}
+
+#[test]
 fn arena_temporary_auto_cleanup_round_trip() {
     // Phase 5 (Design A scope-bound): `with allocator =
     // Arena::new() { ... }` releases the inline arena's tracked

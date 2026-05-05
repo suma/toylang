@@ -564,8 +564,12 @@ impl<'a> TypeCheckerVisitor<'a> {
             rhs_obj.clone().accept(self)?
         };
         
-        // Allow assignment compatibility
-        if lhs_ty != rhs_ty {
+        // Allow assignment compatibility. `is_equivalent` covers the
+        // user-named-type cases the parser emits ambiguously
+        // (`Identifier(name)` vs `Enum(name, _)` / `Struct(name, _)`),
+        // so a `var b: Box = Box::Filled(42u64)` form does not
+        // false-positive even though the bare `==` comparison would.
+        if !lhs_ty.is_equivalent(&rhs_ty) {
             match (&lhs_ty, &rhs_ty) {
                 // Allow unknown type (null values) assignment to any concrete type
                 (_, TypeDecl::Unknown) => {

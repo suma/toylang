@@ -1299,6 +1299,54 @@ fn ref_stage2_compound_mut_ref_propagates_round_trip() {
 }
 
 #[test]
+fn ref_stage2_enum_mut_ref_propagates_round_trip() {
+    // REF-Stage-2 (ii-enum): `&mut Enum` parameter mutation
+    // propagates back to the caller's binding across all three
+    // backends.
+    //   - AOT: `collect_compound_writeback_dests` now flattens
+    //     `Binding::Enum` (tag local + per-variant payload locals)
+    //     into the writeback dest list, and the body-time
+    //     writeback-leaves loop adds enum bindings to
+    //     `Function::self_writeback_types` so the call site uses
+    //     `CallWithSelfWriteback` and routes the trailing return
+    //     leaves back into the caller's enum storage.
+    //   - Interpreter / JIT: enum values share `Rc<RefCell<Object>>`
+    //     so reassignment inside the body is observable on both
+    //     sides automatically (same as struct/tuple).
+    //
+    // Exercises both unit-variant -> tuple-variant transitions and
+    // tuple-variant payload swaps so the tag and payload both make
+    // a round trip through the writeback shape.
+    let src = r#"
+        enum Box {
+            Empty,
+            Filled(u64),
+            Pair(u64, u64),
+        }
+
+        fn fill(b: &mut Box, v: u64) {
+            b = Box::Filled(v)
+        }
+
+        fn pair_it(b: &mut Box, a: u64, c: u64) {
+            b = Box::Pair(a, c)
+        }
+
+        fn main() -> u64 {
+            var b: Box = Box::Empty
+            fill(&mut b, 10u64)
+            pair_it(&mut b, 30u64, 12u64)
+            match b {
+                Box::Empty => 99u64,
+                Box::Filled(x) => x,
+                Box::Pair(x, y) => x + y,
+            }
+        }
+    "#;
+    assert_consistent(src, "ref_stage2_enum_mut_ref_propagates_round_trip");
+}
+
+#[test]
 fn arena_temporary_auto_cleanup_round_trip() {
     // Phase 5 (Design A scope-bound): `with allocator =
     // Arena::new() { ... }` releases the inline arena's tracked

@@ -216,6 +216,37 @@ pub(super) fn flatten_struct_locals(fields: &[FieldBinding]) -> Vec<(LocalId, Ty
     out
 }
 
+/// Flatten an `EnumStorage` into `(LocalId, Type)` pairs in the
+/// canonical order used by `flatten_enum_dests_into` and
+/// `flatten_compound_leaf_types(Type::Enum)`: `(tag_local, U64)`
+/// first, then each variant's payload slots in declaration order
+/// (recursing through nested enum / struct / tuple payloads).
+/// Used by `&mut Enum` writeback so the body-time leaf list aligns
+/// with the declaration-time `self_writeback_types` shape.
+pub(super) fn flatten_enum_storage_locals(storage: &EnumStorage) -> Vec<(LocalId, Type)> {
+    let mut out = Vec::new();
+    flatten_enum_storage_locals_into(storage, &mut out);
+    out
+}
+
+fn flatten_enum_storage_locals_into(storage: &EnumStorage, out: &mut Vec<(LocalId, Type)>) {
+    out.push((storage.tag_local, Type::U64));
+    for variant in &storage.payloads {
+        for slot in variant {
+            match slot {
+                PayloadSlot::Scalar { local, ty } => out.push((*local, *ty)),
+                PayloadSlot::Enum(inner) => flatten_enum_storage_locals_into(inner, out),
+                PayloadSlot::Struct { fields, .. } => {
+                    out.extend(flatten_struct_locals(fields));
+                }
+                PayloadSlot::Tuple { elements, .. } => {
+                    out.extend(flatten_tuple_element_locals(elements));
+                }
+            }
+        }
+    }
+}
+
 /// Flatten a tuple-element list into a sequential `(LocalId, Type)`
 /// list, recursing through struct / tuple sub-shapes so compound
 /// elements still expose their leaf scalars in declaration order.

@@ -437,6 +437,9 @@ impl<'a> FunctionLower<'a> {
                         dests.push(l);
                     }
                 }
+                Some(super::bindings::Binding::Enum(storage)) => {
+                    Self::flatten_enum_dests_into(storage, &mut dests);
+                }
                 _ => {} // Scalar bindings handled by AddressOf path; not a writeback dest.
             }
         }

@@ -1113,6 +1113,9 @@ impl<'a> FunctionLower<'a> {
                 Some(super::bindings::Binding::Tuple { elements }) => {
                     writeback_leaves.extend(super::bindings::flatten_tuple_element_locals(&elements));
                 }
+                Some(super::bindings::Binding::Enum(storage)) => {
+                    writeback_leaves.extend(super::bindings::flatten_enum_storage_locals(&storage));
+                }
                 _ => {} // Scalar (RefScalar) and other shapes don't contribute.
             }
         }

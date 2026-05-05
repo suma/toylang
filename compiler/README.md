@@ -4,13 +4,13 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 
 ## ステータス
 
-MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (191 件) と `compiler/tests/consistency.rs` (23 件、interpreter / JIT / AOT 3 経路一致) が緑のものはすべて使える。
+MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (34 件) + `compiler/tests/e2e_batched.rs` (8 件、巨大プログラムにケース ID dispatch をまとめたバッチ版) + `compiler/tests/consistency.rs` (83 件、interpreter / JIT / AOT 3 経路一致) + `compiler/tests/jit_smoke.rs` (9 件) が緑のものはすべて使える。
 
 サポート:
 
-- 型: `i64`, `u64`, `f64`, `bool`, `Unit`、scalar フィールドのみの struct、scalar 要素のみの tuple
-- 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)
-- 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`
+- 型: `i64`, `u64`, `f64`, `bool`, `Unit`、`u8` / `u16` / `u32` / `i8` / `i16` / `i32` (NUM-W、narrow integer)、`str`、`ptr`、`Allocator`、`Self`、scalar / compound フィールドの struct、scalar / compound 要素の tuple、enum (unit / tuple variant)、配列 `[T; N]`
+- 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)、char literal (`'A'` / `'\n'` / `'\xHH'` / `'\u{HEX}'` — すべて `u32` 値)、string literal escape (`"line1\nline2"` / `"\xHH"` / `"\u{HEX}"`)
+- 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`、`type Name = TargetType` / `type Pair<T> = Box<T>` (型エイリアス、cross-module / forward-reference / generic alias chain すべて対応)
 - 同一プログラム内の関数呼び出し（`main` のみ C ABI でエクスポート、それ以外は `toy_<name>` プレフィックス）
 - **ジェネリック関数 (Phase L)**: `fn id<T>(x: T) -> T { x }` を宣言可能。各呼び出しサイトで型引数を引数の型から推論し、`(template_name, type_args)` ごとに新しい IR Function を monomorphise。`fn unwrap_or<T>(o: Option<T>, default: T) -> T` のようにジェネリック enum / struct と組み合わせ可、ジェネリック関数からジェネリック関数を呼ぶチェーンも自動展開（pending work queue で処理）
 - **`as` キャスト**: `i64 ↔ u64`（identity）、`{i64, u64} ↔ f64`（cranelift の `fcvt_*_sat` で truncating saturation）。bool との cast や Unit との cast は不可
@@ -56,11 +56,12 @@ MVP として始まったが、Phase A〜Z の段階的拡張で interpreter と
 
 未対応（明確なエラーで reject される）:
 
-- (廃止) 任意の文字列値 — **Phase T 以降**: `str` 型を val/var、関数引数 / 戻り値、struct field に渡せる。文字列操作 (`s.len()` / 連結) はランタイムヘルパ未対応
-- dict
+- (廃止) 任意の文字列値 — **Phase T 以降**: `str` 型を val/var、関数引数 / 戻り値、struct field に渡せる
+- (廃止) 文字列操作 — `core/std/string.t::type String = Vec<u8>` + `impl Vec<u8> { from_str / eq / push_str / push_char / extend_bytes }` で `String` (= `Vec<u8>`) ベースの操作が全 backend で動作
+- dict はインタープリタ専用 (`core/std/dict.t::Dict<K, V>` は AOT で動かないため 3-way テストから除外)
 - 配列要素に enum、range slicing で variable bound — リテラル `[a, b, c]`、const/runtime index、struct/tuple 要素、const-bound range slicing は **Phase S/Y/Y2/Y3 以降対応**
 - (廃止) trait — **Phase R 以降**: inherent method, `impl <Trait> for <Type>` 経由のメソッド呼び出し、`<T: Greet>` bound 経由の generic method 呼び出しすべて対応 (monomorphisation 経由)。`dyn Trait` の動的 dispatch は対象外
-- allocator
+- (廃止) allocator — **Phase 5 + #121 Phase B-rest 以降**: `with allocator = ...` の lexical scope、`__builtin_arena_allocator()` / `__builtin_fixed_buffer_allocator(cap)` の inline form は scope-bound auto-drop、`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write/mem_copy` builtins、`Arena::new()` / `FixedBuffer::new(cap)` wrapper struct (stdlib `core/std/allocator.t`) すべて 3-way 動作。生 `__builtin_*` form と wrapper form 両方が auto-drop 対象
 - (廃止) generics（→ struct / enum / 関数とも対応済）
 - (廃止) 関数戻り値 / メソッド戻り値の compound 値を直接 `print` / `println` する — **Phase U 以降**: `println(make_point())` / `println(p.doubled())` のように直接呼べる
 - struct / tuple binding 全体の再代入
@@ -70,7 +71,7 @@ MVP として始まったが、Phase A〜Z の段階的拡張で interpreter と
 - ネストしたフィールド全体への代入（`p.inner = Inner { ... }` 不可、leaf scalar への代入は可）
 - `f64` の `%` (mod) — cranelift に native fmod が無い
 - bool との `as` キャスト、Unit との `as` キャスト
-- heap / pointer builtins
+- narrow int (u8/u16/u32/i8/i16/i32) ↔ f64 の `as` キャスト (中間 widen 経路が未実装)
 
 ## 使い方
 

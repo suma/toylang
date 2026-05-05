@@ -70,14 +70,15 @@ Both forms can appear inline or on their own line.
 Reserved words, none of which can be used as identifiers:
 
 ```
-fn  val  var  const  return  break  continue
+fn  val  var  const  type  return  break  continue
 if  elif  else  for  in  to  while
 class  struct  trait  impl  enum  match  Self
 true  false  null
 pub  extern  package  import  as
 with  ambient
 requires  ensures
-u64  i64  f64  bool  str  ptr  usize  dict
+u8  u16  u32  u64  i8  i16  i32  i64  f64
+bool  str  ptr  usize  dict
 ```
 
 `else if` is **not** valid; use `elif`.
@@ -232,6 +233,65 @@ The `&self` / `&mut self` receiver forms are part of the same family
 but predate `&T` (REF Stage 1) and live in their own parser path.
 Stdlib read-only methods (`String::len`, `Vec::size`, …) take `&self`;
 mutating ones (`Vec::push`, `String::push_str`) take `&mut self`.
+
+### Type aliases
+
+`type Name = TargetType` declares a synonym for an existing type at
+the top level. Aliases are pure rewrites — they do not introduce a
+new nominal type — and they carry zero runtime cost: every backend
+sees the substituted target type after parsing.
+
+```rust
+type Byte = u32
+type Word = Byte                 # alias chain — collapses to u32
+type Pair<T> = Box<T>            # generic alias
+
+struct Box<T> { v: T }
+type IntPair = Pair<i64>         # generic alias used as a target
+
+fn id(b: Byte) -> Byte { b }
+val p: IntPair = Box { v: 21i64 }
+```
+
+Resolution happens in two layers:
+
+- **Per-file (parser-time)** — within the file that declares the
+  alias, the parser eagerly substitutes any subsequent `Byte` /
+  `Pair<u8>` / `IntPair` mention with the target type.
+- **Cross-module (post-integration)** — after every auto-loaded /
+  imported module has been merged into the program AST, a global
+  pass (`frontend::resolve_type_aliases`) substitutes alias
+  references that survived parsing in other modules. This is what
+  lets a stdlib alias (`core/std/string.t::type String = Vec<u8>`)
+  reach user code transparently.
+
+Properties:
+
+- **Forward references work.** `val x: Foo = ...` followed later
+  by `type Foo = i64` resolves cleanly: the per-file pass leaves
+  the unknown identifier alone, and the post-integration pass
+  substitutes it after the alias is collected.
+- **Alias chains collapse.** `type A = u8; type B = A; type C = B`
+  end up with `C` resolving directly to `u8` — the substitution
+  recurses on the resolved target.
+- **Generic aliases are arity-checked at the use site.** Bare uses
+  of a generic alias (`Pair` without `<...>`) and arity mismatches
+  are rejected by the type checker with proper source-location
+  context.
+- **`pub type` is parsed but not yet enforced** at module
+  boundaries — alias visibility currently flows through the
+  global cross-module pass for any auto-loaded module.
+
+Stdlib aliases:
+
+- `core/std/char.t::type char = u8` — semantic alias for byte
+  values that represent characters. Drives signature sites like
+  `Vec<u8>::push_char(c: char)`.
+- `core/std/string.t::type String = Vec<u8>` — `String` *is*
+  `Vec<u8>`. The byte-specific helpers (`from_str`, `eq`,
+  `push_str`, `push_char`) live on `impl Vec<u8>`; the generic
+  helpers (`size`, `is_empty`, `as_ptr`, `clear`, `push`) come
+  from `impl<T> Vec<T>`.
 
 ### Type inference
 
@@ -461,12 +521,21 @@ caret-pointer formatting visible in test output.
 ```
 42u64       # u64
 42i64       # i64
+42u8        # u8       (also: u16 / u32 / i8 / i16 / i32)
+42i32       # i32
 0xFFu64     # hex u64
 0xFFi64     # hex i64
+0xFFu8      # hex narrow int (range-checked at lex time)
 0xFF        # untyped Number, resolved by context (default u64)
 42          # untyped Number, resolved by context
 -3i64       # i64 with leading minus inside the lexer
 ```
+
+The narrow widths (`u8` / `u16` / `u32` / `i8` / `i16` / `i32`) work
+identically to `u64` / `i64`: the lexer validates the literal fits,
+the parser stores the value at its native width, and the type
+checker / interpreter / JIT / AOT compiler all carry the width
+through end-to-end.
 
 ### Float literals
 
@@ -498,11 +567,58 @@ null
 `null` carries a type at runtime (`Null(T)`). The type comes from the
 binding or value position the null is assigned into.
 
+### Char literals
+
+A single-quoted single character lexes to a `u32` value carrying
+the character's Unicode code point. The same shape as a numeric
+literal — every backend treats it through the existing `u32`
+literal pipeline.
+
+```rust
+'A'           # 65u32
+'z'           # 122u32
+' '           # 32u32 (space)
+'\n'          # 10u32  (line feed)
+'\t'          # 9u32
+'\r'          # 13u32
+'\0'          # 0u32   (NUL)
+'\\'          # 92u32  (literal backslash)
+'\''          # 39u32  (literal single quote)
+'\"'          # 34u32  (literal double quote)
+'\xHH'        # 0xHH as u32 (exactly 2 hex digits)
+'\u{HEX}'     # Unicode code point (1-6 hex digits, max 0x10FFFF)
+'\u{1F600}'   # 😀 = 128512u32
+```
+
+Multi-byte UTF-8 between bare quotes (`'あ'`) is **not** accepted at
+the lexer surface today — use `'\u{3042}'` instead. (The constraint
+comes from the rflex regex backend not supporting `\xNN` byte
+ranges in character classes; the lexer comment block at the rule
+site has the details.)
+
+The companion alias `core/std/char.t::type char = u8` exists for
+signature sites that want to document "this byte represents a
+character" without changing the underlying numeric type.
+
 ### String literals
 
 ```rust
-"hello"     # ConstString — interned, immutable
+"hello"           # ConstString — interned, immutable
+"line1\nline2"    # \n decoded to LF in the lexer
+"hex \x41 here"   # \x41 decoded to 'A'
+"unicode \u{3042} here"   # \u{3042} encoded as 3-byte UTF-8 'あ'
 ```
+
+The lexer decodes the same escape ladder as the char literal rule
+(`\n` / `\t` / `\r` / `\0` / `\\` / `\'` / `\xHH` / `\u{HEX}`)
+once at lex time and stores the resulting bytes in the
+`Kind::String(...)` token. Downstream layers see only the decoded
+byte sequence.
+
+`\"` inside a `"..."` literal is **not** yet decodable — the
+closing-quote regex still wins. Use `'\"'` (char) or
+`"\u{22}"` (Unicode escape) when you need a literal `"` in a
+string for now.
 
 Multi-line string literals are not yet supported.
 
@@ -632,6 +748,20 @@ fn area(r: f64) -> f64 { PI * r * r }
 
 Today the JIT silently falls back to the tree-walking interpreter for
 any function that references a `const` — see [`JIT.md`](../JIT.md).
+
+### Top-level `type` declarations
+
+`type Name = TargetType` declares a top-level type alias. See
+[Type aliases](#type-aliases) above for the full semantics
+(per-file vs cross-module resolution, generic alias arity, alias
+chains, forward references).
+
+```rust
+type Byte = u32                 # non-generic
+type Pair<T> = Box<T>           # generic
+pub type ApiVersion = u32       # `pub` is parsed but not yet
+                                # enforced at module boundaries
+```
 
 #### Tuple destructuring
 
@@ -1488,7 +1618,7 @@ Backend coverage:
 
 ### String methods
 
-Method-call syntax on `str`:
+Method-call syntax on `str` (the static-string primitive):
 
 | Method | Signature |
 |---|---|
@@ -1500,6 +1630,34 @@ Method-call syntax on `str`:
 | `str.trim()` | `-> str` |
 | `str.to_upper()` | `-> str` |
 | `str.to_lower()` | `-> str` |
+
+### `String` (heap byte buffer)
+
+`core/std/string.t::type String = Vec<u8>` is a `type` alias —
+`String` *is* `Vec<u8>` after alias resolution. There is no
+nominal `String` type. Construct via `Vec::from_str("text")`
+with a `String` annotation to disambiguate the generic parameter:
+
+```rust
+val s: String = Vec::from_str("hello")
+val n: u64 = s.size()         # 5
+val empty: bool = s.is_empty()
+val p: ptr = s.as_ptr()
+s.push_char('!')              # u8 / char alias both work
+s.push_str(other)             # other: &Vec<u8> via auto-borrow
+val eq: bool = s.eq(other)
+s.clear()
+```
+
+Method dispatch falls into two impl blocks (both in
+`core/std/collections/vec.t`):
+
+- `impl<T> Vec<T>` — generic helpers reused by `String`:
+  `push`, `pop`, `get`, `set`, `size`, `capacity`, `is_empty`,
+  `as_ptr`, `clear`. (`size` rather than `len` to dodge a
+  field/method name clash with the `Vec<T>.len` field.)
+- `impl Vec<u8>` — byte-specific helpers: `from_str`, `eq`,
+  `push_str`, `push_char`, `extend_bytes`.
 
 ### `is_null` (universal)
 
@@ -1685,11 +1843,11 @@ These are real today; some appear in `todo.md` as planned work.
   i64, bool)`) reach the JIT; nested tuples (`((a, b), c)`) and
   tuple-of-struct (`(Point, i64)`) fall back to the interpreter
   until `ParamTy::Tuple` becomes a tree of element shapes.
-- **`with allocator` not in AOT codegen** — the compiler MVP
-  rejects `__builtin_arena_allocator()` / `with allocator = ...` /
-  `__builtin_heap_alloc(...)` etc. with a precise "needs IR-level
-  AllocatorBinding + native codegen" message. Use the interpreter
-  for allocator-system programs.
+- **JIT enum / generic-struct fallback is permanent for now** —
+  see entries above; both code paths land in the interpreter
+  fallback regardless of the program shape. This is acceptable
+  because the AOT pipeline handles the same code through its
+  monomorph machinery.
 
 ---
 

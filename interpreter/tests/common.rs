@@ -169,6 +169,7 @@ pub fn assert_object_type(obj: &Object, expected_type: &str) {
         Object::Allocator(_) => "Allocator",
         Object::EnumVariant { .. } => "EnumVariant",
         Object::Range { .. } => "Range",
+        Object::Closure { .. } => "Closure",
     };
     assert_eq!(actual_type, expected_type, "Expected {} but got {}", expected_type, actual_type);
 }

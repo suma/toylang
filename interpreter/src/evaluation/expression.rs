@@ -213,7 +213,249 @@ impl EvaluationContext<'_> {
                 }
                 result
             }
+            Expr::Closure { params, return_type, body } => {
+                self.evaluate_closure_literal(&params, &return_type, &body)
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
+        }
+    }
+
+    /// Closures Phase 3: build an `Object::Closure` snapshot. Walks
+    /// the body once to find free variables (every identifier
+    /// reference not bound by the closure's own params or by a
+    /// nested binding inside the body), then captures each one's
+    /// current `Value`. Captures are stored as `RcObject` — primitives
+    /// land in a fresh cell (so later rebinding of the same name in
+    /// the outer scope can't be observed by the closure), compound
+    /// values keep their existing Rc cell (matching the standard
+    /// interpreter Rc-share semantics for compound bindings).
+    fn evaluate_closure_literal(
+        &mut self,
+        params: &ParameterList,
+        return_type: &Option<TypeDecl>,
+        body: &ExprRef,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let bound: std::collections::HashSet<DefaultSymbol> =
+            params.iter().map(|(n, _)| *n).collect();
+        let mut captures: Vec<(DefaultSymbol, RcObject)> = Vec::new();
+        let mut seen: std::collections::HashSet<DefaultSymbol> =
+            std::collections::HashSet::new();
+        self.collect_closure_captures(*body, &bound, &mut captures, &mut seen);
+
+        let return_ty = return_type.clone().unwrap_or(TypeDecl::Unknown);
+        let closure_obj = Object::Closure {
+            params: params.clone(),
+            return_ty,
+            body: *body,
+            captures,
+        };
+        Ok(EvaluationResult::Value(crate::value::Value::heap(closure_obj)))
+    }
+
+    /// Walk an expression body to collect free-variable captures.
+    /// Mirrors the type-checker's `collect_closure_free_vars`: an
+    /// identifier reference is captured iff it doesn't appear in
+    /// `bound` and the environment can resolve it. Nested scopes
+    /// (Block let-binding, for-loop iter, match arm patterns, inner
+    /// closure params) extend `bound` so captures only fire for the
+    /// outermost free var.
+    fn collect_closure_captures(
+        &self,
+        expr_ref: ExprRef,
+        bound: &std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, RcObject)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        let expr = match self.expr_pool.get(&expr_ref) {
+            Some(e) => e,
+            None => return,
+        };
+        let mut record = |s: DefaultSymbol,
+                          out: &mut Vec<(DefaultSymbol, RcObject)>,
+                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+            if bound.contains(&s) || seen.contains(&s) {
+                return;
+            }
+            if let Some(val) = self.environment.get_val(s) {
+                seen.insert(s);
+                out.push((s, val.into_rc()));
+            }
+        };
+        match expr {
+            Expr::Identifier(s) => record(s, out, seen),
+            Expr::Call(name, args_ref) => {
+                record(name, out, seen);
+                self.collect_closure_captures(args_ref, bound, out, seen);
+            }
+            Expr::Assign(lhs, rhs) => {
+                self.collect_closure_captures(lhs, bound, out, seen);
+                self.collect_closure_captures(rhs, bound, out, seen);
+            }
+            Expr::Binary(_, l, r) | Expr::Range(l, r) | Expr::With(l, r) => {
+                self.collect_closure_captures(l, bound, out, seen);
+                self.collect_closure_captures(r, bound, out, seen);
+            }
+            Expr::IfElifElse(c, t, elif_pairs, e) => {
+                self.collect_closure_captures(c, bound, out, seen);
+                self.collect_closure_captures(t, bound, out, seen);
+                for (cc, bb) in elif_pairs {
+                    self.collect_closure_captures(cc, bound, out, seen);
+                    self.collect_closure_captures(bb, bound, out, seen);
+                }
+                self.collect_closure_captures(e, bound, out, seen);
+            }
+            Expr::Unary(_, operand) => {
+                self.collect_closure_captures(operand, bound, out, seen);
+            }
+            Expr::Block(stmts) => {
+                let mut bound = bound.clone();
+                for s in stmts {
+                    if let Some(stmt) = self.stmt_pool.get(&s) {
+                        self.collect_stmt_captures(&stmt, &mut bound, out, seen);
+                    }
+                }
+            }
+            Expr::ExprList(items) | Expr::ArrayLiteral(items) | Expr::TupleLiteral(items) => {
+                for e in items {
+                    self.collect_closure_captures(e, bound, out, seen);
+                }
+            }
+            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
+                self.collect_closure_captures(obj, bound, out, seen);
+            }
+            Expr::MethodCall(obj, _, args) => {
+                self.collect_closure_captures(obj, bound, out, seen);
+                for a in args {
+                    self.collect_closure_captures(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinMethodCall(receiver, _, args) => {
+                self.collect_closure_captures(receiver, bound, out, seen);
+                for a in args {
+                    self.collect_closure_captures(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinCall(_, args) | Expr::AssociatedFunctionCall(_, _, args) => {
+                for a in args {
+                    self.collect_closure_captures(a, bound, out, seen);
+                }
+            }
+            Expr::StructLiteral(_, fields) => {
+                for (_, e) in fields {
+                    self.collect_closure_captures(e, bound, out, seen);
+                }
+            }
+            Expr::SliceAccess(obj, info) => {
+                self.collect_closure_captures(obj, bound, out, seen);
+                if let Some(s) = info.start {
+                    self.collect_closure_captures(s, bound, out, seen);
+                }
+                if let Some(e) = info.end {
+                    self.collect_closure_captures(e, bound, out, seen);
+                }
+            }
+            Expr::SliceAssign(obj, start, end, value) => {
+                self.collect_closure_captures(obj, bound, out, seen);
+                if let Some(s) = start {
+                    self.collect_closure_captures(s, bound, out, seen);
+                }
+                if let Some(e) = end {
+                    self.collect_closure_captures(e, bound, out, seen);
+                }
+                self.collect_closure_captures(value, bound, out, seen);
+            }
+            Expr::DictLiteral(entries) => {
+                for (k, v) in entries {
+                    self.collect_closure_captures(k, bound, out, seen);
+                    self.collect_closure_captures(v, bound, out, seen);
+                }
+            }
+            Expr::Cast(e, _) => self.collect_closure_captures(e, bound, out, seen),
+            Expr::Match(scrut, arms) => {
+                self.collect_closure_captures(scrut, bound, out, seen);
+                for arm in arms {
+                    let mut arm_bound = bound.clone();
+                    Self::pattern_bound_names(&arm.pattern, &mut arm_bound);
+                    if let Some(g) = arm.guard {
+                        self.collect_closure_captures(g, &arm_bound, out, seen);
+                    }
+                    self.collect_closure_captures(arm.body, &arm_bound, out, seen);
+                }
+            }
+            Expr::Closure { params, body, .. } => {
+                let mut nested_bound = bound.clone();
+                for (p, _) in &params {
+                    nested_bound.insert(*p);
+                }
+                self.collect_closure_captures(body, &nested_bound, out, seen);
+            }
+            Expr::QualifiedIdentifier(_)
+            | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
+            | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::Number(_) | Expr::String(_)
+            | Expr::True | Expr::False | Expr::Null => {}
+        }
+    }
+
+    fn collect_stmt_captures(
+        &self,
+        stmt: &Stmt,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, RcObject)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        match stmt {
+            Stmt::Expression(e) => self.collect_closure_captures(*e, bound, out, seen),
+            Stmt::Val(name, _, e) => {
+                self.collect_closure_captures(*e, bound, out, seen);
+                bound.insert(*name);
+            }
+            Stmt::Var(name, _, e) => {
+                if let Some(e) = e {
+                    self.collect_closure_captures(*e, bound, out, seen);
+                }
+                bound.insert(*name);
+            }
+            Stmt::Return(e) => {
+                if let Some(e) = e {
+                    self.collect_closure_captures(*e, bound, out, seen);
+                }
+            }
+            Stmt::For(name, start, end, body) => {
+                self.collect_closure_captures(*start, bound, out, seen);
+                self.collect_closure_captures(*end, bound, out, seen);
+                let mut inner = bound.clone();
+                inner.insert(*name);
+                self.collect_closure_captures(*body, &inner, out, seen);
+            }
+            Stmt::While(cond, body) => {
+                self.collect_closure_captures(*cond, bound, out, seen);
+                self.collect_closure_captures(*body, bound, out, seen);
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::StructDecl { .. }
+            | Stmt::ImplBlock { .. }
+            | Stmt::EnumDecl { .. }
+            | Stmt::TraitDecl { .. }
+            | Stmt::TypeAlias { .. } => {}
+        }
+    }
+
+    fn pattern_bound_names(
+        pat: &Pattern,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        match pat {
+            Pattern::Name(s) => {
+                bound.insert(*s);
+            }
+            Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+                for sp in subs {
+                    Self::pattern_bound_names(sp, bound);
+                }
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }
 

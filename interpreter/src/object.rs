@@ -3,6 +3,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use frontend::type_decl::TypeDecl;
+use frontend::ast::ExprRef;
 use string_interner::DefaultSymbol;
 use crate::heap::Allocator;
 
@@ -75,6 +76,25 @@ pub enum Object {
     Range {
         start: RcObject,
         end: RcObject,
+    },
+    /// Closure / lambda value produced by an `Expr::Closure` literal.
+    /// `params` and `return_ty` mirror the literal's signature so a
+    /// runtime defence-in-depth `is_equivalent` against an
+    /// expected `TypeDecl::Function` succeeds. `body` points at the
+    /// body block in the shared `ExprPool`. `captures` is a snapshot
+    /// of every free variable in the body, taken at closure creation
+    /// time — by-value for primitives (own copy of the inline tag)
+    /// and by-Rc-share for compound types (the existing Rc-share
+    /// semantics that all interpreter bindings already follow).
+    /// Phase 3 (interpreter) — JIT / AOT use this as a runtime
+    /// representation for the same reason. Generic-parameterised
+    /// closures are rejected up-front by the type checker, so the
+    /// stored types are always concrete.
+    Closure {
+        params: Vec<(DefaultSymbol, TypeDecl)>,
+        return_ty: TypeDecl,
+        body: ExprRef,
+        captures: Vec<(DefaultSymbol, RcObject)>,
     },
 }
 
@@ -240,6 +260,16 @@ impl Ord for ObjectKey {
             }
             (Object::Range { .. }, _) => Ordering::Less,
             (_, Object::Range { .. }) => Ordering::Greater,
+            // Closures don't have a meaningful user-visible total
+            // order — they aren't dict keys, comparable values, etc.
+            // Compare by body ExprRef just to satisfy `Ord` (the
+            // bucket-ordering pattern above requires every variant
+            // to land somewhere).
+            (Object::Closure { body: b1, .. }, Object::Closure { body: b2, .. }) => {
+                b1.0.cmp(&b2.0)
+            }
+            (Object::Closure { .. }, _) => Ordering::Less,
+            (_, Object::Closure { .. }) => Ordering::Greater,
         }
     }
 }
@@ -426,6 +456,16 @@ impl Hash for Object {
                 start.borrow().hash(state);
                 end.borrow().hash(state);
             }
+            Object::Closure { body, .. } => {
+                // Closures hash by body ExprRef. They don't
+                // participate in user-visible equality (Eq below
+                // returns false for any Closure pair) so this is
+                // mostly here to satisfy `Hash`. Captures
+                // intentionally don't contribute — captured values
+                // can be cyclic structures.
+                40u8.hash(state);
+                body.0.hash(state);
+            }
         }
     }
 }
@@ -550,6 +590,10 @@ impl Object {
             Object::Allocator(_) => TypeDecl::Allocator,
             Object::EnumVariant { enum_name, .. } => TypeDecl::Enum(*enum_name, Vec::new()),
             Object::Range { start, .. } => TypeDecl::Range(Box::new(start.borrow().get_type())),
+            Object::Closure { params, return_ty, .. } => TypeDecl::Function(
+                params.iter().map(|(_, t)| t.clone()).collect(),
+                Box::new(return_ty.clone()),
+            ),
         }
     }
 
@@ -762,6 +806,17 @@ impl Object {
                     return format!("{}::{}({})", header, variant_str, parts.join(", "));
                 }
                 format!("{}::{}", header, variant_str)
+            }
+            Object::Closure { params, .. } => {
+                // Render closures as `<closure/N>` where N is the
+                // arity. Captured values aren't included — they're an
+                // implementation detail and printing them would also
+                // recurse into compound captures (cycles are possible
+                // if a captured struct field eventually holds the
+                // closure). N captures the arity at a glance which is
+                // the only piece of information `print(f)` users care
+                // about.
+                format!("<closure/{}>", params.len())
             }
         }
     }

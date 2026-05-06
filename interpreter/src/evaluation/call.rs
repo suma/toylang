@@ -690,8 +690,124 @@ impl EvaluationContext<'_> {
                 _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
             }
         } else {
+            // Closures Phase 3: indirect call. When the bare name
+            // doesn't resolve to a fn decl but does resolve to a
+            // local variable holding `Object::Closure`, dispatch
+            // through the closure body. Mirrors the type-checker
+            // fallback in `visit_call`.
+            if let Some(callee_val) = self.environment.get_val(*name) {
+                let callee_rc = callee_val.into_rc();
+                let is_closure = matches!(&*callee_rc.borrow(), Object::Closure { .. });
+                if is_closure {
+                    return self.evaluate_indirect_call(callee_rc, name, args);
+                }
+            }
             let name = self.string_interner.resolve(*name).unwrap_or("<NOT_FOUND>");
             Err(InterpreterError::FunctionNotFound(name.to_string()))
+        }
+    }
+
+    /// Closures Phase 3: dispatch through an `Object::Closure` value
+    /// at the given binding. Evaluates each argument expression
+    /// against the caller's environment, then opens a fresh block
+    /// scope, binds captures + params, and evaluates the body.
+    /// Mirrors the values-based call path used by `evaluate_function`
+    /// without the writeback / contract / generic-monomorphisation
+    /// machinery — closures don't carry contract clauses or generic
+    /// params (Phase 2 reject), so the simpler shape suffices.
+    fn evaluate_indirect_call(
+        &mut self,
+        callee: RcObject,
+        callee_name: &DefaultSymbol,
+        args: &ExprRef,
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let args_list = match self.expr_pool.get(args) {
+            Some(Expr::ExprList(args)) => args,
+            _ => return Err(InterpreterError::InternalError(
+                "evaluate_indirect_call: expected ExprList".to_string(),
+            )),
+        };
+        // Snapshot closure parts under a borrow + drop pattern so we
+        // can mutate the environment afterwards without reborrowing.
+        let (params, body, captures) = {
+            let borrowed = callee.borrow();
+            match &*borrowed {
+                Object::Closure { params, body, captures, .. } => (
+                    params.clone(),
+                    *body,
+                    captures.clone(),
+                ),
+                _ => return Err(InterpreterError::InternalError(
+                    "evaluate_indirect_call: callee was not a closure".to_string(),
+                )),
+            }
+        };
+        if args_list.len() != params.len() {
+            let name_str = self
+                .string_interner
+                .resolve(*callee_name)
+                .unwrap_or("<closure>");
+            return Err(InterpreterError::FunctionParameterMismatch {
+                message: format!(
+                    "closure '{}' arg count mismatch: expected {}, found {}",
+                    name_str,
+                    params.len(),
+                    args_list.len()
+                ),
+                expected: params.len(),
+                found: args_list.len(),
+            });
+        }
+        // Evaluate args in caller scope FIRST — they may reference
+        // bindings that aren't in the closure's capture set.
+        let mut evaluated: Vec<crate::value::Value> = Vec::with_capacity(args_list.len());
+        for arg in &args_list {
+            let v = self.evaluate(arg)?;
+            let v = match v {
+                EvaluationResult::Value(v) => v,
+                EvaluationResult::Return(_)
+                | EvaluationResult::Break
+                | EvaluationResult::Continue
+                | EvaluationResult::None => {
+                    return Err(InterpreterError::InternalError(
+                        "closure argument produced control-flow value".to_string(),
+                    ));
+                }
+            };
+            evaluated.push(v);
+        }
+        // Open a fresh scope and bind captures + params. Args take
+        // precedence (a param shadowing a captured name is fine) —
+        // params are inserted last so they win on lookup.
+        self.environment.enter_block();
+        for (name, val) in &captures {
+            self.environment
+                .set_val(*name, crate::value::Value::from_rc(val));
+        }
+        for ((param_sym, _), arg_val) in params.iter().zip(evaluated.into_iter()) {
+            self.environment.set_val(*param_sym, arg_val);
+        }
+        // Evaluate the body. Body is a block ExprRef per the parser
+        // (`parse_closure_expr` always uses `parse_block`), so this
+        // exercises the standard block evaluator.
+        let body_expr = self.expr_pool.get(&body).ok_or_else(|| {
+            InterpreterError::InternalError("closure body ExprRef not in pool".to_string())
+        })?;
+        let result = match body_expr {
+            Expr::Block(stmts) => self.evaluate_block(&stmts),
+            _ => self.evaluate(&body),
+        };
+        self.environment.exit_block();
+        // Convert a Return result back into a plain Value at the
+        // closure boundary — the body's `return` shouldn't leak
+        // into the caller's control flow.
+        match result {
+            Ok(EvaluationResult::Value(v)) => Ok(EvaluationResult::Value(v)),
+            Ok(EvaluationResult::Return(v)) => {
+                Ok(EvaluationResult::Value(v.unwrap_or(crate::value::Value::Unit)))
+            }
+            Ok(other) => Ok(other),
+            Err(e) => Err(e),
         }
     }
 

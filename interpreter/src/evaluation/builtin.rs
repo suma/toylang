@@ -54,7 +54,8 @@ fn object_byte_size(value: &Object) -> Option<u64> {
         }
         // Opaque / non-serialisable values have no canonical byte size.
         Object::ConstString(_) | Object::String(_) | Object::Dict(_)
-        | Object::Null(_) | Object::Allocator(_) | Object::Range { .. } => None,
+        | Object::Null(_) | Object::Allocator(_) | Object::Range { .. }
+        | Object::Closure { .. } => None,
     }
 }
 

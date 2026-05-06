@@ -252,6 +252,7 @@ impl<'a> FunctionLower<'a> {
                 }
                 Some(Binding::Enum(_)) => None,
                 Some(Binding::Array { .. }) => None,
+                Some(Binding::FunctionPtr { .. }) => Some(Type::U64),
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),

@@ -402,7 +402,27 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(sym).unwrap_or("?"),
                         ))
                     }
+                    Some(Binding::FunctionPtr { local, .. }) => {
+                        // Closures Phase 5b: bare use of a fn-pointer
+                        // binding loads the U64 address. Used when
+                        // forwarding a HOF parameter to another HOF
+                        // call (`apply(g, x)` inside a body whose
+                        // `g` is itself a FunctionPtr param).
+                        self.pending_struct_value = None;
+                        Ok(self.emit(InstKind::LoadLocal(local), Some(Type::U64)))
+                    }
                     None => {
+                        // Closures Phase 5b: a `val f = fn(...)` binding
+                        // registers the lifted FuncId in
+                        // `closure_bindings` (Phase 5a) without an
+                        // entry in `bindings`. When such a name is used
+                        // in expression position (passing the closure
+                        // to a HOF), emit FuncAddr to materialise the
+                        // function's runtime address as a U64.
+                        if let Some(target) = self.closure_bindings.get(&sym).copied() {
+                            self.pending_struct_value = None;
+                            return Ok(self.emit(InstKind::FuncAddr { target }, Some(Type::U64)));
+                        }
                         // Fall back to top-level `const` lookup. This
                         // mirrors what the type-checker does: a name
                         // that wasn't introduced by a local binding
@@ -731,18 +751,19 @@ impl<'a> FunctionLower<'a> {
                 self.with_scope_arena_drops.pop();
                 Ok(body_value)
             }
-            // Closures Phase 5a: a `Expr::Closure` literal in
-            // expression position (i.e. NOT as a `val`-binding rhs)
-            // would need a true function-pointer value type the
-            // compiler doesn't model yet. The `val name = fn(...)`
-            // form is intercepted in `lower_let::lift_closure_binding`
-            // before this dispatcher fires; everything else rejects
-            // here with an actionable hint.
-            Expr::Closure { .. } => Err(
-                "compiler Phase 5a only supports `val name = fn(...) -> R { body }` form for closures; \
-                 passing closure literals as arguments / returning them / storing them in fields is a future phase"
-                    .to_string(),
-            ),
+            // Closures Phase 5b: a `Expr::Closure` literal in
+            // expression position (e.g. as a HOF argument:
+            // `apply(fn(x: i64) -> i64 { x }, 5i64)`). We lift the
+            // closure to an anonymous top-level function on the fly
+            // and emit `FuncAddr` to yield its runtime address as
+            // a `Type::U64` value. The caller of `lower_expr` is
+            // responsible for matching the value to a fn-typed
+            // parameter slot. Captures are still unsupported —
+            // body lowering will fail with "undefined identifier"
+            // if the closure body references an outer-scope local.
+            Expr::Closure { params, return_type, body } => {
+                self.lift_closure_inline(&params, &return_type, &body)
+            }
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other

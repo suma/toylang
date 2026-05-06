@@ -869,6 +869,26 @@ pub enum InstKind {
         index: ValueId,
         elem_ty: Type,
     },
+    /// Closures Phase 5b: take the runtime address of a top-level
+    /// function. Result type is `Type::U64` (pointer-sized fn
+    /// pointer). Used for passing a non-capturing closure (lifted
+    /// to a top-level fn) or any direct-callable function as a
+    /// value to a higher-order function. Codegen emits
+    /// `func_addr(I64, declare_func_in_func(target, func))`.
+    FuncAddr { target: FuncId },
+    /// Closures Phase 5b: indirect call through a function-pointer
+    /// value. The callee is a `Type::U64` value (typically loaded
+    /// from a `Binding::FunctionPtr` local or produced by
+    /// `FuncAddr`). `param_tys` and `ret_ty` describe the callee's
+    /// signature so cranelift codegen can `import_signature` and
+    /// `call_indirect` against it. The instruction's `result` slot
+    /// carries the return value (None when `ret_ty` is `Type::Unit`).
+    CallIndirect {
+        callee: ValueId,
+        args: Vec<ValueId>,
+        param_tys: Vec<Type>,
+        ret_ty: Type,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1329,6 +1349,17 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::AllocFixedBufferDrop { handle } => {
                 write!(f, "alloc_fixed_buffer_drop {handle}")
+            }
+            InstKind::FuncAddr { target } => write!(f, "{prefix}func_addr {target}"),
+            InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {
+                let astr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                let pstr: Vec<String> = param_tys.iter().map(|t| t.to_string()).collect();
+                write!(
+                    f,
+                    "{prefix}call_indirect {callee}({}) : ({}) -> {ret_ty}",
+                    astr.join(", "),
+                    pstr.join(", ")
+                )
             }
         }
     }

@@ -160,6 +160,12 @@ impl<'a> FunctionLower<'a> {
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }
+                    Some(Binding::FunctionPtr { .. }) => {
+                        return Err(format!(
+                            "compiler MVP cannot reassign a function-value binding `{}`",
+                            self.interner.resolve(sym).unwrap_or("?")
+                        ));
+                    }
                     None => {
                         return Err(format!(
                             "undefined identifier `{}`",

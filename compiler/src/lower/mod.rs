@@ -386,6 +386,63 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
+    /// Closures Phase 5b: lift an `Expr::Closure` literal that
+    /// appears in expression position (typically as a HOF
+    /// argument) into an anonymous top-level function and emit
+    /// `FuncAddr` so the caller sees a `Type::U64` runtime
+    /// address. Reuses the same lift mechanism as Phase 5a's
+    /// `lift_closure_binding` (declare_function_anon + queue the
+    /// body) — the only difference is we don't register the
+    /// closure under any `closure_bindings` name because there
+    /// is none.
+    pub(super) fn lift_closure_inline(
+        &mut self,
+        params: &frontend::ast::ParameterList,
+        return_type: &Option<frontend::type_decl::TypeDecl>,
+        body: &frontend::ast::ExprRef,
+    ) -> Result<Option<crate::ir::ValueId>, String> {
+        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len());
+        for (pname, pty) in params {
+            let lowered = types::lower_scalar(pty).ok_or_else(|| {
+                format!(
+                    "compiler MVP: closure parameter `{}: {:?}` requires a primitive scalar type",
+                    self.interner.resolve(*pname).unwrap_or("?"),
+                    pty
+                )
+            })?;
+            ir_params.push(lowered);
+        }
+        let ir_ret = match return_type {
+            Some(t) => types::lower_scalar(t).ok_or_else(|| {
+                format!(
+                    "compiler MVP: closure return type `{:?}` requires a primitive scalar type",
+                    t
+                )
+            })?,
+            None => {
+                return Err(
+                    "compiler MVP: inline closure literal requires an explicit `-> ReturnType` annotation"
+                        .to_string(),
+                );
+            }
+        };
+        let outer_name = self.module.function(self.func_id).export_name.clone();
+        let counter = self.closure_bindings.len() + self.pending_closure_work.len();
+        let export_name = format!("{outer_name}__closure_inline_{counter}");
+        let func_id = self
+            .module
+            .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
+        self.pending_closure_work.push(PendingClosureBody {
+            func_id,
+            parameter: params.clone(),
+            body: *body,
+        });
+        // Emit FuncAddr to surface the lifted function as a U64
+        // runtime address so the surrounding call's arg evaluation
+        // can pass it through the regular value path.
+        Ok(self.emit(crate::ir::InstKind::FuncAddr { target: func_id }, Some(Type::U64)))
+    }
+
     /// Closures Phase 5a: lower a queued closure body. Mirrors
     /// the param-binding + body-eval + implicit-return shape of
     /// `lower_body` but skips the contract / generic / writeback

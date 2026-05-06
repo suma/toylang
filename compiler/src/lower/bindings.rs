@@ -59,6 +59,20 @@ pub(super) enum Binding {
         length: usize,
         slot: ArraySlotId,
     },
+    /// Closures Phase 5b: function-pointer binding. The `local`
+    /// holds a `Type::U64` value that is the runtime address of a
+    /// function — produced either by `InstKind::FuncAddr` (when a
+    /// closure / direct fn name is passed as a value) or by the
+    /// caller's argument when this binding represents a
+    /// function-typed parameter (`f: (T1, T2) -> R`). A
+    /// subsequent `Expr::Call(name, args)` whose name resolves
+    /// here lowers to `LoadLocal` + `InstKind::CallIndirect`
+    /// using the recorded signature.
+    FunctionPtr {
+        local: LocalId,
+        param_tys: Vec<Type>,
+        ret_ty: Type,
+    },
 }
 
 /// Storage tree for one enum value in IR. `tag_local` holds the

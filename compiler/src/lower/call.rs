@@ -327,6 +327,36 @@ impl<'a> FunctionLower<'a> {
         fn_name: DefaultSymbol,
         args_ref: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
+        // Closures Phase 5b: indirect-call dispatch through a
+        // `Binding::FunctionPtr` value. Hits when the bare-name
+        // resolves to a function-typed local (HOF parameter or
+        // re-bound closure). LoadLocal yields the U64 fn-pointer,
+        // each arg goes through the regular expression lowering,
+        // and `InstKind::CallIndirect` carries the signature so
+        // codegen can `import_signature` + `call_indirect`.
+        if let Some(super::bindings::Binding::FunctionPtr { local, param_tys, ret_ty }) =
+            self.bindings.get(&fn_name).cloned()
+        {
+            let callee = self
+                .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                .ok_or_else(|| "FunctionPtr load: LoadLocal returned no value".to_string())?;
+            let arg_values = self.lower_call_args(args_ref)?;
+            let _ = &param_tys; // borrowed for the InstKind below
+            let result_ty = if matches!(ret_ty, Type::Unit) {
+                None
+            } else {
+                Some(ret_ty)
+            };
+            return Ok(self.emit(
+                InstKind::CallIndirect {
+                    callee,
+                    args: arg_values,
+                    param_tys,
+                    ret_ty,
+                },
+                result_ty,
+            ));
+        }
         let target = self.resolve_call_target(fn_name, args_ref)?;
         let ret_ty = self.module.function(target).return_type;
         // Struct-returning calls in expression position aren't

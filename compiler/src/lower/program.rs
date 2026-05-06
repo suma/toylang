@@ -1184,6 +1184,44 @@ impl<'a> FunctionLower<'a> {
                 // the struct &mut T true-pointer path is future
                 // work).
             }
+            // Closures Phase 5b: function-typed parameter
+            // (`f: (T1, T2) -> R`) binds as `Binding::FunctionPtr`
+            // so a body-level `f(args)` call can dispatch through
+            // `InstKind::CallIndirect` with the recorded signature.
+            // The IR param type itself was already lowered to
+            // `Type::U64` by `lower_scalar`, so codegen sees a
+            // plain pointer-sized argument.
+            if let frontend::type_decl::TypeDecl::Function(p_tys, r_ty) = decl_ty {
+                let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
+                let mut ok = true;
+                for pt in p_tys {
+                    match super::types::lower_scalar(pt) {
+                        Some(t) => ir_param_tys.push(t),
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                let ir_ret_ty = super::types::lower_scalar(r_ty);
+                if ok && ir_ret_ty.is_some() {
+                    let local = self.module.function_mut(self.func_id).add_local(Type::U64);
+                    self.bindings.insert(
+                        *name,
+                        Binding::FunctionPtr {
+                            local,
+                            param_tys: ir_param_tys,
+                            ret_ty: ir_ret_ty.unwrap(),
+                        },
+                    );
+                    continue;
+                }
+                return Err(format!(
+                    "compiler MVP: function-typed parameter `{}: {:?}` requires primitive scalar param/return types",
+                    self.interner.resolve(*name).unwrap_or("?"),
+                    decl_ty
+                ));
+            }
             match param_types[i] {
                 Type::Struct(struct_id) => {
                     let field_bindings = self.allocate_struct_fields(struct_id);

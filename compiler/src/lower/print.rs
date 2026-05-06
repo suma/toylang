@@ -77,6 +77,17 @@ impl<'a> FunctionLower<'a> {
                         self.emit_print_array(element_ty, length, slot, newline);
                         return Ok(None);
                     }
+                    Binding::FunctionPtr { .. } => {
+                        // Closures Phase 5b: printing a function-
+                        // pointer value isn't meaningful (no
+                        // canonical user-visible form). Reject so
+                        // the diagnostic is precise instead of
+                        // silently printing the raw u64 address.
+                        return Err(
+                            "compiler MVP: print of a function value is not supported"
+                                .to_string(),
+                        );
+                    }
                 }
             }
         }

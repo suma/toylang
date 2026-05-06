@@ -116,6 +116,10 @@ impl<'a> FunctionLower<'a> {
                     "compiler MVP cannot use enum `{}` in a field-access chain",
                     self.interner.resolve(sym).unwrap_or("?")
                 )),
+                Some(Binding::FunctionPtr { .. }) => Err(format!(
+                    "compiler MVP cannot use function value `{}` in a field-access chain",
+                    self.interner.resolve(sym).unwrap_or("?")
+                )),
                 None => Err(format!(
                     "undefined identifier `{}`",
                     self.interner.resolve(sym).unwrap_or("?")

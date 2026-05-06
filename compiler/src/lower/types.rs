@@ -46,6 +46,14 @@ pub(super) fn lower_scalar(ty: &TypeDecl) -> Option<Type> {
         // the default global allocator; other values would be
         // backend handles for arena / fixed_buffer once those land.
         TypeDecl::Allocator => Some(Type::U64),
+        // Closures Phase 5b: function-pointer values are passed
+        // as a pointer-sized U64. The signature shape (`params` /
+        // `ret`) is recovered at the call site via the
+        // `Binding::FunctionPtr` side info, not from the IR Type
+        // itself — the IR doesn't yet carry function-pointer
+        // signatures as first-class types, which keeps every
+        // existing matcher unchanged.
+        TypeDecl::Function(_, _) => Some(Type::U64),
         _ => None,
     }
 }

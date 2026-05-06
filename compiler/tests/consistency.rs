@@ -3110,3 +3110,77 @@ fn closure_phase5_call_then_bind_round_trip() {
     assert_consistent(src, "closure_phase5_call_then_bind");
 }
 
+// Closures Phase 5b — HOF + closure-as-argument. The fn-typed
+// parameter `f: (i64) -> i64` lowers to a `Type::U64` slot bound
+// as `Binding::FunctionPtr`; a body-level `f(x)` dispatches via
+// `InstKind::CallIndirect` against the recorded signature. The
+// caller passes the closure either as a binding-name identifier
+// (`apply(add_two, x)`) — emits `FuncAddr` to surface the lifted
+// FuncId's runtime address — or as an inline literal
+// (`apply(fn(x) -> ..., x)`) which lifts on-the-fly through
+// `lift_closure_inline`.
+#[test]
+fn closure_phase5b_hof_with_closure_binding_round_trip() {
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn main() -> i64 {
+            val add_two = fn(x: i64) -> i64 { x + 2i64 }
+            apply(add_two, 40i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5b_hof_with_closure_binding");
+}
+
+#[test]
+fn closure_phase5b_hof_with_inline_closure_literal_round_trip() {
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn main() -> i64 {
+            apply(fn(x: i64) -> i64 { x * 2i64 }, 21i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5b_hof_with_inline_closure_literal");
+}
+
+#[test]
+fn closure_phase5b_hof_called_twice_round_trip() {
+    // Confirms the fn-pointer parameter is callable any number
+    // of times in the body — `CallIndirect` re-imports the
+    // signature each time but the cranelift `SigRef` cache makes
+    // this O(1).
+    let src = r#"
+        fn apply_twice(f: (i64) -> i64, x: i64) -> i64 {
+            f(f(x))
+        }
+
+        fn main() -> i64 {
+            val plus_three = fn(x: i64) -> i64 { x + 3i64 }
+            apply_twice(plus_three, 36i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5b_hof_called_twice");
+}
+
+#[test]
+fn closure_phase5b_hof_passes_closure_through_round_trip() {
+    // Forwards a fn-typed parameter from one HOF to another —
+    // `lower_expr::Expr::Identifier` for a `Binding::FunctionPtr`
+    // emits LoadLocal to surface the U64 address, which the
+    // outer call's arg evaluator passes through as a value.
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn run_via(g: (i64) -> i64, x: i64) -> i64 {
+            apply(g, x)
+        }
+
+        fn main() -> i64 {
+            val plus_one = fn(x: i64) -> i64 { x + 1i64 }
+            run_via(plus_one, 41i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5b_hof_passes_closure_through");
+}
+

@@ -300,6 +300,59 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            InstKind::FuncAddr { target } => {
+                // Closures Phase 5b: yield the runtime address of a
+                // top-level function as a u64 value. Reuses the
+                // function-import FuncRef pre-declared by
+                // `declare_imports`.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let addr = self.builder.ins().func_addr(types::I64, func_ref);
+                self.record_result(inst, addr);
+            }
+            InstKind::CallIndirect {
+                callee,
+                args,
+                param_tys,
+                ret_ty,
+            } => {
+                // Closures Phase 5b: indirect call through a fn-ptr
+                // value. Build a cranelift signature from `param_tys`
+                // / `ret_ty` (Unit returns produce no result), import
+                // it onto the current function for a fresh SigRef,
+                // then `call_indirect` against the callee value.
+                let call_conv = self.builder.func.signature.call_conv;
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for pt in param_tys {
+                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
+                        format!("CallIndirect: cannot lower param type {pt:?} to cranelift")
+                    })?;
+                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                if !matches!(ret_ty, IrType::Unit) {
+                    let cl = ir_to_cranelift_ty(*ret_ty).ok_or_else(|| {
+                        format!("CallIndirect: cannot lower return type {ret_ty:?} to cranelift")
+                    })?;
+                    sig.returns.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                let sig_ref = self.builder.import_signature(sig);
+                let callee_val = self.value(*callee);
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, callee_val, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if let Some((vid, _ty)) = inst.result {
+                    let v = results.first().copied().ok_or_else(|| {
+                        "CallIndirect declared a return type but produced no Cranelift result"
+                            .to_string()
+                    })?;
+                    self.values.insert(vid.0, v);
+                }
+            }
             InstKind::CallStruct { target, args, dests } => {
                 // Multi-result call: store result `i` into `dests[i]`.
                 // Each `dest` is a per-field local pre-allocated by

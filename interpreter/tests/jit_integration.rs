@@ -270,6 +270,33 @@ fn jit_generic_enum_je3_actually_compiles_main() {
 }
 
 #[test]
+fn jit_generic_enum_boundary_je5_compile() {
+    // Phase JE-5: generic enum monomorph (`Opt<i64>`) flows
+    // across function param/return boundaries through the JIT.
+    // `ParamTy::Enum { base_name, payload_ty }` carries the
+    // per-monomorph payload type so each instantiation gets a
+    // distinct cranelift signature. Both modes exit 42.
+    assert_match("example/jit_generic_enum_boundary_je5.t");
+    let r = run("example/jit_generic_enum_boundary_je5.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_generic_enum_boundary_je5_actually_compiles_all() {
+    // Confirm both helper functions plus main JIT-compile.
+    let r = run("example/jit_generic_enum_boundary_je5.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:")
+            && r.stderr.contains("unwrap_or_zero")
+            && r.stderr.contains("double_opt"),
+        "expected JE-5 to compile both helpers; stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn jit_multi_generic_enum_je4_compile() {
     // Phase JE-4: multi-generic-param enum (`Res<T, E>` — the
     // Result<T, E> shape) JIT-compiles when both type args

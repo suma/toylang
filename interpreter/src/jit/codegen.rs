@@ -74,16 +74,17 @@ pub fn make_signature<M: Module>(
                     ));
                 }
             }
-            // Phase JE-2d: enum parameter expands to (tag: I64) for
-            // unit-only enums and (tag: I64, payload: <payload_ty>)
-            // when the layout has a payload.
-            ParamTy::Enum(enum_name) => {
-                let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
-                    .expect("enum layout missing for declared param");
+            // Phase JE-2d/JE-5: enum parameter expands to (tag: I64)
+            // for unit-only enums and (tag: I64, payload: <payload_ty>)
+            // when the per-monomorph payload is non-None.
+            // ParamTy::Enum carries the resolved payload_ty (JE-5),
+            // so generic monomorphs (`Opt<i64>`) and non-generic
+            // enums share the same boundary expansion.
+            ParamTy::Enum { payload_ty, .. } => {
                 s.params.push(AbiParam::new(types::I64));
-                if let Some(payload_ty) = layout.payload_ty() {
+                if let Some(pty) = payload_ty {
                     s.params.push(AbiParam::new(
-                        ir_type(payload_ty).expect("enum payload type must be representable"),
+                        ir_type(*pty).expect("enum payload type must be representable"),
                     ));
                 }
             }
@@ -114,14 +115,14 @@ pub fn make_signature<M: Module>(
                 ));
             }
         }
-        ParamTy::Enum(enum_name) => {
-            // Phase JE-2d: enum return = (tag) or (tag, payload).
-            let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
-                .expect("enum layout missing for declared return");
+        ParamTy::Enum { payload_ty, .. } => {
+            // Phase JE-2d/JE-5: enum return = (tag) or (tag, payload).
+            // Per-monomorph payload type comes from ParamTy::Enum
+            // directly (JE-5), so generic enum returns work too.
             s.returns.push(AbiParam::new(types::I64));
-            if let Some(payload_ty) = layout.payload_ty() {
+            if let Some(pty) = payload_ty {
                 s.returns.push(AbiParam::new(
-                    ir_type(payload_ty).expect("enum payload type must be representable"),
+                    ir_type(*pty).expect("enum payload type must be representable"),
                 ));
             }
         }
@@ -226,19 +227,21 @@ pub fn translate_function<M: Module>(
             // payload variant. The pair lands in `enum_locals` so
             // the body can use it via the same machinery as
             // try_gen_enum_local.
-            ParamTy::Enum(enum_name) => {
-                let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
-                    .ok_or_else(|| "enum param has no layout".to_string())?;
+            ParamTy::Enum { base_name: enum_name, payload_ty } => {
+                // Phase JE-5: payload_ty is per-monomorph (carried
+                // by ParamTy::Enum) so generic enums (Opt<i64>) get
+                // the right cranelift type without needing to look
+                // up the layout.
                 let tag_var = builder.declare_var(types::I64);
                 builder.def_var(tag_var, block_params[block_param_idx]);
                 block_param_idx += 1;
-                let payload = if let Some(payload_ty) = layout.payload_ty() {
-                    let pty = ir_type(payload_ty)
+                let payload = if let Some(pty_scalar) = payload_ty {
+                    let pty = ir_type(*pty_scalar)
                         .expect("enum payload type must be representable");
                     let pvar = builder.declare_var(pty);
                     builder.def_var(pvar, block_params[block_param_idx]);
                     block_param_idx += 1;
-                    Some((pvar, payload_ty))
+                    Some((pvar, *pty_scalar))
                 } else {
                     None
                 };
@@ -290,8 +293,8 @@ pub fn translate_function<M: Module>(
         emit_struct_return(&mut state, &body_expr, *struct_name)?;
     } else if let ParamTy::Tuple(elements) = &sig.ret {
         emit_tuple_return(&mut state, &body_expr, elements)?;
-    } else if let ParamTy::Enum(enum_name) = &sig.ret {
-        emit_enum_return(&mut state, &body_expr, *enum_name)?;
+    } else if let ParamTy::Enum { base_name: enum_name, payload_ty } = &sig.ret {
+        emit_enum_return(&mut state, &body_expr, *enum_name, *payload_ty)?;
     } else {
         let body_value = state.gen_expr(&body_expr)?;
         if !state.terminated {
@@ -305,7 +308,7 @@ pub fn translate_function<M: Module>(
                     })?;
                     state.builder.ins().return_(&[v]);
                 }
-                ParamTy::Struct(_) | ParamTy::Tuple(_) | ParamTy::Enum(_) => unreachable!(),
+                ParamTy::Struct(_) | ParamTy::Tuple(_) | ParamTy::Enum { .. } => unreachable!(),
             }
             state.terminated = true;
         }
@@ -417,6 +420,7 @@ fn emit_enum_return(
     state: &mut State,
     body_expr: &ExprRef,
     enum_name: DefaultSymbol,
+    payload_ty: Option<ScalarTy>,
 ) -> Result<(), String> {
     let body = state
         .program
@@ -446,7 +450,7 @@ fn emit_enum_return(
         Stmt::Expression(e) => e,
         _ => return Err("last stmt of enum-returning body must be an expression".into()),
     };
-    lower_into_enum_return(state, &result_expr_ref, enum_name)
+    lower_into_enum_return(state, &result_expr_ref, enum_name, payload_ty)
 }
 
 /// Lower an enum-producing expression at a function-return tail.
@@ -457,6 +461,7 @@ fn lower_into_enum_return(
     state: &mut State,
     expr_ref: &ExprRef,
     enum_name: DefaultSymbol,
+    payload_ty: Option<ScalarTy>,
 ) -> Result<(), String> {
     let expr = state
         .program
@@ -508,7 +513,7 @@ fn lower_into_enum_return(
                 _ => return Err("unsupported match pattern in JIT codegen".to_string()),
             }
             state.switch_to(arm_blk);
-            lower_into_enum_return(state, &arm.body, enum_name)?;
+            lower_into_enum_return(state, &arm.body, enum_name, payload_ty)?;
             if let Some((name, prior_var, prior_ty)) = payload_binding {
                 match prior_var {
                     Some(v) => { state.local_vars.insert(name, v); }
@@ -526,7 +531,7 @@ fn lower_into_enum_return(
         state.terminated = true;
         return Ok(());
     }
-    let values = gather_enum_values(state, expr_ref, enum_name)?;
+    let values = gather_enum_values(state, expr_ref, enum_name, payload_ty)?;
     if !state.terminated {
         state.builder.ins().return_(&values);
         state.terminated = true;
@@ -543,6 +548,7 @@ fn gather_enum_values(
     state: &mut State,
     expr_ref: &ExprRef,
     enum_name: DefaultSymbol,
+    payload_ty: Option<ScalarTy>,
 ) -> Result<Vec<Value>, String> {
     let layout = super::eligibility::enum_layout_for_codegen(enum_name)
         .ok_or_else(|| "enum return: layout missing in JIT".to_string())?;
@@ -551,6 +557,10 @@ fn gather_enum_values(
         .expression
         .get(expr_ref)
         .ok_or_else(|| "missing enum-producing expression".to_string())?;
+    // Phase JE-5: prefer the per-monomorph payload_ty over the
+    // layout's so generic enums (Opt<i64>) pick the right cranelift
+    // type.
+    let resolved_payload = payload_ty.or_else(|| layout.payload_ty());
     match expr {
         Expr::Identifier(name) => {
             let local = state
@@ -559,7 +569,7 @@ fn gather_enum_values(
                 .cloned()
                 .ok_or_else(|| "identifier is not a known enum local".to_string())?;
             let mut out = vec![state.builder.use_var(local.tag)];
-            if layout.payload_ty().is_some() {
+            if resolved_payload.is_some() {
                 let (pvar, _) = local.payload.ok_or_else(|| {
                     "enum return: layout has payload but local doesn't".to_string()
                 })?;
@@ -572,7 +582,7 @@ fn gather_enum_values(
                 .variant_tag(path[1])
                 .ok_or_else(|| "enum return: unknown unit variant".to_string())?;
             let mut out = vec![state.builder.ins().iconst(types::I64, tag as i64)];
-            if let Some(payload_ty) = layout.payload_ty() {
+            if let Some(payload_ty) = resolved_payload {
                 let zero = match payload_ty {
                     ScalarTy::F64 => state.builder.ins().f64const(0.0),
                     ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
@@ -2361,7 +2371,10 @@ impl<'a, 'b> State<'a, 'b> {
                 // values, mirroring the boundary signature. Identifier
                 // of an enum local pulls the existing Variables; a
                 // unit / tuple constructor materialises a fresh pair.
-                ParamTy::Enum(enum_name) => {
+                ParamTy::Enum { base_name: enum_name, payload_ty: param_payload_ty } => {
+                    // Phase JE-5: payload_ty comes from the
+                    // ParamTy::Enum (per-monomorph) rather than the
+                    // layout, so generic enums work the same.
                     let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
                         .ok_or_else(|| "enum arg has no layout".to_string())?;
                     let arg_expr = self
@@ -2377,7 +2390,7 @@ impl<'a, 'b> State<'a, 'b> {
                                 .cloned()
                                 .ok_or_else(|| "enum argument unknown".to_string())?;
                             arg_values.push(self.builder.use_var(local.tag));
-                            if layout.payload_ty().is_some() {
+                            if param_payload_ty.is_some() {
                                 let (pvar, _) = local.payload.ok_or_else(|| {
                                     "enum arg layout / local payload mismatch".to_string()
                                 })?;
@@ -2389,7 +2402,7 @@ impl<'a, 'b> State<'a, 'b> {
                                 .variant_tag(path[1])
                                 .ok_or_else(|| "enum arg: unknown unit variant".to_string())?;
                             arg_values.push(self.builder.ins().iconst(types::I64, tag as i64));
-                            if let Some(payload_ty) = layout.payload_ty() {
+                            if let Some(payload_ty) = *param_payload_ty {
                                 let zero = match payload_ty {
                                     ScalarTy::F64 => self.builder.ins().f64const(0.0),
                                     ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
@@ -2674,12 +2687,10 @@ impl<'a, 'b> State<'a, 'b> {
                     Some(s) => s.clone(),
                     None => return Ok(false),
                 };
-                let enum_name = match target_sig.ret {
-                    ParamTy::Enum(s) => s,
+                let (enum_name, ret_payload_ty) = match target_sig.ret {
+                    ParamTy::Enum { base_name, payload_ty } => (base_name, payload_ty),
                     _ => return Ok(false),
                 };
-                let layout = super::eligibility::enum_layout_for_codegen(enum_name)
-                    .ok_or_else(|| "enum return has no layout in JIT".to_string())?;
                 let arg_values = self.gather_call_args(value_ref, &target_sig)?;
                 let func_ref = *self
                     .func_refs
@@ -2687,7 +2698,7 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
                 let call = self.builder.ins().call(func_ref, &arg_values);
                 let results = self.builder.inst_results(call).to_vec();
-                let expected = 1 + if layout.payload_ty().is_some() { 1 } else { 0 };
+                let expected = 1 + if ret_payload_ty.is_some() { 1 } else { 0 };
                 if results.len() != expected {
                     return Err(
                         "enum-returning call produced wrong number of results".into(),
@@ -2695,7 +2706,7 @@ impl<'a, 'b> State<'a, 'b> {
                 }
                 let tag_var = self.builder.declare_var(types::I64);
                 self.builder.def_var(tag_var, results[0]);
-                let payload = if let Some(payload_ty) = layout.payload_ty() {
+                let payload = if let Some(payload_ty) = ret_payload_ty {
                     let pty = ir_type(payload_ty)
                         .expect("enum payload type must be representable");
                     let pvar = self.builder.declare_var(pty);

@@ -340,12 +340,18 @@ pub enum ParamTy {
     /// structural, so the element types alone identify the shape; no
     /// separate layout map is needed.
     Tuple(Vec<ScalarTy>),
-    /// Phase JE-2d: enum value, identified by its declared type name.
-    /// Layout is looked up via `EligibleSet::enum_layouts` (or the
-    /// thread-local `ENUM_LAYOUTS`); ABI expansion is `(tag: U64)` for
-    /// unit-only enums and `(tag: U64, payload: <payload_ty>)` for
-    /// payload-bearing enums.
-    Enum(DefaultSymbol),
+    /// Phase JE-2d/JE-5: enum value identified by its declared type
+    /// name plus the per-monomorph resolved payload type. ABI
+    /// expansion is `(tag: U64)` for unit-only enums (payload_ty =
+    /// `None`) and `(tag: U64, payload: <payload_ty>)` for
+    /// payload-bearing enums. Generic enum monomorphs (`Opt<i64>`)
+    /// carry the resolved scalar so two distinct monomorphs of the
+    /// same base name (`Opt<i64>` vs `Opt<u64>`) get distinct
+    /// signatures and `MonoKey`s.
+    Enum {
+        base_name: DefaultSymbol,
+        payload_ty: Option<ScalarTy>,
+    },
 }
 
 /// Signature of an eligible function in JIT-friendly form.
@@ -1252,10 +1258,51 @@ pub(crate) fn resolve_param_ty(
         // (non-generic, uniform / no payload), so any hit is safe
         // to expand at the boundary.
         TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
-            Some(ParamTy::Enum(*s))
+            // Phase JE-5: non-generic enum payload_ty is determined
+            // entirely by the layout.
+            let payload_ty = enum_layout_for(*s).and_then(|l| l.payload_ty());
+            Some(ParamTy::Enum { base_name: *s, payload_ty })
         }
-        TypeDecl::Enum(s, args) if args.is_empty() && enum_layout_for(*s).is_some() => {
-            Some(ParamTy::Enum(*s))
+        // Phase JE-5: parser-ambiguous form. The frontend emits
+        // `TypeDecl::Struct(s, args)` for any `Name<Args>` (it
+        // can't tell enums from structs at parse time). When the
+        // name actually resolves to a JIT-eligible enum (and not
+        // a struct), treat it as `ParamTy::Enum` with payload
+        // resolved from the args.
+        TypeDecl::Struct(s, args)
+            if enum_layout_for(*s).is_some() && !struct_layouts.contains_key(s) =>
+        {
+            let layout = enum_layout_for(*s)?;
+            let synthetic_td = TypeDecl::Enum(*s, args.clone());
+            let payload_ty = if args.is_empty() {
+                layout.payload_ty()
+            } else {
+                payload_ty_from_annotation(&synthetic_td, &layout)
+            };
+            if layout.variant_payloads.iter().any(|v| v.is_some())
+                && payload_ty.is_none()
+            {
+                return None;
+            }
+            Some(ParamTy::Enum { base_name: *s, payload_ty })
+        }
+        TypeDecl::Enum(s, args) if enum_layout_for(*s).is_some() => {
+            // Phase JE-5: generic enum monomorph at a function
+            // boundary. Build a substitution from the layout's
+            // generic_params to the call-site type args, then
+            // resolve to the uniform per-monomorph payload scalar.
+            let layout = enum_layout_for(*s)?;
+            let payload_ty = if args.is_empty() {
+                layout.payload_ty()
+            } else {
+                payload_ty_from_annotation(td, &layout)
+            };
+            if layout.variant_payloads.iter().any(|v| v.is_some())
+                && payload_ty.is_none()
+            {
+                return None;
+            }
+            Some(ParamTy::Enum { base_name: *s, payload_ty })
         }
         TypeDecl::Tuple(elements) => {
             // Tuples are scalar-only at the JIT layer; any non-scalar
@@ -1324,18 +1371,14 @@ fn check_callable_body(
             ParamTy::Tuple(elements) => {
                 tuple_locals.insert(*n, elements.clone());
             }
-            // Phase JE-2d: enum-typed param registers as an enum
-            // local so the body's identifier lookups + match
-            // scrutinees route through `enum_locals`.
-            ParamTy::Enum(enum_name) => {
-                // Phase JE-3: ParamTy::Enum currently carries only the
-                // base name, so this path can only resolve the
-                // payload_ty from the layout — fine for non-generic
-                // enums (the JE-2d shape). Generic enums at function
-                // boundaries are a follow-up phase.
-                let payload_ty = enum_layout_for(*enum_name)
-                    .and_then(|l| l.payload_ty());
-                enum_locals.insert(*n, EnumLocalInfo::new(*enum_name, payload_ty));
+            // Phase JE-2d/JE-5: enum-typed param registers as an
+            // enum local. `ParamTy::Enum` now carries the resolved
+            // per-monomorph `payload_ty` (JE-5), so generic enums
+            // at the boundary (`Opt<i64>` / `Result<T, E>`) also
+            // work — the boundary expansion uses the same payload
+            // type as the local does.
+            ParamTy::Enum { base_name, payload_ty } => {
+                enum_locals.insert(*n, EnumLocalInfo::new(*base_name, *payload_ty));
             }
         }
     }
@@ -1344,11 +1387,12 @@ fn check_callable_body(
     // mirroring struct/tuple — the body's tail expression must be
     // an enum producer (identifier of an enum local, constructor,
     // or a Match whose arms each produce the right enum).
-    if let ParamTy::Enum(enum_name) = &sig.ret {
+    if let ParamTy::Enum { base_name: enum_name, payload_ty: enum_payload_ty } = &sig.ret {
         return check_enum_returning_body(
             program,
             &code,
             *enum_name,
+            *enum_payload_ty,
             &mut locals,
             &mut struct_locals,
             &mut tuple_locals,
@@ -1570,6 +1614,7 @@ fn check_enum_returning_body(
     program: &Program,
     body_stmt_ref: &StmtRef,
     enum_name: DefaultSymbol,
+    enum_payload_ty: Option<ScalarTy>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
@@ -1636,7 +1681,7 @@ fn check_enum_returning_body(
         }
     };
     check_enum_producing_expr(
-        program, &result_expr_ref, enum_name, locals, struct_locals,
+        program, &result_expr_ref, enum_name, enum_payload_ty, locals, struct_locals,
         tuple_locals, enum_locals, substitutions, struct_layouts, callees,
         ptr_read_hints, reject_reason,
     )
@@ -1650,6 +1695,7 @@ fn check_enum_producing_expr(
     program: &Program,
     expr_ref: &ExprRef,
     enum_name: DefaultSymbol,
+    enum_payload_ty: Option<ScalarTy>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
@@ -1710,7 +1756,11 @@ fn check_enum_producing_expr(
                 });
                 return false;
             }
-            let payload_ty = match layout.payload_ty() {
+            // Phase JE-5: prefer the per-monomorph payload_ty
+            // (provided by the caller — e.g. the function's
+            // `ParamTy::Enum.payload_ty` for return-type checking)
+            // over the layout's, so generic enums work.
+            let payload_ty = match enum_payload_ty.or_else(|| layout.payload_ty()) {
                 Some(t) => t,
                 None => return false,
             };
@@ -1768,7 +1818,7 @@ fn check_enum_producing_expr(
                     None
                 };
                 let ok = check_enum_producing_expr(
-                    program, &arm.body, enum_name, locals, struct_locals,
+                    program, &arm.body, enum_name, enum_payload_ty, locals, struct_locals,
                     tuple_locals, enum_locals, substitutions, struct_layouts,
                     callees, ptr_read_hints, reject_reason,
                 );
@@ -2246,12 +2296,48 @@ fn check_enum_returning_call(
         .iter()
         .find(|f| f.name == callee_name)
         .cloned()?;
-    // Only proceed when callee returns a JIT-eligible (non-generic)
-    // enum. Generic enum returns are JE-3-boundary follow-up.
-    let ret_enum = match &callee.return_type {
+    // Phase JE-5: accept generic enum returns. Resolve the
+    // monomorph payload_ty from the return TypeDecl's args via
+    // `payload_ty_from_annotation`.
+    // Note the parser-ambiguous `Struct(name, args)` form for
+    // user-named types.
+    let (ret_enum, ret_payload_ty) = match &callee.return_type {
         Some(td) => match td {
-            TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => *s,
-            TypeDecl::Enum(s, args) if args.is_empty() && enum_layout_for(*s).is_some() => *s,
+            TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
+                let layout = enum_layout_for(*s).unwrap();
+                (*s, layout.payload_ty())
+            }
+            TypeDecl::Enum(s, _) | TypeDecl::Struct(s, _)
+                if enum_layout_for(*s).is_some() =>
+            {
+                let layout = enum_layout_for(*s).unwrap();
+                // Synthesize a TypeDecl::Enum form so
+                // payload_ty_from_annotation resolves correctly
+                // regardless of which variant the parser emitted.
+                let synthetic_td = match td {
+                    TypeDecl::Enum(_, args) => TypeDecl::Enum(*s, args.clone()),
+                    TypeDecl::Struct(_, args) => TypeDecl::Enum(*s, args.clone()),
+                    _ => unreachable!(),
+                };
+                let args_empty = matches!(
+                    td,
+                    TypeDecl::Enum(_, a) | TypeDecl::Struct(_, a) if a.is_empty()
+                );
+                let pty = if args_empty {
+                    layout.payload_ty()
+                } else {
+                    payload_ty_from_annotation(&synthetic_td, &layout)
+                };
+                // For payload-bearing enums the resolution must
+                // produce a scalar — otherwise the boundary is
+                // undefined.
+                if layout.variant_payloads.iter().any(|v| v.is_some())
+                    && pty.is_none()
+                {
+                    return None;
+                }
+                (*s, pty)
+            }
             _ => return None,
         },
         None => return None,
@@ -2264,8 +2350,7 @@ fn check_enum_returning_call(
     if result.is_none() && callees.len() == saved_callees_len {
         return None;
     }
-    let payload_ty = enum_layout_for(ret_enum).and_then(|l| l.payload_ty());
-    Some(EnumLocalInfo::new(ret_enum, payload_ty))
+    Some(EnumLocalInfo::new(ret_enum, ret_payload_ty))
 }
 
 /// Phase JE-2b/JE-3: detect an enum constructor RHS and validate
@@ -4353,7 +4438,7 @@ pub(crate) fn check_expr(
                             });
                             None
                         }
-                        Some(ParamTy::Enum(_)) => {
+                        Some(ParamTy::Enum { .. }) => {
                             note(reject_reason, || {
                                 "enum-returning method must be the rhs of a val/var"
                                     .to_string()
@@ -4600,7 +4685,9 @@ fn check_plain_call(
         // arg is a direct identifier of an enum local, or it's a
         // unit / tuple constructor for the matching enum (the same
         // shapes the boundary expansion supports).
-        if let Some(ParamTy::Enum(want_enum)) = resolve_param_ty(param_td, substitutions, struct_layouts) {
+        if let Some(ParamTy::Enum { base_name: want_enum, payload_ty: want_payload }) =
+            resolve_param_ty(param_td, substitutions, struct_layouts)
+        {
             // Identifier of an enum local.
             if let Expr::Identifier(id) = arg_expr {
                 if let Some(local_info) = enum_locals.get(&id).copied() {
@@ -4610,7 +4697,21 @@ fn check_plain_call(
                         });
                         return None;
                     }
-                    callee_param_tys.push(ParamTy::Enum(local_info.base_name));
+                    // JE-5: per-monomorph payload type must agree
+                    // (e.g. you can't pass `Opt<i64>` to a `Opt<u64>`
+                    // parameter — both are `Opt` but the cranelift
+                    // payload widths differ).
+                    if local_info.payload_ty != want_payload {
+                        note(reject_reason, || {
+                            "enum argument's monomorph payload type does not match \
+                             callee parameter".to_string()
+                        });
+                        return None;
+                    }
+                    callee_param_tys.push(ParamTy::Enum {
+                        base_name: local_info.base_name,
+                        payload_ty: local_info.payload_ty,
+                    });
                     scalar_arg_tys.push(ScalarTy::Unit);
                     continue;
                 }
@@ -4619,13 +4720,22 @@ fn check_plain_call(
             // val/var rhs helper to validate the variant + payload.
             // Build a synthetic annotation hint from the param type
             // so generic-enum unit constructors can resolve T.
-            if check_enum_constructor_rhs(
+            if let Some(info) = check_enum_constructor_rhs(
                 program, a, locals, struct_locals, tuple_locals, enum_locals,
                 substitutions, struct_layouts, callees, ptr_read_hints,
                 reject_reason, Some(param_td),
-            ).is_some()
-            {
-                callee_param_tys.push(ParamTy::Enum(want_enum));
+            ) {
+                if info.payload_ty != want_payload {
+                    note(reject_reason, || {
+                        "inline enum constructor's payload monomorph does not match \
+                         callee parameter".to_string()
+                    });
+                    return None;
+                }
+                callee_param_tys.push(ParamTy::Enum {
+                    base_name: want_enum,
+                    payload_ty: want_payload,
+                });
                 scalar_arg_tys.push(ScalarTy::Unit);
                 continue;
             }

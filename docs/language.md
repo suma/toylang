@@ -803,12 +803,84 @@ to leaf bindings only.
 ```rust
 if cond { ... } elif cond { ... } else { ... }
 for i in start..end { ... }
+for x in iter { ... }        # iterator protocol (see below)
 while cond { ... }
 break
 continue
 return                       # returns Unit
 return value                 # returns a value
 ```
+
+#### `for` loop forms
+
+Three shapes share the `for IDENT in EXPR { body }` syntax. The
+parser picks the desugaring based on what follows `EXPR`:
+
+1. **Integer range, `..` form** — `for i in 0i64..10i64 { ... }`.
+   Bare `start..end` produces a fast-path `Stmt::For`; the body
+   sees `i` typed as the range's element type. Same for u64.
+2. **Integer range, `to` form** — `for i in 0i64 to 10i64 { ... }`.
+   Legacy spelling, semantically identical to `..`.
+3. **Iterator protocol** — `for x in EXPR { body }` where EXPR is
+   any value whose type exposes `fn next(&mut self) -> Option<T>`.
+   The parser desugars at parse time:
+
+       for x in EXPR { body }
+     ⇒ {
+           var __iter_for_<n> = EXPR
+           while true {
+               match __iter_for_<n>.next() {
+                   Option::Some(x) => { body; continue },
+                   Option::None    => { break },
+               }
+           }
+       }
+
+   The trailing `continue` after `body` exists purely to unify the
+   match arm types at `Unit` (so the user's body may end in any
+   expression — e.g. an assignment whose rhs type would otherwise
+   clash with the `None` arm's `break`).
+
+   The protocol is **structural**, not nominal: there is no
+   `trait Iterator<T>` declaration to implement, because generic
+   trait declarations (`trait Foo<T>`) are not yet supported. Any
+   struct providing the right `next` shape participates. See
+   `core/std/iter.t` for the full contract.
+
+   ```rust
+   struct Counter { current: i64, end: i64 }
+   impl Counter {
+       fn new(end: i64) -> Self { Counter { current: 0i64, end: end } }
+       fn next(&mut self) -> Option<i64> {
+           if self.current >= self.end {
+               Option::None
+           } else {
+               val v = self.current
+               self.current = self.current + 1i64
+               Option::Some(v)
+           }
+       }
+   }
+
+   var sum = 0i64
+   var iter = Counter::new(5i64)
+   for x in iter { sum = sum + x }   # sum == 10
+   ```
+
+   `break` / `continue` / `return` inside the body propagate
+   through the desugared `match` and `while` to the expected target
+   (the enclosing for-loop, the next iteration, or the surrounding
+   function respectively).
+
+   **Backend coverage**: interpreter and JIT both run the protocol
+   end-to-end (JIT inherits from the interpreter via the existing
+   silent-fallback rules). AOT compilation of the iterator-protocol
+   form is a follow-up — programs that compile through `compiler`
+   currently surface a lowering error
+   (`val/var rhs produced no value`) on the desugared
+   `var __iter_for_<n> = EXPR` binding when EXPR is a struct value
+   produced by an associated function call. Range-based `for` loops
+   keep the dedicated AOT fast path.
 
 `break` / `continue` apply to the innermost enclosing loop; labelled
 break is not implemented.

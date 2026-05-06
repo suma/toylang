@@ -4,6 +4,9 @@
 
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
+### 2026-05-06
+- **ITER-PROTOCOL Phase 1 (interpreter + JIT)** — `for x in EXPR { body }` を parser-level で `while + match Option::Some(x)/None` に desugar。EXPR の型が `fn next(&mut self) -> Option<T>` を持てば動作 (structural / duck-typed)。`trait Iterator<T>` 宣言は generic-trait 未対応のため providing 不可、`core/std/iter.t` は documentation-only。`evaluate()` に `Expr::Block` を追加 (match arm body が block の場合の runtime error も同時 fix)。Range-based for-loop (`0..N` / `0 to N`) は既存の `Stmt::For` 整数 fast path を維持。AOT 対応は follow-up (下記 ITER-PROTOCOL-AOT 参照)。
+
 ### 2026-05-05
 - **NUM-LIT-SEPARATORS** — 数値リテラルに `_` 区切り (`1_000_000u64` / `0xDEAD_BEEFu64` / `3_141.592_653f64`)。lexer-only。
 - **CLOSURES Phase 1〜8** — frontend + 型 checker (P1/P2)、interpreter (P3)、AOT direct/indirect/capturing/narrow int/return/struct field 格納 (P5a〜P8)、`fn (T) -> R` 関数型構文。
@@ -46,6 +49,10 @@
 - **#184 Trait + impl** / **#170 top-level const** / **#169 言語リファレンス `docs/language.md` 新設**。
 
 ## 未実装 📋
+
+ITER-PROTOCOL-AOT. **iterator protocol の AOT compiler 対応** — `for x in EXPR { body }` の parser-level desugaring (`while + match Option::Some(x)/None`) は interpreter / JIT で動作するが、AOT compile すると `compile error: val/var rhs produced no value` で失敗。原因は desugar が emit する `var __iter_for_<n> = EXPR` (EXPR が Counter::new(...) のような struct-returning AssociatedFunctionCall) の lowering で、現状の AOT compound-returning method の expression position 制約に抵触している。`compile_to_jit_main_with_options` 経由の JIT は問題なく動作するため、AOT 側の compound binding 制約を緩めるか、parser で `{ var iter = EXPR; ... }` ではなく initializer を直接 callable に rewrite する形にすれば解決可能。優先度: 中 (interpreter / JIT で動くので blocker ではない)。関連: `CONCRETE-IMPL-Phase-2c` の compound-returning method 制約。
+
+ITER-PROTOCOL-TRAIT. **`trait Iterator<T>` の宣言サポート** — 現状 generic trait (`trait Foo<T>`) は CLAUDE.md の OOP 未対応リストに載っていて、`core/std/iter.t` は documentation-only。これが入れば structural duck-typing から nominal typing に移行でき、`fn first<I: Iterator<i64>>(iter: I) -> Option<i64>` のような generic-bound API が書ける。実装は trait 宣言 + 引数 bound check + impl 解決の generic param substitution。優先度: 中 (単独でも価値あるが、Iterator が最も明確な動機)。
 
 NUM-W-AOT-pack-Phase3. **狭い数値型 AOT の compound element packing 続き**: NUM-W-AOT-pack Phase 1 (`747146c`) で homogeneous scalar 配列の packing は完了。残: compound element 配列 (`[PackedRgba; N]` で `struct PackedRgba { r:u8, g:u8, b:u8, a:u8 }` が現状 32 バイト消費、本来 4 バイト) の tighter layout。実装には `ArraySlotInfo` を per-leaf strides ベースに refactor、もしくは `ArrayLoad/Store` に element_index + leaf_offset_const の 2 値を取らせる IR 拡張が必要。優先度: 低 (機能は動くがメモリ効率の改善のみ)。
 

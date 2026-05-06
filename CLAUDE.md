@@ -117,6 +117,7 @@ fn main() -> u64 {
   - **数値リテラル区切り**: `_` を桁の間に挿入できる (`1_000_000u64`、`0xDEAD_BEEFu64`、`3_141.592_653f64`)。最初の文字は数字必須 (`_42` は識別子)。lexer のみで処理、AST / IR / runtime は separator を見ない。
   - **f64 リテラルは必ず `f64` サフィックスを付ける**: タプルアクセス `outer.0.1` のような構文との曖昧性を避けるため、`1.5` 単体は許可しない。整数 → f64 への暗黙変換も無いので、`1.0f64` または `1f64` と書く（必要なら `as f64` キャスト）
 - Control flow: `if/else`, `for i in start to end`, `while`, `break`, `continue`, `return`
+- **Iterator protocol** (`for x in EXPR { body }`): EXPR が `..` / `to` を含まない場合 parser が `while + match Option::Some(x)/None` に desugar、`fn next(&mut self) -> Option<T>` を持つ任意の struct で動作 (structural / duck-typed; generic trait `trait Iterator<T>` 自体は未対応のため `core/std/iter.t` は documentation-only)。Range-based for-loop (`0..N` / `0 to N`) は既存の整数 fast path を維持。**backend coverage**: interpreter + JIT 完全対応、AOT は follow-up (todo.md `ITER-PROTOCOL-AOT`)
 - **`else if` 構文は未サポート**: `if expr {} else if expr {}` は使用不可。代わりに `elif` キーワードを使用すること
   ```rust
   # NG: else if は使えない

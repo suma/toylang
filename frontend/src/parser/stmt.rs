@@ -76,26 +76,39 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
                     let ident = parser.string_interner.get_or_intern(s);
                     parser.next();
                     parser.expect_err(&Kind::In)?;
+                    // Forbid struct literals in the iterable expression so
+                    // `for x in MyIter { ... }` parses the `{` as the body
+                    // block, not a `MyIter {}` struct literal — same trick
+                    // as `if` / `while` conditions.
+                    parser.push_context(crate::parser::core::ParseContext::Condition);
                     let start = super::expr::parse_logical_expr(parser)?;
-                    // Accept both the legacy `to` keyword and the `..` range
-                    // operator as the loop separator.
+                    parser.pop_context();
+                    // Three-way fork on the next token:
+                    //   `to` / `..`  → integer range fast path (Stmt::For)
+                    //   `{`          → iterator-protocol form (desugar)
+                    //   else         → error
                     match parser.peek() {
                         Some(Kind::To) | Some(Kind::DotDot) => {
                             parser.next();
+                            let end = super::expr::parse_logical_expr(parser)?;
+                            let block = super::expr::parse_block(parser)?;
+                            let location = parser.current_source_location();
+                            Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
+                        }
+                        Some(Kind::BraceOpen) => {
+                            let body = super::expr::parse_block(parser)?;
+                            let location = parser.current_source_location();
+                            Ok(desugar_for_in_iterator(parser, ident, start, body, location))
                         }
                         other => {
                             let other_str = format!("{:?}", other);
                             let location = parser.current_source_location();
-                            return Err(ParserError::generic_error(
+                            Err(ParserError::generic_error(
                                 location,
-                                format!("expected `to` or `..` in for header, got {}", other_str),
-                            ));
+                                format!("expected `to`, `..`, or `{{` in for header, got {}", other_str),
+                            ))
                         }
                     }
-                    let end = super::expr::parse_logical_expr(parser)?;
-                    let block = super::expr::parse_block(parser)?;
-                    let location = parser.current_source_location();
-                    Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
                 }
                 x => {
                     let location = parser.current_source_location();
@@ -116,6 +129,121 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
         }
         _ => parser.parse_expr(),
     }
+}
+
+/// Desugar `for x in EXPR { body }` into the iterator-protocol shape:
+///
+/// ```text
+/// {
+///     var __iter_for_<n> = EXPR
+///     while true {
+///         match __iter_for_<n>.next() {
+///             Option::Some(x) => body,
+///             Option::None    => { break },
+///         }
+///     }
+/// }
+/// ```
+///
+/// `EXPR` must produce a value whose type exposes
+/// `fn next(&mut self) -> Option<T>` — by convention, an
+/// `impl Iterator<T> for ...`. Range expressions (`0..10`) keep
+/// the dedicated `Stmt::For` integer fast path; only the bare
+/// `for x in EXPR { body }` shape (no `..` / `to`) lands here.
+fn desugar_for_in_iterator(
+    parser: &mut Parser,
+    loop_var: DefaultSymbol,
+    iter_expr: ExprRef,
+    body: ExprRef,
+    location: crate::type_checker::SourceLocation,
+) -> StmtRef {
+    let counter = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let iter_name = format!("__iter_for_{counter}");
+    let iter_sym = parser.string_interner.get_or_intern(iter_name.as_str());
+    let option_sym = parser.string_interner.get_or_intern("Option");
+    let some_sym = parser.string_interner.get_or_intern("Some");
+    let none_sym = parser.string_interner.get_or_intern("None");
+    let next_sym = parser.string_interner.get_or_intern("next");
+
+    // var __iter_for_n = iter_expr
+    let iter_decl = parser.ast_builder.var_stmt(
+        iter_sym,
+        None,
+        Some(iter_expr),
+        Some(location.clone()),
+    );
+
+    // __iter_for_n.next()
+    let iter_ident = parser
+        .ast_builder
+        .identifier_expr(iter_sym, Some(location.clone()));
+    let next_call = parser.ast_builder.method_call_expr(
+        iter_ident,
+        next_sym,
+        vec![],
+        Some(location.clone()),
+    );
+
+    // Some(x) arm — body is the user's block, wrapped in
+    // `{ user_body; continue }` so the arm type unifies with
+    // the None-arm's `{ break }` (both Unit). The trailing
+    // `continue` is a no-op semantically (the while body has
+    // nothing after the match), but its `Unit` return type
+    // discards whatever the user's last statement produced
+    // — without it, `for x in iter { sum = sum + x }` fails
+    // type-check because Assign returns its rhs type.
+    let user_body_stmt = parser
+        .ast_builder
+        .add_stmt_with_location(Stmt::Expression(body), Some(location.clone()));
+    let continue_stmt = parser.ast_builder.continue_stmt(Some(location.clone()));
+    let some_arm_body = parser.ast_builder.block_expr(
+        vec![user_body_stmt, continue_stmt],
+        Some(location.clone()),
+    );
+    let some_arm = MatchArm {
+        pattern: Pattern::EnumVariant(option_sym, some_sym, vec![Pattern::Name(loop_var)]),
+        guard: None,
+        body: some_arm_body,
+    };
+
+    // None => { break }
+    let break_stmt = parser.ast_builder.break_stmt(Some(location.clone()));
+    let break_block = parser
+        .ast_builder
+        .block_expr(vec![break_stmt], Some(location.clone()));
+    let none_arm = MatchArm {
+        pattern: Pattern::EnumVariant(option_sym, none_sym, vec![]),
+        guard: None,
+        body: break_block,
+    };
+
+    // match __iter.next() { Some(x) => body, None => { break } }
+    let match_expr = parser.ast_builder.add_expr_with_location(
+        Expr::Match(next_call, vec![some_arm, none_arm]),
+        Some(location.clone()),
+    );
+
+    // while true { <match-stmt> }
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+    let match_stmt = parser.ast_builder.add_stmt_with_location(
+        Stmt::Expression(match_expr),
+        Some(location.clone()),
+    );
+    let while_body = parser
+        .ast_builder
+        .block_expr(vec![match_stmt], Some(location.clone()));
+    let while_stmt = parser
+        .ast_builder
+        .while_stmt(true_expr, while_body, Some(location.clone()));
+
+    // Outer block: { var __iter = ...; while ... { ... } }
+    let outer_block = parser
+        .ast_builder
+        .block_expr(vec![iter_decl, while_stmt], Some(location.clone()));
+    parser
+        .ast_builder
+        .add_stmt_with_location(Stmt::Expression(outer_block), Some(location))
 }
 
 pub fn parse_var_def(parser: &mut Parser) -> ParserResult<StmtRef> {

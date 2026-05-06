@@ -216,6 +216,17 @@ impl EvaluationContext<'_> {
             Expr::Closure { params, return_type, body } => {
                 self.evaluate_closure_literal(&params, &return_type, &body)
             }
+            // Block as a value-position expression: needed for match arm
+            // bodies (`Some(x) => { ... }`) and the iterator-protocol
+            // `for x in iter { body }` desugaring whose match arms wrap
+            // the user body in a fresh block. Mirrors the
+            // statement-position handling in `handle_expression_statement`.
+            Expr::Block(stmts) => {
+                self.environment.enter_block();
+                let res = self.evaluate_block(&stmts);
+                self.environment.exit_block();
+                res
+            }
             _ => Err(InterpreterError::InternalError(format!("evaluate: unexpected expr: {expr:?}"))),
         }
     }

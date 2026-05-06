@@ -17,6 +17,8 @@
 //! variadic ABI quirks (notably macOS aarch64) that make calling
 //! `printf` directly from cranelift error-prone.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::Hasher;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,7 +32,114 @@ use std::process::{Command, Stdio};
 /// in a single run).
 const RUNTIME_OBJECT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/toylang_rt.o"));
 
+/// Cache schema version — bump when the link inputs (cc flags,
+/// runtime object format, output convention) change in a way that
+/// would invalidate previously-cached artefacts.
+const LINK_CACHE_VERSION: u32 = 1;
+
+/// Opt-in content-addressed cache for linked binaries. When the
+/// `TOY_LINK_CACHE_DIR` env var is set, `link_executable` first
+/// hashes its inputs (toylang object bytes + runtime object bytes
+/// + cc selection + platform flag + cache version), looks up
+/// `<dir>/<hash>.bin`, and — on hit — copies the cached binary
+/// directly to `output` instead of invoking `cc`.
+///
+/// The dominant savings on macOS is the Mach-O ad-hoc code
+/// signing pass that runs on every link (~150-300 ms per binary
+/// on Apple Silicon). For repeat test runs (cargo nextest with
+/// stable inputs) the hit rate approaches 100% after the first
+/// run, turning the AOT-link bottleneck into a copy.
+///
+/// Production users don't set the env var so behaviour stays
+/// identical to the uncached path.
+fn link_cache_dir() -> Option<PathBuf> {
+    let raw = std::env::var_os("TOY_LINK_CACHE_DIR")?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(raw))
+}
+
+/// Stable hash of every input that affects the linked binary's
+/// bytes. SipHasher13 with the fixed (0, 0) keys (i.e.
+/// `DefaultHasher::new()`) is deterministic across processes —
+/// caches built by one test run remain valid for the next.
+fn compute_link_hash(object_bytes: &[u8], cc: &str) -> u64 {
+    let mut h = DefaultHasher::new();
+    h.write_u32(LINK_CACHE_VERSION);
+    h.write_usize(object_bytes.len());
+    h.write(object_bytes);
+    h.write_usize(RUNTIME_OBJECT.len());
+    h.write(RUNTIME_OBJECT);
+    h.write(cc.as_bytes());
+    // Platform flag is encoded into the hash so a cache produced
+    // on a Linux box can't collide with a macOS-flagged build.
+    #[cfg(target_os = "macos")]
+    h.write(b"macos:11.0");
+    #[cfg(not(target_os = "macos"))]
+    h.write(b"other");
+    h.finish()
+}
+
 pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Result<(), String> {
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+    // Opt-in cache hit: copy cached binary to `output`.
+    if let Some(dir) = link_cache_dir() {
+        let hash = compute_link_hash(object_bytes, &cc);
+        let cached = dir.join(format!("{hash:016x}.bin"));
+        if cached.is_file() {
+            // Copy preserves file mode on Unix (executable bit
+            // included) so the resulting binary is runnable.
+            std::fs::copy(&cached, output)
+                .map_err(|e| format!("link cache copy {} -> {}: {}", cached.display(), output.display(), e))?;
+            return Ok(());
+        }
+        // Miss: link normally, then populate the cache atomically.
+        link_executable_uncached(object_bytes, output, verbose, &cc)?;
+        if let Err(e) = populate_link_cache(&dir, hash, output) {
+            // Cache population failure is non-fatal — we already
+            // produced the requested binary. Surface a warning
+            // rather than failing the user's build.
+            eprintln!("link-cache: populate failed: {e}");
+        }
+        return Ok(());
+    }
+    link_executable_uncached(object_bytes, output, verbose, &cc)
+}
+
+/// Atomic cache write: copy `output` to a temp file in the cache
+/// directory, then `rename` into place. Concurrent test workers
+/// may race on the same hash; whichever rename wins, the result
+/// is byte-identical so either outcome is correct.
+fn populate_link_cache(dir: &Path, hash: u64, output: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("create_dir_all {}: {}", dir.display(), e))?;
+    // Embed the PID + nanos in the temp name so two concurrent
+    // populators can't trip over each other's tmp file.
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = dir.join(format!(".{hash:016x}.{pid}.{nanos}.tmp"));
+    std::fs::copy(output, &tmp)
+        .map_err(|e| format!("link cache stage {}: {}", tmp.display(), e))?;
+    let final_path = dir.join(format!("{hash:016x}.bin"));
+    // `rename` is atomic on Unix and overwrites — the loser of a
+    // race just overwrites with byte-identical content.
+    std::fs::rename(&tmp, &final_path).map_err(|e| {
+        // Cleanup the tmp on failure.
+        let _ = std::fs::remove_file(&tmp);
+        format!("link cache rename: {e}")
+    })?;
+    Ok(())
+}
+
+fn link_executable_uncached(
+    object_bytes: &[u8],
+    output: &Path,
+    verbose: bool,
+    cc: &str,
+) -> Result<(), String> {
     // Write the toylang object next to the desired output. Putting it
     // in the same directory keeps the artefact local and easy to clean
     // up; we don't bother with /tmp since the compiler may run in a
@@ -48,8 +157,6 @@ pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Res
     let tmp_rt_obj = sibling_temp_path(output, ".rt.o");
     std::fs::write(&tmp_rt_obj, RUNTIME_OBJECT)
         .map_err(|e| format!("write {}: {}", tmp_rt_obj.display(), e))?;
-
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
 
     // Platform-specific link flags. On macOS, cranelift's `ObjectModule`
     // doesn't emit an `LC_BUILD_VERSION` load command in the Mach-O

@@ -1,0 +1,21 @@
+# Workspace-wide cargo config.
+#
+# `[env]` exports environment variables to every process cargo
+# spawns — including test binaries. We use this to enable the
+# AOT link cache during local + CI builds without intrusively
+# modifying CompilerOptions or compile_file.
+#
+# `TOY_LINK_CACHE_DIR` (read by `compiler/src/driver.rs`) is the
+# content-addressed cache for linked Mach-O / ELF binaries. On
+# macOS the dominant cost of an AOT compile is the linker's
+# ad-hoc code-signing pass (~150-300 ms / binary on Apple
+# Silicon); a cache hit replaces both the cc invocation and the
+# signing pass with a `std::fs::copy`. The cache is stable
+# across cargo invocations (input hash uses a deterministic
+# SipHasher13 seed), so repeat `cargo nextest` runs see ~100%
+# hit rate after the first run.
+#
+# Production users (downstream consumers of the compiler crate)
+# don't get this env var, so their behaviour is unchanged.
+[env]
+TOY_LINK_CACHE_DIR = { value = "target/toy_link_cache", relative = true }

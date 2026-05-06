@@ -242,36 +242,45 @@ fn assert_consistent(source: &str, stem: &str) {
 /// Used by `assert_stdout_consistent` so the same `cc`-built
 /// interpreter binary serves both the JIT and the plain-interpreter
 /// reference outputs (no in-process redirection needed).
-fn interpreter_stdout(source: &str, stem: &str) -> String {
+///
+/// `with_core` — same convention as `jit_exit_code`. When false the
+/// spawn skips stdlib auto-load (~150 ms savings).
+fn interpreter_stdout(source: &str, stem: &str, with_core: bool) -> String {
     let bin = interpreter_bin();
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
-    let out = Command::new(&bin)
-        .arg(&src_path)
-        .output()
-        .expect("spawn interpreter");
+    let mut cmd = Command::new(&bin);
+    cmd.arg(&src_path);
+    if !with_core {
+        cmd.env("TOYLANG_CORE_MODULES", "");
+    }
+    let out = cmd.output().expect("spawn interpreter");
     let _ = std::fs::remove_file(&src_path);
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// JIT counterpart to `interpreter_stdout` — same binary, with the
 /// `INTERPRETER_JIT=1` env var that flips on the cranelift JIT path.
-fn jit_stdout(source: &str, stem: &str) -> String {
+/// `with_core` follows the same convention.
+fn jit_stdout(source: &str, stem: &str, with_core: bool) -> String {
     let bin = interpreter_bin();
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
-    let out = Command::new(&bin)
-        .arg(&src_path)
-        .env("INTERPRETER_JIT", "1")
-        .output()
-        .expect("spawn interpreter+jit");
+    let mut cmd = Command::new(&bin);
+    cmd.arg(&src_path).env("INTERPRETER_JIT", "1");
+    if !with_core {
+        cmd.env("TOYLANG_CORE_MODULES", "");
+    }
+    let out = cmd.output().expect("spawn interpreter+jit");
     let _ = std::fs::remove_file(&src_path);
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// Compile to a binary, run it, and capture stdout. Mirrors
 /// `compiler_exit_code` but keeps the bytes instead of the exit code.
-fn compiler_stdout(source: &str, stem: &str) -> String {
+/// `with_core` follows the same convention; returns `None` when
+/// `compile_file` fails (lets the lite-path caller fall back).
+fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> Option<String> {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
@@ -281,13 +290,21 @@ fn compiler_stdout(source: &str, stem: &str) -> String {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: Some(core_modules_dir()),
+        core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
     };
-    compile_file(&options).expect("compile_file");
-    let out = Command::new(&exe_path).output().expect("spawn binary");
+    let result = if compile_file(&options).is_ok() {
+        let out = Command::new(&exe_path).output().expect("spawn binary");
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    result
+}
+
+fn compiler_stdout(source: &str, stem: &str) -> String {
+    try_compiler_stdout(source, stem, true).expect("compile_file")
 }
 
 /// Same shape as `assert_consistent`, but compares stdout instead of
@@ -295,13 +312,31 @@ fn compiler_stdout(source: &str, stem: &str) -> String {
 /// across the three backends (the original motivation: the
 /// interpreter-vs-compiler generic-instance type-args mismatch that
 /// Phase "interpreter generic print" tracked down).
+///
+/// Lite path: try all three backends with `TOYLANG_CORE_MODULES=""`
+/// (skip stdlib auto-load) first. When all three succeed AND the
+/// outputs agree, the test wins ~150 ms × 3 spawns of stdlib
+/// type-checking. Programs that reference stdlib symbols
+/// (`Vec`, `String`, `Option`, ...) fail compile in the lite path,
+/// so we fall back to the canonical with-core path. The lite path's
+/// AOT compile uses `try_compiler_stdout` (returns None on failure)
+/// to avoid panicking when stdlib symbols are missing.
 fn assert_stdout_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
-    let interp = interpreter_stdout(source, &format!("{stem}_interp"));
+    if let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false) {
+        let interp = interpreter_stdout(source, &format!("{stem}_interp_lite"), false);
+        let jit = jit_stdout(source, &format!("{stem}_jit_lite"), false);
+        if interp == compiled && interp == jit {
+            return;
+        }
+        // Mismatch on lite path falls through; the canonical path
+        // produces the diagnostic the user sees.
+    }
+    let interp = interpreter_stdout(source, &format!("{stem}_interp"), true);
     let compiled = compiler_stdout(source, &format!("{stem}_aot"));
-    let jit = jit_stdout(source, &format!("{stem}_jit"));
+    let jit = jit_stdout(source, &format!("{stem}_jit"), true);
     assert_eq!(
         interp, compiled,
         "interpreter vs compiler stdout mismatch for source:\n{source}\n--interp--\n{interp}\n--compiler--\n{compiled}",

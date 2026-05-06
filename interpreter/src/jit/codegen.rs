@@ -154,6 +154,8 @@ pub fn translate_function<M: Module>(
     let mut struct_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     let mut tuple_locals: HashMap<DefaultSymbol, Vec<Variable>> = HashMap::new();
     let mut tuple_local_types: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
+    let mut enum_locals: HashMap<DefaultSymbol, EnumLocal> = HashMap::new();
+    let mut enum_local_types: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
     let block_params: Vec<Value> = builder.block_params(entry).to_vec();
     let mut block_param_idx: usize = 0;
     for (name, ty) in &sig.params {
@@ -217,6 +219,8 @@ pub fn translate_function<M: Module>(
         struct_local_types: &mut struct_local_types,
         tuple_locals: &mut tuple_locals,
         tuple_local_types: &mut tuple_local_types,
+        enum_locals: &mut enum_locals,
+        enum_local_types: &mut enum_local_types,
         func_signatures,
         func_refs: &func_refs,
         helper_refs: &helper_refs,
@@ -471,6 +475,17 @@ struct State<'a, 'b> {
     /// Mirror of `tuple_locals` carrying the per-element ScalarTy so
     /// codegen and `expr_type` can resolve TupleAccess types.
     tuple_local_types: &'a mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    /// Phase JE-2b: enum-typed locals. Each enum value is stored as
+    /// (tag_var, optional payload_var) — `payload_var` is `Some(_)`
+    /// when the enum's `EnumLayout::payload_ty` is `Some(_)`. Mirrors
+    /// the struct/tuple split: the value layout lives here while the
+    /// type-name view lives in `enum_local_types` so eligibility's
+    /// codegen-time `check_expr` can resolve identifiers.
+    enum_locals: &'a mut HashMap<DefaultSymbol, EnumLocal>,
+    /// Mirror of `enum_locals` keyed by local name -> enum type name.
+    /// Used when constructing the eligibility-side `enum_locals` view
+    /// for codegen-time type lookups.
+    enum_local_types: &'a mut HashMap<DefaultSymbol, DefaultSymbol>,
     #[allow(dead_code)]
     func_signatures: &'a HashMap<MonoKey, FuncSignature>,
     func_refs: &'a HashMap<MonoKey, FuncRef>,
@@ -499,6 +514,18 @@ struct State<'a, 'b> {
     /// pops are dropped from the *outermost* down so the runtime
     /// active-allocator stack stays consistent.
     with_depth: u32,
+}
+
+/// Phase JE-2b: per-local representation for an enum value. `tag` is
+/// always present (carries the variant index as a U64). `payload` is
+/// `Some(var, ty)` when the enum's layout has a uniform payload type;
+/// codegen reads the payload Variable when the variant pattern binds
+/// it. The pair is created in `try_gen_enum_local` and consumed by
+/// `Match` (and, in JE-2d, by function boundary expansion).
+#[derive(Debug, Clone)]
+pub(crate) struct EnumLocal {
+    pub(crate) tag: Variable,
+    pub(crate) payload: Option<(Variable, ScalarTy)>,
 }
 
 struct LoopFrame {
@@ -565,12 +592,18 @@ impl<'a, 'b> State<'a, 'b> {
             Expr::True => Ok(Some(self.builder.ins().iconst(types::I8, 1))),
             Expr::False => Ok(Some(self.builder.ins().iconst(types::I8, 0))),
             Expr::Identifier(sym) => {
-                let var = self
-                    .local_vars
-                    .get(&sym)
-                    .copied()
-                    .ok_or_else(|| "unresolved identifier in JIT".to_string())?;
-                Ok(Some(self.builder.use_var(var)))
+                if let Some(var) = self.local_vars.get(&sym).copied() {
+                    return Ok(Some(self.builder.use_var(var)));
+                }
+                // Phase JE-2b: bare reference to an enum local in
+                // value position resolves to its tag (the JIT
+                // representation of the enum's discriminant). Match
+                // scrutinees pick the same value via this path so
+                // tag-based dispatch falls out naturally.
+                if let Some(local) = self.enum_locals.get(&sym).cloned() {
+                    return Ok(Some(self.builder.use_var(local.tag)));
+                }
+                Err("unresolved identifier in JIT".to_string())
             }
             Expr::Binary(op, lhs_ref, rhs_ref) => {
                 if matches!(op, Operator::LogicalAnd | Operator::LogicalOr) {
@@ -1220,9 +1253,61 @@ impl<'a, 'b> State<'a, 'b> {
                 let scrut_v = self
                     .gen_expr(&scrutinee)?
                     .ok_or_else(|| "match scrutinee produced no value".to_string())?;
+                // Phase JE-2b: peek the scrutinee for an enum local
+                // identifier so payload-binding patterns can pull
+                // the payload Variable directly from `enum_locals`.
+                let scrut_enum_local = match self.program.expression.get(&scrutinee) {
+                    Some(Expr::Identifier(sym)) => self.enum_locals.get(&sym).cloned(),
+                    _ => None,
+                };
                 // Result type: take the first arm's body. Eligibility
-                // already verified all arms agree.
-                let result_ty = self.expr_type(&arms[0].body)?;
+                // already verified all arms agree. Phase JE-2b: if
+                // the first arm's pattern binds a payload, install
+                // that binding temporarily for `expr_type` so the
+                // body can resolve the payload identifier.
+                let result_ty = {
+                    let first_arm = &arms[0];
+                    let prior = if let Pattern::EnumVariant(enum_sym, _, sub_pats) =
+                        &first_arm.pattern
+                    {
+                        if let [Pattern::Name(payload_name)] = sub_pats.as_slice() {
+                            let layout = super::eligibility::enum_layout_for_codegen(*enum_sym);
+                            if let (Some(layout), Some(local)) =
+                                (layout, scrut_enum_local.as_ref())
+                            {
+                                if let (Some(payload_ty), Some((pvar, _))) =
+                                    (layout.payload_ty, local.payload)
+                                {
+                                    let prior_ty = self
+                                        .local_types
+                                        .insert(*payload_name, payload_ty);
+                                    let prior_var = self.local_vars.insert(*payload_name, pvar);
+                                    Some((*payload_name, prior_ty, prior_var))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    let ty = self.expr_type(&first_arm.body)?;
+                    if let Some((name, prior_ty, prior_var)) = prior {
+                        match prior_ty {
+                            Some(t) => { self.local_types.insert(name, t); }
+                            None => { self.local_types.remove(&name); }
+                        }
+                        match prior_var {
+                            Some(v) => { self.local_vars.insert(name, v); }
+                            None => { self.local_vars.remove(&name); }
+                        }
+                    }
+                    ty
+                };
                 let cont = self.builder.create_block();
                 let result_param = match ir_type(result_ty) {
                     Some(t) => Some(self.builder.append_block_param(cont, t)),
@@ -1234,6 +1319,7 @@ impl<'a, 'b> State<'a, 'b> {
                     // Compute the cmp value for this arm. Wildcard
                     // is unconditional jump; literal / variant emit
                     // an `icmp eq scrut, pattern_value` then brif.
+                    let mut payload_binding: Option<(DefaultSymbol, Variable, ScalarTy, Option<Variable>)> = None;
                     match &arm.pattern {
                         Pattern::Wildcard => {
                             // Drop the next_blk (unreachable) by
@@ -1247,7 +1333,7 @@ impl<'a, 'b> State<'a, 'b> {
                             let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
                             self.brif(cmp, arm_blk, next_blk);
                         }
-                        Pattern::EnumVariant(enum_sym, variant_sym, _sub_pats) => {
+                        Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
                             let layout = super::eligibility::enum_layout_for_codegen(*enum_sym)
                                 .ok_or_else(|| "match variant: enum layout missing in JIT".to_string())?;
                             let tag = layout
@@ -1256,6 +1342,32 @@ impl<'a, 'b> State<'a, 'b> {
                             let tag_v = self.builder.ins().iconst(types::I64, tag as i64);
                             let cmp = self.builder.ins().icmp(IntCC::Equal, scrut_v, tag_v);
                             self.brif(cmp, arm_blk, next_blk);
+                            // Phase JE-2b: capture the payload-binding
+                            // intent so we can install / remove the
+                            // alias on `local_vars` around the arm
+                            // body. Eligibility guarantees the enum
+                            // local exists when the pattern has a
+                            // Pattern::Name sub-pattern.
+                            if let [Pattern::Name(payload_name)] = sub_pats.as_slice() {
+                                if let (Some(local), Some(payload_ty)) =
+                                    (scrut_enum_local.as_ref(), layout.payload_ty)
+                                {
+                                    if let Some((pvar, pty)) = local.payload {
+                                        let _ = pty;
+                                        let prior = self.local_vars.insert(*payload_name, pvar);
+                                        let prior_ty = self
+                                            .local_types
+                                            .insert(*payload_name, payload_ty);
+                                        payload_binding = Some((
+                                            *payload_name,
+                                            pvar,
+                                            payload_ty,
+                                            prior,
+                                        ));
+                                        let _ = prior_ty;
+                                    }
+                                }
+                            }
                         }
                         _ => {
                             return Err("unsupported match pattern in JIT codegen".to_string());
@@ -1271,6 +1383,14 @@ impl<'a, 'b> State<'a, 'b> {
                             (true, Some(v)) => self.jump_with(cont, &[v]),
                             (false, _) => self.jump(cont),
                             (true, None) => return Err("match arm missing required value".into()),
+                        }
+                    }
+                    // Restore prior local binding (if any) so the next
+                    // arm doesn't observe this arm's payload alias.
+                    if let Some((name, _, _, prior)) = payload_binding {
+                        match prior {
+                            Some(v) => { self.local_vars.insert(name, v); }
+                            None => { self.local_vars.remove(&name); }
                         }
                     }
 
@@ -1317,6 +1437,8 @@ impl<'a, 'b> State<'a, 'b> {
                         last_value = None;
                     } else if self.try_gen_tuple_local(name, &value)? {
                         last_value = None;
+                    } else if self.try_gen_enum_local(name, &value)? {
+                        last_value = None;
                     } else {
                         let st = self.expr_type(&value)?;
                         let v = self
@@ -1338,6 +1460,10 @@ impl<'a, 'b> State<'a, 'b> {
                             continue;
                         }
                         if self.try_gen_tuple_local(name, &v)? {
+                            last_value = None;
+                            continue;
+                        }
+                        if self.try_gen_enum_local(name, &v)? {
                             last_value = None;
                             continue;
                         }
@@ -2086,6 +2212,121 @@ impl<'a, 'b> State<'a, 'b> {
         }
     }
 
+    /// Phase JE-2b: detect an enum constructor as a val/var rhs and
+    /// materialise it into a fresh enum local. Returns `Ok(true)`
+    /// when handled. The constructor shapes are:
+    ///
+    ///   - `Expr::QualifiedIdentifier([enum, variant])` — unit
+    ///     constructor; emit `(tag = variant_index, payload = 0)`
+    ///     when the layout has a payload type, or just `(tag)` for
+    ///     unit-only enums.
+    ///   - `Expr::AssociatedFunctionCall(enum, variant, [arg])` —
+    ///     tuple constructor; emit `(tag = variant_index, payload =
+    ///     gen_expr(arg))`.
+    ///   - `Expr::Identifier(rhs_name)` — enum-to-enum alias;
+    ///     reuse the same Variables (by sharing the EnumLocal).
+    ///
+    /// Eligibility has validated the variant exists, the payload
+    /// type matches, and the layout is JIT-eligible.
+    fn try_gen_enum_local(
+        &mut self,
+        name: DefaultSymbol,
+        value_ref: &ExprRef,
+    ) -> Result<bool, String> {
+        let value = match self.program.expression.get(value_ref) {
+            Some(v) => v,
+            None => return Ok(false),
+        };
+        match value {
+            Expr::QualifiedIdentifier(path) if path.len() == 2 => {
+                let enum_name = path[0];
+                let variant = path[1];
+                let layout = match super::eligibility::enum_layout_for_codegen(enum_name) {
+                    Some(l) => l,
+                    None => return Ok(false),
+                };
+                let tag = match layout.variant_tag(variant) {
+                    Some(t) => t,
+                    None => return Ok(false),
+                };
+                let tag_v = self.builder.ins().iconst(types::I64, tag as i64);
+                let tag_var = self.builder.declare_var(types::I64);
+                self.builder.def_var(tag_var, tag_v);
+                let payload = if let Some(payload_ty) = layout.payload_ty {
+                    let zero = match payload_ty {
+                        ScalarTy::Bool => self.builder.ins().iconst(types::I8, 0),
+                        ScalarTy::F64 => self.builder.ins().f64const(0.0),
+                        ScalarTy::I8 | ScalarTy::U8 => self.builder.ins().iconst(types::I8, 0),
+                        ScalarTy::I16 | ScalarTy::U16 => self.builder.ins().iconst(types::I16, 0),
+                        ScalarTy::I32 | ScalarTy::U32 => self.builder.ins().iconst(types::I32, 0),
+                        _ => self.builder.ins().iconst(types::I64, 0),
+                    };
+                    let pty = ir_type(payload_ty)
+                        .expect("enum payload type must be representable");
+                    let pvar = self.builder.declare_var(pty);
+                    self.builder.def_var(pvar, zero);
+                    Some((pvar, payload_ty))
+                } else {
+                    None
+                };
+                self.enum_locals.insert(name, EnumLocal { tag: tag_var, payload });
+                self.enum_local_types.insert(name, enum_name);
+                Ok(true)
+            }
+            Expr::AssociatedFunctionCall(enum_name, variant, args) => {
+                let layout = match super::eligibility::enum_layout_for_codegen(enum_name) {
+                    Some(l) => l,
+                    None => return Ok(false),
+                };
+                let idx = match layout.variants.iter().position(|n| *n == variant) {
+                    Some(i) => i,
+                    None => return Ok(false),
+                };
+                if !layout.variant_has_payload[idx] {
+                    return Ok(false);
+                }
+                let payload_ty = match layout.payload_ty {
+                    Some(t) => t,
+                    None => return Ok(false),
+                };
+                if args.len() != 1 {
+                    return Ok(false);
+                }
+                let payload_v = self
+                    .gen_expr(&args[0])?
+                    .ok_or_else(|| "enum tuple constructor payload produced no value".to_string())?;
+                let tag_v = self.builder.ins().iconst(types::I64, idx as i64);
+                let tag_var = self.builder.declare_var(types::I64);
+                self.builder.def_var(tag_var, tag_v);
+                let pty = ir_type(payload_ty)
+                    .expect("enum payload type must be representable");
+                let pvar = self.builder.declare_var(pty);
+                self.builder.def_var(pvar, payload_v);
+                self.enum_locals.insert(
+                    name,
+                    EnumLocal { tag: tag_var, payload: Some((pvar, payload_ty)) },
+                );
+                self.enum_local_types.insert(name, enum_name);
+                Ok(true)
+            }
+            Expr::Identifier(rhs_name) => {
+                let local = match self.enum_locals.get(&rhs_name).cloned() {
+                    Some(l) => l,
+                    None => return Ok(false),
+                };
+                let enum_name = self
+                    .enum_local_types
+                    .get(&rhs_name)
+                    .copied()
+                    .ok_or_else(|| "enum local missing type".to_string())?;
+                self.enum_locals.insert(name, local);
+                self.enum_local_types.insert(name, enum_name);
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Recover the (cached) scalar type of an expression. Mirrors the rules
     /// in eligibility; this is needed at codegen time to pick the right
     /// instruction (signed vs unsigned, comparison condition codes, etc.).
@@ -2106,12 +2347,15 @@ impl<'a, 'b> State<'a, 'b> {
         // copy without disturbing the codegen-side state.
         let mut struct_locals_view = self.struct_local_types.clone();
         let mut tuple_locals_view = self.tuple_local_types.clone();
+        let mut enum_locals_view: HashMap<DefaultSymbol, DefaultSymbol> =
+            self.enum_local_types.clone();
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
             &mut struct_locals_view,
             &mut tuple_locals_view,
+            &mut enum_locals_view,
             &empty_subs,
             self.struct_layouts,
             &mut callees,

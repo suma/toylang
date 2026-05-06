@@ -229,6 +229,33 @@ fn jit_unit_enum_constructor_and_match_compile() {
     assert_eq!(r.code, 1, "interpreter exit; stderr: {}", r.stderr);
 }
 
+#[test]
+fn jit_tuple_enum_je2_compile() {
+    // Phase JE-2b/c: a non-generic enum with uniform tuple-variant
+    // payload (Status::Ok(i64) / Status::Bad) compiles via the JIT.
+    // Constructor lowers to (tag, payload), match dispatches on
+    // tag, and the `Status::Ok(x)` arm binds `x` to the payload
+    // Variable. Both modes must return exit 42.
+    assert_match("example/jit_tuple_enum_je2.t");
+    let r = run("example/jit_tuple_enum_je2.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_tuple_enum_je2_actually_compiles_main() {
+    // Confirm the JIT actually compiles `main` (touching the
+    // tuple-payload enum) rather than silently falling back. The
+    // verbose log must mention `JIT compiled: main`.
+    let r = run("example/jit_tuple_enum_je2.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("main"),
+        "expected JE-2b/c to compile `main`; stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn jit_unit_enum_actually_compiles_pick() {

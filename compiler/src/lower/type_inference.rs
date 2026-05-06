@@ -124,7 +124,7 @@ impl<'a> FunctionLower<'a> {
             Expr::Call(fn_name, _) => self
                 .module
                 .lookup_function(None, fn_name)
-                .or_else(|| self.closure_bindings.get(&fn_name).copied())
+                .or_else(|| self.closure_bindings.get(&fn_name).map(|link| link.func_id))
                 .map(|id| self.module.function(id).return_type),
             Expr::AssociatedFunctionCall(struct_name, fn_name, _) => {
                 // Module-qualified call: prefer

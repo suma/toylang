@@ -889,6 +889,21 @@ pub enum InstKind {
         param_tys: Vec<Type>,
         ret_ty: Type,
     },
+    /// Closures Phase 6: build a closure environment for a
+    /// capturing closure. Heap-allocates `8 + 8 * captures.len()`
+    /// bytes via libc `malloc`, stores the lifted function's
+    /// address at offset 0 (always present so future indirect-
+    /// call paths can recover the fn-ptr from the env), and
+    /// stores each capture at offset `8 + i*8`. Result is a
+    /// `Type::U64` env-pointer value. Captures are restricted to
+    /// 8-byte scalars (i64 / u64 / f64 / bool / ptr) for the
+    /// initial implementation; narrow ints would need width-aware
+    /// store/load and are rejected up-front.
+    MakeClosure {
+        target: FuncId,
+        captures: Vec<ValueId>,
+        capture_tys: Vec<Type>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1360,6 +1375,14 @@ impl fmt::Display for DisplayInst<'_> {
                     astr.join(", "),
                     pstr.join(", ")
                 )
+            }
+            InstKind::MakeClosure { target, captures, capture_tys } => {
+                let cstr: Vec<String> = captures
+                    .iter()
+                    .zip(capture_tys.iter())
+                    .map(|(v, t)| format!("{v} : {t}"))
+                    .collect();
+                write!(f, "{prefix}make_closure {target}[{}]", cstr.join(", "))
             }
         }
     }

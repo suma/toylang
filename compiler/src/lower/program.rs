@@ -934,7 +934,7 @@ pub fn lower_program(
             &mut pending_method_work,
             &mut pending_closure_work,
         )?;
-        builder.lower_closure_body(&work.parameter, &work.body)?;
+        builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
     }
     Ok(module)
 }

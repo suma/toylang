@@ -61,8 +61,8 @@ impl<'a> FunctionLower<'a> {
         // `name -> FuncId` when it sees a `val name = fn(...)`
         // literal, so a subsequent `name(args)` lands here as a
         // regular direct `Call` to the lifted body.
-        if let Some(id) = self.closure_bindings.get(&fn_name).copied() {
-            return Ok(id);
+        if let Some(link) = self.closure_bindings.get(&fn_name).copied() {
+            return Ok(link.func_id);
         }
         if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {
             // Infer type-argument bindings by walking each parameter
@@ -357,6 +357,14 @@ impl<'a> FunctionLower<'a> {
                 result_ty,
             ));
         }
+        // Phase 6 capturing closure direct call: inject env_ptr as
+        // the implicit first argument before the user-visible args.
+        // `closure_bindings` carries the env_ptr ValueId from
+        // `lift_closure_binding`'s MakeClosure emission.
+        let capturing_env = self
+            .closure_bindings
+            .get(&fn_name)
+            .and_then(|link| link.env_ptr);
         let target = self.resolve_call_target(fn_name, args_ref)?;
         let ret_ty = self.module.function(target).return_type;
         // Struct-returning calls in expression position aren't
@@ -379,7 +387,14 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(fn_name).unwrap_or("?")
             ));
         }
-        let arg_values = self.lower_call_args_with_target(args_ref, Some(target))?;
+        let mut arg_values = self.lower_call_args_with_target(args_ref, Some(target))?;
+        // Phase 6: capturing closure direct call — prepend the
+        // env_ptr in front of the user-visible args so the
+        // callee's signature `(env: U64, ...user_params)` is
+        // matched exactly.
+        if let Some(env_ptr) = capturing_env {
+            arg_values.insert(0, env_ptr);
+        }
         // REF-Stage-2 (ii): if the callee declares writeback
         // returns (`&mut <compound>` parameters contributed leaf
         // types to `self_writeback_types`), gather the caller-

@@ -3184,3 +3184,68 @@ fn closure_phase5b_hof_passes_closure_through_round_trip() {
     assert_consistent(src, "closure_phase5b_hof_passes_closure_through");
 }
 
+// Closures Phase 6 — capturing closure direct call. The
+// `val name = fn(...) { ... + cap }` form lifts to a synthesized
+// fn whose IR signature carries an implicit `env: U64` first
+// parameter. `MakeClosure` allocates an env on the heap
+// (layout: `[fn_ptr][cap0][cap1]...`) and the binding's
+// env_ptr is prepended to the user-visible args at every call
+// site. Captures are loaded inside the body via
+// `PtrRead(env, +8 + i*8)`.
+#[test]
+fn closure_phase6_single_capture_direct_call_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val n: i64 = 10i64
+            val add_n = fn(x: i64) -> i64 { x + n }
+            add_n(32i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6_single_capture_direct_call");
+}
+
+#[test]
+fn closure_phase6_multi_capture_direct_call_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val a: i64 = 5i64
+            val b: i64 = 7i64
+            val sum_offset = fn(x: i64) -> i64 { x + a + b }
+            sum_offset(30i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6_multi_capture_direct_call");
+}
+
+#[test]
+fn closure_phase6_capture_snapshot_independent_of_post_capture_mutation() {
+    // Primitives are captured by value at lift time — `MakeClosure`
+    // stores the current binding's loaded value into the env, so
+    // a subsequent reassignment of the outer `n` doesn't affect
+    // the closure's behaviour. Mirrors the interpreter Phase 3
+    // semantics.
+    let src = r#"
+        fn main() -> i64 {
+            var n: i64 = 10i64
+            val add_n = fn(x: i64) -> i64 { x + n }
+            n = 100i64
+            add_n(32i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6_capture_snapshot");
+}
+
+#[test]
+fn closure_phase6_capture_called_twice_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val k: i64 = 1i64
+            val plus_k = fn(x: i64) -> i64 { x + k }
+            val r1 = plus_k(20i64)
+            val r2 = plus_k(21i64)
+            r1 + r2
+        }
+    "#;
+    assert_consistent(src, "closure_phase6_capture_called_twice");
+}
+

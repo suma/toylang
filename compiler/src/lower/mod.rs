@@ -290,14 +290,15 @@ struct FunctionLower<'a> {
     pending_self_writeback_param: Option<DefaultSymbol>,
     /// Closures Phase 5a (AOT): mapping from a closure-binding
     /// symbol (the `name` in `val name = fn(...)`) to the
-    /// synthesized top-level `FuncId` we lifted the closure into.
-    /// `resolve_call_target` consults this after the bare-name
-    /// function-table lookup so `name(args)` dispatches to the
-    /// lifted body. Per-`FunctionLower` because closure bindings
-    /// are local to the function in which they are declared
-    /// (cross-function passing of closure values is Phase 5b
-    /// and needs a true function-pointer value type).
-    closure_bindings: HashMap<DefaultSymbol, FuncId>,
+    /// synthesized top-level `FuncId` we lifted the closure into,
+    /// and (Phase 6) the optional environment pointer when the
+    /// closure captures values from the outer scope. `env_ptr`
+    /// is `Some(v)` for capturing closures and `None` for
+    /// non-capturing (Phase 5a) closures so direct calls can
+    /// short-circuit the env-arg injection. Per-`FunctionLower`
+    /// because closure bindings are local to the function in
+    /// which they are declared.
+    closure_bindings: HashMap<DefaultSymbol, ClosureBindingLink>,
     /// Closures Phase 5a: queue of pending closure bodies whose
     /// top-level function has been declared but not yet lowered.
     /// Borrowed mutably so each `FunctionLower` instance pushes
@@ -306,15 +307,34 @@ struct FunctionLower<'a> {
     pending_closure_work: &'a mut Vec<PendingClosureBody>,
 }
 
-/// Closures Phase 5a: queued closure body lowering job. The
+/// Closures Phase 5a/6: queued closure body lowering job. The
 /// `FuncId` was declared at closure-literal lower time; the
 /// body `ExprRef` and the parameter list need to round-trip
 /// through the queue because the body lowers under its own
 /// `FunctionLower` instance (distinct from the outer function's).
+/// Phase 6 adds `captures` (outer-scope name + type pairs):
+/// non-empty means the body must read each capture from the
+/// env pointer at lower time, and the IR signature has an extra
+/// implicit `env: Type::U64` parameter at position 0.
 pub(super) struct PendingClosureBody {
     pub(super) func_id: FuncId,
     pub(super) parameter: frontend::ast::ParameterList,
     pub(super) body: frontend::ast::ExprRef,
+    pub(super) captures: Vec<(DefaultSymbol, Type)>,
+}
+
+/// Closures Phase 5a/6: linkage info for a `val name = fn(...)`
+/// binding. `func_id` always points at the lifted body; `env_ptr`
+/// is `Some(v)` when the closure captures outer-scope values
+/// (the body's first IR param is `env: U64` and lower_call must
+/// prepend `env_ptr` to the user-visible argument list) or
+/// `None` for non-capturing closures (Phase 5a fast path: the
+/// IR signature has only the user-visible params, direct Call
+/// emits args verbatim).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ClosureBindingLink {
+    pub(super) func_id: FuncId,
+    pub(super) env_ptr: Option<crate::ir::ValueId>,
 }
 
 impl<'a> FunctionLower<'a> {
@@ -336,11 +356,16 @@ impl<'a> FunctionLower<'a> {
         return_type: &Option<frontend::type_decl::TypeDecl>,
         body: &frontend::ast::ExprRef,
     ) -> Result<Option<crate::ir::ValueId>, String> {
-        // Lower each closure parameter type to an IR `Type`. Phase 5a
-        // restricts to scalar params (no struct / tuple / enum / fn
-        // closures yet) — the existing `lower_scalar` helper handles
-        // every primitive shape.
-        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len());
+        // Phase 6: collect free variables before declaring the
+        // function so the IR signature can include the implicit
+        // `env: U64` parameter when the closure captures.
+        let captures = self.collect_closure_captures(params, body)?;
+        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len() + 1);
+        if !captures.is_empty() {
+            // Implicit env pointer at position 0 — the body lowers
+            // its captures by reading from env+8, env+16, ...
+            ir_params.push(Type::U64);
+        }
         for (pname, pty) in params {
             let lowered = types::lower_scalar(pty).ok_or_else(|| {
                 format!(
@@ -365,9 +390,6 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        // Mangle the export name. The outer function's export name +
-        // the binding name + a per-function counter give a stable,
-        // collision-free symbol.
         let outer_name = self.module.function(self.func_id).export_name.clone();
         let bind_name = self.interner.resolve(name).unwrap_or("anon");
         let counter = self.closure_bindings.len();
@@ -375,15 +397,295 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
-        // Track the binding so a later `name(args)` call resolves
-        // through `resolve_call_target`'s closure path.
-        self.closure_bindings.insert(name, func_id);
+        // Phase 6: when the closure captures, emit MakeClosure to
+        // build the env on the heap and store the env_ptr alongside
+        // the FuncId so `lower_call` can prepend it to the user
+        // arguments. Captures are fetched here from the current
+        // outer scope's bindings — Phase 6 supports scalar
+        // captures only (8-byte values).
+        let env_ptr = if captures.is_empty() {
+            None
+        } else {
+            let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
+            let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
+            for (cap_name, cap_ty) in &captures {
+                // Phase 6 restricts to 8-byte captures — codegen
+                // stores via `store.i64`. Narrower scalars need
+                // zext/sext + per-width store and are deferred.
+                if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+                    return Err(format!(
+                        "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                        self.interner.resolve(*cap_name).unwrap_or("?"),
+                        cap_ty
+                    ));
+                }
+                let local = match self.bindings.get(cap_name) {
+                    Some(bindings::Binding::Scalar { local, .. }) => *local,
+                    other => {
+                        return Err(format!(
+                            "compiler MVP: capturing closure cannot capture `{}` (binding shape unsupported: {:?})",
+                            self.interner.resolve(*cap_name).unwrap_or("?"),
+                            other.is_some()
+                        ));
+                    }
+                };
+                let v = self
+                    .emit(crate::ir::InstKind::LoadLocal(local), Some(*cap_ty))
+                    .ok_or_else(|| "capture LoadLocal returned no value".to_string())?;
+                capture_vals.push(v);
+                capture_tys.push(*cap_ty);
+            }
+            self.emit(
+                crate::ir::InstKind::MakeClosure {
+                    target: func_id,
+                    captures: capture_vals,
+                    capture_tys,
+                },
+                Some(Type::U64),
+            )
+        };
+        self.closure_bindings.insert(
+            name,
+            ClosureBindingLink {
+                func_id,
+                env_ptr,
+            },
+        );
         self.pending_closure_work.push(PendingClosureBody {
             func_id,
             parameter: params.clone(),
             body: *body,
+            captures,
         });
         Ok(None)
+    }
+
+    /// Phase 6: walk a closure body to collect (name, IR-Type)
+    /// pairs for every outer-scope identifier the body references
+    /// that isn't bound by the closure's own parameters or by a
+    /// nested binding inside the body. The walker mirrors the
+    /// type-checker's `collect_closure_free_vars` and the
+    /// interpreter's `collect_closure_captures`. Capture order
+    /// is the order of first reference (deterministic across
+    /// runs because the AST is walked linearly).
+    fn collect_closure_captures(
+        &self,
+        params: &frontend::ast::ParameterList,
+        body_ref: &frontend::ast::ExprRef,
+    ) -> Result<Vec<(DefaultSymbol, Type)>, String> {
+        use std::collections::HashSet;
+        let mut bound: HashSet<DefaultSymbol> = params.iter().map(|(n, _)| *n).collect();
+        let mut out: Vec<(DefaultSymbol, Type)> = Vec::new();
+        let mut seen: HashSet<DefaultSymbol> = HashSet::new();
+        self.walk_closure_for_captures(body_ref, &mut bound, &mut out, &mut seen);
+        Ok(out)
+    }
+
+    fn walk_closure_for_captures(
+        &self,
+        expr_ref: &frontend::ast::ExprRef,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, Type)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        use frontend::ast::Expr;
+        let expr = match self.program.expression.get(expr_ref) {
+            Some(e) => e,
+            None => return,
+        };
+        let mut record = |s: DefaultSymbol,
+                          out: &mut Vec<(DefaultSymbol, Type)>,
+                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+            if bound.contains(&s) || seen.contains(&s) {
+                return;
+            }
+            // Only record when the outer scope holds a Scalar
+            // binding for this name; other shapes are not valid
+            // capture sources in Phase 6.
+            if let Some(bindings::Binding::Scalar { ty, .. }) = self.bindings.get(&s) {
+                seen.insert(s);
+                out.push((s, *ty));
+            }
+        };
+        match expr {
+            Expr::Identifier(s) => record(s, out, seen),
+            Expr::Call(name, args_ref) => {
+                record(name, out, seen);
+                self.walk_closure_for_captures(&args_ref, bound, out, seen);
+            }
+            Expr::Assign(lhs, rhs)
+            | Expr::Binary(_, lhs, rhs)
+            | Expr::Range(lhs, rhs)
+            | Expr::With(lhs, rhs) => {
+                self.walk_closure_for_captures(&lhs, bound, out, seen);
+                self.walk_closure_for_captures(&rhs, bound, out, seen);
+            }
+            Expr::IfElifElse(c, t, elif_pairs, e) => {
+                self.walk_closure_for_captures(&c, bound, out, seen);
+                self.walk_closure_for_captures(&t, bound, out, seen);
+                for (cc, bb) in &elif_pairs {
+                    self.walk_closure_for_captures(cc, bound, out, seen);
+                    self.walk_closure_for_captures(bb, bound, out, seen);
+                }
+                self.walk_closure_for_captures(&e, bound, out, seen);
+            }
+            Expr::Unary(_, operand) => {
+                self.walk_closure_for_captures(&operand, bound, out, seen);
+            }
+            Expr::Block(stmts) => {
+                let mut bound = bound.clone();
+                for s in &stmts {
+                    if let Some(stmt) = self.program.statement.get(s) {
+                        self.walk_stmt_for_captures(&stmt, &mut bound, out, seen);
+                    }
+                }
+            }
+            Expr::ExprList(items)
+            | Expr::ArrayLiteral(items)
+            | Expr::TupleLiteral(items) => {
+                for e in &items {
+                    self.walk_closure_for_captures(e, bound, out, seen);
+                }
+            }
+            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
+                self.walk_closure_for_captures(&obj, bound, out, seen);
+            }
+            Expr::MethodCall(obj, _, args) => {
+                self.walk_closure_for_captures(&obj, bound, out, seen);
+                for a in &args {
+                    self.walk_closure_for_captures(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinMethodCall(receiver, _, args) => {
+                self.walk_closure_for_captures(&receiver, bound, out, seen);
+                for a in &args {
+                    self.walk_closure_for_captures(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinCall(_, args) | Expr::AssociatedFunctionCall(_, _, args) => {
+                for a in &args {
+                    self.walk_closure_for_captures(a, bound, out, seen);
+                }
+            }
+            Expr::StructLiteral(_, fields) => {
+                for (_, e) in &fields {
+                    self.walk_closure_for_captures(e, bound, out, seen);
+                }
+            }
+            Expr::SliceAccess(obj, info) => {
+                self.walk_closure_for_captures(&obj, bound, out, seen);
+                if let Some(s) = info.start {
+                    self.walk_closure_for_captures(&s, bound, out, seen);
+                }
+                if let Some(e) = info.end {
+                    self.walk_closure_for_captures(&e, bound, out, seen);
+                }
+            }
+            Expr::SliceAssign(obj, start, end, value) => {
+                self.walk_closure_for_captures(&obj, bound, out, seen);
+                if let Some(s) = start {
+                    self.walk_closure_for_captures(&s, bound, out, seen);
+                }
+                if let Some(e) = end {
+                    self.walk_closure_for_captures(&e, bound, out, seen);
+                }
+                self.walk_closure_for_captures(&value, bound, out, seen);
+            }
+            Expr::DictLiteral(entries) => {
+                for (k, v) in &entries {
+                    self.walk_closure_for_captures(k, bound, out, seen);
+                    self.walk_closure_for_captures(v, bound, out, seen);
+                }
+            }
+            Expr::Cast(e, _) => self.walk_closure_for_captures(&e, bound, out, seen),
+            Expr::Match(scrut, arms) => {
+                self.walk_closure_for_captures(&scrut, bound, out, seen);
+                for arm in &arms {
+                    let mut arm_bound = bound.clone();
+                    Self::pattern_bound_names(&arm.pattern, &mut arm_bound);
+                    if let Some(g) = arm.guard {
+                        self.walk_closure_for_captures(&g, &mut arm_bound, out, seen);
+                    }
+                    self.walk_closure_for_captures(&arm.body, &mut arm_bound, out, seen);
+                }
+            }
+            Expr::Closure { params: inner_params, body, .. } => {
+                let mut nested_bound = bound.clone();
+                for (p, _) in &inner_params {
+                    nested_bound.insert(*p);
+                }
+                self.walk_closure_for_captures(&body, &mut nested_bound, out, seen);
+            }
+            Expr::QualifiedIdentifier(_)
+            | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
+            | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::Number(_) | Expr::String(_)
+            | Expr::True | Expr::False | Expr::Null => {}
+        }
+    }
+
+    fn walk_stmt_for_captures(
+        &self,
+        stmt: &frontend::ast::Stmt,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, Type)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        use frontend::ast::Stmt;
+        match stmt {
+            Stmt::Expression(e) => self.walk_closure_for_captures(e, bound, out, seen),
+            Stmt::Val(name, _, e) => {
+                self.walk_closure_for_captures(e, bound, out, seen);
+                bound.insert(*name);
+            }
+            Stmt::Var(name, _, e) => {
+                if let Some(e) = e {
+                    self.walk_closure_for_captures(e, bound, out, seen);
+                }
+                bound.insert(*name);
+            }
+            Stmt::Return(e) => {
+                if let Some(e) = e {
+                    self.walk_closure_for_captures(e, bound, out, seen);
+                }
+            }
+            Stmt::For(name, start, end, body) => {
+                self.walk_closure_for_captures(start, bound, out, seen);
+                self.walk_closure_for_captures(end, bound, out, seen);
+                let mut inner = bound.clone();
+                inner.insert(*name);
+                self.walk_closure_for_captures(body, &mut inner, out, seen);
+            }
+            Stmt::While(cond, body) => {
+                self.walk_closure_for_captures(cond, bound, out, seen);
+                self.walk_closure_for_captures(body, bound, out, seen);
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::StructDecl { .. }
+            | Stmt::ImplBlock { .. }
+            | Stmt::EnumDecl { .. }
+            | Stmt::TraitDecl { .. }
+            | Stmt::TypeAlias { .. } => {}
+        }
+    }
+
+    fn pattern_bound_names(
+        pat: &frontend::ast::Pattern,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        use frontend::ast::Pattern;
+        match pat {
+            Pattern::Name(s) => {
+                bound.insert(*s);
+            }
+            Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+                for sp in subs {
+                    Self::pattern_bound_names(sp, bound);
+                }
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
     }
 
     /// Closures Phase 5b: lift an `Expr::Closure` literal that
@@ -426,6 +728,19 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
+        // Phase 6: inline closure literals also need capture
+        // detection — but Phase 5b/6 currently doesn't pass an
+        // env to indirect calls, so a capturing inline literal
+        // can't be passed as a HOF argument yet. Reject up-front
+        // when captures exist so the user gets a precise message
+        // instead of a downstream signature mismatch.
+        let captures = self.collect_closure_captures(params, body)?;
+        if !captures.is_empty() {
+            return Err(
+                "compiler MVP: capturing inline closure literals can't yet be passed as a function value (Phase 5b/6 wiring); bind to a `val` and call directly instead"
+                    .to_string(),
+            );
+        }
         let outer_name = self.module.function(self.func_id).export_name.clone();
         let counter = self.closure_bindings.len() + self.pending_closure_work.len();
         let export_name = format!("{outer_name}__closure_inline_{counter}");
@@ -436,6 +751,7 @@ impl<'a> FunctionLower<'a> {
             func_id,
             parameter: params.clone(),
             body: *body,
+            captures,
         });
         // Emit FuncAddr to surface the lifted function as a U64
         // runtime address so the surrounding call's arg evaluation
@@ -453,10 +769,23 @@ impl<'a> FunctionLower<'a> {
         &mut self,
         parameter: &frontend::ast::ParameterList,
         body_expr_ref: &frontend::ast::ExprRef,
+        captures: &[(DefaultSymbol, Type)],
     ) -> Result<(), String> {
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
+        // Phase 6: when the closure captures, the IR signature has
+        // an implicit `env: U64` at position 0 and the user-visible
+        // parameters start at position 1. Bind env as a scalar
+        // local so we can `LoadLocal` it for each capture read.
+        let env_local = if !captures.is_empty() {
+            let local = self.module.function_mut(self.func_id).add_local(Type::U64);
+            Some(local)
+        } else {
+            None
+        };
+        let user_param_offset = if env_local.is_some() { 1 } else { 0 };
         for (i, (name, _decl_ty)) in parameter.iter().enumerate() {
-            match param_types[i] {
+            let pt_idx = i + user_param_offset;
+            match param_types[pt_idx] {
                 scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
                     | Type::I32 | Type::U32) => {
@@ -481,6 +810,42 @@ impl<'a> FunctionLower<'a> {
         let entry = self.module.function_mut(self.func_id).add_block();
         self.module.function_mut(self.func_id).entry = entry;
         self.current_block = Some(entry);
+        // Phase 6: load each capture from the env into a fresh
+        // scalar binding the body can consume the same way it
+        // would a local. Layout: env+8 = first capture, env+16 =
+        // second, ... — codegen for `MakeClosure` mirrors this.
+        if let Some(env_local) = env_local {
+            for (i, (cap_name, cap_ty)) in captures.iter().enumerate() {
+                let env_v = self
+                    .emit(crate::ir::InstKind::LoadLocal(env_local), Some(Type::U64))
+                    .ok_or_else(|| "capture load: env LoadLocal returned no value".to_string())?;
+                let offset_v = self
+                    .emit(
+                        crate::ir::InstKind::Const(crate::ir::Const::U64(((i + 1) * 8) as u64)),
+                        Some(Type::U64),
+                    )
+                    .ok_or_else(|| "capture load: offset const returned no value".to_string())?;
+                let v = self
+                    .emit(
+                        crate::ir::InstKind::PtrRead {
+                            ptr: env_v,
+                            offset: offset_v,
+                            elem_ty: *cap_ty,
+                        },
+                        Some(*cap_ty),
+                    )
+                    .ok_or_else(|| "capture load: PtrRead returned no value".to_string())?;
+                let local = self.module.function_mut(self.func_id).add_local(*cap_ty);
+                self.emit(
+                    crate::ir::InstKind::StoreLocal { dst: local, src: v },
+                    None,
+                );
+                self.bindings.insert(
+                    *cap_name,
+                    bindings::Binding::Scalar { local, ty: *cap_ty },
+                );
+            }
+        }
         let body_value = self.lower_expr(body_expr_ref)?;
         if self.current_block.is_some() {
             let ret_ty = self.module.function(self.func_id).return_type;

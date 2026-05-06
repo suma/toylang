@@ -419,9 +419,24 @@ impl<'a> FunctionLower<'a> {
                         // in expression position (passing the closure
                         // to a HOF), emit FuncAddr to materialise the
                         // function's runtime address as a U64.
-                        if let Some(target) = self.closure_bindings.get(&sym).copied() {
+                        if let Some(link) = self.closure_bindings.get(&sym).copied() {
                             self.pending_struct_value = None;
-                            return Ok(self.emit(InstKind::FuncAddr { target }, Some(Type::U64)));
+                            // Phase 6: capturing closures can't yet be
+                            // surfaced as a fn-pointer value (would
+                            // need a heap-allocated thunk that bundles
+                            // env_ptr + fn_ptr). Reject explicitly so
+                            // the user gets a precise message instead
+                            // of a downstream signature mismatch.
+                            if link.env_ptr.is_some() {
+                                return Err(format!(
+                                    "compiler MVP: capturing closure `{}` cannot yet be passed as a function value (Phase 5b/6 wiring); call it directly instead",
+                                    self.interner.resolve(sym).unwrap_or("?")
+                                ));
+                            }
+                            return Ok(self.emit(
+                                InstKind::FuncAddr { target: link.func_id },
+                                Some(Type::U64),
+                            ));
                         }
                         // Fall back to top-level `const` lookup. This
                         // mirrors what the type-checker does: a name

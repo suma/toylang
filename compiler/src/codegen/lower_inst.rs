@@ -312,6 +312,59 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let addr = self.builder.ins().func_addr(types::I64, func_ref);
                 self.record_result(inst, addr);
             }
+            InstKind::MakeClosure {
+                target,
+                captures,
+                capture_tys,
+            } => {
+                // Closures Phase 6: build an env on the heap.
+                // Layout: [fn_ptr: i64][cap0: i64][cap1: i64]...
+                // Captures are stored in 8-byte slots (zext for
+                // narrow ints would happen at the lift site, but
+                // Phase 6 restricts captures to 8-byte scalars).
+                if captures.len() != capture_tys.len() {
+                    return Err(format!(
+                        "MakeClosure: {} captures but {} capture types",
+                        captures.len(),
+                        capture_tys.len()
+                    ));
+                }
+                let env_size_bytes = (1 + captures.len()) as i64 * 8;
+                let size_val = self.builder.ins().iconst(types::I64, env_size_bytes);
+                let alloc_call = self.builder.ins().call(self.runtime.malloc, &[size_val]);
+                let alloc_results = self.builder.inst_results(alloc_call).to_vec();
+                let env_ptr = *alloc_results.first().ok_or_else(|| {
+                    "MakeClosure: malloc returned no result".to_string()
+                })?;
+                // Store fn_ptr at offset 0.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("MakeClosure: missing import for {target:?}"))?;
+                let fn_ptr = self.builder.ins().func_addr(types::I64, func_ref);
+                use cranelift_codegen::ir::MemFlags;
+                let flags = MemFlags::new();
+                self.builder
+                    .ins()
+                    .store(flags, fn_ptr, env_ptr, 0i32);
+                // Store each capture at +8, +16, ...
+                for (i, (cap_val, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
+                    let offset = ((i + 1) * 8) as i32;
+                    let v = self.value(*cap_val);
+                    // For 8-byte scalars, store directly; for
+                    // narrower (currently rejected at lift time)
+                    // we'd need zext/sext here.
+                    let cl_ty = ir_to_cranelift_ty(*cap_ty)
+                        .ok_or_else(|| format!("MakeClosure: cannot lower capture type {cap_ty:?}"))?;
+                    if cl_ty.bytes() != 8 {
+                        return Err(format!(
+                            "MakeClosure: capture type {cap_ty:?} is not 8 bytes (Phase 6 restriction)"
+                        ));
+                    }
+                    self.builder.ins().store(flags, v, env_ptr, offset);
+                }
+                self.record_result(inst, env_ptr);
+            }
             InstKind::CallIndirect {
                 callee,
                 args,

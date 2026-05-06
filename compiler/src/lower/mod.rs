@@ -406,9 +406,21 @@ impl<'a> FunctionLower<'a> {
         let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
         let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
         for (cap_name, cap_ty) in &captures {
-            if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+            // Phase 6c: narrow int captures (u8/u16/u32/i8/i16/i32)
+            // are accepted in addition to 8-byte scalars. Each
+            // capture occupies an 8-byte slot in the env (for
+            // pointer-aligned addressing) but uses a width-aware
+            // store at MakeClosure time and a width-aware load at
+            // body-entry time. Only opaque/compound types stay
+            // rejected.
+            if !matches!(
+                cap_ty,
+                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                    | Type::I32 | Type::U32
+            ) {
                 return Err(format!(
-                    "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type {:?}",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
                     cap_ty
                 ));
@@ -741,9 +753,21 @@ impl<'a> FunctionLower<'a> {
         let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
         let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
         for (cap_name, cap_ty) in &captures {
-            if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+            // Phase 6c: narrow int captures (u8/u16/u32/i8/i16/i32)
+            // are accepted in addition to 8-byte scalars. Each
+            // capture occupies an 8-byte slot in the env (for
+            // pointer-aligned addressing) but uses a width-aware
+            // store at MakeClosure time and a width-aware load at
+            // body-entry time. Only opaque/compound types stay
+            // rejected.
+            if !matches!(
+                cap_ty,
+                Type::I64 | Type::U64 | Type::F64 | Type::Bool
+                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                    | Type::I32 | Type::U32
+            ) {
                 return Err(format!(
-                    "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                    "compiler MVP: capturing closure can only capture primitive scalars; `{}` has type {:?}",
                     self.interner.resolve(*cap_name).unwrap_or("?"),
                     cap_ty
                 ));

@@ -3310,3 +3310,58 @@ fn closure_phase6b_capturing_called_via_two_hops_round_trip() {
     assert_consistent(src, "closure_phase6b_capturing_via_two_hops");
 }
 
+// Closures Phase 6c — narrow int captures (u8/u16/u32/i8/i16/i32).
+// Each capture occupies an 8-byte slot in the env tuple for
+// pointer-aligned addressing, but uses a width-aware load at
+// body entry (driven by `PtrRead.elem_ty`). MakeClosure's
+// `store` is width-polymorphic on the value type.
+#[test]
+fn closure_phase6c_narrow_int_capture_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val n: i32 = 10i32
+            val add_n = fn(x: i32) -> i32 { x + n }
+            val r = add_n(32i32)
+            r as i64
+        }
+    "#;
+    assert_consistent(src, "closure_phase6c_narrow_int_capture");
+}
+
+#[test]
+fn closure_phase6c_u8_capture_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val n: u8 = 10u8
+            val add_n = fn(x: u8) -> u8 { x + n }
+            val r = add_n(32u8)
+            r as i64
+        }
+    "#;
+    assert_consistent(src, "closure_phase6c_u8_capture");
+}
+
+#[test]
+fn closure_phase6c_all_narrow_widths_captured_round_trip() {
+    // Captures all six narrow widths in a single closure to
+    // confirm the per-width store/load pairings line up
+    // independently — each capture lives in its own 8-byte
+    // env slot regardless of its width.
+    let src = r#"
+        fn main() -> i64 {
+            val a: i8 = 1i8
+            val b: i16 = 2i16
+            val c: i32 = 3i32
+            val d: u8 = 4u8
+            val e: u16 = 5u16
+            val f: u32 = 6u32
+            val sum = fn(x: i64) -> i64 {
+                x + (a as i64) + (b as i64) + (c as i64)
+                  + (d as i64) + (e as i64) + (f as i64)
+            }
+            sum(21i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6c_all_narrow_widths");
+}
+

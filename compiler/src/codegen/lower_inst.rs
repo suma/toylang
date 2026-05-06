@@ -347,20 +347,23 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 self.builder
                     .ins()
                     .store(flags, fn_ptr, env_ptr, 0i32);
-                // Store each capture at +8, +16, ...
+                // Store each capture at +8, +16, ... — every slot
+                // is 8-byte aligned regardless of capture width
+                // (Phase 6c: narrow ints occupy the low N bytes
+                // of an 8-byte slot, the rest is unused — same
+                // pattern the body's PtrRead recovers via a
+                // width-aware load).
                 for (i, (cap_val, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
                     let offset = ((i + 1) * 8) as i32;
                     let v = self.value(*cap_val);
-                    // For 8-byte scalars, store directly; for
-                    // narrower (currently rejected at lift time)
-                    // we'd need zext/sext here.
                     let cl_ty = ir_to_cranelift_ty(*cap_ty)
                         .ok_or_else(|| format!("MakeClosure: cannot lower capture type {cap_ty:?}"))?;
-                    if cl_ty.bytes() != 8 {
-                        return Err(format!(
-                            "MakeClosure: capture type {cap_ty:?} is not 8 bytes (Phase 6 restriction)"
-                        ));
-                    }
+                    // cranelift's `store` is width-polymorphic on
+                    // the value's type; we don't need to specialise
+                    // per-width as long as the matching `load.<ty>`
+                    // is used at the read site (driven by the
+                    // PtrRead instruction's `elem_ty`).
+                    let _ = cl_ty;
                     self.builder.ins().store(flags, v, env_ptr, offset);
                 }
                 self.record_result(inst, env_ptr);

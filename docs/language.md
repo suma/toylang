@@ -977,19 +977,20 @@ show_n()                      # 1 — captured the original value
   function would need to lower a closure. The `INTERPRETER_JIT=1`
   verbose log surfaces the precise reason ("JIT does not yet
   support closure / lambda values").
-- **AOT compiler** — supports the `val name = fn(params) -> R { body }`
-  form with both **non-capturing** and **capturing** bodies, plus
-  closures-as-arguments to higher-order functions (`(T1, T2) -> R`
-  parameter types). Non-capturing literals lift to a synthesized
-  top-level function (Phase 5a); HOF arguments dispatch through
-  `InstKind::CallIndirect` over a fn-pointer value (Phase 5b);
-  capturing closures heap-allocate an env tuple
-  `[fn_ptr, cap0, cap1, ...]` and the body reads each capture
-  via a known offset (Phase 6). Restrictions: captures must be
-  8-byte scalars (i64 / u64 / f64 / bool); capturing closures
-  can't yet be passed as a HOF argument or returned from a
-  function; closure values can't be stored in struct fields.
-  Use the interpreter for programs that exercise those shapes.
+- **AOT compiler** — supports both `val name = fn(...) -> R { body }`
+  direct calls and closures passed to higher-order functions
+  (`(T1, T2) -> R` parameter types). Both shapes work for
+  capturing **and** non-capturing closures. Every closure value
+  is an env-pointer (`Type::U64`) into a heap-allocated env
+  tuple `[fn_ptr, cap0, cap1, ...]` — non-capturing closures
+  still get an env containing just the fn-pointer. The lifted
+  body's first IR parameter is the env, captures are read from
+  known offsets, and `InstKind::CallIndirect` recovers the
+  fn-pointer from `env+0` and prepends env to the user-visible
+  args. Restrictions: captures must be 8-byte scalars
+  (i64 / u64 / f64 / bool); closure values can't yet be
+  returned from a function or stored in struct fields. Use
+  the interpreter for those shapes.
 
 ---
 
@@ -1890,12 +1891,11 @@ These are real today; some appear in `todo.md` as planned work.
   interpreter (literals, free-variable captures, passing closures as
   HOF arguments, returning closures, nesting). The JIT silently
   falls back to the interpreter when a program contains a closure.
-  The AOT compiler covers `val name = fn(...) -> R { body }` direct
-  calls (capturing **and** non-capturing) plus closures-as-arguments
-  to HOFs through indirect call. Captures are restricted to 8-byte
-  scalars; capturing closures can't yet be returned from a function
-  or passed as a HOF argument (the env-aware indirect-call shape is
-  Phase 6b). See [Closures → Backend coverage](#closures).
+  The AOT compiler now covers both direct calls and HOF dispatch
+  for capturing and non-capturing closures via a unified env-based
+  ABI (Phase 6b). Captures are restricted to 8-byte scalars; closure
+  values can't yet be returned from a function or stored in struct
+  fields. See [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.

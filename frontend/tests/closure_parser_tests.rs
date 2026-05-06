@@ -147,6 +147,59 @@ fn closure_expr_lands_in_pool_with_correct_shape() {
 }
 
 #[test]
+fn fn_prefixed_function_type_in_param_position_parses() {
+    // The `fn (T1, T2) -> R` prefixed form should be accepted
+    // wherever a bare `(T1, T2) -> R` is — Phase ARG syntax
+    // sugar to make function types stand out at a glance and
+    // line up visually with closure literals (`fn(x: T) -> R`).
+    parse_program_ok(
+        "fn apply(f: fn (i64) -> i64, x: i64) -> i64 { f(x) }
+        fn main() -> i64 { 0i64 }",
+    );
+}
+
+#[test]
+fn fn_prefixed_function_type_in_val_annotation_parses() {
+    parse_program_ok(
+        "fn main() -> i64 {
+            val f: fn (i64) -> i64 = fn(x: i64) -> i64 { x + 1i64 }
+            val z: fn () -> u64 = fn() -> u64 { 42u64 }
+            val g: fn (i64, i64) -> i64 = fn(a: i64, b: i64) -> i64 { a + b }
+            0i64
+        }",
+    );
+}
+
+#[test]
+fn fn_prefixed_function_type_parses_into_typedecl_function() {
+    let mut parser = ParserWithInterner::new(
+        "fn apply(f: fn (i64, i64) -> i64, x: i64) -> i64 { x }
+        fn main() -> i64 { 0i64 }",
+    );
+    let program = parser.parse_program().expect("parse");
+    let apply = program
+        .function
+        .iter()
+        .find(|f| {
+            parser
+                .get_string_interner()
+                .resolve(f.name)
+                == Some("apply")
+        })
+        .expect("apply fn present");
+    let (_, ftype) = &apply.parameter[0];
+    match ftype {
+        TypeDecl::Function(params, ret) => {
+            assert_eq!(params.len(), 2, "expected 2 params in fn type");
+            assert!(matches!(params[0], TypeDecl::Int64));
+            assert!(matches!(params[1], TypeDecl::Int64));
+            assert!(matches!(**ret, TypeDecl::Int64));
+        }
+        other => panic!("expected Function type, got {:?}", other),
+    }
+}
+
+#[test]
 fn function_type_parses_into_typedecl_function() {
     // White-box check: a `(i64) -> i64` annotation lands as
     // `TypeDecl::Function([Int64], Box<Int64>)`.

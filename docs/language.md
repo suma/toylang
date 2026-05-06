@@ -919,19 +919,31 @@ annotation, and returnable from functions.
 
 ### Function type syntax
 
-`(T1, T2, ...) -> R` describes a function value taking the listed
-parameter types and returning `R`. Use it on parameter / return
-type positions:
+A function value's type is written as either:
+
+- `fn (T1, T2, ...) -> R` — preferred; the leading `fn` keyword
+  makes the intent explicit and lines up visually with closure
+  literals (`fn(x: T) -> R { body }`).
+- `(T1, T2, ...) -> R` — bare form, kept for backwards
+  compatibility. May feel ambiguous next to a tuple literal,
+  but the parser distinguishes the two by looking for `->` after
+  the matching `)`.
+
+Use either on parameter / return type positions:
 
 ```rust
-fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
-fn make_adder(n: i64) -> (i64) -> i64 {
+fn apply(f: fn (i64) -> i64, x: i64) -> i64 { f(x) }
+
+fn make_adder(n: i64) -> fn (i64) -> i64 {
     fn(x: i64) -> i64 { x + n }
 }
+
+val add: fn (i64, i64) -> i64 = fn(a: i64, b: i64) -> i64 { a + b }
+val zero: fn () -> i64 = fn() -> i64 { 0i64 }
 ```
 
-The empty-parameter form `() -> R` is also valid (zero-arg
-function value).
+The empty-parameter form `fn () -> R` (and `() -> R`) is valid
+(zero-arg function value).
 
 ### Captures
 

@@ -12,6 +12,37 @@ impl<'a> Parser<'a> {
 
     pub fn parse_type_declaration_with_generic_context(&mut self, generic_params: &HashSet<DefaultSymbol>) -> ParserResult<TypeDecl> {
         match self.peek() {
+            // Closures: `fn (T1, T2) -> R` is the explicit form of
+            // a function type. Equivalent to the bare `(T1, T2) -> R`
+            // shape (still accepted), but the `fn` prefix makes the
+            // intent obvious at a glance and lines up syntactically
+            // with closure literals (`fn(x: T) -> R { body }`). The
+            // bare form is kept for backwards compatibility.
+            Some(Kind::Function) => {
+                self.next(); // consume `fn`
+                self.expect_err(&Kind::ParenOpen)?;
+                self.skip_newlines();
+                let mut params: Vec<TypeDecl> = Vec::new();
+                if self.peek() != Some(&Kind::ParenClose) {
+                    let first = self.parse_type_declaration_with_generic_context(generic_params)?;
+                    params.push(first);
+                    self.skip_newlines();
+                    while self.peek() == Some(&Kind::Comma) {
+                        self.next();
+                        self.skip_newlines();
+                        if self.peek() == Some(&Kind::ParenClose) {
+                            break;
+                        }
+                        let pt = self.parse_type_declaration_with_generic_context(generic_params)?;
+                        params.push(pt);
+                        self.skip_newlines();
+                    }
+                }
+                self.expect_err(&Kind::ParenClose)?;
+                self.expect_err(&Kind::Arrow)?;
+                let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
+                return Ok(TypeDecl::Function(params, Box::new(ret)));
+            }
             // REF-Stage-2: `&T` and `&mut T` reference types at any
             // type-annotation position (parameter type, val annotation,
             // return type, struct field type, ...). The `&self` /

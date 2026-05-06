@@ -4645,6 +4645,19 @@ pub(crate) fn check_expr(
                      (constructors / match / methods)"
                         .to_string()
                 }
+                // Closures Phase 4: explicit reject reason. The JIT
+                // doesn't model `Object::Closure` values — each
+                // closure literal would need a captured-environment
+                // representation + indirect-call dispatch the JIT
+                // doesn't have. The interpreter handles closures
+                // natively (Phase 3); JIT-eligible programs simply
+                // fall back to interpretation when they contain a
+                // closure literal.
+                Expr::Closure { .. } => {
+                    "JIT does not yet support closure / lambda values \
+                     (interpreter handles them; AOT support is a later phase)"
+                        .to_string()
+                }
                 _ => format!("uses unsupported expression {}", expr_kind_name(&other)),
             };
             note(reject_reason, move || precise);
@@ -4947,6 +4960,7 @@ fn expr_kind_name(e: &Expr) -> &'static str {
         Expr::With(_, _) => "`with allocator` block",
         Expr::Match(_, _) => "match expression",
         Expr::Range(_, _) => "range value",
+        Expr::Closure { .. } => "closure literal",
         _ => "expression",
     }
 }

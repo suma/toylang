@@ -814,9 +814,417 @@ impl<'a> TypeCheckerVisitor<'a> {
             };
             Ok(ret)
         } else {
+            // Function lookup miss — try the indirect-call path.
+            // Closures Phase 2: when a binding holds a value of type
+            // `TypeDecl::Function(params, ret)`, `f(args)` is an
+            // indirect call. The parser can't tell statically whether
+            // an `Identifier` is a fn decl or a value, so it always
+            // emits `Expr::Call(name, args)`; this branch handles
+            // the value case.
             self.pop_context();
+            if let Some(callee_ty) = self.context.get_var(fn_name) {
+                if let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
+                    return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
+                }
+            }
             let fn_name_str = self.resolve_symbol_name(fn_name);
             Err(TypeCheckError::not_found("Function", &fn_name_str))
+        }
+    }
+
+    /// Closures Phase 2: type check a call site whose callee is a
+    /// function-typed value (e.g. a `val f = fn(...) -> R { ... }`
+    /// binding or a parameter of `(T1, T2) -> R` type). Mirrors the
+    /// argument validation arm of `visit_call` but without the
+    /// generic-monomorphisation / visibility-check / pre-typecheck
+    /// machinery, none of which apply to a value.
+    fn visit_indirect_call(
+        &mut self,
+        callee_name: DefaultSymbol,
+        args_ref: &ExprRef,
+        param_tys: &[TypeDecl],
+        ret_ty: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let args_data = match self.core.expr_pool.get(args_ref) {
+            Some(Expr::ExprList(args)) => args.clone(),
+            _ => return Err(TypeCheckError::generic_error("Invalid arguments reference")),
+        };
+        if args_data.len() != param_tys.len() {
+            let name_str = self.resolve_symbol_name(callee_name);
+            return Err(TypeCheckError::generic_error(&format!(
+                "function value '{}' argument count mismatch: expected {}, found {}",
+                name_str,
+                param_tys.len(),
+                args_data.len()
+            )));
+        }
+        let original_hint = self.type_inference.type_hint.clone();
+        for (idx, (arg, expected)) in args_data.iter().zip(param_tys.iter()).enumerate() {
+            self.type_inference.type_hint = Some(expected.clone());
+            let arg_ty = self.visit_expr(arg)?;
+            if !TypeDecl::is_arg_compatible(&arg_ty, expected) && arg_ty != TypeDecl::Unknown {
+                self.type_inference.type_hint = original_hint;
+                let name_str = self.resolve_symbol_name(callee_name);
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Type error: expected {:?}, found {:?}. Function value '{}' argument {} type mismatch",
+                    expected,
+                    arg_ty,
+                    name_str,
+                    idx + 1
+                )));
+            }
+        }
+        self.type_inference.type_hint = original_hint;
+        Ok(ret_ty.clone())
+    }
+
+    /// Closures Phase 2: type check a closure / lambda literal
+    /// `fn(params) -> Ret { body }`.
+    ///
+    /// Walks the body under a fresh scope that binds each declared
+    /// parameter, then validates the body type against the optional
+    /// declared return type. Returns the resulting
+    /// `TypeDecl::Function(param_tys, ret_ty)`.
+    ///
+    /// Capture analysis: after the body type-checks, walk it once to
+    /// collect identifier references not bound by the closure's own
+    /// parameter scope. Each capture is recorded in
+    /// `context.closure_captures` keyed by the closure's `ExprRef`.
+    /// Captures whose type carries an enclosing function's generic
+    /// parameter are rejected up front — generic-parameterised
+    /// closures are deferred to a future phase.
+    pub fn visit_closure_impl(
+        &mut self,
+        params: &ParameterList,
+        return_type: &Option<TypeDecl>,
+        body: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // Reject generic-param leakage. Any `TypeDecl::Generic(_)`
+        // appearance in the closure signature or its captures means
+        // the closure body's type depends on the enclosing function's
+        // type parameters, which the MVP can't lower into either an
+        // independent function value or a monomorphic instantiation.
+        // The check uses a `Generic(_)` predicate (no symbol set
+        // needed) because every enclosing generic introduces a
+        // `Generic(sym)` placeholder either in the param type, the
+        // return type, or in a captured variable's recorded type.
+        for (_, ty) in params {
+            if Self::type_mentions_any_generic(ty) {
+                return Err(TypeCheckError::generic_error(
+                    "generic-parameterised closures are not yet supported",
+                ));
+            }
+        }
+        if let Some(ret) = return_type {
+            if Self::type_mentions_any_generic(ret) {
+                return Err(TypeCheckError::generic_error(
+                    "generic-parameterised closures are not yet supported",
+                ));
+            }
+        }
+
+        // Push a fresh scope and bind each parameter.
+        self.push_context();
+        for (name, ty) in params {
+            self.context.set_var(*name, ty.clone());
+        }
+
+        let body_result = self.visit_expr(body);
+
+        self.pop_context();
+
+        let body_ty = body_result?;
+
+        let ret_ty = match return_type {
+            Some(declared) => {
+                if !TypeDecl::is_arg_compatible(&body_ty, declared)
+                    && body_ty != TypeDecl::Unknown
+                {
+                    return Err(TypeCheckError::generic_error(&format!(
+                        "closure body returns {:?} but declared return type is {:?}",
+                        body_ty, declared
+                    )));
+                }
+                declared.clone()
+            }
+            None => body_ty,
+        };
+
+        // Capture analysis. The body type-check already enforced that
+        // every identifier resolves somewhere on the stack (otherwise
+        // `visit_identifier` would have errored), so any free var
+        // here is one bound in the enclosing scope.
+        let bound: std::collections::HashSet<DefaultSymbol> =
+            params.iter().map(|(n, _)| *n).collect();
+        let mut captures: Vec<(DefaultSymbol, TypeDecl)> = Vec::new();
+        let mut seen: std::collections::HashSet<DefaultSymbol> =
+            std::collections::HashSet::new();
+        self.collect_closure_free_vars(*body, &bound, &mut captures, &mut seen);
+
+        for (_, ty) in &captures {
+            if Self::type_mentions_any_generic(ty) {
+                return Err(TypeCheckError::generic_error(
+                    "generic-parameterised closures are not yet supported",
+                ));
+            }
+        }
+
+        // Side-table is keyed by the body's ExprRef. Each closure
+        // has a unique body block ExprRef so collisions are impossible
+        // even when the trait `visit_closure` doesn't have access to
+        // the closure's own ExprRef.
+        self.context.closure_captures.insert(*body, captures);
+
+        let param_tys: Vec<_> = params.iter().map(|(_, t)| t.clone()).collect();
+        Ok(TypeDecl::Function(param_tys, Box::new(ret_ty)))
+    }
+
+    /// Returns true when `ty` mentions any `TypeDecl::Generic(_)`
+    /// placeholder anywhere in its tree. Walks compound shapes
+    /// (Array / Tuple / Dict / Struct / Enum / Range / Ref /
+    /// Function). Used by the closure type checker to reject
+    /// signatures and captures that depend on an enclosing generic
+    /// parameter — generic-parameterised closures are deferred.
+    fn type_mentions_any_generic(ty: &TypeDecl) -> bool {
+        match ty {
+            TypeDecl::Generic(_) => true,
+            TypeDecl::Array(elems, _) | TypeDecl::Tuple(elems) => {
+                elems.iter().any(Self::type_mentions_any_generic)
+            }
+            TypeDecl::Dict(k, v) => {
+                Self::type_mentions_any_generic(k) || Self::type_mentions_any_generic(v)
+            }
+            TypeDecl::Struct(_, args) | TypeDecl::Enum(_, args) => {
+                args.iter().any(Self::type_mentions_any_generic)
+            }
+            TypeDecl::Range(t) => Self::type_mentions_any_generic(t),
+            TypeDecl::Ref { inner, .. } => Self::type_mentions_any_generic(inner),
+            TypeDecl::Function(params, ret) => {
+                params.iter().any(Self::type_mentions_any_generic)
+                    || Self::type_mentions_any_generic(ret)
+            }
+            _ => false,
+        }
+    }
+
+    /// Walk an expression tree looking for `Expr::Identifier` /
+    /// `Expr::Assign(Identifier, _)` / `Expr::Call(name, _)` references
+    /// to symbols that are NOT in `bound`. Each matched name is looked
+    /// up in the current type-checker context (which still holds the
+    /// outer scope when this is called from `visit_closure_impl`) and
+    /// recorded in `out` with its current type. Already-recorded
+    /// symbols are skipped via `seen`. Nested closures extend the
+    /// `bound` set with their own params.
+    fn collect_closure_free_vars(
+        &self,
+        expr_ref: ExprRef,
+        bound: &std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, TypeDecl)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        let expr = match self.core.expr_pool.get(&expr_ref) {
+            Some(e) => e,
+            None => return,
+        };
+        let record = |s: DefaultSymbol,
+                          out: &mut Vec<(DefaultSymbol, TypeDecl)>,
+                          seen: &mut std::collections::HashSet<DefaultSymbol>| {
+            if bound.contains(&s) || seen.contains(&s) {
+                return;
+            }
+            // Only record names that actually resolve to a variable in
+            // the enclosing scope. Function names, struct names, and
+            // builtin symbols intentionally skip the capture set.
+            if let Some(ty) = self.context.get_var(s) {
+                seen.insert(s);
+                out.push((s, ty));
+            }
+        };
+        match expr {
+            Expr::Identifier(s) => record(s, out, seen),
+            Expr::Call(name, args_ref) => {
+                record(name, out, seen);
+                self.collect_closure_free_vars(args_ref, bound, out, seen);
+            }
+            Expr::Assign(lhs, rhs) => {
+                self.collect_closure_free_vars(lhs, bound, out, seen);
+                self.collect_closure_free_vars(rhs, bound, out, seen);
+            }
+            Expr::Binary(_, l, r)
+            | Expr::Range(l, r)
+            | Expr::With(l, r)
+            | Expr::IfElifElse(l, r, _, _) => {
+                self.collect_closure_free_vars(l, bound, out, seen);
+                self.collect_closure_free_vars(r, bound, out, seen);
+                if let Expr::IfElifElse(_, _, elif_pairs, else_block) = expr.clone() {
+                    for (c, b) in elif_pairs {
+                        self.collect_closure_free_vars(c, bound, out, seen);
+                        self.collect_closure_free_vars(b, bound, out, seen);
+                    }
+                    self.collect_closure_free_vars(else_block, bound, out, seen);
+                }
+            }
+            Expr::Unary(_, operand) => {
+                self.collect_closure_free_vars(operand, bound, out, seen);
+            }
+            Expr::Block(stmts) => {
+                let mut bound = bound.clone();
+                for s in stmts {
+                    if let Some(stmt) = self.core.stmt_pool.get(&s) {
+                        self.collect_stmt_free_vars(&stmt, &mut bound, out, seen);
+                    }
+                }
+            }
+            Expr::ExprList(items)
+            | Expr::ArrayLiteral(items)
+            | Expr::TupleLiteral(items) => {
+                for e in items {
+                    self.collect_closure_free_vars(e, bound, out, seen);
+                }
+            }
+            Expr::FieldAccess(obj, _) | Expr::TupleAccess(obj, _) => {
+                self.collect_closure_free_vars(obj, bound, out, seen);
+            }
+            Expr::MethodCall(obj, _, args) => {
+                self.collect_closure_free_vars(obj, bound, out, seen);
+                for a in args {
+                    self.collect_closure_free_vars(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinMethodCall(receiver, _, args) => {
+                self.collect_closure_free_vars(receiver, bound, out, seen);
+                for a in args {
+                    self.collect_closure_free_vars(a, bound, out, seen);
+                }
+            }
+            Expr::BuiltinCall(_, args) => {
+                for a in args {
+                    self.collect_closure_free_vars(a, bound, out, seen);
+                }
+            }
+            Expr::StructLiteral(_, fields) => {
+                for (_, e) in fields {
+                    self.collect_closure_free_vars(e, bound, out, seen);
+                }
+            }
+            Expr::AssociatedFunctionCall(_, _, args) => {
+                for a in args {
+                    self.collect_closure_free_vars(a, bound, out, seen);
+                }
+            }
+            Expr::SliceAccess(obj, info) => {
+                self.collect_closure_free_vars(obj, bound, out, seen);
+                if let Some(s) = info.start {
+                    self.collect_closure_free_vars(s, bound, out, seen);
+                }
+                if let Some(e) = info.end {
+                    self.collect_closure_free_vars(e, bound, out, seen);
+                }
+            }
+            Expr::SliceAssign(obj, start, end, value) => {
+                self.collect_closure_free_vars(obj, bound, out, seen);
+                if let Some(s) = start {
+                    self.collect_closure_free_vars(s, bound, out, seen);
+                }
+                if let Some(e) = end {
+                    self.collect_closure_free_vars(e, bound, out, seen);
+                }
+                self.collect_closure_free_vars(value, bound, out, seen);
+            }
+            Expr::DictLiteral(entries) => {
+                for (k, v) in entries {
+                    self.collect_closure_free_vars(k, bound, out, seen);
+                    self.collect_closure_free_vars(v, bound, out, seen);
+                }
+            }
+            Expr::Cast(e, _) => self.collect_closure_free_vars(e, bound, out, seen),
+            Expr::Match(scrut, arms) => {
+                self.collect_closure_free_vars(scrut, bound, out, seen);
+                for arm in arms {
+                    let mut arm_bound = bound.clone();
+                    Self::pattern_bound_names(&arm.pattern, &mut arm_bound);
+                    if let Some(g) = arm.guard {
+                        self.collect_closure_free_vars(g, &arm_bound, out, seen);
+                    }
+                    self.collect_closure_free_vars(arm.body, &arm_bound, out, seen);
+                }
+            }
+            Expr::Closure { params, body, .. } => {
+                let mut nested_bound = bound.clone();
+                for (p, _) in &params {
+                    nested_bound.insert(*p);
+                }
+                self.collect_closure_free_vars(body, &nested_bound, out, seen);
+            }
+            Expr::QualifiedIdentifier(_)
+            | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
+            | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
+            | Expr::UInt8(_) | Expr::UInt16(_) | Expr::UInt32(_)
+            | Expr::Number(_) | Expr::String(_)
+            | Expr::True | Expr::False | Expr::Null => {}
+        }
+    }
+
+    fn collect_stmt_free_vars(
+        &self,
+        stmt: &Stmt,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+        out: &mut Vec<(DefaultSymbol, TypeDecl)>,
+        seen: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        match stmt {
+            Stmt::Expression(e) => self.collect_closure_free_vars(*e, bound, out, seen),
+            Stmt::Val(name, _, e) => {
+                self.collect_closure_free_vars(*e, bound, out, seen);
+                bound.insert(*name);
+            }
+            Stmt::Var(name, _, e) => {
+                if let Some(e) = e {
+                    self.collect_closure_free_vars(*e, bound, out, seen);
+                }
+                bound.insert(*name);
+            }
+            Stmt::Return(e) => {
+                if let Some(e) = e {
+                    self.collect_closure_free_vars(*e, bound, out, seen);
+                }
+            }
+            Stmt::For(name, start, end, body) => {
+                self.collect_closure_free_vars(*start, bound, out, seen);
+                self.collect_closure_free_vars(*end, bound, out, seen);
+                let mut inner = bound.clone();
+                inner.insert(*name);
+                self.collect_closure_free_vars(*body, &inner, out, seen);
+            }
+            Stmt::While(cond, body) => {
+                self.collect_closure_free_vars(*cond, bound, out, seen);
+                self.collect_closure_free_vars(*body, bound, out, seen);
+            }
+            Stmt::Break | Stmt::Continue => {}
+            Stmt::StructDecl { .. }
+            | Stmt::ImplBlock { .. }
+            | Stmt::EnumDecl { .. }
+            | Stmt::TraitDecl { .. }
+            | Stmt::TypeAlias { .. } => {}
+        }
+    }
+
+    /// Collect symbols that a pattern binds — used to extend the
+    /// in-scope set when walking a `match` arm body for free vars.
+    fn pattern_bound_names(
+        pat: &Pattern,
+        bound: &mut std::collections::HashSet<DefaultSymbol>,
+    ) {
+        match pat {
+            Pattern::Name(s) => {
+                bound.insert(*s);
+            }
+            Pattern::EnumVariant(_, _, subs) | Pattern::Tuple(subs) => {
+                for sp in subs {
+                    Self::pattern_bound_names(sp, bound);
+                }
+            }
+            Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }
 

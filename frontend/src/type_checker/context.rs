@@ -59,6 +59,19 @@ pub struct TypeCheckContext {
     // Populated by `impl <Trait> for <Struct>` blocks once the conformance
     // check succeeds. Used at call sites to verify generic-bound satisfaction.
     pub struct_trait_impls: HashMap<DefaultSymbol, HashSet<DefaultSymbol>>,
+    /// Side-table populated by `visit_closure` (Phase 2): for each
+    /// closure literal, the list of `(name, type)` pairs the body
+    /// references from outside its own parameter scope. Phase 1+2
+    /// don't consume this — it lives here so later phases
+    /// (interpreter / IR) can read the capture set without re-walking
+    /// the AST. **Keyed by the closure body's `ExprRef`** rather than
+    /// the closure expression itself, because the trait
+    /// `AstVisitor::visit_closure` signature carries the body ref but
+    /// not the closure ref. Bodies are unique-per-closure (each is its
+    /// own freshly-allocated `Expr::Block`), so the keying is
+    /// collision-free. The `ExprPool` is append-only so indices stay
+    /// stable across the type-check pass.
+    pub closure_captures: HashMap<crate::ast::ExprRef, Vec<(DefaultSymbol, TypeDecl)>>,
 }
 
 impl TypeCheckContext {
@@ -78,6 +91,7 @@ impl TypeCheckContext {
             enum_generic_params: HashMap::new(),
             traits: HashMap::new(),
             struct_trait_impls: HashMap::new(),
+            closure_captures: HashMap::new(),
         }
     }
 

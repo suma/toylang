@@ -462,6 +462,15 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_match_impl(scrutinee, arms)
     }
 
+    fn visit_closure(
+        &mut self,
+        params: &crate::ast::ParameterList,
+        return_type: &Option<TypeDecl>,
+        body: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_closure_impl(params, return_type, body)
+    }
+
     fn visit_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<TypeDecl, TypeCheckError> {
         self.visit_field_access_impl(obj, field)
     }

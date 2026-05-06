@@ -978,12 +978,18 @@ show_n()                      # 1 — captured the original value
   verbose log surfaces the precise reason ("JIT does not yet
   support closure / lambda values").
 - **AOT compiler** — supports the `val name = fn(params) -> R { body }`
-  form with non-capturing bodies and direct `name(args)` calls.
-  The closure literal is lifted to a synthesized top-level
-  function. Capturing closures, closures-as-arguments to HOFs,
-  closure return values, and storing closures in fields are
-  pending phases (`todo.md` Phase 5b/6). Use the interpreter for
-  programs that exercise those shapes.
+  form with both **non-capturing** and **capturing** bodies, plus
+  closures-as-arguments to higher-order functions (`(T1, T2) -> R`
+  parameter types). Non-capturing literals lift to a synthesized
+  top-level function (Phase 5a); HOF arguments dispatch through
+  `InstKind::CallIndirect` over a fn-pointer value (Phase 5b);
+  capturing closures heap-allocate an env tuple
+  `[fn_ptr, cap0, cap1, ...]` and the body reads each capture
+  via a known offset (Phase 6). Restrictions: captures must be
+  8-byte scalars (i64 / u64 / f64 / bool); capturing closures
+  can't yet be passed as a HOF argument or returned from a
+  function; closure values can't be stored in struct fields.
+  Use the interpreter for programs that exercise those shapes.
 
 ---
 
@@ -1884,10 +1890,12 @@ These are real today; some appear in `todo.md` as planned work.
   interpreter (literals, free-variable captures, passing closures as
   HOF arguments, returning closures, nesting). The JIT silently
   falls back to the interpreter when a program contains a closure.
-  The AOT compiler currently supports only the `val name = fn(...) -> R { body }`
-  form with direct `name(args)` calls (no captures, no HOF arguments,
-  no closure return values, no closure storage in fields). Capturing
-  closures + true HOF dispatch in AOT is planned (`todo.md` Phase 5b/6).
+  The AOT compiler covers `val name = fn(...) -> R { body }` direct
+  calls (capturing **and** non-capturing) plus closures-as-arguments
+  to HOFs through indirect call. Captures are restricted to 8-byte
+  scalars; capturing closures can't yet be returned from a function
+  or passed as a HOF argument (the env-aware indirect-call shape is
+  Phase 6b). See [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.

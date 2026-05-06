@@ -21,8 +21,31 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::OnceLock;
 
-use compiler::{compile_file, CompilerOptions, EmitKind};
+use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions, EmitKind};
 use interpreter::object::Object;
+
+/// Wrapper around `compile_to_jit_main_with_options` that mirrors
+/// the lite-path pattern: try without core auto-load first, fall
+/// back to the full options on failure. Same shape as
+/// `e2e_batched.rs::compile_to_jit_lazy_core`.
+fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
+    let lite = CompilerOptions {
+        input: PathBuf::from("<jit>"),
+        output: None,
+        emit: EmitKind::Executable,
+        verbose: false,
+        release: false,
+        core_modules_dir: None,
+    };
+    if let Ok(prog) = compile_to_jit_main_with_options(source, &lite) {
+        return Ok(prog);
+    }
+    let full = CompilerOptions {
+        core_modules_dir: Some(core_modules_dir()),
+        ..lite
+    };
+    compile_to_jit_main_with_options(source, &full)
+}
 
 fn skip_e2e() -> bool {
     std::env::var("COMPILER_E2E").map(|v| v == "skip").unwrap_or(false)
@@ -204,18 +227,22 @@ fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
-    // Fast path: if both the in-process interpreter AND the AOT
-    // compiler succeed without auto-loading core modules, the
-    // program is pure user code (or only uses interpreter built-in
-    // methods that AOT also handles natively). In that case the
-    // JIT spawn can also skip core auto-load. Each `with_core =
-    // false` skip saves ~150 ms of stdlib type-checking.
+    // Fast path: if all three backends succeed without
+    // auto-loading core modules, we use in-process drivers
+    // (`interpreter::execute_program`, `compile_file`, and
+    // `compile_to_jit_main_with_options`) to skip both the
+    // stdlib type-check (~150 ms) AND the JIT spawn (~1-2 s of
+    // interpreter binary startup). The compiler-side JIT shares
+    // codegen with AOT, so the in-process JIT check still
+    // exercises the cranelift pipeline end-to-end.
     if let Some(interp) = interpreter_value_with_core(source, None) {
         if let Some(compiled) = try_compiler_exit_code(source, stem, false) {
-            let jit = jit_exit_code(source, stem, false) as u64;
-            let compiled = compiled as u64;
-            if interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff {
-                return;
+            if let Ok(jit_prog) = compile_jit_lazy_core(source) {
+                let jit = jit_prog.run();
+                let compiled = compiled as u64;
+                if interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff {
+                    return;
+                }
             }
             // Disagreement on the lite path falls through to the
             // canonical full path below, so the diagnostic the
@@ -325,14 +352,23 @@ fn assert_stdout_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
+    // Lite path: compiler in-process JIT (`compile_to_jit_main` +
+    // `run_capturing_stdout`) replaces the JIT binary spawn,
+    // alongside the existing in-process AOT compile. The
+    // interpreter-side stdout still spawns because there's no
+    // in-process stdout-capturing API for it yet (and the
+    // interpreter spawn is comparatively cheap once stdlib
+    // auto-load is skipped).
     if let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false) {
-        let interp = interpreter_stdout(source, &format!("{stem}_interp_lite"), false);
-        let jit = jit_stdout(source, &format!("{stem}_jit_lite"), false);
-        if interp == compiled && interp == jit {
-            return;
+        if let Ok(jit_prog) = compile_jit_lazy_core(source) {
+            let interp = interpreter_stdout(source, &format!("{stem}_interp_lite"), false);
+            let (_exit, jit) = jit_prog.run_capturing_stdout();
+            if interp == compiled && interp == jit {
+                return;
+            }
+            // Mismatch on lite path falls through; the canonical path
+            // produces the diagnostic the user sees.
         }
-        // Mismatch on lite path falls through; the canonical path
-        // produces the diagnostic the user sees.
     }
     let interp = interpreter_stdout(source, &format!("{stem}_interp"), true);
     let compiled = compiler_stdout(source, &format!("{stem}_aot"));

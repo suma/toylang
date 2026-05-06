@@ -189,7 +189,13 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 // long as the inner type is one of the supported
                 // shapes; the impl-block validator only needs to
                 // know the wrapper exists (lowering peels it).
-                TypeDecl::Ref { .. } => {
+                TypeDecl::Ref { .. } |
+                // Closures Phase 7: `fn (T1, T2) -> R` parameter
+                // type is valid for HOF methods. The impl-block
+                // validator only checks shape — the body
+                // type-checker still validates that calls through
+                // the parameter match the declared signature.
+                TypeDecl::Function(_, _) => {
                     // Valid parameter types — primitives, structs,
                     // generics, and collections. `Float64` / `Ptr`
                     // were added when extension traits over
@@ -222,7 +228,13 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                 TypeDecl::Int8 | TypeDecl::Int16 | TypeDecl::Int32 |
                 TypeDecl::UInt8 | TypeDecl::UInt16 | TypeDecl::UInt32 |
                 TypeDecl::Unit | TypeDecl::Identifier(_) | TypeDecl::Generic(_) | TypeDecl::Struct(_, _) |
-                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) => {
+                TypeDecl::Array(_, _) | TypeDecl::Dict(_, _) | TypeDecl::Tuple(_) |
+                // Closures Phase 7: a method may return `fn (T) -> R`
+                // (e.g. `Option::map_to_self` style; `make_adder`
+                // factory pattern). Body validator handles the
+                // detailed shape; this just allows the type to
+                // appear at all.
+                TypeDecl::Function(_, _) => {
                     // Valid return types — primitives, structs,
                     // generics, and collections. `Float64` / `Ptr`
                     // were added when extension traits over

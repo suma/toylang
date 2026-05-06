@@ -147,6 +147,20 @@ fn closure_value_round_trips_through_value_binding() {
     );
 }
 
+// Closures Phase 7 — stdlib HOF methods on `Option` /
+// `Result` (e.g. `Option::map`, `unwrap_or_else`) are
+// deferred to a follow-up. The blocker is that the impl-block
+// body `match self { Option::Some(v) => Option::Some(f(v)),
+// Option::None => Option::None }` makes the type checker
+// instantiate the two arms with different `Generic(?)`
+// substitutions for the same enum (one arm reaches the
+// type checker as `Struct(?, ...)`, the other as
+// `Enum(?, ...)`), so the unifier rejects the body even
+// though the runtime semantics are sound. Tracked in
+// `todo.md` 96残-後半. Until that's fixed, user code can
+// still write `match` directly or define HOFs as free
+// functions over a concrete `Option<i64>` type.
+
 #[test]
 fn closure_object_has_function_type() {
     // Confirms that printing a closure surfaces the placeholder

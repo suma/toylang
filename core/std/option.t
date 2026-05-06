@@ -50,4 +50,16 @@ impl<T> Option<T> {
             Option::None => panic("Option::expect on None"),
         }
     }
+
+    # Closures Phase 7 — HOF methods (`map` / `and_then` /
+    # `unwrap_or_else`) are deferred. The `match self` body
+    # inside an `impl<T> Option<T>` HOF method instantiates
+    # the two arms with different `Generic(?)` substitutions
+    # for the variant the type checker doesn't see literally
+    # (one arm is reached as `Struct(?, ...)`, the other as
+    # `Enum(?, ...)`), so the unifier rejects the body during
+    # stdlib auto-load. Tracked in `todo.md` 96残-後半 — once
+    # the generic-enum match unification handles the
+    # impl-block context cleanly, these HOFs can land. Until
+    # then, use a direct `match` in user code.
 }

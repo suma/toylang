@@ -49,4 +49,13 @@ impl<T, E> Result<T, E> {
             Result::Err(_) => panic("Result::expect on Err"),
         }
     }
+
+    # Closures Phase 7 — HOF methods are deferred for `Result<T, E>`.
+    # The 2-generic-param enum match unification rejects bodies
+    # like `match self { Result::Ok(v) => Result::Ok(v),
+    # Result::Err(e) => Result::Err(f(e)) }` because the two
+    # arms infer different `Generic(?)` substitutions for the
+    # variant the type checker doesn't see literally. The
+    # follow-up is tracked in `todo.md` (96残-後半). Use a
+    # direct `match` until then.
 }

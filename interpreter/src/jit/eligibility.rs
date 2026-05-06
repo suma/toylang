@@ -477,20 +477,72 @@ impl StructLayout {
 /// silently rejected by `collect_enum_layouts`; `variant_has_payload`
 /// records which variants do carry the payload so the constructor
 /// codegen can zero-init the payload slot for unit variants.
+///
+/// Phase JE-3: for generic enums (`Option<T>`), `payload_ty` is
+/// `Some(Generic(T))`-style — i.e. it carries the unresolved
+/// generic param symbol that downstream call sites have to bind
+/// per monomorph. For non-generic enums it stays `Some(scalar)`
+/// or `None` exactly as JE-2a.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct EnumLayout {
     pub base_name: DefaultSymbol,
     /// Variant names in declaration order. Index = tag value.
     pub variants: Vec<DefaultSymbol>,
-    /// Uniform payload scalar type when any variant has a payload;
-    /// `None` for unit-only enums (JE-1b shape).
-    pub payload_ty: Option<ScalarTy>,
+    /// Phase JE-3: the payload's representational shape.
+    pub payload_repr: PayloadRepr,
     /// Per-variant `true` iff the variant has a payload (always
-    /// false when `payload_ty == None`; mixed when `payload_ty` is
-    /// `Some(T)` because a unit variant can coexist with tuple
-    /// variants of payload type `T`).
+    /// false when `payload_repr == None`).
     pub variant_has_payload: Vec<bool>,
+    /// Phase JE-3: generic params of the enum. Empty for non-generic
+    /// enums (the JE-2a shape). For generic enums (`Option<T>`),
+    /// holds [T] so call sites can validate / infer the monomorph.
+    pub generic_params: Vec<DefaultSymbol>,
+}
+
+/// Phase JE-3: enum payload's representational shape. Non-generic
+/// enums resolve to `None` (unit-only) or `Some(Concrete(ty))`.
+/// Generic enums use `Some(Generic(param))` so each instantiation
+/// can supply a concrete `ty`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PayloadRepr {
+    None,
+    Concrete(ScalarTy),
+    Generic(DefaultSymbol),
+}
+
+impl PayloadRepr {
+    /// Resolve to a concrete `ScalarTy` given the per-monomorph
+    /// substitution map. Returns `None` for the `None` variant
+    /// (unit-only enums) or when a generic param is missing from
+    /// `subst`.
+    pub fn resolve(&self, subst: &HashMap<DefaultSymbol, ScalarTy>) -> Option<ScalarTy> {
+        match self {
+            PayloadRepr::None => None,
+            PayloadRepr::Concrete(t) => Some(*t),
+            PayloadRepr::Generic(p) => subst.get(p).copied(),
+        }
+    }
+
+    pub fn is_some(&self) -> bool {
+        !matches!(self, PayloadRepr::None)
+    }
+}
+
+/// Phase JE-3: per-local enum-binding info. Holds the base enum's
+/// name and the resolved payload scalar type for *this* local
+/// (which may differ across monomorphs of the same generic enum).
+/// `payload_ty == None` for unit-only enums.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EnumLocalInfo {
+    pub base_name: DefaultSymbol,
+    pub payload_ty: Option<ScalarTy>,
+}
+
+impl EnumLocalInfo {
+    pub fn new(base_name: DefaultSymbol, payload_ty: Option<ScalarTy>) -> Self {
+        Self { base_name, payload_ty }
+    }
 }
 
 impl EnumLayout {
@@ -506,7 +558,19 @@ impl EnumLayout {
     /// unit-only (just the tag); `2` when any variant carries a
     /// payload (tag + payload).
     pub fn slot_count(&self) -> usize {
-        1 + if self.payload_ty.is_some() { 1 } else { 0 }
+        1 + if self.payload_repr.is_some() { 1 } else { 0 }
+    }
+
+    /// Phase JE-3 transitional: `payload_ty` accessor for callers
+    /// that don't yet thread a substitution map (non-generic enums
+    /// only). Returns `Some(scalar)` for `Concrete`, `None` for
+    /// unit-only or generic. Callers that need to handle generics
+    /// should consult `payload_repr` directly with their own subst.
+    pub fn payload_ty(&self) -> Option<ScalarTy> {
+        match self.payload_repr {
+            PayloadRepr::Concrete(t) => Some(t),
+            _ => None,
+        }
     }
 }
 
@@ -860,9 +924,19 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
             ..
         }) = program.statement.get(&StmtRef(i as u32))
         {
-            if !generic_params.is_empty() {
+            // Phase JE-3: we now collect enums with a single
+            // generic param (e.g. `Option<T>`) where every tuple
+            // variant's single payload is exactly `T`. Multi-param
+            // generics (`Result<T, E>`) and mixed concrete/generic
+            // payloads stay out of scope until we add a fuller
+            // substitution model.
+            let single_generic_param: Option<DefaultSymbol> = if generic_params.len() == 1 {
+                Some(generic_params[0])
+            } else if generic_params.is_empty() {
+                None
+            } else {
                 continue;
-            }
+            };
             // Phase JE-2a: accept enums where every tuple variant has
             // exactly one payload of the same scalar type. Unit
             // variants are still allowed alongside tuple variants
@@ -871,31 +945,46 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
             // rejected — they require the bigger boundary refactor.
             let mut variant_names: Vec<DefaultSymbol> = Vec::with_capacity(variants.len());
             let mut variant_has_payload: Vec<bool> = Vec::with_capacity(variants.len());
-            let mut payload_ty: Option<ScalarTy> = None;
+            // Tracks the consensus payload representation — every
+            // tuple variant must agree on it (Concrete vs Generic).
+            let mut payload_repr: Option<PayloadRepr> = None;
             let mut accept = true;
             for v in &variants {
                 variant_names.push(v.name);
                 match v.payload_types.as_slice() {
                     [] => variant_has_payload.push(false),
                     [single] => {
-                        let sty = match ScalarTy::from_type_decl(single) {
-                            Some(s) => s,
-                            None => {
-                                accept = false;
-                                break;
+                        // Phase JE-3: detect "payload IS the generic
+                        // param `T`" by matching on
+                        // `TypeDecl::Generic(sym)` (which is what the
+                        // type checker emits for generic-param refs).
+                        // For non-generic enums or when the single
+                        // payload is concrete, fall back to
+                        // ScalarTy::from_type_decl.
+                        let proposed: PayloadRepr = match (single, single_generic_param) {
+                            (TypeDecl::Generic(sym), Some(p)) if *sym == p => {
+                                PayloadRepr::Generic(p)
                             }
+                            (TypeDecl::Identifier(sym), Some(p)) if *sym == p => {
+                                PayloadRepr::Generic(p)
+                            }
+                            _ => match ScalarTy::from_type_decl(single) {
+                                Some(s) if !matches!(
+                                    s,
+                                    ScalarTy::Unit | ScalarTy::Allocator | ScalarTy::Never
+                                ) => PayloadRepr::Concrete(s),
+                                _ => {
+                                    accept = false;
+                                    break;
+                                }
+                            },
                         };
-                        // Reject unsupported payload widths up front.
-                        if matches!(sty, ScalarTy::Unit | ScalarTy::Allocator | ScalarTy::Never) {
-                            accept = false;
-                            break;
-                        }
-                        match payload_ty {
-                            Some(existing) if existing != sty => {
+                        match &payload_repr {
+                            Some(existing) if existing != &proposed => {
                                 accept = false;
                                 break;
                             }
-                            _ => payload_ty = Some(sty),
+                            _ => payload_repr = Some(proposed),
                         }
                         variant_has_payload.push(true);
                     }
@@ -908,13 +997,19 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
                 }
             }
             if accept {
+                let final_payload = payload_repr.unwrap_or(PayloadRepr::None);
+                let collected_generic_params: Vec<DefaultSymbol> = match single_generic_param {
+                    Some(p) => vec![p],
+                    None => Vec::new(),
+                };
                 out.insert(
                     name,
                     EnumLayout {
                         base_name: name,
                         variants: variant_names,
-                        payload_ty,
+                        payload_repr: final_payload,
                         variant_has_payload,
+                        generic_params: collected_generic_params,
                     },
                 );
             }
@@ -1187,7 +1282,7 @@ fn check_callable_body(
     // EnumLayout. Tracked alongside struct_locals / tuple_locals
     // because the same threading lives through every check_expr /
     // check_stmt recursion.
-    let mut enum_locals: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
+    let mut enum_locals: HashMap<DefaultSymbol, EnumLocalInfo> = HashMap::new();
     for (n, t) in &sig.params {
         match t {
             ParamTy::Scalar(s) => {
@@ -1203,7 +1298,14 @@ fn check_callable_body(
             // local so the body's identifier lookups + match
             // scrutinees route through `enum_locals`.
             ParamTy::Enum(enum_name) => {
-                enum_locals.insert(*n, *enum_name);
+                // Phase JE-3: ParamTy::Enum currently carries only the
+                // base name, so this path can only resolve the
+                // payload_ty from the layout — fine for non-generic
+                // enums (the JE-2d shape). Generic enums at function
+                // boundaries are a follow-up phase.
+                let payload_ty = enum_layout_for(*enum_name)
+                    .and_then(|l| l.payload_ty());
+                enum_locals.insert(*n, EnumLocalInfo::new(*enum_name, payload_ty));
             }
         }
     }
@@ -1291,7 +1393,7 @@ fn check_struct_returning_body(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1441,7 +1543,7 @@ fn check_enum_returning_body(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1521,7 +1623,7 @@ fn check_enum_producing_expr(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1535,7 +1637,7 @@ fn check_enum_producing_expr(
     match expr {
         Expr::Identifier(name) => {
             match enum_locals.get(&name).copied() {
-                Some(t) if t == enum_name => true,
+                Some(info) if info.base_name == enum_name => true,
                 _ => {
                     note(reject_reason, || {
                         "returned identifier is not an enum local of the declared type".to_string()
@@ -1578,7 +1680,7 @@ fn check_enum_producing_expr(
                 });
                 return false;
             }
-            let payload_ty = match layout.payload_ty {
+            let payload_ty = match layout.payload_ty() {
                 Some(t) => t,
                 None => return false,
             };
@@ -1613,9 +1715,13 @@ fn check_enum_producing_expr(
                 Some(t) => t,
                 None => return false,
             };
+            let scrut_enum_info = match program.expression.get(&scrutinee) {
+                Some(Expr::Identifier(s)) => enum_locals.get(&s).copied(),
+                _ => None,
+            };
             for arm in &arms {
                 let payload_binding = match check_match_pattern(
-                    program, &arm.pattern, scrut_ty, reject_reason,
+                    program, &arm.pattern, scrut_ty, scrut_enum_info, reject_reason,
                 ) {
                     Some(b) => b,
                     None => return false,
@@ -1664,7 +1770,7 @@ fn check_tuple_returning_body(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1788,7 +1894,7 @@ fn check_tuple_literal_fields(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1844,7 +1950,7 @@ fn tuple_literal_target(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1896,7 +2002,7 @@ fn check_tuple_returning_call(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2015,7 +2121,7 @@ fn check_struct_returning_call(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2093,13 +2199,13 @@ fn check_enum_returning_call(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
-) -> Option<DefaultSymbol> {
+) -> Option<EnumLocalInfo> {
     let expr = program.expression.get(value_ref)?;
     let callee_name = match expr {
         Expr::Call(n, _) => n,
@@ -2110,7 +2216,8 @@ fn check_enum_returning_call(
         .iter()
         .find(|f| f.name == callee_name)
         .cloned()?;
-    // Only proceed when callee returns a JIT-eligible enum.
+    // Only proceed when callee returns a JIT-eligible (non-generic)
+    // enum. Generic enum returns are JE-3-boundary follow-up.
     let ret_enum = match &callee.return_type {
         Some(td) => match td {
             TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => *s,
@@ -2127,19 +2234,25 @@ fn check_enum_returning_call(
     if result.is_none() && callees.len() == saved_callees_len {
         return None;
     }
-    Some(ret_enum)
+    let payload_ty = enum_layout_for(ret_enum).and_then(|l| l.payload_ty());
+    Some(EnumLocalInfo::new(ret_enum, payload_ty))
 }
 
-/// Phase JE-2b: detect an enum constructor RHS and validate the
-/// payload. Returns `Some(enum_name)` when `value_ref` is one of:
+/// Phase JE-2b/JE-3: detect an enum constructor RHS and validate
+/// the payload. Returns `Some(EnumLocalInfo)` when `value_ref` is
+/// one of:
 ///   - `Expr::QualifiedIdentifier([enum, variant])` — unit constructor
 ///   - `Expr::AssociatedFunctionCall(enum, variant, args)` — tuple
 ///     constructor; the single arg's type must match the enum's
-///     `payload_ty` (currently uniform across all tuple variants in
-///     the layout).
+///     payload_repr (Concrete or Generic resolved per call-site).
 /// Returns `None` for everything else (the regular check_expr path
 /// runs). Side effect: validates the payload arg via `check_expr`,
 /// which recursively records callees / ptr_read hints.
+///
+/// `annotation_hint` is the val/var annotation if available (the
+/// declared enum type with type args). Used when the rhs is a unit
+/// constructor of a generic enum (e.g. `val o: Option<i64> = Option::None`)
+/// — the payload_ty has to come from somewhere.
 #[allow(clippy::too_many_arguments)]
 fn check_enum_constructor_rhs(
     program: &Program,
@@ -2147,13 +2260,14 @@ fn check_enum_constructor_rhs(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
     reject_reason: &mut Option<String>,
-) -> Option<DefaultSymbol> {
+    annotation_hint: Option<&TypeDecl>,
+) -> Option<EnumLocalInfo> {
     let expr = program.expression.get(value_ref)?;
     match expr {
         Expr::QualifiedIdentifier(path) if path.len() == 2 => {
@@ -2168,7 +2282,28 @@ fn check_enum_constructor_rhs(
                 // path can produce the right error.
                 return None;
             }
-            Some(enum_name)
+            // Phase JE-3: for generic enums, derive payload_ty from
+            // the val/var annotation. Without an annotation, we
+            // can't determine T from a unit constructor alone — fail
+            // and let the user add an annotation.
+            let payload_ty = match &layout.payload_repr {
+                PayloadRepr::None => None,
+                PayloadRepr::Concrete(t) => Some(*t),
+                PayloadRepr::Generic(_) => match annotation_hint
+                    .and_then(|td| payload_ty_from_annotation(td, &layout))
+                {
+                    Some(t) => Some(t),
+                    None => {
+                        note(reject_reason, || {
+                            "JIT generic enum unit constructor needs an annotation \
+                             with concrete type args (e.g. `val o: Option<i64> = Option::None`)"
+                                .to_string()
+                        });
+                        return None;
+                    }
+                },
+            };
+            Some(EnumLocalInfo::new(enum_name, payload_ty))
         }
         Expr::AssociatedFunctionCall(enum_name, variant, args) => {
             let layout = enum_layout_for(enum_name)?;
@@ -2177,7 +2312,6 @@ fn check_enum_constructor_rhs(
                 // `Status::Bad(5i64)` — variant doesn't take a payload.
                 return None;
             }
-            let payload_ty = layout.payload_ty?;
             if args.len() != 1 {
                 note(reject_reason, || {
                     "JIT enum tuple constructor: only single-payload \
@@ -2190,19 +2324,81 @@ fn check_enum_constructor_rhs(
                 enum_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             )?;
-            if arg_ty != payload_ty {
-                note(reject_reason, || {
-                    format!(
-                        "JIT enum tuple constructor: payload type {arg_ty:?} does not \
-                         match declared {payload_ty:?}"
-                    )
-                });
-                return None;
-            }
-            Some(enum_name)
+            // Phase JE-3: for generic enums the payload_ty comes
+            // from the arg directly; for non-generic it must equal
+            // the declared payload_ty. If an annotation is present,
+            // verify it agrees with the inferred type.
+            let payload_ty = match &layout.payload_repr {
+                PayloadRepr::Concrete(declared) => {
+                    if arg_ty != *declared {
+                        note(reject_reason, || {
+                            format!(
+                                "JIT enum tuple constructor: payload type {arg_ty:?} does not \
+                                 match declared {declared:?}"
+                            )
+                        });
+                        return None;
+                    }
+                    arg_ty
+                }
+                PayloadRepr::Generic(_) => {
+                    if let Some(td) = annotation_hint {
+                        if let Some(t) = payload_ty_from_annotation(td, &layout) {
+                            if t != arg_ty {
+                                note(reject_reason, || {
+                                    format!(
+                                        "JIT generic enum constructor: arg type {arg_ty:?} does \
+                                         not match annotation type {t:?}"
+                                    )
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                    arg_ty
+                }
+                PayloadRepr::None => return None,
+            };
+            Some(EnumLocalInfo::new(enum_name, Some(payload_ty)))
         }
         _ => None,
     }
+}
+
+/// Public re-export of `payload_ty_from_annotation` so codegen
+/// can reuse the resolution helper without re-implementing the
+/// substitution logic.
+pub(crate) fn payload_ty_from_annotation_pub(
+    annotation: &TypeDecl,
+    layout: &EnumLayout,
+) -> Option<ScalarTy> {
+    payload_ty_from_annotation(annotation, layout)
+}
+
+/// Phase JE-3: extract the payload scalar type from a val/var
+/// annotation, given the enum's layout. Handles `Option<i64>` form
+/// (TypeDecl::Enum(name, [arg])) and resolves the layout's
+/// generic param against the annotation's type args.
+fn payload_ty_from_annotation(
+    annotation: &TypeDecl,
+    layout: &EnumLayout,
+) -> Option<ScalarTy> {
+    let args = match annotation {
+        TypeDecl::Enum(_, args) => args,
+        TypeDecl::Struct(_, args) => args,
+        _ => return None,
+    };
+    if layout.generic_params.len() != args.len() || args.is_empty() {
+        return None;
+    }
+    // Build a substitution map from the layout's generic params to
+    // the annotation's type args.
+    let mut subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+    for (p, a) in layout.generic_params.iter().zip(args.iter()) {
+        let sty = ScalarTy::from_type_decl(a)?;
+        subst.insert(*p, sty);
+    }
+    layout.payload_repr.resolve(&subst)
 }
 
 /// Validate every field of a struct literal against the registered
@@ -2216,7 +2412,7 @@ fn check_struct_literal_fields(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2328,10 +2524,16 @@ fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
 /// pattern carries a single Pattern::Name sub-pattern (JE-2b
 /// payload binding); otherwise `None`. Caller installs the
 /// binding in `locals` for the arm body and removes it after.
+///
+/// `scrut_enum` carries the per-local enum info when the
+/// scrutinee is an enum identifier — the per-local `payload_ty`
+/// determines what type the pattern's Name binds to (important
+/// for generic enums where the layout's payload_repr is `Generic`).
 fn check_match_pattern(
     program: &Program,
     pat: &Pattern,
     scrut_ty: ScalarTy,
+    scrut_enum: Option<EnumLocalInfo>,
     reject_reason: &mut Option<String>,
 ) -> Option<Option<(DefaultSymbol, ScalarTy)>> {
     match pat {
@@ -2391,7 +2593,14 @@ fn check_match_pattern(
             // the user wrote `Status::Ok =>` (which would still match
             // semantically; treat as no binding).
             if layout.variant_has_payload[idx] {
-                let payload_ty = layout.payload_ty?;
+                // Phase JE-3: prefer the scrutinee's per-local
+                // payload_ty (which knows the resolved generic
+                // monomorph) over the layout's. Fall back to layout
+                // payload_ty for non-generic enums when scrut_enum
+                // is missing (legacy callers).
+                let payload_ty = scrut_enum
+                    .and_then(|e| e.payload_ty)
+                    .or_else(|| layout.payload_ty())?;
                 match sub_pats.as_slice() {
                     [] => Some(None),
                     [single] => match single {
@@ -2528,7 +2737,7 @@ fn check_stmt(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2639,20 +2848,23 @@ fn check_stmt(
             // variant (`Status::Ok(5i64)`) constructors land here when
             // the enum is in `enum_layouts`. Tuple-variant arg type
             // is validated against `EnumLayout::payload_ty`.
-            if let Some(enum_name) = check_enum_constructor_rhs(
+            //
+            // Phase JE-3: pass the val/var annotation as a hint so
+            // generic-enum unit constructors (`Option::None`) can
+            // resolve T from the annotation.
+            if let Some(info) = check_enum_constructor_rhs(
                 program, &value, locals, struct_locals, tuple_locals,
                 enum_locals, substitutions, struct_layouts, callees,
-                ptr_read_hints, reject_reason,
+                ptr_read_hints, reject_reason, type_decl.as_ref(),
             ) {
-                // Enum alias — `val n: Box = b` reuses the enum local.
-                enum_locals.insert(name, enum_name);
+                enum_locals.insert(name, info);
                 return true;
             }
             // Enum alias — `val n: Box = b` where `b` is already a
             // known enum local of the same type.
             if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&value) {
-                if let Some(enum_name) = enum_locals.get(&rhs_name).copied() {
-                    enum_locals.insert(name, enum_name);
+                if let Some(info) = enum_locals.get(&rhs_name).copied() {
+                    enum_locals.insert(name, info);
                     return true;
                 }
             }
@@ -2661,12 +2873,12 @@ fn check_stmt(
             // `check_tuple_returning_call` — runs the call's
             // arg-validation through check_expr (which records
             // callees) and registers the enum local.
-            if let Some(enum_name) = check_enum_returning_call(
+            if let Some(info) = check_enum_returning_call(
                 program, &value, locals, struct_locals, tuple_locals,
                 enum_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             ) {
-                enum_locals.insert(name, enum_name);
+                enum_locals.insert(name, info);
                 return true;
             }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
@@ -2912,7 +3124,7 @@ pub(crate) fn check_expr(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2972,12 +3184,20 @@ pub(crate) fn check_expr(
                 substitutions, struct_layouts, callees, ptr_read_hints,
                 reject_reason,
             )?;
+            // Phase JE-3: peek the scrutinee for its enum-local info
+            // so payload-binding patterns can use the per-local
+            // payload_ty (resolved monomorph) instead of the layout's
+            // generic placeholder.
+            let scrut_enum_info = match program.expression.get(&scrutinee) {
+                Some(Expr::Identifier(s)) => enum_locals.get(&s).copied(),
+                _ => None,
+            };
             // All arms unify to a single type. Walk each arm's
             // pattern (rejecting unsupported shapes) and body.
             let mut result_ty: Option<ScalarTy> = None;
             for arm in &arms {
                 let payload_binding = check_match_pattern(
-                    program, &arm.pattern, scrut_ty, reject_reason,
+                    program, &arm.pattern, scrut_ty, scrut_enum_info, reject_reason,
                 )?;
                 if arm.guard.is_some() {
                     note(reject_reason, || {
@@ -3247,7 +3467,7 @@ pub(crate) fn check_expr(
             if let Some(layout) = enum_layout_for(struct_name) {
                 if let Some(idx) = layout.variants.iter().position(|n| *n == function_name) {
                     if layout.variant_has_payload[idx] {
-                        let payload_ty = layout.payload_ty?;
+                        let payload_ty = layout.payload_ty()?;
                         if args.len() == 1 {
                             let arg_ty = check_expr(
                                 program, &args[0], locals, struct_locals, tuple_locals,
@@ -3334,7 +3554,7 @@ pub(crate) fn check_expr(
                               locals: &mut HashMap<DefaultSymbol, ScalarTy>,
                               struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
                               callees: &mut Vec<MonoCall>,
                               ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
                               reject_reason: &mut Option<String>|
@@ -3429,6 +3649,21 @@ pub(crate) fn check_expr(
                 BuiltinFunction::Print | BuiltinFunction::Println => {
                     if args.len() != 1 {
                         return None;
+                    }
+                    // Phase JE-3: reject `println(enum_local)` —
+                    // enum identifiers report as U64 (their tag) so
+                    // they would otherwise type-check, but the JIT
+                    // would print just the tag whereas the
+                    // interpreter / AOT print the full formatted
+                    // enum value. Skip so the fallback handles it.
+                    if let Some(Expr::Identifier(s)) = program.expression.get(&args[0]) {
+                        if enum_locals.contains_key(&s) {
+                            note(reject_reason, || {
+                                "JIT does not yet format enum values for print/println \
+                                 (would print only the tag); see JIT-enum-1".to_string()
+                            });
+                            return None;
+                        }
                     }
                     let t = check_expr(program, &args[0], locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool)
@@ -4236,7 +4471,7 @@ fn check_plain_call(
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
     tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -4325,24 +4560,26 @@ fn check_plain_call(
         if let Some(ParamTy::Enum(want_enum)) = resolve_param_ty(param_td, substitutions, struct_layouts) {
             // Identifier of an enum local.
             if let Expr::Identifier(id) = arg_expr {
-                if let Some(local_enum) = enum_locals.get(&id).copied() {
-                    if local_enum != want_enum {
+                if let Some(local_info) = enum_locals.get(&id).copied() {
+                    if local_info.base_name != want_enum {
                         note(reject_reason, || {
                             "enum argument's type does not match callee parameter".to_string()
                         });
                         return None;
                     }
-                    callee_param_tys.push(ParamTy::Enum(local_enum));
+                    callee_param_tys.push(ParamTy::Enum(local_info.base_name));
                     scalar_arg_tys.push(ScalarTy::Unit);
                     continue;
                 }
             }
             // Inline unit / tuple constructor — reuse the
             // val/var rhs helper to validate the variant + payload.
+            // Build a synthetic annotation hint from the param type
+            // so generic-enum unit constructors can resolve T.
             if check_enum_constructor_rhs(
                 program, a, locals, struct_locals, tuple_locals, enum_locals,
                 substitutions, struct_layouts, callees, ptr_read_hints,
-                reject_reason,
+                reject_reason, Some(param_td),
             ).is_some()
             {
                 callee_param_tys.push(ParamTy::Enum(want_enum));

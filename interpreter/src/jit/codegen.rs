@@ -81,7 +81,7 @@ pub fn make_signature<M: Module>(
                 let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
                     .expect("enum layout missing for declared param");
                 s.params.push(AbiParam::new(types::I64));
-                if let Some(payload_ty) = layout.payload_ty {
+                if let Some(payload_ty) = layout.payload_ty() {
                     s.params.push(AbiParam::new(
                         ir_type(payload_ty).expect("enum payload type must be representable"),
                     ));
@@ -119,7 +119,7 @@ pub fn make_signature<M: Module>(
             let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
                 .expect("enum layout missing for declared return");
             s.returns.push(AbiParam::new(types::I64));
-            if let Some(payload_ty) = layout.payload_ty {
+            if let Some(payload_ty) = layout.payload_ty() {
                 s.returns.push(AbiParam::new(
                     ir_type(payload_ty).expect("enum payload type must be representable"),
                 ));
@@ -232,7 +232,7 @@ pub fn translate_function<M: Module>(
                 let tag_var = builder.declare_var(types::I64);
                 builder.def_var(tag_var, block_params[block_param_idx]);
                 block_param_idx += 1;
-                let payload = if let Some(payload_ty) = layout.payload_ty {
+                let payload = if let Some(payload_ty) = layout.payload_ty() {
                     let pty = ir_type(payload_ty)
                         .expect("enum payload type must be representable");
                     let pvar = builder.declare_var(pty);
@@ -559,7 +559,7 @@ fn gather_enum_values(
                 .cloned()
                 .ok_or_else(|| "identifier is not a known enum local".to_string())?;
             let mut out = vec![state.builder.use_var(local.tag)];
-            if layout.payload_ty.is_some() {
+            if layout.payload_ty().is_some() {
                 let (pvar, _) = local.payload.ok_or_else(|| {
                     "enum return: layout has payload but local doesn't".to_string()
                 })?;
@@ -572,7 +572,7 @@ fn gather_enum_values(
                 .variant_tag(path[1])
                 .ok_or_else(|| "enum return: unknown unit variant".to_string())?;
             let mut out = vec![state.builder.ins().iconst(types::I64, tag as i64)];
-            if let Some(payload_ty) = layout.payload_ty {
+            if let Some(payload_ty) = layout.payload_ty() {
                 let zero = match payload_ty {
                     ScalarTy::F64 => state.builder.ins().f64const(0.0),
                     ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
@@ -1521,12 +1521,14 @@ impl<'a, 'b> State<'a, 'b> {
                     {
                         if let [Pattern::Name(payload_name)] = sub_pats.as_slice() {
                             let layout = super::eligibility::enum_layout_for_codegen(*enum_sym);
-                            if let (Some(layout), Some(local)) =
+                            if let (Some(_layout), Some(local)) =
                                 (layout, scrut_enum_local.as_ref())
                             {
-                                if let (Some(payload_ty), Some((pvar, _))) =
-                                    (layout.payload_ty, local.payload)
-                                {
+                                // Phase JE-3: prefer the local's
+                                // payload_ty (which knows the
+                                // resolved monomorph for generic
+                                // enums) over the layout's.
+                                if let Some((pvar, payload_ty)) = local.payload {
                                     let prior_ty = self
                                         .local_types
                                         .insert(*payload_name, payload_ty);
@@ -1598,11 +1600,11 @@ impl<'a, 'b> State<'a, 'b> {
                             // local exists when the pattern has a
                             // Pattern::Name sub-pattern.
                             if let [Pattern::Name(payload_name)] = sub_pats.as_slice() {
-                                if let (Some(local), Some(payload_ty)) =
-                                    (scrut_enum_local.as_ref(), layout.payload_ty)
-                                {
-                                    if let Some((pvar, pty)) = local.payload {
-                                        let _ = pty;
+                                // Phase JE-3: prefer the local's
+                                // payload_ty over the layout's so
+                                // generic enums monomorph correctly.
+                                if let Some(local) = scrut_enum_local.as_ref() {
+                                    if let Some((pvar, payload_ty)) = local.payload {
                                         let prior = self.local_vars.insert(*payload_name, pvar);
                                         let prior_ty = self
                                             .local_types
@@ -1686,7 +1688,7 @@ impl<'a, 'b> State<'a, 'b> {
                         last_value = None;
                     } else if self.try_gen_tuple_local(name, &value)? {
                         last_value = None;
-                    } else if self.try_gen_enum_local(name, &value)? {
+                    } else if self.try_gen_enum_local(name, &value, _ty.as_ref())? {
                         last_value = None;
                     } else {
                         let st = self.expr_type(&value)?;
@@ -1712,7 +1714,7 @@ impl<'a, 'b> State<'a, 'b> {
                             last_value = None;
                             continue;
                         }
-                        if self.try_gen_enum_local(name, &v)? {
+                        if self.try_gen_enum_local(name, &v, type_decl.as_ref())? {
                             last_value = None;
                             continue;
                         }
@@ -2375,7 +2377,7 @@ impl<'a, 'b> State<'a, 'b> {
                                 .cloned()
                                 .ok_or_else(|| "enum argument unknown".to_string())?;
                             arg_values.push(self.builder.use_var(local.tag));
-                            if layout.payload_ty.is_some() {
+                            if layout.payload_ty().is_some() {
                                 let (pvar, _) = local.payload.ok_or_else(|| {
                                     "enum arg layout / local payload mismatch".to_string()
                                 })?;
@@ -2387,7 +2389,7 @@ impl<'a, 'b> State<'a, 'b> {
                                 .variant_tag(path[1])
                                 .ok_or_else(|| "enum arg: unknown unit variant".to_string())?;
                             arg_values.push(self.builder.ins().iconst(types::I64, tag as i64));
-                            if let Some(payload_ty) = layout.payload_ty {
+                            if let Some(payload_ty) = layout.payload_ty() {
                                 let zero = match payload_ty {
                                     ScalarTy::F64 => self.builder.ins().f64const(0.0),
                                     ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
@@ -2552,6 +2554,7 @@ impl<'a, 'b> State<'a, 'b> {
         &mut self,
         name: DefaultSymbol,
         value_ref: &ExprRef,
+        annotation: Option<&TypeDecl>,
     ) -> Result<bool, String> {
         let value = match self.program.expression.get(value_ref) {
             Some(v) => v,
@@ -2572,7 +2575,16 @@ impl<'a, 'b> State<'a, 'b> {
                 let tag_v = self.builder.ins().iconst(types::I64, tag as i64);
                 let tag_var = self.builder.declare_var(types::I64);
                 self.builder.def_var(tag_var, tag_v);
-                let payload = if let Some(payload_ty) = layout.payload_ty {
+                // Phase JE-3: derive payload_ty either from the
+                // layout (Concrete for non-generic enums) or from
+                // the val/var annotation (Generic enums where the
+                // unit constructor doesn't carry T).
+                let resolved_payload_ty: Option<ScalarTy> = layout.payload_ty().or_else(|| {
+                    annotation.and_then(|td| {
+                        super::eligibility::payload_ty_from_annotation_pub(td, &layout)
+                    })
+                });
+                let payload = if let Some(payload_ty) = resolved_payload_ty {
                     let zero = match payload_ty {
                         ScalarTy::Bool => self.builder.ins().iconst(types::I8, 0),
                         ScalarTy::F64 => self.builder.ins().f64const(0.0),
@@ -2605,13 +2617,17 @@ impl<'a, 'b> State<'a, 'b> {
                 if !layout.variant_has_payload[idx] {
                     return Ok(false);
                 }
-                let payload_ty = match layout.payload_ty {
-                    Some(t) => t,
-                    None => return Ok(false),
-                };
                 if args.len() != 1 {
                     return Ok(false);
                 }
+                // Phase JE-3: payload_ty comes either from the
+                // layout (non-generic, Concrete) or from the arg's
+                // computed type (generic — eligibility already
+                // verified the arg matches the monomorph).
+                let payload_ty = match layout.payload_ty() {
+                    Some(t) => t,
+                    None => self.expr_type(&args[0])?,
+                };
                 let payload_v = self
                     .gen_expr(&args[0])?
                     .ok_or_else(|| "enum tuple constructor payload produced no value".to_string())?;
@@ -2671,7 +2687,7 @@ impl<'a, 'b> State<'a, 'b> {
                     .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
                 let call = self.builder.ins().call(func_ref, &arg_values);
                 let results = self.builder.inst_results(call).to_vec();
-                let expected = 1 + if layout.payload_ty.is_some() { 1 } else { 0 };
+                let expected = 1 + if layout.payload_ty().is_some() { 1 } else { 0 };
                 if results.len() != expected {
                     return Err(
                         "enum-returning call produced wrong number of results".into(),
@@ -2679,7 +2695,7 @@ impl<'a, 'b> State<'a, 'b> {
                 }
                 let tag_var = self.builder.declare_var(types::I64);
                 self.builder.def_var(tag_var, results[0]);
-                let payload = if let Some(payload_ty) = layout.payload_ty {
+                let payload = if let Some(payload_ty) = layout.payload_ty() {
                     let pty = ir_type(payload_ty)
                         .expect("enum payload type must be representable");
                     let pvar = self.builder.declare_var(pty);
@@ -2716,8 +2732,19 @@ impl<'a, 'b> State<'a, 'b> {
         // copy without disturbing the codegen-side state.
         let mut struct_locals_view = self.struct_local_types.clone();
         let mut tuple_locals_view = self.tuple_local_types.clone();
-        let mut enum_locals_view: HashMap<DefaultSymbol, DefaultSymbol> =
-            self.enum_local_types.clone();
+        // Phase JE-3: build EnumLocalInfo per local from the (tag,
+        // payload) Variables — `payload` is `Some(_, ty)` exactly
+        // when the local has a payload, so the per-local payload_ty
+        // is known.
+        let mut enum_locals_view: HashMap<DefaultSymbol, super::eligibility::EnumLocalInfo> =
+            HashMap::new();
+        for (name, base) in self.enum_local_types.iter() {
+            let payload_ty = self
+                .enum_locals
+                .get(name)
+                .and_then(|el| el.payload.map(|(_, ty)| ty));
+            enum_locals_view.insert(*name, super::eligibility::EnumLocalInfo::new(*base, payload_ty));
+        }
         super::eligibility::check_expr(
             self.program,
             expr_ref,

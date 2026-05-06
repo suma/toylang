@@ -242,6 +242,34 @@ fn jit_tuple_enum_je2_compile() {
 }
 
 #[test]
+fn jit_generic_enum_je3_compile() {
+    // Phase JE-3: single-generic-param enum (`Opt<T>`) now
+    // compiles via the JIT when T resolves to a JIT scalar.
+    // Tuple-variant constructor `Opt::Some(40i64)` infers T from
+    // the arg; unit-variant `Opt::None` resolves T from the val
+    // annotation `Opt<i64>`. Both modes return exit 42.
+    assert_match("example/jit_generic_enum_je3.t");
+    let r = run("example/jit_generic_enum_je3.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_generic_enum_je3_actually_compiles_main() {
+    // Confirm the JIT actually compiles `main` — JE-3 should
+    // collect the generic Opt enum and treat its monomorphs
+    // through the same constructor / match path as non-generic
+    // enums.
+    let r = run("example/jit_generic_enum_je3.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("main"),
+        "expected JE-3 to compile `main`; stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn jit_enum_boundary_je2d_compile() {
     // Phase JE-2d: enum-typed function param/return expand to
     // (tag, payload) cranelift values across boundaries.
@@ -305,19 +333,18 @@ fn jit_unit_enum_actually_compiles_pick() {
 #[cfg(feature = "jit")]
 #[test]
 fn jit_skip_reason_for_enum_constructor() {
-    // JIT enum-value support (`ParamTy::Enum`, tag dispatch, match
-    // codegen) isn't yet implemented — the interpreter handles
-    // anything enum-touching via fallback. The verbose JIT log
-    // should call out enum values specifically rather than the
-    // generic "associated function call" message so users grep
-    // for the right thing. Pairs with the
-    // `stdlib_option_methods_run_end_to_end` test below which
-    // verifies the fallback itself produces the correct result.
+    // Phase JE-3 changed the eligibility surface for generic enums:
+    // `Option<T>` constructors are now collected, so the JIT skip
+    // reason no longer mentions "enum values". The blocker for this
+    // particular program is the enum-receiver method dispatch
+    // (`o.is_some()` / `o.unwrap_or(...)`), which is JE-6 / JE-7
+    // territory. Either way main must skip and the interpreter
+    // fallback must produce 152.
     let r = run("example/stdlib_option.t", true, true);
     assert_eq!(r.code, 152, "fallback exit code; stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("JIT: skipped") && r.stderr.contains("enum values"),
-        "expected enum-specific skip reason; stderr: {}",
+        r.stderr.contains("JIT: skipped"),
+        "expected JIT to skip; stderr: {}",
         r.stderr
     );
 }

@@ -557,6 +557,33 @@ impl EnumLocalInfo {
     }
 }
 
+/// Refactor (post-JE-6): bundle the three compound-local maps so
+/// every `check_expr` / `check_stmt` recursion takes a single
+/// `&mut CompoundLocals` instead of 3 parallel `&mut HashMap`
+/// arguments. Cuts ~150 parameter occurrences across the file
+/// and keeps future per-shape additions (struct fields with
+/// enum types, etc.) from re-inflating the signature footprint.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct CompoundLocals {
+    /// Local name -> struct type name. Mirrors the AOT compiler's
+    /// `Binding::Struct` lookup at the JIT eligibility layer.
+    pub structs: HashMap<DefaultSymbol, DefaultSymbol>,
+    /// Local name -> per-element ScalarTy list. Used for tuple
+    /// literal / tuple-of-scalars dispatch.
+    pub tuples: HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    /// Local name -> EnumLocalInfo (base name + per-monomorph
+    /// payload_ty). The payload_ty resolution lives here so
+    /// generic enum monomorphs (`Opt<i64>` vs `Opt<u64>`) get
+    /// distinct entries.
+    pub enums: HashMap<DefaultSymbol, EnumLocalInfo>,
+}
+
+impl CompoundLocals {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl EnumLayout {
     #[allow(dead_code)]
     pub fn variant_tag(&self, name: DefaultSymbol) -> Option<u64> {
@@ -1365,24 +1392,17 @@ fn check_callable_body(
         return false;
     }
     let mut locals: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
-    let mut struct_locals: HashMap<DefaultSymbol, DefaultSymbol> = HashMap::new();
-    let mut tuple_locals: HashMap<DefaultSymbol, Vec<ScalarTy>> = HashMap::new();
-    // Phase JE-2b: enum-typed locals, mapping local name to the enum
-    // type name so codegen / match scrutinee lookup can recover the
-    // EnumLayout. Tracked alongside struct_locals / tuple_locals
-    // because the same threading lives through every check_expr /
-    // check_stmt recursion.
-    let mut enum_locals: HashMap<DefaultSymbol, EnumLocalInfo> = HashMap::new();
+    let mut compound_locals = CompoundLocals::new();
     for (n, t) in &sig.params {
         match t {
             ParamTy::Scalar(s) => {
                 locals.insert(*n, *s);
             }
             ParamTy::Struct(struct_name) => {
-                struct_locals.insert(*n, *struct_name);
+                compound_locals.structs.insert(*n, *struct_name);
             }
             ParamTy::Tuple(elements) => {
-                tuple_locals.insert(*n, elements.clone());
+                compound_locals.tuples.insert(*n, elements.clone());
             }
             // Phase JE-2d/JE-5: enum-typed param registers as an
             // enum local. `ParamTy::Enum` now carries the resolved
@@ -1391,7 +1411,7 @@ fn check_callable_body(
             // work — the boundary expansion uses the same payload
             // type as the local does.
             ParamTy::Enum { base_name, payload_ty } => {
-                enum_locals.insert(*n, EnumLocalInfo::new(*base_name, *payload_ty));
+                compound_locals.enums.insert(*n, EnumLocalInfo::new(*base_name, *payload_ty));
             }
         }
     }
@@ -1407,9 +1427,7 @@ fn check_callable_body(
             *enum_name,
             *enum_payload_ty,
             &mut locals,
-            &mut struct_locals,
-            &mut tuple_locals,
-            &mut enum_locals,
+            &mut compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1428,9 +1446,7 @@ fn check_callable_body(
             &code,
             *struct_name,
             &mut locals,
-            &mut struct_locals,
-            &mut tuple_locals,
-            &mut enum_locals,
+            &mut compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1446,9 +1462,7 @@ fn check_callable_body(
             &code,
             element_tys,
             &mut locals,
-            &mut struct_locals,
-            &mut tuple_locals,
-            &mut enum_locals,
+            &mut compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1461,9 +1475,7 @@ fn check_callable_body(
         program,
         &code,
         &mut locals,
-        &mut struct_locals,
-        &mut tuple_locals,
-        &mut enum_locals,
+        &mut compound_locals,
         substitutions,
         struct_layouts,
         callees,
@@ -1478,9 +1490,7 @@ fn check_struct_returning_body(
     body_stmt_ref: &StmtRef,
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1525,9 +1535,7 @@ fn check_struct_returning_body(
             program,
             s,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1557,7 +1565,7 @@ fn check_struct_returning_body(
     };
     match result_expr {
         Expr::Identifier(name) => {
-            match struct_locals.get(&name).copied() {
+            match compound_locals.structs.get(&name).copied() {
                 Some(s) if s == struct_name => true,
                 Some(_) => {
                     note(reject_reason, || {
@@ -1590,9 +1598,7 @@ fn check_struct_returning_body(
                 &result_expr_ref,
                 struct_name,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -1629,9 +1635,7 @@ fn check_enum_returning_body(
     enum_name: DefaultSymbol,
     enum_payload_ty: Option<ScalarTy>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1673,7 +1677,7 @@ fn check_enum_returning_body(
     let (last_ref, leading) = block_stmts.split_last().unwrap();
     for s in leading {
         if !check_stmt(
-            program, s, locals, struct_locals, tuple_locals, enum_locals,
+            program, s, locals, compound_locals,
             substitutions, struct_layouts, callees, ptr_read_hints,
             reject_reason,
         ) {
@@ -1694,8 +1698,7 @@ fn check_enum_returning_body(
         }
     };
     check_enum_producing_expr(
-        program, &result_expr_ref, enum_name, enum_payload_ty, locals, struct_locals,
-        tuple_locals, enum_locals, substitutions, struct_layouts, callees,
+        program, &result_expr_ref, enum_name, enum_payload_ty, locals, compound_locals, substitutions, struct_layouts, callees,
         ptr_read_hints, reject_reason,
     )
 }
@@ -1710,9 +1713,7 @@ fn check_enum_producing_expr(
     enum_name: DefaultSymbol,
     enum_payload_ty: Option<ScalarTy>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1725,7 +1726,7 @@ fn check_enum_producing_expr(
     };
     match expr {
         Expr::Identifier(name) => {
-            match enum_locals.get(&name).copied() {
+            match compound_locals.enums.get(&name).copied() {
                 Some(info) if info.base_name == enum_name => true,
                 _ => {
                     note(reject_reason, || {
@@ -1784,8 +1785,7 @@ fn check_enum_producing_expr(
                 return false;
             }
             match check_expr(
-                program, &args[0], locals, struct_locals, tuple_locals,
-                enum_locals, substitutions, struct_layouts, callees,
+                program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             ) {
                 Some(t) if t == payload_ty => true,
@@ -1801,15 +1801,14 @@ fn check_enum_producing_expr(
             // Type-check the scrutinee + patterns, then recurse on
             // each arm body against the same enum target.
             let scrut_ty = match check_expr(
-                program, &scrutinee, locals, struct_locals, tuple_locals,
-                enum_locals, substitutions, struct_layouts, callees,
+                program, &scrutinee, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             ) {
                 Some(t) => t,
                 None => return false,
             };
             let scrut_enum_info = match program.expression.get(&scrutinee) {
-                Some(Expr::Identifier(s)) => enum_locals.get(&s).copied(),
+                Some(Expr::Identifier(s)) => compound_locals.enums.get(&s).copied(),
                 _ => None,
             };
             for arm in &arms {
@@ -1831,8 +1830,7 @@ fn check_enum_producing_expr(
                     None
                 };
                 let ok = check_enum_producing_expr(
-                    program, &arm.body, enum_name, enum_payload_ty, locals, struct_locals,
-                    tuple_locals, enum_locals, substitutions, struct_layouts,
+                    program, &arm.body, enum_name, enum_payload_ty, locals, compound_locals, substitutions, struct_layouts,
                     callees, ptr_read_hints, reject_reason,
                 );
                 if let Some((name, prior)) = prev_local {
@@ -1861,9 +1859,7 @@ fn check_tuple_returning_body(
     body_stmt_ref: &StmtRef,
     element_tys: &[ScalarTy],
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -1908,9 +1904,7 @@ fn check_tuple_returning_body(
             program,
             s,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1938,7 +1932,7 @@ fn check_tuple_returning_body(
         None => return false,
     };
     match result_expr {
-        Expr::Identifier(name) => match tuple_locals.get(&name).cloned() {
+        Expr::Identifier(name) => match compound_locals.tuples.get(&name).cloned() {
             Some(shape) if shape.as_slice() == element_tys => true,
             Some(_) => {
                 note(reject_reason, || {
@@ -1958,9 +1952,7 @@ fn check_tuple_returning_body(
             &elems,
             element_tys,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -1985,9 +1977,7 @@ fn check_tuple_literal_fields(
     elements: &[ExprRef],
     expected: &[ScalarTy],
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2009,9 +1999,7 @@ fn check_tuple_literal_fields(
             program,
             e,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -2041,9 +2029,7 @@ fn tuple_literal_target(
     program: &Program,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2064,9 +2050,7 @@ fn tuple_literal_target(
             program,
             e,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -2093,9 +2077,7 @@ fn check_tuple_returning_call(
     program: &Program,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2127,9 +2109,7 @@ fn check_tuple_returning_call(
         program,
         value_ref,
         locals,
-        struct_locals,
-        tuple_locals,
-        enum_locals,
+        compound_locals,
         substitutions,
         struct_layouts,
         callees,
@@ -2212,9 +2192,7 @@ fn check_struct_returning_call(
     program: &Program,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2258,9 +2236,7 @@ fn check_struct_returning_call(
         program,
         value_ref,
         locals,
-        struct_locals,
-        tuple_locals,
-        enum_locals,
+        compound_locals,
         substitutions,
         struct_layouts,
         callees,
@@ -2290,9 +2266,7 @@ fn check_enum_returning_call(
     program: &Program,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2357,7 +2331,7 @@ fn check_enum_returning_call(
     };
     let saved_callees_len = callees.len();
     let result = check_expr(
-        program, value_ref, locals, struct_locals, tuple_locals, enum_locals,
+        program, value_ref, locals, compound_locals,
         substitutions, struct_layouts, callees, ptr_read_hints, reject_reason,
     );
     if result.is_none() && callees.len() == saved_callees_len {
@@ -2386,9 +2360,7 @@ fn check_enum_constructor_rhs(
     program: &Program,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2452,8 +2424,7 @@ fn check_enum_constructor_rhs(
                 return None;
             }
             let arg_ty = check_expr(
-                program, &args[0], locals, struct_locals, tuple_locals,
-                enum_locals, substitutions, struct_layouts, callees,
+                program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             )?;
             // Phase JE-3/JE-4: variant payload comes from
@@ -2551,9 +2522,7 @@ fn check_struct_literal_fields(
     value_ref: &ExprRef,
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2620,9 +2589,7 @@ fn check_struct_literal_fields(
             program,
             field_expr,
             locals,
-            struct_locals,
-            tuple_locals,
-            enum_locals,
+            compound_locals,
             substitutions,
             struct_layouts,
             callees,
@@ -2876,9 +2843,7 @@ fn check_stmt(
     program: &Program,
     stmt_ref: &StmtRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -2891,7 +2856,7 @@ fn check_stmt(
     };
     match stmt {
         Stmt::Expression(e) => {
-            check_expr(program, &e, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &e, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         Stmt::Val(name, type_decl, value) => {
             // Special-case: a struct-literal RHS registers `name` as a
@@ -2906,9 +2871,7 @@ fn check_stmt(
                     &value,
                     struct_name,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -2917,7 +2880,7 @@ fn check_stmt(
                 ) {
                     return false;
                 }
-                struct_locals.insert(name, struct_name);
+                compound_locals.structs.insert(name, struct_name);
                 return true;
             }
             // Special-case: a struct-returning function call also lands as
@@ -2927,16 +2890,14 @@ fn check_stmt(
                 program,
                 &value,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
                 ptr_read_hints,
                 reject_reason,
             ) {
-                struct_locals.insert(name, struct_name);
+                compound_locals.structs.insert(name, struct_name);
                 return true;
             }
             // Tuple literal RHS — `val pair = (1i64, 2u64)` — registers
@@ -2945,16 +2906,14 @@ fn check_stmt(
                 program,
                 &value,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
                 ptr_read_hints,
                 reject_reason,
             ) {
-                tuple_locals.insert(name, shape);
+                compound_locals.tuples.insert(name, shape);
                 return true;
             }
             // Tuple-returning call — `val pair = make_pair()`.
@@ -2962,23 +2921,21 @@ fn check_stmt(
                 program,
                 &value,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
                 ptr_read_hints,
                 reject_reason,
             ) {
-                tuple_locals.insert(name, shape);
+                compound_locals.tuples.insert(name, shape);
                 return true;
             }
             // Tuple alias — `val q = pair` where `pair` is already a
             // known tuple local.
             if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&value) {
-                if let Some(shape) = tuple_locals.get(&rhs_name).cloned() {
-                    tuple_locals.insert(name, shape);
+                if let Some(shape) = compound_locals.tuples.get(&rhs_name).cloned() {
+                    compound_locals.tuples.insert(name, shape);
                     return true;
                 }
             }
@@ -2994,18 +2951,17 @@ fn check_stmt(
             // generic-enum unit constructors (`Option::None`) can
             // resolve T from the annotation.
             if let Some(info) = check_enum_constructor_rhs(
-                program, &value, locals, struct_locals, tuple_locals,
-                enum_locals, substitutions, struct_layouts, callees,
+                program, &value, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason, type_decl.as_ref(),
             ) {
-                enum_locals.insert(name, info);
+                compound_locals.enums.insert(name, info);
                 return true;
             }
             // Enum alias — `val n: Box = b` where `b` is already a
             // known enum local of the same type.
             if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&value) {
-                if let Some(info) = enum_locals.get(&rhs_name).copied() {
-                    enum_locals.insert(name, info);
+                if let Some(info) = compound_locals.enums.get(&rhs_name).copied() {
+                    compound_locals.enums.insert(name, info);
                     return true;
                 }
             }
@@ -3015,11 +2971,10 @@ fn check_stmt(
             // arg-validation through check_expr (which records
             // callees) and registers the enum local.
             if let Some(info) = check_enum_returning_call(
-                program, &value, locals, struct_locals, tuple_locals,
-                enum_locals, substitutions, struct_layouts, callees,
+                program, &value, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             ) {
-                enum_locals.insert(name, info);
+                compound_locals.enums.insert(name, info);
                 return true;
             }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
@@ -3029,7 +2984,7 @@ fn check_stmt(
             if let Some(t) = declared_hint {
                 register_ptr_read_hint(program, &value, t, ptr_read_hints);
             }
-            let val_ty = match check_expr(program, &value, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let val_ty = match check_expr(program, &value, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -3077,9 +3032,7 @@ fn check_stmt(
                         &v,
                         struct_name,
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -3088,60 +3041,54 @@ fn check_stmt(
                     ) {
                         return false;
                     }
-                    struct_locals.insert(name, struct_name);
+                    compound_locals.structs.insert(name, struct_name);
                     return true;
                 }
                 if let Some(struct_name) = check_struct_returning_call(
                     program,
                     &v,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
                     ptr_read_hints,
                     reject_reason,
                 ) {
-                    struct_locals.insert(name, struct_name);
+                    compound_locals.structs.insert(name, struct_name);
                     return true;
                 }
                 if let Some(shape) = tuple_literal_target(
                     program,
                     &v,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
                     ptr_read_hints,
                     reject_reason,
                 ) {
-                    tuple_locals.insert(name, shape);
+                    compound_locals.tuples.insert(name, shape);
                     return true;
                 }
                 if let Some(shape) = check_tuple_returning_call(
                     program,
                     &v,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
                     ptr_read_hints,
                     reject_reason,
                 ) {
-                    tuple_locals.insert(name, shape);
+                    compound_locals.tuples.insert(name, shape);
                     return true;
                 }
                 if let Some(Expr::Identifier(rhs_name)) = program.expression.get(&v) {
-                    if let Some(shape) = tuple_locals.get(&rhs_name).cloned() {
-                        tuple_locals.insert(name, shape);
+                    if let Some(shape) = compound_locals.tuples.get(&rhs_name).cloned() {
+                        compound_locals.tuples.insert(name, shape);
                         return true;
                     }
                 }
@@ -3150,7 +3097,7 @@ fn check_stmt(
                 // Treat `Some(Unknown)` like `None` — the parser inserts
                 // it when the user wrote no annotation.
                 (Some(TypeDecl::Unknown), Some(v)) | (None, Some(v)) => {
-                    match check_expr(program, &v, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                    match check_expr(program, &v, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                         Some(t) => t,
                         None => return false,
                     }
@@ -3165,7 +3112,7 @@ fn check_stmt(
                 if type_decl.is_some() {
                     register_ptr_read_hint(program, &v, declared, ptr_read_hints);
                 }
-                let val_ty = match check_expr(program, &v, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                let val_ty = match check_expr(program, &v, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                     Some(t) => t,
                     None => return false,
                 };
@@ -3181,18 +3128,18 @@ fn check_stmt(
         }
         Stmt::Return(value) => {
             if let Some(v) = value {
-                check_expr(program, &v, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+                check_expr(program, &v, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
             } else {
                 true
             }
         }
         Stmt::Break | Stmt::Continue => true,
         Stmt::For(var, start, end, block) => {
-            let start_ty = match check_expr(program, &start, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let start_ty = match check_expr(program, &start, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
-            let end_ty = match check_expr(program, &end, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let end_ty = match check_expr(program, &end, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
@@ -3204,7 +3151,7 @@ fn check_stmt(
             }
             let prev = locals.insert(var, start_ty);
             let body_ok =
-                check_expr(program, &block, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some();
+                check_expr(program, &block, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some();
             match prev {
                 Some(t) => {
                     locals.insert(var, t);
@@ -3216,14 +3163,14 @@ fn check_stmt(
             body_ok
         }
         Stmt::While(cond, block) => {
-            let cond_ty = match check_expr(program, &cond, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+            let cond_ty = match check_expr(program, &cond, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
             };
             if cond_ty != ScalarTy::Bool {
                 return false;
             }
-            check_expr(program, &block, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
+            check_expr(program, &block, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason).is_some()
         }
         // No struct / impl / enum declarations are tolerated inside an
         // eligible function body. Top-level decls live outside of any
@@ -3263,9 +3210,7 @@ pub(crate) fn check_expr(
     program: &Program,
     expr_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -3294,7 +3239,7 @@ pub(crate) fn check_expr(
             if let Some(_) = locals.get(&sym).copied() {
                 return locals.get(&sym).copied();
             }
-            if enum_locals.contains_key(&sym) {
+            if compound_locals.enums.contains_key(&sym) {
                 return Some(ScalarTy::U64);
             }
             None
@@ -3321,7 +3266,7 @@ pub(crate) fn check_expr(
         // returns the tag.
         Expr::Match(scrutinee, arms) => {
             let scrut_ty = check_expr(
-                program, &scrutinee, locals, struct_locals, tuple_locals, enum_locals,
+                program, &scrutinee, locals, compound_locals,
                 substitutions, struct_layouts, callees, ptr_read_hints,
                 reject_reason,
             )?;
@@ -3330,7 +3275,7 @@ pub(crate) fn check_expr(
             // payload_ty (resolved monomorph) instead of the layout's
             // generic placeholder.
             let scrut_enum_info = match program.expression.get(&scrutinee) {
-                Some(Expr::Identifier(s)) => enum_locals.get(&s).copied(),
+                Some(Expr::Identifier(s)) => compound_locals.enums.get(&s).copied(),
                 _ => None,
             };
             // All arms unify to a single type. Walk each arm's
@@ -3355,7 +3300,7 @@ pub(crate) fn check_expr(
                     None
                 };
                 let body_ty = check_expr(
-                    program, &arm.body, locals, struct_locals, tuple_locals, enum_locals,
+                    program, &arm.body, locals, compound_locals,
                     substitutions, struct_layouts, callees, ptr_read_hints,
                     reject_reason,
                 )?;
@@ -3381,8 +3326,8 @@ pub(crate) fn check_expr(
             result_ty
         }
         Expr::Binary(op, lhs, rhs) => {
-            let lt = check_expr(program, &lhs, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-            let rt = check_expr(program, &rhs, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let lt = check_expr(program, &lhs, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let rt = check_expr(program, &rhs, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if lt != rt {
                 return None;
             }
@@ -3448,7 +3393,7 @@ pub(crate) fn check_expr(
             }
         }
         Expr::Unary(op, operand) => {
-            let t = check_expr(program, &operand, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let t = check_expr(program, &operand, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             match op {
                 UnaryOp::BitwiseNot => {
                     if matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Bool) {
@@ -3485,9 +3430,9 @@ pub(crate) fn check_expr(
             for s in &stmts {
                 let stmt = program.statement.get(s)?;
                 if let Stmt::Expression(e) = &stmt {
-                    last_ty = check_expr(program, e, &mut snapshot, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    last_ty = check_expr(program, e, &mut snapshot, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 } else {
-                    if !check_stmt(program, s, &mut snapshot, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
+                    if !check_stmt(program, s, &mut snapshot, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     last_ty = ScalarTy::Unit;
@@ -3496,24 +3441,24 @@ pub(crate) fn check_expr(
             Some(last_ty)
         }
         Expr::IfElifElse(cond, if_block, elif_pairs, else_block) => {
-            let ct = check_expr(program, &cond, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let ct = check_expr(program, &cond, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             if ct != ScalarTy::Bool {
                 return None;
             }
             // Unify each branch's type via `ScalarTy::unify_branch`, which
             // treats `Never` (panic / divergence) as a wildcard — so
             // `if cond { panic("...") } else { 5i64 }` types as I64.
-            let then_ty = check_expr(program, &if_block, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let then_ty = check_expr(program, &if_block, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let mut unified = then_ty;
             for (ec, eb) in &elif_pairs {
-                let et = check_expr(program, ec, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                let et = check_expr(program, ec, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 if et != ScalarTy::Bool {
                     return None;
                 }
-                let bt = check_expr(program, eb, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                let bt = check_expr(program, eb, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                 unified = ScalarTy::unify_branch(unified, bt)?;
             }
-            let else_ty = check_expr(program, &else_block, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let else_ty = check_expr(program, &else_block, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             ScalarTy::unify_branch(unified, else_ty)
         }
         Expr::Assign(lhs, rhs) => {
@@ -3528,9 +3473,7 @@ pub(crate) fn check_expr(
                         program,
                         &rhs,
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -3553,7 +3496,7 @@ pub(crate) fn check_expr(
                             return None;
                         }
                     };
-                    let struct_name = match struct_locals.get(&recv_name).copied() {
+                    let struct_name = match compound_locals.structs.get(&recv_name).copied() {
                         Some(s) => s,
                         None => {
                             note(reject_reason, || {
@@ -3569,9 +3512,7 @@ pub(crate) fn check_expr(
                         program,
                         &rhs,
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -3611,8 +3552,7 @@ pub(crate) fn check_expr(
                         let payload_ty = layout.payload_ty()?;
                         if args.len() == 1 {
                             let arg_ty = check_expr(
-                                program, &args[0], locals, struct_locals, tuple_locals,
-                                enum_locals, substitutions, struct_layouts, callees,
+                                program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees,
                                 ptr_read_hints, reject_reason,
                             )?;
                             if arg_ty == payload_ty {
@@ -3670,8 +3610,7 @@ pub(crate) fn check_expr(
                 return None;
             }
             return check_plain_call(
-                program, expr_ref, function_name, &args, locals, struct_locals,
-                tuple_locals, enum_locals, substitutions, struct_layouts, callees,
+                program, expr_ref, function_name, &args, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             );
         }
@@ -3683,8 +3622,7 @@ pub(crate) fn check_expr(
             };
 
             check_plain_call(
-                program, expr_ref, name, &arg_list, locals, struct_locals,
-                tuple_locals, enum_locals, substitutions, struct_layouts, callees,
+                program, expr_ref, name, &arg_list, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             )
         }
@@ -3693,9 +3631,7 @@ pub(crate) fn check_expr(
             let check_args = |expected: &[ScalarTy],
                               args: &Vec<ExprRef>,
                               locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-                              struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+                              compound_locals: &mut CompoundLocals,
                               callees: &mut Vec<MonoCall>,
                               ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
                               reject_reason: &mut Option<String>|
@@ -3715,9 +3651,7 @@ pub(crate) fn check_expr(
                         program,
                         a,
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -3768,7 +3702,7 @@ pub(crate) fn check_expr(
                         return None;
                     }
                     let cond_ty = check_expr(
-                        program, &args[0], locals, struct_locals, tuple_locals, enum_locals,
+                        program, &args[0], locals, compound_locals,
                         substitutions, struct_layouts, callees, ptr_read_hints,
                         reject_reason,
                     )?;
@@ -3798,7 +3732,7 @@ pub(crate) fn check_expr(
                     // interpreter / AOT print the full formatted
                     // enum value. Skip so the fallback handles it.
                     if let Some(Expr::Identifier(s)) = program.expression.get(&args[0]) {
-                        if enum_locals.contains_key(&s) {
+                        if compound_locals.enums.contains_key(&s) {
                             note(reject_reason, || {
                                 "JIT does not yet format enum values for print/println \
                                  (would print only the tag); see JIT-enum-1".to_string()
@@ -3806,7 +3740,7 @@ pub(crate) fn check_expr(
                             return None;
                         }
                     }
-                    let t = check_expr(program, &args[0], locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let t = check_expr(program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool)
                         && !t.is_narrow_int()
                     {
@@ -3815,25 +3749,25 @@ pub(crate) fn check_expr(
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapAlloc => {
-                    if !check_args(&[ScalarTy::U64], &args, locals, struct_locals, tuple_locals, enum_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::U64], &args, locals, compound_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::HeapFree => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, tuple_locals, enum_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, compound_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Unit)
                 }
                 BuiltinFunction::HeapRealloc => {
-                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, struct_locals, tuple_locals, enum_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::U64], &args, locals, compound_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Ptr)
                 }
                 BuiltinFunction::PtrIsNull => {
-                    if !check_args(&[ScalarTy::Ptr], &args, locals, struct_locals, tuple_locals, enum_locals, callees, ptr_read_hints, reject_reason) {
+                    if !check_args(&[ScalarTy::Ptr], &args, locals, compound_locals, callees, ptr_read_hints, reject_reason) {
                         return None;
                     }
                     Some(ScalarTy::Bool)
@@ -3860,9 +3794,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::Ptr, ScalarTy::U64],
                         &args,
                         locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -3876,9 +3808,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::U64, ScalarTy::U64],
                         &args,
                         locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -3896,9 +3826,7 @@ pub(crate) fn check_expr(
                         &[ScalarTy::Ptr, ScalarTy::U64],
                         &args,
                         locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                         callees,
                         ptr_read_hints,
                         reject_reason,
@@ -3929,9 +3857,7 @@ pub(crate) fn check_expr(
                         program,
                         &args[0],
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -3955,9 +3881,9 @@ pub(crate) fn check_expr(
                     if args.len() != 3 {
                         return None;
                     }
-                    let p = check_expr(program, &args[0], locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    let off = check_expr(program, &args[1], locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    let v = check_expr(program, &args[2], locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let p = check_expr(program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let off = check_expr(program, &args[1], locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+                    let v = check_expr(program, &args[2], locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
                     if p != ScalarTy::Ptr || off != ScalarTy::U64 {
                         return None;
                     }
@@ -3998,9 +3924,7 @@ pub(crate) fn check_expr(
                         program,
                         &args[0],
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -4046,9 +3970,7 @@ pub(crate) fn check_expr(
                         program,
                         &args[0],
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -4086,9 +4008,7 @@ pub(crate) fn check_expr(
                         program,
                         &args[0],
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -4099,9 +4019,7 @@ pub(crate) fn check_expr(
                         program,
                         &args[1],
                         locals,
-                        struct_locals,
-                        tuple_locals,
-                        enum_locals,
+                        compound_locals,
                         substitutions,
                         struct_layouts,
                         callees,
@@ -4126,9 +4044,7 @@ pub(crate) fn check_expr(
                 program,
                 &allocator_expr,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -4149,9 +4065,7 @@ pub(crate) fn check_expr(
                 program,
                 &body_expr,
                 locals,
-                struct_locals,
-                tuple_locals,
-                enum_locals,
+                compound_locals,
                 substitutions,
                 struct_layouts,
                 callees,
@@ -4189,9 +4103,7 @@ pub(crate) fn check_expr(
                     program,
                     &receiver,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -4258,7 +4170,7 @@ pub(crate) fn check_expr(
                         other => other.clone(),
                     };
                     let actual = check_expr(
-                        program, arg, locals, struct_locals, tuple_locals, enum_locals,
+                        program, arg, locals, compound_locals,
                         substitutions, struct_layouts, callees, ptr_read_hints,
                         reject_reason,
                     )?;
@@ -4329,7 +4241,7 @@ pub(crate) fn check_expr(
             // all variants to share one scalar). Self_ resolves to
             // the enum name; the substitution map carries T from
             // the receiver.
-            if let Some(enum_info) = enum_locals.get(&recv_name).copied() {
+            if let Some(enum_info) = compound_locals.enums.get(&recv_name).copied() {
                 let method = match find_method(program, enum_info.base_name, method_name) {
                     Some(m) => m,
                     None => {
@@ -4415,8 +4327,7 @@ pub(crate) fn check_expr(
                         }
                     };
                     let actual = check_expr(
-                        program, arg, locals, struct_locals, tuple_locals,
-                        enum_locals, substitutions, struct_layouts, callees,
+                        program, arg, locals, compound_locals, substitutions, struct_layouts, callees,
                         ptr_read_hints, reject_reason,
                     )?;
                     if actual != want {
@@ -4470,7 +4381,7 @@ pub(crate) fn check_expr(
                 };
                 let _ = ret;
             }
-            let struct_name = match struct_locals.get(&recv_name).copied() {
+            let struct_name = match compound_locals.structs.get(&recv_name).copied() {
                 Some(s) => s,
                 None => {
                     note(reject_reason, || {
@@ -4524,7 +4435,7 @@ pub(crate) fn check_expr(
                 let param_td = &method.parameter[i + 1].1;
                 let arg_expr = program.expression.get(arg)?;
                 if let Expr::Identifier(id) = arg_expr {
-                    if let Some(arg_struct) = struct_locals.get(&id).copied() {
+                    if let Some(arg_struct) = compound_locals.structs.get(&id).copied() {
                         match param_td {
                             TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
                                 if *s == arg_struct
@@ -4546,9 +4457,7 @@ pub(crate) fn check_expr(
                     program,
                     arg,
                     locals,
-                    struct_locals,
-                    tuple_locals,
-                    enum_locals,
+                    compound_locals,
                     substitutions,
                     struct_layouts,
                     callees,
@@ -4629,7 +4538,7 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
-            let struct_name = match struct_locals.get(&recv_name).copied() {
+            let struct_name = match compound_locals.structs.get(&recv_name).copied() {
                 Some(s) => s,
                 None => {
                     note(reject_reason, || {
@@ -4660,7 +4569,7 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
-            let shape = match tuple_locals.get(&recv_name).cloned() {
+            let shape = match compound_locals.tuples.get(&recv_name).cloned() {
                 Some(v) => v,
                 None => {
                     note(reject_reason, || {
@@ -4682,7 +4591,7 @@ pub(crate) fn check_expr(
             // uextend / ireduce in codegen), and i64/u64 ↔ f64 (real
             // fcvt instructions). bool casts are intentionally
             // excluded.
-            let inner_ty = check_expr(program, &inner, locals, struct_locals, tuple_locals, enum_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
+            let inner_ty = check_expr(program, &inner, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
             let target_ty = ScalarTy::from_type_decl(&target)?;
             let int_or_float = |t: ScalarTy| {
                 matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64) || t.is_narrow_int()
@@ -4761,9 +4670,7 @@ fn check_plain_call(
     name: DefaultSymbol,
     arg_list: &Vec<ExprRef>,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
-    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
-    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
-    enum_locals: &mut HashMap<DefaultSymbol, EnumLocalInfo>,
+    compound_locals: &mut CompoundLocals,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
     callees: &mut Vec<MonoCall>,
@@ -4807,7 +4714,7 @@ fn check_plain_call(
         }
         for (a, want) in arg_list.iter().zip(entry.params.iter()) {
             match check_expr(
-                program, a, locals, struct_locals, tuple_locals, enum_locals,
+                program, a, locals, compound_locals,
                 substitutions, struct_layouts, callees, ptr_read_hints,
                 reject_reason,
             ) {
@@ -4854,7 +4761,7 @@ fn check_plain_call(
         {
             // Identifier of an enum local.
             if let Expr::Identifier(id) = arg_expr {
-                if let Some(local_info) = enum_locals.get(&id).copied() {
+                if let Some(local_info) = compound_locals.enums.get(&id).copied() {
                     if local_info.base_name != want_enum {
                         note(reject_reason, || {
                             "enum argument's type does not match callee parameter".to_string()
@@ -4885,7 +4792,7 @@ fn check_plain_call(
             // Build a synthetic annotation hint from the param type
             // so generic-enum unit constructors can resolve T.
             if let Some(info) = check_enum_constructor_rhs(
-                program, a, locals, struct_locals, tuple_locals, enum_locals,
+                program, a, locals, compound_locals,
                 substitutions, struct_layouts, callees, ptr_read_hints,
                 reject_reason, Some(param_td),
             ) {
@@ -4910,7 +4817,7 @@ fn check_plain_call(
             return None;
         }
         if let Expr::Identifier(id) = arg_expr {
-            if let Some(struct_name) = struct_locals.get(&id).copied() {
+            if let Some(struct_name) = compound_locals.structs.get(&id).copied() {
                 match param_td {
                     TypeDecl::Identifier(s) | TypeDecl::Struct(s, _)
                         if *s == struct_name && struct_layouts.contains_key(s) =>
@@ -4928,7 +4835,7 @@ fn check_plain_call(
                     }
                 }
             }
-            if let Some(shape) = tuple_locals.get(&id).cloned() {
+            if let Some(shape) = compound_locals.tuples.get(&id).cloned() {
                 let want = match resolve_param_ty(param_td, substitutions, struct_layouts) {
                     Some(ParamTy::Tuple(ts)) => ts,
                     _ => {
@@ -4968,7 +4875,7 @@ fn check_plain_call(
             let mut shape: Vec<ScalarTy> = Vec::with_capacity(elements.len());
             for e in &elements {
                 let t = check_expr(
-                    program, e, locals, struct_locals, tuple_locals, enum_locals, substitutions,
+                    program, e, locals, compound_locals, substitutions,
                     struct_layouts, callees, ptr_read_hints, reject_reason,
                 )?;
                 shape.push(t);
@@ -4985,7 +4892,7 @@ fn check_plain_call(
             continue;
         }
         let t = check_expr(
-            program, a, locals, struct_locals, tuple_locals, enum_locals, substitutions,
+            program, a, locals, compound_locals, substitutions,
             struct_layouts, callees, ptr_read_hints, reject_reason,
         )?;
         scalar_arg_tys.push(t);

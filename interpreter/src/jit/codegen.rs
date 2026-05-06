@@ -2741,28 +2741,28 @@ impl<'a, 'b> State<'a, 'b> {
         // Pass the active struct-local map so FieldAccess type lookups
         // resolve through the layouts; cloning gives a writable scratch
         // copy without disturbing the codegen-side state.
-        let mut struct_locals_view = self.struct_local_types.clone();
-        let mut tuple_locals_view = self.tuple_local_types.clone();
-        // Phase JE-3: build EnumLocalInfo per local from the (tag,
-        // payload) Variables — `payload` is `Some(_, ty)` exactly
-        // when the local has a payload, so the per-local payload_ty
-        // is known.
-        let mut enum_locals_view: HashMap<DefaultSymbol, super::eligibility::EnumLocalInfo> =
-            HashMap::new();
+        // Refactor: build a single CompoundLocals view from the
+        // codegen-side struct/tuple/enum maps. Mirrors the
+        // eligibility-side bundle so the codegen->eligibility
+        // call uses the new combined parameter shape.
+        let mut compound_view = super::eligibility::CompoundLocals::new();
+        compound_view.structs = self.struct_local_types.clone();
+        compound_view.tuples = self.tuple_local_types.clone();
         for (name, base) in self.enum_local_types.iter() {
             let payload_ty = self
                 .enum_locals
                 .get(name)
                 .and_then(|el| el.payload.map(|(_, ty)| ty));
-            enum_locals_view.insert(*name, super::eligibility::EnumLocalInfo::new(*base, payload_ty));
+            compound_view.enums.insert(
+                *name,
+                super::eligibility::EnumLocalInfo::new(*base, payload_ty),
+            );
         }
         super::eligibility::check_expr(
             self.program,
             expr_ref,
             &mut snapshot,
-            &mut struct_locals_view,
-            &mut tuple_locals_view,
-            &mut enum_locals_view,
+            &mut compound_view,
             &empty_subs,
             self.struct_layouts,
             &mut callees,

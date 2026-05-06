@@ -896,6 +896,9 @@ fn build_cache_entry(
         eligibility::ParamTy::Tuple(_) => {
             return Err("main returning a tuple is not supported in JIT".into());
         }
+        eligibility::ParamTy::Enum(_) => {
+            return Err("main returning an enum is not supported in JIT".into());
+        }
     };
 
     Ok(CachedJit {

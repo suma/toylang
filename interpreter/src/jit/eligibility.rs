@@ -340,6 +340,12 @@ pub enum ParamTy {
     /// structural, so the element types alone identify the shape; no
     /// separate layout map is needed.
     Tuple(Vec<ScalarTy>),
+    /// Phase JE-2d: enum value, identified by its declared type name.
+    /// Layout is looked up via `EligibleSet::enum_layouts` (or the
+    /// thread-local `ENUM_LAYOUTS`); ABI expansion is `(tag: U64)` for
+    /// unit-only enums and `(tag: U64, payload: <payload_ty>)` for
+    /// payload-bearing enums.
+    Enum(DefaultSymbol),
 }
 
 /// Signature of an eligible function in JIT-friendly form.
@@ -1116,6 +1122,16 @@ pub(crate) fn resolve_param_ty(
         {
             Some(ParamTy::Struct(*s))
         }
+        // Phase JE-2d: enum-typed parameters / returns. The
+        // `enum_layouts` map only contains JIT-eligible enums
+        // (non-generic, uniform / no payload), so any hit is safe
+        // to expand at the boundary.
+        TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
+            Some(ParamTy::Enum(*s))
+        }
+        TypeDecl::Enum(s, args) if args.is_empty() && enum_layout_for(*s).is_some() => {
+            Some(ParamTy::Enum(*s))
+        }
         TypeDecl::Tuple(elements) => {
             // Tuples are scalar-only at the JIT layer; any non-scalar
             // element (a nested tuple `((a,b),c)` or a struct element
@@ -1183,9 +1199,35 @@ fn check_callable_body(
             ParamTy::Tuple(elements) => {
                 tuple_locals.insert(*n, elements.clone());
             }
+            // Phase JE-2d: enum-typed param registers as an enum
+            // local so the body's identifier lookups + match
+            // scrutinees route through `enum_locals`.
+            ParamTy::Enum(enum_name) => {
+                enum_locals.insert(*n, *enum_name);
+            }
         }
     }
 
+    // Phase JE-2d: enum-returning bodies use a separate validator
+    // mirroring struct/tuple — the body's tail expression must be
+    // an enum producer (identifier of an enum local, constructor,
+    // or a Match whose arms each produce the right enum).
+    if let ParamTy::Enum(enum_name) = &sig.ret {
+        return check_enum_returning_body(
+            program,
+            &code,
+            *enum_name,
+            &mut locals,
+            &mut struct_locals,
+            &mut tuple_locals,
+            &mut enum_locals,
+            substitutions,
+            struct_layouts,
+            callees,
+            ptr_read_hints,
+            reject_reason,
+        );
+    }
     // For struct-returning functions, the body's terminal expression
     // must produce a struct value (Identifier of a struct local, or a
     // StructLiteral). check_expr rejects struct literals in arbitrary
@@ -1383,6 +1425,238 @@ fn check_struct_returning_body(
 /// last expression must be either a TupleLiteral with the declared
 /// element types or an Identifier of a tuple local with the same shape.
 #[allow(clippy::too_many_arguments)]
+/// Phase JE-2d: enum-returning function body validator. The body's
+/// tail expression must be an enum producer that codegen's
+/// `gather_enum_values` can lower:
+///   - `Identifier` of a known enum local
+///   - `QualifiedIdentifier([enum, variant])` for unit constructors
+///   - `AssociatedFunctionCall(enum, variant, [arg])` for tuple constructors
+///   - `Match` whose every arm body is itself a valid enum producer
+///     for `enum_name` (recursive).
+#[allow(clippy::too_many_arguments)]
+fn check_enum_returning_body(
+    program: &Program,
+    body_stmt_ref: &StmtRef,
+    enum_name: DefaultSymbol,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    let body_stmt = match program.statement.get(body_stmt_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let body_expr_ref = match body_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "enum-returning function body must be an expression".to_string()
+            });
+            return false;
+        }
+    };
+    let body_expr = match program.expression.get(&body_expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    let block_stmts = match body_expr {
+        Expr::Block(stmts) => stmts,
+        _ => {
+            note(reject_reason, || {
+                "enum-returning function body must be a block".to_string()
+            });
+            return false;
+        }
+    };
+    if block_stmts.is_empty() {
+        note(reject_reason, || {
+            "enum-returning function body cannot be empty".to_string()
+        });
+        return false;
+    }
+    let (last_ref, leading) = block_stmts.split_last().unwrap();
+    for s in leading {
+        if !check_stmt(
+            program, s, locals, struct_locals, tuple_locals, enum_locals,
+            substitutions, struct_layouts, callees, ptr_read_hints,
+            reject_reason,
+        ) {
+            return false;
+        }
+    }
+    let last_stmt = match program.statement.get(last_ref) {
+        Some(s) => s,
+        None => return false,
+    };
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => {
+            note(reject_reason, || {
+                "enum-returning function body must end in an expression".to_string()
+            });
+            return false;
+        }
+    };
+    check_enum_producing_expr(
+        program, &result_expr_ref, enum_name, locals, struct_locals,
+        tuple_locals, enum_locals, substitutions, struct_layouts, callees,
+        ptr_read_hints, reject_reason,
+    )
+}
+
+/// Phase JE-2d: validate an enum-producing expression for a target
+/// enum type. Recurses through `Match` so each arm body is checked
+/// against the same target.
+#[allow(clippy::too_many_arguments)]
+fn check_enum_producing_expr(
+    program: &Program,
+    expr_ref: &ExprRef,
+    enum_name: DefaultSymbol,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> bool {
+    let expr = match program.expression.get(expr_ref) {
+        Some(e) => e,
+        None => return false,
+    };
+    match expr {
+        Expr::Identifier(name) => {
+            match enum_locals.get(&name).copied() {
+                Some(t) if t == enum_name => true,
+                _ => {
+                    note(reject_reason, || {
+                        "returned identifier is not an enum local of the declared type".to_string()
+                    });
+                    false
+                }
+            }
+        }
+        Expr::QualifiedIdentifier(path) if path.len() == 2 && path[0] == enum_name => {
+            // Unit constructor; layout existence already verified at
+            // signature-resolution time. variant_tag must succeed.
+            match enum_layout_for(enum_name).and_then(|l| l.variant_tag(path[1])) {
+                Some(_) => true,
+                None => {
+                    note(reject_reason, || {
+                        "returned constructor variant is not declared on this enum".to_string()
+                    });
+                    false
+                }
+            }
+        }
+        Expr::AssociatedFunctionCall(callee_enum, variant, args) if callee_enum == enum_name => {
+            // Tuple constructor — validate the payload arg.
+            let layout = match enum_layout_for(enum_name) {
+                Some(l) => l,
+                None => return false,
+            };
+            let idx = match layout.variants.iter().position(|n| *n == variant) {
+                Some(i) => i,
+                None => {
+                    note(reject_reason, || {
+                        "returned constructor variant is not declared on this enum".to_string()
+                    });
+                    return false;
+                }
+            };
+            if !layout.variant_has_payload[idx] {
+                note(reject_reason, || {
+                    "returned unit variant constructed with `(...)`".to_string()
+                });
+                return false;
+            }
+            let payload_ty = match layout.payload_ty {
+                Some(t) => t,
+                None => return false,
+            };
+            if args.len() != 1 {
+                note(reject_reason, || {
+                    "tuple constructor must have one payload arg".to_string()
+                });
+                return false;
+            }
+            match check_expr(
+                program, &args[0], locals, struct_locals, tuple_locals,
+                enum_locals, substitutions, struct_layouts, callees,
+                ptr_read_hints, reject_reason,
+            ) {
+                Some(t) if t == payload_ty => true,
+                _ => {
+                    note(reject_reason, || {
+                        "tuple constructor payload type does not match declared".to_string()
+                    });
+                    false
+                }
+            }
+        }
+        Expr::Match(scrutinee, arms) => {
+            // Type-check the scrutinee + patterns, then recurse on
+            // each arm body against the same enum target.
+            let scrut_ty = match check_expr(
+                program, &scrutinee, locals, struct_locals, tuple_locals,
+                enum_locals, substitutions, struct_layouts, callees,
+                ptr_read_hints, reject_reason,
+            ) {
+                Some(t) => t,
+                None => return false,
+            };
+            for arm in &arms {
+                let payload_binding = match check_match_pattern(
+                    program, &arm.pattern, scrut_ty, reject_reason,
+                ) {
+                    Some(b) => b,
+                    None => return false,
+                };
+                if arm.guard.is_some() {
+                    note(reject_reason, || {
+                        "JIT match arm guards are not yet supported".to_string()
+                    });
+                    return false;
+                }
+                let prev_local = if let Some((name, ty)) = payload_binding {
+                    Some((name, locals.insert(name, ty)))
+                } else {
+                    None
+                };
+                let ok = check_enum_producing_expr(
+                    program, &arm.body, enum_name, locals, struct_locals,
+                    tuple_locals, enum_locals, substitutions, struct_layouts,
+                    callees, ptr_read_hints, reject_reason,
+                );
+                if let Some((name, prior)) = prev_local {
+                    match prior {
+                        Some(t) => { locals.insert(name, t); }
+                        None => { locals.remove(&name); }
+                    }
+                }
+                if !ok {
+                    return false;
+                }
+            }
+            true
+        }
+        _ => {
+            note(reject_reason, || {
+                "enum return expression must be an enum local, constructor, or match".to_string()
+            });
+            false
+        }
+    }
+}
+
 fn check_tuple_returning_body(
     program: &Program,
     body_stmt_ref: &StmtRef,
@@ -1805,6 +2079,55 @@ fn check_struct_returning_call(
     }
     let _ = args_ref; // suppress unused warning
     Some(ret_struct)
+}
+
+/// Phase JE-2d: detect an enum-returning call as a val/var rhs.
+/// Mirrors `check_struct_returning_call` / `check_tuple_returning_call`
+/// — recurse into `check_expr` so the call's args are validated and
+/// `callees` is populated, then return the enum-type-name when the
+/// call's return is `ParamTy::Enum`.
+#[allow(clippy::too_many_arguments)]
+fn check_enum_returning_call(
+    program: &Program,
+    value_ref: &ExprRef,
+    locals: &mut HashMap<DefaultSymbol, ScalarTy>,
+    struct_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    tuple_locals: &mut HashMap<DefaultSymbol, Vec<ScalarTy>>,
+    enum_locals: &mut HashMap<DefaultSymbol, DefaultSymbol>,
+    substitutions: &HashMap<DefaultSymbol, ScalarTy>,
+    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
+    callees: &mut Vec<MonoCall>,
+    ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
+    reject_reason: &mut Option<String>,
+) -> Option<DefaultSymbol> {
+    let expr = program.expression.get(value_ref)?;
+    let callee_name = match expr {
+        Expr::Call(n, _) => n,
+        _ => return None,
+    };
+    let callee = program
+        .function
+        .iter()
+        .find(|f| f.name == callee_name)
+        .cloned()?;
+    // Only proceed when callee returns a JIT-eligible enum.
+    let ret_enum = match &callee.return_type {
+        Some(td) => match td {
+            TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => *s,
+            TypeDecl::Enum(s, args) if args.is_empty() && enum_layout_for(*s).is_some() => *s,
+            _ => return None,
+        },
+        None => return None,
+    };
+    let saved_callees_len = callees.len();
+    let result = check_expr(
+        program, value_ref, locals, struct_locals, tuple_locals, enum_locals,
+        substitutions, struct_layouts, callees, ptr_read_hints, reject_reason,
+    );
+    if result.is_none() && callees.len() == saved_callees_len {
+        return None;
+    }
+    Some(ret_enum)
 }
 
 /// Phase JE-2b: detect an enum constructor RHS and validate the
@@ -2332,6 +2655,19 @@ fn check_stmt(
                     enum_locals.insert(name, enum_name);
                     return true;
                 }
+            }
+            // Phase JE-2d: enum-returning call as val/var rhs.
+            // Mirrors `check_struct_returning_call` /
+            // `check_tuple_returning_call` — runs the call's
+            // arg-validation through check_expr (which records
+            // callees) and registers the enum local.
+            if let Some(enum_name) = check_enum_returning_call(
+                program, &value, locals, struct_locals, tuple_locals,
+                enum_locals, substitutions, struct_layouts, callees,
+                ptr_read_hints, reject_reason,
+            ) {
+                enum_locals.insert(name, enum_name);
+                return true;
             }
             let declared_hint = type_decl.as_ref().and_then(ScalarTy::from_type_decl);
             // If both the annotation and the RHS are PtrRead-shaped, record
@@ -2900,6 +3236,31 @@ pub(crate) fn check_expr(
             }
         }
         Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
+            // Phase JE-2b: tuple-variant enum constructor in expression
+            // position (`Status::Ok(x + x)` as a match arm body). When
+            // the qualifier names a JIT-eligible enum and the variant
+            // exists, validate the payload type and report the value
+            // as `ScalarTy::U64` (its tag, the simple scalar lens at
+            // the eligibility layer). Codegen routes the actual
+            // (tag, payload) lowering through `gather_enum_values` /
+            // `lower_into_enum_return`.
+            if let Some(layout) = enum_layout_for(struct_name) {
+                if let Some(idx) = layout.variants.iter().position(|n| *n == function_name) {
+                    if layout.variant_has_payload[idx] {
+                        let payload_ty = layout.payload_ty?;
+                        if args.len() == 1 {
+                            let arg_ty = check_expr(
+                                program, &args[0], locals, struct_locals, tuple_locals,
+                                enum_locals, substitutions, struct_layouts, callees,
+                                ptr_read_hints, reject_reason,
+                            )?;
+                            if arg_ty == payload_ty {
+                                return Some(ScalarTy::U64);
+                            }
+                        }
+                    }
+                }
+            }
             // Module-qualified call (`math::add(args)`): when the
             // qualifier doesn't refer to a struct / enum but the
             // function name lives in the (post-import) flat function
@@ -3714,6 +4075,13 @@ pub(crate) fn check_expr(
                             });
                             None
                         }
+                        Some(ParamTy::Enum(_)) => {
+                            note(reject_reason, || {
+                                "enum-returning method must be the rhs of a val/var"
+                                    .to_string()
+                            });
+                            None
+                        }
                         None => None,
                     }
                 }
@@ -3950,6 +4318,43 @@ fn check_plain_call(
     let mut callee_param_tys: Vec<ParamTy> = Vec::with_capacity(arg_list.len());
     for (a, (_, param_td)) in arg_list.iter().zip(callee.parameter.iter()) {
         let arg_expr = program.expression.get(a)?;
+        // Phase JE-2d: enum-typed argument matching. Either the
+        // arg is a direct identifier of an enum local, or it's a
+        // unit / tuple constructor for the matching enum (the same
+        // shapes the boundary expansion supports).
+        if let Some(ParamTy::Enum(want_enum)) = resolve_param_ty(param_td, substitutions, struct_layouts) {
+            // Identifier of an enum local.
+            if let Expr::Identifier(id) = arg_expr {
+                if let Some(local_enum) = enum_locals.get(&id).copied() {
+                    if local_enum != want_enum {
+                        note(reject_reason, || {
+                            "enum argument's type does not match callee parameter".to_string()
+                        });
+                        return None;
+                    }
+                    callee_param_tys.push(ParamTy::Enum(local_enum));
+                    scalar_arg_tys.push(ScalarTy::Unit);
+                    continue;
+                }
+            }
+            // Inline unit / tuple constructor — reuse the
+            // val/var rhs helper to validate the variant + payload.
+            if check_enum_constructor_rhs(
+                program, a, locals, struct_locals, tuple_locals, enum_locals,
+                substitutions, struct_layouts, callees, ptr_read_hints,
+                reject_reason,
+            ).is_some()
+            {
+                callee_param_tys.push(ParamTy::Enum(want_enum));
+                scalar_arg_tys.push(ScalarTy::Unit);
+                continue;
+            }
+            note(reject_reason, || {
+                "enum argument must be a local identifier or a constructor for the matching enum"
+                    .to_string()
+            });
+            return None;
+        }
         if let Expr::Identifier(id) = arg_expr {
             if let Some(struct_name) = struct_locals.get(&id).copied() {
                 match param_td {

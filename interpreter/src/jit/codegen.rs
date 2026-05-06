@@ -74,6 +74,19 @@ pub fn make_signature<M: Module>(
                     ));
                 }
             }
+            // Phase JE-2d: enum parameter expands to (tag: I64) for
+            // unit-only enums and (tag: I64, payload: <payload_ty>)
+            // when the layout has a payload.
+            ParamTy::Enum(enum_name) => {
+                let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
+                    .expect("enum layout missing for declared param");
+                s.params.push(AbiParam::new(types::I64));
+                if let Some(payload_ty) = layout.payload_ty {
+                    s.params.push(AbiParam::new(
+                        ir_type(payload_ty).expect("enum payload type must be representable"),
+                    ));
+                }
+            }
         }
     }
     match &sig.ret {
@@ -98,6 +111,17 @@ pub fn make_signature<M: Module>(
             for el in elements {
                 s.returns.push(AbiParam::new(
                     ir_type(*el).expect("tuple return element cannot be Unit"),
+                ));
+            }
+        }
+        ParamTy::Enum(enum_name) => {
+            // Phase JE-2d: enum return = (tag) or (tag, payload).
+            let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
+                .expect("enum layout missing for declared return");
+            s.returns.push(AbiParam::new(types::I64));
+            if let Some(payload_ty) = layout.payload_ty {
+                s.returns.push(AbiParam::new(
+                    ir_type(payload_ty).expect("enum payload type must be representable"),
                 ));
             }
         }
@@ -196,6 +220,31 @@ pub fn translate_function<M: Module>(
                 tuple_locals.insert(*name, element_vars);
                 tuple_local_types.insert(*name, elements.clone());
             }
+            // Phase JE-2d: enum-typed parameter. The cranelift
+            // signature reserves 1-2 slots: `tag: U64` always, plus
+            // `payload: <payload_ty>` when the layout has any
+            // payload variant. The pair lands in `enum_locals` so
+            // the body can use it via the same machinery as
+            // try_gen_enum_local.
+            ParamTy::Enum(enum_name) => {
+                let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
+                    .ok_or_else(|| "enum param has no layout".to_string())?;
+                let tag_var = builder.declare_var(types::I64);
+                builder.def_var(tag_var, block_params[block_param_idx]);
+                block_param_idx += 1;
+                let payload = if let Some(payload_ty) = layout.payload_ty {
+                    let pty = ir_type(payload_ty)
+                        .expect("enum payload type must be representable");
+                    let pvar = builder.declare_var(pty);
+                    builder.def_var(pvar, block_params[block_param_idx]);
+                    block_param_idx += 1;
+                    Some((pvar, payload_ty))
+                } else {
+                    None
+                };
+                enum_locals.insert(*name, EnumLocal { tag: tag_var, payload });
+                enum_local_types.insert(*name, *enum_name);
+            }
         }
     }
 
@@ -241,6 +290,8 @@ pub fn translate_function<M: Module>(
         emit_struct_return(&mut state, &body_expr, *struct_name)?;
     } else if let ParamTy::Tuple(elements) = &sig.ret {
         emit_tuple_return(&mut state, &body_expr, elements)?;
+    } else if let ParamTy::Enum(enum_name) = &sig.ret {
+        emit_enum_return(&mut state, &body_expr, *enum_name)?;
     } else {
         let body_value = state.gen_expr(&body_expr)?;
         if !state.terminated {
@@ -254,7 +305,7 @@ pub fn translate_function<M: Module>(
                     })?;
                     state.builder.ins().return_(&[v]);
                 }
-                ParamTy::Struct(_) | ParamTy::Tuple(_) => unreachable!(),
+                ParamTy::Struct(_) | ParamTy::Tuple(_) | ParamTy::Enum(_) => unreachable!(),
             }
             state.terminated = true;
         }
@@ -354,6 +405,204 @@ fn emit_tuple_return(
         state.terminated = true;
     }
     Ok(())
+}
+
+/// Phase JE-2d: enum return analog. The body's tail expression must
+/// either be an `Identifier` of a known enum local, a unit / tuple
+/// constructor for the matching enum, or a `Match` whose arms each
+/// produce a valid enum value (recursively). We dispatch through
+/// `lower_into_enum_return`, which emits the return at each
+/// terminating leaf so multi-arm matches naturally split.
+fn emit_enum_return(
+    state: &mut State,
+    body_expr: &ExprRef,
+    enum_name: DefaultSymbol,
+) -> Result<(), String> {
+    let body = state
+        .program
+        .expression
+        .get(body_expr)
+        .ok_or_else(|| "missing function body expression".to_string())?;
+    let block_stmts = match body {
+        Expr::Block(stmts) => stmts,
+        _ => return Err("enum-returning function body must be a block".into()),
+    };
+    if block_stmts.is_empty() {
+        return Err("enum-returning function body is empty".into());
+    }
+    let (last, leading) = block_stmts.split_last().unwrap();
+    if !leading.is_empty() {
+        let _ = state.gen_block(leading)?;
+        if state.terminated {
+            return Ok(());
+        }
+    }
+    let last_stmt = state
+        .program
+        .statement
+        .get(last)
+        .ok_or_else(|| "missing last stmt of enum-returning body".to_string())?;
+    let result_expr_ref = match last_stmt {
+        Stmt::Expression(e) => e,
+        _ => return Err("last stmt of enum-returning body must be an expression".into()),
+    };
+    lower_into_enum_return(state, &result_expr_ref, enum_name)
+}
+
+/// Lower an enum-producing expression at a function-return tail.
+/// Direct shapes (identifier / constructor) emit a single
+/// `return_(...)`; Match recurses per-arm so each arm's body
+/// terminates with its own return.
+fn lower_into_enum_return(
+    state: &mut State,
+    expr_ref: &ExprRef,
+    enum_name: DefaultSymbol,
+) -> Result<(), String> {
+    let expr = state
+        .program
+        .expression
+        .get(expr_ref)
+        .ok_or_else(|| "missing enum-producing expression".to_string())?;
+    if let Expr::Match(scrutinee, arms) = expr {
+        let scrut_v = state
+            .gen_expr(&scrutinee)?
+            .ok_or_else(|| "match scrutinee produced no value".to_string())?;
+        let scrut_enum_local = match state.program.expression.get(&scrutinee) {
+            Some(Expr::Identifier(sym)) => state.enum_locals.get(&sym).cloned(),
+            _ => None,
+        };
+        for arm in &arms {
+            let arm_blk = state.builder.create_block();
+            let next_blk = state.builder.create_block();
+            let mut payload_binding: Option<(DefaultSymbol, Option<Variable>, Option<ScalarTy>)> = None;
+            match &arm.pattern {
+                Pattern::Wildcard => {
+                    state.jump(arm_blk);
+                }
+                Pattern::Literal(lit_ref) => {
+                    let lit_v = state
+                        .gen_expr(lit_ref)?
+                        .ok_or_else(|| "match literal produced no value".to_string())?;
+                    let cmp = state.builder.ins().icmp(IntCC::Equal, scrut_v, lit_v);
+                    state.brif(cmp, arm_blk, next_blk);
+                }
+                Pattern::EnumVariant(enum_sym, variant_sym, sub_pats) => {
+                    let layout = super::eligibility::enum_layout_for_codegen(*enum_sym)
+                        .ok_or_else(|| "match variant: enum layout missing".to_string())?;
+                    let tag = layout
+                        .variant_tag(*variant_sym)
+                        .ok_or_else(|| "match variant: variant tag missing".to_string())?;
+                    let tag_v = state.builder.ins().iconst(types::I64, tag as i64);
+                    let cmp = state.builder.ins().icmp(IntCC::Equal, scrut_v, tag_v);
+                    state.brif(cmp, arm_blk, next_blk);
+                    if let [Pattern::Name(payload_name)] = sub_pats.as_slice() {
+                        if let Some(local) = scrut_enum_local.as_ref() {
+                            if let Some((pvar, payload_ty)) = local.payload {
+                                let prior_var = state.local_vars.insert(*payload_name, pvar);
+                                let prior_ty = state.local_types.insert(*payload_name, payload_ty);
+                                payload_binding = Some((*payload_name, prior_var, prior_ty));
+                            }
+                        }
+                    }
+                }
+                _ => return Err("unsupported match pattern in JIT codegen".to_string()),
+            }
+            state.switch_to(arm_blk);
+            lower_into_enum_return(state, &arm.body, enum_name)?;
+            if let Some((name, prior_var, prior_ty)) = payload_binding {
+                match prior_var {
+                    Some(v) => { state.local_vars.insert(name, v); }
+                    None => { state.local_vars.remove(&name); }
+                }
+                match prior_ty {
+                    Some(t) => { state.local_types.insert(name, t); }
+                    None => { state.local_types.remove(&name); }
+                }
+            }
+            state.switch_to(next_blk);
+        }
+        // Trap if no arm matched.
+        state.builder.ins().trap(TrapCode::user(1).expect("non-zero trap"));
+        state.terminated = true;
+        return Ok(());
+    }
+    let values = gather_enum_values(state, expr_ref, enum_name)?;
+    if !state.terminated {
+        state.builder.ins().return_(&values);
+        state.terminated = true;
+    }
+    Ok(())
+}
+
+/// Phase JE-2d: gather `(tag, payload?)` Values for a single
+/// enum-producing expression. Mirrors `gather_tuple_values` —
+/// supported shapes are identifier of an enum local, unit
+/// constructor (`Color::Red`), and tuple constructor
+/// (`Status::Ok(payload)`).
+fn gather_enum_values(
+    state: &mut State,
+    expr_ref: &ExprRef,
+    enum_name: DefaultSymbol,
+) -> Result<Vec<Value>, String> {
+    let layout = super::eligibility::enum_layout_for_codegen(enum_name)
+        .ok_or_else(|| "enum return: layout missing in JIT".to_string())?;
+    let expr = state
+        .program
+        .expression
+        .get(expr_ref)
+        .ok_or_else(|| "missing enum-producing expression".to_string())?;
+    match expr {
+        Expr::Identifier(name) => {
+            let local = state
+                .enum_locals
+                .get(&name)
+                .cloned()
+                .ok_or_else(|| "identifier is not a known enum local".to_string())?;
+            let mut out = vec![state.builder.use_var(local.tag)];
+            if layout.payload_ty.is_some() {
+                let (pvar, _) = local.payload.ok_or_else(|| {
+                    "enum return: layout has payload but local doesn't".to_string()
+                })?;
+                out.push(state.builder.use_var(pvar));
+            }
+            Ok(out)
+        }
+        Expr::QualifiedIdentifier(path) if path.len() == 2 => {
+            let tag = layout
+                .variant_tag(path[1])
+                .ok_or_else(|| "enum return: unknown unit variant".to_string())?;
+            let mut out = vec![state.builder.ins().iconst(types::I64, tag as i64)];
+            if let Some(payload_ty) = layout.payload_ty {
+                let zero = match payload_ty {
+                    ScalarTy::F64 => state.builder.ins().f64const(0.0),
+                    ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
+                        state.builder.ins().iconst(types::I8, 0)
+                    }
+                    ScalarTy::I16 | ScalarTy::U16 => state.builder.ins().iconst(types::I16, 0),
+                    ScalarTy::I32 | ScalarTy::U32 => state.builder.ins().iconst(types::I32, 0),
+                    _ => state.builder.ins().iconst(types::I64, 0),
+                };
+                out.push(zero);
+            }
+            Ok(out)
+        }
+        Expr::AssociatedFunctionCall(_, variant, args) => {
+            let tag = layout
+                .variant_tag(variant)
+                .ok_or_else(|| "enum return: unknown tuple variant".to_string())?;
+            if args.len() != 1 {
+                return Err("enum return: tuple constructor must have one arg".into());
+            }
+            let payload_v = state
+                .gen_expr(&args[0])?
+                .ok_or_else(|| "enum return: tuple payload produced no value".to_string())?;
+            Ok(vec![
+                state.builder.ins().iconst(types::I64, tag as i64),
+                payload_v,
+            ])
+        }
+        _ => Err("enum return: unsupported tail expression shape".into()),
+    }
 }
 
 /// Pull the element Values out of a tuple-producing expression, in the
@@ -2106,6 +2355,77 @@ impl<'a, 'b> State<'a, 'b> {
                         }
                     }
                 }
+                // Phase JE-2d: enum argument expands to (tag, payload?)
+                // values, mirroring the boundary signature. Identifier
+                // of an enum local pulls the existing Variables; a
+                // unit / tuple constructor materialises a fresh pair.
+                ParamTy::Enum(enum_name) => {
+                    let layout = super::eligibility::enum_layout_for_codegen(*enum_name)
+                        .ok_or_else(|| "enum arg has no layout".to_string())?;
+                    let arg_expr = self
+                        .program
+                        .expression
+                        .get(a)
+                        .ok_or_else(|| "missing enum arg expr".to_string())?;
+                    match arg_expr {
+                        Expr::Identifier(s) => {
+                            let local = self
+                                .enum_locals
+                                .get(&s)
+                                .cloned()
+                                .ok_or_else(|| "enum argument unknown".to_string())?;
+                            arg_values.push(self.builder.use_var(local.tag));
+                            if layout.payload_ty.is_some() {
+                                let (pvar, _) = local.payload.ok_or_else(|| {
+                                    "enum arg layout / local payload mismatch".to_string()
+                                })?;
+                                arg_values.push(self.builder.use_var(pvar));
+                            }
+                        }
+                        Expr::QualifiedIdentifier(path) if path.len() == 2 => {
+                            let tag = layout
+                                .variant_tag(path[1])
+                                .ok_or_else(|| "enum arg: unknown unit variant".to_string())?;
+                            arg_values.push(self.builder.ins().iconst(types::I64, tag as i64));
+                            if let Some(payload_ty) = layout.payload_ty {
+                                let zero = match payload_ty {
+                                    ScalarTy::F64 => self.builder.ins().f64const(0.0),
+                                    ScalarTy::Bool | ScalarTy::I8 | ScalarTy::U8 => {
+                                        self.builder.ins().iconst(types::I8, 0)
+                                    }
+                                    ScalarTy::I16 | ScalarTy::U16 => {
+                                        self.builder.ins().iconst(types::I16, 0)
+                                    }
+                                    ScalarTy::I32 | ScalarTy::U32 => {
+                                        self.builder.ins().iconst(types::I32, 0)
+                                    }
+                                    _ => self.builder.ins().iconst(types::I64, 0),
+                                };
+                                arg_values.push(zero);
+                            }
+                        }
+                        Expr::AssociatedFunctionCall(_, variant, args) => {
+                            let tag = layout
+                                .variant_tag(variant)
+                                .ok_or_else(|| "enum arg: unknown tuple variant".to_string())?;
+                            if args.len() != 1 {
+                                return Err(
+                                    "enum arg: tuple constructor must have one arg".into(),
+                                );
+                            }
+                            let payload_v = self.gen_expr(&args[0])?.ok_or_else(|| {
+                                "enum arg: tuple payload produced no value".to_string()
+                            })?;
+                            arg_values.push(self.builder.ins().iconst(types::I64, tag as i64));
+                            arg_values.push(payload_v);
+                        }
+                        _ => {
+                            return Err(
+                                "enum argument must be a local identifier or constructor".into(),
+                            )
+                        }
+                    }
+                }
             }
         }
         Ok(arg_values)
@@ -2320,6 +2640,55 @@ impl<'a, 'b> State<'a, 'b> {
                     .copied()
                     .ok_or_else(|| "enum local missing type".to_string())?;
                 self.enum_locals.insert(name, local);
+                self.enum_local_types.insert(name, enum_name);
+                Ok(true)
+            }
+            // Phase JE-2d: enum-returning call. Mirrors the struct /
+            // tuple variants of `try_gen_*_local` — emit the call,
+            // capture (tag, payload?) results into fresh Variables,
+            // register the enum local. Routed through call_targets +
+            // gather_call_args so the arg expansion shares the
+            // boundary helper above.
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
+                let target_key = match self.call_targets.get(value_ref) {
+                    Some(k) => k.clone(),
+                    None => return Ok(false),
+                };
+                let target_sig = match self.func_signatures.get(&target_key) {
+                    Some(s) => s.clone(),
+                    None => return Ok(false),
+                };
+                let enum_name = match target_sig.ret {
+                    ParamTy::Enum(s) => s,
+                    _ => return Ok(false),
+                };
+                let layout = super::eligibility::enum_layout_for_codegen(enum_name)
+                    .ok_or_else(|| "enum return has no layout in JIT".to_string())?;
+                let arg_values = self.gather_call_args(value_ref, &target_sig)?;
+                let func_ref = *self
+                    .func_refs
+                    .get(&target_key)
+                    .ok_or_else(|| "unresolved function reference in JIT".to_string())?;
+                let call = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call).to_vec();
+                let expected = 1 + if layout.payload_ty.is_some() { 1 } else { 0 };
+                if results.len() != expected {
+                    return Err(
+                        "enum-returning call produced wrong number of results".into(),
+                    );
+                }
+                let tag_var = self.builder.declare_var(types::I64);
+                self.builder.def_var(tag_var, results[0]);
+                let payload = if let Some(payload_ty) = layout.payload_ty {
+                    let pty = ir_type(payload_ty)
+                        .expect("enum payload type must be representable");
+                    let pvar = self.builder.declare_var(pty);
+                    self.builder.def_var(pvar, results[1]);
+                    Some((pvar, payload_ty))
+                } else {
+                    None
+                };
+                self.enum_locals.insert(name, EnumLocal { tag: tag_var, payload });
                 self.enum_local_types.insert(name, enum_name);
                 Ok(true)
             }

@@ -241,6 +241,35 @@ fn jit_tuple_enum_je2_compile() {
     assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
 }
 
+#[test]
+fn jit_enum_boundary_je2d_compile() {
+    // Phase JE-2d: enum-typed function param/return expand to
+    // (tag, payload) cranelift values across boundaries.
+    // double_status takes and returns Status; unwrap_or takes
+    // Status and returns i64. Both interpreter and JIT must
+    // produce exit 42.
+    assert_match("example/jit_enum_boundary_je2d.t");
+    let r = run("example/jit_enum_boundary_je2d.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_enum_boundary_je2d_actually_compiles_all() {
+    // The verbose log must mention every function being JIT-compiled
+    // (`double_status`, `unwrap_or`, `main`) — confirming the enum
+    // boundary expansion works for both arg and return positions.
+    let r = run("example/jit_enum_boundary_je2d.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:")
+            && r.stderr.contains("double_status")
+            && r.stderr.contains("unwrap_or"),
+        "expected JE-2d to compile both helpers; stderr: {}",
+        r.stderr
+    );
+}
+
 #[cfg(feature = "jit")]
 #[test]
 fn jit_tuple_enum_je2_actually_compiles_main() {

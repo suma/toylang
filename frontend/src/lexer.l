@@ -151,30 +151,38 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "%"         return Ok(token!(self, Kind::IMod));
 
 
--?[0-9]+"."[0-9]+"f64"  {
+-?[0-9][0-9_]*"."[0-9][0-9_]*"f64"  {
+                        // Numeric literal separators (`1_000_000.5_f64`):
+                        // `_` is allowed between digits as a visual
+                        // grouping aid. The first character must still
+                        // be a digit so the regex never starts with
+                        // `_` (which would conflict with identifier
+                        // parsing). Strip every `_` before passing to
+                        // `str::parse` — the underlying parser doesn't
+                        // know about separators.
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<f64>() {
                             Ok(value) => return Ok(token!(self, Kind::Float64(value))),
                             Err(_) => return Err(Error::Unmatch),
                         }
                     }
 
--?[0-9]+"f64"       {
+-?[0-9][0-9_]*"f64"       {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<f64>() {
                             Ok(value) => return Ok(token!(self, Kind::Float64(value))),
                             Err(_) => return Err(Error::Unmatch),
                         }
                     }
 
--?[0-9]+"i64"       {
+-?[0-9][0-9_]*"i64"       {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<i64>() {
                             Ok(value) => return Ok(token!(self, Kind::Int64(value))),
                             Err(_) => {
@@ -184,10 +192,10 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
-[0-9]+"u64"         {
+[0-9][0-9_]*"u64"         {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<u64>() {
                             Ok(value) => return Ok(token!(self, Kind::UInt64(value))),
                             Err(_) => {
@@ -197,67 +205,73 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
--?[0-9]+"i32"       {
+-?[0-9][0-9_]*"i32"       {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<i32>() {
                             Ok(value) => return Ok(token!(self, Kind::Int32(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
-[0-9]+"u32"         {
+[0-9][0-9_]*"u32"         {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<u32>() {
                             Ok(value) => return Ok(token!(self, Kind::UInt32(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
--?[0-9]+"i16"       {
+-?[0-9][0-9_]*"i16"       {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<i16>() {
                             Ok(value) => return Ok(token!(self, Kind::Int16(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
-[0-9]+"u16"         {
+[0-9][0-9_]*"u16"         {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<u16>() {
                             Ok(value) => return Ok(token!(self, Kind::UInt16(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
--?[0-9]+"i8"        {
+-?[0-9][0-9_]*"i8"        {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 2));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<i8>() {
                             Ok(value) => return Ok(token!(self, Kind::Int8(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
-[0-9]+"u8"          {
+[0-9][0-9_]*"u8"          {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 2));
-                        let s = drain.collect::<String>();
+                        let s: String = drain.collect::<String>().replace("_", "");
                         match s.parse::<u8>() {
                             Ok(value) => return Ok(token!(self, Kind::UInt8(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
--?0[xX][0-9a-fA-F]+"i64"  {
+-?0[xX][0-9a-fA-F][0-9a-fA-F_]*"i64"  {
+                        // Hex literals also accept `_` separators
+                        // (`0xFF_FF_FF_FFi64`). Prefix `0x` / `-0x`
+                        // is mandatory (anchors the regex); the
+                        // first hex digit must come before any `_`
+                        // for the same first-char-not-_ reason as
+                        // decimal literals above.
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
@@ -266,6 +280,8 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         } else {
                             (false, &s[2..]) // Skip "0x" or "0X"
                         };
+                        let hex_str = hex_str.replace("_", "");
+                        let hex_str = hex_str.as_str();
                         match i64::from_str_radix(hex_str, 16) {
                             Ok(value) => {
                                 let final_value = if is_negative { -value } else { value };
@@ -277,12 +293,12 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
-0[xX][0-9a-fA-F]+"u64"  {
+0[xX][0-9a-fA-F][0-9a-fA-F_]*"u64"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
-                        let hex_str = &s[2..]; // Skip "0x" or "0X"
-                        match u64::from_str_radix(hex_str, 16) {
+                        let hex_str = s[2..].replace("_", ""); // Skip "0x" or "0X"
+                        match u64::from_str_radix(&hex_str, 16) {
                             Ok(value) => return Ok(token!(self, Kind::UInt64(value))),
                             Err(_) => {
                                 return Ok(token!(self, Kind::Integer(self.yytext())))
@@ -290,49 +306,50 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
-0[xX][0-9a-fA-F]+"u32"  {
+0[xX][0-9a-fA-F][0-9a-fA-F_]*"u32"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
-                        let hex_str = &s[2..];
-                        match u32::from_str_radix(hex_str, 16) {
+                        let hex_str = s[2..].replace("_", "");
+                        match u32::from_str_radix(&hex_str, 16) {
                             Ok(value) => return Ok(token!(self, Kind::UInt32(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
-0[xX][0-9a-fA-F]+"u16"  {
+0[xX][0-9a-fA-F][0-9a-fA-F_]*"u16"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
-                        let hex_str = &s[2..];
-                        match u16::from_str_radix(hex_str, 16) {
+                        let hex_str = s[2..].replace("_", "");
+                        match u16::from_str_radix(&hex_str, 16) {
                             Ok(value) => return Ok(token!(self, Kind::UInt16(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
-0[xX][0-9a-fA-F]+"u8"   {
+0[xX][0-9a-fA-F][0-9a-fA-F_]*"u8"   {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 2));
                         let s = drain.collect::<String>();
-                        let hex_str = &s[2..];
-                        match u8::from_str_radix(hex_str, 16) {
+                        let hex_str = s[2..].replace("_", "");
+                        match u8::from_str_radix(&hex_str, 16) {
                             Ok(value) => return Ok(token!(self, Kind::UInt8(value))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
--?0[xX][0-9a-fA-F]+"i32"  {
+-?0[xX][0-9a-fA-F][0-9a-fA-F_]*"i32"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
-                        let (is_negative, hex_str) = if s.starts_with("-") {
+                        let (is_negative, hex_part) = if s.starts_with("-") {
                             (true, &s[3..])
                         } else {
                             (false, &s[2..])
                         };
-                        match i32::from_str_radix(hex_str, 16) {
+                        let hex_str = hex_part.replace("_", "");
+                        match i32::from_str_radix(&hex_str, 16) {
                             Ok(value) => {
                                 let final_value = if is_negative { -value } else { value };
                                 return Ok(token!(self, Kind::Int32(final_value)))
@@ -341,16 +358,17 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
--?0[xX][0-9a-fA-F]+"i16"  {
+-?0[xX][0-9a-fA-F][0-9a-fA-F_]*"i16"  {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 3));
                         let s = drain.collect::<String>();
-                        let (is_negative, hex_str) = if s.starts_with("-") {
+                        let (is_negative, hex_part) = if s.starts_with("-") {
                             (true, &s[3..])
                         } else {
                             (false, &s[2..])
                         };
-                        match i16::from_str_radix(hex_str, 16) {
+                        let hex_str = hex_part.replace("_", "");
+                        match i16::from_str_radix(&hex_str, 16) {
                             Ok(value) => {
                                 let final_value = if is_negative { -value } else { value };
                                 return Ok(token!(self, Kind::Int16(final_value)))
@@ -359,16 +377,17 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
--?0[xX][0-9a-fA-F]+"i8"   {
+-?0[xX][0-9a-fA-F][0-9a-fA-F_]*"i8"   {
                         let mut text = self.yytext();
                         let drain = text.drain(0..(text.len() - 2));
                         let s = drain.collect::<String>();
-                        let (is_negative, hex_str) = if s.starts_with("-") {
+                        let (is_negative, hex_part) = if s.starts_with("-") {
                             (true, &s[3..])
                         } else {
                             (false, &s[2..])
                         };
-                        match i8::from_str_radix(hex_str, 16) {
+                        let hex_str = hex_part.replace("_", "");
+                        match i8::from_str_radix(&hex_str, 16) {
                             Ok(value) => {
                                 let final_value = if is_negative { -value } else { value };
                                 return Ok(token!(self, Kind::Int8(final_value)))
@@ -377,19 +396,21 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                         }
                     }
 
-0[xX][0-9a-fA-F]+   {
+0[xX][0-9a-fA-F][0-9a-fA-F_]*   {
                         let text = self.yytext();
-                        let hex_str = &text[2..]; // Skip "0x" or "0X"
+                        let hex_str = text[2..].replace("_", ""); // Skip "0x" or "0X"
                         // Validate that the hex string parses; either way we hand
-                        // the raw text to the parser/type checker as `Integer` so
-                        // it can apply an explicit suffix or context-driven type.
-                        match u64::from_str_radix(hex_str, 16) {
+                        // the raw text (separators included) to the parser /
+                        // type checker as `Integer` so downstream context can
+                        // apply an explicit suffix. The parser strips `_` again
+                        // before computing the value.
+                        match u64::from_str_radix(&hex_str, 16) {
                             Ok(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                             Err(_) => return Ok(token!(self, Kind::Integer(self.yytext()))),
                         }
                     }
 
--?[0-9]+            return Ok(token!(self, Kind::Integer(self.yytext())));
+-?[0-9][0-9_]*            return Ok(token!(self, Kind::Integer(self.yytext())));
 
 \"[^"]*\"              {
                         // String literal with escape support in the

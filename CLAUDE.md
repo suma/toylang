@@ -114,6 +114,7 @@ fn main() -> u64 {
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）
   - Without suffix: defaults to `u64`, or automatically determined by type inference
   - Examples: `val x = 42` → `u64` type, `val y: i64 = 42` → automatically converted to `i64`
+  - **数値リテラル区切り**: `_` を桁の間に挿入できる (`1_000_000u64`、`0xDEAD_BEEFu64`、`3_141.592_653f64`)。最初の文字は数字必須 (`_42` は識別子)。lexer のみで処理、AST / IR / runtime は separator を見ない。
   - **f64 リテラルは必ず `f64` サフィックスを付ける**: タプルアクセス `outer.0.1` のような構文との曖昧性を避けるため、`1.5` 単体は許可しない。整数 → f64 への暗黙変換も無いので、`1.0f64` または `1f64` と書く（必要なら `as f64` キャスト）
 - Control flow: `if/else`, `for i in start to end`, `while`, `break`, `continue`, `return`
 - **`else if` 構文は未サポート**: `if expr {} else if expr {}` は使用不可。代わりに `elif` キーワードを使用すること

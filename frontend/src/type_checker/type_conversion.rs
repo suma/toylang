@@ -180,20 +180,28 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Get the expression from the pool
         if let Some(expr) = self.core.expr_pool.get(expr_ref) {
             if let Expr::Number(value) = expr {
-                let num_str = self.core.string_interner.resolve(value)
-                    .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?;
-                
+                let num_str_owned = self.core.string_interner.resolve(value)
+                    .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?
+                    .to_string();
+                // Numeric literal separators: `_` between digits is
+                // legal in source (`1_000_000`) but `str::parse` and
+                // `from_str_radix` don't accept it. Strip every `_`
+                // before invoking either.
+                let cleaned = num_str_owned.replace("_", "");
+                let num_str = cleaned.as_str();
+                let num_orig = num_str_owned.as_str();
+
                 // Create the new expression based on target type
                 let new_expr = match target_type {
                     TypeDecl::UInt64 => {
                         let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
                             // Parse hexadecimal literal
                             u64::from_str_radix(&num_str[2..], 16)
-                                .map_err(|_| TypeCheckError::conversion_error(num_str, "UInt64"))?
+                                .map_err(|_| TypeCheckError::conversion_error(num_orig, "UInt64"))?
                         } else {
                             // Parse decimal literal
                             num_str.parse::<u64>()
-                                .map_err(|_| TypeCheckError::conversion_error(num_str, "UInt64"))?
+                                .map_err(|_| TypeCheckError::conversion_error(num_orig, "UInt64"))?
                         };
                         Expr::UInt64(val)
                     },
@@ -201,11 +209,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let val = if num_str.starts_with("0x") || num_str.starts_with("0X") {
                             // Parse hexadecimal literal
                             i64::from_str_radix(&num_str[2..], 16)
-                                .map_err(|_| TypeCheckError::conversion_error(num_str, "Int64"))?
+                                .map_err(|_| TypeCheckError::conversion_error(num_orig, "Int64"))?
                         } else {
                             // Parse decimal literal
                             num_str.parse::<i64>()
-                                .map_err(|_| TypeCheckError::conversion_error(num_str, "Int64"))?
+                                .map_err(|_| TypeCheckError::conversion_error(num_orig, "Int64"))?
                         };
                         Expr::Int64(val)
                     },

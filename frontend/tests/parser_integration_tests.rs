@@ -98,6 +98,38 @@ mod lexer_tests {
     }
 
     #[test]
+    fn test_numeric_literal_separators() {
+        // `_` between digits acts as a visual grouping aid.
+        // First character must still be a digit (`_42` would
+        // be an identifier). Strip happens during value
+        // conversion; the parser sees the original text in
+        // diagnostics but the runtime sees the cleaned number.
+        let test_cases = vec![
+            "1_000u64",
+            "1_000_000u64",
+            "42_u64",
+            "1_2_3i64",
+            "-1_000i64",
+            "100_000u32",
+            "0xFF_FFu64",
+            "0xDEAD_BEEFu64",
+            "3_141.592_653f64",
+            "1_000_000",       // suffix-less Integer token
+        ];
+        for input in test_cases {
+            let mut parser = ParserWithInterner::new(input);
+            let result = parser.parse_stmt();
+            assert!(
+                result.is_ok() && parser.errors.is_empty(),
+                "failed to parse separator literal `{}`: {:?} errors={:?}",
+                input,
+                result,
+                parser.errors,
+            );
+        }
+    }
+
+    #[test]
     fn test_string_literals() {
         let input = "\"hello world\"";
         let mut parser = ParserWithInterner::new(input);

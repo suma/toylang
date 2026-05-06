@@ -538,6 +538,28 @@ the parser stores the value at its native width, and the type
 checker / interpreter / JIT / AOT compiler all carry the width
 through end-to-end.
 
+#### Numeric separators
+
+`_` is allowed between digits as a visual grouping aid for both
+decimal and hexadecimal literals. The first character must be a
+digit (so `_42` parses as an identifier, not a number); after
+that any number of `_` may appear between digits or before the
+type suffix.
+
+```
+1_000_000u64        # one million
+1_2_3_4i64          # 1234 (separators may be irregular)
+42_u64              # underscore before the suffix is allowed
+0xDEAD_BEEFu64      # hex literal with separators
+0xFF_FFu32          # 65535
+3_141.592_653_f64   # floats too — both integer and fraction parts
+1_000_000           # suffix-less; type resolved by context
+```
+
+The separators carry no semantic weight — `1_000` and `1000`
+produce the same value at the same type. Lexer-level only; the
+AST / IR / runtime never see the underscore.
+
 ### Float literals
 
 Float literals always require the `f64` suffix to disambiguate them from

@@ -3472,3 +3472,46 @@ fn closure_phase6c_all_narrow_widths_captured_round_trip() {
     assert_consistent(src, "closure_phase6c_all_narrow_widths");
 }
 
+// Numeric literal separators (`1_000_000`, `0xDEAD_BEEFu64`,
+// `3.141_592_f64`, …). The lexer accepts `_` between digits as
+// a visual grouping aid; value conversion strips them before
+// parsing. Backends never see the separator, so the same value
+// reaches interpreter / JIT / AOT regardless of how the source
+// was formatted.
+#[test]
+fn numeric_literal_separators_decimal_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: u64 = 1_000_000u64
+            val b: u64 = 1_2_3_4u64
+            val c: u64 = 42_u64
+            a + b + c
+        }
+    "#;
+    assert_consistent(src, "numeric_literal_separators_decimal");
+}
+
+#[test]
+fn numeric_literal_separators_hex_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: u64 = 0xDEAD_BEEFu64
+            val b: u32 = 0xFF_FFu32
+            a + (b as u64)
+        }
+    "#;
+    assert_consistent(src, "numeric_literal_separators_hex");
+}
+
+#[test]
+fn numeric_literal_separators_signed_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val a: i64 = 1_234_567i64
+            val b: i64 = -1_000_000i64
+            a + b
+        }
+    "#;
+    assert_consistent(src, "numeric_literal_separators_signed");
+}
+

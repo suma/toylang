@@ -1,4 +1,4 @@
-use crate::token::{Token, Kind};
+use crate::token::{Token, Kind, StringPart};
 
 macro_rules! token {
     ($self: ident, $kind: expr) => {
@@ -413,25 +413,96 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 -?[0-9][0-9_]*            return Ok(token!(self, Kind::Integer(self.yytext())));
 
 \"[^"]*\"              {
-                        // String literal with escape support in the
-                        // handler (the regex itself stays simple so the
-                        // closing `"` always wins; `\"` inside a string
-                        // is therefore not yet supported and would
-                        // terminate the literal early — same constraint
-                        // as before this rule grew escapes). The 6
-                        // escapes `\n` / `\t` / `\r` / `\0` / `\\` /
-                        // `\'` are converted in the byte-by-byte pass
-                        // below. Unknown escapes bail out via
-                        // `Error::Unmatch`. Symmetric with the `'\\.'`
-                        // char literal handler so `"hello\n"` and
-                        // `'\n'` agree on the byte produced.
+                        // String literal with escape support + string
+                        // interpolation. The regex itself stays simple
+                        // (closing `"` always wins; `\"` would terminate
+                        // early — same constraint as before). The 6
+                        // single-char escapes `\n` / `\t` / `\r` / `\0`
+                        // / `\\` / `\'`, plus `\xHH` and `\u{HEX}`, are
+                        // converted in the byte-by-byte pass below.
+                        // Unknown escapes bail out via `Error::Unmatch`.
+                        //
+                        // Interpolation: `{...}` inside the literal
+                        // marks an expression segment. `{{` / `}}` are
+                        // literal `{` / `}` (Rust convention). Brace
+                        // depth is tracked inside expression segments
+                        // so struct literals (`Point { x: 1, y: 2 }`)
+                        // participate correctly. If at least one
+                        // expression segment is found, the token
+                        // becomes `Kind::InterpolatedString(parts)`;
+                        // otherwise the original `Kind::String(out)`.
                         let text = self.yytext();
                         let inner = &text[1..text.len() - 1];
                         let mut out = String::with_capacity(inner.len());
+                        let mut parts: Vec<StringPart> = Vec::new();
+                        let mut has_interpolation = false;
                         let bytes = inner.as_bytes();
                         let mut i = 0;
                         while i < bytes.len() {
                             let b = bytes[i];
+                            // Interpolation: `{` opens an expression
+                            // segment unless doubled (`{{` -> literal
+                            // `{`). Must be checked before escape
+                            // processing because `\` is not the escape
+                            // marker for braces here.
+                            if b == b'{' {
+                                if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
+                                    out.push('{');
+                                    i += 2;
+                                    continue;
+                                }
+                                // Flush the literal segment built so
+                                // far (may be empty if interpolation
+                                // appears at the very start).
+                                parts.push(StringPart::Literal(std::mem::take(&mut out)));
+                                // Find matching `}` honoring brace
+                                // depth. Nested string literals inside
+                                // the expression are not supported (the
+                                // outer `"` would have terminated the
+                                // regex match anyway).
+                                let expr_start = i + 1;
+                                let mut depth: usize = 1;
+                                let mut j = expr_start;
+                                while j < bytes.len() {
+                                    match bytes[j] {
+                                        b'{' => depth += 1,
+                                        b'}' => {
+                                            depth -= 1;
+                                            if depth == 0 {
+                                                break;
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                    j += 1;
+                                }
+                                if depth != 0 {
+                                    return Err(Error::Unmatch);
+                                }
+                                let expr_text = match std::str::from_utf8(&bytes[expr_start..j]) {
+                                    Ok(s) => s.to_string(),
+                                    Err(_) => return Err(Error::Unmatch),
+                                };
+                                parts.push(StringPart::Expr(expr_text));
+                                has_interpolation = true;
+                                i = j + 1;
+                                continue;
+                            }
+                            // `}}` -> literal `}`. A bare `}` (not
+                            // doubled) is allowed as a literal since
+                            // we are clearly outside any `{...}`
+                            // segment at this point — the `{` arm
+                            // consumes through to its matching `}`.
+                            if b == b'}' {
+                                if i + 1 < bytes.len() && bytes[i + 1] == b'}' {
+                                    out.push('}');
+                                    i += 2;
+                                } else {
+                                    out.push('}');
+                                    i += 1;
+                                }
+                                continue;
+                            }
                             if b == b'\\' {
                                 if i + 1 >= bytes.len() {
                                     return Err(Error::Unmatch);
@@ -485,6 +556,11 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
                                 out.push(b as char);
                                 i += 1;
                             }
+                        }
+                        if has_interpolation {
+                            // Push final trailing literal (may be empty).
+                            parts.push(StringPart::Literal(out));
+                            return Ok(token!(self, Kind::InterpolatedString(parts)));
                         }
                         return Ok(token!(self, Kind::String(out)));
                     }

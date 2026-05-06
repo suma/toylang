@@ -1272,6 +1272,15 @@ impl<'a, 'b> State<'a, 'b> {
                         };
                         Ok(Some(self.builder.ins().iconst(types::I64, bytes)))
                     }
+                    BuiltinFunction::ToString => {
+                        // Eligibility filter rejects this builtin so JIT
+                        // codegen should never reach here. If it does,
+                        // surface a clear internal error rather than
+                        // emitting nonsense.
+                        Err("internal error: __builtin_to_string reached JIT codegen \
+                             (eligibility should have rejected)"
+                            .to_string())
+                    }
                     BuiltinFunction::PtrRead => {
                         let expected = self
                             .ptr_read_hints

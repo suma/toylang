@@ -727,6 +727,24 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::UInt64(size)).into()))
             }
 
+            BuiltinFunction::ToString => {
+                if args.len() != 1 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "__builtin_to_string takes 1 argument".to_string(),
+                        expected: 1,
+                        found: args.len(),
+                    });
+                }
+                // Same display formatting as `print` / `println`.
+                // Powers the string-interpolation desugaring at the
+                // parser level (`"hello {x}"` → `"hello ".concat(
+                // __builtin_to_string(x))`).
+                let value = self.evaluate(&args[0])?;
+                let value = try_value!(Ok(value));
+                let rendered = value.borrow().to_display_string(&self.string_interner);
+                Ok(EvaluationResult::Value(Object::String(rendered).into()))
+            }
+
             BuiltinFunction::Panic => {
                 if args.len() != 1 {
                     return Err(InterpreterError::FunctionParameterMismatch {

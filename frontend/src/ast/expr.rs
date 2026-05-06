@@ -289,6 +289,16 @@ pub enum BuiltinFunction {
     // Type introspection
     SizeOf,  // __builtin_sizeof(value) -> u64 — size in bytes of the argument's type
 
+    // Display formatting. `__builtin_to_string(value) -> str`
+    // produces the same display string `print` / `println` would
+    // emit for `value` (via `Object::to_display_string` in the
+    // interpreter). Primary user is the parser-level desugaring of
+    // string interpolation: `"hello {x}"` lowers to
+    // `"hello ".concat(__builtin_to_string(x))`. Any value is
+    // accepted; type-check side reports `str` regardless of the
+    // argument's type.
+    ToString,
+
     // Integer math (user-facing; same shape as `print`/`println`/`panic`/
     // `assert` — everyday operations rather than low-level intrinsics).
     // `abs(x)` accepts `i64` and returns `i64` (matches Rust's
@@ -353,6 +363,9 @@ pub struct BuiltinFunctionSymbols {
     // Type introspection
     pub sizeof: DefaultSymbol,
 
+    // Display formatting (powers string interpolation).
+    pub to_string: DefaultSymbol,
+
     // Integer math (user-facing names).
     pub abs: DefaultSymbol,
     pub min: DefaultSymbol,
@@ -394,6 +407,7 @@ impl BuiltinFunctionSymbols {
             panic: interner.get_or_intern("panic"),
             assert: interner.get_or_intern("assert"),
             sizeof: interner.get_or_intern("__builtin_sizeof"),
+            to_string: interner.get_or_intern("__builtin_to_string"),
             // Integer math intrinsics. The user-facing entry points
             // are `math::abs` / `math::min_*` / `math::max_*` in
             // `interpreter/modules/math/math.t`; the wrappers forward
@@ -430,6 +444,7 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.panic { Some(BuiltinFunction::Panic) }
         else if symbol == self.assert { Some(BuiltinFunction::Assert) }
         else if symbol == self.sizeof { Some(BuiltinFunction::SizeOf) }
+        else if symbol == self.to_string { Some(BuiltinFunction::ToString) }
         else if symbol == self.abs { Some(BuiltinFunction::Abs) }
         else if symbol == self.min { Some(BuiltinFunction::Min) }
         else if symbol == self.max { Some(BuiltinFunction::Max) }

@@ -645,6 +645,57 @@ string for now.
 
 Multi-line string literals are not yet supported.
 
+#### String interpolation
+
+A string literal that contains one or more `{expr}` segments is
+an **interpolated** string. The lexer emits
+`Kind::InterpolatedString(parts)` and the parser desugars it at
+parse time into a chain of `.concat()` calls, lifting each
+`{expr}` through `__builtin_to_string(...)`:
+
+```rust
+val name = "world"
+val n: i64 = 42i64
+
+"hello {name}"
+# ⇒ "hello ".concat(__builtin_to_string(name))
+
+"n={n}, n*2={n * 2i64}"
+# ⇒ "n=".concat(__builtin_to_string(n))
+#       .concat(", n*2=")
+#       .concat(__builtin_to_string(n * 2i64))
+```
+
+`__builtin_to_string(value)` produces the same display string
+`print` / `println` would emit (powered by
+`Object::to_display_string` in the interpreter), so every
+primitive (`i64` / `u64` / `f64` / `bool` / `str` / narrow ints)
+and user-defined struct / enum that has a stable display form
+participates.
+
+Empty literal segments are filtered, so `"{a}{b}"` lowers
+directly to `__builtin_to_string(a).concat(__builtin_to_string(b))`
+without an empty-string head.
+
+Escapes:
+
+- `{{` lexes to a literal `{`
+- `}}` lexes to a literal `}`
+- All other escape sequences (`\n` / `\xHH` / `\u{HEX}` …) work
+  inside literal segments unchanged
+
+Brace nesting inside `{expr}` is tracked so struct literals
+participate (`"point at {Point { x: 1, y: 2 }}"`). Nested string
+literals inside `{expr}` are not yet supported (the inner `"`
+terminates the outer regex).
+
+**Backend coverage**: interpreter runs the desugaring end-to-end.
+JIT silently falls back (no `str` value model yet — the eligibility
+check rejects `__builtin_to_string` with a precise reason). AOT
+rejects the desugared chain at lower time with a clear message;
+landing it in the AOT path needs heap-allocated str support
+(see todo.md `STR-INTERP-AOT`).
+
 ### Array, tuple, and dict literals
 
 ```rust

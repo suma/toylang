@@ -995,6 +995,17 @@ impl<'a> FunctionLower<'a> {
                 };
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
+            BuiltinFunction::ToString => {
+                // String interpolation desugaring uses
+                // `__builtin_to_string(value)`. AOT can't allocate
+                // owned heap strings yet, so reject cleanly with a
+                // pointer to the follow-up. Interpreter handles it
+                // via `Object::to_display_string`.
+                Err("compiler MVP does not yet support \
+                     `__builtin_to_string` (string interpolation \
+                     uses it; falls back to interpreter for now)"
+                    .to_string())
+            }
             BuiltinFunction::MemCopy => {
                 // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`
                 // — emit `InstKind::MemCopy` which codegen lowers

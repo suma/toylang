@@ -1,5 +1,5 @@
 use crate::ast::*;
-use crate::token::Kind;
+use crate::token::{Kind, StringPart};
 use super::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
 use string_interner::DefaultSymbol;
@@ -906,11 +906,125 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
 pub fn parse_primary(parser: &mut Parser) -> ParserResult<ExprRef> {
     // Add recursion protection
     parser.check_and_increment_recursion()?;
-    
+
     let result = parse_primary_impl(parser);
-    
+
     parser.decrement_recursion();
     result
+}
+
+/// Lower a `Kind::InterpolatedString(parts)` token into the
+/// equivalent `.concat()` chain at parse time. For
+/// `parts = [Lit("a"), Expr("x + 1"), Lit("b")]`, the synthesized
+/// token sequence is:
+///
+/// ```text
+/// "a" . concat ( __builtin_to_string ( x + 1 ) ) . concat ( "b" )
+/// ```
+///
+/// The expression text inside each `{...}` is re-tokenized with a
+/// fresh `Lexer` instance, then the whole synthetic stream is
+/// pushed into the parser's lookahead buffer (in reverse order so
+/// the first synthetic token lands at the current cursor). After
+/// the push, `parse_postfix` parses the chain end-to-end without
+/// any awareness of the original interpolation.
+///
+/// Empty literal segments (e.g. when `{x}` appears at the start or
+/// end of the string, or two `{...}` segments are adjacent) are
+/// skipped to keep the chain compact. The first non-empty segment
+/// becomes the chain's leftmost operand; if it happens to be an
+/// `Expr` part the chain starts directly with
+/// `__builtin_to_string(...)`.
+fn parse_interpolated_string(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let parts: Vec<StringPart> = match parser.peek() {
+        Some(Kind::InterpolatedString(p)) => p.clone(),
+        _ => return Err(ParserError::generic_error(
+            parser.current_source_location(),
+            "parse_interpolated_string called without InterpolatedString token".to_string(),
+        )),
+    };
+    parser.next(); // consume the interpolated string token
+
+    // Drop empty `Literal("")` segments so the chain stays compact.
+    // Adjacent `{a}{b}` produces a `Literal("")` between two Expr
+    // parts that's purely an artifact of the lexer.
+    let parts: Vec<StringPart> = parts
+        .into_iter()
+        .filter(|p| !matches!(p, StringPart::Literal(s) if s.is_empty()))
+        .collect();
+
+    if parts.is_empty() {
+        // Pathological: `""` after filter — shouldn't happen since
+        // the lexer wouldn't emit InterpolatedString without an
+        // Expr part, but be defensive and synthesize an empty str.
+        let location = parser.current_source_location();
+        let sym = parser.string_interner.get_or_intern("");
+        return Ok(parser.ast_builder.string_expr(sym, Some(location)));
+    }
+
+    let mut tokens: Vec<Kind> = Vec::new();
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            tokens.push(Kind::Dot);
+            tokens.push(Kind::Identifier("concat".to_string()));
+            tokens.push(Kind::ParenOpen);
+        }
+        match part {
+            StringPart::Literal(s) => {
+                tokens.push(Kind::String(s.clone()));
+            }
+            StringPart::Expr(expr_text) => {
+                tokens.push(Kind::Identifier("__builtin_to_string".to_string()));
+                tokens.push(Kind::ParenOpen);
+                // Re-tokenize the expression text inside `{...}`. The
+                // generated lexer signals end-of-input as
+                // `Err(Error::EOF)` rather than `Ok(Kind::EOF)`, so
+                // EOF is the loop's normal terminator. Any other Err
+                // (e.g. `Error::Unmatch`) is a real lex failure on
+                // the user-supplied expression text.
+                let mut sub_lex = crate::parser::core::lexer::Lexer::new(expr_text, 1);
+                loop {
+                    match sub_lex.yylex() {
+                        Ok(tok) => {
+                            // Skip synthetic NewLine tokens — the
+                            // outer parser's TokenProvider already
+                            // strips them, so the desugared chain
+                            // shouldn't see any.
+                            if matches!(tok.kind, Kind::NewLine | Kind::Comment(_)) {
+                                continue;
+                            }
+                            tokens.push(tok.kind);
+                        }
+                        Err(crate::parser::core::lexer::Error::EOF) => break,
+                        Err(e) => {
+                            return Err(ParserError::generic_error(
+                                parser.current_source_location(),
+                                format!(
+                                    "invalid expression in string interpolation `{}`: lex error {:?}",
+                                    expr_text, e
+                                ),
+                            ));
+                        }
+                    }
+                }
+                tokens.push(Kind::ParenClose);
+            }
+        }
+        if i > 0 {
+            tokens.push(Kind::ParenClose);
+        }
+    }
+
+    // Insert in reverse so the first synthetic token lands at the
+    // current cursor.
+    for tok in tokens.into_iter().rev() {
+        parser.insert_token(tok);
+    }
+
+    // Parse the synthesized chain. parse_postfix handles the
+    // leading literal + zero-or-more `.concat(...)` postfix steps
+    // without knowing they came from interpolation.
+    parse_postfix(parser)
 }
 
 fn parse_tuple_or_grouped_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
@@ -967,6 +1081,15 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         && matches!(parser.peek_n(1), Some(Kind::ParenOpen))
     {
         return parse_closure_expr(parser);
+    }
+    // String interpolation: `"hello {x}, sum={a + b}"` becomes a
+    // chain of `.concat()` calls with each `{...}` segment lifted
+    // through `__builtin_to_string(...)`. Parser-level desugaring,
+    // so the rest of the pipeline only sees ordinary string +
+    // method-call AST nodes. Detected here (in `parse_primary`)
+    // because the resulting chain is itself a primary-with-postfix.
+    if matches!(parser.peek(), Some(Kind::InterpolatedString(_))) {
+        return parse_interpolated_string(parser);
     }
     match parser.peek() {
         Some(Kind::ParenOpen) => {

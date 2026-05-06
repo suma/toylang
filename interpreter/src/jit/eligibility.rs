@@ -3877,6 +3877,19 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::U64)
                 }
+                BuiltinFunction::ToString => {
+                    // JIT has no `str` value model yet — produces an
+                    // owned `Object::String` at runtime. Skip cleanly
+                    // so the desugared string-interpolation chain
+                    // (`"...".concat(__builtin_to_string(x))`)
+                    // falls back to the interpreter.
+                    note(reject_reason, || {
+                        "__builtin_to_string is not supported in JIT \
+                         (string interpolation falls back to interpreter)"
+                            .to_string()
+                    });
+                    return None;
+                }
                 BuiltinFunction::PtrWrite => {
                     if args.len() != 3 {
                         return None;

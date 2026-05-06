@@ -4,6 +4,16 @@ pub struct Token {
     pub position: std::ops::Range<usize>,
 }
 
+/// One segment of a `Kind::InterpolatedString`. Literal segments
+/// hold verbatim text (escapes already processed); Expr segments
+/// hold the raw source text from inside `{...}` so the parser can
+/// re-tokenize them on demand.
+#[derive(Debug, PartialEq, Clone)]
+pub enum StringPart {
+    Literal(String),
+    Expr(String),
+}
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum Kind {
     If,
@@ -132,6 +142,14 @@ pub enum Kind {
     UInt16(u16),
     UInt32(u32),
     String(String),
+    /// String interpolation literal — `"hello {name}, sum={a + b}"`.
+    /// Each `StringPart::Literal(s)` is a verbatim segment (escapes
+    /// already processed); each `StringPart::Expr(s)` is the raw
+    /// source text inside `{...}` that the parser re-tokenizes and
+    /// parses as a sub-expression. `{{` / `}}` lex to literal `{` /
+    /// `}` (Rust convention). At least one Expr part is present
+    /// (otherwise the lexer emits a plain `String`).
+    InterpolatedString(Vec<StringPart>),
     Integer(String),
 
     Identifier(String),

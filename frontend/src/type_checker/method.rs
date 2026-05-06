@@ -143,27 +143,38 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
         Ok(())
     }
 
-    /// Process builtin method calls
+    /// Process builtin method calls. Each variant returns the
+    /// declared type of the method per `BuiltinMethod`'s docstring;
+    /// the receiver and args are still visited so any nested
+    /// type-check error inside them surfaces here.
     fn visit_builtin_method_call(&mut self, receiver: &ExprRef, method: &BuiltinMethod, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        // Simplified implementation for now
+        // Visit receiver and args for side effects — earlier type
+        // errors deeper in the expression tree must propagate even
+        // when the method's return type is fixed.
+        let _receiver_type = self.visit_expr(receiver)?;
+        for arg in args {
+            let _ = self.visit_expr(arg)?;
+        }
         match method {
-            BuiltinMethod::StrLen => Ok(TypeDecl::UInt64),
             BuiltinMethod::IsNull => Ok(TypeDecl::Bool),
-            // NOTE: numeric value-method arms (`I64Abs` / `F64Abs` /
-            // `F64Sqrt`) lived here before Step F. The prelude's
-            // extension-trait impls now cover the same surface, so
-            // call sites resolve through `visit_method_call_on_type`'s
-            // primitive-receiver path against the user-method
-            // registry instead.
-            // Add more builtin methods as needed
-            _ => {
-                // For other builtin methods, check receiver type and args
-                let _receiver_type = self.visit_expr(receiver)?;
-                let _arg_types: Result<Vec<_>, _> = args.iter().map(|arg| self.visit_expr(arg)).collect();
-
-                // Return appropriate type based on method
-                Ok(TypeDecl::Unit)
-            }
+            BuiltinMethod::StrLen => Ok(TypeDecl::UInt64),
+            // String methods that return a fresh string. Pre-fix
+            // these all fell through the `_ => Ok(Unit)` arm, so
+            // `val s = "a".concat("b")` infers Unit and any
+            // downstream str-typed use (return type, str field,
+            // typed val) reports a Type mismatch. The catch-all
+            // remained from when only `len` and `is_null` were
+            // wired up.
+            BuiltinMethod::StrConcat
+            | BuiltinMethod::StrSubstring
+            | BuiltinMethod::StrTrim
+            | BuiltinMethod::StrToUpper
+            | BuiltinMethod::StrToLower => Ok(TypeDecl::String),
+            BuiltinMethod::StrContains => Ok(TypeDecl::Bool),
+            BuiltinMethod::StrSplit => Ok(TypeDecl::Array(
+                vec![TypeDecl::String],
+                0,
+            )),
         }
     }
 

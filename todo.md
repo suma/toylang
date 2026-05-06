@@ -5,6 +5,7 @@
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
 ### 2026-05-06
+- **STR-INTERP Phase 1 (interpreter)** — `"hello {name}, sum={a + b}"` 形式の string interpolation。lexer で `{...}` を検出して `Kind::InterpolatedString(parts: Vec<StringPart>)` を発行、parser-level で `.concat() + __builtin_to_string()` chain に desugar (`Token::insert_token` で synthetic token を current position に push、parse_postfix で chain を parse)。`{{` / `}}` を literal `{` / `}` にエスケープ (Rust 規約)。任意型 (primitives + structs/enums) を補間可能。新規 `BuiltinFunction::ToString` builtin (`Object::to_display_string` 経由)。**副次 fix**: 既存の `visit_builtin_method_call` が `StrConcat` / `StrSubstring` / `StrTrim` / `StrToUpper` / `StrToLower` / `StrContains` / `StrSplit` で全て Unit を返していたバグ (catch-all `_ => Ok(Unit)` がカバーしていた) を修正、各 method の宣言通りの戻り型を返すように。JIT は `__builtin_to_string` を eligibility で skip (silent fallback)、AOT は lower で reject (cleanly with message)。詳細は `STR-INTERP-AOT` 参照。
 - **ITER-PROTOCOL Phase 1 (interpreter + JIT)** — `for x in EXPR { body }` を parser-level で `while + match Option::Some(x)/None` に desugar。EXPR の型が `fn next(&mut self) -> Option<T>` を持てば動作 (structural / duck-typed)。`trait Iterator<T>` 宣言は generic-trait 未対応のため providing 不可、`core/std/iter.t` は documentation-only。`evaluate()` に `Expr::Block` を追加 (match arm body が block の場合の runtime error も同時 fix)。Range-based for-loop (`0..N` / `0 to N`) は既存の `Stmt::For` 整数 fast path を維持。AOT 対応は follow-up (下記 ITER-PROTOCOL-AOT 参照)。
 
 ### 2026-05-05
@@ -49,6 +50,10 @@
 - **#184 Trait + impl** / **#170 top-level const** / **#169 言語リファレンス `docs/language.md` 新設**。
 
 ## 未実装 📋
+
+STR-INTERP-AOT. **string interpolation の AOT 対応** — interpreter / JIT で動作するが、AOT は `__builtin_to_string` を `compile error: compiler MVP does not yet support __builtin_to_string` で reject。lower で実装するには (1) heap-allocated str runtime support (現状 str は `.rodata` reference のみで動的生成に対応していない)、(2) `to_string` の動的 dispatch (引数の type-erased 型から format 関数を選択) が必要。優先度: 中 (interpreter で動くので blocker ではないが、AOT 経路で interpolation が使えないのは UX 上の制約)。同時に `BuiltinMethod::StrConcat` 系の AOT lowering 実装も必要 (現状 method dispatch では handler 未登録)。
+
+STR-INTERP-JIT. **string interpolation の JIT 対応** — 現状 silent fallback (str 値モデル未実装のため eligibility で reject)。JIT で str を value として扱うには `ScalarTy::Str` を導入し、heap-managed 文字列の生成 / 結合をサポートする必要がある。優先度: 低 (interpreter が動くため通常用途では問題なし、hot path で interpolation を使う場合のみ問題)。
 
 ITER-PROTOCOL-AOT. **iterator protocol の AOT compiler 対応** — `for x in EXPR { body }` の parser-level desugaring (`while + match Option::Some(x)/None`) は interpreter / JIT で動作するが、AOT compile すると `compile error: val/var rhs produced no value` で失敗。原因は desugar が emit する `var __iter_for_<n> = EXPR` (EXPR が Counter::new(...) のような struct-returning AssociatedFunctionCall) の lowering で、現状の AOT compound-returning method の expression position 制約に抵触している。`compile_to_jit_main_with_options` 経由の JIT は問題なく動作するため、AOT 側の compound binding 制約を緩めるか、parser で `{ var iter = EXPR; ... }` ではなく initializer を直接 callable に rewrite する形にすれば解決可能。優先度: 中 (interpreter / JIT で動くので blocker ではない)。関連: `CONCRETE-IMPL-Phase-2c` の compound-returning method 制約。
 

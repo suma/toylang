@@ -279,6 +279,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 arg_types: vec![TypeDecl::Unknown],
                 return_type: TypeDecl::UInt64,
             },
+            // `__builtin_to_string` formats any value as the
+            // `print` / `println` display string. Powers
+            // string-interpolation desugaring; the arg type is
+            // intentionally Unknown so all primitives and
+            // structured values are accepted.
+            BuiltinFunctionSignature {
+                func: BuiltinFunction::ToString,
+                arg_count: 1,
+                arg_types: vec![TypeDecl::Unknown],
+                return_type: TypeDecl::String,
+            },
             // Integer math (user-facing). Signatures use Unknown
             // because the concrete shape is `i64 -> i64` *or*
             // `u64 -> u64` (resp. `(T, T) -> T`); visit_builtin_call

@@ -56,6 +56,14 @@ impl<'a> FunctionLower<'a> {
         if let Some(id) = self.module.lookup_function(None, fn_name) {
             return Ok(id);
         }
+        // Closures Phase 5a: the bare-name miss falls through to
+        // the closure-binding map. `lift_closure_binding` registers
+        // `name -> FuncId` when it sees a `val name = fn(...)`
+        // literal, so a subsequent `name(args)` lands here as a
+        // regular direct `Call` to the lifted body.
+        if let Some(id) = self.closure_bindings.get(&fn_name).copied() {
+            return Ok(id);
+        }
         if let Some(template) = self.generic_funcs.get(&fn_name).cloned() {
             // Infer type-argument bindings by walking each parameter
             // declaration alongside the call's actual argument

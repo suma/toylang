@@ -52,6 +52,17 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(rhs_ref)
             .ok_or_else(|| "let rhs missing".to_string())?;
+        // Closures Phase 5a: `val name = fn(params) -> R { body }`
+        // lifts to a synthesized top-level function. The closure
+        // literal isn't materialised as a runtime value (Phase 5a
+        // doesn't model fn-pointer values yet); instead we register
+        // `name -> FuncId` in `closure_bindings` so a subsequent
+        // `name(args)` call resolves to a direct `Call`. Captures
+        // are rejected up-front because Phase 5a can't pass them
+        // into the lifted body — those land in Phase 6.
+        if let Expr::Closure { params, return_type, body } = rhs.clone() {
+            return self.lift_closure_binding(name, &params, &return_type, &body);
+        }
         // Tuple-literal RHS: allocate one local per element. Like
         // structs, tuples never flow through the IR's value graph;
         // the only way to consume one is via `t.N` element access on a

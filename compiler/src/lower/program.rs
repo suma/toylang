@@ -705,6 +705,12 @@ pub fn lower_program(
         .collect();
     let mut generic_instances: GenericInstances = HashMap::new();
     let mut pending_generic_work: Vec<PendingGenericInstance> = Vec::new();
+    // Closures Phase 5a: queue of closure bodies awaiting lowering.
+    // The lift step (`lower_let` of `Expr::Closure`) declares the
+    // synthetic top-level FuncId immediately so call sites resolve;
+    // the body is lowered after the main passes complete so we don't
+    // recurse into a fresh `FunctionLower` while another is mid-flight.
+    let mut pending_closure_work: Vec<super::PendingClosureBody> = Vec::new();
     for (idx, func) in non_generic {
         // Skip body lowering for `extern fn` declarations — there is
         // no body to lower. Phase 2c (compiler extern dispatch) will
@@ -741,6 +747,7 @@ pub fn lower_program(
             &generic_methods,
             &mut method_instances,
             &mut pending_method_work,
+            &mut pending_closure_work,
         )?;
         builder.lower_body(&func)?;
     }
@@ -795,6 +802,7 @@ pub fn lower_program(
             &generic_methods,
             &mut method_instances,
             &mut pending_method_work,
+            &mut pending_closure_work,
         )?;
         builder.lower_method_body(&method, target_sym)?;
     }
@@ -835,6 +843,7 @@ pub fn lower_program(
                 &generic_methods,
                 &mut method_instances,
                 &mut pending_method_work,
+                &mut pending_closure_work,
             )?;
             builder.lower_body(&template)?;
         }
@@ -884,6 +893,7 @@ pub fn lower_program(
                 &generic_methods,
                 &mut method_instances,
                 &mut pending_method_work,
+                &mut pending_closure_work,
             )?;
             // Install the per-monomorph subst so val/var
             // annotations inside the body that reference
@@ -895,6 +905,36 @@ pub fn lower_program(
         if !made_progress {
             break;
         }
+    }
+
+    // Closures Phase 5a: drain the closure-body queue. Each entry
+    // was synthesised when the parent function's `lower_let` saw
+    // an `Expr::Closure` rhs — the FuncId is already declared on
+    // the module, the body lowers here under its own
+    // `FunctionLower` instance. Looping in case a closure body
+    // declares another closure that pushes onto the same queue.
+    while let Some(work) = pending_closure_work.pop() {
+        let mut builder = FunctionLower::new(
+            &mut module,
+            work.func_id,
+            program,
+            interner,
+            &struct_defs,
+            &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            &const_values,
+            contract_msgs,
+            release,
+            &method_registry,
+            &method_func_ids,
+            &generic_methods,
+            &mut method_instances,
+            &mut pending_method_work,
+            &mut pending_closure_work,
+        )?;
+        builder.lower_closure_body(&work.parameter, &work.body)?;
     }
     Ok(module)
 }
@@ -933,6 +973,7 @@ impl<'a> FunctionLower<'a> {
         generic_methods: &'a GenericMethods,
         method_instances: &'a mut MethodInstances,
         pending_method_work: &'a mut Vec<PendingMethodInstance>,
+        pending_closure_work: &'a mut Vec<super::PendingClosureBody>,
     ) -> Result<Self, String> {
         Ok(Self {
             module,
@@ -967,6 +1008,8 @@ impl<'a> FunctionLower<'a> {
             active_subst: HashMap::new(),
             self_writeback_locals: None,
             pending_self_writeback_param: None,
+            closure_bindings: HashMap::new(),
+            pending_closure_work,
         })
     }
 

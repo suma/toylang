@@ -3057,3 +3057,56 @@ fn enum_str_payload_round_trip() {
     assert_consistent(src, "enum_str_payload_round_trip");
 }
 
+// Closures Phase 5a — non-capturing closure literal lifted to a
+// synthesized top-level function. The `val name = fn(...)` form
+// gets a fresh FuncId; subsequent `name(args)` direct-call sites
+// resolve through `closure_bindings` and emit a regular `Call`.
+// JIT and interpreter handle the same source through their own
+// closure paths (Phase 4 silent fallback for JIT, Phase 3
+// `Object::Closure` for interpreter); 3-way agreement pins the
+// shared semantics.
+#[test]
+fn closure_phase5_non_capturing_direct_call_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val add_two = fn(x: i64) -> i64 { x + 2i64 }
+            add_two(40i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5_non_capturing_direct_call");
+}
+
+#[test]
+fn closure_phase5_multi_param_direct_call_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val sum3 = fn(a: i64, b: i64, c: i64) -> i64 { a + b + c }
+            sum3(10i64, 20i64, 12i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase5_multi_param_direct_call");
+}
+
+#[test]
+fn closure_phase5_zero_arg_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val k = fn() -> u64 { 42u64 }
+            k()
+        }
+    "#;
+    assert_consistent(src, "closure_phase5_zero_arg");
+}
+
+#[test]
+fn closure_phase5_call_then_bind_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val mul = fn(x: i64, y: i64) -> i64 { x * y }
+            val r = mul(6i64, 7i64)
+            r
+        }
+    "#;
+    assert_consistent(src, "closure_phase5_call_then_bind");
+}
+

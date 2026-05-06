@@ -288,6 +288,166 @@ struct FunctionLower<'a> {
     /// snapshot is taken so subsequent (non-method) bodies in
     /// the same `FunctionLower` reuse cycle aren't affected.
     pending_self_writeback_param: Option<DefaultSymbol>,
+    /// Closures Phase 5a (AOT): mapping from a closure-binding
+    /// symbol (the `name` in `val name = fn(...)`) to the
+    /// synthesized top-level `FuncId` we lifted the closure into.
+    /// `resolve_call_target` consults this after the bare-name
+    /// function-table lookup so `name(args)` dispatches to the
+    /// lifted body. Per-`FunctionLower` because closure bindings
+    /// are local to the function in which they are declared
+    /// (cross-function passing of closure values is Phase 5b
+    /// and needs a true function-pointer value type).
+    closure_bindings: HashMap<DefaultSymbol, FuncId>,
+    /// Closures Phase 5a: queue of pending closure bodies whose
+    /// top-level function has been declared but not yet lowered.
+    /// Borrowed mutably so each `FunctionLower` instance pushes
+    /// to the same queue; the program-level driver drains it
+    /// after the main + generic + method passes complete.
+    pending_closure_work: &'a mut Vec<PendingClosureBody>,
+}
+
+/// Closures Phase 5a: queued closure body lowering job. The
+/// `FuncId` was declared at closure-literal lower time; the
+/// body `ExprRef` and the parameter list need to round-trip
+/// through the queue because the body lowers under its own
+/// `FunctionLower` instance (distinct from the outer function's).
+pub(super) struct PendingClosureBody {
+    pub(super) func_id: FuncId,
+    pub(super) parameter: frontend::ast::ParameterList,
+    pub(super) body: frontend::ast::ExprRef,
+}
+
+impl<'a> FunctionLower<'a> {
+    /// Closures Phase 5a: lift a `val name = fn(params) -> R { body }`
+    /// closure literal into a synthesized top-level function. The
+    /// function gets a unique mangled export name, the FuncId is
+    /// recorded in `closure_bindings`, and the body is queued for
+    /// lowering after the main passes complete. Captures are not
+    /// supported in Phase 5a (the lifted body has no way to
+    /// receive them); the loose check here is "if the body
+    /// references a name that doesn't resolve at lower time, the
+    /// body lowering will fail at that point" — which gives a
+    /// clear error message even without an explicit capture
+    /// scan.
+    pub(super) fn lift_closure_binding(
+        &mut self,
+        name: DefaultSymbol,
+        params: &frontend::ast::ParameterList,
+        return_type: &Option<frontend::type_decl::TypeDecl>,
+        body: &frontend::ast::ExprRef,
+    ) -> Result<Option<crate::ir::ValueId>, String> {
+        // Lower each closure parameter type to an IR `Type`. Phase 5a
+        // restricts to scalar params (no struct / tuple / enum / fn
+        // closures yet) — the existing `lower_scalar` helper handles
+        // every primitive shape.
+        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len());
+        for (pname, pty) in params {
+            let lowered = types::lower_scalar(pty).ok_or_else(|| {
+                format!(
+                    "compiler MVP: closure parameter `{}: {:?}` requires a primitive scalar type",
+                    self.interner.resolve(*pname).unwrap_or("?"),
+                    pty
+                )
+            })?;
+            ir_params.push(lowered);
+        }
+        let ir_ret = match return_type {
+            Some(t) => types::lower_scalar(t).ok_or_else(|| {
+                format!(
+                    "compiler MVP: closure return type `{:?}` requires a primitive scalar type",
+                    t
+                )
+            })?,
+            None => {
+                return Err(
+                    "compiler MVP: closure literal requires an explicit `-> ReturnType` annotation"
+                        .to_string(),
+                );
+            }
+        };
+        // Mangle the export name. The outer function's export name +
+        // the binding name + a per-function counter give a stable,
+        // collision-free symbol.
+        let outer_name = self.module.function(self.func_id).export_name.clone();
+        let bind_name = self.interner.resolve(name).unwrap_or("anon");
+        let counter = self.closure_bindings.len();
+        let export_name = format!("{outer_name}__closure_{bind_name}_{counter}");
+        let func_id = self
+            .module
+            .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
+        // Track the binding so a later `name(args)` call resolves
+        // through `resolve_call_target`'s closure path.
+        self.closure_bindings.insert(name, func_id);
+        self.pending_closure_work.push(PendingClosureBody {
+            func_id,
+            parameter: params.clone(),
+            body: *body,
+        });
+        Ok(None)
+    }
+
+    /// Closures Phase 5a: lower a queued closure body. Mirrors
+    /// the param-binding + body-eval + implicit-return shape of
+    /// `lower_body` but skips the contract / generic / writeback
+    /// machinery (closures don't carry any of that). The Module
+    /// already holds the FuncId with the right param / return
+    /// types from `lift_closure_binding`.
+    pub(super) fn lower_closure_body(
+        &mut self,
+        parameter: &frontend::ast::ParameterList,
+        body_expr_ref: &frontend::ast::ExprRef,
+    ) -> Result<(), String> {
+        let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
+        for (i, (name, _decl_ty)) in parameter.iter().enumerate() {
+            match param_types[i] {
+                scalar @ (Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str
+                    | Type::I8 | Type::U8 | Type::I16 | Type::U16
+                    | Type::I32 | Type::U32) => {
+                    let local = self.module.function_mut(self.func_id).add_local(scalar);
+                    self.bindings.insert(*name, bindings::Binding::Scalar { local, ty: scalar });
+                }
+                Type::Unit => {
+                    return Err(format!(
+                        "closure parameter `{}` cannot have type Unit",
+                        self.interner.resolve(*name).unwrap_or("?")
+                    ));
+                }
+                other => {
+                    return Err(format!(
+                        "compiler MVP: closure parameter `{}` requires a primitive scalar type, got {:?}",
+                        self.interner.resolve(*name).unwrap_or("?"),
+                        other
+                    ));
+                }
+            }
+        }
+        let entry = self.module.function_mut(self.func_id).add_block();
+        self.module.function_mut(self.func_id).entry = entry;
+        self.current_block = Some(entry);
+        let body_value = self.lower_expr(body_expr_ref)?;
+        if self.current_block.is_some() {
+            let ret_ty = self.module.function(self.func_id).return_type;
+            // The closure has no name in the function symbol table;
+            // fabricate a placeholder for diagnostic purposes.
+            let placeholder_name = self
+                .interner
+                .get("anon")
+                .unwrap_or_else(|| {
+                    // Fall back to any symbol — emit_implicit_return only uses it for
+                    // error formatting and closures shouldn't trigger those paths in
+                    // Phase 5a (scalar return only, no compound).
+                    parameter
+                        .first()
+                        .map(|(s, _)| *s)
+                        .unwrap_or_else(|| {
+                            use string_interner::Symbol;
+                            DefaultSymbol::try_from_usize(0).unwrap()
+                        })
+                });
+            self.emit_implicit_return(ret_ty, body_value, &placeholder_name)?;
+        }
+        Ok(())
+    }
 }
 
 impl<'a> FunctionLower<'a> {

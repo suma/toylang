@@ -731,6 +731,18 @@ impl<'a> FunctionLower<'a> {
                 self.with_scope_arena_drops.pop();
                 Ok(body_value)
             }
+            // Closures Phase 5a: a `Expr::Closure` literal in
+            // expression position (i.e. NOT as a `val`-binding rhs)
+            // would need a true function-pointer value type the
+            // compiler doesn't model yet. The `val name = fn(...)`
+            // form is intercepted in `lower_let::lift_closure_binding`
+            // before this dispatcher fires; everything else rejects
+            // here with an actionable hint.
+            Expr::Closure { .. } => Err(
+                "compiler Phase 5a only supports `val name = fn(...) -> R { body }` form for closures; \
+                 passing closure literals as arguments / returning them / storing them in fields is a future phase"
+                    .to_string(),
+            ),
             other => Err(format!(
                 "compiler MVP cannot lower expression yet: {:?}",
                 other

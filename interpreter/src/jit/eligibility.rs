@@ -489,14 +489,20 @@ pub struct EnumLayout {
     pub base_name: DefaultSymbol,
     /// Variant names in declaration order. Index = tag value.
     pub variants: Vec<DefaultSymbol>,
-    /// Phase JE-3: the payload's representational shape.
-    pub payload_repr: PayloadRepr,
-    /// Per-variant `true` iff the variant has a payload (always
-    /// false when `payload_repr == None`).
+    /// Phase JE-4: per-variant payload representation. `None` for
+    /// unit variants; `Some(repr)` for tuple variants (single
+    /// payload only — multi-payload tuple variants are still out
+    /// of scope). Each repr may be `Concrete(scalar)` (non-generic
+    /// payload) or `Generic(param)` (uses one of the enum's
+    /// `generic_params`). For multi-generic enums (`Result<T, E>`)
+    /// different variants may reference different generic params.
+    pub variant_payloads: Vec<Option<PayloadRepr>>,
+    /// Per-variant `true` iff the variant has a payload (mirror of
+    /// `variant_payloads[i].is_some()`).
     pub variant_has_payload: Vec<bool>,
-    /// Phase JE-3: generic params of the enum. Empty for non-generic
-    /// enums (the JE-2a shape). For generic enums (`Option<T>`),
-    /// holds [T] so call sites can validate / infer the monomorph.
+    /// Phase JE-3/JE-4: generic params of the enum. Empty for
+    /// non-generic enums (the JE-2a shape). For `Option<T>` holds
+    /// `[T]`; for `Result<T, E>` holds `[T, E]`.
     pub generic_params: Vec<DefaultSymbol>,
 }
 
@@ -558,19 +564,47 @@ impl EnumLayout {
     /// unit-only (just the tag); `2` when any variant carries a
     /// payload (tag + payload).
     pub fn slot_count(&self) -> usize {
-        1 + if self.payload_repr.is_some() { 1 } else { 0 }
+        if self.variant_payloads.iter().any(|v| v.is_some()) {
+            2
+        } else {
+            1
+        }
     }
 
-    /// Phase JE-3 transitional: `payload_ty` accessor for callers
-    /// that don't yet thread a substitution map (non-generic enums
-    /// only). Returns `Some(scalar)` for `Concrete`, `None` for
-    /// unit-only or generic. Callers that need to handle generics
-    /// should consult `payload_repr` directly with their own subst.
+    /// Phase JE-3/JE-4: convenience for non-generic enums whose
+    /// payload representation is uniformly `Concrete`. Returns the
+    /// shared scalar when all tuple variants agree; `None` for
+    /// unit-only enums or for any generic / mismatched layout.
+    /// For generic enums (`Option<T>` / `Result<T, E>`) callers
+    /// must instead use `resolve_uniform_payload(subst)` with a
+    /// per-monomorph substitution map.
     pub fn payload_ty(&self) -> Option<ScalarTy> {
-        match self.payload_repr {
-            PayloadRepr::Concrete(t) => Some(t),
-            _ => None,
+        self.resolve_uniform_payload(&HashMap::new())
+    }
+
+    /// Phase JE-4: resolve every tuple variant's payload via the
+    /// monomorph substitution map and return the shared scalar
+    /// type when all variants agree. Returns `None` if there is
+    /// no tuple variant, if any generic param is unbound, or if
+    /// two variants' payloads resolve to different scalars (the
+    /// JIT's single-payload-slot representation requires a uniform
+    /// width). Used by both eligibility (validation) and codegen
+    /// (per-local payload_ty resolution).
+    pub fn resolve_uniform_payload(
+        &self,
+        subst: &HashMap<DefaultSymbol, ScalarTy>,
+    ) -> Option<ScalarTy> {
+        let mut found: Option<ScalarTy> = None;
+        for vp in &self.variant_payloads {
+            if let Some(repr) = vp {
+                let t = repr.resolve(subst)?;
+                match found {
+                    Some(existing) if existing != t => return None,
+                    _ => found = Some(t),
+                }
+            }
         }
+        found
     }
 }
 
@@ -924,51 +958,58 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
             ..
         }) = program.statement.get(&StmtRef(i as u32))
         {
-            // Phase JE-3: we now collect enums with a single
-            // generic param (e.g. `Option<T>`) where every tuple
-            // variant's single payload is exactly `T`. Multi-param
-            // generics (`Result<T, E>`) and mixed concrete/generic
-            // payloads stay out of scope until we add a fuller
-            // substitution model.
-            let single_generic_param: Option<DefaultSymbol> = if generic_params.len() == 1 {
-                Some(generic_params[0])
-            } else if generic_params.is_empty() {
-                None
-            } else {
-                continue;
-            };
-            // Phase JE-2a: accept enums where every tuple variant has
-            // exactly one payload of the same scalar type. Unit
-            // variants are still allowed alongside tuple variants
-            // (the tag-only branch of an otherwise-payload enum).
-            // Multi-payload variants and mixed payload types stay
-            // rejected — they require the bigger boundary refactor.
+            // Phase JE-4: accept enums with any number of generic
+            // params (`Option<T>` / `Result<T, E>` etc.). Each
+            // variant's payload may reference any one of those
+            // params, or be a concrete scalar. The JIT's
+            // single-payload-slot representation still requires
+            // that every variant's payload resolves to the same
+            // scalar at instantiation time — checked via
+            // `resolve_uniform_payload`. Mixed-width payloads at
+            // a given monomorph fail to resolve and skip JIT.
+            let collected_generic_params: Vec<DefaultSymbol> =
+                generic_params.iter().copied().collect();
+            // Phase JE-2a: every tuple variant has exactly one
+            // payload (multi-payload variants are still out of
+            // scope). Unit variants are allowed alongside tuple
+            // variants.
             let mut variant_names: Vec<DefaultSymbol> = Vec::with_capacity(variants.len());
             let mut variant_has_payload: Vec<bool> = Vec::with_capacity(variants.len());
-            // Tracks the consensus payload representation — every
-            // tuple variant must agree on it (Concrete vs Generic).
-            let mut payload_repr: Option<PayloadRepr> = None;
+            let mut variant_payloads: Vec<Option<PayloadRepr>> =
+                Vec::with_capacity(variants.len());
             let mut accept = true;
             for v in &variants {
                 variant_names.push(v.name);
                 match v.payload_types.as_slice() {
-                    [] => variant_has_payload.push(false),
+                    [] => {
+                        variant_has_payload.push(false);
+                        variant_payloads.push(None);
+                    }
                     [single] => {
-                        // Phase JE-3: detect "payload IS the generic
-                        // param `T`" by matching on
-                        // `TypeDecl::Generic(sym)` (which is what the
-                        // type checker emits for generic-param refs).
-                        // For non-generic enums or when the single
-                        // payload is concrete, fall back to
+                        // Phase JE-3/JE-4: detect "payload IS one of
+                        // the enum's generic params" by matching on
+                        // `TypeDecl::Generic(sym)` (which the type
+                        // checker emits for generic-param refs) or
+                        // `TypeDecl::Identifier(sym)` for the bare
+                        // form. Concrete payloads fall back to
                         // ScalarTy::from_type_decl.
-                        let proposed: PayloadRepr = match (single, single_generic_param) {
-                            (TypeDecl::Generic(sym), Some(p)) if *sym == p => {
-                                PayloadRepr::Generic(p)
+                        let payload_is_generic = match single {
+                            TypeDecl::Generic(sym)
+                                if collected_generic_params.contains(sym) =>
+                            {
+                                Some(*sym)
                             }
-                            (TypeDecl::Identifier(sym), Some(p)) if *sym == p => {
-                                PayloadRepr::Generic(p)
+                            TypeDecl::Identifier(sym)
+                                if collected_generic_params.contains(sym) =>
+                            {
+                                Some(*sym)
                             }
-                            _ => match ScalarTy::from_type_decl(single) {
+                            _ => None,
+                        };
+                        let proposed: PayloadRepr = if let Some(p) = payload_is_generic {
+                            PayloadRepr::Generic(p)
+                        } else {
+                            match ScalarTy::from_type_decl(single) {
                                 Some(s) if !matches!(
                                     s,
                                     ScalarTy::Unit | ScalarTy::Allocator | ScalarTy::Never
@@ -977,16 +1018,10 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
                                     accept = false;
                                     break;
                                 }
-                            },
-                        };
-                        match &payload_repr {
-                            Some(existing) if existing != &proposed => {
-                                accept = false;
-                                break;
                             }
-                            _ => payload_repr = Some(proposed),
-                        }
+                        };
                         variant_has_payload.push(true);
+                        variant_payloads.push(Some(proposed));
                     }
                     _ => {
                         // Multi-payload tuple variant — JE-2a scope
@@ -997,17 +1032,12 @@ fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout>
                 }
             }
             if accept {
-                let final_payload = payload_repr.unwrap_or(PayloadRepr::None);
-                let collected_generic_params: Vec<DefaultSymbol> = match single_generic_param {
-                    Some(p) => vec![p],
-                    None => Vec::new(),
-                };
                 out.insert(
                     name,
                     EnumLayout {
                         base_name: name,
                         variants: variant_names,
-                        payload_repr: final_payload,
+                        variant_payloads,
                         variant_has_payload,
                         generic_params: collected_generic_params,
                     },
@@ -2282,16 +2312,20 @@ fn check_enum_constructor_rhs(
                 // path can produce the right error.
                 return None;
             }
-            // Phase JE-3: for generic enums, derive payload_ty from
-            // the val/var annotation. Without an annotation, we
-            // can't determine T from a unit constructor alone — fail
-            // and let the user add an annotation.
-            let payload_ty = match &layout.payload_repr {
-                PayloadRepr::None => None,
-                PayloadRepr::Concrete(t) => Some(*t),
-                PayloadRepr::Generic(_) => match annotation_hint
-                    .and_then(|td| payload_ty_from_annotation(td, &layout))
-                {
+            // Phase JE-3/JE-4: payload_ty resolution depends on
+            // whether the enum has any tuple variant. Unit-only
+            // enums report `None`. Otherwise the per-monomorph
+            // uniform payload comes from the val/var annotation
+            // (via `resolve_uniform_payload`). For non-generic
+            // enums the annotation is unnecessary because
+            // `resolve_uniform_payload(empty subst)` already
+            // produces the right answer.
+            let payload_ty = if !layout.variant_payloads.iter().any(|v| v.is_some()) {
+                None
+            } else if let Some(t) = layout.resolve_uniform_payload(&HashMap::new()) {
+                Some(t)
+            } else {
+                match annotation_hint.and_then(|td| payload_ty_from_annotation(td, &layout)) {
                     Some(t) => Some(t),
                     None => {
                         note(reject_reason, || {
@@ -2301,7 +2335,7 @@ fn check_enum_constructor_rhs(
                         });
                         return None;
                     }
-                },
+                }
             };
             Some(EnumLocalInfo::new(enum_name, payload_ty))
         }
@@ -2324,13 +2358,16 @@ fn check_enum_constructor_rhs(
                 enum_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
             )?;
-            // Phase JE-3: for generic enums the payload_ty comes
-            // from the arg directly; for non-generic it must equal
-            // the declared payload_ty. If an annotation is present,
-            // verify it agrees with the inferred type.
-            let payload_ty = match &layout.payload_repr {
+            // Phase JE-3/JE-4: variant payload comes from
+            // `variant_payloads[idx]`. For Concrete the arg type
+            // must match; for Generic the arg type itself fixes
+            // that variant's payload (and we cross-check against
+            // the annotation when present so multi-generic enums
+            // like `Result<T, E>` get the consistency check).
+            let variant_repr = layout.variant_payloads[idx].clone()?;
+            let payload_ty = match variant_repr {
                 PayloadRepr::Concrete(declared) => {
-                    if arg_ty != *declared {
+                    if arg_ty != declared {
                         note(reject_reason, || {
                             format!(
                                 "JIT enum tuple constructor: payload type {arg_ty:?} does not \
@@ -2375,10 +2412,16 @@ pub(crate) fn payload_ty_from_annotation_pub(
     payload_ty_from_annotation(annotation, layout)
 }
 
-/// Phase JE-3: extract the payload scalar type from a val/var
+/// Phase JE-3/JE-4: extract the payload scalar type from a val/var
 /// annotation, given the enum's layout. Handles `Option<i64>` form
-/// (TypeDecl::Enum(name, [arg])) and resolves the layout's
-/// generic param against the annotation's type args.
+/// (`TypeDecl::Enum(name, [args])`) and resolves the layout's
+/// generic params against the annotation's type args.
+///
+/// For multi-generic enums (`Result<T, E>`), all variant payloads
+/// must resolve to the same scalar (the JIT's single-payload-slot
+/// representation). `resolve_uniform_payload` returns `None` if
+/// any pair disagrees (e.g. `Result<i64, bool>`), causing the JIT
+/// to skip the program with the regular fallback.
 fn payload_ty_from_annotation(
     annotation: &TypeDecl,
     layout: &EnumLayout,
@@ -2398,7 +2441,7 @@ fn payload_ty_from_annotation(
         let sty = ScalarTy::from_type_decl(a)?;
         subst.insert(*p, sty);
     }
-    layout.payload_repr.resolve(&subst)
+    layout.resolve_uniform_payload(&subst)
 }
 
 /// Validate every field of a struct literal against the registered

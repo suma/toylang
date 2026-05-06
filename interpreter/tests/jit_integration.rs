@@ -270,6 +270,33 @@ fn jit_generic_enum_je3_actually_compiles_main() {
 }
 
 #[test]
+fn jit_multi_generic_enum_je4_compile() {
+    // Phase JE-4: multi-generic-param enum (`Res<T, E>` — the
+    // Result<T, E> shape) JIT-compiles when both type args
+    // resolve to a uniform scalar at the monomorph. Pinned for
+    // both interpreter and JIT exit 42.
+    assert_match("example/jit_multi_generic_enum_je4.t");
+    let r = run("example/jit_multi_generic_enum_je4.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_multi_generic_enum_je4_actually_compiles_main() {
+    // Confirm JE-4 actually compiles `main`. Per-variant payload
+    // representations let `Ok(T)` and `Err(E)` reference different
+    // generic params; `resolve_uniform_payload` ensures the
+    // monomorph still fits the single-payload-slot layout.
+    let r = run("example/jit_multi_generic_enum_je4.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:") && r.stderr.contains("main"),
+        "expected JE-4 to compile `main`; stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn jit_enum_boundary_je2d_compile() {
     // Phase JE-2d: enum-typed function param/return expand to
     // (tag, payload) cranelift values across boundaries.

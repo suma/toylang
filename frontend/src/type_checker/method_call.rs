@@ -372,7 +372,58 @@ impl<'a> TypeCheckerVisitor<'a> {
             let dummy_obj_ref = ExprRef(0); // Use dummy ref for now
             return self.visit_builtin_method_call(&dummy_obj_ref, &builtin_method, args);
         }
-        
+
+        // Closures Phase 8: fallback to field-call dispatch.
+        // When `obj.method(args)` doesn't resolve to any
+        // method, look for a field whose name matches and
+        // whose declared type is `fn (T1, T2) -> R`. If found,
+        // type-check the call against the function type's
+        // signature and return its return type. The runtime
+        // (interpreter / AOT) reads the field as a closure
+        // value and dispatches indirectly — same path it uses
+        // when a function-typed local is called.
+        if let TypeDecl::Struct(struct_name, _) = obj_type {
+            if let Some(fields) = self.context.get_struct_fields(*struct_name).cloned() {
+                let field = fields.iter().find(|f| f.name == method_name);
+                if let Some(field) = field {
+                    if let TypeDecl::Function(param_tys, ret_ty) = &field.type_decl {
+                        // Argument count + per-position
+                        // compatibility — same shape as
+                        // `visit_indirect_call`'s checks.
+                        if args.len() != param_tys.len() {
+                            return Err(TypeCheckError::generic_error(&format!(
+                                "field '{}' on struct '{:?}' has fn type taking {} args, got {}",
+                                method_name,
+                                struct_name,
+                                param_tys.len(),
+                                args.len()
+                            )));
+                        }
+                        let original_hint = self.type_inference.type_hint.clone();
+                        for (idx, (arg_ref, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
+                            self.type_inference.type_hint = Some(expected.clone());
+                            let arg_ty = self.visit_expr(arg_ref)?;
+                            if !TypeDecl::is_arg_compatible(&arg_ty, expected)
+                                && arg_ty != TypeDecl::Unknown
+                            {
+                                self.type_inference.type_hint = original_hint;
+                                return Err(TypeCheckError::generic_error(&format!(
+                                    "Type error: expected {:?}, found {:?}. field '{}' on struct '{:?}' arg {} type mismatch",
+                                    expected,
+                                    arg_ty,
+                                    method_name,
+                                    struct_name,
+                                    idx + 1
+                                )));
+                            }
+                        }
+                        self.type_inference.type_hint = original_hint;
+                        return Ok((**ret_ty).clone());
+                    }
+                }
+            }
+        }
+
         Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))
     }
 

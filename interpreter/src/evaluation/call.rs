@@ -715,6 +715,84 @@ impl EvaluationContext<'_> {
     /// without the writeback / contract / generic-monomorphisation
     /// machinery — closures don't carry contract clauses or generic
     /// params (Phase 2 reject), so the simpler shape suffices.
+    /// Closures Phase 8: dispatch a `obj.field(args)` call when
+    /// the field's value is a closure. Same shape as
+    /// `evaluate_indirect_call` but takes the args as a slice
+    /// (method-call ABI) instead of an `ExprList` ref.
+    fn evaluate_field_closure_call(
+        &mut self,
+        callee: RcObject,
+        field_name: DefaultSymbol,
+        args: &[ExprRef],
+    ) -> Result<EvaluationResult, InterpreterError> {
+        let (params, body, captures) = {
+            let borrowed = callee.borrow();
+            match &*borrowed {
+                Object::Closure { params, body, captures, .. } => (
+                    params.clone(),
+                    *body,
+                    captures.clone(),
+                ),
+                _ => return Err(InterpreterError::InternalError(
+                    "evaluate_field_closure_call: callee was not a closure".to_string(),
+                )),
+            }
+        };
+        if args.len() != params.len() {
+            let name_str = self
+                .string_interner
+                .resolve(field_name)
+                .unwrap_or("<closure-field>");
+            return Err(InterpreterError::FunctionParameterMismatch {
+                message: format!(
+                    "closure field '{}' arg count mismatch: expected {}, found {}",
+                    name_str,
+                    params.len(),
+                    args.len()
+                ),
+                expected: params.len(),
+                found: args.len(),
+            });
+        }
+        let mut evaluated: Vec<crate::value::Value> = Vec::with_capacity(args.len());
+        for arg in args {
+            let v = self.evaluate(arg)?;
+            let v = match v {
+                EvaluationResult::Value(v) => v,
+                _ => {
+                    return Err(InterpreterError::InternalError(
+                        "field closure argument produced control-flow value".to_string(),
+                    ));
+                }
+            };
+            evaluated.push(v);
+        }
+        self.environment.enter_block();
+        for (name, val) in &captures {
+            self.environment
+                .set_val(*name, crate::value::Value::from_rc(val));
+        }
+        for ((param_sym, _), arg_val) in params.iter().zip(evaluated.into_iter()) {
+            self.environment.set_val(*param_sym, arg_val);
+        }
+        let body_expr = self.expr_pool.get(&body).ok_or_else(|| {
+            InterpreterError::InternalError("closure body ExprRef not in pool".to_string())
+        })?;
+        let result = match body_expr {
+            Expr::Block(stmts) => self.evaluate_block(&stmts),
+            _ => self.evaluate(&body),
+        };
+        self.environment.exit_block();
+        match result {
+            Ok(EvaluationResult::Value(v)) => Ok(EvaluationResult::Value(v)),
+            Ok(EvaluationResult::Return(v)) => {
+                Ok(EvaluationResult::Value(v.unwrap_or(crate::value::Value::Unit)))
+            }
+            Ok(other) => Ok(other),
+            Err(e) => Err(e),
+        }
+    }
+
     fn evaluate_indirect_call(
         &mut self,
         callee: RcObject,
@@ -1054,6 +1132,27 @@ impl EvaluationContext<'_> {
                     // Call method with self as first argument
                     self.call_method(method_func, obj_val, arg_values)
                 } else {
+                    // Closures Phase 8: when no method matches,
+                    // try the field-call fallback. If the struct
+                    // has a field whose name matches and whose
+                    // value is a closure (`Object::Closure`),
+                    // dispatch through the indirect-call path —
+                    // the same one a `val f = fn(...); f(x)`
+                    // call would take.
+                    if let Object::Struct { fields, .. } = &*obj_borrowed {
+                        if let Some(field_rc) = fields.get(method).cloned() {
+                            let is_closure = matches!(
+                                &*field_rc.borrow(),
+                                Object::Closure { .. }
+                            );
+                            if is_closure {
+                                drop(obj_borrowed);
+                                return self.evaluate_field_closure_call(
+                                    field_rc, *method, args,
+                                );
+                            }
+                        }
+                    }
                     Err(InterpreterError::InternalError(format!("Method '{method_name}' not found for struct '{type_name:?}'")))
                 }
             }

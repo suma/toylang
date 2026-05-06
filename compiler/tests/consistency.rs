@@ -3384,6 +3384,70 @@ fn closure_phase6d_two_returned_closures_with_independent_captures_round_trip() 
     assert_consistent(src, "closure_phase6d_two_returned_closures");
 }
 
+// Closures Phase 8 — closure stored in a struct field, called
+// via `obj.field(args)`. Type-checker resolves the field-call
+// because no method named `field` exists on the struct;
+// runtime dispatches through the same env-based CallIndirect
+// machinery the HOF parameter path uses (Phase 6b ABI).
+#[test]
+fn closure_phase8_struct_field_holds_closure_round_trip() {
+    let src = r#"
+        struct Calculator {
+            op: fn (i64, i64) -> i64,
+        }
+
+        fn main() -> i64 {
+            val c = Calculator {
+                op: fn(a: i64, b: i64) -> i64 { a + b },
+            }
+            c.op(20i64, 22i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase8_struct_field_holds_closure");
+}
+
+#[test]
+fn closure_phase8_struct_field_capturing_closure_round_trip() {
+    // The closure stored in `inc` captures `n` from the
+    // outer scope — exercises the full Phase 6b env-aware
+    // CallIndirect through a field-call dispatch.
+    let src = r#"
+        struct Counter {
+            inc: fn (i64) -> i64,
+        }
+
+        fn main() -> i64 {
+            val n: i64 = 10i64
+            val c = Counter {
+                inc: fn(x: i64) -> i64 { x + n },
+            }
+            c.inc(32i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase8_struct_field_capturing_closure");
+}
+
+#[test]
+fn closure_phase8_struct_with_two_closure_fields_round_trip() {
+    // Two closure fields stored independently; each is called
+    // through its own field-call dispatch.
+    let src = r#"
+        struct Pair {
+            add: fn (i64, i64) -> i64,
+            sub: fn (i64, i64) -> i64,
+        }
+
+        fn main() -> i64 {
+            val p = Pair {
+                add: fn(a: i64, b: i64) -> i64 { a + b },
+                sub: fn(a: i64, b: i64) -> i64 { a - b },
+            }
+            p.add(20i64, 30i64) + p.sub(0i64, 8i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase8_struct_with_two_closure_fields");
+}
+
 #[test]
 fn closure_phase6c_all_narrow_widths_captured_round_trip() {
     // Captures all six narrow widths in a single closure to

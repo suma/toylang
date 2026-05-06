@@ -989,20 +989,24 @@ show_n()                      # 1 — captured the original value
   function would need to lower a closure. The `INTERPRETER_JIT=1`
   verbose log surfaces the precise reason ("JIT does not yet
   support closure / lambda values").
-- **AOT compiler** — supports both `val name = fn(...) -> R { body }`
-  direct calls and closures passed to higher-order functions
-  (`(T1, T2) -> R` parameter types). Both shapes work for
-  capturing **and** non-capturing closures. Every closure value
-  is an env-pointer (`Type::U64`) into a heap-allocated env
-  tuple `[fn_ptr, cap0, cap1, ...]` — non-capturing closures
-  still get an env containing just the fn-pointer. The lifted
-  body's first IR parameter is the env, captures are read from
-  known offsets, and `InstKind::CallIndirect` recovers the
-  fn-pointer from `env+0` and prepends env to the user-visible
-  args. Restrictions: captures must be 8-byte scalars
-  (i64 / u64 / f64 / bool); closure values can't yet be
-  returned from a function or stored in struct fields. Use
-  the interpreter for those shapes.
+- **AOT compiler** — supports `val name = fn(...) -> R { body }`
+  direct calls, closures passed to higher-order functions
+  (`fn (T1, T2) -> R` parameter types), closures returned
+  from functions, and closures stored in struct fields
+  (called via `obj.field(args)`). All four shapes work for
+  capturing **and** non-capturing closures. Every closure
+  value is an env-pointer (`Type::U64`) into a heap-allocated
+  env tuple `[fn_ptr, cap0, cap1, ...]` — non-capturing
+  closures still get an env containing just the fn-pointer.
+  The lifted body's first IR parameter is the env, captures
+  are read from known offsets, and `InstKind::CallIndirect`
+  recovers the fn-pointer from `env+0` and prepends env to
+  the user-visible args. Captures support both 8-byte scalars
+  (i64 / u64 / f64 / bool) and narrow ints (u8 / u16 / u32 /
+  i8 / i16 / i32). The remaining gap is stdlib HOF methods
+  on generic enums (`Option::map<U>` etc.), blocked on a
+  generic-enum match arm unification fix in the type
+  checker.
 
 ---
 
@@ -1899,15 +1903,19 @@ overflow on cyclic structures.
 These are real today; some appear in `todo.md` as planned work.
 
 - **Closures: partial support** — closures use `fn(params) -> R { body }`
-  and the function type `(T1, T2) -> R`. Fully supported in the
-  interpreter (literals, free-variable captures, passing closures as
-  HOF arguments, returning closures, nesting). The JIT silently
-  falls back to the interpreter when a program contains a closure.
-  The AOT compiler now covers both direct calls and HOF dispatch
-  for capturing and non-capturing closures via a unified env-based
-  ABI (Phase 6b). Captures are restricted to 8-byte scalars; closure
-  values can't yet be returned from a function or stored in struct
-  fields. See [Closures → Backend coverage](#closures).
+  and the function type `fn (T1, T2) -> R` (or bare
+  `(T1, T2) -> R`). Fully supported in the interpreter
+  (literals, captures, HOF arguments, return values, nested
+  closures). The JIT silently falls back to the interpreter
+  when a program contains a closure. The AOT compiler covers
+  direct calls, HOF dispatch, closure return values, and
+  closures stored in struct fields — capturing and
+  non-capturing alike — via a unified env-based ABI
+  (Phase 6b/8). Captures support 8-byte scalars and narrow
+  ints. The remaining gap is stdlib HOF methods on generic
+  enums (e.g. `Option::map<U>`), blocked on a generic-enum
+  match arm unification improvement in the type checker.
+  See [Closures → Backend coverage](#closures).
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.

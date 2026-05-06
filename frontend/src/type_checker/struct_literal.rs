@@ -53,6 +53,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // user code can hold heap-allocated buffers; `Allocator` is
                     // needed for generic allocator-aware structs.
                 },
+                // Closures Phase 8: function-typed field
+                // (`f: fn (T1, T2) -> R`). Storing a closure in a
+                // struct enables strategy / vtable / callback
+                // patterns. The body of the held closure must be
+                // type-checked (every closure literal is) before
+                // it lands in the field; this validator just
+                // recognises that the wrapper shape is permitted.
+                TypeDecl::Function(_, _) => {},
                 TypeDecl::Generic(_) => {
                     // Generic types are valid if they're in scope
                 },

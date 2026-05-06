@@ -401,12 +401,139 @@ impl<'a> FunctionLower<'a> {
     /// symbol, look up the method via the registry built in
     /// `lower_program`, and emit a regular `Call` with the
     /// receiver's leaf scalars prepended to the call's arg values.
+    /// Closures Phase 8 helper: try to lower `obj.method(args)`
+    /// as a field-call when `method` names a field of fn type
+    /// rather than a registered method. Returns:
+    ///   - `Ok(Some(_))` when the field-call path applied.
+    ///   - `Ok(None)` when this isn't a field-call (caller
+    ///     should fall through to the regular method-dispatch
+    ///     path).
+    ///   - `Err(_)` for actual errors (signature mismatch).
+    pub(super) fn try_lower_field_closure_call(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        // Receiver must be a bare identifier bound to a struct
+        // (other shapes — chained method calls, field access —
+        // can be added later if needed).
+        let sym = match self.program.expression.get(obj) {
+            Some(Expr::Identifier(s)) => s,
+            _ => return Ok(None),
+        };
+        let (struct_id, field_bindings) = match self.bindings.get(&sym) {
+            Some(Binding::Struct { struct_id, fields }) => (*struct_id, fields.clone()),
+            _ => return Ok(None),
+        };
+        // Struct definition must have a field whose name matches
+        // the method symbol AND whose declared type is `Function`.
+        let method_name = self.interner.resolve(method).unwrap_or("");
+        if method_name.is_empty() {
+            return Ok(None);
+        }
+        // Resolve the receiver's IR struct name → look up the
+        // AST struct template to find the matching field's
+        // declared type.
+        let ir_struct_name = self.module.struct_def(struct_id).base_name;
+        let template = match self.struct_defs.get(&ir_struct_name) {
+            Some(t) => t.clone(),
+            None => return Ok(None),
+        };
+        let field_decl = template
+            .fields
+            .iter()
+            .find(|(n, _)| n == method_name)
+            .map(|(_, t)| t.clone());
+        let (param_tys_decl, ret_ty_decl) = match field_decl {
+            Some(TypeDecl::Function(p, r)) => (p, r),
+            _ => return Ok(None),
+        };
+        // Resolve the field's IR shape — it must be a scalar
+        // local of `Type::U64` (lower_scalar maps Function → U64).
+        let field_local = field_bindings
+            .iter()
+            .find(|fb| fb.name == method_name)
+            .and_then(|fb| match &fb.shape {
+                super::bindings::FieldShape::Scalar { local, ty } if matches!(ty, Type::U64) => {
+                    Some(*local)
+                }
+                _ => None,
+            });
+        let field_local = match field_local {
+            Some(l) => l,
+            None => return Ok(None),
+        };
+        // Lower IR types from the AST signature so we can build
+        // the CallIndirect signature.
+        let mut ir_param_tys: Vec<Type> = Vec::with_capacity(param_tys_decl.len());
+        for pt in &param_tys_decl {
+            let lowered = lower_scalar(pt).ok_or_else(|| {
+                format!(
+                    "compiler MVP: field-call closure parameter type {pt:?} is not a primitive scalar"
+                )
+            })?;
+            ir_param_tys.push(lowered);
+        }
+        let ir_ret_ty = lower_scalar(&ret_ty_decl).ok_or_else(|| {
+            format!(
+                "compiler MVP: field-call closure return type {:?} is not a primitive scalar",
+                ret_ty_decl
+            )
+        })?;
+        if args.len() != ir_param_tys.len() {
+            return Err(format!(
+                "field-call `{}` expects {} arg(s), got {}",
+                method_name,
+                ir_param_tys.len(),
+                args.len()
+            ));
+        }
+        // Load the env_ptr from the field local, evaluate args,
+        // and emit CallIndirect (env-aware Phase 6b ABI).
+        let callee = self
+            .emit(InstKind::LoadLocal(field_local), Some(Type::U64))
+            .ok_or_else(|| "field-call: LoadLocal returned no value".to_string())?;
+        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+        for a in args {
+            let v = self
+                .lower_expr(a)?
+                .ok_or_else(|| "field-call argument produced no value".to_string())?;
+            arg_values.push(v);
+        }
+        let result_ty = if matches!(ir_ret_ty, Type::Unit) {
+            None
+        } else {
+            Some(ir_ret_ty)
+        };
+        let inst = InstKind::CallIndirect {
+            callee,
+            args: arg_values,
+            param_tys: ir_param_tys,
+            ret_ty: ir_ret_ty,
+        };
+        Ok(Some(self.emit(inst, result_ty)))
+    }
+
     pub(super) fn lower_method_call(
         &mut self,
         obj: &ExprRef,
         method: DefaultSymbol,
         args: &Vec<ExprRef>,
     ) -> Result<Option<ValueId>, String> {
+        // Closures Phase 8: field-call dispatch. When the
+        // receiver is a struct-bound identifier and the
+        // requested name matches a field whose declared type is
+        // `fn (T1, T2) -> R`, the call is really
+        // `(load_field)(args)` — load the closure value (an
+        // env_ptr) from the field local, then dispatch through
+        // the env-aware `CallIndirect` (Phase 6b ABI). The body
+        // of `lower_method_call` looks for a registered method
+        // first; this branch fires before so a same-named
+        // method (rare but legal) doesn't shadow the field.
+        if let Some(field_call) = self.try_lower_field_closure_call(obj, method, args)? {
+            return Ok(field_call);
+        }
         // Step D + F: extension-trait dispatch on a primitive
         // receiver. Run *before* the bare-identifier check so
         // chained primitive method calls (`x.abs().abs()`) — whose

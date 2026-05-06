@@ -20,6 +20,7 @@ implementation-side details, see the companion documents:
 - [Expressions](#expressions)
 - [Statements](#statements)
 - [Functions](#functions)
+- [Closures](#closures)
 - [Structs and methods](#structs-and-methods)
 - [Traits](#traits)
 - [Enums and pattern matching](#enums-and-pattern-matching)
@@ -901,6 +902,91 @@ return type. See [Design by Contract](#design-by-contract).
 
 ---
 
+## Closures
+
+Anonymous function values use the same `fn` keyword as top-level
+declarations, distinguished by the next token: `fn(` is a closure
+literal; `fn name(` is a top-level function or method.
+
+```rust
+val add_two = fn(x: i64) -> i64 { x + 2i64 }
+val r = add_two(40i64)        # 42
+```
+
+Closures are first-class values: assignable to `val` / `var`,
+passable to higher-order functions through a function-type
+annotation, and returnable from functions.
+
+### Function type syntax
+
+`(T1, T2, ...) -> R` describes a function value taking the listed
+parameter types and returning `R`. Use it on parameter / return
+type positions:
+
+```rust
+fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+fn make_adder(n: i64) -> (i64) -> i64 {
+    fn(x: i64) -> i64 { x + n }
+}
+```
+
+The empty-parameter form `() -> R` is also valid (zero-arg
+function value).
+
+### Captures
+
+Free variables in the body are captured at closure-creation time.
+Primitives are captured by value (a snapshot of the current
+binding); compound values (`struct`, `array`, `dict`, …) share the
+existing reference so mutations through the original are visible
+in the closure. This matches how every other binding behaves in
+the interpreter.
+
+```rust
+val n: i64 = 10i64
+val add_n = fn(x: i64) -> i64 { x + n }
+add_n(32i64)                  # 42
+```
+
+Reassigning the outer binding after capture does not disturb the
+closure's snapshot for primitives:
+
+```rust
+var n: i64 = 1i64
+val show_n = fn() -> i64 { n }
+n = 999i64
+show_n()                      # 1 — captured the original value
+```
+
+### Type-checker rules
+
+- Closure parameters must carry an explicit type annotation; the
+  return type is optional and inferred from the body when omitted.
+- Capturing a value whose type mentions an enclosing function's
+  generic parameter (`<T>`) is rejected — *generic-parameterised
+  closures are not yet supported*. Concrete captures are fine.
+- Calling through a function-typed value produces the value type's
+  `R`. Argument count and per-position compatibility are enforced
+  at the call site exactly as for direct calls.
+
+### Backend coverage
+
+- **Interpreter** — full support: literals, captures, HOF
+  arguments, closure return values, nested closures.
+- **JIT** — silently falls back to the interpreter when a
+  function would need to lower a closure. The `INTERPRETER_JIT=1`
+  verbose log surfaces the precise reason ("JIT does not yet
+  support closure / lambda values").
+- **AOT compiler** — supports the `val name = fn(params) -> R { body }`
+  form with non-capturing bodies and direct `name(args)` calls.
+  The closure literal is lifted to a synthesized top-level
+  function. Capturing closures, closures-as-arguments to HOFs,
+  closure return values, and storing closures in fields are
+  pending phases (`todo.md` Phase 5b/6). Use the interpreter for
+  programs that exercise those shapes.
+
+---
+
 ## Structs and methods
 
 ### Declaration
@@ -1589,9 +1675,11 @@ r.unwrap_or(99u64)       # T
 r.expect("ok required")  # T  — panics on Err
 ```
 
-`unwrap_or(default)` takes the default eagerly because the language
-doesn't have closures yet — there's no `unwrap_or_else(|| ...)`
-shape to mirror Rust's lazy default. `expect(msg)` accepts a string
+`unwrap_or(default)` takes the default eagerly. The language now
+has closures (see *Closures*), so an `unwrap_or_else(f: () -> T) -> T`
+shape is mechanically possible — it isn't yet provided by the
+stdlib because closure-as-argument dispatch requires AOT Phase 5b
+(see *Closures → AOT support*). `expect(msg)` accepts a string
 literal and lowers to the same `panic("...")` machinery the
 runtime already provides.
 
@@ -1791,8 +1879,15 @@ overflow on cyclic structures.
 
 These are real today; some appear in `todo.md` as planned work.
 
-- **No closures or lambdas** — functions are not first-class values
-  outside `fn`-named declarations.
+- **Closures: partial support** — closures use `fn(params) -> R { body }`
+  and the function type `(T1, T2) -> R`. Fully supported in the
+  interpreter (literals, free-variable captures, passing closures as
+  HOF arguments, returning closures, nesting). The JIT silently
+  falls back to the interpreter when a program contains a closure.
+  The AOT compiler currently supports only the `val name = fn(...) -> R { body }`
+  form with direct `name(args)` calls (no captures, no HOF arguments,
+  no closure return values, no closure storage in fields). Capturing
+  closures + true HOF dispatch in AOT is planned (`todo.md` Phase 5b/6).
 - **No `else if`** — use `elif`.
 - **No bare `self`** — `self: Self` is mandatory in method signatures.
 - **`val` is a keyword** — cannot be used as a parameter or field name.

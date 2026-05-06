@@ -152,6 +152,7 @@ fn main() -> u64 {
   - 型パラメータ bound `<T: SomeTrait>` を関数・struct・impl に書ける。呼び出し時に「実型がその trait を実装しているか」を検証
   - 実装メソッドは inherent method としても登録されるので `value.trait_method()` 形式で直接呼べる
   - **未対応（後続 phase）**: trait ジェネリクス（`trait Foo<T>`）、デフォルトメソッド、複数 bound（`<T: A + B>`）、trait 継承、`dyn Trait`、associated types
+- **クロージャ / ラムダ**: `fn(params) -> R { body }` 形式の anonymous function literal、関数型 `(T1, T2) -> R` で parameter / return 位置に書ける。bind は `val f = fn(x: i64) -> i64 { x + 1i64 }`。free var capture は creation time の snapshot (primitive は値コピー、compound は Rc 共有)。**backend coverage**: interpreter は full support (literals + captures + HOF args + return + nest)、JIT は silent fallback (closure を含む function は interpreter 経路に流れる)、AOT compiler は **`val name = fn(...) -> R { body }` + 直接 `name(args)` 呼び出しの形のみ** (no captures, no HOF args, no return, no field storage — todo.md Phase 5b/6 残)。詳細は [`docs/language.md` → Closures](docs/language.md)。
 - **Design by Contract キーワード**: `requires`（事前条件）, `ensures`（事後条件）。関数 / メソッドの `-> ReturnType` の後、body `{` の前に複数並べられる。各節は bool 式で、AND 合成。`ensures` 内では `result` が戻り値を指す。違反時は `ContractViolation` エラーで停止。`INTERPRETER_CONTRACTS=all|pre|post|off`（unset = `all`）で `requires` / `ensures` を独立に切り替えられる（D の `-release` 相当）
 - **可視性・外部連携**: `pub`（公開）, `extern`（外部関数）
 - **モジュールシステム**: `package`, `import`, `as`

@@ -904,6 +904,60 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+        // Phase 6b/6c: a Call RHS whose callee returns a function
+        // type (`TypeDecl::Function`) lands as a fn-pointer value
+        // (Type::U64 in IR). Bind under `Binding::FunctionPtr` so
+        // a subsequent `name(args)` dispatches through the
+        // env-based CallIndirect path. Without this branch the
+        // binding would be a plain `Binding::Scalar { ty: U64 }`
+        // and `lower_call` would then fail to find `name` in the
+        // function table.
+        if let Expr::Call(callee_name, _) = rhs.clone() {
+            if let Some(callee_id) = self.module.lookup_function(None, callee_name) {
+                if let Some(callee_fn) = self
+                    .program
+                    .function
+                    .iter()
+                    .find(|f| f.name == callee_name)
+                {
+                    if let Some(frontend::type_decl::TypeDecl::Function(p_tys, r_ty)) =
+                        callee_fn.return_type.as_ref()
+                    {
+                        let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
+                        let mut ok = true;
+                        for pt in p_tys {
+                            match super::types::lower_scalar(pt) {
+                                Some(t) => ir_param_tys.push(t),
+                                None => {
+                                    ok = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if let (true, Some(ir_ret_ty)) = (ok, super::types::lower_scalar(r_ty)) {
+                            let _ = callee_id; // resolved at the existing scalar fall-through
+                            let v = self
+                                .lower_expr(rhs_ref)?
+                                .ok_or_else(|| "val/var rhs produced no value".to_string())?;
+                            let local = self
+                                .module
+                                .function_mut(self.func_id)
+                                .add_local(Type::U64);
+                            self.bindings.insert(
+                                name,
+                                Binding::FunctionPtr {
+                                    local,
+                                    param_tys: ir_param_tys,
+                                    ret_ty: ir_ret_ty,
+                                },
+                            );
+                            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
         // Scalar fallback (existing behaviour).
         let v = self
             .lower_expr(rhs_ref)?

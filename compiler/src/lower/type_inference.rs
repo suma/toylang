@@ -121,11 +121,22 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
             Expr::Match(_, arms) => arms.iter().find_map(|a| self.value_scalar(&a.body)),
-            Expr::Call(fn_name, _) => self
-                .module
-                .lookup_function(None, fn_name)
-                .or_else(|| self.closure_bindings.get(&fn_name).map(|link| link.func_id))
-                .map(|id| self.module.function(id).return_type),
+            Expr::Call(fn_name, _) => {
+                // Phase 6b: a FunctionPtr binding (HOF parameter
+                // or closure-returning call result) carries its
+                // own return type; resolve through the binding
+                // map first so `val r = f(x)` infers correctly
+                // even when `f` isn't a top-level function.
+                if let Some(super::bindings::Binding::FunctionPtr { ret_ty, .. }) =
+                    self.bindings.get(&fn_name)
+                {
+                    return Some(*ret_ty);
+                }
+                self.module
+                    .lookup_function(None, fn_name)
+                    .or_else(|| self.closure_bindings.get(&fn_name).map(|link| link.func_id))
+                    .map(|id| self.module.function(id).return_type)
+            }
             Expr::AssociatedFunctionCall(struct_name, fn_name, _) => {
                 // Module-qualified call: prefer
                 // `(Some(struct_name), fn_name)` so cross-module

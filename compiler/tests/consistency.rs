@@ -3341,6 +3341,49 @@ fn closure_phase6c_u8_capture_round_trip() {
     assert_consistent(src, "closure_phase6c_u8_capture");
 }
 
+// Closures Phase 6d — closure return value. A function whose
+// return type is `(T1, T2) -> R` lifts the inline closure body
+// to a top-level fn (Phase 5b's lift_closure_inline path) and
+// surfaces the env_ptr as the return value (Type::U64). The
+// caller's `val name = make_adder(...)` binds `name` as a
+// `Binding::FunctionPtr` so a subsequent `name(args)` dispatches
+// through the env-aware CallIndirect.
+#[test]
+fn closure_phase6d_closure_return_value_round_trip() {
+    let src = r#"
+        fn make_adder(n: i64) -> (i64) -> i64 {
+            fn(x: i64) -> i64 { x + n }
+        }
+
+        fn main() -> i64 {
+            val add5 = make_adder(5i64)
+            add5(37i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6d_closure_return_value");
+}
+
+#[test]
+fn closure_phase6d_two_returned_closures_with_independent_captures_round_trip() {
+    // Each `make_adder(n)` call produces an independent env
+    // tuple — the captures must not alias across the two
+    // returned closures.
+    let src = r#"
+        fn make_adder(n: i64) -> (i64) -> i64 {
+            fn(x: i64) -> i64 { x + n }
+        }
+
+        fn main() -> i64 {
+            val add5 = make_adder(5i64)
+            val add10 = make_adder(10i64)
+            val r1 = add5(37i64)
+            val r2 = add10(32i64)
+            r1 + r2 - 42i64
+        }
+    "#;
+    assert_consistent(src, "closure_phase6d_two_returned_closures");
+}
+
 #[test]
 fn closure_phase6c_all_narrow_widths_captured_round_trip() {
     // Captures all six narrow widths in a single closure to

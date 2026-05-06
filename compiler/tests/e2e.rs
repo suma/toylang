@@ -42,7 +42,26 @@ fn core_modules_dir() -> PathBuf {
 /// `<repo>/core/` so value-method tests using `i64.abs()` /
 /// `f64.sqrt()` (provided by `core/std/i64.t` and
 /// `core/std/f64.t`) work without per-test wiring.
+///
+/// Lite-path optimisation: try first WITHOUT core auto-load (most
+/// e2e tests are pure user code). When `compile_file` fails on the
+/// lite path (typically because the source references a stdlib
+/// symbol like `Vec` / `Option` / `String`) fall back to the
+/// canonical with-core path so the user sees the same error
+/// surface. Saves ~150 ms per stdlib-free test.
 fn compile_and_run(source: &str, stem: &str) -> i32 {
+    if let Some(code) = try_compile_and_run(source, stem, None) {
+        return code;
+    }
+    try_compile_and_run(source, stem, Some(core_modules_dir()))
+        .expect("compile_file failed even with core modules")
+}
+
+fn try_compile_and_run(
+    source: &str,
+    stem: &str,
+    core_dir: Option<PathBuf>,
+) -> Option<i32> {
     let src_path = unique_path(&format!("{stem}.t"));
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
@@ -52,16 +71,19 @@ fn compile_and_run(source: &str, stem: &str) -> i32 {
         emit: EmitKind::Executable,
         verbose: false,
         release: false,
-        core_modules_dir: Some(core_modules_dir()),
+        core_modules_dir: core_dir,
     };
-    compile_file(&options).expect("compile_file failed");
-    let status = Command::new(&exe_path)
-        .status()
-        .expect("spawn compiled executable");
-    let code = status.code().expect("process produced no exit code");
+    let result = if compile_file(&options).is_ok() {
+        let status = Command::new(&exe_path)
+            .status()
+            .expect("spawn compiled executable");
+        Some(status.code().expect("process produced no exit code"))
+    } else {
+        None
+    };
     let _ = std::fs::remove_file(&src_path);
     let _ = std::fs::remove_file(&exe_path);
-    code
+    result
 }
 #[test]
 fn short_circuit_and_or() {

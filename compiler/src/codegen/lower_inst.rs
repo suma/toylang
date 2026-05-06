@@ -371,13 +371,25 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 param_tys,
                 ret_ty,
             } => {
-                // Closures Phase 5b: indirect call through a fn-ptr
-                // value. Build a cranelift signature from `param_tys`
-                // / `ret_ty` (Unit returns produce no result), import
-                // it onto the current function for a fresh SigRef,
-                // then `call_indirect` against the callee value.
+                // Closures Phase 6b: env-based indirect call. The
+                // callee is an env_ptr (i64) — env layout starts
+                // with [fn_ptr] at offset 0 followed by captures.
+                // Codegen loads fn_ptr from `env+0`, builds a
+                // signature `(env: i64, ...param_tys) -> ret_ty`,
+                // and calls `call_indirect(sig, fn_ptr, [env, args])`.
+                // The lifted closure body's first IR parameter is
+                // the env pointer (set up by `lower_closure_body`),
+                // matching this calling convention.
+                use cranelift_codegen::ir::MemFlags;
+                let env_val = self.value(*callee);
+                let flags = MemFlags::new();
+                let fn_ptr = self.builder.ins().load(types::I64, flags, env_val, 0i32);
                 let call_conv = self.builder.func.signature.call_conv;
                 let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                // Implicit env: i64 first parameter — every closure
+                // body has it as IR param[0].
+                sig.params
+                    .push(cranelift_codegen::ir::AbiParam::new(types::I64));
                 for pt in param_tys {
                     let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
                         format!("CallIndirect: cannot lower param type {pt:?} to cranelift")
@@ -391,12 +403,15 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     sig.returns.push(cranelift_codegen::ir::AbiParam::new(cl));
                 }
                 let sig_ref = self.builder.import_signature(sig);
-                let callee_val = self.value(*callee);
-                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let mut arg_values: Vec<Value> = Vec::with_capacity(args.len() + 1);
+                arg_values.push(env_val);
+                for a in args {
+                    arg_values.push(self.value(*a));
+                }
                 let call_inst = self
                     .builder
                     .ins()
-                    .call_indirect(sig_ref, callee_val, &arg_values);
+                    .call_indirect(sig_ref, fn_ptr, &arg_values);
                 let results = self.builder.inst_results(call_inst).to_vec();
                 if let Some((vid, _ty)) = inst.result {
                     let v = results.first().copied().ok_or_else(|| {

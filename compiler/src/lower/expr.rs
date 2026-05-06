@@ -421,18 +421,20 @@ impl<'a> FunctionLower<'a> {
                         // function's runtime address as a U64.
                         if let Some(link) = self.closure_bindings.get(&sym).copied() {
                             self.pending_struct_value = None;
-                            // Phase 6: capturing closures can't yet be
-                            // surfaced as a fn-pointer value (would
-                            // need a heap-allocated thunk that bundles
-                            // env_ptr + fn_ptr). Reject explicitly so
-                            // the user gets a precise message instead
-                            // of a downstream signature mismatch.
-                            if link.env_ptr.is_some() {
-                                return Err(format!(
-                                    "compiler MVP: capturing closure `{}` cannot yet be passed as a function value (Phase 5b/6 wiring); call it directly instead",
-                                    self.interner.resolve(sym).unwrap_or("?")
-                                ));
+                            // Phase 6b: env-based ABI — every
+                            // closure binding has an env_ptr
+                            // (Some) regardless of capture set.
+                            // Surfacing the closure as a value
+                            // returns the env_ptr; the receiving
+                            // HOF uses CallIndirect against it
+                            // (codegen loads fn_ptr from env+0).
+                            if let Some(env_ptr) = link.env_ptr {
+                                return Ok(Some(env_ptr));
                             }
+                            // Defensive fallback (should never fire
+                            // post-Phase-6b — every closure binding
+                            // emits MakeClosure on entry): expose
+                            // the bare fn pointer.
                             return Ok(self.emit(
                                 InstKind::FuncAddr { target: link.func_id },
                                 Some(Type::U64),

@@ -356,16 +356,16 @@ impl<'a> FunctionLower<'a> {
         return_type: &Option<frontend::type_decl::TypeDecl>,
         body: &frontend::ast::ExprRef,
     ) -> Result<Option<crate::ir::ValueId>, String> {
-        // Phase 6: collect free variables before declaring the
-        // function so the IR signature can include the implicit
-        // `env: U64` parameter when the closure captures.
+        // Phase 6b: every closure body — capturing or not —
+        // takes an implicit `env: U64` first parameter so a
+        // single ABI works for direct calls and HOF dispatch.
+        // Non-capturing closures still go through `MakeClosure`
+        // (env layout = `[fn_ptr]`, 8 bytes) so the env pointer
+        // can be loaded uniformly at the call site.
         let captures = self.collect_closure_captures(params, body)?;
         let mut ir_params: Vec<Type> = Vec::with_capacity(params.len() + 1);
-        if !captures.is_empty() {
-            // Implicit env pointer at position 0 — the body lowers
-            // its captures by reading from env+8, env+16, ...
-            ir_params.push(Type::U64);
-        }
+        // Implicit env pointer at position 0.
+        ir_params.push(Type::U64);
         for (pname, pty) in params {
             let lowered = types::lower_scalar(pty).ok_or_else(|| {
                 format!(
@@ -397,53 +397,46 @@ impl<'a> FunctionLower<'a> {
         let func_id = self
             .module
             .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
-        // Phase 6: when the closure captures, emit MakeClosure to
-        // build the env on the heap and store the env_ptr alongside
-        // the FuncId so `lower_call` can prepend it to the user
-        // arguments. Captures are fetched here from the current
-        // outer scope's bindings — Phase 6 supports scalar
-        // captures only (8-byte values).
-        let env_ptr = if captures.is_empty() {
-            None
-        } else {
-            let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
-            let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
-            for (cap_name, cap_ty) in &captures {
-                // Phase 6 restricts to 8-byte captures — codegen
-                // stores via `store.i64`. Narrower scalars need
-                // zext/sext + per-width store and are deferred.
-                if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+        // Phase 6b: emit `MakeClosure` for every closure (even
+        // non-capturing — the env still needs to carry fn_ptr at
+        // offset 0 so HOF call sites can recover it). For
+        // capturing closures we also load + store each capture
+        // value into the env. Captures must be 8-byte scalars
+        // for the initial implementation.
+        let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
+        let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
+        for (cap_name, cap_ty) in &captures {
+            if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+                return Err(format!(
+                    "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                    self.interner.resolve(*cap_name).unwrap_or("?"),
+                    cap_ty
+                ));
+            }
+            let local = match self.bindings.get(cap_name) {
+                Some(bindings::Binding::Scalar { local, .. }) => *local,
+                other => {
                     return Err(format!(
-                        "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                        "compiler MVP: capturing closure cannot capture `{}` (binding shape unsupported: {:?})",
                         self.interner.resolve(*cap_name).unwrap_or("?"),
-                        cap_ty
+                        other.is_some()
                     ));
                 }
-                let local = match self.bindings.get(cap_name) {
-                    Some(bindings::Binding::Scalar { local, .. }) => *local,
-                    other => {
-                        return Err(format!(
-                            "compiler MVP: capturing closure cannot capture `{}` (binding shape unsupported: {:?})",
-                            self.interner.resolve(*cap_name).unwrap_or("?"),
-                            other.is_some()
-                        ));
-                    }
-                };
-                let v = self
-                    .emit(crate::ir::InstKind::LoadLocal(local), Some(*cap_ty))
-                    .ok_or_else(|| "capture LoadLocal returned no value".to_string())?;
-                capture_vals.push(v);
-                capture_tys.push(*cap_ty);
-            }
-            self.emit(
-                crate::ir::InstKind::MakeClosure {
-                    target: func_id,
-                    captures: capture_vals,
-                    capture_tys,
-                },
-                Some(Type::U64),
-            )
-        };
+            };
+            let v = self
+                .emit(crate::ir::InstKind::LoadLocal(local), Some(*cap_ty))
+                .ok_or_else(|| "capture LoadLocal returned no value".to_string())?;
+            capture_vals.push(v);
+            capture_tys.push(*cap_ty);
+        }
+        let env_ptr = self.emit(
+            crate::ir::InstKind::MakeClosure {
+                target: func_id,
+                captures: capture_vals,
+                capture_tys,
+            },
+            Some(Type::U64),
+        );
         self.closure_bindings.insert(
             name,
             ClosureBindingLink {
@@ -703,7 +696,14 @@ impl<'a> FunctionLower<'a> {
         return_type: &Option<frontend::type_decl::TypeDecl>,
         body: &frontend::ast::ExprRef,
     ) -> Result<Option<crate::ir::ValueId>, String> {
-        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len());
+        // Phase 6b: inline closure literals share the env-based
+        // ABI with named closure bindings. Capturing inline
+        // literals (e.g. `apply(fn(x: i64) -> i64 { x + n }, 5)`)
+        // are now supported through the same `MakeClosure` path
+        // — the HOF call dispatches via env-aware CallIndirect.
+        let captures = self.collect_closure_captures(params, body)?;
+        let mut ir_params: Vec<Type> = Vec::with_capacity(params.len() + 1);
+        ir_params.push(Type::U64); // implicit env: U64
         for (pname, pty) in params {
             let lowered = types::lower_scalar(pty).ok_or_else(|| {
                 format!(
@@ -728,35 +728,55 @@ impl<'a> FunctionLower<'a> {
                 );
             }
         };
-        // Phase 6: inline closure literals also need capture
-        // detection — but Phase 5b/6 currently doesn't pass an
-        // env to indirect calls, so a capturing inline literal
-        // can't be passed as a HOF argument yet. Reject up-front
-        // when captures exist so the user gets a precise message
-        // instead of a downstream signature mismatch.
-        let captures = self.collect_closure_captures(params, body)?;
-        if !captures.is_empty() {
-            return Err(
-                "compiler MVP: capturing inline closure literals can't yet be passed as a function value (Phase 5b/6 wiring); bind to a `val` and call directly instead"
-                    .to_string(),
-            );
-        }
         let outer_name = self.module.function(self.func_id).export_name.clone();
         let counter = self.closure_bindings.len() + self.pending_closure_work.len();
         let export_name = format!("{outer_name}__closure_inline_{counter}");
         let func_id = self
             .module
             .declare_function_anon(export_name, crate::ir::Linkage::Local, ir_params, ir_ret);
+        // Phase 6b: build the env on the heap. Resolve each
+        // capture from the outer-scope binding map and emit
+        // `MakeClosure` so the resulting env_ptr is the value
+        // passed to the HOF call.
+        let mut capture_vals: Vec<crate::ir::ValueId> = Vec::with_capacity(captures.len());
+        let mut capture_tys: Vec<Type> = Vec::with_capacity(captures.len());
+        for (cap_name, cap_ty) in &captures {
+            if !matches!(cap_ty, Type::I64 | Type::U64 | Type::F64 | Type::Bool) {
+                return Err(format!(
+                    "compiler MVP: capturing closure can only capture 8-byte scalars (i64 / u64 / f64 / bool); `{}` has type {:?}",
+                    self.interner.resolve(*cap_name).unwrap_or("?"),
+                    cap_ty
+                ));
+            }
+            let local = match self.bindings.get(cap_name) {
+                Some(bindings::Binding::Scalar { local, .. }) => *local,
+                _ => {
+                    return Err(format!(
+                        "compiler MVP: capturing inline closure cannot capture `{}` (only scalar outer locals supported)",
+                        self.interner.resolve(*cap_name).unwrap_or("?")
+                    ));
+                }
+            };
+            let v = self
+                .emit(crate::ir::InstKind::LoadLocal(local), Some(*cap_ty))
+                .ok_or_else(|| "inline closure capture: LoadLocal returned no value".to_string())?;
+            capture_vals.push(v);
+            capture_tys.push(*cap_ty);
+        }
         self.pending_closure_work.push(PendingClosureBody {
             func_id,
             parameter: params.clone(),
             body: *body,
             captures,
         });
-        // Emit FuncAddr to surface the lifted function as a U64
-        // runtime address so the surrounding call's arg evaluation
-        // can pass it through the regular value path.
-        Ok(self.emit(crate::ir::InstKind::FuncAddr { target: func_id }, Some(Type::U64)))
+        Ok(self.emit(
+            crate::ir::InstKind::MakeClosure {
+                target: func_id,
+                captures: capture_vals,
+                capture_tys,
+            },
+            Some(Type::U64),
+        ))
     }
 
     /// Closures Phase 5a: lower a queued closure body. Mirrors
@@ -772,17 +792,14 @@ impl<'a> FunctionLower<'a> {
         captures: &[(DefaultSymbol, Type)],
     ) -> Result<(), String> {
         let param_types: Vec<Type> = self.module.function(self.func_id).params.clone();
-        // Phase 6: when the closure captures, the IR signature has
-        // an implicit `env: U64` at position 0 and the user-visible
-        // parameters start at position 1. Bind env as a scalar
-        // local so we can `LoadLocal` it for each capture read.
-        let env_local = if !captures.is_empty() {
-            let local = self.module.function_mut(self.func_id).add_local(Type::U64);
-            Some(local)
-        } else {
-            None
-        };
-        let user_param_offset = if env_local.is_some() { 1 } else { 0 };
+        // Phase 6b: every closure body has env: U64 as IR
+        // param[0] (even non-capturing). User-visible parameters
+        // start at position 1. The env local is allocated up
+        // front so capture loads can `LoadLocal(env)` uniformly.
+        let env_local = Some(
+            self.module.function_mut(self.func_id).add_local(Type::U64)
+        );
+        let user_param_offset = 1;
         for (i, (name, _decl_ty)) in parameter.iter().enumerate() {
             let pt_idx = i + user_param_offset;
             match param_types[pt_idx] {

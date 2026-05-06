@@ -3249,3 +3249,64 @@ fn closure_phase6_capture_called_twice_round_trip() {
     assert_consistent(src, "closure_phase6_capture_called_twice");
 }
 
+// Closures Phase 6b — unified env-based ABI. Every closure value
+// is an env_ptr (Type::U64) pointing at `[fn_ptr][captures...]`,
+// even non-capturing closures (env layout = `[fn_ptr]`, 8 bytes).
+// CallIndirect loads fn_ptr from env+0 and prepends env to the
+// user-visible args. This unification lets capturing closures
+// flow through HOF parameters: the same indirect-call machinery
+// handles both non-capturing and capturing call sites.
+#[test]
+fn closure_phase6b_capturing_closure_via_hof_round_trip() {
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn main() -> i64 {
+            val n: i64 = 10i64
+            val add_n = fn(x: i64) -> i64 { x + n }
+            apply(add_n, 32i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6b_capturing_via_hof");
+}
+
+#[test]
+fn closure_phase6b_capturing_inline_literal_via_hof_round_trip() {
+    // Inline closure literal that captures from the outer scope
+    // and is passed straight to a HOF — exercises both
+    // `lift_closure_inline` (env build) and CallIndirect dispatch
+    // in a single expression position.
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn main() -> i64 {
+            val n: i64 = 10i64
+            apply(fn(x: i64) -> i64 { x + n }, 32i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6b_capturing_inline_via_hof");
+}
+
+#[test]
+fn closure_phase6b_capturing_called_via_two_hops_round_trip() {
+    // HOF→HOF forward of a capturing closure. The inner HOF
+    // (`apply`) sees `g` as a fn-typed parameter (Binding::
+    // FunctionPtr); reading `g` in expression position loads
+    // the env_ptr U64; passing it to `apply(g, x)` goes through
+    // the same CallIndirect path again.
+    let src = r#"
+        fn apply(f: (i64) -> i64, x: i64) -> i64 { f(x) }
+
+        fn run_via(g: (i64) -> i64, x: i64) -> i64 {
+            apply(g, x)
+        }
+
+        fn main() -> i64 {
+            val k: i64 = 7i64
+            val plus_k = fn(x: i64) -> i64 { x + k }
+            run_via(plus_k, 35i64)
+        }
+    "#;
+    assert_consistent(src, "closure_phase6b_capturing_via_two_hops");
+}
+

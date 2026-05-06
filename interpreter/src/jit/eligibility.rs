@@ -1258,9 +1258,22 @@ pub(crate) fn resolve_param_ty(
         // (non-generic, uniform / no payload), so any hit is safe
         // to expand at the boundary.
         TypeDecl::Identifier(s) if enum_layout_for(*s).is_some() => {
-            // Phase JE-5: non-generic enum payload_ty is determined
-            // entirely by the layout.
-            let payload_ty = enum_layout_for(*s).and_then(|l| l.payload_ty());
+            // Phase JE-5/JE-6: non-generic enum payload_ty is
+            // determined entirely by the layout. For generic enums
+            // referenced via bare `Identifier` (e.g. `Self_` resolved
+            // to an enum name when the impl had generic params), the
+            // substitution map drives the resolution — required for
+            // method dispatch on generic enums (`Option<T>::is_some`).
+            let layout = enum_layout_for(*s)?;
+            let payload_ty = if layout.generic_params.is_empty() {
+                layout.payload_ty()
+            } else {
+                let resolved = layout.resolve_uniform_payload(substitutions);
+                if layout.variant_payloads.iter().any(|v| v.is_some()) && resolved.is_none() {
+                    return None;
+                }
+                resolved
+            };
             Some(ParamTy::Enum { base_name: *s, payload_ty })
         }
         // Phase JE-5: parser-ambiguous form. The frontend emits
@@ -4306,6 +4319,157 @@ pub(crate) fn check_expr(
                     return None;
                 }
             };
+            // Phase JE-6: enum receiver method dispatch. When the
+            // receiver is an enum local, look up the method on the
+            // enum's base name. Generic methods (`impl<T>
+            // Option<T>`) are instantiated by zipping the layout's
+            // `generic_params` with the receiver's per-monomorph
+            // type args (currently always `[payload_ty]` because
+            // the JIT's single-payload-slot representation requires
+            // all variants to share one scalar). Self_ resolves to
+            // the enum name; the substitution map carries T from
+            // the receiver.
+            if let Some(enum_info) = enum_locals.get(&recv_name).copied() {
+                let method = match find_method(program, enum_info.base_name, method_name) {
+                    Some(m) => m,
+                    None => {
+                        note(reject_reason, || {
+                            "method not found on enum".to_string()
+                        });
+                        return None;
+                    }
+                };
+                if method.parameter.is_empty() {
+                    note(reject_reason, || {
+                        "enum method has no parameters; expected `self`".to_string()
+                    });
+                    return None;
+                }
+                let layout = enum_layout_for(enum_info.base_name)?;
+                // Build subst from method.generic_params. For the
+                // common single-generic-param case (impl<T>
+                // Option<T>) the method's [T] aligns with the
+                // layout's [T]; we map T -> receiver.payload_ty.
+                // For unit-only enums there's no payload_ty so
+                // no substitution is bound (acceptable when the
+                // method doesn't reference any generic param).
+                let mut method_subst: HashMap<DefaultSymbol, ScalarTy> = HashMap::new();
+                if !method.generic_params.is_empty() {
+                    if layout.generic_params.is_empty() {
+                        note(reject_reason, || {
+                            "JIT enum method: generic method on non-generic enum is not yet supported".to_string()
+                        });
+                        return None;
+                    }
+                    // For multi-generic enums (Result<T, E>) the
+                    // single-payload-slot constraint forces all
+                    // params to bind to the same scalar. This is a
+                    // strong restriction but matches the JE-4 layout.
+                    let payload_ty = match enum_info.payload_ty {
+                        Some(t) => t,
+                        None => {
+                            note(reject_reason, || {
+                                "JIT enum method: receiver has no payload type to bind".to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    for p in &method.generic_params {
+                        method_subst.insert(*p, payload_ty);
+                    }
+                }
+                // Merge in the receiver-context subst (rare; methods
+                // usually only see their own generics).
+                for (k, v) in substitutions.iter() {
+                    method_subst.entry(*k).or_insert(*v);
+                }
+                let expected_param_count = method.parameter.len() - 1;
+                if args.len() != expected_param_count {
+                    note(reject_reason, || {
+                        format!(
+                            "enum method call has {} arg(s), expects {}",
+                            args.len(),
+                            expected_param_count
+                        )
+                    });
+                    return None;
+                }
+                // Validate each arg type against the (substituted)
+                // method param type.
+                for (i, arg) in args.iter().enumerate() {
+                    let raw_param_td = &method.parameter[i + 1].1;
+                    let resolved_param_td = match raw_param_td {
+                        TypeDecl::Self_ => TypeDecl::Identifier(enum_info.base_name),
+                        other => other.clone(),
+                    };
+                    let want = match resolve_param_ty(
+                        &resolved_param_td, &method_subst, struct_layouts,
+                    ) {
+                        Some(ParamTy::Scalar(s)) => s,
+                        _ => {
+                            note(reject_reason, || {
+                                "JIT enum method: only scalar parameters are supported"
+                                    .to_string()
+                            });
+                            return None;
+                        }
+                    };
+                    let actual = check_expr(
+                        program, arg, locals, struct_locals, tuple_locals,
+                        enum_locals, substitutions, struct_layouts, callees,
+                        ptr_read_hints, reject_reason,
+                    )?;
+                    if actual != want {
+                        note(reject_reason, || {
+                            format!(
+                                "enum method arg type mismatch: got {actual:?}, want {want:?}"
+                            )
+                        });
+                        return None;
+                    }
+                }
+                // Build mono_args from the layout's generic_params
+                // resolved through method_subst. Empty for non-
+                // generic enums.
+                let mono_args: Vec<ScalarTy> = layout
+                    .generic_params
+                    .iter()
+                    .filter_map(|p| method_subst.get(p).copied())
+                    .collect();
+                callees.push(MonoCall {
+                    call_expr: *expr_ref,
+                    target: MonoTarget::Method(enum_info.base_name, method_name),
+                    mono_args,
+                });
+                // Return type with Self_ -> enum, generics
+                // substituted.
+                let ret = match &method.return_type {
+                    Some(td) => {
+                        let resolved = match td {
+                            TypeDecl::Self_ => TypeDecl::Identifier(enum_info.base_name),
+                            other => other.clone(),
+                        };
+                        match resolve_param_ty(&resolved, &method_subst, struct_layouts) {
+                            Some(ParamTy::Scalar(s)) => return Some(s),
+                            Some(ParamTy::Enum { .. }) => {
+                                note(reject_reason, || {
+                                    "JIT enum method returning enum must be the rhs of a val/var \
+                                     (JE-6 expression-position scope)".to_string()
+                                });
+                                return None;
+                            }
+                            _ => {
+                                note(reject_reason, || {
+                                    "enum method return type unsupported".to_string()
+                                });
+                                return None;
+                            }
+                        }
+                    }
+                    None => return Some(ScalarTy::Unit),
+                };
+                let _ = ret;
+            }
             let struct_name = match struct_locals.get(&recv_name).copied() {
                 Some(s) => s,
                 None => {

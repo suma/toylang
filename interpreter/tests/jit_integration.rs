@@ -270,6 +270,36 @@ fn jit_generic_enum_je3_actually_compiles_main() {
 }
 
 #[test]
+fn jit_enum_receiver_method_je6_compile() {
+    // Phase JE-6: enum receiver method dispatch
+    // (`o.is_some()` / `o.unwrap_or(...)`) JIT-compiles via the
+    // same MonoTarget::Method path used for struct methods.
+    // Generic methods (`impl<T> Opt<T> { ... }`) get monomorphised
+    // by zipping the layout's generic_params with the receiver's
+    // payload_ty. Both modes exit 42.
+    assert_match("example/jit_enum_receiver_method_je6.t");
+    let r = run("example/jit_enum_receiver_method_je6.t", false, false);
+    assert_eq!(r.code, 42, "interpreter exit; stderr: {}", r.stderr);
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn jit_enum_receiver_method_je6_actually_compiles_methods() {
+    // The verbose log must mention each Opt method monomorph
+    // being JIT-compiled, confirming the generic-method
+    // substitution path is exercised.
+    let r = run("example/jit_enum_receiver_method_je6.t", true, true);
+    assert_eq!(r.code, 42, "stderr: {}", r.stderr);
+    assert!(
+        r.stderr.contains("JIT compiled:")
+            && r.stderr.contains("Opt__is_some")
+            && r.stderr.contains("Opt__unwrap_or"),
+        "expected JE-6 to compile both methods; stderr: {}",
+        r.stderr
+    );
+}
+
+#[test]
 fn jit_generic_enum_boundary_je5_compile() {
     // Phase JE-5: generic enum monomorph (`Opt<i64>`) flows
     // across function param/return boundaries through the JIT.
@@ -386,19 +416,19 @@ fn jit_unit_enum_actually_compiles_pick() {
 
 #[cfg(feature = "jit")]
 #[test]
-fn jit_skip_reason_for_enum_constructor() {
-    // Phase JE-3 changed the eligibility surface for generic enums:
-    // `Option<T>` constructors are now collected, so the JIT skip
-    // reason no longer mentions "enum values". The blocker for this
-    // particular program is the enum-receiver method dispatch
-    // (`o.is_some()` / `o.unwrap_or(...)`), which is JE-6 / JE-7
-    // territory. Either way main must skip and the interpreter
-    // fallback must produce 152.
+fn jit_stdlib_option_now_compiles_via_je6() {
+    // Phase JE-6 closed the loop: enum receiver method dispatch
+    // (`o.is_some()` / `o.unwrap_or(...)`) lowers via the same
+    // `MonoTarget::Method` path the JIT uses for struct methods.
+    // `core/std/option.t`'s methods now JIT-compile end-to-end.
+    // Both modes must produce 152.
     let r = run("example/stdlib_option.t", true, true);
-    assert_eq!(r.code, 152, "fallback exit code; stderr: {}", r.stderr);
+    assert_eq!(r.code, 152, "exit; stderr: {}", r.stderr);
     assert!(
-        r.stderr.contains("JIT: skipped"),
-        "expected JIT to skip; stderr: {}",
+        r.stderr.contains("JIT compiled:")
+            && r.stderr.contains("Option__is_some")
+            && r.stderr.contains("Option__unwrap_or"),
+        "expected JE-6 to compile Option methods; stderr: {}",
         r.stderr
     );
 }

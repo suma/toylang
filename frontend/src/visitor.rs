@@ -1,5 +1,5 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef, TraitMethodSignature};
+use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef, TraitMethodSignature, ParameterList};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 use std::rc::Rc;
@@ -70,6 +70,19 @@ pub trait AstVisitor {
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<MatchArm>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_range(&mut self, start: &ExprRef, end: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    /// `fn(params) -> Ret { body }` — closure / lambda literal. The
+    /// default implementation returns `TypeDecl::Unknown` so that
+    /// frontend-only Phase 1 lands without forcing every existing
+    /// visitor to implement it; the type checker overrides this in
+    /// Phase 2.
+    fn visit_closure(
+        &mut self,
+        _params: &ParameterList,
+        _return_type: &Option<TypeDecl>,
+        _body: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Unknown)
+    }
 
     // Stmt variants
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;

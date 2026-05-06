@@ -513,6 +513,29 @@ fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern>
     Ok(crate::ast::Pattern::EnumVariant(first, second, sub_patterns))
 }
 
+/// Parse a closure / lambda literal: `fn(params) -> Ret { body }`. The
+/// caller has confirmed (via lookahead) that the current token is
+/// `Function` and the next is `ParenOpen`. The closure shares the
+/// declaration parameter list parser so syntax stays consistent with
+/// top-level `fn name(...)`. The return type annotation is optional;
+/// when omitted the body's type drives the inferred return type at
+/// the type-checker layer (Phase 2).
+fn parse_closure_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let location = parser.current_source_location();
+    parser.expect_err(&Kind::Function)?;
+    parser.expect_err(&Kind::ParenOpen)?;
+    let params = parser.parse_param_def_list(vec![])?;
+    parser.expect_err(&Kind::ParenClose)?;
+    let return_type = if parser.peek() == Some(&Kind::Arrow) {
+        parser.next();
+        Some(parser.parse_type_declaration()?)
+    } else {
+        None
+    };
+    let body = parse_block(parser)?;
+    Ok(parser.ast_builder.closure_expr(params, return_type, body, Some(location)))
+}
+
 pub fn parse_block(parser: &mut Parser) -> ParserResult<ExprRef> {
     parser.expect_err(&Kind::BraceOpen)?;
     match parser.peek() {
@@ -935,6 +958,16 @@ fn parse_tuple_or_grouped_expr(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
+    // Closure literal: `fn(params) -> Ret { body }`. Distinguished from
+    // top-level `fn name(...)` declarations by the next token — a closure
+    // jumps straight to `(`, while a declaration always carries an
+    // identifier first. Top-level `fn` declarations are parsed in
+    // `program_parser.rs`, so any `fn` reaching here is an expression.
+    if matches!(parser.peek(), Some(Kind::Function))
+        && matches!(parser.peek_n(1), Some(Kind::ParenOpen))
+    {
+        return parse_closure_expr(parser);
+    }
     match parser.peek() {
         Some(Kind::ParenOpen) => {
             parse_tuple_or_grouped_expr(parser)

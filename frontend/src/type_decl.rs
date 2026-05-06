@@ -40,6 +40,12 @@ pub enum TypeDecl {
     /// runtime representation. IR-level pointer passing and the
     /// borrow checker are deferred to later phases.
     Ref { is_mut: bool, inner: Box<TypeDecl> },
+    /// Function value type `(T1, T2, ...) -> R`. Represents both
+    /// closure literals (`fn(x: i64) -> i64 { x + 1 }`) and bare
+    /// function references passed by value. Phase 1 (frontend-only)
+    /// landing — interpreter / JIT / AOT execution paths come in
+    /// follow-up phases.
+    Function(Vec<TypeDecl>, Box<TypeDecl>),
 }
 
 impl TypeDecl {
@@ -105,6 +111,13 @@ impl TypeDecl {
                 params1.len() == params2.len()
                     && params1.iter().zip(params2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
+            // Function types match structurally: same arity + per-position
+            // equivalence + equivalent return types.
+            (TypeDecl::Function(p1, r1), TypeDecl::Function(p2, r2)) => {
+                p1.len() == p2.len()
+                    && p1.iter().zip(p2.iter()).all(|(a, b)| a.is_equivalent(b))
+                    && r1.is_equivalent(r2)
+            }
             // Generic types are compatible with any type during inference
             (TypeDecl::Generic(_), _) | (_, TypeDecl::Generic(_)) => true,
             // Unknown types are compatible with any type
@@ -181,6 +194,13 @@ impl TypeDecl {
             TypeDecl::Struct(_, args) => args.iter().any(|t| t.contains_ref()),
             TypeDecl::Enum(_, args) => args.iter().any(|t| t.contains_ref()),
             TypeDecl::Range(t) => t.contains_ref(),
+            // Function values would let a `&T` escape via the
+            // returned value or hide one in a parameter slot, so
+            // walk both halves of the signature for the same
+            // syntactic-escape rule.
+            TypeDecl::Function(params, ret) => {
+                params.iter().any(|t| t.contains_ref()) || ret.contains_ref()
+            }
             _ => false,
         }
     }
@@ -224,6 +244,13 @@ impl TypeDecl {
                     is_mut: *is_mut,
                     inner: Box::new(inner.substitute_generics(substitutions)),
                 }
+            }
+            TypeDecl::Function(params, ret) => {
+                let new_params = params.iter()
+                    .map(|t| t.substitute_generics(substitutions))
+                    .collect();
+                let new_ret = Box::new(ret.substitute_generics(substitutions));
+                TypeDecl::Function(new_params, new_ret)
             }
             // For all other types, no substitution needed
             _ => self.clone(),

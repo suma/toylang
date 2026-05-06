@@ -1,7 +1,7 @@
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use std::rc::Rc;
 use crate::type_decl::TypeDecl;
-use super::{ExprRef, StmtRef, StructField, Visibility, MethodFunction, TraitMethodSignature};
+use super::{ExprRef, StmtRef, StructField, Visibility, MethodFunction, TraitMethodSignature, ParameterList};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SliceType {
@@ -197,6 +197,16 @@ pub enum Expr {
     With(ExprRef, ExprRef),  // with allocator = allocator_expr { body } - scoped allocator binding
     Match(ExprRef, Vec<MatchArm>),  // match scrutinee { pat [if guard] => body, ... }
     Range(ExprRef, ExprRef),  // start..end — half-open integer range literal
+    /// Closure / lambda literal: `fn(x: T, y: U) -> R { body }`. Phase 1
+    /// (frontend-only) — parses + lives in the AST + (Phase 2) the type
+    /// checker reports a function type. Interpreter / JIT / AOT execution
+    /// is wired up in subsequent phases. The `body` is an `ExprRef`
+    /// pointing at an `Expr::Block`.
+    Closure {
+        params: ParameterList,
+        return_type: Option<TypeDecl>,
+        body: ExprRef,
+    },
 }
 
 impl Expr {

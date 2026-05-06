@@ -245,13 +245,26 @@ impl<'a> Parser<'a> {
                 Ok(TypeDecl::Dict(Box::new(key_type), Box::new(value_type)))
             }
             Some(Kind::ParenOpen) => {
-                // Parse tuple type: (type1, type2, ...)
+                // Parse tuple type `(T1, T2, ...)` — or, when the
+                // matching close-paren is followed by `->`, a
+                // function type `(T1, T2) -> R`. The disambiguation
+                // matters because `()` may also appear in either
+                // form: `()` is the unit tuple and `() -> R` is a
+                // zero-arg function type. We peek past the close
+                // paren after parsing the parenthesised type list
+                // and rewrite into the function form when `Arrow`
+                // follows.
                 self.next();
                 self.skip_newlines();
 
-                // Handle empty tuple: ()
+                // Handle empty tuple / zero-arg function: ()
                 if self.peek() == Some(&Kind::ParenClose) {
                     self.next();
+                    if self.peek() == Some(&Kind::Arrow) {
+                        self.next(); // consume `->`
+                        let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
+                        return Ok(TypeDecl::Function(vec![], Box::new(ret)));
+                    }
                     return Ok(TypeDecl::Tuple(vec![]));
                 }
 
@@ -278,6 +291,11 @@ impl<'a> Parser<'a> {
                 }
 
                 self.expect_err(&Kind::ParenClose)?;
+                if self.peek() == Some(&Kind::Arrow) {
+                    self.next(); // consume `->`
+                    let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
+                    return Ok(TypeDecl::Function(element_types, Box::new(ret)));
+                }
                 Ok(TypeDecl::Tuple(element_types))
             }
             Some(_) | None => {

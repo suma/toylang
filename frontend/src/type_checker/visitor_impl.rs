@@ -56,6 +56,9 @@ impl Acceptable for Expr {
             Expr::With(allocator, body) => visitor.visit_with(allocator, body),
             Expr::Match(scrutinee, arms) => visitor.visit_match(scrutinee, arms),
             Expr::Range(start, end) => visitor.visit_range(start, end),
+            Expr::Closure { params, return_type, body } => {
+                visitor.visit_closure(params, return_type, body)
+            }
         }
     }
 }

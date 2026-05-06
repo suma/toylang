@@ -252,6 +252,12 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                 let prefix = if *is_mut { "&mut " } else { "&" };
                 format!("{}{}", prefix, self.format_type_for_error(inner))
             }
+            TypeDecl::Function(params, ret) => {
+                let param_strs: Vec<String> = params.iter()
+                    .map(|t| self.format_type_for_error(t))
+                    .collect();
+                format!("({}) -> {}", param_strs.join(", "), self.format_type_for_error(ret))
+            }
         }
     }
     

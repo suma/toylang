@@ -280,6 +280,18 @@ impl AstBuilder {
         expr_ref
     }
 
+    pub fn closure_expr(
+        &mut self,
+        params: crate::ast::ParameterList,
+        return_type: Option<crate::type_decl::TypeDecl>,
+        body: ExprRef,
+        location: Option<SourceLocation>,
+    ) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Closure { params, return_type, body });
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);

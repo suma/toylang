@@ -6,7 +6,7 @@ use crate::visitor::AstVisitor;
 use super::{
     Expr, Stmt, Operator, UnaryOp, SliceInfo, MatchArm, EnumVariantDef,
     BuiltinMethod, BuiltinFunction,
-    StructField, Visibility, MethodFunction, TraitMethodSignature,
+    StructField, Visibility, MethodFunction, TraitMethodSignature, ParameterList,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -73,6 +73,8 @@ pub enum ExprType {
     UInt8 = 36,
     UInt16 = 37,
     UInt32 = 38,
+    /// `fn(params) -> Ret { body }` — closure / lambda literal. Phase 1.
+    Closure = 39,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -127,6 +129,11 @@ pub struct ExprPool {
     pub slice_info: Vec<Option<SliceInfo>>,        // For slice access
     pub target_type: Vec<Option<TypeDecl>>,        // For cast expressions
     pub match_arms: Vec<Option<Vec<MatchArm>>>,  // For match expressions
+    /// Closure parameter list (one entry per closure expression).
+    /// Reuses `target_type` for the closure's optional declared return
+    /// type and `lhs` for the body `ExprRef`. Kept as a separate
+    /// parallel array because no other variant needs `ParameterList`.
+    pub closure_params: Vec<Option<ParameterList>>,
 }
 
 impl Default for ExprPool {
@@ -161,6 +168,7 @@ impl ExprPool {
             slice_info: Vec::new(),
             target_type: Vec::new(),
             match_arms: Vec::new(),
+            closure_params: Vec::new(),
         }
     }
 
@@ -189,6 +197,7 @@ impl ExprPool {
             slice_info: Vec::with_capacity(cap),
             target_type: Vec::with_capacity(cap),
             match_arms: Vec::with_capacity(cap),
+            closure_params: Vec::with_capacity(cap),
         }
     }
 
@@ -219,6 +228,7 @@ impl ExprPool {
             self.slice_info.resize(current_len + extend_count, None);
             self.target_type.resize(current_len + extend_count, None);
             self.match_arms.resize(current_len + extend_count, None);
+            self.closure_params.resize(current_len + extend_count, None);
         }
     }
 
@@ -410,6 +420,15 @@ impl ExprPool {
                 self.lhs[index] = Some(start);
                 self.rhs[index] = Some(end);
             }
+            Expr::Closure { params, return_type, body } => {
+                // body ExprRef stored in lhs; declared return type
+                // (optional) in target_type; params in the dedicated
+                // closure_params slot.
+                self.expr_types[index] = ExprType::Closure;
+                self.lhs[index] = Some(body);
+                self.target_type[index] = return_type;
+                self.closure_params[index] = Some(params);
+            }
         }
 
         ExprRef(index as u32)
@@ -591,6 +610,13 @@ impl ExprPool {
                     self.rhs[index]?,
                 ))
             }
+            ExprType::Closure => {
+                Some(Expr::Closure {
+                    params: self.closure_params[index].clone()?,
+                    return_type: self.target_type[index].clone(),
+                    body: self.lhs[index]?,
+                })
+            }
         }
     }
 
@@ -629,6 +655,8 @@ impl ExprPool {
         self.index_val[index] = None;
         self.third_operand[index] = None;
         self.match_arms[index] = None;
+        self.closure_params[index] = None;
+        self.target_type[index] = None;
 
         // Set the new expression data
         match expr {
@@ -815,6 +843,12 @@ impl ExprPool {
                 self.expr_types[index] = ExprType::Range;
                 self.lhs[index] = Some(start);
                 self.rhs[index] = Some(end);
+            }
+            Expr::Closure { params, return_type, body } => {
+                self.expr_types[index] = ExprType::Closure;
+                self.lhs[index] = Some(body);
+                self.target_type[index] = return_type;
+                self.closure_params[index] = Some(params);
             }
         }
     }

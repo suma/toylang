@@ -516,6 +516,87 @@ impl<'a> FunctionLower<'a> {
             }
             // Falls through to the scalar path (could be a const).
         }
+        // ITER-PROTOCOL-AOT: `match obj.method(...)` where the
+        // method returns an enum. Required by the iterator-protocol
+        // desugaring (`for x in iter { ... }` lowers to
+        // `match __iter.next() { Some(x) => ..., None => break }`).
+        // Allocates fresh enum storage, emits a CallEnum that
+        // populates it (with `&mut self` writeback if needed), and
+        // returns it as the scrutinee. Identifier-bound enums
+        // already short-circuited above; this arm covers
+        // expression scrutinees.
+        if let Expr::MethodCall(recv, method_sym, method_args) = scrut_expr.clone() {
+            if let Some((target_id, recv_binding)) =
+                self.resolve_method_target(&recv, method_sym, &method_args)?
+            {
+                let target_ret = self.module.function(target_id).return_type;
+                if let Type::Enum(enum_id) = target_ret {
+                    let storage = self.allocate_enum_storage(enum_id);
+                    let mut dests = Self::flatten_enum_dests(&storage);
+                    // Receiver leaves first (matches
+                    // `populate_method_writeback_types` order).
+                    let mut all_args: Vec<crate::ir::ValueId> = Vec::new();
+                    match &recv_binding {
+                        Binding::Struct { fields, .. } => {
+                            for (local, ty) in
+                                super::bindings::flatten_struct_locals(fields)
+                            {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(local), Some(ty))
+                                    .expect("LoadLocal returns");
+                                all_args.push(v);
+                            }
+                        }
+                        Binding::Enum(stg) => {
+                            let stg = stg.clone();
+                            let vs = self.load_enum_locals(&stg);
+                            all_args.extend(vs);
+                        }
+                        _ => unreachable!(
+                            "resolve_method_target only returns struct / enum receivers"
+                        ),
+                    }
+                    for a in &method_args {
+                        let v = self
+                            .lower_expr(a)?
+                            .ok_or_else(|| "method argument produced no value".to_string())?;
+                        all_args.push(v);
+                    }
+                    let needs_writeback = !self
+                        .module
+                        .function(target_id)
+                        .self_writeback_types
+                        .is_empty();
+                    if needs_writeback {
+                        match &recv_binding {
+                            Binding::Struct { fields, .. } => {
+                                for (l, _) in
+                                    super::bindings::flatten_struct_locals(fields)
+                                {
+                                    dests.push(l);
+                                }
+                            }
+                            Binding::Enum(stg) => {
+                                Self::flatten_enum_dests_into(stg, &mut dests);
+                            }
+                            _ => {}
+                        }
+                        let arg_dests =
+                            self.collect_compound_writeback_dests_slice(&method_args)?;
+                        dests.extend(arg_dests);
+                    }
+                    self.emit(
+                        InstKind::CallEnum {
+                            target: target_id,
+                            args: all_args,
+                            dests,
+                        },
+                        None,
+                    );
+                    return Ok(MatchScrutinee::Enum(storage));
+                }
+            }
+        }
         // Generic scalar scrutinee: lower the expression once.
         let ty = self.value_scalar(scrutinee).ok_or_else(|| {
             "compiler MVP requires `match` scrutinee to be either an enum binding \

@@ -928,15 +928,14 @@ parser picks the desugaring based on what follows `EXPR`:
    (the enclosing for-loop, the next iteration, or the surrounding
    function respectively).
 
-   **Backend coverage**: interpreter and JIT both run the protocol
-   end-to-end (JIT inherits from the interpreter via the existing
-   silent-fallback rules). AOT compilation of the iterator-protocol
-   form is a follow-up — programs that compile through `compiler`
-   currently surface a lowering error
-   (`val/var rhs produced no value`) on the desugared
-   `var __iter_for_<n> = EXPR` binding when EXPR is a struct value
-   produced by an associated function call. Range-based `for` loops
-   keep the dedicated AOT fast path.
+   **Backend coverage**: interpreter, AOT compiler, and the
+   cranelift JIT all run the protocol end-to-end. Range-based
+   `for` loops keep the dedicated AOT fast path. The desugaring
+   skips the synthetic `var __iter_for_<n> = EXPR` temporary when
+   EXPR is already a bare identifier (the AOT compiler's let-rhs
+   path doesn't aliasing-copy struct bindings); `&mut self`
+   writeback through `iter.next()` mutates the user's original
+   binding correctly between iterations.
 
 `break` / `continue` apply to the innermost enclosing loop; labelled
 break is not implemented.

@@ -3587,6 +3587,121 @@ fn string_interp_double_brace_escape_round_trip() {
     assert_consistent(src, "string_interp_double_brace_escape");
 }
 
+// ITER-PROTOCOL-AOT: 3-way consistency for the iterator protocol.
+// `for x in iter { ... }` desugars to a while + match on
+// `iter.next()` (an `&mut self` enum-returning method call) at the
+// parser level. AOT support requires (a) `&mut self` writeback in
+// let-rhs / match-scrutinee positions, (b) skipping the synthetic
+// temporary when EXPR is already a bare identifier so the desugared
+// `var __iter = iter` doesn't try to alias-copy a struct binding.
+
+const ITER_COUNTER_PRELUDE: &str = r#"
+    struct Counter { current: i64, end: i64 }
+    impl Counter {
+        fn new(end: i64) -> Self {
+            Counter { current: 0i64, end: end }
+        }
+        fn next(&mut self) -> Option<i64> {
+            if self.current >= self.end {
+                Option::None
+            } else {
+                val v = self.current
+                self.current = self.current + 1i64
+                Option::Some(v)
+            }
+        }
+    }
+"#;
+
+#[test]
+fn iter_protocol_basic_round_trip() {
+    let src = format!(
+        r#"
+        {ITER_COUNTER_PRELUDE}
+        fn main() -> i64 {{
+            var sum = 0i64
+            var iter = Counter::new(5i64)
+            for x in iter {{ sum = sum + x }}
+            sum
+        }}
+        "#,
+    );
+    assert_consistent(&src, "iter_protocol_basic");
+}
+
+#[test]
+fn iter_protocol_break_round_trip() {
+    let src = format!(
+        r#"
+        {ITER_COUNTER_PRELUDE}
+        fn main() -> i64 {{
+            var sum = 0i64
+            var iter = Counter::new(100i64)
+            for x in iter {{
+                if x >= 5i64 {{ break }}
+                sum = sum + x
+            }}
+            sum
+        }}
+        "#,
+    );
+    assert_consistent(&src, "iter_protocol_break");
+}
+
+#[test]
+fn iter_protocol_continue_round_trip() {
+    let src = format!(
+        r#"
+        {ITER_COUNTER_PRELUDE}
+        fn main() -> i64 {{
+            var sum = 0i64
+            var iter = Counter::new(10i64)
+            for x in iter {{
+                if x % 2i64 == 1i64 {{ continue }}
+                sum = sum + x
+            }}
+            sum
+        }}
+        "#,
+    );
+    assert_consistent(&src, "iter_protocol_continue");
+}
+
+#[test]
+fn iter_protocol_zero_iterations_round_trip() {
+    let src = format!(
+        r#"
+        {ITER_COUNTER_PRELUDE}
+        fn main() -> i64 {{
+            var sum = 0i64
+            var iter = Counter::new(0i64)
+            for x in iter {{ sum = sum + x + 1i64 }}
+            sum
+        }}
+        "#,
+    );
+    assert_consistent(&src, "iter_protocol_zero_iterations");
+}
+
+#[test]
+fn iter_protocol_nested_round_trip() {
+    let src = format!(
+        r#"
+        {ITER_COUNTER_PRELUDE}
+        fn main() -> i64 {{
+            var total = 0i64
+            var outer = Counter::new(3i64)
+            for i in outer {{
+                var inner = Counter::new(3i64)
+                for j in inner {{ total = total + i * j }}
+            }}
+            total
+        }}
+        "#,
+    );
+    assert_consistent(&src, "iter_protocol_nested");
+}
+
 #[test]
 fn string_interp_chain_with_println_round_trip() {
     // Exercises the full chain through `println` — interpolation

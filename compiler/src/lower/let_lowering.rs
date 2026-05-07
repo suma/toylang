@@ -679,14 +679,58 @@ impl<'a> FunctionLower<'a> {
                             .ok_or_else(|| "method argument produced no value".to_string())?;
                         all_args.push(v);
                     }
+                    // ITER-PROTOCOL-AOT: when the callee is `&mut self`
+                    // (or has compound `&mut T` arg writeback declared),
+                    // its cranelift signature carries extra return
+                    // values for the writeback leaves. Compute the
+                    // additional dests so the caller-side bindings
+                    // receive the modified leaves alongside the
+                    // compound result. Order matches
+                    // `populate_method_writeback_types`: receiver
+                    // leaves first, then args in declaration order.
+                    let needs_writeback = !self
+                        .module
+                        .function(target_id)
+                        .self_writeback_types
+                        .is_empty();
+                    let receiver_writeback_dests: Vec<LocalId> = if needs_writeback {
+                        match &recv_binding {
+                            Binding::Struct { fields, .. } => flatten_struct_locals(fields)
+                                .into_iter()
+                                .map(|(l, _)| l)
+                                .collect(),
+                            Binding::Enum(storage) => {
+                                let mut out = Vec::new();
+                                Self::flatten_enum_dests_into(storage, &mut out);
+                                out
+                            }
+                            _ => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    let arg_writeback_dests: Vec<LocalId> = if needs_writeback {
+                        // Build a synthetic ExprList for the args so
+                        // `collect_compound_writeback_dests` can scan
+                        // them. We can't reuse the existing helper
+                        // (`collect_compound_writeback_dests_slice`)
+                        // because it lives on the same module; the
+                        // helper takes a slice of ExprRefs, which is
+                        // exactly `&method_args`.
+                        self.collect_compound_writeback_dests_slice(&method_args)?
+                    } else {
+                        Vec::new()
+                    };
                     match target_ret {
                         Type::Struct(struct_id) => {
                             let fields = self.allocate_struct_fields(struct_id);
-                            let dests: Vec<LocalId> =
+                            let mut dests: Vec<LocalId> =
                                 flatten_struct_locals(&fields)
                                     .into_iter()
                                     .map(|(l, _)| l)
                                     .collect();
+                            dests.extend(receiver_writeback_dests.iter().copied());
+                            dests.extend(arg_writeback_dests.iter().copied());
                             self.register_drop_for_struct_binding(struct_id, &fields);
                             self.bindings.insert(
                                 name,
@@ -703,11 +747,13 @@ impl<'a> FunctionLower<'a> {
                         }
                         Type::Tuple(tuple_id) => {
                             let elements = self.allocate_tuple_elements(tuple_id)?;
-                            let dests: Vec<LocalId> =
+                            let mut dests: Vec<LocalId> =
                                 flatten_tuple_element_locals(&elements)
                                     .into_iter()
                                     .map(|(l, _)| l)
                                     .collect();
+                            dests.extend(receiver_writeback_dests.iter().copied());
+                            dests.extend(arg_writeback_dests.iter().copied());
                             self.bindings.insert(
                                 name,
                                 Binding::Tuple { elements },
@@ -723,7 +769,9 @@ impl<'a> FunctionLower<'a> {
                         }
                         Type::Enum(enum_id) => {
                             let storage = self.allocate_enum_storage(enum_id);
-                            let dests = Self::flatten_enum_dests(&storage);
+                            let mut dests = Self::flatten_enum_dests(&storage);
+                            dests.extend(receiver_writeback_dests.iter().copied());
+                            dests.extend(arg_writeback_dests.iter().copied());
                             self.bindings.insert(name, Binding::Enum(storage));
                             self.emit(
                                 InstKind::CallEnum {

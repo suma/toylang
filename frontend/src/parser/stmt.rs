@@ -157,29 +157,48 @@ fn desugar_for_in_iterator(
     body: ExprRef,
     location: crate::type_checker::SourceLocation,
 ) -> StmtRef {
-    let counter = parser.synthetic_counter;
-    parser.synthetic_counter += 1;
-    let iter_name = format!("__iter_for_{counter}");
-    let iter_sym = parser.string_interner.get_or_intern(iter_name.as_str());
+    // ITER-PROTOCOL-AOT: when EXPR is already a bare identifier
+    // bound by the caller (e.g. `for x in iter { ... }` where the
+    // user wrote `var iter = Counter::new(...)` above), skip the
+    // synthetic temporary and call `iter.next()` directly. The
+    // AOT compiler's let-rhs path doesn't aliasing-copy struct
+    // bindings (`var __iter = iter` would fail with "val/var rhs
+    // produced no value" since struct values aren't first-class
+    // SSA), but `&mut self` writeback still mutates the user's
+    // original binding correctly between iterations.
     let option_sym = parser.string_interner.get_or_intern("Option");
     let some_sym = parser.string_interner.get_or_intern("Some");
     let none_sym = parser.string_interner.get_or_intern("None");
     let next_sym = parser.string_interner.get_or_intern("next");
 
-    // var __iter_for_n = iter_expr
-    let iter_decl = parser.ast_builder.var_stmt(
-        iter_sym,
-        None,
-        Some(iter_expr),
-        Some(location.clone()),
-    );
-
-    // __iter_for_n.next()
-    let iter_ident = parser
+    let iter_expr_kind = parser
         .ast_builder
-        .identifier_expr(iter_sym, Some(location.clone()));
+        .get_expr_pool()
+        .get(&iter_expr);
+    let bare_identifier = matches!(iter_expr_kind, Some(Expr::Identifier(_)));
+
+    let (prelude_stmts, receiver_expr): (Vec<StmtRef>, ExprRef) = if bare_identifier {
+        (Vec::new(), iter_expr)
+    } else {
+        let counter = parser.synthetic_counter;
+        parser.synthetic_counter += 1;
+        let iter_name = format!("__iter_for_{counter}");
+        let iter_sym = parser.string_interner.get_or_intern(iter_name.as_str());
+        let iter_decl = parser.ast_builder.var_stmt(
+            iter_sym,
+            None,
+            Some(iter_expr),
+            Some(location.clone()),
+        );
+        let iter_ident = parser
+            .ast_builder
+            .identifier_expr(iter_sym, Some(location.clone()));
+        (vec![iter_decl], iter_ident)
+    };
+
+    // receiver.next()
     let next_call = parser.ast_builder.method_call_expr(
-        iter_ident,
+        receiver_expr,
         next_sym,
         vec![],
         Some(location.clone()),
@@ -237,10 +256,12 @@ fn desugar_for_in_iterator(
         .ast_builder
         .while_stmt(true_expr, while_body, Some(location.clone()));
 
-    // Outer block: { var __iter = ...; while ... { ... } }
+    // Outer block: { [optional var __iter = ...;] while ... { ... } }
+    let mut outer_stmts = prelude_stmts;
+    outer_stmts.push(while_stmt);
     let outer_block = parser
         .ast_builder
-        .block_expr(vec![iter_decl, while_stmt], Some(location.clone()));
+        .block_expr(outer_stmts, Some(location.clone()));
     parser
         .ast_builder
         .add_stmt_with_location(Stmt::Expression(outer_block), Some(location))

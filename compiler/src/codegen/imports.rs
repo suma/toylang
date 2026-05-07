@@ -180,6 +180,18 @@ impl<M: Module> CodegenSession<M> {
             log: self.module.declare_func_in_func(self.libm_log, func),
             log2: self.module.declare_func_in_func(self.libm_log2, func),
             exp: self.module.declare_func_in_func(self.libm_exp, func),
+            str_concat: self.module.declare_func_in_func(self.rt_str_concat, func),
+            to_string_i64: self.module.declare_func_in_func(self.rt_to_string_i64, func),
+            to_string_u64: self.module.declare_func_in_func(self.rt_to_string_u64, func),
+            to_string_f64: self.module.declare_func_in_func(self.rt_to_string_f64, func),
+            to_string_bool: self.module.declare_func_in_func(self.rt_to_string_bool, func),
+            to_string_str: self.module.declare_func_in_func(self.rt_to_string_str, func),
+            to_string_i8: self.module.declare_func_in_func(self.rt_to_string_i8, func),
+            to_string_u8: self.module.declare_func_in_func(self.rt_to_string_u8, func),
+            to_string_i16: self.module.declare_func_in_func(self.rt_to_string_i16, func),
+            to_string_u16: self.module.declare_func_in_func(self.rt_to_string_u16, func),
+            to_string_i32: self.module.declare_func_in_func(self.rt_to_string_i32, func),
+            to_string_u32: self.module.declare_func_in_func(self.rt_to_string_u32, func),
         }
     }
 }

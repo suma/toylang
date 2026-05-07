@@ -996,15 +996,43 @@ impl<'a> FunctionLower<'a> {
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
             BuiltinFunction::ToString => {
-                // String interpolation desugaring uses
-                // `__builtin_to_string(value)`. AOT can't allocate
-                // owned heap strings yet, so reject cleanly with a
-                // pointer to the follow-up. Interpreter handles it
-                // via `Object::to_display_string`.
-                Err("compiler MVP does not yet support \
-                     `__builtin_to_string` (string interpolation \
-                     uses it; falls back to interpreter for now)"
-                    .to_string())
+                // STR-INTERP-AOT: lower to `InstKind::ToString`,
+                // which codegen turns into a call to the matching
+                // `toy_to_string_<ty>` runtime helper. The arg's
+                // IR type is captured here so codegen can pick the
+                // right helper without re-inferring later.
+                if args.len() != 1 {
+                    return Err(format!(
+                        "__builtin_to_string takes 1 argument, got {}",
+                        args.len()
+                    ));
+                }
+                let arg_value = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "__builtin_to_string arg produced no value".to_string())?;
+                let value_ty = self
+                    .value_ir_type_for(arg_value)
+                    .ok_or_else(|| {
+                        "__builtin_to_string: could not infer arg IR type at lower time".to_string()
+                    })?;
+                // Compound types aren't supported by the
+                // to_string_* runtime family. Reject early so the
+                // user gets a precise message rather than a
+                // codegen-time internal error.
+                if matches!(
+                    value_ty,
+                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit
+                ) {
+                    return Err(format!(
+                        "compiler MVP cannot lower __builtin_to_string of compound type {:?} \
+                         yet — interpolation supports primitives only at AOT",
+                        value_ty
+                    ));
+                }
+                Ok(self.emit(
+                    InstKind::ToString { value: arg_value, value_ty },
+                    Some(Type::Str),
+                ))
             }
             BuiltinFunction::MemCopy => {
                 // `__builtin_mem_copy(src: ptr, dest: ptr, size: u64)`

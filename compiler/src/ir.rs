@@ -767,6 +767,20 @@ pub enum InstKind {
     /// str value's byte pointer. Returns the byte count (NOT the
     /// character count for multi-byte UTF-8).
     StrLen { value: ValueId },
+    /// `s.concat(t) -> str` — runtime str concatenation. Both
+    /// operands are runtime str pointers (point at the u64 len
+    /// field per the toylang str layout); the result is a fresh
+    /// heap-allocated str with the same layout. Produced when the
+    /// type checker resolves `BuiltinMethod::StrConcat`.
+    StrConcat { a: ValueId, b: ValueId },
+    /// `__builtin_to_string(value) -> str` — format any scalar
+    /// value as its display string and return a heap-allocated
+    /// str. The `value_ty` snapshot is captured at lower time so
+    /// codegen picks the matching `toy_to_string_<ty>` runtime
+    /// helper. Powers the parser-level desugaring of string
+    /// interpolation (`"hello {x}"` →
+    /// `"hello ".concat(__builtin_to_string(x))`).
+    ToString { value: ValueId, value_ty: Type },
     /// `__builtin_mem_copy(src, dest, size)` — libc memcpy. Note
     /// the toylang argument order is (src, dest, size); codegen
     /// swaps to libc's `(dest, src, n)` at the call site.
@@ -1332,6 +1346,12 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::StrLen { value } => {
                 write!(f, "{prefix}str_len {value}")
+            }
+            InstKind::StrConcat { a, b } => {
+                write!(f, "{prefix}str_concat {a}, {b}")
+            }
+            InstKind::ToString { value, value_ty } => {
+                write!(f, "{prefix}to_string {value}: {value_ty}")
             }
             InstKind::MemCopy { src, dest, size } => {
                 write!(f, "mem_copy {src} -> {dest}, {size}")

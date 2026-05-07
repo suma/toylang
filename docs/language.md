@@ -689,12 +689,17 @@ participate (`"point at {Point { x: 1, y: 2 }}"`). Nested string
 literals inside `{expr}` are not yet supported (the inner `"`
 terminates the outer regex).
 
-**Backend coverage**: interpreter runs the desugaring end-to-end.
-JIT silently falls back (no `str` value model yet — the eligibility
-check rejects `__builtin_to_string` with a precise reason). AOT
-rejects the desugared chain at lower time with a clear message;
-landing it in the AOT path needs heap-allocated str support
-(see todo.md `STR-INTERP-AOT`).
+**Backend coverage**: interpreter, AOT compiler, and the
+cranelift JIT all run the desugaring end-to-end. AOT and JIT
+share the runtime helpers `toy_str_concat` and the
+`toy_to_string_<ty>` family (one per scalar primitive); both
+emit identical heap-str layout
+(`[bytes][NUL][u64 len LE]`, returned pointer points at the
+`u64 len` field) so the result is pointer-uniform with `.rodata`
+strs and flows through `print` / `println` / `__builtin_str_len`
+unchanged. The interpreter JIT
+(`interpreter/src/jit/`, separate codebase) silently falls back
+to the tree-walking interpreter for interpolation.
 
 ### Array, tuple, and dict literals
 

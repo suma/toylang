@@ -534,6 +534,38 @@ impl<'a> FunctionLower<'a> {
         if let Some(field_call) = self.try_lower_field_closure_call(obj, method, args)? {
             return Ok(field_call);
         }
+        // STR-INTERP-AOT: built-in str methods that don't have a
+        // user-visible `impl` block. Today the type checker
+        // registers `concat` directly through
+        // `BuiltinMethod::StrConcat` (see
+        // `frontend/src/type_checker/builtin.rs`), so the Step D
+        // extension-trait lookup below would miss them. Intercept
+        // before that path and emit a direct call to the runtime
+        // helper. Restricted to str receivers; numeric
+        // BuiltinMethods (StrLen on str / I64Abs etc.) either go
+        // through `__builtin_str_len(s)` already or were migrated
+        // to extension-trait impls in the prelude (Step F).
+        if let Some(Type::Str) = self.value_scalar(obj) {
+            let method_name = self.interner.resolve(method).unwrap_or("");
+            if method_name == "concat" {
+                if args.len() != 1 {
+                    return Err(format!(
+                        "str.concat takes 1 argument, got {}",
+                        args.len()
+                    ));
+                }
+                let recv_v = self
+                    .lower_expr(obj)?
+                    .ok_or_else(|| "str.concat receiver produced no value".to_string())?;
+                let arg_v = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "str.concat argument produced no value".to_string())?;
+                return Ok(self.emit(
+                    InstKind::StrConcat { a: recv_v, b: arg_v },
+                    Some(Type::Str),
+                ));
+            }
+        }
         // Step D + F: extension-trait dispatch on a primitive
         // receiver. Run *before* the bare-identifier check so
         // chained primitive method calls (`x.abs().abs()`) — whose

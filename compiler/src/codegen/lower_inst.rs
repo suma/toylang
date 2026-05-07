@@ -772,6 +772,58 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
+            InstKind::StrConcat { a, b } => {
+                // Direct call to `toy_str_concat(a, b)` — both args
+                // and the result are str runtime values (= u64
+                // pointers in cranelift IR; see toylang_rt.c for
+                // the concrete heap layout).
+                let av = self.value(*a);
+                let bv = self.value(*b);
+                let call = self.builder.ins().call(self.runtime.str_concat, &[av, bv]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
+            InstKind::ToString { value, value_ty } => {
+                // Direct call to the matching `toy_to_string_<ty>`
+                // helper. The IR captured the value's type at lower
+                // time so we can pick the right helper without
+                // re-inferring at codegen.
+                let v = self.value(*value);
+                let helper = match value_ty {
+                    IrType::I64 => self.runtime.to_string_i64,
+                    IrType::U64 => self.runtime.to_string_u64,
+                    IrType::F64 => self.runtime.to_string_f64,
+                    IrType::Bool => self.runtime.to_string_bool,
+                    IrType::Str => self.runtime.to_string_str,
+                    IrType::I8 => self.runtime.to_string_i8,
+                    IrType::U8 => self.runtime.to_string_u8,
+                    IrType::I16 => self.runtime.to_string_i16,
+                    IrType::U16 => self.runtime.to_string_u16,
+                    IrType::I32 => self.runtime.to_string_i32,
+                    IrType::U32 => self.runtime.to_string_u32,
+                    IrType::Unit => {
+                        return Err(
+                            "internal error: __builtin_to_string of Unit reached codegen \
+                             (lower should have rejected)"
+                                .to_string(),
+                        );
+                    }
+                    IrType::Struct(_) | IrType::Tuple(_) | IrType::Enum(_) => {
+                        return Err(format!(
+                            "internal error: __builtin_to_string of compound type {:?} \
+                             reached codegen (lower should have rejected)",
+                            value_ty
+                        ));
+                    }
+                };
+                let call = self.builder.ins().call(helper, &[v]);
+                let result = self.builder.inst_results(call)[0];
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, result);
+                }
+            }
             InstKind::MemCopy { src, dest, size } => {
                 // libc memcpy uses (dest, src, n) — swap from
                 // toylang's (src, dest, size) order.

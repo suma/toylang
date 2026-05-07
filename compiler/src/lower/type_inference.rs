@@ -177,6 +177,9 @@ impl<'a> FunctionLower<'a> {
                 frontend::ast::BuiltinFunction::StrToPtr => Some(Type::U64),
                 // `__builtin_str_len(s) -> u64`.
                 frontend::ast::BuiltinFunction::StrLen => Some(Type::U64),
+                // `__builtin_to_string(value) -> str` (powers
+                // string-interpolation desugaring; STR-INTERP-AOT).
+                frontend::ast::BuiltinFunction::ToString => Some(Type::Str),
                 // SizeOf handled above already; no other builtins
                 // currently route through value_scalar.
                 // f64 math (sqrt/pow/sin/cos/tan/log/log2/exp
@@ -222,6 +225,24 @@ impl<'a> FunctionLower<'a> {
                                 ("abs", Type::F64) => return Some(Type::F64),
                                 ("sqrt", Type::F64) => return Some(Type::F64),
                                 _ => {}
+                            }
+                        }
+                    }
+                }
+                // STR-INTERP-AOT: `s.concat(t)` returns str even
+                // when the receiver is a string literal or another
+                // `.concat()` chain — peek through any number of
+                // levels so `value_scalar` of the desugared
+                // interpolation chain works in print / let-rhs
+                // contexts. Needed because the chain receiver is
+                // typically `Expr::String` (the leading literal),
+                // not an `Identifier`, which the binding-based
+                // path below doesn't handle.
+                if let Some(name) = self.interner.resolve(method) {
+                    if name == "concat" && args.len() == 1 {
+                        if let Some(recv_ty) = self.value_scalar(&obj) {
+                            if matches!(recv_ty, Type::Str) {
+                                return Some(Type::Str);
                             }
                         }
                     }

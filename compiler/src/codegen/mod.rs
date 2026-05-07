@@ -222,6 +222,23 @@ pub(crate) struct CodegenSession<M: Module> {
     // bulk-free, symmetric to `toy_arena_drop` but specific to
     // fixed_buffer slots.
     rt_fixed_buffer_drop: cranelift_module::FuncId,
+    // STR-INTERP-AOT: string interpolation runtime helpers.
+    // `concat` and the `to_string` family produce heap-allocated
+    // str values following the toylang str layout
+    // `[bytes][NUL][u64 len LE]`. The result pointer points at the
+    // u64 len field so it's pointer-uniform with `.rodata` strs.
+    rt_str_concat: cranelift_module::FuncId,
+    rt_to_string_i64: cranelift_module::FuncId,
+    rt_to_string_u64: cranelift_module::FuncId,
+    rt_to_string_f64: cranelift_module::FuncId,
+    rt_to_string_bool: cranelift_module::FuncId,
+    rt_to_string_str: cranelift_module::FuncId,
+    rt_to_string_i8: cranelift_module::FuncId,
+    rt_to_string_u8: cranelift_module::FuncId,
+    rt_to_string_i16: cranelift_module::FuncId,
+    rt_to_string_u16: cranelift_module::FuncId,
+    rt_to_string_i32: cranelift_module::FuncId,
+    rt_to_string_u32: cranelift_module::FuncId,
     /// `panic`-message symbol → data id of `.rodata` blob holding
     /// `"panic: <msg>\0"`. Layout differs from print strings.
     panic_strings: HashMap<DefaultSymbol, DataId>,
@@ -483,6 +500,65 @@ impl<M: Module> CodegenSession<M> {
         fixed_buffer_drop_sig.params.push(AbiParam::new(types::I64));
         let rt_fixed_buffer_drop = declare_helper(&mut module, "toy_fixed_buffer_drop", &fixed_buffer_drop_sig)?;
 
+        // STR-INTERP-AOT: str runtime helpers. `concat` takes two
+        // str pointers (= u64 in cranelift IR) and returns one;
+        // each `to_string_*` takes its native scalar width and
+        // returns a str pointer. The narrow-int variants ride on
+        // the same sext / uext convention as the print helpers
+        // (the C ABI side reads register-extended bits).
+        let mut str_concat_sig = Signature::new(call_conv);
+        str_concat_sig.params.push(AbiParam::new(types::I64));
+        str_concat_sig.params.push(AbiParam::new(types::I64));
+        str_concat_sig.returns.push(AbiParam::new(types::I64));
+        let rt_str_concat = declare_helper(&mut module, "toy_str_concat", &str_concat_sig)?;
+
+        let mut to_string_i64_sig = Signature::new(call_conv);
+        to_string_i64_sig.params.push(AbiParam::new(types::I64));
+        to_string_i64_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_i64 = declare_helper(&mut module, "toy_to_string_i64", &to_string_i64_sig)?;
+        let rt_to_string_u64 = declare_helper(&mut module, "toy_to_string_u64", &to_string_i64_sig)?;
+        let rt_to_string_str = declare_helper(&mut module, "toy_to_string_str", &to_string_i64_sig)?;
+
+        let mut to_string_f64_sig = Signature::new(call_conv);
+        to_string_f64_sig.params.push(AbiParam::new(types::F64));
+        to_string_f64_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_f64 = declare_helper(&mut module, "toy_to_string_f64", &to_string_f64_sig)?;
+
+        let mut to_string_bool_sig = Signature::new(call_conv);
+        to_string_bool_sig.params.push(AbiParam::new(types::I8).uext());
+        to_string_bool_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_bool = declare_helper(&mut module, "toy_to_string_bool", &to_string_bool_sig)?;
+
+        let mut to_string_i8_sig = Signature::new(call_conv);
+        to_string_i8_sig.params.push(AbiParam::new(types::I8).sext());
+        to_string_i8_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_i8 = declare_helper(&mut module, "toy_to_string_i8", &to_string_i8_sig)?;
+
+        let mut to_string_u8_sig = Signature::new(call_conv);
+        to_string_u8_sig.params.push(AbiParam::new(types::I8).uext());
+        to_string_u8_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_u8 = declare_helper(&mut module, "toy_to_string_u8", &to_string_u8_sig)?;
+
+        let mut to_string_i16_sig = Signature::new(call_conv);
+        to_string_i16_sig.params.push(AbiParam::new(types::I16).sext());
+        to_string_i16_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_i16 = declare_helper(&mut module, "toy_to_string_i16", &to_string_i16_sig)?;
+
+        let mut to_string_u16_sig = Signature::new(call_conv);
+        to_string_u16_sig.params.push(AbiParam::new(types::I16).uext());
+        to_string_u16_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_u16 = declare_helper(&mut module, "toy_to_string_u16", &to_string_u16_sig)?;
+
+        let mut to_string_i32_sig = Signature::new(call_conv);
+        to_string_i32_sig.params.push(AbiParam::new(types::I32).sext());
+        to_string_i32_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_i32 = declare_helper(&mut module, "toy_to_string_i32", &to_string_i32_sig)?;
+
+        let mut to_string_u32_sig = Signature::new(call_conv);
+        to_string_u32_sig.params.push(AbiParam::new(types::I32).uext());
+        to_string_u32_sig.returns.push(AbiParam::new(types::I64));
+        let rt_to_string_u32 = declare_helper(&mut module, "toy_to_string_u32", &to_string_u32_sig)?;
+
         Ok(Self {
             module,
             fn_ids: HashMap::new(),
@@ -531,6 +607,18 @@ impl<M: Module> CodegenSession<M> {
             rt_dispatched_free,
             rt_arena_drop,
             rt_fixed_buffer_drop,
+            rt_str_concat,
+            rt_to_string_i64,
+            rt_to_string_u64,
+            rt_to_string_f64,
+            rt_to_string_bool,
+            rt_to_string_str,
+            rt_to_string_i8,
+            rt_to_string_u8,
+            rt_to_string_i16,
+            rt_to_string_u16,
+            rt_to_string_i32,
+            rt_to_string_u32,
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
@@ -925,6 +1013,19 @@ struct RuntimeRefs {
     log: cranelift_codegen::ir::FuncRef,
     log2: cranelift_codegen::ir::FuncRef,
     exp: cranelift_codegen::ir::FuncRef,
+    // STR-INTERP-AOT: str runtime helpers.
+    str_concat: cranelift_codegen::ir::FuncRef,
+    to_string_i64: cranelift_codegen::ir::FuncRef,
+    to_string_u64: cranelift_codegen::ir::FuncRef,
+    to_string_f64: cranelift_codegen::ir::FuncRef,
+    to_string_bool: cranelift_codegen::ir::FuncRef,
+    to_string_str: cranelift_codegen::ir::FuncRef,
+    to_string_i8: cranelift_codegen::ir::FuncRef,
+    to_string_u8: cranelift_codegen::ir::FuncRef,
+    to_string_i16: cranelift_codegen::ir::FuncRef,
+    to_string_u16: cranelift_codegen::ir::FuncRef,
+    to_string_i32: cranelift_codegen::ir::FuncRef,
+    to_string_u32: cranelift_codegen::ir::FuncRef,
 }
 
 /// REF-Stage-2: byte size of a scalar IR type for stack-slot

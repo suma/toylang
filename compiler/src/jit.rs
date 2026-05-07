@@ -362,6 +362,21 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
     jit_builder.symbol("toy_arena_drop", toy_arena_drop as *const u8);
     jit_builder.symbol("toy_fixed_buffer_drop", toy_fixed_buffer_drop as *const u8);
+    // STR-INTERP-AOT: str runtime helpers. The JIT-side
+    // implementations (below) mirror the C runtime so JIT and
+    // AOT produce byte-identical interpolation output.
+    jit_builder.symbol("toy_str_concat", toy_str_concat as *const u8);
+    jit_builder.symbol("toy_to_string_i64", toy_to_string_i64 as *const u8);
+    jit_builder.symbol("toy_to_string_u64", toy_to_string_u64 as *const u8);
+    jit_builder.symbol("toy_to_string_f64", toy_to_string_f64 as *const u8);
+    jit_builder.symbol("toy_to_string_bool", toy_to_string_bool as *const u8);
+    jit_builder.symbol("toy_to_string_str", toy_to_string_str as *const u8);
+    jit_builder.symbol("toy_to_string_i8", toy_to_string_i8 as *const u8);
+    jit_builder.symbol("toy_to_string_u8", toy_to_string_u8 as *const u8);
+    jit_builder.symbol("toy_to_string_i16", toy_to_string_i16 as *const u8);
+    jit_builder.symbol("toy_to_string_u16", toy_to_string_u16 as *const u8);
+    jit_builder.symbol("toy_to_string_i32", toy_to_string_i32 as *const u8);
+    jit_builder.symbol("toy_to_string_u32", toy_to_string_u32 as *const u8);
 }
 
 // All helpers below mirror `runtime/toylang_rt.c`. Use libc's
@@ -933,5 +948,120 @@ unsafe extern "C" fn toy_println_f64(v: f64) {
     unsafe {
         emit_f64(v, true);
     }
+}
+
+// ---------------------------------------------------------------------------
+// STR-INTERP-AOT: heap str helpers — JIT-side mirror of
+// `runtime/toylang_rt.c::toy_str_*` / `toy_to_string_*`. Exact same
+// memory layout (`[bytes][NUL][u64 len LE]`, returned pointer
+// points at the u64 len field) so JIT-emitted code is interchangeable
+// with the AOT object code at the symbol level — pointer-uniform
+// with `.rodata` strs, so `print` / `println` / `__builtin_str_len`
+// already work on the result without any backend-specific tweak.
+// Memory is allocated via libc malloc directly, mirroring the C
+// runtime; the result is leaked at process exit (interpolation
+// strings are typically short-lived).
+//
+// Unsafe invariant: each `*const u8` returned points at the u64
+// len field; `byte_start = ret - len - 1`. The leading 8-byte
+// prefix is correctly aligned because libc malloc returns
+// 16-byte-aligned memory on every platform we target.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
+}
+
+unsafe fn toy_str_alloc(bytes: *const u8, len: u64) -> *const u8 {
+    unsafe {
+        let total = (len as usize) + 1 + 8;
+        let base = malloc(total);
+        if base.is_null() {
+            // Mirror the C runtime's hard-fail behaviour.
+            std::process::exit(1);
+        }
+        if len > 0 && !bytes.is_null() {
+            memcpy(base, bytes, len as usize);
+        }
+        *base.add(len as usize) = 0u8; // NUL terminator
+        // Length stored little-endian (host order = LE everywhere
+        // we target). `write_unaligned` because the caller has no
+        // 8-byte alignment guarantee for `base + len + 1`.
+        let len_field = base.add((len as usize) + 1) as *mut u64;
+        len_field.write_unaligned(len);
+        len_field as *const u8
+    }
+}
+
+unsafe extern "C" fn toy_str_concat(a: *const u8, b: *const u8) -> *const u8 {
+    unsafe {
+        // The len field lives at offset 0 from the str runtime
+        // value (read with `read_unaligned`; see `toy_str_alloc`).
+        let la = (a as *const u64).read_unaligned();
+        let lb = (b as *const u64).read_unaligned();
+        let a_bytes = a.sub((la as usize) + 1);
+        let b_bytes = b.sub((lb as usize) + 1);
+        let total = la + lb;
+        let base = malloc((total as usize) + 1 + 8);
+        if base.is_null() {
+            std::process::exit(1);
+        }
+        if la > 0 {
+            memcpy(base, a_bytes, la as usize);
+        }
+        if lb > 0 {
+            memcpy(base.add(la as usize), b_bytes, lb as usize);
+        }
+        *base.add(total as usize) = 0u8;
+        let len_field = base.add((total as usize) + 1) as *mut u64;
+        len_field.write_unaligned(total);
+        len_field as *const u8
+    }
+}
+
+unsafe extern "C" fn toy_to_string_i64(v: i64) -> *const u8 {
+    let s = format!("{v}");
+    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
+}
+
+unsafe extern "C" fn toy_to_string_u64(v: u64) -> *const u8 {
+    let s = format!("{v}");
+    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
+}
+
+unsafe extern "C" fn toy_to_string_f64(v: f64) -> *const u8 {
+    let s = format_f64(v);
+    unsafe { toy_str_alloc(s.as_ptr(), s.len() as u64) }
+}
+
+unsafe extern "C" fn toy_to_string_bool(v: u8) -> *const u8 {
+    let bytes: &[u8] = if v != 0 { b"true" } else { b"false" };
+    unsafe { toy_str_alloc(bytes.as_ptr(), bytes.len() as u64) }
+}
+
+// str -> str: identity. Mirrors the C runtime so the desugared
+// interpolation chain can route every `{expr}` segment through
+// `__builtin_to_string` uniformly.
+unsafe extern "C" fn toy_to_string_str(s: *const u8) -> *const u8 {
+    s
+}
+
+unsafe extern "C" fn toy_to_string_i8(v: i8) -> *const u8 {
+    unsafe { toy_to_string_i64(v as i64) }
+}
+unsafe extern "C" fn toy_to_string_u8(v: u8) -> *const u8 {
+    unsafe { toy_to_string_u64(v as u64) }
+}
+unsafe extern "C" fn toy_to_string_i16(v: i16) -> *const u8 {
+    unsafe { toy_to_string_i64(v as i64) }
+}
+unsafe extern "C" fn toy_to_string_u16(v: u16) -> *const u8 {
+    unsafe { toy_to_string_u64(v as u64) }
+}
+unsafe extern "C" fn toy_to_string_i32(v: i32) -> *const u8 {
+    unsafe { toy_to_string_i64(v as i64) }
+}
+unsafe extern "C" fn toy_to_string_u32(v: u32) -> *const u8 {
+    unsafe { toy_to_string_u64(v as u64) }
 }
 

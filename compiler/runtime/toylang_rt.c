@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>  /* exit() for the allocator-stack guard rails. */
+#include <string.h>  /* memcpy() for str_alloc / str_concat. */
 
 void toy_print_i64(int64_t v) {
     printf("%lld", (long long) v);
@@ -409,4 +410,131 @@ void toy_print_f64(double v) {
 
 void toy_println_f64(double v) {
     emit_f64(v, 1);
+}
+
+/* ---- Heap-allocated str helpers (string interpolation Phase 2) ----
+ *
+ * AOT `str` runtime layout, per `compiler/src/codegen/lower_inst.rs`
+ * `ConstStr` / `Print`:
+ *
+ *     [bytes...][NUL][u64 len LE]
+ *      ^                ^
+ *      byte_start       (str runtime value points here)
+ *
+ * Heap-allocated strings (produced by `__builtin_to_string` and
+ * `.concat()`) follow the exact same layout so every consumer of
+ * `str` (print / println / strlen / interpolation chain) is
+ * pointer-uniform: a `str` value always points at its u64 len
+ * field; `byte_start = s - len - 1`.
+ *
+ * Allocation goes through libc malloc directly rather than the
+ * active toylang allocator stack — interpolation strings are
+ * typically short-lived and routing them through the user-facing
+ * allocator could surprise programs that swap in a quota-limited
+ * fixed_buffer for a different purpose. `free` is the caller's
+ * responsibility (currently a no-op; relies on process exit).
+ */
+
+/* Lay out a fresh heap str. `bytes` may be NULL when len is 0. */
+static const char *toy_str_alloc(const char *bytes, uint64_t len) {
+    char *base = (char *) malloc(len + 1u + 8u);
+    if (!base) {
+        fputs("toy_str_alloc: out of memory\n", stderr);
+        exit(1);
+    }
+    if (len > 0 && bytes != NULL) {
+        memcpy(base, bytes, (size_t) len);
+    }
+    base[len] = '\0';
+    /* Length stored little-endian (host order = LE on every
+     * cranelift target the compiler currently supports). */
+    *(uint64_t *) (base + len + 1u) = len;
+    return (const char *) (base + len + 1u);
+}
+
+/* Concatenate two toylang str values. Both arguments and the
+ * result follow the runtime layout described above. */
+const char *toy_str_concat(const char *a, const char *b) {
+    uint64_t la = *(const uint64_t *) a;
+    uint64_t lb = *(const uint64_t *) b;
+    const char *a_bytes = a - la - 1u;
+    const char *b_bytes = b - lb - 1u;
+    uint64_t total = la + lb;
+    char *base = (char *) malloc(total + 1u + 8u);
+    if (!base) {
+        fputs("toy_str_concat: out of memory\n", stderr);
+        exit(1);
+    }
+    if (la > 0) memcpy(base, a_bytes, (size_t) la);
+    if (lb > 0) memcpy(base + la, b_bytes, (size_t) lb);
+    base[total] = '\0';
+    *(uint64_t *) (base + total + 1u) = total;
+    return (const char *) (base + total + 1u);
+}
+
+/* `__builtin_to_string(value)` lowering — one entry point per
+ * primitive type. Each formats with the same conventions
+ * `Object::to_display_string` uses in the interpreter so
+ * interpreter / AOT stay byte-identical for string-interpolation
+ * output. */
+
+const char *toy_to_string_i64(int64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long) v);
+    if (n < 0) n = 0;
+    return toy_str_alloc(buf, (uint64_t) n);
+}
+
+const char *toy_to_string_u64(uint64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    if (n < 0) n = 0;
+    return toy_str_alloc(buf, (uint64_t) n);
+}
+
+const char *toy_to_string_f64(double v) {
+    char buf[64];
+    int n;
+    /* Mirror `emit_f64`'s integral-padding rule so f64 output
+     * matches print / println. */
+    if (v == (double) (long long) v) {
+        n = snprintf(buf, sizeof(buf), "%.1f", v);
+    } else {
+        n = snprintf(buf, sizeof(buf), "%g", v);
+    }
+    if (n < 0) n = 0;
+    return toy_str_alloc(buf, (uint64_t) n);
+}
+
+const char *toy_to_string_bool(uint8_t v) {
+    return v ? toy_str_alloc("true", 4) : toy_str_alloc("false", 5);
+}
+
+/* str -> str: identity. The desugaring lifts every `{expr}` segment
+ * through `__builtin_to_string`, even when `expr` is already `str`,
+ * so the codegen call site can stay type-uniform. Returning the
+ * original handle avoids a redundant heap copy. */
+const char *toy_to_string_str(const char *s) {
+    return s;
+}
+
+/* Narrow integer to_string variants. Each promotes through the
+ * existing snprintf format specifier of the matching width. */
+const char *toy_to_string_i8(int8_t v) {
+    return toy_to_string_i64((int64_t) v);
+}
+const char *toy_to_string_u8(uint8_t v) {
+    return toy_to_string_u64((uint64_t) v);
+}
+const char *toy_to_string_i16(int16_t v) {
+    return toy_to_string_i64((int64_t) v);
+}
+const char *toy_to_string_u16(uint16_t v) {
+    return toy_to_string_u64((uint64_t) v);
+}
+const char *toy_to_string_i32(int32_t v) {
+    return toy_to_string_i64((int64_t) v);
+}
+const char *toy_to_string_u32(uint32_t v) {
+    return toy_to_string_u64((uint64_t) v);
 }

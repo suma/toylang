@@ -3515,3 +3515,92 @@ fn numeric_literal_separators_signed_round_trip() {
     assert_consistent(src, "numeric_literal_separators_signed");
 }
 
+// STR-INTERP-AOT: 3-way consistency for string interpolation. The
+// chain ends with `.len() as i64` so the program returns an exit
+// code (the string itself is consumed by `println` for visual
+// inspection on a manual run; we don't capture stdout in
+// `assert_consistent`). Length matches across all three backends
+// when the desugared `.concat() / __builtin_to_string()` chain
+// produces the same bytes.
+
+#[test]
+fn string_interp_identifier_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val name = "world"
+            val s = "hello {name}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_identifier");
+}
+
+#[test]
+fn string_interp_arithmetic_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val a: i64 = 7i64
+            val b: i64 = 35i64
+            val s = "sum is {a + b}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_arithmetic");
+}
+
+#[test]
+fn string_interp_multi_segment_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val name = "Alice"
+            val n: i64 = 30i64
+            val u: u64 = 7u64
+            val s = "name={name}, n={n}, u={u}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_multi_segment");
+}
+
+#[test]
+fn string_interp_bool_and_f64_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val b: bool = true
+            val f: f64 = 3.5f64
+            val s = "b={b}, f={f}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_bool_and_f64");
+}
+
+#[test]
+fn string_interp_double_brace_escape_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val n: i64 = 7i64
+            val s = "value {{is {n}}}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_double_brace_escape");
+}
+
+#[test]
+fn string_interp_chain_with_println_round_trip() {
+    // Exercises the full chain through `println` — interpolation
+    // result flows directly into the print builtin (no `val s =`
+    // intermediate). The exit code carries `n` so the test pins
+    // both the print path and the function-return path together.
+    let src = r#"
+        fn main() -> i64 {
+            val name = "world"
+            val n: i64 = 42i64
+            println("hello {name}, n={n}")
+            n
+        }
+    "#;
+    assert_consistent(src, "string_interp_chain_with_println");
+}
+

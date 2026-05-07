@@ -285,14 +285,19 @@ Properties:
 
 Stdlib aliases:
 
-- `core/std/char.t::type char = u8` — semantic alias for byte
-  values that represent characters. Drives signature sites like
-  `Vec<u8>::push_char(c: char)`.
+- `core/std/char.t::type char = u32` — Unicode codepoint alias.
+  Char literals (`'a'` / `'\n'` / `'\u{1F600}'`) lex straight to
+  `Kind::UInt32`, so a `c: char` parameter receives any Unicode
+  scalar value without truncation. `Vec<u8>::push_char(c: char)`
+  UTF-8 encodes the codepoint into 1-4 bytes (RFC 3629); surrogate
+  codepoints (U+D800..U+DFFF) and codepoints >= U+110000 panic.
 - `core/std/string.t::type String = Vec<u8>` — `String` *is*
   `Vec<u8>`. The byte-specific helpers (`from_str`, `eq`,
   `push_str`, `push_char`) live on `impl Vec<u8>`; the generic
   helpers (`size`, `is_empty`, `as_ptr`, `clear`, `push`) come
-  from `impl<T> Vec<T>`.
+  from `impl<T> Vec<T>`. `String` also satisfies the `Length` /
+  `AsPtr` extension traits from `core/std/str.t`, so `.len()` /
+  `.as_ptr()` work uniformly on `str` and `String` receivers.
 
 ### Type inference
 
@@ -619,9 +624,12 @@ comes from the rflex regex backend not supporting `\xNN` byte
 ranges in character classes; the lexer comment block at the rule
 site has the details.)
 
-The companion alias `core/std/char.t::type char = u8` exists for
-signature sites that want to document "this byte represents a
-character" without changing the underlying numeric type.
+The companion alias `core/std/char.t::type char = u32` makes
+`char` a Unicode scalar value. Use it at signature sites that want
+to document "this is a codepoint" rather than a raw integer.
+`Vec<u8>::push_char(c: char)` UTF-8 encodes the codepoint into 1-4
+bytes following RFC 3629; surrogate codepoints (U+D800..U+DFFF) and
+values >= U+110000 panic.
 
 ### String literals
 
@@ -1900,24 +1908,29 @@ with a `String` annotation to disambiguate the generic parameter:
 
 ```rust
 val s: String = Vec::from_str("hello")
-val n: u64 = s.size()         # 5
+val n: u64 = s.len()          # 5  — Length trait, mirrors str.len()
+val also_n: u64 = s.size()    # 5  — same value via inherent method
 val empty: bool = s.is_empty()
-val p: ptr = s.as_ptr()
-s.push_char('!')              # u8 / char alias both work
+val p: ptr = s.as_ptr()       # AsPtr trait, mirrors str.as_ptr()
+s.push_char('!')              # UTF-8 encoded into 1-4 bytes
 s.push_str(other)             # other: &Vec<u8> via auto-borrow
 val eq: bool = s.eq(other)
 s.clear()
 ```
 
-Method dispatch falls into two impl blocks (both in
-`core/std/collections/vec.t`):
+Method dispatch falls into three impl blocks:
 
-- `impl<T> Vec<T>` — generic helpers reused by `String`:
-  `push`, `pop`, `get`, `set`, `size`, `capacity`, `is_empty`,
-  `as_ptr`, `clear`. (`size` rather than `len` to dodge a
-  field/method name clash with the `Vec<T>.len` field.)
-- `impl Vec<u8>` — byte-specific helpers: `from_str`, `eq`,
-  `push_str`, `push_char`, `extend_bytes`.
+- `impl<T> Vec<T>` (in `core/std/collections/vec.t`) — generic
+  helpers reused by `String`: `push`, `pop`, `get`, `set`,
+  `size`, `capacity`, `is_empty`, `as_ptr`, `clear`. (`size`
+  rather than `len` to dodge a field/method name clash with the
+  `Vec<T>.len` field.)
+- `impl Vec<u8>` (in `core/std/collections/vec.t`) — byte-specific
+  helpers: `from_str`, `eq`, `push_str`, `push_char`,
+  `extend_bytes`.
+- `impl Length for Vec<u8>` / `impl AsPtr for Vec<u8>` (in
+  `core/std/string.t`) — extension trait impls so the
+  `.len()` / `.as_ptr()` call shape matches `str` exactly.
 
 ### `is_null` (universal)
 

@@ -21,6 +21,19 @@
 #
 #     val s: String = Vec::from_str("hello")
 #
+# `str` superset extension (the `impl` blocks below) — `Vec<u8>`
+# also satisfies the `Length` / `AsPtr` traits from
+# `core/std/str.t`, so `.len()` / `.as_ptr()` work on both
+# `str` and `String` receivers with the same call shape.
+# Internally each impl delegates to the existing inherent
+# `Vec<u8>` API (`.size()` / `self.data`).
+#
+# `Concat<Other>` / `Contains<Needle>` are deferred — the AOT
+# lower currently rejects trait methods that take a struct
+# (or `&struct`) argument with "method argument produced no value".
+# The traits live in `core/std/str_ops.t` for the impls to attach
+# to once the AOT fix lands.
+#
 # Cross-module alias resolution (`frontend::resolve_type_aliases`)
 # substitutes `String` with `Vec<u8>` everywhere in the integrated
 # AST after parsing. User code can therefore write `val s: String`
@@ -34,3 +47,24 @@
 # does not affect correctness.
 
 type String = Vec<u8>
+
+# `len()` — UTF-8 byte length. Identity wrapper around the
+# existing `Vec<u8>::size()` so callers can use the same
+# `.len()` name as `str`.
+impl Length for Vec<u8> {
+    fn len(self: Self) -> u64 {
+        self.size()
+    }
+}
+
+# `as_ptr()` — pointer to the first byte. The trait method on
+# `str` returns a NUL-terminated pointer; `String` doesn't promise
+# NUL termination (the buffer is sized exactly to `self.len`), so
+# callers walking the bytes should pair `s.as_ptr()` with
+# `s.len()` rather than scan for `'\0'`.
+impl AsPtr for Vec<u8> {
+    fn as_ptr(self: Self) -> ptr {
+        self.data
+    }
+}
+

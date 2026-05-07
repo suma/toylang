@@ -120,6 +120,91 @@ fn push_char_out_of_range_panics() {
     assert_program_fails(src);
 }
 
+// ---------------------------------------------------------------
+// Phase 1: `Length` / `AsPtr` for `Vec<u8>` (= `String`).
+//
+// `core/std/str.t` defines the `Length` and `AsPtr` traits that
+// `str` already satisfies. `core/std/string.t` adds `impl
+// Length for Vec<u8>` and `impl AsPtr for Vec<u8>` so user code
+// can call `.len()` / `.as_ptr()` against either receiver shape
+// (str / String) without caring which one a binding holds.
+//
+// The `Concat<Other>` / `Contains<Needle>` traits from the same
+// session are **not** implemented yet — the AOT compiler currently
+// rejects trait methods that take a struct (or `&struct`) argument
+// with "method argument produced no value". That work is tracked
+// separately.
+// ---------------------------------------------------------------
+
+#[test]
+fn string_len_matches_byte_count() {
+    // `Vec<u8>::len()` (via `impl Length for Vec<u8>`) returns the
+    // same value as `.size()`.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            assert(s.len() == 11u64, "len mismatch")
+            assert(s.len() == s.size(), "len() == size()")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_len_with_multibyte_utf8() {
+    // The byte length of a multi-byte UTF-8 string is bigger than
+    // its logical character count. `é` (U+00E9) occupies 2 bytes,
+    // `あ` (U+3042) 3 bytes, `😀` (U+1F600) 4 bytes — total 9 bytes.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0xE9u32)
+            s.push_char(0x3042u32)
+            s.push_char(0x1F600u32)
+            assert(s.len() == 9u64, "expected 9 bytes")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_as_ptr_round_trip() {
+    // `s.as_ptr()` returns the heap pointer; round-trip through
+    // `__builtin_ptr_read` to confirm bytes match.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("ABC")
+            val p: ptr = s.as_ptr()
+            val b0: u8 = __builtin_ptr_read(p, 0u64)
+            val b1: u8 = __builtin_ptr_read(p, 1u64)
+            val b2: u8 = __builtin_ptr_read(p, 2u64)
+            assert(b0 == 0x41u8, "byte 0")
+            assert(b1 == 0x42u8, "byte 1")
+            assert(b2 == 0x43u8, "byte 2")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn str_and_string_share_len_method_name() {
+    // The whole point of putting `Length` on both receivers — the
+    // same `.len()` call works whether the binding is a `str`
+    // literal or a heap-allocated `String`.
+    let src = r#"
+        fn main() -> u64 {
+            val a = "hello"
+            val b: String = Vec::from_str("hello")
+            assert(a.len() == b.len(), "str.len() == String.len()")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
 #[test]
 fn push_char_appends_to_existing_buffer() {
     // push_char on a non-empty buffer keeps prior content intact

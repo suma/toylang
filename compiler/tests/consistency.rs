@@ -2288,6 +2288,41 @@ fn push_char_two_byte_utf8_round_trip() {
 }
 
 #[test]
+fn string_len_via_length_trait_round_trip() {
+    // `core/std/string.t::impl Length for Vec<u8>` exposes `.len()`
+    // on `String` as a thin wrapper around `.size()`. Pinning this
+    // confirms trait-based dispatch into stdlib `Vec<u8>` works
+    // across all 3 backends (interpreter, JIT silent fallback, AOT).
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            if s.len() != 5u64 { return 1u64 }
+            if s.len() != s.size() { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_len_via_length_trait_round_trip");
+}
+
+#[test]
+fn string_as_ptr_via_trait_round_trip() {
+    // `impl AsPtr for Vec<u8>` exposes `.as_ptr()` on `String`.
+    // Round-trip through `__builtin_ptr_read` confirms the
+    // returned pointer addresses the buffer's first byte in every
+    // backend.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("Z")
+            val p: ptr = s.as_ptr()
+            val b: u8 = __builtin_ptr_read(p, 0u64)
+            if b != 0x5Au8 { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_as_ptr_via_trait_round_trip");
+}
+
+#[test]
 fn push_char_three_byte_utf8_round_trip() {
     // `Vec<u8>::push_char` UTF-8 encoding for codepoint 0x3042 ('あ').
     // Expected bytes: [0xE3, 0x81, 0x82].

@@ -370,6 +370,176 @@ extern "C" fn jit_with_allocator_pop() {
 /// panic would be undefined behaviour. The cranelift `trap` emitted
 /// after this call is dead code; it exists only so the basic block
 /// has a recognised terminator.
+// ---------------------------------------------------------------------------
+// STR-INTERP-INTERP-JIT: heap-allocated str helpers — JIT-side mirror
+// of `compiler/runtime/toylang_rt.c::toy_str_*` and `toy_to_string_*`.
+// Same memory layout (`[bytes][NUL][u64 len LE]`, returned pointer
+// points at the u64 len field) so JIT-emitted code is interchangeable
+// with the AOT runtime — `__builtin_str_len(s)` is a single
+// `load.i64(s, 0)`, `print` via `jit_print_str` walks back to the
+// byte_start with `s - len - 1`.
+//
+// Memory comes from libc malloc directly (not the toylang allocator
+// stack). Interpolation strings are short-lived; routing them through
+// the user-visible allocator could surprise programs that swap in a
+// quota-limited fixed_buffer for a different purpose. Leaks at process
+// exit — same policy as the compiler-side JIT runtime.
+//
+// Symbol resolution: the JIT codegen calls `jit_string_literal(sym_id)`
+// to materialise a heap str from an interned `Object::ConstString`.
+// The resolved bytes go through the same `toy_str_alloc` shape as
+// runtime concat / to_string results, so every str value reaching
+// `jit_print_str` / `jit_str_concat` is pointer-uniform.
+// ---------------------------------------------------------------------------
+
+unsafe extern "C" {
+    fn malloc(size: usize) -> *mut u8;
+    fn memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8;
+}
+
+unsafe fn jit_str_alloc_from_bytes(bytes: *const u8, len: u64) -> u64 {
+    unsafe {
+        let total = (len as usize) + 1 + 8;
+        let base = malloc(total);
+        if base.is_null() {
+            eprintln!("jit_str_alloc: out of memory");
+            std::process::exit(1);
+        }
+        if len > 0 && !bytes.is_null() {
+            memcpy(base, bytes, len as usize);
+        }
+        *base.add(len as usize) = 0u8; // NUL terminator
+        let len_field = base.add((len as usize) + 1) as *mut u64;
+        len_field.write_unaligned(len);
+        len_field as u64
+    }
+}
+
+/// Materialise a heap str for an interned string literal. The codegen
+/// calls this with the symbol's u32 → u64 promotion at every
+/// `Expr::String` site so the resulting str pointer is uniform with
+/// other str values flowing through the JIT.
+extern "C" fn jit_string_literal(sym_id: u64) -> u64 {
+    let resolved = JIT_STRING_INTERNER.with(|slot| {
+        let p = *slot.borrow();
+        p.and_then(|raw| {
+            // SAFETY: same as `jit_panic` — installed by `execute_cached`
+            // and live while the JIT main is on the stack.
+            let interner: &DefaultStringInterner = unsafe { &*raw };
+            let sym_u32 = sym_id as u32;
+            string_interner::Symbol::try_from_usize(sym_u32 as usize)
+                .and_then(|sym: string_interner::DefaultSymbol| {
+                    interner.resolve(sym).map(|s| s.to_string())
+                })
+        })
+    });
+    let bytes = resolved.unwrap_or_default();
+    unsafe { jit_str_alloc_from_bytes(bytes.as_ptr(), bytes.len() as u64) }
+}
+
+extern "C" fn jit_str_concat(a: u64, b: u64) -> u64 {
+    unsafe {
+        let a_ptr = a as *const u8;
+        let b_ptr = b as *const u8;
+        let la = (a_ptr as *const u64).read_unaligned();
+        let lb = (b_ptr as *const u64).read_unaligned();
+        let a_bytes = a_ptr.sub((la as usize) + 1);
+        let b_bytes = b_ptr.sub((lb as usize) + 1);
+        let total = la + lb;
+        let base = malloc((total as usize) + 1 + 8);
+        if base.is_null() {
+            eprintln!("jit_str_concat: out of memory");
+            std::process::exit(1);
+        }
+        if la > 0 {
+            memcpy(base, a_bytes, la as usize);
+        }
+        if lb > 0 {
+            memcpy(base.add(la as usize), b_bytes, lb as usize);
+        }
+        *base.add(total as usize) = 0u8;
+        let len_field = base.add((total as usize) + 1) as *mut u64;
+        len_field.write_unaligned(total);
+        len_field as u64
+    }
+}
+
+extern "C" fn jit_to_string_i64(v: i64) -> u64 {
+    let s = format!("{v}");
+    unsafe { jit_str_alloc_from_bytes(s.as_ptr(), s.len() as u64) }
+}
+extern "C" fn jit_to_string_u64(v: u64) -> u64 {
+    let s = format!("{v}");
+    unsafe { jit_str_alloc_from_bytes(s.as_ptr(), s.len() as u64) }
+}
+extern "C" fn jit_to_string_f64(v: f64) -> u64 {
+    // Same display rule as `Object::Float64::to_display_string` —
+    // integral values get a trailing `.0`, others use `%g`-like
+    // formatting (Rust's default Display for f64 is close enough
+    // for the small magnitudes interpolation typically prints).
+    let s = if v == (v as i64) as f64 {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    };
+    unsafe { jit_str_alloc_from_bytes(s.as_ptr(), s.len() as u64) }
+}
+extern "C" fn jit_to_string_bool(v: u8) -> u64 {
+    let bytes: &[u8] = if v != 0 { b"true" } else { b"false" };
+    unsafe { jit_str_alloc_from_bytes(bytes.as_ptr(), bytes.len() as u64) }
+}
+/// str -> str: identity. Mirrors the C runtime's contract so the
+/// desugared interpolation chain can route every `{expr}` segment
+/// through `__builtin_to_string` uniformly.
+extern "C" fn jit_to_string_str(s: u64) -> u64 {
+    s
+}
+extern "C" fn jit_to_string_i8(v: i8) -> u64 {
+    jit_to_string_i64(v as i64)
+}
+extern "C" fn jit_to_string_u8(v: u8) -> u64 {
+    jit_to_string_u64(v as u64)
+}
+extern "C" fn jit_to_string_i16(v: i16) -> u64 {
+    jit_to_string_i64(v as i64)
+}
+extern "C" fn jit_to_string_u16(v: u16) -> u64 {
+    jit_to_string_u64(v as u64)
+}
+extern "C" fn jit_to_string_i32(v: i32) -> u64 {
+    jit_to_string_i64(v as i64)
+}
+extern "C" fn jit_to_string_u32(v: u32) -> u64 {
+    jit_to_string_u64(v as u64)
+}
+
+/// `print(str_value)` in the JIT. Walks back to byte_start
+/// (`s - len - 1`) and writes the bytes via Rust's `print!`.
+extern "C" fn jit_print_str(s: u64) {
+    unsafe {
+        let s_ptr = s as *const u8;
+        let len = (s_ptr as *const u64).read_unaligned();
+        let bytes_start = s_ptr.sub((len as usize) + 1);
+        let slice = std::slice::from_raw_parts(bytes_start, len as usize);
+        // UTF-8 source: every str value the JIT can produce comes
+        // from interner / to_string / concat, all of which preserve
+        // valid UTF-8. Use `from_utf8_unchecked` to skip a redundant
+        // verification at every print site.
+        let s = std::str::from_utf8_unchecked(slice);
+        print!("{}", s);
+    }
+}
+extern "C" fn jit_println_str(s: u64) {
+    unsafe {
+        let s_ptr = s as *const u8;
+        let len = (s_ptr as *const u64).read_unaligned();
+        let bytes_start = s_ptr.sub((len as usize) + 1);
+        let slice = std::slice::from_raw_parts(bytes_start, len as usize);
+        let s = std::str::from_utf8_unchecked(slice);
+        println!("{}", s);
+    }
+}
+
 extern "C" fn jit_panic(sym_id: u64) {
     let resolved = JIT_STRING_INTERNER.with(|slot| {
         let p = *slot.borrow();
@@ -456,6 +626,32 @@ pub(crate) enum HelperKind {
     LogF64,   // natural log (ln)
     Log2F64,
     ExpF64,
+    // STR-INTERP-INTERP-JIT: string interpolation runtime.
+    /// `(sym_id: u64) -> str_ptr` — materialise a heap str from
+    /// an interned literal. Called at each `Expr::String` site so
+    /// every str value flowing through the JIT is heap-allocated
+    /// with a uniform layout.
+    StringLiteral,
+    /// `(a: str, b: str) -> str` — concatenate two str pointers.
+    StrConcat,
+    /// `(value: <ty>) -> str` — format `value` as its display
+    /// string. One variant per scalar type; the JIT codegen
+    /// dispatches on the operand's `ScalarTy`.
+    ToStringI64,
+    ToStringU64,
+    ToStringF64,
+    ToStringBool,
+    ToStringStr,
+    ToStringI8,
+    ToStringU8,
+    ToStringI16,
+    ToStringU16,
+    ToStringI32,
+    ToStringU32,
+    /// `(s: str) -> ()` — print a str value (no newline).
+    PrintStrValue,
+    /// `(s: str) -> ()` — print a str value + newline.
+    PrintlnStrValue,
 }
 
 impl HelperKind {
@@ -509,6 +705,21 @@ impl HelperKind {
             HelperKind::LogF64 => "jit_log_f64",
             HelperKind::Log2F64 => "jit_log2_f64",
             HelperKind::ExpF64 => "jit_exp_f64",
+            HelperKind::StringLiteral => "jit_string_literal",
+            HelperKind::StrConcat => "jit_str_concat",
+            HelperKind::ToStringI64 => "jit_to_string_i64",
+            HelperKind::ToStringU64 => "jit_to_string_u64",
+            HelperKind::ToStringF64 => "jit_to_string_f64",
+            HelperKind::ToStringBool => "jit_to_string_bool",
+            HelperKind::ToStringStr => "jit_to_string_str",
+            HelperKind::ToStringI8 => "jit_to_string_i8",
+            HelperKind::ToStringU8 => "jit_to_string_u8",
+            HelperKind::ToStringI16 => "jit_to_string_i16",
+            HelperKind::ToStringU16 => "jit_to_string_u16",
+            HelperKind::ToStringI32 => "jit_to_string_i32",
+            HelperKind::ToStringU32 => "jit_to_string_u32",
+            HelperKind::PrintStrValue => "jit_print_str",
+            HelperKind::PrintlnStrValue => "jit_println_str",
         }
     }
 
@@ -562,6 +773,21 @@ impl HelperKind {
             HelperKind::LogF64 => jit_log_f64 as *const u8,
             HelperKind::Log2F64 => jit_log2_f64 as *const u8,
             HelperKind::ExpF64 => jit_exp_f64 as *const u8,
+            HelperKind::StringLiteral => jit_string_literal as *const u8,
+            HelperKind::StrConcat => jit_str_concat as *const u8,
+            HelperKind::ToStringI64 => jit_to_string_i64 as *const u8,
+            HelperKind::ToStringU64 => jit_to_string_u64 as *const u8,
+            HelperKind::ToStringF64 => jit_to_string_f64 as *const u8,
+            HelperKind::ToStringBool => jit_to_string_bool as *const u8,
+            HelperKind::ToStringStr => jit_to_string_str as *const u8,
+            HelperKind::ToStringI8 => jit_to_string_i8 as *const u8,
+            HelperKind::ToStringU8 => jit_to_string_u8 as *const u8,
+            HelperKind::ToStringI16 => jit_to_string_i16 as *const u8,
+            HelperKind::ToStringU16 => jit_to_string_u16 as *const u8,
+            HelperKind::ToStringI32 => jit_to_string_i32 as *const u8,
+            HelperKind::ToStringU32 => jit_to_string_u32 as *const u8,
+            HelperKind::PrintStrValue => jit_print_str as *const u8,
+            HelperKind::PrintlnStrValue => jit_println_str as *const u8,
         }
     }
 
@@ -607,10 +833,30 @@ impl HelperKind {
             | HelperKind::LogF64
             | HelperKind::Log2F64
             | HelperKind::ExpF64 => (vec![types::F64], Some(types::F64)),
+            // STR-INTERP-INTERP-JIT signatures.
+            HelperKind::StringLiteral => (vec![types::I64], Some(types::I64)),
+            HelperKind::StrConcat => (vec![types::I64, types::I64], Some(types::I64)),
+            HelperKind::ToStringI64 | HelperKind::ToStringU64 | HelperKind::ToStringStr => {
+                (vec![types::I64], Some(types::I64))
+            }
+            HelperKind::ToStringF64 => (vec![types::F64], Some(types::I64)),
+            HelperKind::ToStringBool => (vec![types::I8], Some(types::I64)),
+            HelperKind::ToStringI8 | HelperKind::ToStringU8 => {
+                (vec![types::I8], Some(types::I64))
+            }
+            HelperKind::ToStringI16 | HelperKind::ToStringU16 => {
+                (vec![types::I16], Some(types::I64))
+            }
+            HelperKind::ToStringI32 | HelperKind::ToStringU32 => {
+                (vec![types::I32], Some(types::I64))
+            }
+            HelperKind::PrintStrValue | HelperKind::PrintlnStrValue => {
+                (vec![types::I64], None)
+            }
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 48] = [
+    pub(crate) const ALL: [HelperKind; 63] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -659,6 +905,21 @@ impl HelperKind {
         HelperKind::LogF64,
         HelperKind::Log2F64,
         HelperKind::ExpF64,
+        HelperKind::StringLiteral,
+        HelperKind::StrConcat,
+        HelperKind::ToStringI64,
+        HelperKind::ToStringU64,
+        HelperKind::ToStringF64,
+        HelperKind::ToStringBool,
+        HelperKind::ToStringStr,
+        HelperKind::ToStringI8,
+        HelperKind::ToStringU8,
+        HelperKind::ToStringI16,
+        HelperKind::ToStringU16,
+        HelperKind::ToStringI32,
+        HelperKind::ToStringU32,
+        HelperKind::PrintStrValue,
+        HelperKind::PrintlnStrValue,
     ];
 }
 
@@ -1013,6 +1274,15 @@ fn execute_cached(
             ScalarTy::U32 => {
                 let f: extern "C" fn() -> u32 = std::mem::transmute(main_ptr);
                 Object::UInt32(f())
+            }
+            ScalarTy::Str => {
+                // STR-INTERP-INTERP-JIT: a `main` whose return type
+                // is `str` is rejected in `build_cache_entry` because
+                // we can't safely return a JIT-allocated str across
+                // the boundary (the heap copy outlives the JIT
+                // module but holds no Object lifecycle). Reaching
+                // here means the eligibility check missed it.
+                unreachable!("main returning Str should be rejected")
             }
         }
     };

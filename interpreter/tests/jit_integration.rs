@@ -1007,3 +1007,44 @@ fn unsupported_program_falls_back_silently() {
         r.stderr
     );
 }
+
+#[cfg(feature = "jit")]
+#[test]
+fn string_interpolation_jit_matches_interpreter() {
+    // STR-INTERP-INTERP-JIT: the interpreter JIT now compiles
+    // string-interpolation chains end-to-end (instead of silently
+    // falling back). `__builtin_to_string(value)` and
+    // `str.concat(t)` route to runtime helpers that allocate
+    // toylang str values on the heap; `print` / `println` accept
+    // a str-typed arg via dedicated helpers (`jit_print_str` /
+    // `jit_println_str`).
+    //
+    // The example exercises identifier / arithmetic / multi-segment
+    // / escape-brace / `.to_upper()` follow-on cases; matching
+    // stdout between the two modes pins the format byte-for-byte.
+    assert_match("example/string_interpolation.t");
+}
+
+#[cfg(feature = "jit")]
+#[test]
+fn string_interpolation_jit_logs_compiled_main() {
+    // Pin that the JIT eligibility actually accepts the
+    // interpolation chain (no silent fallback). Uses the
+    // `string_interpolation_jit.t` variant which avoids
+    // `s.len()` (still routed through the legacy extension-trait
+    // dispatch path that doesn't know about str), so the whole
+    // function lowers cleanly and emits a `JIT compiled: main`
+    // line.
+    let r = run("example/string_interpolation_jit.t", true, true);
+    assert_eq!(r.code, 42, "unexpected exit code: {}", r.code);
+    assert!(
+        r.stderr.contains("JIT compiled:"),
+        "expected JIT compile log, got stderr: {}",
+        r.stderr
+    );
+    assert!(
+        r.stderr.contains("main"),
+        "expected `main` in compile log, got stderr: {}",
+        r.stderr
+    );
+}

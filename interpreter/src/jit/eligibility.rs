@@ -98,6 +98,24 @@ thread_local! {
     /// `enum_layout_for(name)` from the enum-related arms.
     static ENUM_LAYOUTS: RefCell<HashMap<DefaultSymbol, EnumLayout>>
         = RefCell::new(HashMap::new());
+
+    /// STR-INTERP-INTERP-JIT: cached symbol for the `concat` method
+    /// name, populated at `analyze` time. Used by the str.concat
+    /// fast-path in `check_expr`'s MethodCall arm without threading
+    /// the interner through.
+    static CONCAT_SYM: RefCell<Option<DefaultSymbol>> = const { RefCell::new(None) };
+}
+
+/// Install the cached `concat` method symbol. Called from `analyze`
+/// alongside the other primitive-target-symbol installers.
+fn install_concat_sym(interner: &DefaultStringInterner) {
+    CONCAT_SYM.with(|cell| {
+        *cell.borrow_mut() = interner.get("concat");
+    });
+}
+
+pub(crate) fn concat_sym() -> Option<DefaultSymbol> {
+    CONCAT_SYM.with(|cell| *cell.borrow())
 }
 
 /// Install the extern dispatch map for the current thread. Run inside
@@ -260,6 +278,18 @@ pub enum ScalarTy {
     U8,
     U16,
     U32,
+    /// String value. Internally an i64 pointer to a heap-allocated
+    /// blob with the toylang str layout `[bytes][NUL][u64 len LE]`,
+    /// where the str value points at the `u64 len` field
+    /// (pointer-uniform with the AOT path's `.rodata` strs and
+    /// the compiler-side JIT's heap strs). Allocations are made via
+    /// libc malloc and leaked at process exit (interpolation strings
+    /// are typically short-lived). String params / returns at
+    /// function boundaries aren't supported — the eligibility check
+    /// only accepts str values that originate and are consumed
+    /// inside a single JIT-compiled function (typically:
+    /// interpolation chain → `println` arg).
+    Str,
     /// Bottom type for diverging expressions (currently only `panic`).
     /// Compatible with any other `ScalarTy` in branch unification, since
     /// a diverging branch never produces a value at runtime. No
@@ -301,6 +331,12 @@ impl ScalarTy {
             TypeDecl::UInt8 => Some(ScalarTy::U8),
             TypeDecl::UInt16 => Some(ScalarTy::U16),
             TypeDecl::UInt32 => Some(ScalarTy::U32),
+            // STR-INTERP-INTERP-JIT: str values flow through the
+            // JIT as i64 pointers. Function-boundary support
+            // (params / returns) is rejected separately in
+            // `check_signature` so the i64 representation never
+            // crosses the Object lifecycle without a known owner.
+            TypeDecl::String => Some(ScalarTy::Str),
             _ => None,
         }
     }
@@ -695,6 +731,7 @@ pub fn analyze(
 ) -> Result<EligibleSet, String> {
     install_extern_dispatch(interner);
     install_primitive_target_symbols(interner);
+    install_concat_sym(interner);
     // Phase 5 (汎用 RAII): the JIT codegen doesn't model the
     // user-Drop scope-bound auto-call. When the program has a
     // **user-defined** `impl Drop for ...` (i.e. excluding the
@@ -1271,6 +1308,15 @@ pub(crate) fn resolve_param_ty(
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
 ) -> Option<ParamTy> {
+    // STR-INTERP-INTERP-JIT: str is supported INSIDE a JIT function
+    // (interpolation chain → println), but must NOT cross the
+    // function boundary as a parameter or return type. The JIT's
+    // heap-allocated str pointer has no `Object` lifecycle owner,
+    // so handing it to interpreter code (or accepting one from
+    // interpreter code) would be unsound.
+    if matches!(td, TypeDecl::String) {
+        return None;
+    }
     if let Some(s) = substitute_to_scalar(td, substitutions) {
         return Some(ParamTy::Scalar(s));
     }
@@ -3230,6 +3276,11 @@ pub(crate) fn check_expr(
         Expr::UInt32(_) => Some(ScalarTy::U32),
         Expr::Float64(_) => Some(ScalarTy::F64),
         Expr::True | Expr::False => Some(ScalarTy::Bool),
+        // STR-INTERP-INTERP-JIT: a string literal in an expression
+        // position lowers to a `jit_string_literal(sym_id)` call
+        // that materialises a heap str. The literal flows through
+        // the JIT as a `ScalarTy::Str` value (i64 pointer).
+        Expr::String(_) => Some(ScalarTy::Str),
         Expr::Identifier(sym) => {
             // Phase JE-2b: enum-typed locals report their tag type
             // (U64) so they participate in match scrutinees and bare
@@ -3741,8 +3792,13 @@ pub(crate) fn check_expr(
                         }
                     }
                     let t = check_expr(program, &args[0], locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason)?;
-                    if !matches!(t, ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool)
-                        && !t.is_narrow_int()
+                    // STR-INTERP-INTERP-JIT: Str is now a supported
+                    // print value via `jit_print_str` / `jit_println_str`.
+                    if !matches!(
+                        t,
+                        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64
+                            | ScalarTy::Bool | ScalarTy::Str
+                    ) && !t.is_narrow_int()
                     {
                         return None;
                     }
@@ -3878,17 +3934,38 @@ pub(crate) fn check_expr(
                     Some(ScalarTy::U64)
                 }
                 BuiltinFunction::ToString => {
-                    // JIT has no `str` value model yet — produces an
-                    // owned `Object::String` at runtime. Skip cleanly
-                    // so the desugared string-interpolation chain
-                    // (`"...".concat(__builtin_to_string(x))`)
-                    // falls back to the interpreter.
-                    note(reject_reason, || {
-                        "__builtin_to_string is not supported in JIT \
-                         (string interpolation falls back to interpreter)"
-                            .to_string()
-                    });
-                    return None;
+                    // STR-INTERP-INTERP-JIT: __builtin_to_string(value)
+                    // produces a heap-allocated str via the matching
+                    // `jit_to_string_<ty>` runtime helper. Accept any
+                    // scalar arg whose ScalarTy maps to a known
+                    // helper — primitives only (struct / tuple / enum
+                    // formatting still falls back).
+                    if args.len() != 1 {
+                        note(reject_reason, || {
+                            format!("__builtin_to_string takes 1 arg, got {}", args.len())
+                        });
+                        return None;
+                    }
+                    let arg_ty = check_expr(
+                        program, &args[0], locals, compound_locals, substitutions,
+                        struct_layouts, callees, ptr_read_hints, reject_reason,
+                    )?;
+                    if !matches!(
+                        arg_ty,
+                        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::F64 | ScalarTy::Bool
+                            | ScalarTy::Str | ScalarTy::I8 | ScalarTy::U8
+                            | ScalarTy::I16 | ScalarTy::U16
+                            | ScalarTy::I32 | ScalarTy::U32
+                    ) {
+                        note(reject_reason, || {
+                            format!(
+                                "__builtin_to_string of {arg_ty:?} not supported in JIT \
+                                 (only primitives lower to runtime helpers)"
+                            )
+                        });
+                        return None;
+                    }
+                    Some(ScalarTy::Str)
                 }
                 BuiltinFunction::PtrWrite => {
                     if args.len() != 3 {
@@ -4087,6 +4164,31 @@ pub(crate) fn check_expr(
             )
         }
         Expr::MethodCall(receiver, method_name, args) => {
+            // STR-INTERP-INTERP-JIT: `s.concat(t)` where the receiver
+            // and arg are str. Codegen emits a direct call to the
+            // `jit_str_concat` runtime helper. Intercept here before
+            // the extension-trait lookup (which would miss it
+            // because `concat` is registered as a `BuiltinMethod`
+            // in the type checker, not as a stdlib trait impl).
+            if Some(method_name) == concat_sym() && args.len() == 1 {
+                let recv_ty = check_expr(
+                    program, &receiver, locals, compound_locals, substitutions,
+                    struct_layouts, callees, ptr_read_hints, reject_reason,
+                )?;
+                if matches!(recv_ty, ScalarTy::Str) {
+                    let arg_ty = check_expr(
+                        program, &args[0], locals, compound_locals, substitutions,
+                        struct_layouts, callees, ptr_read_hints, reject_reason,
+                    )?;
+                    if !matches!(arg_ty, ScalarTy::Str) {
+                        note(reject_reason, || {
+                            format!("str.concat argument must be str, got {arg_ty:?}")
+                        });
+                        return None;
+                    }
+                    return Some(ScalarTy::Str);
+                }
+            }
             // The receiver may be:
             //   1. A struct local (existing struct-method dispatch).
             //   2. A primitive scalar local (Step C extension-trait

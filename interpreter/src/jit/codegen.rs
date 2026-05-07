@@ -32,6 +32,12 @@ pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
         ScalarTy::I8 | ScalarTy::U8 => Some(types::I8),
         ScalarTy::I16 | ScalarTy::U16 => Some(types::I16),
         ScalarTy::I32 | ScalarTy::U32 => Some(types::I32),
+        // STR-INTERP-INTERP-JIT: str values are heap pointers
+        // (i64-sized) following the toylang str layout — same
+        // representation as `Ptr`, but kept distinct in the type
+        // system so codegen can pick the str-specific helpers
+        // (`jit_print_str` / `jit_str_concat`) at use sites.
+        ScalarTy::Str => Some(types::I64),
         // Unit and Never both produce no IR value: Unit because there's
         // nothing to materialise; Never because the expression diverges
         // before any value can be observed.
@@ -850,6 +856,18 @@ impl<'a, 'b> State<'a, 'b> {
             Expr::Float64(v) => Ok(Some(self.builder.ins().f64const(v))),
             Expr::True => Ok(Some(self.builder.ins().iconst(types::I8, 1))),
             Expr::False => Ok(Some(self.builder.ins().iconst(types::I8, 0))),
+            // STR-INTERP-INTERP-JIT: a string literal in expression
+            // position lowers to a `jit_string_literal(sym_id)` call
+            // that materialises a heap str. Storing the symbol's
+            // `to_usize()` as a u64 keeps us off the cranelift data
+            // segment path (which the interpreter JIT doesn't have);
+            // the helper resolves to bytes through the thread-local
+            // interner pointer installed by `execute_cached`.
+            Expr::String(sym) => {
+                let sym_u64 = sym.to_usize() as u64;
+                let sym_v = self.builder.ins().iconst(types::I64, sym_u64 as i64);
+                Ok(Some(self.call_helper(HelperKind::StringLiteral, &[sym_v])?))
+            }
             Expr::Identifier(sym) => {
                 if let Some(var) = self.local_vars.get(&sym).copied() {
                     return Ok(Some(self.builder.use_var(var)));
@@ -1180,6 +1198,12 @@ impl<'a, 'b> State<'a, 'b> {
                             (true, ScalarTy::U16) => HelperKind::PrintlnU16,
                             (false, ScalarTy::U32) => HelperKind::PrintU32,
                             (true, ScalarTy::U32) => HelperKind::PrintlnU32,
+                            // STR-INTERP-INTERP-JIT: print of a str
+                            // value (interpolation chain result, etc.)
+                            // routes through the dedicated runtime
+                            // helper that walks back to byte_start.
+                            (false, ScalarTy::Str) => HelperKind::PrintStrValue,
+                            (true, ScalarTy::Str) => HelperKind::PrintlnStrValue,
                             _ => return Err("print arg type unsupported in JIT".into()),
                         };
                         self.call_helper(kind, &[v])?;
@@ -1273,13 +1297,34 @@ impl<'a, 'b> State<'a, 'b> {
                         Ok(Some(self.builder.ins().iconst(types::I64, bytes)))
                     }
                     BuiltinFunction::ToString => {
-                        // Eligibility filter rejects this builtin so JIT
-                        // codegen should never reach here. If it does,
-                        // surface a clear internal error rather than
-                        // emitting nonsense.
-                        Err("internal error: __builtin_to_string reached JIT codegen \
-                             (eligibility should have rejected)"
-                            .to_string())
+                        // STR-INTERP-INTERP-JIT: dispatch on the arg's
+                        // ScalarTy to pick the matching `jit_to_string_*`
+                        // helper. Eligibility already validated the
+                        // arg type is one of the supported primitives.
+                        if args.len() != 1 {
+                            return Err("__builtin_to_string takes 1 arg".into());
+                        }
+                        let arg_ty = self.expr_type(&args[0])?;
+                        let v = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "__builtin_to_string arg produced no value".to_string())?;
+                        let kind = match arg_ty {
+                            ScalarTy::I64 => HelperKind::ToStringI64,
+                            ScalarTy::U64 => HelperKind::ToStringU64,
+                            ScalarTy::F64 => HelperKind::ToStringF64,
+                            ScalarTy::Bool => HelperKind::ToStringBool,
+                            ScalarTy::Str => HelperKind::ToStringStr,
+                            ScalarTy::I8 => HelperKind::ToStringI8,
+                            ScalarTy::U8 => HelperKind::ToStringU8,
+                            ScalarTy::I16 => HelperKind::ToStringI16,
+                            ScalarTy::U16 => HelperKind::ToStringU16,
+                            ScalarTy::I32 => HelperKind::ToStringI32,
+                            ScalarTy::U32 => HelperKind::ToStringU32,
+                            _ => return Err(format!(
+                                "__builtin_to_string of {arg_ty:?} unsupported in JIT"
+                            )),
+                        };
+                        Ok(Some(self.call_helper(kind, &[v])?))
                     }
                     BuiltinFunction::PtrRead => {
                         let expected = self
@@ -1448,6 +1493,30 @@ impl<'a, 'b> State<'a, 'b> {
                 Ok(Some(result))
             }
             Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
+                // STR-INTERP-INTERP-JIT: str.concat(t) doesn't go
+                // through the user-method registry; it's a builtin
+                // that lowers directly to the `jit_str_concat`
+                // runtime helper. Eligibility validated both
+                // operands are str; here we just emit the call.
+                // Method-name comparison uses the cached `concat`
+                // symbol installed during analyze (same pattern as
+                // eligibility).
+                if let Some(Expr::MethodCall(recv, method_name, args)) =
+                    self.program.expression.get(expr_ref)
+                {
+                    let is_concat_str = Some(method_name) == super::eligibility::concat_sym()
+                        && args.len() == 1
+                        && matches!(self.expr_type(&recv).ok(), Some(ScalarTy::Str));
+                    if is_concat_str {
+                        let a = self
+                            .gen_expr(&recv)?
+                            .ok_or_else(|| "str.concat receiver produced no value".to_string())?;
+                        let b = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "str.concat arg produced no value".to_string())?;
+                        return Ok(Some(self.call_helper(HelperKind::StrConcat, &[a, b])?));
+                    }
+                }
                 // `extern fn` calls bypass the monomorphisation /
                 // call_targets pipeline — they have no body to
                 // monomorphise. Eligibility has already validated the

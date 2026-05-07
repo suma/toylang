@@ -1,0 +1,139 @@
+// `core/std/string.t` / `core/std/collections/vec.t` stdlib API
+// tests. Phase 0: `Vec<u8>::push_char` UTF-8 encoding (with the
+// `char` alias upgraded from u8 to u32 in `core/std/char.t`).
+// Future phases will add `Concat` / `Contains` / `Substring` /
+// etc. trait-based String API tests.
+
+mod common;
+
+use common::{assert_program_fails, assert_program_result_u64};
+
+// Returns each byte of the buffer packed into a u64 — bytes are
+// laid out LSB-first so byte_0 ends up in the low 8 bits. The
+// helper avoids needing a dedicated array assertion since every
+// push_char test produces at most 4 bytes (well within u64).
+fn pack_bytes_program(push_char_call: &str, expected_size: u64) -> String {
+    format!(
+        r#"
+        fn main() -> u64 {{
+            var s: Vec<u8> = Vec::new()
+            {push_char_call}
+            assert(s.size() == {expected_size}u64, "byte count mismatch")
+            var packed: u64 = 0u64
+            var i: u64 = 0u64
+            while i < s.size() {{
+                val b: u8 = s.get(i)
+                packed = packed | ((b as u64) << (i * 8u64))
+                i = i + 1u64
+            }}
+            packed
+        }}
+        "#
+    )
+}
+
+#[test]
+fn push_char_ascii_single_byte() {
+    // 0x41 = 'A' is < 0x80, encoded as a single byte.
+    let src = pack_bytes_program("s.push_char(0x41u32)", 1);
+    assert_program_result_u64(&src, 0x41);
+}
+
+#[test]
+fn push_char_two_byte_utf8() {
+    // 0xE9 = 'é' (Latin small letter e with acute). 2-byte UTF-8.
+    // Bytes: [0xC3, 0xA9] → packed LSB-first = 0xA9C3.
+    let src = pack_bytes_program("s.push_char(0xE9u32)", 2);
+    assert_program_result_u64(&src, 0xA9C3);
+}
+
+#[test]
+fn push_char_three_byte_utf8() {
+    // 0x3042 = 'あ' (Hiragana letter A). 3-byte UTF-8.
+    // Bytes: [0xE3, 0x81, 0x82] → packed LSB-first = 0x8281E3.
+    let src = pack_bytes_program("s.push_char(0x3042u32)", 3);
+    assert_program_result_u64(&src, 0x82_81_E3);
+}
+
+#[test]
+fn push_char_four_byte_utf8() {
+    // 0x1F600 = '😀' (grinning face). 4-byte UTF-8.
+    // Bytes: [0xF0, 0x9F, 0x98, 0x80] → packed LSB-first =
+    // 0x80989FF0.
+    let src = pack_bytes_program("s.push_char(0x1F600u32)", 4);
+    assert_program_result_u64(&src, 0x80_98_9F_F0);
+}
+
+#[test]
+fn push_char_char_literal_produces_utf8() {
+    // Confirm char literal `'a'` lexes to UInt32 (codepoint 97)
+    // and goes through the UTF-8 encoder. Single-byte path.
+    let src = pack_bytes_program("s.push_char('a')", 1);
+    assert_program_result_u64(&src, 0x61);
+}
+
+#[test]
+fn push_char_unicode_escape_literal() {
+    // `'\u{1F600}'` (😀) at parse time → Kind::UInt32(0x1F600).
+    // Same expected bytes as `push_char_four_byte_utf8`.
+    let src = pack_bytes_program(r"s.push_char('\u{1F600}')", 4);
+    assert_program_result_u64(&src, 0x80_98_9F_F0);
+}
+
+#[test]
+fn push_char_surrogate_low_panics() {
+    // U+D800 is the first high surrogate — not a valid scalar.
+    // push_char must panic via the assert guard.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0xD800u32)
+            0u64
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn push_char_surrogate_high_panics() {
+    // U+DFFF is the last low surrogate.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0xDFFFu32)
+            0u64
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn push_char_out_of_range_panics() {
+    // U+110000 is one past the Unicode max scalar.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0x110000u32)
+            0u64
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn push_char_appends_to_existing_buffer() {
+    // push_char on a non-empty buffer keeps prior content intact
+    // and appends the encoded bytes after.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::from_str("hi")
+            s.push_char(0x21u32)
+            assert(s.size() == 3u64, "size after push_char")
+            assert(s.get(0u64) == 104u8, "byte 0 = 'h'")
+            assert(s.get(1u64) == 105u8, "byte 1 = 'i'")
+            assert(s.get(2u64) == 33u8, "byte 2 = '!'")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}

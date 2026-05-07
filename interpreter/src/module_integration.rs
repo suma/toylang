@@ -124,6 +124,13 @@ impl<'a> AstIntegrationContext<'a> {
             Expr::True | Expr::False | Expr::Null => Ok(expr.clone()),
             Expr::Int64(v) => Ok(Expr::Int64(*v)),
             Expr::UInt64(v) => Ok(Expr::UInt64(*v)),
+            Expr::Int8(v) => Ok(Expr::Int8(*v)),
+            Expr::Int16(v) => Ok(Expr::Int16(*v)),
+            Expr::Int32(v) => Ok(Expr::Int32(*v)),
+            Expr::UInt8(v) => Ok(Expr::UInt8(*v)),
+            Expr::UInt16(v) => Ok(Expr::UInt16(*v)),
+            Expr::UInt32(v) => Ok(Expr::UInt32(*v)),
+            Expr::Float64(v) => Ok(Expr::Float64(*v)),
             Expr::Number(symbol) => {
                 // Remap symbol to main program's string interner
                 let symbol_str = self.module_string_interner.resolve(*symbol)

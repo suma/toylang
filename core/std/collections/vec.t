@@ -187,15 +187,45 @@ impl Vec<u8> {
         self.extend_bytes(other.as_ptr(), other.size())
     }
 
-    # Append a single byte. Equivalent to `push` but the named
-    # variant documents intent (and parallels the legacy
-    # `String::push_char` API). `c: char` uses the alias from
-    # `core/std/char.t` — the cross-module alias-resolution pass
-    # (`frontend::resolve_type_aliases`) substitutes it to `u8`
-    # at type-check time so dispatch picks up the existing
-    # generic `Vec<T>::push` body.
+    # UTF-8 encode a Unicode codepoint and append the resulting 1-4
+    # bytes. `c: char` is `u32` (see `core/std/char.t`); the encoding
+    # follows RFC 3629:
+    #
+    #   < 0x80     -> 1 byte:  0xxxxxxx
+    #   < 0x800    -> 2 bytes: 110xxxxx 10xxxxxx
+    #   < 0x10000  -> 3 bytes: 1110xxxx 10xxxxxx 10xxxxxx
+    #   < 0x110000 -> 4 bytes: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+    #
+    # Surrogate codepoints (U+D800..U+DFFF) and codepoints
+    # >= U+110000 are not valid Unicode scalars and panic. Lexer
+    # already rejects them in `'\u{...}'` literals via
+    # `char::from_u32`; the runtime check guards values built from
+    # arithmetic.
+    #
+    # Implementation notes: shifts intentionally use `u64` operands —
+    # the type checker forces shift right-hand sides to `u64`
+    # (`frontend/src/type_checker/utility.rs:128`), so we widen the
+    # codepoint once and narrow each output byte with `as u8`.
     fn push_char(&mut self, c: char) {
-        self.push(c)
+        assert(c < 0x110000u32, "push_char: codepoint out of range")
+        assert(!(c >= 0xD800u32 && c <= 0xDFFFu32),
+               "push_char: surrogate codepoint not allowed")
+        val cp: u64 = c as u64
+        if cp < 0x80u64 {
+            self.push(cp as u8)
+        } elif cp < 0x800u64 {
+            self.push(((0xC0u64 | (cp >> 6u64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | (cp & 0x3Fu64)) & 0xFFu64) as u8)
+        } elif cp < 0x10000u64 {
+            self.push(((0xE0u64 | (cp >> 12u64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | ((cp >> 6u64) & 0x3Fu64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | (cp & 0x3Fu64)) & 0xFFu64) as u8)
+        } else {
+            self.push(((0xF0u64 | (cp >> 18u64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | ((cp >> 12u64) & 0x3Fu64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | ((cp >> 6u64) & 0x3Fu64)) & 0xFFu64) as u8)
+            self.push(((0x80u64 | (cp & 0x3Fu64)) & 0xFFu64) as u8)
+        }
     }
 
     # Byte-wise equality. Two byte vectors are equal iff they

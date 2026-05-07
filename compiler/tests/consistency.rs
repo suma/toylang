@@ -2128,22 +2128,22 @@ fn type_alias_forward_reference_round_trip() {
 
 #[test]
 fn cross_module_char_alias_round_trip() {
-    // `core/std/char.t::type char = u8` is resolved by the
+    // `core/std/char.t::type char = u32` is resolved by the
     // cross-module alias pass — annotation positions in user
     // code (`val a: char`, `c: char` parameter, `-> char` return)
-    // all substitute to `u8`. Used in conjunction with the
-    // recently-added `Vec<u8>::push_char(&mut self, c: char)`
-    // declaration in `core/std/collections/vec.t` which itself
-    // depends on the cross-module substitution to compile.
+    // all substitute to `u32`. Used in conjunction with the
+    // `Vec<u8>::push_char(&mut self, c: char)` declaration in
+    // `core/std/collections/vec.t`, which UTF-8 encodes the
+    // codepoint into 1-4 bytes.
     let src = r#"
         fn id_char(c: char) -> char {
             c
         }
 
         fn main() -> u64 {
-            val a: char = 65u8
+            val a: char = 65u32
             val b: char = id_char(a)
-            if b != 65u8 { return 1u64 }
+            if b != 65u32 { return 1u64 }
             var s: String = Vec::from_str("x")
             s.push_char(a)
             if s.size() != 2u64 { return 2u64 }
@@ -2238,15 +2238,15 @@ fn string_eq_clear_push_char_round_trip() {
     //     length-mismatch (early-return false) and length-equal
     //     full-loop paths
     //   - `clear(&mut self)` followed by `is_empty()` / `len()`
-    //   - `push_char(&mut self, c: u8)` filling a buffer that
-    //     was just cleared (cap was preserved by `clear`)
+    //   - `push_char(&mut self, c: char)` (char = u32) UTF-8
+    //     encoding ASCII codepoints into a single byte
     // Auto-borrow at the call sites: `s.eq(a)` passes `a:
     // String` into the `&String` param thanks to REF-Stage-2-min.
     // 3-way pin across interpreter / JIT silent fallback / AOT.
     let src = r#"
         fn main() -> u64 {
             var s: String = Vec::from_str("hi")
-            s.push_char(33u8)
+            s.push_char(33u32)
 
             val a: String = Vec::from_str("hi!")
             val b: String = Vec::from_str("hi?")
@@ -2258,7 +2258,7 @@ fn string_eq_clear_push_char_round_trip() {
             if !s.is_empty() { return 3u64 }
             if s.size() != 0u64 { return 4u64 }
 
-            s.push_char(120u8)
+            s.push_char(120u32)
             val x: String = Vec::from_str("x")
             if !s.eq(x) { return 5u64 }
             if s.size() != 1u64 { return 6u64 }
@@ -2267,6 +2267,42 @@ fn string_eq_clear_push_char_round_trip() {
         }
     "#;
     assert_consistent(src, "string_eq_clear_push_char_round_trip");
+}
+
+#[test]
+fn push_char_two_byte_utf8_round_trip() {
+    // `Vec<u8>::push_char` UTF-8 encoding for codepoint 0xE9 ('é').
+    // Expected bytes: [0xC3, 0xA9]. Pinned across interpreter, JIT
+    // (silent fallback for generic Vec<T>), and AOT.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0xE9u32)
+            if s.size() != 2u64 { return 1u64 }
+            if s.get(0u64) != 0xC3u8 { return 2u64 }
+            if s.get(1u64) != 0xA9u8 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "push_char_two_byte_utf8_round_trip");
+}
+
+#[test]
+fn push_char_three_byte_utf8_round_trip() {
+    // `Vec<u8>::push_char` UTF-8 encoding for codepoint 0x3042 ('あ').
+    // Expected bytes: [0xE3, 0x81, 0x82].
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0x3042u32)
+            if s.size() != 3u64 { return 1u64 }
+            if s.get(0u64) != 0xE3u8 { return 2u64 }
+            if s.get(1u64) != 0x81u8 { return 3u64 }
+            if s.get(2u64) != 0x82u8 { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "push_char_three_byte_utf8_round_trip");
 }
 
 #[test]

@@ -114,8 +114,11 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
                 }
                 Stmt::EnumDecl { name, generic_params, variants, visibility }
             }
-            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, mut target_type_args, methods, trait_name, mut trait_type_args } => {
                 for arg in target_type_args.iter_mut() {
+                    *arg = resolve_in_type(aliases, arg);
+                }
+                for arg in trait_type_args.iter_mut() {
                     *arg = resolve_in_type(aliases, arg);
                 }
                 let mut new_methods = Vec::with_capacity(methods.len());
@@ -137,9 +140,10 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
                     target_type_args,
                     methods: new_methods,
                     trait_name,
+                    trait_type_args,
                 }
             }
-            Stmt::TraitDecl { name, mut methods, visibility } => {
+            Stmt::TraitDecl { name, generic_params, mut methods, visibility } => {
                 for m in methods.iter_mut() {
                     for (_, ty) in m.parameter.iter_mut() {
                         *ty = resolve_in_type(aliases, ty);
@@ -151,7 +155,7 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
                         *bound = resolve_in_type(aliases, bound);
                     }
                 }
-                Stmt::TraitDecl { name, methods, visibility }
+                Stmt::TraitDecl { name, generic_params, methods, visibility }
             }
             Stmt::TypeAlias { name, generic_params, target, visibility } => {
                 let new_target = resolve_in_type(aliases, &target);

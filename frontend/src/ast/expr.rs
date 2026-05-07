@@ -78,13 +78,28 @@ pub enum Stmt {
         /// inherent `impl <Type>`. Trait conformance is recorded by the
         /// type-checker; runtime dispatch sees the methods either way.
         trait_name: Option<DefaultSymbol>,
+        /// ITER-PROTOCOL-TRAIT: concrete type arguments supplied to a
+        /// **generic** trait at this impl site (e.g. `<i64>` in
+        /// `impl Iterator<i64> for Counter`). Empty for non-generic
+        /// trait impls (`impl Greet for Dog`) and inherent impls
+        /// (`trait_name` is None). The type-checker substitutes the
+        /// trait's generic parameters with these args before verifying
+        /// each impl method matches the trait signature.
+        trait_type_args: Vec<TypeDecl>,
     },
     /// `trait Name { fn m(self: Self, ...) -> T; ... }` — declares a set of
     /// method signatures that conforming structs must provide. Trait methods
-    /// have no body. Generics on the trait itself, default methods, and trait
-    /// inheritance are out of scope for the initial implementation.
+    /// have no body. ITER-PROTOCOL-TRAIT added `generic_params`; default
+    /// methods, multi-bound (`<T: A + B>`), trait inheritance, and `dyn Trait`
+    /// remain out of scope.
     TraitDecl {
         name: DefaultSymbol,
+        /// ITER-PROTOCOL-TRAIT: parameter names introduced by
+        /// `trait Foo<T, U, ...>`. Each appears as `TypeDecl::Generic(P)`
+        /// inside method signatures and is substituted with the
+        /// matching `trait_type_args` entry from the impl site at
+        /// conformance-check time. Empty for non-generic traits.
+        generic_params: Vec<DefaultSymbol>,
         methods: Vec<TraitMethodSignature>,
         visibility: Visibility,
     },

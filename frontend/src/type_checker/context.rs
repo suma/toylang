@@ -55,6 +55,22 @@ pub struct TypeCheckContext {
     pub enum_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
     // Registered traits: name -> ordered method signatures.
     pub traits: HashMap<DefaultSymbol, Vec<TraitMethodSignature>>,
+    /// ITER-PROTOCOL-TRAIT: generic parameters declared on each
+    /// trait (`trait Foo<T, U, ...>` -> `[T, U, ...]`). Empty vec
+    /// for non-generic traits; missing entry means the trait
+    /// hasn't been registered yet. Consumed by
+    /// `check_trait_conformance` to substitute the params with
+    /// the impl's `trait_type_args` before comparing signatures.
+    pub trait_generic_params: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    /// ITER-PROTOCOL-TRAIT: per-impl trait_type_args queued by
+    /// `visit_impl_block_with_trait_args` immediately before
+    /// running `visit_impl_block_impl`. The conformance check
+    /// reads (and clears) this so generic-trait impls
+    /// `impl Iterator<i64> for Counter` substitute `T -> i64`
+    /// before comparing signatures. Always empty between
+    /// top-level statements; saved/restored across nested calls
+    /// in `visit_impl_block_with_trait_args`.
+    pub pending_trait_type_args: Vec<TypeDecl>,
     // Trait conformance: struct symbol -> set of trait symbols it implements.
     // Populated by `impl <Trait> for <Struct>` blocks once the conformance
     // check succeeds. Used at call sites to verify generic-bound satisfaction.
@@ -90,6 +106,8 @@ impl TypeCheckContext {
             enum_definitions: HashMap::new(),
             enum_generic_params: HashMap::new(),
             traits: HashMap::new(),
+            trait_generic_params: HashMap::new(),
+            pending_trait_type_args: Vec::new(),
             struct_trait_impls: HashMap::new(),
             closure_captures: HashMap::new(),
         }

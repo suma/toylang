@@ -294,13 +294,23 @@ fn integrate_modules(
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
-    impl_blocks: &[(DefaultSymbol, Vec<frontend::type_decl::TypeDecl>, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>)],
+    impl_blocks: &[(DefaultSymbol, Vec<frontend::type_decl::TypeDecl>, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>, Vec<frontend::type_decl::TypeDecl>)],
     formatter: &Option<ErrorFormatter>
 ) -> Vec<String> {
     let mut errors = Vec::new();
 
-    for (target_type, target_type_args, methods, trait_name) in impl_blocks {
-        if let Err(err) = tc.visit_impl_block(*target_type, target_type_args, methods, *trait_name) {
+    // ITER-PROTOCOL-TRAIT: route through the trait-args-aware
+    // visitor entry so generic-trait impls
+    // (`impl Iterator<i64> for Counter`) substitute `T -> i64`
+    // before the conformance check compares signatures.
+    for (target_type, target_type_args, methods, trait_name, trait_type_args) in impl_blocks {
+        if let Err(err) = tc.visit_impl_block_with_trait_args(
+            *target_type,
+            target_type_args,
+            methods,
+            *trait_name,
+            trait_type_args,
+        ) {
             let formatted_error = if let Some(ref fmt) = formatter {
                 fmt.format_type_check_error(&err)
             } else {
@@ -387,8 +397,8 @@ pub fn check_typing_with_core_modules(
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
-            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } = &stmt {
-                impl_blocks.push((*target_type, target_type_args.clone(), methods.clone(), *trait_name));
+            if let frontend::ast::Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } = &stmt {
+                impl_blocks.push((*target_type, target_type_args.clone(), methods.clone(), *trait_name, trait_type_args.clone()));
             }
         }
     }

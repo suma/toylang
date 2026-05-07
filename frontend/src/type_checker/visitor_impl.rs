@@ -75,9 +75,9 @@ impl Acceptable for Stmt {
             Stmt::Break => visitor.visit_break(),
             Stmt::Continue => visitor.visit_continue(),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => visitor.visit_impl_block(*target_type, target_type_args, methods, *trait_name),
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => visitor.visit_impl_block_with_trait_args(*target_type, target_type_args, methods, *trait_name, trait_type_args),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
-            Stmt::TraitDecl { name, methods, visibility } => visitor.visit_trait_decl(*name, methods, visibility),
+            Stmt::TraitDecl { name, generic_params, methods, visibility } => visitor.visit_trait_decl_with_generics(*name, generic_params, methods, visibility),
             // Aliases were already substituted during parsing; nothing
             // for the type checker to do here.
             Stmt::TypeAlias { .. } => Ok(TypeDecl::Unit),
@@ -431,8 +431,37 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name)
     }
 
+    fn visit_impl_block_with_trait_args(
+        &mut self,
+        target_type: DefaultSymbol,
+        target_type_args: &Vec<TypeDecl>,
+        methods: &Vec<Rc<MethodFunction>>,
+        trait_name: Option<DefaultSymbol>,
+        trait_type_args: &Vec<TypeDecl>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // ITER-PROTOCOL-TRAIT: stash the trait_type_args in the
+        // context so `visit_impl_block_impl` (called below) can
+        // route through `check_trait_conformance_with_args` when
+        // it gets to the conformance step.
+        let prev = std::mem::take(&mut self.context.pending_trait_type_args);
+        self.context.pending_trait_type_args = trait_type_args.clone();
+        let r = self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name);
+        self.context.pending_trait_type_args = prev;
+        r
+    }
+
     fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         self.visit_trait_decl_impl(name, methods)
+    }
+
+    fn visit_trait_decl_with_generics(
+        &mut self,
+        name: DefaultSymbol,
+        generic_params: &Vec<DefaultSymbol>,
+        methods: &Vec<TraitMethodSignature>,
+        _visibility: &Visibility,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_trait_decl_with_generic_params(name, generic_params, methods)
     }
 
     fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {

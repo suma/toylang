@@ -32,8 +32,20 @@ impl<'a> TypeCheckerVisitor<'a> {
         // For `impl <Trait> for <Struct>`, validate that the trait exists
         // and that this block satisfies every required method signature.
         // Conformance is recorded in the context for use at call sites.
+        // ITER-PROTOCOL-TRAIT: when the impl supplied concrete trait
+        // type args (`impl Iterator<i64> for Counter`), they sit in
+        // `context.pending_trait_type_args`; consume them here so the
+        // conformance check substitutes the trait's generic params
+        // before comparing signatures.
         if let Some(trait_symbol) = trait_name {
-            self.check_trait_conformance(struct_symbol, trait_symbol, methods)?;
+            let trait_type_args =
+                std::mem::take(&mut self.context.pending_trait_type_args);
+            self.check_trait_conformance_with_args(
+                struct_symbol,
+                trait_symbol,
+                &trait_type_args,
+                methods,
+            )?;
         }
 
         // Set current impl target for Self resolution

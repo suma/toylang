@@ -571,8 +571,21 @@ pub fn parse_impl_methods(parser: &mut Parser, methods: Vec<Rc<MethodFunction>>)
 /// terminated by a newline; the loop ends at `}`. Generics on individual
 /// trait methods are accepted but their bounds are dropped (the initial
 /// trait feature implementation does not propagate them).
+/// Backward-compat wrapper for non-generic traits — calls the
+/// generic-aware variant with an empty generic param list.
 pub fn parse_trait_method_signatures(
     parser: &mut Parser,
+) -> ParserResult<Vec<TraitMethodSignature>> {
+    parse_trait_method_signatures_with_generics(parser, &[])
+}
+
+/// ITER-PROTOCOL-TRAIT: parses trait method signatures with the
+/// trait's generic parameters in scope so type identifiers like
+/// `T` inside method signatures are recognised as generics rather
+/// than struct/enum names.
+pub fn parse_trait_method_signatures_with_generics(
+    parser: &mut Parser,
+    trait_generic_params: &[string_interner::DefaultSymbol],
 ) -> ParserResult<Vec<TraitMethodSignature>> {
     const MAX_METHODS: usize = 500;
     let mut methods: Vec<TraitMethodSignature> = Vec::new();
@@ -607,13 +620,18 @@ pub fn parse_trait_method_signatures(
                     skip_until_matching_gt(parser);
                 }
                 parser.expect_err(&Kind::ParenOpen)?;
-                let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(parser, vec![], &[])?;
+                let (params, has_self, self_is_mut) = parse_method_param_list_with_generic_context(parser, vec![], trait_generic_params)?;
                 parser.expect_err(&Kind::ParenClose)?;
 
                 let mut ret_ty: Option<TypeDecl> = None;
                 if let Some(Kind::Arrow) = parser.peek() {
                     parser.expect_err(&Kind::Arrow)?;
-                    ret_ty = Some(parser.parse_type_declaration()?);
+                    // ITER-PROTOCOL-TRAIT: pass the trait's generic
+                    // params so `Option<T>` resolves `T` as a generic
+                    // marker, not as an undeclared type name.
+                    let gen_set: std::collections::HashSet<string_interner::DefaultSymbol> =
+                        trait_generic_params.iter().copied().collect();
+                    ret_ty = Some(parser.parse_type_declaration_with_generic_context(&gen_set)?);
                 }
 
                 let (requires, ensures) = parser.parse_contract_clauses()?;

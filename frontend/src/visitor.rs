@@ -95,6 +95,21 @@ pub trait AstVisitor {
     fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
+    /// ITER-PROTOCOL-TRAIT: extended visit method that also receives
+    /// concrete trait type args (`<i64>` in `impl Iterator<i64> for ...`).
+    /// Default impl forwards to `visit_impl_block` for backward compat
+    /// with non-generic-trait impls; the type checker overrides this
+    /// to substitute the trait's generic params before conformance check.
+    fn visit_impl_block_with_trait_args(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>, _trait_type_args: &Vec<TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_impl_block(target_type, target_type_args, methods, trait_name)
+    }
     fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
+    /// ITER-PROTOCOL-TRAIT: extended visit method with `generic_params`.
+    /// Default impl forwards to `visit_trait_decl`; the type checker
+    /// overrides to register the trait's generic params in the
+    /// trait registry.
+    fn visit_trait_decl_with_generics(&mut self, name: DefaultSymbol, _generic_params: &Vec<DefaultSymbol>, methods: &Vec<TraitMethodSignature>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_trait_decl(name, methods, visibility)
+    }
 }

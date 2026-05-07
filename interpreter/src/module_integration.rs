@@ -649,7 +649,7 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone(),
                 })
             }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
                 // Remap target / trait symbols and each method body
                 // through the module's interner. Without the symbol
                 // remap, `target_type` and `trait_name` would still
@@ -685,11 +685,19 @@ impl<'a> AstIntegrationContext<'a> {
                 for arg in target_type_args {
                     new_target_type_args.push(self.remap_type_decl(arg)?);
                 }
+                // ITER-PROTOCOL-TRAIT: trait_type_args symbols are
+                // interned in the module's interner — same reasoning
+                // as target_type_args above.
+                let mut new_trait_type_args = Vec::with_capacity(trait_type_args.len());
+                for arg in trait_type_args {
+                    new_trait_type_args.push(self.remap_type_decl(arg)?);
+                }
                 Ok(Stmt::ImplBlock {
                     target_type: new_target,
                     target_type_args: new_target_type_args,
                     methods: new_methods,
                     trait_name: new_trait,
+                    trait_type_args: new_trait_type_args,
                 })
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
@@ -734,7 +742,7 @@ impl<'a> AstIntegrationContext<'a> {
                     visibility: visibility.clone(),
                 })
             }
-            Stmt::TraitDecl { name, methods, visibility } => {
+            Stmt::TraitDecl { name, generic_params, methods, visibility } => {
                 // Same fix as ImplBlock: `name` belongs to the
                 // module's interner and must be remapped before
                 // landing in the main program. Each
@@ -782,8 +790,18 @@ impl<'a> AstIntegrationContext<'a> {
                         self_is_mut: sig.self_is_mut,
                     });
                 }
+                // ITER-PROTOCOL-TRAIT: trait generic params are
+                // symbol-only (`T` etc.) and need remapping into
+                // the main interner so subsequent generic
+                // substitution at conformance time sees the same
+                // DefaultSymbol the impl side does.
+                let mut new_generic_params = Vec::with_capacity(generic_params.len());
+                for g in generic_params {
+                    new_generic_params.push(self.remap_symbol(*g)?);
+                }
                 Ok(Stmt::TraitDecl {
                     name: new_name,
+                    generic_params: new_generic_params,
                     methods: new_methods,
                     visibility: visibility.clone(),
                 })

@@ -450,3 +450,164 @@ mod multi_method {
         assert_eq!(result.borrow().unwrap_uint64(), 6);
     }
 }
+
+// =====================================================================
+// ITER-PROTOCOL-TRAIT: generic trait declarations + impl-with-trait-args.
+// =====================================================================
+mod generic_traits {
+    use crate::common::{test_program, assert_program_fails};
+
+    #[test]
+    fn generic_trait_compiles_alone() {
+        // A bare `trait Iterator<T>` declaration alongside a struct
+        // should type-check without any impls — the trait just
+        // registers `T` as a generic parameter in the trait registry.
+        let source = r#"
+            trait Box<T> {
+                fn unwrap(self: Self) -> T
+            }
+            struct Holder { v: i64 }
+            fn main() -> i64 { 0i64 }
+        "#;
+        assert!(test_program(source).is_ok(), "expected ok");
+    }
+
+    #[test]
+    fn generic_trait_impl_with_substitution() {
+        // The impl supplies `<i64>` for the trait's `T`. The
+        // substituted `next() -> Option<i64>` matches the impl
+        // method's literal `Option<i64>`. End-to-end iteration
+        // (driven by the parser-level `for x in iter { ... }`
+        // desugaring) returns 0+1+2+3+4 = 10.
+        let source = r#"
+            trait Pull<T> {
+                fn next(&mut self) -> Option<T>
+            }
+            struct Counter { current: i64, end: i64 }
+            impl Counter {
+                fn new(end: i64) -> Self {
+                    Counter { current: 0i64, end: end }
+                }
+            }
+            impl Pull<i64> for Counter {
+                fn next(&mut self) -> Option<i64> {
+                    if self.current >= self.end {
+                        Option::None
+                    } else {
+                        val v = self.current
+                        self.current = self.current + 1i64
+                        Option::Some(v)
+                    }
+                }
+            }
+            fn main() -> i64 {
+                var sum = 0i64
+                var iter = Counter::new(5i64)
+                for x in iter { sum = sum + x }
+                sum
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 10);
+    }
+
+    #[test]
+    fn generic_trait_return_type_mismatch_rejected() {
+        // The impl claims `Pull<i64>` but `next` returns `bool` —
+        // after substitution the trait demands `Option<i64>`, so
+        // the conformance check must reject this with a clear
+        // return-type-mismatch diagnostic.
+        let source = r#"
+            trait Pull<T> {
+                fn next(&mut self) -> Option<T>
+            }
+            struct Counter { v: i64 }
+            impl Counter {
+                fn new() -> Self { Counter { v: 0i64 } }
+            }
+            impl Pull<i64> for Counter {
+                fn next(&mut self) -> bool { true }
+            }
+            fn main() -> i64 { 0i64 }
+        "#;
+        assert_program_fails(source);
+    }
+
+    #[test]
+    fn generic_trait_param_substitution_round_trip() {
+        // A two-parameter generic trait. Both `T` and `E` get
+        // substituted by the impl's args.
+        let source = r#"
+            trait Encode<T, E> {
+                fn encode(self: Self, value: T) -> E
+            }
+            struct AsHex {}
+            impl AsHex {
+                fn new() -> Self { AsHex {} }
+            }
+            impl Encode<i64, u64> for AsHex {
+                fn encode(self: Self, value: i64) -> u64 {
+                    value as u64
+                }
+            }
+            fn main() -> u64 {
+                val a = AsHex::new()
+                a.encode(42i64)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_uint64(), 42);
+    }
+
+    #[test]
+    fn generic_trait_arg_count_mismatch_rejected() {
+        // The trait declares one parameter; the impl supplies
+        // two. Arity check should reject this.
+        let source = r#"
+            trait Box<T> {
+                fn id(self: Self, v: T) -> T
+            }
+            struct Holder {}
+            impl Box<i64, u64> for Holder {
+                fn id(self: Self, v: i64) -> i64 { v }
+            }
+            fn main() -> i64 { 0i64 }
+        "#;
+        assert_program_fails(source);
+    }
+
+    #[test]
+    fn generic_trait_can_be_implemented_via_stdlib_iterator() {
+        // The stdlib's `core/std/iter.t::trait Iterator<T>` is
+        // auto-loaded; user code can implement it directly. End-
+        // to-end behaviour identical to the structural-only
+        // shape that `for x in EXPR` already supports.
+        let source = r#"
+            struct Counter { current: i64, end: i64 }
+            impl Counter {
+                fn new(end: i64) -> Self {
+                    Counter { current: 0i64, end: end }
+                }
+            }
+            impl Iterator<i64> for Counter {
+                fn next(&mut self) -> Option<i64> {
+                    if self.current >= self.end {
+                        Option::None
+                    } else {
+                        val v = self.current
+                        self.current = self.current + 1i64
+                        Option::Some(v)
+                    }
+                }
+            }
+            fn main() -> i64 {
+                var sum = 0i64
+                var iter = Counter::new(5i64)
+                for x in iter { sum = sum + x }
+                sum
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 10);
+    }
+}

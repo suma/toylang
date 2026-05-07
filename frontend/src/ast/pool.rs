@@ -893,6 +893,15 @@ pub struct StmtPool {
     pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
     pub enum_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For enum generic parameters
     pub trait_methods: Vec<Option<Vec<TraitMethodSignature>>>, // For trait declarations
+    /// ITER-PROTOCOL-TRAIT: generic params declared on a trait
+    /// (`trait Foo<T, U, ...>`). `Some(Vec::new())` for non-generic
+    /// traits and `None` for non-TraitDecl statements.
+    pub trait_generic_params: Vec<Option<Vec<DefaultSymbol>>>,
+    /// ITER-PROTOCOL-TRAIT: concrete type args supplied to the trait
+    /// at an impl site (`impl Foo<i64> for Counter` → `[i64]`).
+    /// `Some(Vec::new())` for non-generic-trait impls and inherent
+    /// impls; `None` for non-ImplBlock statements.
+    pub impl_trait_type_args: Vec<Option<Vec<TypeDecl>>>,
 }
 
 impl Default for StmtPool {
@@ -923,6 +932,8 @@ impl StmtPool {
             enum_variants: Vec::new(),
             enum_generic_params: Vec::new(),
             trait_methods: Vec::new(),
+            trait_generic_params: Vec::new(),
+            impl_trait_type_args: Vec::new(),
         }
     }
 
@@ -947,6 +958,8 @@ impl StmtPool {
             enum_variants: Vec::with_capacity(cap),
             enum_generic_params: Vec::with_capacity(cap),
             trait_methods: Vec::with_capacity(cap),
+            trait_generic_params: Vec::with_capacity(cap),
+            impl_trait_type_args: Vec::with_capacity(cap),
         }
     }
 
@@ -973,6 +986,8 @@ impl StmtPool {
             self.enum_variants.resize(current_len + extend_count, None);
             self.enum_generic_params.resize(current_len + extend_count, None);
             self.trait_methods.resize(current_len + extend_count, None);
+            self.trait_generic_params.resize(current_len + extend_count, None);
+            self.impl_trait_type_args.resize(current_len + extend_count, None);
         }
     }
 
@@ -1027,12 +1042,13 @@ impl StmtPool {
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
                 self.stmt_types[index] = StmtType::ImplBlock;
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
                 self.impl_trait_name[index] = trait_name;
                 self.impl_target_type_args[index] = Some(target_type_args);
+                self.impl_trait_type_args[index] = Some(trait_type_args);
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 self.stmt_types[index] = StmtType::EnumDecl;
@@ -1041,10 +1057,11 @@ impl StmtPool {
                 self.enum_variants[index] = Some(variants);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::TraitDecl { name, methods, visibility } => {
+            Stmt::TraitDecl { name, generic_params, methods, visibility } => {
                 self.stmt_types[index] = StmtType::TraitDecl;
                 self.struct_name[index] = Some(name);
                 self.trait_methods[index] = Some(methods);
+                self.trait_generic_params[index] = Some(generic_params);
                 self.visibility[index] = Some(visibility);
             }
             Stmt::TypeAlias { name, generic_params, target, visibility } => {
@@ -1144,12 +1161,13 @@ impl StmtPool {
                 self.struct_fields[index] = Some(fields);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name } => {
+            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
                 self.stmt_types[index] = StmtType::ImplBlock;
                 self.struct_name[index] = Some(target_type);
                 self.impl_methods[index] = Some(methods);
                 self.impl_trait_name[index] = trait_name;
                 self.impl_target_type_args[index] = Some(target_type_args);
+                self.impl_trait_type_args[index] = Some(trait_type_args);
             }
             Stmt::EnumDecl { name, generic_params, variants, visibility } => {
                 self.stmt_types[index] = StmtType::EnumDecl;
@@ -1158,10 +1176,11 @@ impl StmtPool {
                 self.enum_variants[index] = Some(variants);
                 self.visibility[index] = Some(visibility);
             }
-            Stmt::TraitDecl { name, methods, visibility } => {
+            Stmt::TraitDecl { name, generic_params, methods, visibility } => {
                 self.stmt_types[index] = StmtType::TraitDecl;
                 self.struct_name[index] = Some(name);
                 self.trait_methods[index] = Some(methods);
+                self.trait_generic_params[index] = Some(generic_params);
                 self.visibility[index] = Some(visibility);
             }
             Stmt::TypeAlias { name, generic_params, target, visibility } => {
@@ -1232,6 +1251,7 @@ impl StmtPool {
                     target_type_args: self.impl_target_type_args[index].clone().unwrap_or_default(),
                     methods: self.impl_methods[index].clone()?,
                     trait_name: self.impl_trait_name[index],
+                    trait_type_args: self.impl_trait_type_args[index].clone().unwrap_or_default(),
                 })
             }
             StmtType::EnumDecl => {
@@ -1245,6 +1265,7 @@ impl StmtPool {
             StmtType::TraitDecl => {
                 Some(Stmt::TraitDecl {
                     name: self.struct_name[index]?,
+                    generic_params: self.trait_generic_params[index].clone().unwrap_or_default(),
                     methods: self.trait_methods[index].clone()?,
                     visibility: self.visibility[index].clone()?,
                 })

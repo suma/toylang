@@ -409,7 +409,37 @@ impl AstBuilder {
         trait_name: Option<DefaultSymbol>,
         location: Option<SourceLocation>,
     ) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock { target_type, target_type_args, methods, trait_name });
+        // Default no trait_type_args; callers that supply concrete
+        // generic-trait args go through the explicit-args helper.
+        self.impl_block_stmt_with_trait_args(
+            target_type,
+            target_type_args,
+            methods,
+            trait_name,
+            Vec::new(),
+            location,
+        )
+    }
+
+    /// ITER-PROTOCOL-TRAIT: full-shape builder used when the trait
+    /// itself carries concrete type args at the impl site
+    /// (`impl Iterator<i64> for Counter` → `trait_type_args = [i64]`).
+    pub fn impl_block_stmt_with_trait_args(
+        &mut self,
+        target_type: DefaultSymbol,
+        target_type_args: Vec<crate::type_decl::TypeDecl>,
+        methods: Vec<Rc<MethodFunction>>,
+        trait_name: Option<DefaultSymbol>,
+        trait_type_args: Vec<crate::type_decl::TypeDecl>,
+        location: Option<SourceLocation>,
+    ) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::ImplBlock {
+            target_type,
+            target_type_args,
+            methods,
+            trait_name,
+            trait_type_args,
+        });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
@@ -421,7 +451,29 @@ impl AstBuilder {
         visibility: Visibility,
         location: Option<SourceLocation>,
     ) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::TraitDecl { name, methods, visibility });
+        // Backward compat for non-generic traits: empty generic_params.
+        self.trait_decl_stmt_with_generics(name, Vec::new(), methods, visibility, location)
+    }
+
+    /// ITER-PROTOCOL-TRAIT: generic-aware trait declaration builder.
+    /// `generic_params` carries the symbol names introduced by
+    /// `trait Foo<T, U, ...>`; each occurrence of `T` / `U` in a
+    /// method signature shows up as `TypeDecl::Generic(P)` (the
+    /// existing convention for struct / function generics).
+    pub fn trait_decl_stmt_with_generics(
+        &mut self,
+        name: DefaultSymbol,
+        generic_params: Vec<DefaultSymbol>,
+        methods: Vec<crate::ast::TraitMethodSignature>,
+        visibility: Visibility,
+        location: Option<SourceLocation>,
+    ) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::TraitDecl {
+            name,
+            generic_params,
+            methods,
+            visibility,
+        });
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }

@@ -473,40 +473,48 @@ impl<'a> Parser<'a> {
                             // type-checker / interpreter / compiler — they
                             // are reserved keywords so there's no clash with
                             // a user struct of the same name.
-                            let (trait_name, target_type_symbol, target_type_args) = if matches!(self.peek(), Some(Kind::For)) {
-                                self.next(); // consume `for`
-                                let (target_sym, target_args) = match self.peek() {
-                                    Some(Kind::Identifier(name)) => {
-                                        let name_copy = name.clone();
-                                        let sym = self.string_interner.get_or_intern(&name_copy);
-                                        self.next();
-                                        let args = if self.peek() == Some(&Kind::LT) {
-                                            self.next(); // consume '<'
-                                            self.parse_type_args_after_lt(&generic_params_set)?
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        (sym, args)
-                                    }
-                                    Some(kind) if primitive_type_canonical_name(kind).is_some() => {
-                                        let name = primitive_type_canonical_name(kind).unwrap();
-                                        let sym = self.string_interner.get_or_intern(name);
-                                        self.next();
-                                        (sym, Vec::new())
-                                    }
-                                    _ => {
-                                        self.collect_error("expected target type after `for` in impl-trait");
-                                        self.next();
-                                        continue;
-                                    }
+                            // ITER-PROTOCOL-TRAIT: when `for` follows,
+                            // `first_target_args` actually carries the
+                            // trait's concrete type args (`<i64>` in
+                            // `impl Iterator<i64> for Counter`). Pass
+                            // them through as `trait_type_args` so the
+                            // type checker can substitute the trait's
+                            // generic params at conformance time.
+                            let (trait_name, trait_type_args, target_type_symbol, target_type_args) =
+                                if matches!(self.peek(), Some(Kind::For)) {
+                                    self.next(); // consume `for`
+                                    let (target_sym, target_args) = match self.peek() {
+                                        Some(Kind::Identifier(name)) => {
+                                            let name_copy = name.clone();
+                                            let sym = self.string_interner.get_or_intern(&name_copy);
+                                            self.next();
+                                            let args = if self.peek() == Some(&Kind::LT) {
+                                                self.next(); // consume '<'
+                                                self.parse_type_args_after_lt(&generic_params_set)?
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            (sym, args)
+                                        }
+                                        Some(kind) if primitive_type_canonical_name(kind).is_some() => {
+                                            let name = primitive_type_canonical_name(kind).unwrap();
+                                            let sym = self.string_interner.get_or_intern(name);
+                                            self.next();
+                                            (sym, Vec::new())
+                                        }
+                                        _ => {
+                                            self.collect_error("expected target type after `for` in impl-trait");
+                                            self.next();
+                                            continue;
+                                        }
+                                    };
+                                    (Some(first_ident_symbol), first_target_args, target_sym, target_args)
+                                } else {
+                                    // Inherent impl: first identifier is the
+                                    // target type; its `<...>` (if any) was
+                                    // captured into `first_target_args`.
+                                    (None, Vec::new(), first_ident_symbol, first_target_args)
                                 };
-                                (Some(first_ident_symbol), target_sym, target_args)
-                            } else {
-                                // Inherent impl: first identifier is the
-                                // target type; its `<...>` (if any) was
-                                // captured into `first_target_args` above.
-                                (None, first_ident_symbol, first_target_args)
-                            };
 
                             self.expect_err(&Kind::BraceOpen)?;
                             let methods = super::stmt::parse_impl_methods_with_generic_context(self, vec![], &generic_params, &generic_bounds)?;
@@ -514,7 +522,14 @@ impl<'a> Parser<'a> {
                             let impl_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(impl_end_pos);
 
-                            self.ast_builder.impl_block_stmt_with_trait(target_type_symbol, target_type_args, methods, trait_name, Some(location));
+                            self.ast_builder.impl_block_stmt_with_trait_args(
+                                target_type_symbol,
+                                target_type_args,
+                                methods,
+                                trait_name,
+                                trait_type_args,
+                                Some(location),
+                            );
                         }
                         _ => {
                             self.collect_error("expected type name for impl block");
@@ -532,13 +547,30 @@ impl<'a> Parser<'a> {
                             let s_copy = s.clone();
                             let trait_symbol = self.string_interner.get_or_intern(&s_copy);
                             self.next();
+                            // ITER-PROTOCOL-TRAIT: optional generic
+                            // parameter list `<T, U, ...>`. We discard
+                            // any per-parameter bounds here — trait
+                            // generics don't (yet) participate in the
+                            // bound-check pipeline; treating them as
+                            // unbounded is identical to how struct
+                            // generics start out.
+                            let (trait_generic_params, _trait_generic_bounds) =
+                                if matches!(self.peek(), Some(Kind::LT)) {
+                                    self.parse_generic_params()?
+                                } else {
+                                    (Vec::new(), std::collections::HashMap::new())
+                                };
                             self.expect_err(&Kind::BraceOpen)?;
-                            let methods = super::stmt::parse_trait_method_signatures(self)?;
+                            let methods = super::stmt::parse_trait_method_signatures_with_generics(
+                                self,
+                                &trait_generic_params,
+                            )?;
                             self.expect_err(&Kind::BraceClose)?;
                             let trait_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
                             update_end_pos(trait_end_pos);
-                            self.ast_builder.trait_decl_stmt(
+                            self.ast_builder.trait_decl_stmt_with_generics(
                                 trait_symbol,
+                                trait_generic_params,
                                 methods,
                                 visibility,
                                 Some(location),

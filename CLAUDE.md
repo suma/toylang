@@ -171,7 +171,13 @@ fn main() -> u64 {
 - **演算子**:
   - 算術: `+`, `-`, `*`, `/`, `%`（剰余・truncated remainder で `(-7) % 3 == -1`）
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
-  - **算術 operator overload**: `+` / `-` / `*` / `/` / `%` も同型 struct ペアで `add` / `sub` / `mul` / `div` / `rem` method (各 `(&self, &Self) -> Self`) に dispatch。`val c: Vec3 = a + b` 形 (let-rhs context) を 3 backend で。chain (`a + b + c`) は MVP では未対応
+  - **全 binary / unary operator overload** (Phase B + OP-OVERLOAD-ARITH + OP-OVERLOAD-EXTEND Phase 1-4): 同型 struct ペアで以下に dispatch (3 backend、let-rhs context):
+    - 算術: `+` / `-` / `*` / `/` / `%` → `add` / `sub` / `mul` / `div` / `rem` (`(&self, &Self) -> Self`)
+    - 複合代入: `+=` / `-=` / `*=` / `/=` / `%=` (parser desugar `a OP= b → a = a OP b` で算術 method 経由、AOT は `assign.rs` で既存 binding leaf locals に上書き)
+    - 順序比較: `<` / `<=` / `>` / `>=` → `lt` / `le` / `gt` / `ge` (`(&self, &Self) -> bool`)
+    - ビット: `&` / `|` / `^` / `<<` / `>>` → `bitand` / `bitor` / `bitxor` / `shl` / `shr` (Self 戻り)
+    - 単項: `-` / `~` / `!` → `neg` / `bitnot` / `not` (`(&self) -> Self`)
+    - **scope 外**: `&&` / `||` (short-circuit semantics)、chain (`a + b + c`)、binary struct literal operand (`a & Foo { ... }`)
   - 複合代入: `+=`, `-=`, `*=`, `/=`, `%=`（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar。LHS は identifier / フィールドアクセス対応）
   - 範囲: `..`（例: `0..10`）式として使用可能。`for i in 0..10 { ... }` と `val r = 0..10` の両方が書ける。`for i in 0 to 10` の旧形式も引き続き有効
   - スコープ解決: `::`

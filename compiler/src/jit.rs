@@ -233,7 +233,7 @@ fn compile_program_to_jit(
     // code lives in JIT-allocated memory the runtime addresses
     // absolutely.
     let mut jit_builder =
-        JITBuilder::with_flags(&[("opt_level", "speed")], cranelift_module::default_libcall_names())
+        JITBuilder::with_flags(&[("opt_level", crate::codegen::cranelift_opt_level())], cranelift_module::default_libcall_names())
             .map_err(|e| format!("JITBuilder: {e}"))?;
     register_runtime_symbols(&mut jit_builder);
     let module = JITModule::new(jit_builder);

@@ -272,6 +272,26 @@ cargo nextest run -p compiler -E 'test(returns_literal_exit_code)'
 
 テスト全体の wall-clock は 20 コアの macOS で約 60〜70 秒。
 
+#### Cranelift `opt_level`
+
+cranelift の `opt_level` は環境変数
+`TOYLANG_CRANELIFT_OPT_LEVEL` で切り替えられる
+(`compiler/src/codegen/mod.rs::cranelift_opt_level`)。プロダクション
+（CLI から直接 `cargo run -p compiler -- foo.t` で実行）は `"speed"`
+（デフォルト）、テスト実行時は `.config/nextest.toml` で `"none"` を
+注入している。`opt_level=none` だと cranelift の最適化パスが無効化
+され codegen 時間がおよそ **3 倍** 速くなる：
+
+| 計測 | `speed` | `none` | 改善 |
+|---|---|---|---|
+| nextest summary | 150s | 54s | **2.77x** |
+| `time real` | 231s | 60s | **3.86x** |
+| 205 テスト pass | ✅ | ✅ | — |
+
+テスト時に意図的に `speed` を使いたい (perf 検証など) ときは
+`TOYLANG_CRANELIFT_OPT_LEVEL=speed cargo nextest run -p compiler` で
+override する。`speed_and_size` も accept する。
+
 ### パフォーマンス
 
 各テストが `compile_file(... emit=Executable)` → 生成された binary の

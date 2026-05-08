@@ -1,0 +1,19 @@
+# cargo nextest configuration.
+#
+# Cranelift's `opt_level` defaults to `"speed"` everywhere the AOT /
+# JIT pipeline is invoked (see `compiler/src/codegen/mod.rs::cranelift_opt_level`).
+# For the test suite we override to `"none"` because each test runs
+# its own AOT compile via `assert_consistent` and we don't care about
+# the produced binary's runtime quality — only that it links and
+# executes correctly. Cranelift at opt_level=none is roughly **3x
+# faster** at codegen, which on the workspace measured at:
+#
+#   speed: nextest summary 150s, real 231s
+#   none:  nextest summary  54s, real  60s   (compiler crate, 205 tests)
+#
+# Override locally with `TOYLANG_CRANELIFT_OPT_LEVEL=speed cargo
+# nextest run` if you want to verify against the production setting.
+
+[profile.default]
+[profile.default.env]
+TOYLANG_CRANELIFT_OPT_LEVEL = "none"

@@ -260,6 +260,21 @@ pub(crate) struct CodegenSession<M: Module> {
     const_str_bytes: HashMap<Vec<u8>, DataId>,
 }
 
+/// Resolve cranelift's `opt_level` flag from the environment, defaulting
+/// to `"speed"` for production / interactive use. Setting
+/// `TOYLANG_CRANELIFT_OPT_LEVEL=none` slashes per-compile time roughly
+/// 20x at the cost of slower generated code — useful for the test
+/// suite where we typically build hundreds of tiny programs and run
+/// each only once. `"speed_and_size"` is also accepted for symmetry
+/// with cranelift's setting names.
+pub(crate) fn cranelift_opt_level() -> &'static str {
+    match std::env::var("TOYLANG_CRANELIFT_OPT_LEVEL") {
+        Ok(v) if v == "none" => "none",
+        Ok(v) if v == "speed_and_size" => "speed_and_size",
+        _ => "speed",
+    }
+}
+
 /// Construct the host-targeted ObjectModule used by the AOT pipeline.
 /// Pulled out of `CodegenSession::new` so the JIT path can build a
 /// `JITModule` with its own ISA settings and still funnel into the
@@ -269,7 +284,7 @@ pub(crate) fn make_object_module() -> Result<ObjectModule, String> {
         .map_err(|e| format!("host ISA detection failed: {e}"))?;
     let mut flag_builder = settings::builder();
     flag_builder
-        .set("opt_level", "speed")
+        .set("opt_level", cranelift_opt_level())
         .map_err(|e| format!("flag set: {e}"))?;
     // PIC is required by some platform linkers (notably recent macOS)
     // for relocatable objects feeding into PIE executables.

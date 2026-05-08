@@ -233,3 +233,46 @@ impl ToString for Vec<u8> {
         result
     }
 }
+
+# `split(sep)` — naive O(n * m) byte-loop split. Empty `sep`
+# panics. Each part is a fresh `Vec<u8>` allocated through the
+# active allocator; the outer `Vec<Vec<u8>>` holds them in
+# encounter order (including a trailing empty slice if the input
+# ends with `sep`, matching Rust's `str::split` shape). The
+# AOT-COMPOUND-PTR-RW landing makes `Vec<T>` work for compound
+# `T`, so the outer container fits the existing `Vec<u8>` impl
+# unchanged.
+impl Split<Vec<u8>, Vec<Vec<u8>>> for Vec<u8> {
+    fn split(&self, sep: &Vec<u8>) -> Vec<Vec<u8>> {
+        assert(sep.len > 0u64, "split: separator must be non-empty")
+        var result: Vec<Vec<u8>> = Vec::new()
+        val n: u64 = self.len
+        val m: u64 = sep.len
+        var start: u64 = 0u64
+        var i: u64 = 0u64
+        while i + m <= n {
+            var matched: bool = true
+            var j: u64 = 0u64
+            while j < m {
+                val a: u8 = __builtin_ptr_read(self.data, i + j)
+                val b: u8 = __builtin_ptr_read(sep.data, j)
+                if a != b {
+                    matched = false
+                    break
+                }
+                j = j + 1u64
+            }
+            if matched {
+                val part: Vec<u8> = self.substring(start, i)
+                result.push(part)
+                start = i + m
+                i = start
+            } else {
+                i = i + 1u64
+            }
+        }
+        val tail: Vec<u8> = self.substring(start, n)
+        result.push(tail)
+        result
+    }
+}

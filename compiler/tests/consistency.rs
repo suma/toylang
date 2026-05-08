@@ -2410,6 +2410,58 @@ fn builtin_sizeof_struct_value_round_trip() {
 }
 
 #[test]
+fn vec_of_vec_round_trip() {
+    // AOT-COMPOUND-PTR-RW: `Vec<T>` for compound `T` (struct
+    // here) round-trips through the heap buffer because
+    // `__builtin_ptr_write/read` now expand into per-leaf
+    // scalar reads / writes. Pre-fix the AOT lower bailed at
+    // "ptr_write value produced no value" the first time
+    // `Vec<u8>::push` tried to store a compound element.
+    let src = r#"
+        fn main() -> u64 {
+            var outer: Vec<Vec<u8>> = Vec::new()
+            val a: Vec<u8> = Vec::from_str("hi")
+            val b: Vec<u8> = Vec::from_str("world")
+            outer.push(a)
+            outer.push(b)
+            if outer.size() != 2u64 { return 1u64 }
+            val first: Vec<u8> = outer.get(0u64)
+            if first.size() != 2u64 { return 2u64 }
+            val second: Vec<u8> = outer.get(1u64)
+            if second.size() != 5u64 { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "vec_of_vec_round_trip");
+}
+
+#[test]
+fn string_split_round_trip() {
+    // `Split<Vec<u8>, Vec<Vec<u8>>>` for String, riding on the
+    // AOT-COMPOUND-PTR-RW landing. Three-way pin: AOT did not
+    // type-check this trait return shape before the lower fix.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("a,b,c")
+            val sep: String = Vec::from_str(",")
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            if parts.size() != 3u64 { return 1u64 }
+            val a: Vec<u8> = parts.get(0u64)
+            val b: Vec<u8> = parts.get(1u64)
+            val c: Vec<u8> = parts.get(2u64)
+            val ea: String = Vec::from_str("a")
+            val eb: String = Vec::from_str("b")
+            val ec: String = Vec::from_str("c")
+            if !a.eq(ea) { return 2u64 }
+            if !b.eq(eb) { return 3u64 }
+            if !c.eq(ec) { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_split_round_trip");
+}
+
+#[test]
 fn string_eq_operator_round_trip() {
     // Phase B operator overload — `s == t` / `s != t` between
     // two String values dispatch to the user-defined `eq` method.

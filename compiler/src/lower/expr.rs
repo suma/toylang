@@ -74,6 +74,67 @@ impl<'a> FunctionLower<'a> {
         }
     }
 
+    /// Walk `ty` to a list of `(byte_offset, leaf_scalar_type)`
+    /// pairs, mirroring the natural-sum byte layout that
+    /// `compute_byte_size` and the user-space `Vec<T>` body assume.
+    /// Used by AOT-COMPOUND-PTR-RW to expand a single
+    /// `__builtin_ptr_write(p, off, struct_value)` /
+    /// `__builtin_ptr_read(p, off) -> Struct` into per-leaf
+    /// scalar reads / writes — the AOT lower's `PtrRead` /
+    /// `PtrWrite` IR nodes only model a scalar slot.
+    ///
+    /// Tuples flatten in declaration order; structs flatten in
+    /// field declaration order (matching `flatten_struct_locals`
+    /// and the IR's `StructDef.fields` iteration). Enums are
+    /// rejected — variant payload layouts can't safely be
+    /// encoded as a single offset list (a single buffer slot
+    /// holds different leaf shapes per variant, which the
+    /// per-leaf read/write model would garble). Callers that
+    /// need enum support fall back to the "compound type
+    /// unsupported" diagnostic and the existing single-scalar
+    /// code path.
+    pub(super) fn compute_leaf_layout(&self, ty: Type) -> Option<Vec<(u64, Type)>> {
+        let mut leaves: Vec<(u64, Type)> = Vec::new();
+        let mut offset: u64 = 0;
+        self.collect_leaves(ty, &mut offset, &mut leaves)?;
+        Some(leaves)
+    }
+
+    fn collect_leaves(
+        &self,
+        ty: Type,
+        offset: &mut u64,
+        out: &mut Vec<(u64, Type)>,
+    ) -> Option<()> {
+        match ty {
+            Type::Bool | Type::I8 | Type::U8
+            | Type::I16 | Type::U16
+            | Type::I32 | Type::U32
+            | Type::I64 | Type::U64 | Type::F64 | Type::Str => {
+                out.push((*offset, ty));
+                *offset = offset.saturating_add(self.compute_byte_size(ty)?);
+                Some(())
+            }
+            Type::Unit => Some(()),
+            Type::Struct(struct_id) => {
+                let def = self.module.struct_def(struct_id);
+                let field_tys: Vec<Type> = def.fields.iter().map(|(_, t)| *t).collect();
+                for ft in field_tys {
+                    self.collect_leaves(ft, offset, out)?;
+                }
+                Some(())
+            }
+            Type::Tuple(tuple_id) => {
+                let elems = self.module.tuple_defs[tuple_id.0 as usize].clone();
+                for et in elems {
+                    self.collect_leaves(et, offset, out)?;
+                }
+                Some(())
+            }
+            Type::Enum(_) => None,
+        }
+    }
+
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
         self.lower_call_args_with_target(args_ref, None)
     }
@@ -983,24 +1044,103 @@ impl<'a> FunctionLower<'a> {
                 // offset (`Dict<K, V>` always reads/writes K-typed
                 // values to `keys` and V-typed values to `vals`, so
                 // there's no tag-mismatch worry in well-typed code).
+                //
+                // AOT-COMPOUND-PTR-RW: when `value` is a compound
+                // (struct / tuple) the call expands into one
+                // `PtrWrite` per leaf scalar at `offset + leaf_off`.
+                // `compute_leaf_layout` walks the type to a flat
+                // `(byte_offset, scalar_type)` list, and the leaf
+                // values come from the binding's leaf locals. Pre-
+                // existing scalar callers fall through the single
+                // `PtrWrite` path unchanged.
                 if args.len() != 3 {
                     return Err(format!(
                         "__builtin_ptr_write takes 3 args (ptr, offset, value), got {}",
                         args.len()
                     ));
                 }
+                let value_ty = self
+                    .value_scalar(&args[2])
+                    .ok_or_else(|| {
+                        "__builtin_ptr_write value type unsupported (needs scalar or struct/tuple)"
+                            .to_string()
+                    })?;
+                if matches!(value_ty, Type::Struct(_) | Type::Tuple(_)) {
+                    let leaves = self.compute_leaf_layout(value_ty).ok_or_else(|| {
+                        format!(
+                            "__builtin_ptr_write: unable to compute leaf layout for {:?}",
+                            value_ty
+                        )
+                    })?;
+                    // Resolve the value identifier to its binding
+                    // and pull leaf locals via `flatten_struct_locals`
+                    // / `flatten_tuple_element_locals` (same paths
+                    // method-call argument flattening uses).
+                    let value_expr = self.program.expression.get(&args[2])
+                        .ok_or_else(|| "ptr_write value expr missing".to_string())?;
+                    let leaf_locals: Vec<(crate::ir::LocalId, Type)> = match value_expr {
+                        Expr::Identifier(sym) => match self.bindings.get(&sym).cloned() {
+                            Some(super::bindings::Binding::Struct { fields, .. }) => {
+                                super::bindings::flatten_struct_locals(&fields)
+                            }
+                            Some(super::bindings::Binding::Tuple { elements }) => {
+                                super::bindings::flatten_tuple_element_locals(&elements)
+                            }
+                            other => return Err(format!(
+                                "__builtin_ptr_write: compound value identifier needs struct/tuple binding, got {:?}",
+                                other.is_some()
+                            )),
+                        },
+                        other => return Err(format!(
+                            "__builtin_ptr_write: compound value must be a bare identifier, got {:?}",
+                            std::mem::discriminant(&other)
+                        )),
+                    };
+                    if leaf_locals.len() != leaves.len() {
+                        return Err(format!(
+                            "__builtin_ptr_write: leaf count mismatch ({} locals vs {} layout entries) — binding likely doesn't match the type-checker's view of {:?}",
+                            leaf_locals.len(),
+                            leaves.len(),
+                            value_ty
+                        ));
+                    }
+                    let ptr = self.lower_expr(&args[0])?
+                        .ok_or_else(|| "ptr_write ptr produced no value".to_string())?;
+                    let base_offset = self.lower_expr(&args[1])?
+                        .ok_or_else(|| "ptr_write offset produced no value".to_string())?;
+                    for ((leaf_off, leaf_ty), (local, _local_ty)) in
+                        leaves.iter().zip(leaf_locals.iter())
+                    {
+                        let leaf_off_v = self
+                            .emit(
+                                InstKind::Const(crate::ir::Const::U64(*leaf_off)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns a value");
+                        let off_v = self
+                            .emit(
+                                InstKind::BinOp {
+                                    op: crate::ir::BinOp::Add,
+                                    lhs: base_offset,
+                                    rhs: leaf_off_v,
+                                },
+                                Some(Type::U64),
+                            )
+                            .expect("BinOp returns a value");
+                        let value = self
+                            .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                            .expect("LoadLocal returns a value");
+                        self.emit(
+                            InstKind::PtrWrite { ptr, offset: off_v, value, value_ty: *leaf_ty },
+                            None,
+                        );
+                    }
+                    return Ok(None);
+                }
                 let ptr = self.lower_expr(&args[0])?
                     .ok_or_else(|| "ptr_write ptr produced no value".to_string())?;
                 let offset = self.lower_expr(&args[1])?
                     .ok_or_else(|| "ptr_write offset produced no value".to_string())?;
-                // Peek the value's IR type before lowering so the
-                // store width is preserved; lower the value as usual.
-                let value_ty = self
-                    .value_scalar(&args[2])
-                    .ok_or_else(|| {
-                        "__builtin_ptr_write value type unsupported (needs scalar)"
-                            .to_string()
-                    })?;
                 let value = self.lower_expr(&args[2])?
                     .ok_or_else(|| "ptr_write value produced no value".to_string())?;
                 Ok(self.emit(

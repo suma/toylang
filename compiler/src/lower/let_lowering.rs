@@ -1113,6 +1113,14 @@ impl<'a> FunctionLower<'a> {
         // intercept, lower_builtin_call's PtrRead arm rejects the
         // call with a clear error pointing at the missing type
         // hint, but a let-binding always supplies one.
+        //
+        // AOT-COMPOUND-PTR-RW: when the annotation is a compound
+        // (struct / tuple) the call expands into one `PtrRead` per
+        // leaf scalar at `off + leaf_off`, then stores each leaf
+        // into a freshly-allocated `Binding::Struct` /
+        // `Binding::Tuple` local. Mirrors the per-leaf write loop
+        // in `expr.rs::PtrWrite`. Pre-existing scalar callers
+        // continue through the original single-PtrRead path.
         if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone() {
             if args.len() == 2 {
                 // Resolve the annotation type with the active
@@ -1125,6 +1133,78 @@ impl<'a> FunctionLower<'a> {
                 // which only knows the leaf-primitive `TypeDecl`s.
                 let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));
                 if let Some(elem_ty) = elem_ty {
+                    if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_)) {
+                        let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {
+                            format!(
+                                "__builtin_ptr_read: unable to compute leaf layout for {:?}",
+                                elem_ty
+                            )
+                        })?;
+                        let ptr = self
+                            .lower_expr(&args[0])?
+                            .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
+                        let base_offset = self
+                            .lower_expr(&args[1])?
+                            .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                        // Allocate the destination binding's leaf
+                        // locals up front so we can store each
+                        // PtrRead value straight into them in
+                        // declaration order.
+                        let (leaf_locals, binding) = match elem_ty {
+                            Type::Struct(struct_id) => {
+                                let fields = self.allocate_struct_fields(struct_id);
+                                let locals = flatten_struct_locals(&fields);
+                                self.register_drop_for_struct_binding(struct_id, &fields);
+                                (locals, Binding::Struct { struct_id, fields })
+                            }
+                            Type::Tuple(tuple_id) => {
+                                let elements = self.allocate_tuple_elements(tuple_id)?;
+                                let locals = flatten_tuple_element_locals(&elements);
+                                (locals, Binding::Tuple { elements })
+                            }
+                            _ => unreachable!("guarded above"),
+                        };
+                        if leaf_locals.len() != leaves.len() {
+                            return Err(format!(
+                                "__builtin_ptr_read: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
+                                leaf_locals.len(),
+                                leaves.len(),
+                                elem_ty
+                            ));
+                        }
+                        for ((leaf_off, leaf_ty), (local, _local_ty)) in
+                            leaves.iter().zip(leaf_locals.iter())
+                        {
+                            let leaf_off_v = self
+                                .emit(
+                                    InstKind::Const(crate::ir::Const::U64(*leaf_off)),
+                                    Some(Type::U64),
+                                )
+                                .expect("Const returns a value");
+                            let off_v = self
+                                .emit(
+                                    InstKind::BinOp {
+                                        op: crate::ir::BinOp::Add,
+                                        lhs: base_offset,
+                                        rhs: leaf_off_v,
+                                    },
+                                    Some(Type::U64),
+                                )
+                                .expect("BinOp returns a value");
+                            let v = self
+                                .emit(
+                                    InstKind::PtrRead { ptr, offset: off_v, elem_ty: *leaf_ty },
+                                    Some(*leaf_ty),
+                                )
+                                .expect("PtrRead returns a value");
+                            self.emit(
+                                InstKind::StoreLocal { dst: *local, src: v },
+                                None,
+                            );
+                        }
+                        self.bindings.insert(name, binding);
+                        return Ok(None);
+                    }
                     let ptr = self
                         .lower_expr(&args[0])?
                         .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;

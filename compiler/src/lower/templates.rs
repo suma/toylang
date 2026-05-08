@@ -535,7 +535,15 @@ pub(super) fn lower_param_or_return_type(
         {
             let mut lowered_args: Vec<Type> = Vec::with_capacity(args.len());
             for a in args {
-                let l = lower_scalar(a)?;
+                // AOT-COMPOUND-PTR-RW: recurse so type args
+                // themselves can be compound (`Vec<Vec<u8>>` is the
+                // landing case). Pre-fix `lower_scalar(a)?` rejected
+                // any non-primitive arg, which was fine when no
+                // user-space stdlib produced nested generic structs
+                // yet — but Phase B's `Split<Vec<u8>, Vec<Vec<u8>>>`
+                // and the underlying `__builtin_ptr_read/write` of
+                // compound values now do.
+                let l = lower_param_or_return_type(a, struct_defs, enum_defs, module, interner)?;
                 if matches!(l, Type::Unit) {
                     return None;
                 }

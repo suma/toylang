@@ -61,3 +61,13 @@ pub trait Contains<Needle> {
 pub trait ToString {
     fn to_string(self: Self) -> Vec<u8>
 }
+
+# `Split` — split `self` at every occurrence of `sep`, returning
+# a vector of slices (each slice itself is a `Vec<u8>`). Empty
+# `sep` panics — the libc / Rust convention of "every codepoint
+# boundary" doesn't apply at the byte level. `Out` is generic so
+# future receivers can pick their own container shape (e.g. an
+# iterator type) without changing the trait surface.
+pub trait Split<Sep, Out> {
+    fn split(&self, sep: &Sep) -> Out
+}

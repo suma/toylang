@@ -11,6 +11,9 @@
 // methods taking a struct argument (let_lowering.rs identifier-
 // flatten path) plus the primitive-receiver compound-returning
 // method bind path for `str::to_string -> Vec<u8>`.
+// Phase 5: `Split<Vec<u8>, Vec<Vec<u8>>>` — depends on the
+// AOT-COMPOUND-PTR-RW fix (compound `__builtin_ptr_read/write`)
+// so `Vec<Vec<u8>>` round-trips through the heap buffer.
 
 mod common;
 
@@ -613,6 +616,107 @@ fn string_eq_operator_different_lengths() {
         }
     "#;
     assert_program_result_u64(src, 42);
+}
+
+// ---------------------------------------------------------------
+// Phase 5: `Split` for String. AOT-COMPOUND-PTR-RW unlocked
+// `Vec<T>` for compound `T`, which lets `s.split(sep)` return a
+// `Vec<Vec<u8>>` that round-trips across all 3 backends.
+// ---------------------------------------------------------------
+
+#[test]
+fn string_split_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("a,b,c")
+            val sep: String = Vec::from_str(",")
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            assert(parts.size() == 3u64, "3 parts")
+            val a: Vec<u8> = parts.get(0u64)
+            val b: Vec<u8> = parts.get(1u64)
+            val c: Vec<u8> = parts.get(2u64)
+            val ea: String = Vec::from_str("a")
+            val eb: String = Vec::from_str("b")
+            val ec: String = Vec::from_str("c")
+            assert(a.eq(ea), "a")
+            assert(b.eq(eb), "b")
+            assert(c.eq(ec), "c")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_split_no_match() {
+    // No occurrence of sep -> single-element result containing
+    // the whole input.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val sep: String = Vec::from_str(",")
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            assert(parts.size() == 1u64, "1 part")
+            val first: Vec<u8> = parts.get(0u64)
+            assert(first.eq(s), "first equals whole input")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_split_trailing_separator() {
+    // Trailing separator emits a final empty slice (Rust
+    // `str::split` shape).
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("a,b,")
+            val sep: String = Vec::from_str(",")
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            assert(parts.size() == 3u64, "3 parts (last empty)")
+            val tail: Vec<u8> = parts.get(2u64)
+            assert(tail.is_empty(), "last is empty")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_split_multibyte_separator() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("foo--bar--baz")
+            val sep: String = Vec::from_str("--")
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            assert(parts.size() == 3u64, "3 parts")
+            val foo: Vec<u8> = parts.get(0u64)
+            val bar: Vec<u8> = parts.get(1u64)
+            val baz: Vec<u8> = parts.get(2u64)
+            val efoo: String = Vec::from_str("foo")
+            val ebar: String = Vec::from_str("bar")
+            val ebaz: String = Vec::from_str("baz")
+            assert(foo.eq(efoo), "foo")
+            assert(bar.eq(ebar), "bar")
+            assert(baz.eq(ebaz), "baz")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_split_empty_separator_panics() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hi")
+            val sep: String = Vec::new()
+            val parts: Vec<Vec<u8>> = s.split(sep)
+            parts.size()
+        }
+    "#;
+    assert_program_fails(src);
 }
 
 #[test]

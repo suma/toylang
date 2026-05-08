@@ -5,6 +5,7 @@
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
 ### 2026-05-08
+- **AOT-SIZEOF-COMPOUND 完了** (`a57d9fe`) — STRING-API-SPLIT spike の副産物。`compiler/src/lower/expr.rs::FunctionLower::compute_byte_size` (新規 helper) を追加し、`__builtin_sizeof(struct/tuple/enum)` の AOT lower を有効化 (interpreter `object_byte_size` の compile-time 版、struct = field sum、tuple = element sum、enum = 1-byte tag + max payload)。`compiler/src/lower/type_inference.rs::value_scalar` の `Expr::Identifier` arm を `Binding::Struct` / `Binding::Enum` 認識に拡張 (それぞれ `Type::Struct(struct_id)` / `Type::Enum(enum_id)` を返す)。3-way consistency 1 件 (`builtin_sizeof_struct_value_round_trip`)。1370 -> **1371 tests pass**。残: `Vec<T>` で `T` が compound のとき `__builtin_ptr_write/read` が AOT で fail するため、`STRING-API-SPLIT` (Vec<Vec<u8>> 戻り) はまだ deferred — 下記未実装参照。
 - **STRING-API Phase 4 完了** (`6a0fa3c`) — `Concat<Other>` / `Contains<Needle>` / `ToString` trait を `core/std/str_ops.t` に追加し、`core/std/string.t` の `impl Vec<u8>` 群に対応 impl 追加。`core/std/str.t` に `impl ToString for str` (`Vec::from_str` 委譲) も追加。**前提となった AOT lower 拡張**: (1) `let_lowering.rs::MethodCall` arm の args loop に identifier-flatten path 追加 (struct/tuple/enum identifier を leaf locals に展開、explicit borrow `&p` peel)、(2) primitive-receiver compound-returning method bind path 新設 (`str.to_string() -> Vec<u8>` を CallStruct で emit、Step D の compound-return guard を回避)。`primitive_target_sym_for_ir_type` を pub(super) 化して再利用。新規テスト 8 件 (concat / contains / to_string)、3-way consistency 3 件。1359 -> **1370 tests pass**。
 - **STRING-API Phase 2 完了** (`7335421`) — `Substring` / `Trim` / `CaseConvert` trait を `core/std/str_ops.t` に追加、`Vec<u8>` (= `String`) で impl。当初想定の AOT 制約「compound-returning instance method の expression position」は **tail-position の chain に限定**であることが判明 (`val r: T = method_call; r` で workaround 可)、`Trim::trim` で適用。新規テスト 11 件 (substring / trim / case)、3-way consistency 4 件。1344 -> **1359 tests pass**。
 - **STRING-API Phase 1 完了** (`e9b2ee7`) — `core/std/str.t` の `Length` / `AsPtr` extension trait を `Vec<u8>` (= `String`) にも `impl` し、`.len()` / `.as_ptr()` が `str` / `String` 共通の call shape で呼べるように。`core/std/str_ops.t` を新規追加 (Phase 2 / 4 でその trait を埋める)。新規 `interpreter/tests/string_stdlib_tests.rs` に Phase 1 テスト 4 件 + Phase 0 と合わせて計 14 件、`compiler/tests/consistency.rs` に `string_len_via_length_trait_round_trip` / `string_as_ptr_via_trait_round_trip` の 3-way 2 件。1338 -> **1344 tests pass**。
@@ -65,7 +66,9 @@
 ## 未実装 📋
 
 
-STRING-API-SPLIT. **`Split<Sep, Out>` trait と `impl Split for Vec<u8>`** — Phase 4 で Concat / Contains / ToString は landed (2026-05-08, `6a0fa3c`)。残: `split(sep)` で string を境界で分割し `Vec<Vec<u8>>` を返す trait。実装には **nested generic struct** (`Vec<Vec<u8>>`) の AOT lower サポートが必要 — todo.md の `JIT-enum-1 (residual)` / `159` 系で記録された generic struct lower の限定もあって、現状の `Vec<T>` は `T` が primitive のとき特化で動くが、`T = Vec<u8>` (compound) は未確認。優先度: 中 (実装範囲不明、要 spike)。
+STRING-API-SPLIT. **`Split<Sep, Out>` trait と `impl Split for Vec<u8>`** — Phase 4 で Concat / Contains / ToString は landed (2026-05-08, `6a0fa3c`)。残: `split(sep)` で string を境界で分割し `Vec<Vec<u8>>` を返す trait。spike (`a57d9fe`) で AOT 制約を 2 つ確認: (1) `__builtin_sizeof` の compound 対応 = ✅ 完了、(2) **`__builtin_ptr_write(p, off, struct_value)` / `__builtin_ptr_read(p, off) -> Struct` の AOT lower 未対応**。現状 `Vec<T>::push(value: T)` body が `__builtin_ptr_write` で `value: T` を直接書こうとするため、`T = Vec<u8>` 等 compound のとき "ptr_write value produced no value" で fail。実装には struct 値の per-leaf serialization (各 field を順次 `ptr_write_<scalar>` に展開) が必要、AOT compound element 全般の作業 (`AOT-COMPOUND-PTR-RW` として下記)。interpreter / JIT は両方とも動くので、stdlib 実装 + interpreter-only test 先行も可。優先度: 中。
+
+AOT-COMPOUND-PTR-RW. **`__builtin_ptr_write/read` の compound 値対応** — 現状 AOT は scalar 値 (i64/u64/f64/bool/str/narrow ints) のみ。compound (struct/tuple/enum) を渡すと "ptr_write value produced no value" / 同様の read 側 fail。実装案: `value: T` が compound なら lower で `T` を leaf に flatten し `for each leaf { ptr_write(p, off + leaf_offset, leaf) }` に展開、read は逆方向 (per-leaf read + struct/tuple/enum literal 構築)。`STRING-API-SPLIT` のブロッカー、`159` (generic struct JIT) と関連。優先度: 中。
 
 STR-INTERP-COMPOUND. **string interpolation で struct / tuple / enum 値の補間** — 現状 AOT は primitives (i64/u64/f64/bool/str/narrow ints) のみ補間可能。compound 型を補間するには `__builtin_to_string` で動的 dispatch + 型ごとの format 関数生成が必要 (interpreter は `Object::to_display_string` で既に動いている)。優先度: 中 (struct / enum を `println` で表示する既存パスと統合できる)。
 
@@ -143,7 +146,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1370 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / STRING-API-PHASE-1 / -2 / -4 で計 44 件追加。compiler/e2e は 191、consistency は 50+）
+- 合計 1371 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / STRING-API-PHASE-1 / -2 / -4 + AOT-SIZEOF-COMPOUND で計 45 件追加。compiler/e2e は 191、consistency は 50+）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (50+) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

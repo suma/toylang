@@ -110,7 +110,13 @@ fn main() -> u64 {
 - Variables: `val` (immutable), `var` (mutable)
 - Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
-- Stdlib aliases: `char = u32` (Unicode codepoint、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)、`String = Vec<u8>` (heap-managed byte buffer)。`String` は `core/std/str.t` の `Length` / `AsPtr` / `ToString` と `core/std/str_ops.t` の `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains` / `Split` を `impl` していて `s.len()` / `s.as_ptr()` / `s.substring(start, end)` / `s.trim()` / `s.to_upper()` / `s.to_lower()` / `s.concat(other)` / `s.contains(needle)` / `s.to_string()` / `s.split(sep)` が `str` と同じ call shape で動く (3 backend)。`Vec<u8>::push_char(c: char)` は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。**alias-qualified associated function call** も対応 (`val s: String = String::from_str("...")` / `var t: String = String::new()` が `Vec::from_str` / `Vec::new` 経由で動作)。`Vec<T>` で `T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)
+- Stdlib types:
+  - `char = u32` (Unicode codepoint alias、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)
+  - `String` (`core/std/string.t`) — heap-managed byte buffer の **nominal struct** (`type` alias ではなく独立 struct、`Vec<u8>` と同 memory layout だが nominal identity は別)。inherent method (`new` / `from_str(s)` / `push` / `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` / `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char` / `eq` / `to_string`) + 拡張 trait impl (`Substring` / `Trim` / `CaseConvert` / `Concat<String>` / `Contains<String>` / `Split<String, Vec<String>>` from `core/std/str_ops.t`) で `s.len()` / `s.substring(...)` / `s.trim()` / `s.concat(other)` / `s.split(sep)` 等が `str` と同じ call shape で動く (3 backend)。
+  - `Vec<T>` (`core/std/collections/vec.t`) — generic dynamic array。`T` が compound (struct/tuple) も AOT 対応 (`__builtin_ptr_read/write` を per-leaf 展開、`AOT-COMPOUND-PTR-RW`)。
+- **`==` / `!=` operator overload** (Phase B) — 同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (3 backend)。`s == t` で String 比較が動く。
+- **`Vec<u8>::push_char(c: char)`** は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。
+- **alias-qualified associated function call** も frontend で支援 (`String::from_str("...")` / `String::new()` が直接 dispatch)。
 - **Numeric literals**:
   - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit), `1.5f64` / `42f64` (IEEE 754 double)
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）

@@ -525,6 +525,68 @@ impl EvaluationContext<'_> {
         let lhs_v = try_value_v!(lhs_result);
         let rhs_v = try_value_v!(rhs_result);
 
+        // Phase B operator overload: `s == t` / `s != t` between
+        // two struct values of the same nominal type dispatches to
+        // the user-defined `eq(&self, other: &Self) -> bool`
+        // method on the struct. The frontend type checker ensures
+        // the receiver / argument shape matches before reaching
+        // here, so we only need to look up `eq` and forward the
+        // call. `!=` negates the boolean result. Falls through to
+        // the regular comparison path when no `eq` method is
+        // registered (the type checker's allow-list also catches
+        // the unsupported case before this point, but the
+        // defensive fall-through keeps non-overloaded comparisons
+        // (Allocator identity, etc.) routed through their existing
+        // arms).
+        if matches!(op, Operator::EQ | Operator::NE) {
+            if let (Value::Heap(lhs_rc), Value::Heap(rhs_rc)) = (&lhs_v, &rhs_v) {
+                let struct_info = {
+                    let lhs_obj = lhs_rc.borrow();
+                    let rhs_obj = rhs_rc.borrow();
+                    match (&*lhs_obj, &*rhs_obj) {
+                        (Object::Struct { type_name: ln, type_args: la, .. },
+                         Object::Struct { type_name: rn, type_args: ra, .. })
+                            if ln == rn && la == ra => Some((*ln, la.clone())),
+                        _ => None,
+                    }
+                };
+                if let Some((struct_name, type_args)) = struct_info {
+                    if let Some(eq_sym) = self.string_interner.get("eq") {
+                        if let Some(method) =
+                            self.get_method(struct_name, eq_sym, &type_args)
+                        {
+                            let result = self.call_method(
+                                method,
+                                lhs_rc.clone(),
+                                vec![rhs_rc.clone()],
+                            )?;
+                            let result_v = match result {
+                                EvaluationResult::Value(v) => v,
+                                _ => return Err(InterpreterError::InternalError(
+                                    "operator overload: eq returned non-value".to_string()
+                                )),
+                            };
+                            let bool_result = match result_v {
+                                Value::Bool(b) => b,
+                                other => return Err(InterpreterError::InternalError(
+                                    format!(
+                                        "operator overload: eq returned {:?}, expected bool",
+                                        other
+                                    ),
+                                )),
+                            };
+                            let final_bool = if matches!(op, Operator::EQ) {
+                                bool_result
+                            } else {
+                                !bool_result
+                            };
+                            return Ok(EvaluationResult::Value(Value::Bool(final_bool)));
+                        }
+                    }
+                }
+            }
+        }
+
         let result_v = match op {
             Operator::IAdd => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Add)?,
             Operator::ISub => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Sub)?,

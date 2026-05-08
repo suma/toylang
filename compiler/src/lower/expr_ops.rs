@@ -36,6 +36,23 @@ impl<'a> FunctionLower<'a> {
             return self.lower_short_circuit(op, lhs, rhs);
         }
         let lhs_ty = self.value_scalar(lhs).unwrap_or(Type::U64);
+        // Phase B operator overload: `==` / `!=` between two struct
+        // values dispatches to the struct's
+        // `eq(&self, other: &Self) -> bool` method. Mirrors the
+        // interpreter side (operators.rs::evaluate_binary). The
+        // type checker has already vetted that both sides are the
+        // same nominal struct with an `eq` method, so this lookup
+        // is expected to succeed; if it doesn't (concrete-impl
+        // dispatch edge cases, etc.) fall through to the regular
+        // BinOp path which will error out with the standard
+        // mismatch.
+        if matches!(op, Operator::EQ | Operator::NE) {
+            if let Type::Struct(struct_id) = lhs_ty {
+                if let Some(value) = self.try_lower_struct_eq(struct_id, lhs, rhs, op)? {
+                    return Ok(Some(value));
+                }
+            }
+        }
         let l = self
             .lower_expr(lhs)?
             .ok_or_else(|| "binary lhs produced no value".to_string())?;
@@ -69,6 +86,82 @@ impl<'a> FunctionLower<'a> {
             },
             Some(result_ty),
         ))
+    }
+
+    /// Phase B operator overload helper. Returns `Ok(Some(value))`
+    /// when the struct dispatches `==` / `!=` to its `eq` method;
+    /// `Ok(None)` when the lookup misses (caller falls back to the
+    /// regular BinOp path). The struct's leaf locals are loaded
+    /// for both sides and concatenated as `Call` arguments — same
+    /// shape the regular method-call lowering uses for
+    /// `Binding::Struct` / borrow-of-struct args.
+    fn try_lower_struct_eq(
+        &mut self,
+        struct_id: crate::ir::StructId,
+        lhs: &ExprRef,
+        rhs: &ExprRef,
+        op: &Operator,
+    ) -> Result<Option<ValueId>, String> {
+        use frontend::ast::Expr;
+        use super::bindings::{flatten_struct_locals, Binding};
+        let struct_def = self.module.struct_def(struct_id);
+        let target_sym = struct_def.base_name;
+        let type_args = struct_def.type_args.clone();
+        let eq_sym = match self.interner.get("eq") {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let func_id = match super::method_registry::lookup_method_func(
+            self.method_func_ids, target_sym, eq_sym, &type_args,
+        ) {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+        // Collect leaf values for both sides. Each side must be an
+        // `Expr::Identifier` resolving to a `Binding::Struct` (the
+        // typical String / Vec<u8> shape). If either side is some
+        // other expression form we fall back to the regular BinOp
+        // path — the type checker rejects most such cases up front,
+        // and the surviving ones get the standard "Bad types"
+        // diagnostic.
+        let lhs_leaves = match self.program.expression.get(lhs) {
+            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Struct { fields, .. }) => flatten_struct_locals(&fields),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let rhs_leaves = match self.program.expression.get(rhs) {
+            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                Some(Binding::Struct { fields, .. }) => flatten_struct_locals(&fields),
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        let mut args: Vec<ValueId> = Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
+        for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
+            let v = self
+                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                .expect("LoadLocal returns a value");
+            args.push(v);
+        }
+        let bool_v = self
+            .emit(InstKind::Call { target: func_id, args }, Some(Type::Bool))
+            .ok_or_else(|| "operator overload: eq call produced no value".to_string())?;
+        if matches!(op, Operator::EQ) {
+            Ok(Some(bool_v))
+        } else {
+            // `!=`: emit `bool_v == false` to invert. Cleaner than
+            // adding a UnaryOp::Not lowering for booleans through a
+            // cranelift IR path that doesn't currently model it.
+            let const_false = self
+                .emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))
+                .expect("Const returns a value");
+            Ok(self.emit(
+                InstKind::BinOp { op: BinOp::Eq, lhs: bool_v, rhs: const_false },
+                Some(Type::Bool),
+            ))
+        }
     }
 
     pub(super) fn lower_short_circuit(

@@ -2410,6 +2410,30 @@ fn builtin_sizeof_struct_value_round_trip() {
 }
 
 #[test]
+fn string_eq_operator_round_trip() {
+    // Phase B operator overload — `s == t` / `s != t` between
+    // two String values dispatch to the user-defined `eq` method.
+    // Pinned 3-way: interpreter does it via
+    // `evaluate_binary` early dispatch; AOT does it via
+    // `lower_binary::try_lower_struct_eq` (Call to the resolved
+    // `eq` FuncId with leaf locals as args); JIT silently falls
+    // back to the interpreter for struct-typed binaries.
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str("hello")
+            val c: String = Vec::from_str("world")
+            if !(a == b) { return 1u64 }
+            if a == c { return 2u64 }
+            if a != b { return 3u64 }
+            if !(a != c) { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_eq_operator_round_trip");
+}
+
+#[test]
 fn string_from_str_via_alias_round_trip() {
     // `String::from_str("...")` — the alias `type String = Vec<u8>`
     // is now rewritten in expression position too, so the qualifier

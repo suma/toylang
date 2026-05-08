@@ -535,6 +535,86 @@ fn string_new_via_alias() {
     assert_program_result_u64(src, 42);
 }
 
+// ---------------------------------------------------------------
+// Phase B: operator overload — `==` / `!=` between two struct
+// values dispatches to the struct's `eq(&self, other: &Self) ->
+// bool` method. Currently interpreter-only (AOT support is a
+// follow-up; JIT silently falls back to the interpreter).
+// ---------------------------------------------------------------
+
+#[test]
+fn string_eq_operator_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str("hello")
+            val c: String = Vec::from_str("world")
+            assert(a == b, "a == b")
+            assert(!(a == c), "a == c is false")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_ne_operator_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str("hello")
+            val c: String = Vec::from_str("world")
+            assert(!(a != b), "a != b is false")
+            assert(a != c, "a != c")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_eq_operator_in_if_condition() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("yes")
+            val target: String = Vec::from_str("yes")
+            if a == target {
+                100u64
+            } else {
+                200u64
+            }
+        }
+    "#;
+    assert_program_result_u64(src, 100);
+}
+
+#[test]
+fn string_eq_operator_empty_strings() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::new()
+            val b: String = Vec::new()
+            assert(a == b, "empty strings are equal")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_eq_operator_different_lengths() {
+    let src = r#"
+        fn main() -> u64 {
+            val short: String = Vec::from_str("hi")
+            val long: String = Vec::from_str("hello")
+            assert(!(short == long), "different lengths not equal")
+            assert(short != long, "different lengths != true")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
 #[test]
 fn push_char_appends_to_existing_buffer() {
     // push_char on a non-empty buffer keeps prior content intact

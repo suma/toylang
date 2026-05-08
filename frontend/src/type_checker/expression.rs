@@ -350,6 +350,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // so expressions like `current_allocator() == a` type-check inside a
                     // `<A: Allocator>` function body.
                     TypeDecl::Bool
+                } else if matches!(op, Operator::EQ | Operator::NE)
+                          && self.struct_eq_compatible(&resolved_lhs_ty, &resolved_rhs_ty) {
+                    // Operator overload (Phase B): two struct values of
+                    // the same nominal type are comparable with `==` /
+                    // `!=` iff the struct exposes an `eq(&self, other:
+                    // &Self) -> bool` method. Each backend's comparison
+                    // evaluator dispatches the operator to that method
+                    // for struct receivers — `s == t` becomes
+                    // semantically equivalent to `s.eq(t)`.
+                    TypeDecl::Bool
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
@@ -642,6 +652,33 @@ impl<'a> TypeCheckerVisitor<'a> {
             ),
             _ => false,
         }
+    }
+
+    /// Whether `lhs` and `rhs` are both the same struct type and that struct
+    /// has an `eq` method registered. Drives the Phase B operator-overload
+    /// path that lets `s == t` dispatch to `s.eq(t)` for nominal struct
+    /// values (e.g. `String` / `Vec<u8>`). Generic struct args must also
+    /// match so `Vec<u8> == Vec<u8>` compares but `Vec<u8> == Vec<i64>`
+    /// continues to bail with the standard mismatch error.
+    fn struct_eq_compatible(&self, lhs: &TypeDecl, rhs: &TypeDecl) -> bool {
+        let (lhs_name, lhs_args) = match lhs {
+            TypeDecl::Struct(name, args) => (*name, args),
+            _ => return false,
+        };
+        let (rhs_name, rhs_args) = match rhs {
+            TypeDecl::Struct(name, args) => (*name, args),
+            _ => return false,
+        };
+        if lhs_name != rhs_name || lhs_args != rhs_args {
+            return false;
+        }
+        let eq_sym = match self.core.string_interner.get("eq") {
+            Some(s) => s,
+            None => return false,
+        };
+        self.context.struct_methods.get(&lhs_name)
+            .and_then(|m| m.get(&eq_sym))
+            .is_some()
     }
 
     /// If the call to `fun` omits trailing Allocator-typed parameters, extend the

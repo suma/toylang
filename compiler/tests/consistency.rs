@@ -3842,6 +3842,37 @@ fn string_interp_identifier_round_trip() {
 }
 
 #[test]
+fn string_interp_tuple_round_trip() {
+    // STR-INTERP-COMPOUND-EXTEND tuple branch — `(elem0, elem1)` /
+    // `(elem,)` formatting matches the interpreter's display.
+    let src = r#"
+        fn main() -> i64 {
+            val t: (i64, u64) = (3i64, 5u64)
+            val s = "t = {t}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_tuple");
+}
+
+#[test]
+fn string_interp_nested_struct_round_trip() {
+    // STR-INTERP-COMPOUND-EXTEND nested-compound branch — struct
+    // field that is itself a struct recurses through
+    // `emit_struct_format`.
+    let src = r#"
+        struct Inner { x: i64, y: i64 }
+        struct Outer { inner: Inner, n: u64 }
+        fn main() -> i64 {
+            val o: Outer = Outer { inner: Inner { x: 3i64, y: 5i64 }, n: 7u64 }
+            val s = "{o}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_nested_struct");
+}
+
+#[test]
 fn string_interp_struct_round_trip() {
     // STR-INTERP-COMPOUND: interpolating a struct value at AOT
     // expands into per-field `toy_to_string_<ty>` +

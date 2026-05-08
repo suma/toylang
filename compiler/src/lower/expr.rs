@@ -136,41 +136,44 @@ impl<'a> FunctionLower<'a> {
                 "__builtin_to_string: struct identifier needs a Struct binding".to_string(),
             ),
         };
-        let (type_name_sym, decl_fields): (string_interner::DefaultSymbol, Vec<(String, Type)>) = {
+        let v = self.emit_struct_format(struct_id, &fields)?;
+        Ok(Some(v))
+    }
+
+    /// STR-INTERP-COMPOUND-EXTEND nested-compound helper. Builds
+    /// the formatted text for a struct binding tree. Recurses into
+    /// `FieldShape::Struct` / `FieldShape::Tuple` so a struct
+    /// whose field is itself a struct (or tuple) prints as
+    /// `Outer { inner: Inner { x: 1 } }` rather than bailing.
+    fn emit_struct_format(
+        &mut self,
+        struct_id: crate::ir::StructId,
+        fields: &[super::bindings::FieldBinding],
+    ) -> Result<ValueId, String> {
+        let (type_name_sym, decl_field_count): (string_interner::DefaultSymbol, usize) = {
             let def = self.module.struct_def(struct_id);
-            (def.base_name, def.fields.clone())
+            (def.base_name, def.fields.len())
         };
         let type_name_str = self
             .interner
             .resolve(type_name_sym)
             .unwrap_or("?")
             .to_string();
-        let leaf_locals = flatten_struct_locals(&fields);
-        if leaf_locals.len() != decl_fields.len() {
+        if fields.len() != decl_field_count {
             return Err(format!(
-                "__builtin_to_string: struct {} has nested compound fields — \
-                 nested compound to_string is not supported in AOT yet",
-                type_name_str
+                "__builtin_to_string: struct {} field-binding count mismatch \
+                 ({} bindings vs {} declared)",
+                type_name_str,
+                fields.len(),
+                decl_field_count
             ));
         }
-        let mut sorted: Vec<(usize, String, Type)> = decl_fields
+        let mut sorted: Vec<(usize, String)> = fields
             .iter()
             .enumerate()
-            .map(|(i, (n, t))| (i, n.clone(), *t))
+            .map(|(i, fb)| (i, fb.name.clone()))
             .collect();
         sorted.sort_by(|a, b| a.1.cmp(&b.1));
-        for (_, name, ty) in &sorted {
-            if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit) {
-                return Err(format!(
-                    "__builtin_to_string: struct {} field `{}` has compound type {:?} — \
-                     nested compound to_string is not supported in AOT yet",
-                    type_name_str, name, ty
-                ));
-            }
-        }
-        // Header `"TypeName { "` if there's at least one field;
-        // `"TypeName {}"` for an empty struct. Matches the
-        // interpreter's display format exactly.
         let header_text = if sorted.is_empty() {
             format!("{} {{}}", type_name_str)
         } else {
@@ -182,7 +185,7 @@ impl<'a> FunctionLower<'a> {
                 Some(Type::Str),
             )
             .expect("ConstStrBytes returns a value");
-        for (i, (decl_idx, name, field_ty)) in sorted.iter().enumerate() {
+        for (i, (decl_idx, name)) in sorted.iter().enumerate() {
             let prefix = format!("{}: ", name);
             let prefix_v = self
                 .emit(
@@ -193,16 +196,7 @@ impl<'a> FunctionLower<'a> {
             acc = self
                 .emit(InstKind::StrConcat { a: acc, b: prefix_v }, Some(Type::Str))
                 .expect("StrConcat returns a value");
-            let (local, leaf_ty) = leaf_locals[*decl_idx];
-            let val = self
-                .emit(InstKind::LoadLocal(local), Some(leaf_ty))
-                .expect("LoadLocal returns a value");
-            let val_str = self
-                .emit(
-                    InstKind::ToString { value: val, value_ty: *field_ty },
-                    Some(Type::Str),
-                )
-                .expect("ToString returns a value");
+            let val_str = self.emit_field_to_string(&fields[*decl_idx])?;
             acc = self
                 .emit(InstKind::StrConcat { a: acc, b: val_str }, Some(Type::Str))
                 .expect("StrConcat returns a value");
@@ -229,7 +223,155 @@ impl<'a> FunctionLower<'a> {
                 .emit(InstKind::StrConcat { a: acc, b: footer }, Some(Type::Str))
                 .expect("StrConcat returns a value");
         }
-        Ok(Some(acc))
+        Ok(acc)
+    }
+
+    /// Dispatch a single struct field's binding tree to the right
+    /// to_string emitter. Scalar leaves go through the existing
+    /// `InstKind::ToString` runtime helper; nested struct / tuple
+    /// fields recurse into `emit_struct_format` /
+    /// `emit_tuple_format`. Enum fields aren't supported yet.
+    fn emit_field_to_string(
+        &mut self,
+        field: &super::bindings::FieldBinding,
+    ) -> Result<ValueId, String> {
+        use super::bindings::FieldShape;
+        match &field.shape {
+            FieldShape::Scalar { local, ty } => {
+                let val = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .expect("LoadLocal returns a value");
+                Ok(self
+                    .emit(
+                        InstKind::ToString { value: val, value_ty: *ty },
+                        Some(Type::Str),
+                    )
+                    .expect("ToString returns a value"))
+            }
+            FieldShape::Struct { struct_id, fields } => {
+                let nested_fields = fields.clone();
+                self.emit_struct_format(*struct_id, &nested_fields)
+            }
+            FieldShape::Tuple { tuple_id: _, elements } => {
+                let nested = elements.clone();
+                self.emit_tuple_format(&nested)
+            }
+        }
+    }
+
+    /// Tuple-element variant of `emit_field_to_string`. Same
+    /// dispatch shape, just with `TupleElementShape` instead of
+    /// `FieldShape`.
+    fn emit_tuple_element_to_string(
+        &mut self,
+        element: &super::bindings::TupleElementBinding,
+    ) -> Result<ValueId, String> {
+        use super::bindings::TupleElementShape;
+        match &element.shape {
+            TupleElementShape::Scalar { local, ty } => {
+                let val = self
+                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                    .expect("LoadLocal returns a value");
+                Ok(self
+                    .emit(
+                        InstKind::ToString { value: val, value_ty: *ty },
+                        Some(Type::Str),
+                    )
+                    .expect("ToString returns a value"))
+            }
+            TupleElementShape::Struct { struct_id, fields } => {
+                let nested_fields = fields.clone();
+                self.emit_struct_format(*struct_id, &nested_fields)
+            }
+            TupleElementShape::Tuple { tuple_id: _, elements } => {
+                let nested = elements.clone();
+                self.emit_tuple_format(&nested)
+            }
+        }
+    }
+
+    /// STR-INTERP-COMPOUND-EXTEND tuple-arm. Mirrors
+    /// `lower_struct_to_string`'s shape but uses tuple-display
+    /// formatting: `(a, b)` for >1 elements, `(a,)` for the
+    /// single-element case (matches Rust + the interpreter's
+    /// `Object::to_display_string`). Element order is the tuple's
+    /// declaration order (no alphabetical sort — there's no field
+    /// name to sort by). All-scalar elements only for now;
+    /// nested compound elements are rejected with a precise
+    /// message.
+    fn lower_tuple_to_string(
+        &mut self,
+        arg_expr: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        let arg_inner = self
+            .program
+            .expression
+            .get(arg_expr)
+            .ok_or_else(|| "__builtin_to_string arg expr missing".to_string())?;
+        let sym = match arg_inner {
+            Expr::Identifier(s) => s,
+            _ => return Err(
+                "__builtin_to_string: tuple arg must be a bare identifier (MVP)".to_string(),
+            ),
+        };
+        let elements = match self.bindings.get(&sym).cloned() {
+            Some(Binding::Tuple { elements }) => elements,
+            _ => return Err(
+                "__builtin_to_string: tuple identifier needs a Tuple binding".to_string(),
+            ),
+        };
+        let v = self.emit_tuple_format(&elements)?;
+        Ok(Some(v))
+    }
+
+    /// STR-INTERP-COMPOUND-EXTEND nested-tuple helper. Builds the
+    /// formatted text for a tuple element-binding tree. Recurses
+    /// into nested struct / tuple elements just like
+    /// `emit_struct_format`. Single-element tuples render as
+    /// `(elem,)` (Rust convention), multi-element as
+    /// `(elem0, elem1, ...)`.
+    fn emit_tuple_format(
+        &mut self,
+        elements: &[super::bindings::TupleElementBinding],
+    ) -> Result<ValueId, String> {
+        let mut acc = self
+            .emit(
+                InstKind::ConstStrBytes { bytes: b"(".to_vec() },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        for (i, element) in elements.iter().enumerate() {
+            let val_str = self.emit_tuple_element_to_string(element)?;
+            acc = self
+                .emit(InstKind::StrConcat { a: acc, b: val_str }, Some(Type::Str))
+                .expect("StrConcat returns a value");
+            if i + 1 < elements.len() {
+                let sep = self
+                    .emit(
+                        InstKind::ConstStrBytes { bytes: b", ".to_vec() },
+                        Some(Type::Str),
+                    )
+                    .expect("ConstStrBytes returns a value");
+                acc = self
+                    .emit(InstKind::StrConcat { a: acc, b: sep }, Some(Type::Str))
+                    .expect("StrConcat returns a value");
+            }
+        }
+        let footer_bytes: Vec<u8> = if elements.len() == 1 {
+            b",)".to_vec()
+        } else {
+            b")".to_vec()
+        };
+        let footer = self
+            .emit(
+                InstKind::ConstStrBytes { bytes: footer_bytes },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        acc = self
+            .emit(InstKind::StrConcat { a: acc, b: footer }, Some(Type::Str))
+            .expect("StrConcat returns a value");
+        Ok(acc)
     }
 
     fn collect_leaves(
@@ -1333,6 +1475,16 @@ impl<'a> FunctionLower<'a> {
                 }
                 if let Some(Type::Struct(struct_id)) = self.value_scalar(&args[0]) {
                     return self.lower_struct_to_string(struct_id, &args[0]);
+                }
+                // Tuple-typed identifier — `value_scalar` can't
+                // surface a Tuple shape (the binding doesn't carry
+                // `tuple_id`), so peek the binding directly.
+                if let Some(Expr::Identifier(sym)) =
+                    self.program.expression.get(&args[0])
+                {
+                    if matches!(self.bindings.get(&sym), Some(Binding::Tuple { .. })) {
+                        return self.lower_tuple_to_string(&args[0]);
+                    }
                 }
                 let arg_value = self
                     .lower_expr(&args[0])?

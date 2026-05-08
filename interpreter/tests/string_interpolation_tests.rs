@@ -249,6 +249,49 @@ fn interpolation_with_struct_alphabetical_field_order() {
 }
 
 #[test]
+fn interpolation_with_tuple_value() {
+    // STR-INTERP-COMPOUND-EXTEND tuple branch.
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val t: (i64, u64) = (3i64, 5u64)
+            "t = {t}"
+        }"#,
+    );
+    assert_eq!(s, "t = (3, 5)");
+}
+
+#[test]
+fn interpolation_with_single_element_tuple() {
+    // Trailing-comma form `(elem,)` — Rust convention, matches
+    // the interpreter's tuple display.
+    let s = run_returns_owned_string(
+        r#"fn main() -> str {
+            val t: (i64,) = (42i64,)
+            "{t}"
+        }"#,
+    );
+    assert_eq!(s, "(42,)");
+}
+
+#[test]
+fn interpolation_with_nested_struct() {
+    // STR-INTERP-COMPOUND-EXTEND nested-compound branch:
+    // `Outer { inner: Inner { ... }, ... }` recurses through
+    // `emit_struct_format` for the inner struct.
+    let s = run_returns_owned_string(
+        r#"
+        struct Inner { x: i64, y: i64 }
+        struct Outer { inner: Inner, n: u64 }
+        fn main() -> str {
+            val o: Outer = Outer { inner: Inner { x: 3i64, y: 5i64 }, n: 7u64 }
+            "{o}"
+        }
+        "#,
+    );
+    assert_eq!(s, "Outer { inner: Inner { x: 3, y: 5 }, n: 7 }");
+}
+
+#[test]
 fn interpolation_with_struct_mixed_scalar_types() {
     // struct fields restricted to i64 / u64 (the AOT lower
     // already supports more, but the parser/type checker

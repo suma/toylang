@@ -103,7 +103,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 ## 実装済み機能サマリー
 
 ### コア言語機能
-- 基本言語機能: if/else/elif、for、while、break/continue、return
+- 基本言語機能: if/else/elif、for、while、break/continue (`@label:` でラベル付きループ + `break @label` / `continue @label`、3 backend)、return
 - 変数: val（不変）/var（可変）、コンテキストベース型推論
 - 数値型: u64 / i64 / f64（f64 リテラルは `1.5f64` / `42f64` のように `f64` サフィックス必須、タプルアクセスとの曖昧性回避）。`as` による i64/u64 ↔ f64 変換、剰余 `%` と複合代入 `+= -= *= /= %=` 対応
 - 固定配列: 型推論対応、インデックス型推論、境界チェック、要素に struct / tuple / 別配列も可

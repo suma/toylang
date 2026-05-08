@@ -84,6 +84,11 @@ bool  str  ptr  usize  dict
 
 `else if` is **not** valid; use `elif`.
 
+`@` is reserved as the [labelled-loop](#control-flow) prefix
+(`@outer:`, `break @outer`, `continue @outer`) and cannot appear
+elsewhere — there are no decorators / attributes that share the
+sigil.
+
 ### Statement separators
 
 Statements are separated by newlines. Semicolons are not used and not

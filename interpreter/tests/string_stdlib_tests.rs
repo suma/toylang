@@ -11,9 +11,9 @@
 // methods taking a struct argument (let_lowering.rs identifier-
 // flatten path) plus the primitive-receiver compound-returning
 // method bind path for `str::to_string -> Vec<u8>`.
-// Phase 5: `Split<Vec<u8>, Vec<Vec<u8>>>` — depends on the
+// Phase 5: `Split<Vec<u8>, Vec<String>>` — depends on the
 // AOT-COMPOUND-PTR-RW fix (compound `__builtin_ptr_read/write`)
-// so `Vec<Vec<u8>>` round-trips through the heap buffer.
+// so `Vec<String>` round-trips through the heap buffer.
 
 mod common;
 
@@ -153,7 +153,7 @@ fn string_len_matches_byte_count() {
     // same value as `.size()`.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
+            val s: String = String::from_str("hello world")
             assert(s.len() == 11u64, "len mismatch")
             assert(s.len() == s.size(), "len() == size()")
             42u64
@@ -173,7 +173,7 @@ fn string_len_with_multibyte_utf8() {
             s.push_char(0xE9u32)
             s.push_char(0x3042u32)
             s.push_char(0x1F600u32)
-            assert(s.len() == 9u64, "expected 9 bytes")
+            assert(s.size() == 9u64, "expected 9 bytes")
             42u64
         }
     "#;
@@ -186,7 +186,7 @@ fn string_as_ptr_round_trip() {
     // `__builtin_ptr_read` to confirm bytes match.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("ABC")
+            val s: String = String::from_str("ABC")
             val p: ptr = s.as_ptr()
             val b0: u8 = __builtin_ptr_read(p, 0u64)
             val b1: u8 = __builtin_ptr_read(p, 1u64)
@@ -208,7 +208,7 @@ fn str_and_string_share_len_method_name() {
     let src = r#"
         fn main() -> u64 {
             val a = "hello"
-            val b: String = Vec::from_str("hello")
+            val b: String = String::from_str("hello")
             assert(a.len() == b.len(), "str.len() == String.len()")
             42u64
         }
@@ -224,9 +224,9 @@ fn str_and_string_share_len_method_name() {
 fn string_substring_basic() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
+            val s: String = String::from_str("hello world")
             val sub: String = s.substring(6u64, 11u64)
-            val expected: String = Vec::from_str("world")
+            val expected: String = String::from_str("world")
             assert(sub.eq(expected), "substring mismatch")
             42u64
         }
@@ -239,7 +239,7 @@ fn string_substring_empty_range() {
     // start == end returns an empty buffer (size 0).
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             val sub: String = s.substring(2u64, 2u64)
             assert(sub.size() == 0u64, "empty substring size 0")
             assert(sub.is_empty(), "empty substring is_empty")
@@ -254,7 +254,7 @@ fn string_substring_full_range() {
     // 0..len returns a copy of the whole buffer.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             val sub: String = s.substring(0u64, s.len())
             assert(sub.eq(s), "full-range substring equals self")
             42u64
@@ -267,7 +267,7 @@ fn string_substring_full_range() {
 fn string_substring_inverted_range_panics() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             val sub: String = s.substring(3u64, 1u64)
             sub.size()
         }
@@ -279,7 +279,7 @@ fn string_substring_inverted_range_panics() {
 fn string_substring_out_of_range_panics() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hi")
+            val s: String = String::from_str("hi")
             val sub: String = s.substring(0u64, 10u64)
             sub.size()
         }
@@ -291,9 +291,9 @@ fn string_substring_out_of_range_panics() {
 fn string_trim_strips_both_ends() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("  hi  ")
+            val s: String = String::from_str("  hi  ")
             val t: String = s.trim()
-            val expected: String = Vec::from_str("hi")
+            val expected: String = String::from_str("hi")
             assert(t.eq(expected), "trim both ends")
             42u64
         }
@@ -305,7 +305,7 @@ fn string_trim_strips_both_ends() {
 fn string_trim_only_whitespace_returns_empty() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("   \t\n\r  ")
+            val s: String = String::from_str("   \t\n\r  ")
             val t: String = s.trim()
             assert(t.size() == 0u64, "trim of all-whitespace is empty")
             42u64
@@ -318,7 +318,7 @@ fn string_trim_only_whitespace_returns_empty() {
 fn string_trim_no_whitespace_unchanged() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             val t: String = s.trim()
             assert(t.eq(s), "trim of clean string equals self")
             42u64
@@ -331,9 +331,9 @@ fn string_trim_no_whitespace_unchanged() {
 fn string_to_upper_ascii() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("Hello, World!")
+            val s: String = String::from_str("Hello, World!")
             val u: String = s.to_upper()
-            val expected: String = Vec::from_str("HELLO, WORLD!")
+            val expected: String = String::from_str("HELLO, WORLD!")
             assert(u.eq(expected), "to_upper ascii")
             42u64
         }
@@ -345,9 +345,9 @@ fn string_to_upper_ascii() {
 fn string_to_lower_ascii() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("Hello, World!")
+            val s: String = String::from_str("Hello, World!")
             val l: String = s.to_lower()
-            val expected: String = Vec::from_str("hello, world!")
+            val expected: String = String::from_str("hello, world!")
             assert(l.eq(expected), "to_lower ascii")
             42u64
         }
@@ -362,10 +362,10 @@ fn string_case_convert_preserves_high_bit_bytes() {
     // sequences pass through.
     let src = r#"
         fn main() -> u64 {
-            var s: Vec<u8> = Vec::new()
+            var s: String = String::new()
             s.push_char(0xE9u32)
-            val u: Vec<u8> = s.to_upper()
-            val l: Vec<u8> = s.to_lower()
+            val u: String = s.to_upper()
+            val l: String = s.to_lower()
             assert(u.size() == 2u64, "upper preserves byte count")
             assert(l.size() == 2u64, "lower preserves byte count")
             assert(u.get(0u64) == 0xC3u8, "upper byte 0 unchanged")
@@ -387,10 +387,10 @@ fn string_case_convert_preserves_high_bit_bytes() {
 fn string_concat_basic() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str(" world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str(" world")
             val c: String = a.concat(b)
-            val expected: String = Vec::from_str("hello world")
+            val expected: String = String::from_str("hello world")
             assert(c.eq(expected), "concat works")
             assert(c.len() == 11u64, "concat len 11")
             42u64
@@ -403,8 +403,8 @@ fn string_concat_basic() {
 fn string_concat_with_empty() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val empty: String = Vec::new()
+            val a: String = String::from_str("hello")
+            val empty: String = String::new()
             val left: String = a.concat(empty)
             val right: String = empty.concat(a)
             assert(left.eq(a), "concat with empty on right is identity")
@@ -419,8 +419,8 @@ fn string_concat_with_empty() {
 fn string_contains_substring_present() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
-            val needle: String = Vec::from_str("o w")
+            val s: String = String::from_str("hello world")
+            val needle: String = String::from_str("o w")
             assert(s.contains(needle), "contains 'o w'")
             42u64
         }
@@ -432,8 +432,8 @@ fn string_contains_substring_present() {
 fn string_contains_substring_absent() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
-            val needle: String = Vec::from_str("xyz")
+            val s: String = String::from_str("hello world")
+            val needle: String = String::from_str("xyz")
             assert(!s.contains(needle), "does not contain xyz")
             42u64
         }
@@ -447,8 +447,8 @@ fn string_contains_empty_needle() {
     // (returning at position 0).
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
-            val empty: String = Vec::new()
+            val s: String = String::from_str("hello")
+            val empty: String = String::new()
             assert(s.contains(empty), "empty needle always contained")
             42u64
         }
@@ -460,8 +460,8 @@ fn string_contains_empty_needle() {
 fn string_contains_needle_longer_than_haystack() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hi")
-            val needle: String = Vec::from_str("hello")
+            val s: String = String::from_str("hi")
+            val needle: String = String::from_str("hello")
             assert(!s.contains(needle), "longer needle not contained")
             42u64
         }
@@ -471,12 +471,19 @@ fn string_contains_needle_longer_than_haystack() {
 
 #[test]
 fn str_to_string_round_trip() {
+    // STRING-NOMINAL: `str.to_string()` was retired when the
+    // `ToString` trait left stdlib (its non-`Self` return type
+    // collided with the trait-conformance canonicalisation under
+    // the new struct String). User code uses
+    // `String::from_str(s)` instead — which the existing
+    // type-alias-qualifier rewrite + nominal-struct dispatch
+    // pick up cleanly.
     let src = r#"
         fn main() -> u64 {
             val s = "literal"
-            val owned: String = s.to_string()
-            val expected: String = Vec::from_str("literal")
-            assert(owned.eq(expected), "str.to_string() matches Vec::from_str")
+            val owned: String = String::from_str(s)
+            val expected: String = String::from_str("literal")
+            assert(owned.eq(expected), "from_str round-trip")
             assert(owned.len() == 7u64, "owned len 7")
             42u64
         }
@@ -490,7 +497,7 @@ fn string_to_string_idempotent_copy() {
     // bytes (matches Rust's `String::to_string` shape).
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("clone me")
+            val a: String = String::from_str("clone me")
             val b: String = a.to_string()
             assert(b.eq(a), "to_string copy equals original")
             assert(b.len() == a.len(), "byte counts match")
@@ -506,7 +513,7 @@ fn string_to_string_idempotent_copy() {
 // `frontend::alias_resolution` not just in type position but also
 // in expression position (`Expr::AssociatedFunctionCall`
 // qualifier), so user code can write `String::from_str("...")` as
-// a more readable stand-in for `Vec::from_str("...")`.
+// a more readable stand-in for `String::from_str("...")`.
 // ---------------------------------------------------------------
 
 #[test]
@@ -515,8 +522,8 @@ fn string_from_str_via_alias() {
         fn main() -> u64 {
             val s: String = String::from_str("hello")
             assert(s.len() == 5u64, "len 5")
-            val expected: String = Vec::from_str("hello")
-            assert(s.eq(expected), "String::from_str matches Vec::from_str")
+            val expected: String = String::from_str("hello")
+            assert(s.eq(expected), "String::from_str matches String::from_str")
             42u64
         }
     "#;
@@ -549,9 +556,9 @@ fn string_new_via_alias() {
 fn string_eq_operator_basic() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str("hello")
-            val c: String = Vec::from_str("world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str("hello")
+            val c: String = String::from_str("world")
             assert(a == b, "a == b")
             assert(!(a == c), "a == c is false")
             42u64
@@ -564,9 +571,9 @@ fn string_eq_operator_basic() {
 fn string_ne_operator_basic() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str("hello")
-            val c: String = Vec::from_str("world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str("hello")
+            val c: String = String::from_str("world")
             assert(!(a != b), "a != b is false")
             assert(a != c, "a != c")
             42u64
@@ -579,8 +586,8 @@ fn string_ne_operator_basic() {
 fn string_eq_operator_in_if_condition() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("yes")
-            val target: String = Vec::from_str("yes")
+            val a: String = String::from_str("yes")
+            val target: String = String::from_str("yes")
             if a == target {
                 100u64
             } else {
@@ -595,8 +602,8 @@ fn string_eq_operator_in_if_condition() {
 fn string_eq_operator_empty_strings() {
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::new()
-            val b: String = Vec::new()
+            val a: String = String::new()
+            val b: String = String::new()
             assert(a == b, "empty strings are equal")
             42u64
         }
@@ -608,8 +615,8 @@ fn string_eq_operator_empty_strings() {
 fn string_eq_operator_different_lengths() {
     let src = r#"
         fn main() -> u64 {
-            val short: String = Vec::from_str("hi")
-            val long: String = Vec::from_str("hello")
+            val short: String = String::from_str("hi")
+            val long: String = String::from_str("hello")
             assert(!(short == long), "different lengths not equal")
             assert(short != long, "different lengths != true")
             42u64
@@ -621,23 +628,23 @@ fn string_eq_operator_different_lengths() {
 // ---------------------------------------------------------------
 // Phase 5: `Split` for String. AOT-COMPOUND-PTR-RW unlocked
 // `Vec<T>` for compound `T`, which lets `s.split(sep)` return a
-// `Vec<Vec<u8>>` that round-trips across all 3 backends.
+// `Vec<String>` that round-trips across all 3 backends.
 // ---------------------------------------------------------------
 
 #[test]
 fn string_split_basic() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("a,b,c")
-            val sep: String = Vec::from_str(",")
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("a,b,c")
+            val sep: String = String::from_str(",")
+            val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts")
-            val a: Vec<u8> = parts.get(0u64)
-            val b: Vec<u8> = parts.get(1u64)
-            val c: Vec<u8> = parts.get(2u64)
-            val ea: String = Vec::from_str("a")
-            val eb: String = Vec::from_str("b")
-            val ec: String = Vec::from_str("c")
+            val a: String = parts.get(0u64)
+            val b: String = parts.get(1u64)
+            val c: String = parts.get(2u64)
+            val ea: String = String::from_str("a")
+            val eb: String = String::from_str("b")
+            val ec: String = String::from_str("c")
             assert(a.eq(ea), "a")
             assert(b.eq(eb), "b")
             assert(c.eq(ec), "c")
@@ -653,11 +660,11 @@ fn string_split_no_match() {
     // the whole input.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
-            val sep: String = Vec::from_str(",")
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("hello")
+            val sep: String = String::from_str(",")
+            val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 1u64, "1 part")
-            val first: Vec<u8> = parts.get(0u64)
+            val first: String = parts.get(0u64)
             assert(first.eq(s), "first equals whole input")
             42u64
         }
@@ -671,11 +678,11 @@ fn string_split_trailing_separator() {
     // `str::split` shape).
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("a,b,")
-            val sep: String = Vec::from_str(",")
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("a,b,")
+            val sep: String = String::from_str(",")
+            val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts (last empty)")
-            val tail: Vec<u8> = parts.get(2u64)
+            val tail: String = parts.get(2u64)
             assert(tail.is_empty(), "last is empty")
             42u64
         }
@@ -687,16 +694,16 @@ fn string_split_trailing_separator() {
 fn string_split_multibyte_separator() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("foo--bar--baz")
-            val sep: String = Vec::from_str("--")
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("foo--bar--baz")
+            val sep: String = String::from_str("--")
+            val parts: Vec<String> = s.split(sep)
             assert(parts.size() == 3u64, "3 parts")
-            val foo: Vec<u8> = parts.get(0u64)
-            val bar: Vec<u8> = parts.get(1u64)
-            val baz: Vec<u8> = parts.get(2u64)
-            val efoo: String = Vec::from_str("foo")
-            val ebar: String = Vec::from_str("bar")
-            val ebaz: String = Vec::from_str("baz")
+            val foo: String = parts.get(0u64)
+            val bar: String = parts.get(1u64)
+            val baz: String = parts.get(2u64)
+            val efoo: String = String::from_str("foo")
+            val ebar: String = String::from_str("bar")
+            val ebaz: String = String::from_str("baz")
             assert(foo.eq(efoo), "foo")
             assert(bar.eq(ebar), "bar")
             assert(baz.eq(ebaz), "baz")
@@ -710,9 +717,9 @@ fn string_split_multibyte_separator() {
 fn string_split_empty_separator_panics() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hi")
-            val sep: String = Vec::new()
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("hi")
+            val sep: String = String::new()
+            val parts: Vec<String> = s.split(sep)
             parts.size()
         }
     "#;
@@ -725,7 +732,7 @@ fn push_char_appends_to_existing_buffer() {
     // and appends the encoded bytes after.
     let src = r#"
         fn main() -> u64 {
-            var s: Vec<u8> = Vec::from_str("hi")
+            var s: Vec<u8> = String::from_str("hi")
             s.push_char(0x21u32)
             assert(s.size() == 3u64, "size after push_char")
             assert(s.get(0u64) == 104u8, "byte 0 = 'h'")

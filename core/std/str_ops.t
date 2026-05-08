@@ -2,17 +2,25 @@
 #
 # Auto-loaded from `<core>/std/str_ops.t -> ["std", "str_ops"]`.
 #
-# `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains`
-# are implemented on `Vec<u8>` (= `String`) in `core/std/string.t`
-# so user code can call `.substring(start, end)` / `.trim()` /
+# `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains` /
+# `Split` are implemented on `String` in `core/std/string.t` so
+# user code can call `.substring(start, end)` / `.trim()` /
 # `.to_upper()` / `.to_lower()` / `.concat(other)` /
-# `.contains(needle)` against either a `str` literal or a
-# heap-allocated `String`. `str` already carries the equivalent
-# operations as builtin methods (`BuiltinMethod::StrSubstring` /
-# `StrTrim` / `StrToUpper` / `StrToLower` / `StrConcat` /
-# `StrContains`) so each receiver shape uses the native fast path:
-# `str` goes through the builtin, `Vec<u8>` goes through the
-# trait impl.
+# `.contains(needle)` / `.split(sep)` against either a `str`
+# literal or a heap-allocated `String`. `str` already carries
+# the equivalent operations as builtin methods
+# (`BuiltinMethod::StrSubstring` / `StrTrim` / `StrToUpper` /
+# `StrToLower` / `StrConcat` / `StrContains`) so each receiver
+# shape uses the native fast path: `str` goes through the
+# builtin, `String` goes through the trait impl.
+#
+# `ToString` is intentionally NOT a trait — its non-`Self` return
+# type (`String`) tripped the frontend's trait-conformance
+# canonicalisation in mixed `Identifier(String)` /
+# `Struct(String, [])` shapes. Each type provides `to_string` as
+# an inherent method instead (`String::to_string` does an
+# identity-clone; `str` users construct owned `String`s via
+# `String::from_str(s)`).
 
 # `Substring` — half-open byte slice `[start, end)`. Both indices
 # are byte offsets, not codepoint counts. Out-of-range / inverted
@@ -39,7 +47,7 @@ pub trait CaseConvert {
 
 # `Concat` — append two values of the same shape, returning a new
 # value. `other` is taken by `&` reference so user code can pass
-# either a `Vec<u8>` (auto-borrowed at the call site) or a borrow
+# either a `String` (auto-borrowed at the call site) or a borrow
 # explicitly.
 pub trait Concat<Other> {
     fn concat(&self, other: &Other) -> Self
@@ -52,18 +60,8 @@ pub trait Contains<Needle> {
     fn contains(&self, needle: &Needle) -> bool
 }
 
-# `ToString` — convert `self` into an owned `Vec<u8>` (= `String`).
-# Idempotent on `Vec<u8>` (returns a fresh copy of the same bytes).
-# `str` impl lives alongside the str builtins in `core/std/str.t`.
-# Receiver kind matches `Length` / `AsPtr` (`self: Self`) since
-# both implementors are cheap to take by value (`str` is a tiny
-# pointer + length pair, `Vec<u8>` shares the heap buffer).
-pub trait ToString {
-    fn to_string(self: Self) -> Vec<u8>
-}
-
 # `Split` — split `self` at every occurrence of `sep`, returning
-# a vector of slices (each slice itself is a `Vec<u8>`). Empty
+# a vector of slices (each slice itself is a `String`). Empty
 # `sep` panics — the libc / Rust convention of "every codepoint
 # boundary" doesn't apply at the byte level. `Out` is generic so
 # future receivers can pick their own container shape (e.g. an

@@ -1038,7 +1038,7 @@ fn string_from_str_round_trip() {
     // 'h'=104 / 'e'=101 / 'l'=108 / 'l'=108 / 'o'=111 + len=5.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             val n: u64 = s.size()
             val p: ptr = s.as_ptr()
             val a: u8 = __builtin_ptr_read(p, 0u64)
@@ -1080,9 +1080,9 @@ fn string_push_str_round_trip() {
     // same exit code (42 on success).
     let src = r#"
         fn main() -> u64 {
-            var s: String = Vec::from_str("hello")
-            val sp: String = Vec::from_str(" ")
-            val w: String = Vec::from_str("world")
+            var s: String = String::from_str("hello")
+            val sp: String = String::from_str(" ")
+            val w: String = String::from_str("world")
             s.push_str(sp)
             s.push_str(w)
             val n: u64 = s.size()
@@ -1147,7 +1147,7 @@ fn ref_stage2_explicit_borrow_and_mut_ref_round_trip() {
         }
 
         fn main() -> u64 {
-            var s: String = Vec::from_str("hello")
+            var s: String = String::from_str("hello")
             # auto-borrow: bare String -> &String (immutable only)
             if len_of(s) != 5u64 { return 1u64 }
             # explicit borrow expression
@@ -2069,7 +2069,7 @@ fn narrow_int_jit_phase_a_round_trip() {
 
 #[test]
 fn vec_from_str_empty_string_round_trip() {
-    // `Vec::from_str("")` previously hit a "Invalid memory access
+    // `String::from_str("")` previously hit a "Invalid memory access
     // in mem_copy" interpreter error: `core/std/collections/vec.t::from_str`
     // calls `__builtin_heap_alloc(0u64)` then
     // `__builtin_heap_realloc(p, 0u64)` followed by
@@ -2083,7 +2083,7 @@ fn vec_from_str_empty_string_round_trip() {
     // consistent with their libc counterparts.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("")
+            val s: String = String::from_str("")
             if s.size() != 0u64 { return 1u64 }
             if !s.is_empty() { return 2u64 }
             42u64
@@ -2144,7 +2144,7 @@ fn cross_module_char_alias_round_trip() {
             val a: char = 65u32
             val b: char = id_char(a)
             if b != 65u32 { return 1u64 }
-            var s: String = Vec::from_str("x")
+            var s: String = String::from_str("x")
             s.push_char(a)
             if s.size() != 2u64 { return 2u64 }
             42u64
@@ -2173,9 +2173,9 @@ fn cross_module_type_alias_round_trip() {
         }
 
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str("hello")
-            val c: String = Vec::from_str("world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str("hello")
+            val c: String = String::from_str("world")
             if len_of(a) != 5u64 { return 1u64 }
             if !a.eq(b) { return 2u64 }
             if a.eq(c) { return 3u64 }
@@ -2245,11 +2245,11 @@ fn string_eq_clear_push_char_round_trip() {
     // 3-way pin across interpreter / JIT silent fallback / AOT.
     let src = r#"
         fn main() -> u64 {
-            var s: String = Vec::from_str("hi")
+            var s: String = String::from_str("hi")
             s.push_char(33u32)
 
-            val a: String = Vec::from_str("hi!")
-            val b: String = Vec::from_str("hi?")
+            val a: String = String::from_str("hi!")
+            val b: String = String::from_str("hi?")
 
             if !s.eq(a) { return 1u64 }
             if s.eq(b) { return 2u64 }
@@ -2259,7 +2259,7 @@ fn string_eq_clear_push_char_round_trip() {
             if s.size() != 0u64 { return 4u64 }
 
             s.push_char(120u32)
-            val x: String = Vec::from_str("x")
+            val x: String = String::from_str("x")
             if !s.eq(x) { return 5u64 }
             if s.size() != 1u64 { return 6u64 }
 
@@ -2295,7 +2295,7 @@ fn string_len_via_length_trait_round_trip() {
     // across all 3 backends (interpreter, JIT silent fallback, AOT).
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello")
+            val s: String = String::from_str("hello")
             if s.len() != 5u64 { return 1u64 }
             if s.len() != s.size() { return 2u64 }
             42u64
@@ -2312,7 +2312,7 @@ fn string_as_ptr_via_trait_round_trip() {
     // backend.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("Z")
+            val s: String = String::from_str("Z")
             val p: ptr = s.as_ptr()
             val b: u8 = __builtin_ptr_read(p, 0u64)
             if b != 0x5Au8 { return 1u64 }
@@ -2330,9 +2330,9 @@ fn string_substring_round_trip() {
     // compound-returning instance methods works in all 3 backends.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
+            val s: String = String::from_str("hello world")
             val sub: String = s.substring(6u64, 11u64)
-            val expected: String = Vec::from_str("world")
+            val expected: String = String::from_str("world")
             if !sub.eq(expected) { return 1u64 }
             42u64
         }
@@ -2344,9 +2344,9 @@ fn string_substring_round_trip() {
 fn string_trim_round_trip() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("  trim me  ")
+            val s: String = String::from_str("  trim me  ")
             val t: String = s.trim()
-            val expected: String = Vec::from_str("trim me")
+            val expected: String = String::from_str("trim me")
             if !t.eq(expected) { return 1u64 }
             42u64
         }
@@ -2358,9 +2358,9 @@ fn string_trim_round_trip() {
 fn string_to_upper_round_trip() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("Hello World")
+            val s: String = String::from_str("Hello World")
             val u: String = s.to_upper()
-            val expected: String = Vec::from_str("HELLO WORLD")
+            val expected: String = String::from_str("HELLO WORLD")
             if !u.eq(expected) { return 1u64 }
             42u64
         }
@@ -2372,9 +2372,9 @@ fn string_to_upper_round_trip() {
 fn string_to_lower_round_trip() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("Hello World")
+            val s: String = String::from_str("Hello World")
             val l: String = s.to_lower()
-            val expected: String = Vec::from_str("hello world")
+            val expected: String = String::from_str("hello world")
             if !l.eq(expected) { return 1u64 }
             42u64
         }
@@ -2419,15 +2419,15 @@ fn vec_of_vec_round_trip() {
     // `Vec<u8>::push` tried to store a compound element.
     let src = r#"
         fn main() -> u64 {
-            var outer: Vec<Vec<u8>> = Vec::new()
-            val a: Vec<u8> = Vec::from_str("hi")
-            val b: Vec<u8> = Vec::from_str("world")
+            var outer: Vec<String> = Vec::new()
+            val a: String = String::from_str("hi")
+            val b: String = String::from_str("world")
             outer.push(a)
             outer.push(b)
             if outer.size() != 2u64 { return 1u64 }
-            val first: Vec<u8> = outer.get(0u64)
+            val first: String = outer.get(0u64)
             if first.size() != 2u64 { return 2u64 }
-            val second: Vec<u8> = outer.get(1u64)
+            val second: String = outer.get(1u64)
             if second.size() != 5u64 { return 3u64 }
             42u64
         }
@@ -2437,21 +2437,21 @@ fn vec_of_vec_round_trip() {
 
 #[test]
 fn string_split_round_trip() {
-    // `Split<Vec<u8>, Vec<Vec<u8>>>` for String, riding on the
+    // `Split<Vec<u8>, Vec<String>>` for String, riding on the
     // AOT-COMPOUND-PTR-RW landing. Three-way pin: AOT did not
     // type-check this trait return shape before the lower fix.
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("a,b,c")
-            val sep: String = Vec::from_str(",")
-            val parts: Vec<Vec<u8>> = s.split(sep)
+            val s: String = String::from_str("a,b,c")
+            val sep: String = String::from_str(",")
+            val parts: Vec<String> = s.split(sep)
             if parts.size() != 3u64 { return 1u64 }
-            val a: Vec<u8> = parts.get(0u64)
-            val b: Vec<u8> = parts.get(1u64)
-            val c: Vec<u8> = parts.get(2u64)
-            val ea: String = Vec::from_str("a")
-            val eb: String = Vec::from_str("b")
-            val ec: String = Vec::from_str("c")
+            val a: String = parts.get(0u64)
+            val b: String = parts.get(1u64)
+            val c: String = parts.get(2u64)
+            val ea: String = String::from_str("a")
+            val eb: String = String::from_str("b")
+            val ec: String = String::from_str("c")
             if !a.eq(ea) { return 2u64 }
             if !b.eq(eb) { return 3u64 }
             if !c.eq(ec) { return 4u64 }
@@ -2472,9 +2472,9 @@ fn string_eq_operator_round_trip() {
     // back to the interpreter for struct-typed binaries.
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str("hello")
-            val c: String = Vec::from_str("world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str("hello")
+            val c: String = String::from_str("world")
             if !(a == b) { return 1u64 }
             if a == c { return 2u64 }
             if a != b { return 3u64 }
@@ -2495,7 +2495,7 @@ fn string_from_str_via_alias_round_trip() {
     let src = r#"
         fn main() -> u64 {
             val s: String = String::from_str("hello")
-            val expected: String = Vec::from_str("hello")
+            val expected: String = String::from_str("hello")
             if s.len() != 5u64 { return 1u64 }
             if !s.eq(expected) { return 2u64 }
             42u64
@@ -2513,10 +2513,10 @@ fn string_concat_round_trip() {
     // methods.
     let src = r#"
         fn main() -> u64 {
-            val a: String = Vec::from_str("hello")
-            val b: String = Vec::from_str(" world")
+            val a: String = String::from_str("hello")
+            val b: String = String::from_str(" world")
             val c: String = a.concat(b)
-            val expected: String = Vec::from_str("hello world")
+            val expected: String = String::from_str("hello world")
             if !c.eq(expected) { return 1u64 }
             42u64
         }
@@ -2528,9 +2528,9 @@ fn string_concat_round_trip() {
 fn string_contains_round_trip() {
     let src = r#"
         fn main() -> u64 {
-            val s: String = Vec::from_str("hello world")
-            val present: String = Vec::from_str("o w")
-            val absent: String = Vec::from_str("xyz")
+            val s: String = String::from_str("hello world")
+            val present: String = String::from_str("o w")
+            val absent: String = String::from_str("xyz")
             if !s.contains(present) { return 1u64 }
             if s.contains(absent) { return 2u64 }
             42u64
@@ -2541,16 +2541,14 @@ fn string_contains_round_trip() {
 
 #[test]
 fn str_to_string_round_trip() {
-    // `str.to_string()` exercises the new
-    // primitive-receiver compound-returning method bind path
-    // (`let_lowering.rs` arm added this session). Without it the
-    // call would fall through to `lower_method_call`'s primitive
-    // path and bail on the compound-return guard.
+    // STRING-NOMINAL: `str.to_string()` impl was retired when the
+    // `ToString` trait left stdlib. User code uses
+    // `String::from_str(s)` instead.
     let src = r#"
         fn main() -> u64 {
             val s = "literal"
-            val owned: String = s.to_string()
-            val expected: String = Vec::from_str("literal")
+            val owned: String = String::from_str(s)
+            val expected: String = String::from_str("literal")
             if !owned.eq(expected) { return 1u64 }
             if owned.len() != 7u64 { return 2u64 }
             42u64

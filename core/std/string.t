@@ -23,19 +23,15 @@
 #
 # `str` superset extension (the `impl` blocks below) — `Vec<u8>`
 # satisfies `core/std/str.t`'s `Length` / `AsPtr` traits and
-# `core/std/str_ops.t`'s `Substring` / `Trim` / `CaseConvert`
-# traits, so `.len()` / `.as_ptr()` / `.substring(start, end)` /
-# `.trim()` / `.to_upper()` / `.to_lower()` work on both `str`
-# and `String` receivers with the same call shape. Internally
-# each impl either delegates to the existing inherent `Vec<u8>`
-# API (`.size()` / `self.data`) or walks the byte buffer with
+# `core/std/str_ops.t`'s `Substring` / `Trim` / `CaseConvert` /
+# `Concat` / `Contains` / `ToString` traits, so `.len()` /
+# `.as_ptr()` / `.substring(start, end)` / `.trim()` /
+# `.to_upper()` / `.to_lower()` / `.concat(other)` /
+# `.contains(needle)` / `.to_string()` work on both `str` and
+# `String` receivers with the same call shape. Internally each
+# impl either delegates to the existing inherent `Vec<u8>` API
+# (`.size()` / `self.data`) or walks the byte buffer with
 # `__builtin_ptr_read`.
-#
-# `Concat<Other>` / `Contains<Needle>` are deferred — the AOT
-# lower currently rejects trait methods that take a struct
-# (or `&struct`) argument with "method argument produced no value".
-# The traits live in `core/std/str_ops.t` for the impls to attach
-# to once the AOT fix lands.
 #
 # Cross-module alias resolution (`frontend::resolve_type_aliases`)
 # substitutes `String` with `Vec<u8>` everywhere in the integrated
@@ -161,3 +157,79 @@ impl CaseConvert for Vec<u8> {
     }
 }
 
+# `concat(other)` — append `other`'s bytes after `self`'s.
+# The new vector is allocated through the active allocator
+# (`Vec::new()` + per-byte `push`), so a `with allocator = ...`
+# scope flows through naturally. Per-byte `push` instead of
+# `extend_bytes(self.data, self.len)` because the latter mixes
+# `&mut self` against a temporary `result` binding plus two
+# `ptr` arguments derived from field accesses — a combination
+# the AOT lower can't round-trip cleanly today.
+impl Concat<Vec<u8>> for Vec<u8> {
+    fn concat(&self, other: &Vec<u8>) -> Vec<u8> {
+        var result: Vec<u8> = Vec::new()
+        var i: u64 = 0u64
+        while i < self.len {
+            val a: u8 = __builtin_ptr_read(self.data, i)
+            result.push(a)
+            i = i + 1u64
+        }
+        var j: u64 = 0u64
+        while j < other.len {
+            val b: u8 = __builtin_ptr_read(other.data, j)
+            result.push(b)
+            j = j + 1u64
+        }
+        result
+    }
+}
+
+# `contains(needle)` — naive O(n * m) byte loop. Empty `needle`
+# matches at position 0 (Rust / libc convention). Sufficient for
+# short needles, the typical user-code case.
+impl Contains<Vec<u8>> for Vec<u8> {
+    fn contains(&self, needle: &Vec<u8>) -> bool {
+        val n: u64 = self.len
+        val m: u64 = needle.len
+        if m == 0u64 {
+            return true
+        }
+        if m > n {
+            return false
+        }
+        var i: u64 = 0u64
+        while i + m <= n {
+            var matched: bool = true
+            var j: u64 = 0u64
+            while j < m {
+                val a: u8 = __builtin_ptr_read(self.data, i + j)
+                val b: u8 = __builtin_ptr_read(needle.data, j)
+                if a != b {
+                    matched = false
+                    break
+                }
+                j = j + 1u64
+            }
+            if matched {
+                return true
+            }
+            i = i + 1u64
+        }
+        false
+    }
+}
+
+# `to_string()` — clone `self` into a fresh `Vec<u8>`. Idempotent
+# on `String` (matches Rust's `String::to_string` behaviour).
+impl ToString for Vec<u8> {
+    fn to_string(self: Self) -> Vec<u8> {
+        var result: Vec<u8> = Vec::new()
+        var i: u64 = 0u64
+        while i < self.len {
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            result.push(b)
+            i = i + 1u64
+        }
+        result
+    }
+}

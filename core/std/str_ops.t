@@ -2,21 +2,17 @@
 #
 # Auto-loaded from `<core>/std/str_ops.t -> ["std", "str_ops"]`.
 #
-# `Substring` / `Trim` / `CaseConvert` are implemented on
-# `Vec<u8>` (= `String`) in `core/std/string.t` so user code can
-# call `s.substring(start, end)` / `s.trim()` / `s.to_upper()` /
-# `s.to_lower()` against either a `str` literal or a heap-allocated
-# `String`. `str` already carries the equivalent operations as
-# builtin methods (`BuiltinMethod::StrSubstring` / `StrTrim` /
-# `StrToUpper` / `StrToLower`) so each receiver shape uses the
-# native fast path: `str` goes through the builtin, `Vec<u8>`
-# goes through the trait impl.
-#
-# Deferred (await follow-up): `Concat<Other>` / `Contains<Needle>`
-# both need AOT-lower support for trait methods that take a struct
-# (or `&struct`) argument — today the lower bails with "method
-# argument produced no value" for that shape (fine on interpreter
-# / JIT).
+# `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains`
+# are implemented on `Vec<u8>` (= `String`) in `core/std/string.t`
+# so user code can call `.substring(start, end)` / `.trim()` /
+# `.to_upper()` / `.to_lower()` / `.concat(other)` /
+# `.contains(needle)` against either a `str` literal or a
+# heap-allocated `String`. `str` already carries the equivalent
+# operations as builtin methods (`BuiltinMethod::StrSubstring` /
+# `StrTrim` / `StrToUpper` / `StrToLower` / `StrConcat` /
+# `StrContains`) so each receiver shape uses the native fast path:
+# `str` goes through the builtin, `Vec<u8>` goes through the
+# trait impl.
 
 # `Substring` — half-open byte slice `[start, end)`. Both indices
 # are byte offsets, not codepoint counts. Out-of-range / inverted
@@ -39,4 +35,29 @@ pub trait Trim {
 pub trait CaseConvert {
     fn to_upper(&self) -> Self
     fn to_lower(&self) -> Self
+}
+
+# `Concat` — append two values of the same shape, returning a new
+# value. `other` is taken by `&` reference so user code can pass
+# either a `Vec<u8>` (auto-borrowed at the call site) or a borrow
+# explicitly.
+pub trait Concat<Other> {
+    fn concat(&self, other: &Other) -> Self
+}
+
+# `Contains` — substring / sub-buffer search. Returns true iff
+# `needle` appears in `self` as a contiguous run. Empty `needle`
+# matches at position 0 (Rust / libc convention).
+pub trait Contains<Needle> {
+    fn contains(&self, needle: &Needle) -> bool
+}
+
+# `ToString` — convert `self` into an owned `Vec<u8>` (= `String`).
+# Idempotent on `Vec<u8>` (returns a fresh copy of the same bytes).
+# `str` impl lives alongside the str builtins in `core/std/str.t`.
+# Receiver kind matches `Length` / `AsPtr` (`self: Self`) since
+# both implementors are cheap to take by value (`str` is a tiny
+# pointer + length pair, `Vec<u8>` shares the heap buffer).
+pub trait ToString {
+    fn to_string(self: Self) -> Vec<u8>
 }

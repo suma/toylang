@@ -59,3 +59,16 @@ impl Length for str {
         __builtin_str_len(self)
     }
 }
+
+# `str.to_string()` — copy the str's UTF-8 bytes onto the heap
+# as a `Vec<u8>` (= `String`) through the active allocator.
+# Mirrors `Vec::from_str(s)` so user code can pick whichever shape
+# reads better at the call site (`s.to_string()` vs
+# `Vec::from_str(s)`). The `ToString` trait is declared in
+# `core/std/str_ops.t` (alongside `ToString for Vec<u8>`).
+impl ToString for str {
+    fn to_string(self: Self) -> Vec<u8> {
+        val r: Vec<u8> = Vec::from_str(self)
+        r
+    }
+}

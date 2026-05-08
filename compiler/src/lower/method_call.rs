@@ -38,7 +38,7 @@ use crate::ir::{FuncId, InstKind, Linkage, StructId, Type, ValueId};
 /// Used by `lower_method_call`'s Step D extension-trait path so
 /// `i64.neg()` can be looked up in the same `method_func_ids`
 /// table that struct methods use.
-fn primitive_target_sym_for_ir_type(
+pub(super) fn primitive_target_sym_for_ir_type(
     ty: Type,
     interner: &DefaultStringInterner,
 ) -> Option<DefaultSymbol> {

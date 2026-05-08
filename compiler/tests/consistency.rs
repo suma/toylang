@@ -2383,6 +2383,61 @@ fn string_to_lower_round_trip() {
 }
 
 #[test]
+fn string_concat_round_trip() {
+    // `Concat` trait + per-byte push body. Pinning confirms the
+    // let-rhs path's identifier-flatten extension (which lets a
+    // `Vec<u8>` argument decompose into leaf locals across the
+    // cranelift call ABI) works for compound-returning trait
+    // methods.
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str(" world")
+            val c: String = a.concat(b)
+            val expected: String = Vec::from_str("hello world")
+            if !c.eq(expected) { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_concat_round_trip");
+}
+
+#[test]
+fn string_contains_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            val present: String = Vec::from_str("o w")
+            val absent: String = Vec::from_str("xyz")
+            if !s.contains(present) { return 1u64 }
+            if s.contains(absent) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_contains_round_trip");
+}
+
+#[test]
+fn str_to_string_round_trip() {
+    // `str.to_string()` exercises the new
+    // primitive-receiver compound-returning method bind path
+    // (`let_lowering.rs` arm added this session). Without it the
+    // call would fall through to `lower_method_call`'s primitive
+    // path and bail on the compound-return guard.
+    let src = r#"
+        fn main() -> u64 {
+            val s = "literal"
+            val owned: String = s.to_string()
+            val expected: String = Vec::from_str("literal")
+            if !owned.eq(expected) { return 1u64 }
+            if owned.len() != 7u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "str_to_string_round_trip");
+}
+
+#[test]
 fn push_char_three_byte_utf8_round_trip() {
     // `Vec<u8>::push_char` UTF-8 encoding for codepoint 0x3042 ('あ').
     // Expected bytes: [0xE3, 0x81, 0x82].

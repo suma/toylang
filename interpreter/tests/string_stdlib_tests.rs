@@ -6,8 +6,11 @@
 // Phase 1: `Length` / `AsPtr` extension traits on `Vec<u8>`.
 // Phase 2: `Substring` / `Trim` / `CaseConvert` extension traits
 // on `Vec<u8>`.
-// Deferred: `Concat<Other>` / `Contains<Needle>` (need AOT lower
-// support for trait methods taking a struct argument).
+// Phase 4: `Concat<Other>` / `Contains<Needle>` / `ToString`
+// extension traits — relies on the AOT-lower fix for trait
+// methods taking a struct argument (let_lowering.rs identifier-
+// flatten path) plus the primitive-receiver compound-returning
+// method bind path for `str::to_string -> Vec<u8>`.
 
 mod common;
 
@@ -366,6 +369,128 @@ fn string_case_convert_preserves_high_bit_bytes() {
             assert(u.get(1u64) == 0xA9u8, "upper byte 1 unchanged")
             assert(l.get(0u64) == 0xC3u8, "lower byte 0 unchanged")
             assert(l.get(1u64) == 0xA9u8, "lower byte 1 unchanged")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+// ---------------------------------------------------------------
+// Phase 4: `Concat` / `Contains` / `ToString` for `Vec<u8>` (str
+// for `ToString`).
+// ---------------------------------------------------------------
+
+#[test]
+fn string_concat_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val b: String = Vec::from_str(" world")
+            val c: String = a.concat(b)
+            val expected: String = Vec::from_str("hello world")
+            assert(c.eq(expected), "concat works")
+            assert(c.len() == 11u64, "concat len 11")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_concat_with_empty() {
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("hello")
+            val empty: String = Vec::new()
+            val left: String = a.concat(empty)
+            val right: String = empty.concat(a)
+            assert(left.eq(a), "concat with empty on right is identity")
+            assert(right.eq(a), "concat with empty on left is identity")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_contains_substring_present() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            val needle: String = Vec::from_str("o w")
+            assert(s.contains(needle), "contains 'o w'")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_contains_substring_absent() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            val needle: String = Vec::from_str("xyz")
+            assert(!s.contains(needle), "does not contain xyz")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_contains_empty_needle() {
+    // Rust / libc convention: empty needle matches everywhere
+    // (returning at position 0).
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val empty: String = Vec::new()
+            assert(s.contains(empty), "empty needle always contained")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_contains_needle_longer_than_haystack() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hi")
+            val needle: String = Vec::from_str("hello")
+            assert(!s.contains(needle), "longer needle not contained")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn str_to_string_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s = "literal"
+            val owned: String = s.to_string()
+            val expected: String = Vec::from_str("literal")
+            assert(owned.eq(expected), "str.to_string() matches Vec::from_str")
+            assert(owned.len() == 7u64, "owned len 7")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_to_string_idempotent_copy() {
+    // `Vec<u8>::to_string()` returns a fresh copy with identical
+    // bytes (matches Rust's `String::to_string` shape).
+    let src = r#"
+        fn main() -> u64 {
+            val a: String = Vec::from_str("clone me")
+            val b: String = a.to_string()
+            assert(b.eq(a), "to_string copy equals original")
+            assert(b.len() == a.len(), "byte counts match")
             42u64
         }
     "#;

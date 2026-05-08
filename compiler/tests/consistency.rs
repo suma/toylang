@@ -2410,6 +2410,25 @@ fn builtin_sizeof_struct_value_round_trip() {
 }
 
 #[test]
+fn string_from_str_via_alias_round_trip() {
+    // `String::from_str("...")` — the alias `type String = Vec<u8>`
+    // is now rewritten in expression position too, so the qualifier
+    // resolves to `Vec` and dispatch picks up the existing
+    // `impl Vec<u8>::from_str` from the val annotation. Pinned
+    // 3-way to confirm the alias rewrite happens in every backend.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = String::from_str("hello")
+            val expected: String = Vec::from_str("hello")
+            if s.len() != 5u64 { return 1u64 }
+            if !s.eq(expected) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_from_str_via_alias_round_trip");
+}
+
+#[test]
 fn string_concat_round_trip() {
     // `Concat` trait + per-byte push body. Pinning confirms the
     // let-rhs path's identifier-flatten extension (which lets a

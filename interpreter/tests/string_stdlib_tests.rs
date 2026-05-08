@@ -497,6 +497,44 @@ fn string_to_string_idempotent_copy() {
     assert_program_result_u64(src, 42);
 }
 
+// ---------------------------------------------------------------
+// String::xxx alias-qualified associated function calls. The
+// `type String = Vec<u8>` alias is rewritten by
+// `frontend::alias_resolution` not just in type position but also
+// in expression position (`Expr::AssociatedFunctionCall`
+// qualifier), so user code can write `String::from_str("...")` as
+// a more readable stand-in for `Vec::from_str("...")`.
+// ---------------------------------------------------------------
+
+#[test]
+fn string_from_str_via_alias() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = String::from_str("hello")
+            assert(s.len() == 5u64, "len 5")
+            val expected: String = Vec::from_str("hello")
+            assert(s.eq(expected), "String::from_str matches Vec::from_str")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_new_via_alias() {
+    // `String::new()` -> `Vec::new()` (generic). Annotation drives
+    // the T=u8 resolution.
+    let src = r#"
+        fn main() -> u64 {
+            var s: String = String::new()
+            assert(s.is_empty(), "String::new is empty")
+            assert(s.size() == 0u64, "size 0")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
 #[test]
 fn push_char_appends_to_existing_buffer() {
     // push_char on a non-empty buffer keeps prior content intact

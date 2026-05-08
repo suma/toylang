@@ -166,16 +166,50 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
         program.statement.update(&stmt_ref, new_stmt);
     }
 
-    // Expression-level casts (`expr as Type`).
+    // Expression-level rewrites:
+    //   - `expr as Type` — casts carry a TypeDecl that needs alias
+    //     resolution.
+    //   - `Alias::function(args)` — the qualifier is a bare symbol
+    //     in the AST (`AssociatedFunctionCall(struct_name, fn_name,
+    //     args)`); when `struct_name` resolves to an alias whose
+    //     target is a struct shape, rewrite the qualifier to the
+    //     target struct's base name. This lets user code call
+    //     `String::from_str("...")` as a stand-in for
+    //     `Vec::from_str("...")`. Type args (`<u8>` for
+    //     `Vec<u8>`) are recovered from the val/var annotation by
+    //     each backend's existing `resolve_struct_instance` path.
     let m = program.expression.len();
     for i in 0..m {
         let expr_ref = ExprRef(i as u32);
         let Some(expr) = program.expression.get(&expr_ref) else { continue };
-        if let Expr::Cast(target, ty) = expr {
-            let new_ty = resolve_in_type(aliases, &ty);
-            if new_ty != ty {
-                program.expression.update(&expr_ref, Expr::Cast(target, new_ty));
+        match expr {
+            Expr::Cast(target, ty) => {
+                let new_ty = resolve_in_type(aliases, &ty);
+                if new_ty != ty {
+                    program.expression.update(&expr_ref, Expr::Cast(target, new_ty));
+                }
             }
+            Expr::AssociatedFunctionCall(struct_sym, fn_sym, args) => {
+                if let Some((params, target)) = aliases.get(&struct_sym) {
+                    if params.is_empty() {
+                        let resolved = resolve_in_type(aliases, &target);
+                        let base_name = match resolved {
+                            TypeDecl::Struct(name, _) => Some(name),
+                            TypeDecl::Identifier(name) => Some(name),
+                            _ => None,
+                        };
+                        if let Some(new_sym) = base_name {
+                            if new_sym != struct_sym {
+                                program.expression.update(
+                                    &expr_ref,
+                                    Expr::AssociatedFunctionCall(new_sym, fn_sym, args.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

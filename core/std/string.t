@@ -22,11 +22,14 @@
 #     val s: String = Vec::from_str("hello")
 #
 # `str` superset extension (the `impl` blocks below) — `Vec<u8>`
-# also satisfies the `Length` / `AsPtr` traits from
-# `core/std/str.t`, so `.len()` / `.as_ptr()` work on both
-# `str` and `String` receivers with the same call shape.
-# Internally each impl delegates to the existing inherent
-# `Vec<u8>` API (`.size()` / `self.data`).
+# satisfies `core/std/str.t`'s `Length` / `AsPtr` traits and
+# `core/std/str_ops.t`'s `Substring` / `Trim` / `CaseConvert`
+# traits, so `.len()` / `.as_ptr()` / `.substring(start, end)` /
+# `.trim()` / `.to_upper()` / `.to_lower()` work on both `str`
+# and `String` receivers with the same call shape. Internally
+# each impl either delegates to the existing inherent `Vec<u8>`
+# API (`.size()` / `self.data`) or walks the byte buffer with
+# `__builtin_ptr_read`.
 #
 # `Concat<Other>` / `Contains<Needle>` are deferred — the AOT
 # lower currently rejects trait methods that take a struct
@@ -65,6 +68,96 @@ impl Length for Vec<u8> {
 impl AsPtr for Vec<u8> {
     fn as_ptr(self: Self) -> ptr {
         self.data
+    }
+}
+
+# `substring(start, end)` — half-open byte slice `[start, end)`.
+# Both indices are byte offsets, not codepoint counts. Out-of-range
+# / inverted ranges panic via `assert(...)`. The returned `Vec<u8>`
+# is allocated through the active allocator and contains only the
+# requested byte range.
+impl Substring for Vec<u8> {
+    fn substring(&self, start: u64, end: u64) -> Vec<u8> {
+        assert(start <= end, "substring: start must be <= end")
+        assert(end <= self.len, "substring: end out of range")
+        var result: Vec<u8> = Vec::new()
+        var i: u64 = start
+        while i < end {
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            result.push(b)
+            i = i + 1u64
+        }
+        result
+    }
+}
+
+# `trim()` — strip ASCII whitespace from both ends. Recognises
+# space (0x20), horizontal tab (0x09), newline (0x0A), and
+# carriage return (0x0D). A buffer consisting entirely of
+# whitespace returns an empty `Vec<u8>`. The trailing
+# `val r = ...; r` bind (instead of `self.substring(...)` directly
+# in tail position) sidesteps the AOT MVP limitation where
+# compound-returning instance methods can't sit in expression
+# position.
+impl Trim for Vec<u8> {
+    fn trim(&self) -> Vec<u8> {
+        val n: u64 = self.len
+        var start: u64 = 0u64
+        while start < n {
+            val b: u8 = __builtin_ptr_read(self.data, start)
+            if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
+                start = start + 1u64
+            } else {
+                break
+            }
+        }
+        var end: u64 = n
+        while end > start {
+            val b: u8 = __builtin_ptr_read(self.data, end - 1u64)
+            if b == 0x20u8 || b == 0x09u8 || b == 0x0Au8 || b == 0x0Du8 {
+                end = end - 1u64
+            } else {
+                break
+            }
+        }
+        val r: Vec<u8> = self.substring(start, end)
+        r
+    }
+}
+
+# `to_upper()` / `to_lower()` — ASCII-only case folding. Bytes
+# outside `b'a'..=b'z'` / `b'A'..=b'Z'` are copied unchanged so
+# multi-byte UTF-8 sequences pass through as-is. Returns a fresh
+# `Vec<u8>` (does not mutate `self`).
+impl CaseConvert for Vec<u8> {
+    fn to_upper(&self) -> Vec<u8> {
+        var result: Vec<u8> = Vec::new()
+        var i: u64 = 0u64
+        while i < self.len {
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            if b >= 0x61u8 && b <= 0x7Au8 {
+                result.push(b - 0x20u8)
+            } else {
+                result.push(b)
+            }
+            i = i + 1u64
+        }
+        result
+    }
+
+    fn to_lower(&self) -> Vec<u8> {
+        var result: Vec<u8> = Vec::new()
+        var i: u64 = 0u64
+        while i < self.len {
+            val b: u8 = __builtin_ptr_read(self.data, i)
+            if b >= 0x41u8 && b <= 0x5Au8 {
+                result.push(b + 0x20u8)
+            } else {
+                result.push(b)
+            }
+            i = i + 1u64
+        }
+        result
     }
 }
 

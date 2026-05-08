@@ -1,8 +1,13 @@
 // `core/std/string.t` / `core/std/collections/vec.t` stdlib API
-// tests. Phase 0: `Vec<u8>::push_char` UTF-8 encoding (with the
-// `char` alias upgraded from u8 to u32 in `core/std/char.t`).
-// Future phases will add `Concat` / `Contains` / `Substring` /
-// etc. trait-based String API tests.
+// tests.
+//
+// Phase 0: `Vec<u8>::push_char` UTF-8 encoding (with the `char`
+// alias upgraded from u8 to u32 in `core/std/char.t`).
+// Phase 1: `Length` / `AsPtr` extension traits on `Vec<u8>`.
+// Phase 2: `Substring` / `Trim` / `CaseConvert` extension traits
+// on `Vec<u8>`.
+// Deferred: `Concat<Other>` / `Contains<Needle>` (need AOT lower
+// support for trait methods taking a struct argument).
 
 mod common;
 
@@ -199,6 +204,168 @@ fn str_and_string_share_len_method_name() {
             val a = "hello"
             val b: String = Vec::from_str("hello")
             assert(a.len() == b.len(), "str.len() == String.len()")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+// ---------------------------------------------------------------
+// Phase 2: `Substring` / `Trim` / `CaseConvert` for `Vec<u8>`.
+// ---------------------------------------------------------------
+
+#[test]
+fn string_substring_basic() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            val sub: String = s.substring(6u64, 11u64)
+            val expected: String = Vec::from_str("world")
+            assert(sub.eq(expected), "substring mismatch")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_substring_empty_range() {
+    // start == end returns an empty buffer (size 0).
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val sub: String = s.substring(2u64, 2u64)
+            assert(sub.size() == 0u64, "empty substring size 0")
+            assert(sub.is_empty(), "empty substring is_empty")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_substring_full_range() {
+    // 0..len returns a copy of the whole buffer.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val sub: String = s.substring(0u64, s.len())
+            assert(sub.eq(s), "full-range substring equals self")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_substring_inverted_range_panics() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val sub: String = s.substring(3u64, 1u64)
+            sub.size()
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn string_substring_out_of_range_panics() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hi")
+            val sub: String = s.substring(0u64, 10u64)
+            sub.size()
+        }
+    "#;
+    assert_program_fails(src);
+}
+
+#[test]
+fn string_trim_strips_both_ends() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("  hi  ")
+            val t: String = s.trim()
+            val expected: String = Vec::from_str("hi")
+            assert(t.eq(expected), "trim both ends")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_trim_only_whitespace_returns_empty() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("   \t\n\r  ")
+            val t: String = s.trim()
+            assert(t.size() == 0u64, "trim of all-whitespace is empty")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_trim_no_whitespace_unchanged() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello")
+            val t: String = s.trim()
+            assert(t.eq(s), "trim of clean string equals self")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_to_upper_ascii() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("Hello, World!")
+            val u: String = s.to_upper()
+            val expected: String = Vec::from_str("HELLO, WORLD!")
+            assert(u.eq(expected), "to_upper ascii")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_to_lower_ascii() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("Hello, World!")
+            val l: String = s.to_lower()
+            val expected: String = Vec::from_str("hello, world!")
+            assert(l.eq(expected), "to_lower ascii")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
+#[test]
+fn string_case_convert_preserves_high_bit_bytes() {
+    // 0xC3 0xA9 = UTF-8 'é'. Both bytes have the high bit set;
+    // case fold should leave them unchanged so multi-byte
+    // sequences pass through.
+    let src = r#"
+        fn main() -> u64 {
+            var s: Vec<u8> = Vec::new()
+            s.push_char(0xE9u32)
+            val u: Vec<u8> = s.to_upper()
+            val l: Vec<u8> = s.to_lower()
+            assert(u.size() == 2u64, "upper preserves byte count")
+            assert(l.size() == 2u64, "lower preserves byte count")
+            assert(u.get(0u64) == 0xC3u8, "upper byte 0 unchanged")
+            assert(u.get(1u64) == 0xA9u8, "upper byte 1 unchanged")
+            assert(l.get(0u64) == 0xC3u8, "lower byte 0 unchanged")
+            assert(l.get(1u64) == 0xA9u8, "lower byte 1 unchanged")
             42u64
         }
     "#;

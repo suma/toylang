@@ -2323,6 +2323,66 @@ fn string_as_ptr_via_trait_round_trip() {
 }
 
 #[test]
+fn string_substring_round_trip() {
+    // `core/std/string.t::impl Substring for Vec<u8>` exposes
+    // `.substring(start, end)` returning a fresh `Vec<u8>`. Pinning
+    // confirms the half-open byte slice + the let-rhs path for
+    // compound-returning instance methods works in all 3 backends.
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("hello world")
+            val sub: String = s.substring(6u64, 11u64)
+            val expected: String = Vec::from_str("world")
+            if !sub.eq(expected) { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_substring_round_trip");
+}
+
+#[test]
+fn string_trim_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("  trim me  ")
+            val t: String = s.trim()
+            val expected: String = Vec::from_str("trim me")
+            if !t.eq(expected) { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_trim_round_trip");
+}
+
+#[test]
+fn string_to_upper_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("Hello World")
+            val u: String = s.to_upper()
+            val expected: String = Vec::from_str("HELLO WORLD")
+            if !u.eq(expected) { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_to_upper_round_trip");
+}
+
+#[test]
+fn string_to_lower_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val s: String = Vec::from_str("Hello World")
+            val l: String = s.to_lower()
+            val expected: String = Vec::from_str("hello world")
+            if !l.eq(expected) { return 1u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "string_to_lower_round_trip");
+}
+
+#[test]
 fn push_char_three_byte_utf8_round_trip() {
     // `Vec<u8>::push_char` UTF-8 encoding for codepoint 0x3042 ('あ').
     // Expected bytes: [0xE3, 0x81, 0x82].

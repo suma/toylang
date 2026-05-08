@@ -171,6 +171,7 @@ fn main() -> u64 {
 - **演算子**:
   - 算術: `+`, `-`, `*`, `/`, `%`（剰余・truncated remainder で `(-7) % 3 == -1`）
   - 比較: `==`, `!=`, `<`, `<=`, `>`, `>=`。`==` / `!=` は同型 struct ペアで **operator overload** — その struct に `eq(&self, other: &Self) -> bool` method があれば dispatch (3 backend)。`s == t` で String/Vec<u8> 等の比較が動く
+  - **算術 operator overload**: `+` / `-` / `*` / `/` / `%` も同型 struct ペアで `add` / `sub` / `mul` / `div` / `rem` method (各 `(&self, &Self) -> Self`) に dispatch。`val c: Vec3 = a + b` 形 (let-rhs context) を 3 backend で。chain (`a + b + c`) は MVP では未対応
   - 複合代入: `+=`, `-=`, `*=`, `/=`, `%=`（パーサで `lhs op= rhs` を `lhs = lhs op rhs` に desugar。LHS は identifier / フィールドアクセス対応）
   - 範囲: `..`（例: `0..10`）式として使用可能。`for i in 0..10 { ... }` と `val r = 0..10` の両方が書ける。`for i in 0 to 10` の旧形式も引き続き有効
   - スコープ解決: `::`

@@ -635,6 +635,111 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+        // Operator overload (Phase B continuation): arithmetic
+        // overloads (`a + b` / `a - b` / `a * b` / `a / b` /
+        // `a % b`) for matching struct values dispatch to the
+        // user-defined `add` / `sub` / `mul` / `div` / `rem`
+        // method. The frontend type checker has already vetted
+        // shape compatibility; here we resolve the method's
+        // FuncId, flatten both struct receivers' leaf locals
+        // (mirrors `try_lower_struct_eq`'s shape) and emit
+        // `CallStruct` into a fresh binding for the
+        // compound `Self` return. The let-rhs path is the
+        // primary user shape (`val c = a + b`) — chained
+        // expression-position uses (`a + b + c`) are a future
+        // extension that needs the call result to flow back as
+        // an `Expr::Binary` ValueId.
+        if let Expr::Binary(op, lhs_ref, rhs_ref) = rhs.clone() {
+            let op_method: Option<&'static str> = match op {
+                frontend::ast::Operator::IAdd => Some("add"),
+                frontend::ast::Operator::ISub => Some("sub"),
+                frontend::ast::Operator::IMul => Some("mul"),
+                frontend::ast::Operator::IDiv => Some("div"),
+                frontend::ast::Operator::IMod => Some("rem"),
+                _ => None,
+            };
+            if let Some(method_name) = op_method {
+                if let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
+                    let struct_def = self.module.struct_def(struct_id);
+                    let target_sym = struct_def.base_name;
+                    let type_args = struct_def.type_args.clone();
+                    if let Some(method_sym) = self.interner.get(method_name) {
+                        if let Some(func_id) = super::method_registry::lookup_method_func(
+                            self.method_func_ids, target_sym, method_sym, &type_args,
+                        ) {
+                            // Flatten both struct receivers' leaf
+                            // locals — must come from bare struct
+                            // identifier bindings, same as the
+                            // `try_lower_struct_eq` shape.
+                            let lhs_leaves = match self.program.expression.get(&lhs_ref) {
+                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                    Some(Binding::Struct { fields, .. }) => {
+                                        flatten_struct_locals(&fields)
+                                    }
+                                    _ => return Err(
+                                        "operator overload: arith lhs needs struct binding (MVP)".to_string(),
+                                    ),
+                                },
+                                _ => return Err(
+                                    "operator overload: arith lhs must be a bare identifier (MVP)".to_string(),
+                                ),
+                            };
+                            let rhs_leaves = match self.program.expression.get(&rhs_ref) {
+                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                    Some(Binding::Struct { fields, .. }) => {
+                                        flatten_struct_locals(&fields)
+                                    }
+                                    _ => return Err(
+                                        "operator overload: arith rhs needs struct binding (MVP)".to_string(),
+                                    ),
+                                },
+                                _ => return Err(
+                                    "operator overload: arith rhs must be a bare identifier (MVP)".to_string(),
+                                ),
+                            };
+                            let mut all_args: Vec<ValueId> =
+                                Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
+                            for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                                    .expect("LoadLocal returns a value");
+                                all_args.push(v);
+                            }
+                            // Compound Self return — allocate dest
+                            // binding then emit `CallStruct`.
+                            let target_ret = self.module.function(func_id).return_type;
+                            let dest_struct_id = match target_ret {
+                                Type::Struct(id) => id,
+                                _ => return Err(format!(
+                                    "operator overload: {} method must return Self (got {:?})",
+                                    method_name, target_ret
+                                )),
+                            };
+                            let fields = self.allocate_struct_fields(dest_struct_id);
+                            let dests: Vec<LocalId> =
+                                flatten_struct_locals(&fields)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.register_drop_for_struct_binding(dest_struct_id, &fields);
+                            self.bindings.insert(
+                                name,
+                                Binding::Struct { struct_id: dest_struct_id, fields },
+                            );
+                            self.emit(
+                                InstKind::CallStruct {
+                                    target: func_id,
+                                    args: all_args,
+                                    dests,
+                                },
+                                None,
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
         // Primitive-receiver compound-returning method RHS:
         // `val s: String = lit.to_string()`. Mirrors the
         // struct/enum-receiver path below — but routes through

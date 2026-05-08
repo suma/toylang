@@ -538,7 +538,30 @@ impl EvaluationContext<'_> {
         // defensive fall-through keeps non-overloaded comparisons
         // (Allocator identity, etc.) routed through their existing
         // arms).
-        if matches!(op, Operator::EQ | Operator::NE) {
+        // Phase B operator overload + arithmetic continuation:
+        // `s OP t` between two struct values of the same nominal
+        // type dispatches to the user-defined method (`eq` for
+        // `==` / `!=`; `add` / `sub` / `mul` / `div` / `rem` for
+        // `+` / `-` / `*` / `/` / `%`). The frontend type
+        // checker has already vetted the receiver / argument
+        // shape; we only need to look up the method and forward
+        // the call. `!=` negates the boolean result. Falls
+        // through to the regular arithmetic / comparison path
+        // when no matching method is registered (the type
+        // checker's allow-list catches the unsupported cases
+        // before this point — the defensive fall-through keeps
+        // primitive operators routed through their existing
+        // arms).
+        let overload_method_name: Option<&'static str> = match op {
+            Operator::EQ | Operator::NE => Some("eq"),
+            Operator::IAdd => Some("add"),
+            Operator::ISub => Some("sub"),
+            Operator::IMul => Some("mul"),
+            Operator::IDiv => Some("div"),
+            Operator::IMod => Some("rem"),
+            _ => None,
+        };
+        if let Some(method_name) = overload_method_name {
             if let (Value::Heap(lhs_rc), Value::Heap(rhs_rc)) = (&lhs_v, &rhs_v) {
                 let struct_info = {
                     let lhs_obj = lhs_rc.borrow();
@@ -551,9 +574,9 @@ impl EvaluationContext<'_> {
                     }
                 };
                 if let Some((struct_name, type_args)) = struct_info {
-                    if let Some(eq_sym) = self.string_interner.get("eq") {
+                    if let Some(method_sym) = self.string_interner.get(method_name) {
                         if let Some(method) =
-                            self.get_method(struct_name, eq_sym, &type_args)
+                            self.get_method(struct_name, method_sym, &type_args)
                         {
                             let result = self.call_method(
                                 method,
@@ -563,24 +586,37 @@ impl EvaluationContext<'_> {
                             let result_v = match result {
                                 EvaluationResult::Value(v) => v,
                                 _ => return Err(InterpreterError::InternalError(
-                                    "operator overload: eq returned non-value".to_string()
-                                )),
-                            };
-                            let bool_result = match result_v {
-                                Value::Bool(b) => b,
-                                other => return Err(InterpreterError::InternalError(
                                     format!(
-                                        "operator overload: eq returned {:?}, expected bool",
-                                        other
-                                    ),
+                                        "operator overload: {} returned non-value",
+                                        method_name
+                                    )
                                 )),
                             };
-                            let final_bool = if matches!(op, Operator::EQ) {
-                                bool_result
+                            // For `==` / `!=` the bool result is
+                            // (optionally) negated and returned
+                            // directly. For arithmetic operators
+                            // the method returns Self (the same
+                            // struct) which we forward through
+                            // the existing Value pipeline.
+                            if matches!(op, Operator::EQ | Operator::NE) {
+                                let bool_result = match result_v {
+                                    Value::Bool(b) => b,
+                                    other => return Err(InterpreterError::InternalError(
+                                        format!(
+                                            "operator overload: eq returned {:?}, expected bool",
+                                            other
+                                        ),
+                                    )),
+                                };
+                                let final_bool = if matches!(op, Operator::EQ) {
+                                    bool_result
+                                } else {
+                                    !bool_result
+                                };
+                                return Ok(EvaluationResult::Value(Value::Bool(final_bool)));
                             } else {
-                                !bool_result
-                            };
-                            return Ok(EvaluationResult::Value(Value::Bool(final_bool)));
+                                return Ok(EvaluationResult::Value(result_v));
+                            }
                         }
                     }
                 }

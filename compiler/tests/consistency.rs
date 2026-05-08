@@ -2462,6 +2462,47 @@ fn string_split_round_trip() {
 }
 
 #[test]
+fn struct_arith_operator_overload_round_trip() {
+    // Operator overload (Phase B continuation): `+` / `-` / `*` /
+    // `/` / `%` between matching struct values dispatch to the
+    // user-defined `add` / `sub` / `mul` / `div` / `rem` method.
+    // Pinned 3-way to lock in: frontend type checker accepts the
+    // overload before `resolve_numeric_types` would reject it,
+    // interpreter routes through `evaluate_binary`'s extended
+    // `overload_method_name` table, AOT routes through
+    // `let_lowering.rs`'s arithmetic struct arm (CallStruct into
+    // a fresh binding for the compound `Self` return).
+    let src = r#"
+        struct Vec3 { x: i64, y: i64, z: i64 }
+
+        impl Vec3 {
+            fn add(&self, other: &Vec3) -> Vec3 {
+                Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+            }
+            fn sub(&self, other: &Vec3) -> Vec3 {
+                Vec3 { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
+            }
+            fn eq(&self, other: &Vec3) -> bool {
+                self.x == other.x && self.y == other.y && self.z == other.z
+            }
+        }
+
+        fn main() -> u64 {
+            val a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            val b: Vec3 = Vec3 { x: 10i64, y: 20i64, z: 30i64 }
+            val sum: Vec3 = a + b
+            val expect_sum: Vec3 = Vec3 { x: 11i64, y: 22i64, z: 33i64 }
+            if !(sum == expect_sum) { return 1u64 }
+            val diff: Vec3 = b - a
+            val expect_diff: Vec3 = Vec3 { x: 9i64, y: 18i64, z: 27i64 }
+            if !(diff == expect_diff) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_arith_operator_overload_round_trip");
+}
+
+#[test]
 fn string_eq_operator_round_trip() {
     // Phase B operator overload — `s == t` / `s != t` between
     // two String values dispatch to the user-defined `eq` method.

@@ -232,6 +232,22 @@ impl<'a> TypeCheckerVisitor<'a> {
             rhs_obj.clone().accept(self)?
         };
         
+        // Operator overload (Phase B continuation): arithmetic /
+        // comparison ops between matching struct values dispatch
+        // to `add` / `sub` / `mul` / `div` / `rem` / `eq` methods
+        // on the struct. Catch this *before* `resolve_numeric_types`
+        // because that helper rejects struct-typed operands with
+        // the generic "incompatible types" diagnostic — defeating
+        // the user's overload. The `==` / `!=` flow already had
+        // its own arm below; this short-circuit handles arithmetic
+        // overloads symmetrically (returning the struct as result
+        // type so `a + b + c` chains keep checking).
+        if let Some(method_name) = Self::struct_arith_method_name(&op) {
+            if self.struct_method_compatible(&lhs_ty, &rhs_ty, method_name) {
+                return Ok(lhs_ty);
+            }
+        }
+
         // Special handling for shift operations where right operand must be UInt64
         let (resolved_lhs_ty, resolved_rhs_ty) = if matches!(op, Operator::LeftShift | Operator::RightShift) {
             self.resolve_shift_operand_types(&lhs_ty, &rhs_ty)
@@ -306,6 +322,26 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (&resolved_lhs_ty, &resolved_rhs_ty) {
                     // Allow arithmetic operations on generic types if they are the same parameter
                     if left_param == right_param {
+                        resolved_lhs_ty.clone()
+                    } else {
+                        return Err(self.error_with_location(
+                            TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                            &lhs,
+                        ));
+                    }
+                } else if let Some(method_name) = Self::struct_arith_method_name(&op) {
+                    // Operator overload (Phase B continuation): two
+                    // struct values of the same nominal type are
+                    // comparable with `+` / `-` / `*` / `/` / `%`
+                    // when the struct exposes the matching `add` /
+                    // `sub` / `mul` / `div` / `rem` method
+                    // (`fn ___(&self, other: &Self) -> Self`). Each
+                    // backend's binary evaluator dispatches the
+                    // operator to the method the same way Phase B
+                    // routes `==` to `eq`. Result type is the
+                    // struct itself so chained expressions
+                    // (`a + b + c`) keep type-checking.
+                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
                         resolved_lhs_ty.clone()
                     } else {
                         return Err(self.error_with_location(
@@ -661,24 +697,69 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// match so `Vec<u8> == Vec<u8>` compares but `Vec<u8> == Vec<i64>`
     /// continues to bail with the standard mismatch error.
     fn struct_eq_compatible(&self, lhs: &TypeDecl, rhs: &TypeDecl) -> bool {
-        let (lhs_name, lhs_args) = match lhs {
-            TypeDecl::Struct(name, args) => (*name, args),
-            _ => return false,
+        self.struct_method_compatible(lhs, rhs, "eq")
+    }
+
+    /// Generalised version of `struct_eq_compatible` for arithmetic
+    /// operator overloading (Phase B continuation). `+` / `-` / `*`
+    /// / `/` / `%` dispatch to `add` / `sub` / `mul` / `div` / `rem`
+    /// methods on the matching struct. Same nominal-identity rule
+    /// as `eq`: same struct name + same generic args, otherwise
+    /// fall through to the standard mismatch diagnostic.
+    fn struct_method_compatible(
+        &self,
+        lhs: &TypeDecl,
+        rhs: &TypeDecl,
+        method_name: &str,
+    ) -> bool {
+        // Both `Struct(name, args)` and `Identifier(name)`
+        // (= bare struct name pre-canonicalisation) are accepted —
+        // the type checker hands us the latter for non-generic
+        // struct values that bypass `Struct(...)` canonical form.
+        // Treating them uniformly lets `Vec3 + Vec3` reach the
+        // dispatch even when both operands carry the Identifier
+        // shape.
+        let extract = |t: &TypeDecl| -> Option<(DefaultSymbol, Vec<TypeDecl>)> {
+            match t {
+                TypeDecl::Struct(name, args) => Some((*name, args.clone())),
+                TypeDecl::Identifier(name) => Some((*name, Vec::new())),
+                _ => None,
+            }
         };
-        let (rhs_name, rhs_args) = match rhs {
-            TypeDecl::Struct(name, args) => (*name, args),
-            _ => return false,
+        let (lhs_name, lhs_args) = match extract(lhs) {
+            Some(x) => x,
+            None => return false,
+        };
+        let (rhs_name, rhs_args) = match extract(rhs) {
+            Some(x) => x,
+            None => return false,
         };
         if lhs_name != rhs_name || lhs_args != rhs_args {
             return false;
         }
-        let eq_sym = match self.core.string_interner.get("eq") {
+        let method_sym = match self.core.string_interner.get(method_name) {
             Some(s) => s,
             None => return false,
         };
         self.context.struct_methods.get(&lhs_name)
-            .and_then(|m| m.get(&eq_sym))
+            .and_then(|m| m.get(&method_sym))
             .is_some()
+    }
+
+    /// Returns the inherent method name an arithmetic operator
+    /// overloads to (`+` -> `add`, etc.). Used by both the type
+    /// checker (compatibility check) and the interpreter / AOT
+    /// dispatchers (method lookup). Mirrors Rust's `std::ops`
+    /// trait method names.
+    pub(crate) fn struct_arith_method_name(op: &Operator) -> Option<&'static str> {
+        match op {
+            Operator::IAdd => Some("add"),
+            Operator::ISub => Some("sub"),
+            Operator::IMul => Some("mul"),
+            Operator::IDiv => Some("div"),
+            Operator::IMod => Some("rem"),
+            _ => None,
+        }
     }
 
     /// If the call to `fun` omits trailing Allocator-typed parameters, extend the

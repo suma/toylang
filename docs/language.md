@@ -295,9 +295,13 @@ Stdlib aliases:
   `Vec<u8>`. The byte-specific helpers (`from_str`, `eq`,
   `push_str`, `push_char`) live on `impl Vec<u8>`; the generic
   helpers (`size`, `is_empty`, `as_ptr`, `clear`, `push`) come
-  from `impl<T> Vec<T>`. `String` also satisfies the `Length` /
-  `AsPtr` extension traits from `core/std/str.t`, so `.len()` /
-  `.as_ptr()` work uniformly on `str` and `String` receivers.
+  from `impl<T> Vec<T>`. `String` also satisfies six extension
+  traits — `Length` / `AsPtr` / `ToString` from `core/std/str.t`
+  and `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains`
+  from `core/std/str_ops.t` — so `.len()` / `.as_ptr()` /
+  `.substring(start, end)` / `.trim()` / `.to_upper()` /
+  `.to_lower()` / `.concat(other)` / `.contains(needle)` /
+  `.to_string()` work uniformly on `str` and `String` receivers.
 
 ### Type inference
 
@@ -1928,9 +1932,15 @@ Method dispatch falls into three impl blocks:
 - `impl Vec<u8>` (in `core/std/collections/vec.t`) — byte-specific
   helpers: `from_str`, `eq`, `push_str`, `push_char`,
   `extend_bytes`.
-- `impl Length for Vec<u8>` / `impl AsPtr for Vec<u8>` (in
-  `core/std/string.t`) — extension trait impls so the
-  `.len()` / `.as_ptr()` call shape matches `str` exactly.
+- `impl Length for Vec<u8>` / `impl AsPtr for Vec<u8>` /
+  `impl Substring for Vec<u8>` / `impl Trim for Vec<u8>` /
+  `impl CaseConvert for Vec<u8>` / `impl Concat<Vec<u8>> for Vec<u8>` /
+  `impl Contains<Vec<u8>> for Vec<u8>` /
+  `impl ToString for Vec<u8>` (in `core/std/string.t`) —
+  extension trait impls so the same call shape works on `str` and
+  `String`. The traits live in `core/std/str.t` (`Length` /
+  `AsPtr` / `ToString`) and `core/std/str_ops.t` (`Substring` /
+  `Trim` / `CaseConvert` / `Concat` / `Contains`).
 
 ### `is_null` (universal)
 

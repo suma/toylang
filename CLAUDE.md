@@ -110,7 +110,7 @@ fn main() -> u64 {
 - Variables: `val` (immutable), `var` (mutable)
 - Types: `u64`, `i64`, `f64`, `bool`, `str`, `ptr`, `usize`, `dict`, `null`, `Self`
 - Narrow ints (NUM-W): `u8` / `u16` / `u32` / `i8` / `i16` / `i32` (literal suffix `42u8` / `0xFFi32` 等)。`as` cast で wide ↔ narrow 変換 (暗黙 widening は無し)
-- Stdlib aliases: `char = u32` (Unicode codepoint、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)、`String = Vec<u8>` (heap-managed byte buffer)。`String` は `core/std/str.t::Length` / `AsPtr` を `impl` していて `s.len()` / `s.as_ptr()` が `str` と同じ call shape で動く。`Vec<u8>::push_char(c: char)` は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。残: substring / trim / case / split / Concat / Contains / to_string trait は AOT lower 制約のため deferred (`STRING-API-PHASE-2-3` in todo.md)
+- Stdlib aliases: `char = u32` (Unicode codepoint、char literal `'a'` / `'\u{1F600}'` は lexer で `Kind::UInt32` に lex)、`String = Vec<u8>` (heap-managed byte buffer)。`String` は `core/std/str.t` の `Length` / `AsPtr` / `ToString` と `core/std/str_ops.t` の `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains` を `impl` していて `s.len()` / `s.as_ptr()` / `s.substring(start, end)` / `s.trim()` / `s.to_upper()` / `s.to_lower()` / `s.concat(other)` / `s.contains(needle)` / `s.to_string()` が `str` と同じ call shape で動く。`Vec<u8>::push_char(c: char)` は **UTF-8 encoding 対応** (RFC 3629、1〜4 bytes、surrogate / U+110000+ は panic)。残: `Split<Sep, Out>` trait (`s.split(sep) -> Vec<Vec<u8>>`、`Vec<Vec<u8>>` の AOT lower 確認が必要、`STRING-API-SPLIT` in todo.md)
 - **Numeric literals**:
   - Type suffix: `42u64` (unsigned 64-bit), `42i64` (signed 64-bit), `1.5f64` / `42f64` (IEEE 754 double)
   - Hex literals: `0xFFu64`, `0xFFi64`, `0xFF`（型サフィックスなしも可）

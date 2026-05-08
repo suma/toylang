@@ -469,6 +469,52 @@ impl EvaluationContext<'_> {
         let operand_result = self.evaluate(operand);
         let operand_v = try_value_v!(operand_result);
 
+        // OP-OVERLOAD-EXTEND Phase 4 unary overload. `-x` / `~x`
+        // / `!x` for a struct receiver dispatches to `neg` /
+        // `bitnot` / `not` (each `fn (&self) -> Self`). Mirrors
+        // the binary overload arm above.
+        let unary_method_name: Option<&'static str> = match op {
+            UnaryOp::Negate => Some("neg"),
+            UnaryOp::BitwiseNot => Some("bitnot"),
+            UnaryOp::LogicalNot => Some("not"),
+            UnaryOp::Borrow | UnaryOp::BorrowMut => None,
+        };
+        if let Some(method_name) = unary_method_name {
+            if let Value::Heap(operand_rc) = &operand_v {
+                let struct_info = {
+                    let obj = operand_rc.borrow();
+                    if let Object::Struct { type_name, type_args, .. } = &*obj {
+                        Some((*type_name, type_args.clone()))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((struct_name, type_args)) = struct_info {
+                    if let Some(method_sym) = self.string_interner.get(method_name) {
+                        if let Some(method) =
+                            self.get_method(struct_name, method_sym, &type_args)
+                        {
+                            let result = self.call_method(
+                                method,
+                                operand_rc.clone(),
+                                vec![],
+                            )?;
+                            let result_v = match result {
+                                EvaluationResult::Value(v) => v,
+                                _ => return Err(InterpreterError::InternalError(
+                                    format!(
+                                        "unary overload: {} returned non-value",
+                                        method_name
+                                    )
+                                )),
+                            };
+                            return Ok(EvaluationResult::Value(result_v));
+                        }
+                    }
+                }
+            }
+        }
+
         let result_v = match op {
             UnaryOp::BitwiseNot => match &operand_v {
                 Value::UInt64(v) => Value::UInt64(!*v),
@@ -554,11 +600,20 @@ impl EvaluationContext<'_> {
         // arms).
         let overload_method_name: Option<&'static str> = match op {
             Operator::EQ | Operator::NE => Some("eq"),
+            Operator::LT => Some("lt"),
+            Operator::LE => Some("le"),
+            Operator::GT => Some("gt"),
+            Operator::GE => Some("ge"),
             Operator::IAdd => Some("add"),
             Operator::ISub => Some("sub"),
             Operator::IMul => Some("mul"),
             Operator::IDiv => Some("div"),
             Operator::IMod => Some("rem"),
+            Operator::BitwiseAnd => Some("bitand"),
+            Operator::BitwiseOr => Some("bitor"),
+            Operator::BitwiseXor => Some("bitxor"),
+            Operator::LeftShift => Some("shl"),
+            Operator::RightShift => Some("shr"),
             _ => None,
         };
         if let Some(method_name) = overload_method_name {
@@ -592,13 +647,17 @@ impl EvaluationContext<'_> {
                                     )
                                 )),
                             };
-                            // For `==` / `!=` the bool result is
-                            // (optionally) negated and returned
-                            // directly. For arithmetic operators
-                            // the method returns Self (the same
-                            // struct) which we forward through
-                            // the existing Value pipeline.
-                            if matches!(op, Operator::EQ | Operator::NE) {
+                            // For `==` / `!=` / `<` / `<=` / `>`
+                            // / `>=` the bool result is (optionally)
+                            // negated and returned directly. For
+                            // arithmetic operators the method returns
+                            // Self (the same struct) which we forward
+                            // through the existing Value pipeline.
+                            if matches!(op,
+                                Operator::EQ | Operator::NE
+                                | Operator::LT | Operator::LE
+                                | Operator::GT | Operator::GE
+                            ) {
                                 let bool_result = match result_v {
                                     Value::Bool(b) => b,
                                     other => return Err(InterpreterError::InternalError(
@@ -608,10 +667,16 @@ impl EvaluationContext<'_> {
                                         ),
                                     )),
                                 };
-                                let final_bool = if matches!(op, Operator::EQ) {
-                                    bool_result
-                                } else {
+                                // `!=` is the only operator that
+                                // routes through `eq` and inverts.
+                                // The ordering operators have their
+                                // own dedicated methods (`lt` / `le`
+                                // / `gt` / `ge`) and don't need a
+                                // negation step.
+                                let final_bool = if matches!(op, Operator::NE) {
                                     !bool_result
+                                } else {
+                                    bool_result
                                 };
                                 return Ok(EvaluationResult::Value(Value::Bool(final_bool)));
                             } else {

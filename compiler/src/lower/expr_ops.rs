@@ -46,9 +46,24 @@ impl<'a> FunctionLower<'a> {
         // dispatch edge cases, etc.) fall through to the regular
         // BinOp path which will error out with the standard
         // mismatch.
-        if matches!(op, Operator::EQ | Operator::NE) {
+        // Comparison-operator method-name table (Phase B + Phase 2
+        // extension). Mirrors the frontend's `struct_cmp_method_name`
+        // and the interpreter's `overload_method_name` table for
+        // the cmp half. Arithmetic overload (`+` / `-` / ...) goes
+        // through `let_lowering.rs::Binary` arm because it returns
+        // a compound `Self`; cmp returns Bool which fits the
+        // single-ValueId return contract here.
+        let cmp_method: Option<&'static str> = match op {
+            Operator::EQ | Operator::NE => Some("eq"),
+            Operator::LT => Some("lt"),
+            Operator::LE => Some("le"),
+            Operator::GT => Some("gt"),
+            Operator::GE => Some("ge"),
+            _ => None,
+        };
+        if let Some(method_name) = cmp_method {
             if let Type::Struct(struct_id) = lhs_ty {
-                if let Some(value) = self.try_lower_struct_eq(struct_id, lhs, rhs, op)? {
+                if let Some(value) = self.try_lower_struct_cmp(struct_id, lhs, rhs, op, method_name)? {
                     return Ok(Some(value));
                 }
             }
@@ -95,24 +110,25 @@ impl<'a> FunctionLower<'a> {
     /// for both sides and concatenated as `Call` arguments — same
     /// shape the regular method-call lowering uses for
     /// `Binding::Struct` / borrow-of-struct args.
-    fn try_lower_struct_eq(
+    fn try_lower_struct_cmp(
         &mut self,
         struct_id: crate::ir::StructId,
         lhs: &ExprRef,
         rhs: &ExprRef,
         op: &Operator,
+        method_name: &str,
     ) -> Result<Option<ValueId>, String> {
         use frontend::ast::Expr;
         use super::bindings::{flatten_struct_locals, Binding};
         let struct_def = self.module.struct_def(struct_id);
         let target_sym = struct_def.base_name;
         let type_args = struct_def.type_args.clone();
-        let eq_sym = match self.interner.get("eq") {
+        let method_sym = match self.interner.get(method_name) {
             Some(s) => s,
             None => return Ok(None),
         };
         let func_id = match super::method_registry::lookup_method_func(
-            self.method_func_ids, target_sym, eq_sym, &type_args,
+            self.method_func_ids, target_sym, method_sym, &type_args,
         ) {
             Some(f) => f,
             None => return Ok(None),
@@ -147,13 +163,15 @@ impl<'a> FunctionLower<'a> {
         }
         let bool_v = self
             .emit(InstKind::Call { target: func_id, args }, Some(Type::Bool))
-            .ok_or_else(|| "operator overload: eq call produced no value".to_string())?;
-        if matches!(op, Operator::EQ) {
-            Ok(Some(bool_v))
-        } else {
-            // `!=`: emit `bool_v == false` to invert. Cleaner than
-            // adding a UnaryOp::Not lowering for booleans through a
-            // cranelift IR path that doesn't currently model it.
+            .ok_or_else(|| format!(
+                "operator overload: {} call produced no value", method_name
+            ))?;
+        // `!=` is the only operator that routes through `eq` and
+        // negates. `<` / `<=` / `>` / `>=` use their own dedicated
+        // methods (`lt` / `le` / `gt` / `ge`) and don't need
+        // negation. `==` returns the eq result directly.
+        if matches!(op, Operator::NE) {
+            // emit `bool_v == false` to invert.
             let const_false = self
                 .emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))
                 .expect("Const returns a value");
@@ -161,6 +179,8 @@ impl<'a> FunctionLower<'a> {
                 InstKind::BinOp { op: BinOp::Eq, lhs: bool_v, rhs: const_false },
                 Some(Type::Bool),
             ))
+        } else {
+            Ok(Some(bool_v))
         }
     }
 

@@ -169,6 +169,19 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.transform_numeric_expr(&operand, &resolved_ty)?;
         }
         
+        // OP-OVERLOAD-EXTEND Phase 4: unary operator overload.
+        // `-x` / `~x` / `!x` for matching struct values dispatch
+        // to the user-defined `neg` / `bitnot` / `not` method
+        // (`fn ___(&self) -> Self`). Catch this before the
+        // primitive-only checks below so the standard "type
+        // mismatch in unary X" diagnostic doesn't preempt the
+        // overload.
+        if let Some(method_name) = Self::struct_unary_method_name(&op) {
+            if self.struct_method_compatible(&resolved_ty, &resolved_ty, method_name) {
+                return Ok(resolved_ty);
+            }
+        }
+
         let result_type = match op {
             UnaryOp::BitwiseNot => {
                 if resolved_ty == TypeDecl::UInt64 {
@@ -210,8 +223,23 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
             UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("borrow handled above"),
         };
-        
+
         Ok(result_type)
+    }
+
+    /// Unary operator overload table (Phase 4 extension). Maps
+    /// `Negate` / `BitwiseNot` / `LogicalNot` to the user-defined
+    /// `neg` / `bitnot` / `not` methods (each `fn (&self) -> Self`).
+    /// Borrow / BorrowMut are intentionally excluded — they're
+    /// reference-construction operators, not arithmetic-style
+    /// overloads.
+    pub(crate) fn struct_unary_method_name(op: &UnaryOp) -> Option<&'static str> {
+        match op {
+            UnaryOp::Negate => Some("neg"),
+            UnaryOp::BitwiseNot => Some("bitnot"),
+            UnaryOp::LogicalNot => Some("not"),
+            UnaryOp::Borrow | UnaryOp::BorrowMut => None,
+        }
     }
 
     /// Type check binary operators
@@ -386,16 +414,26 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // so expressions like `current_allocator() == a` type-check inside a
                     // `<A: Allocator>` function body.
                     TypeDecl::Bool
-                } else if matches!(op, Operator::EQ | Operator::NE)
-                          && self.struct_eq_compatible(&resolved_lhs_ty, &resolved_rhs_ty) {
-                    // Operator overload (Phase B): two struct values of
-                    // the same nominal type are comparable with `==` /
-                    // `!=` iff the struct exposes an `eq(&self, other:
-                    // &Self) -> bool` method. Each backend's comparison
-                    // evaluator dispatches the operator to that method
-                    // for struct receivers — `s == t` becomes
-                    // semantically equivalent to `s.eq(t)`.
-                    TypeDecl::Bool
+                } else if let Some(method_name) = Self::struct_cmp_method_name(&op) {
+                    // Operator overload (Phase B + Phase 2 ext):
+                    // two struct values of the same nominal type
+                    // are comparable with `==` / `!=` / `<` / `<=` /
+                    // `>` / `>=` iff the struct exposes the
+                    // matching `eq` / `lt` / `le` / `gt` / `ge`
+                    // method (`fn ___(&self, other: &Self) -> bool`).
+                    // Each backend's comparison evaluator
+                    // dispatches the operator to that method for
+                    // struct receivers — `s OP t` becomes
+                    // semantically equivalent to `s.OP(t)`. Result
+                    // is `Bool` (per the trait method's return).
+                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
+                        TypeDecl::Bool
+                    } else {
+                        return Err(self.error_with_location(
+                            TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                            &lhs,
+                        ));
+                    }
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
@@ -418,6 +456,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                     TypeDecl::UInt64
                 } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
                     TypeDecl::Int64
+                } else if let Some(method_name) = Self::struct_self_returning_method_name(&op) {
+                    // Phase 3 operator overload: `&` / `|` / `^`
+                    // dispatch to `bitand` / `bitor` / `bitxor`.
+                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
+                        resolved_lhs_ty.clone()
+                    } else {
+                        return Err(self.error_with_location(
+                            TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
+                            &lhs,
+                        ));
+                    }
                 } else {
                     return Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
@@ -426,6 +475,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
             }
             Operator::LeftShift | Operator::RightShift => {
+                // Phase 3 operator overload: `<<` / `>>` for matching
+                // structs dispatch to `shl` / `shr`. Catch this
+                // before the primitive-only "right operand must be
+                // UInt64" rule (which would otherwise reject the
+                // struct-struct shape).
+                if let Some(method_name) = Self::struct_self_returning_method_name(&op) {
+                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
+                        return Ok(resolved_lhs_ty.clone());
+                    }
+                }
                 // For shift operations, right operand must be UInt64
                 if resolved_rhs_ty != TypeDecl::UInt64 {
                     return Err(self.error_with_location(
@@ -752,12 +811,41 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// dispatchers (method lookup). Mirrors Rust's `std::ops`
     /// trait method names.
     pub(crate) fn struct_arith_method_name(op: &Operator) -> Option<&'static str> {
+        Self::struct_self_returning_method_name(op)
+    }
+
+    /// Self-returning binary operator overload table. Covers the
+    /// arithmetic ops (Phase OP-OVERLOAD-ARITH) and the bitwise +
+    /// shift ops (Phase 3 extension). All return `Self` (the same
+    /// nominal struct), unlike the comparison family which return
+    /// `bool`. Method names mirror Rust's `std::ops::*` traits.
+    pub(crate) fn struct_self_returning_method_name(op: &Operator) -> Option<&'static str> {
         match op {
             Operator::IAdd => Some("add"),
             Operator::ISub => Some("sub"),
             Operator::IMul => Some("mul"),
             Operator::IDiv => Some("div"),
             Operator::IMod => Some("rem"),
+            Operator::BitwiseAnd => Some("bitand"),
+            Operator::BitwiseOr => Some("bitor"),
+            Operator::BitwiseXor => Some("bitxor"),
+            Operator::LeftShift => Some("shl"),
+            Operator::RightShift => Some("shr"),
+            _ => None,
+        }
+    }
+
+    /// Comparison-operator method-name table (Phase B + Phase 2
+    /// extension). Mirrors Rust's `PartialEq` / `PartialOrd`
+    /// trait method names. All return `bool`.
+    pub(crate) fn struct_cmp_method_name(op: &Operator) -> Option<&'static str> {
+        match op {
+            Operator::EQ => Some("eq"),
+            Operator::NE => Some("eq"), // routes through eq + negate
+            Operator::LT => Some("lt"),
+            Operator::LE => Some("le"),
+            Operator::GT => Some("gt"),
+            Operator::GE => Some("ge"),
             _ => None,
         }
     }

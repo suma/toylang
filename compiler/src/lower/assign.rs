@@ -132,6 +132,11 @@ impl<'a> FunctionLower<'a> {
                             frontend::ast::Operator::IMul => Some("mul"),
                             frontend::ast::Operator::IDiv => Some("div"),
                             frontend::ast::Operator::IMod => Some("rem"),
+                            frontend::ast::Operator::BitwiseAnd => Some("bitand"),
+                            frontend::ast::Operator::BitwiseOr => Some("bitor"),
+                            frontend::ast::Operator::BitwiseXor => Some("bitxor"),
+                            frontend::ast::Operator::LeftShift => Some("shl"),
+                            frontend::ast::Operator::RightShift => Some("shr"),
                             _ => None,
                         };
                         if let Some(method_name) = op_method {

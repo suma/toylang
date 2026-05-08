@@ -635,6 +635,82 @@ impl<'a> FunctionLower<'a> {
                 }
             }
         }
+        // OP-OVERLOAD-EXTEND Phase 4: unary operator overload at
+        // let-rhs context (`val r: Vec3 = -a`). Compound `Self`
+        // return needs `CallStruct` into a fresh binding, same
+        // as the binary arith overload below — handle here so
+        // `lower_unary`'s `Result<Option<ValueId>, _>` shape
+        // doesn't have to deal with multi-leaf returns.
+        if let Expr::Unary(unary_op, operand_ref) = rhs.clone() {
+            let unary_method: Option<&'static str> = match unary_op {
+                frontend::ast::UnaryOp::Negate => Some("neg"),
+                frontend::ast::UnaryOp::BitwiseNot => Some("bitnot"),
+                frontend::ast::UnaryOp::LogicalNot => Some("not"),
+                _ => None,
+            };
+            if let Some(method_name) = unary_method {
+                if let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
+                    let struct_def = self.module.struct_def(struct_id);
+                    let target_sym = struct_def.base_name;
+                    let type_args = struct_def.type_args.clone();
+                    if let Some(method_sym) = self.interner.get(method_name) {
+                        if let Some(func_id) = super::method_registry::lookup_method_func(
+                            self.method_func_ids, target_sym, method_sym, &type_args,
+                        ) {
+                            let operand_leaves = match self.program.expression.get(&operand_ref) {
+                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                    Some(Binding::Struct { fields, .. }) => {
+                                        flatten_struct_locals(&fields)
+                                    }
+                                    _ => return Err(
+                                        "unary overload: operand needs struct binding (MVP)".to_string(),
+                                    ),
+                                },
+                                _ => return Err(
+                                    "unary overload: operand must be a bare identifier (MVP)".to_string(),
+                                ),
+                            };
+                            let mut all_args: Vec<ValueId> =
+                                Vec::with_capacity(operand_leaves.len());
+                            for (local, ty) in operand_leaves.iter() {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(*local), Some(*ty))
+                                    .expect("LoadLocal returns a value");
+                                all_args.push(v);
+                            }
+                            let target_ret = self.module.function(func_id).return_type;
+                            let dest_struct_id = match target_ret {
+                                Type::Struct(id) => id,
+                                _ => return Err(format!(
+                                    "unary overload: {} method must return Self (got {:?})",
+                                    method_name, target_ret
+                                )),
+                            };
+                            let fields = self.allocate_struct_fields(dest_struct_id);
+                            let dests: Vec<LocalId> =
+                                flatten_struct_locals(&fields)
+                                    .into_iter()
+                                    .map(|(l, _)| l)
+                                    .collect();
+                            self.register_drop_for_struct_binding(dest_struct_id, &fields);
+                            self.bindings.insert(
+                                name,
+                                Binding::Struct { struct_id: dest_struct_id, fields },
+                            );
+                            self.emit(
+                                InstKind::CallStruct {
+                                    target: func_id,
+                                    args: all_args,
+                                    dests,
+                                },
+                                None,
+                            );
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
         // Operator overload (Phase B continuation): arithmetic
         // overloads (`a + b` / `a - b` / `a * b` / `a / b` /
         // `a % b`) for matching struct values dispatch to the
@@ -656,6 +732,11 @@ impl<'a> FunctionLower<'a> {
                 frontend::ast::Operator::IMul => Some("mul"),
                 frontend::ast::Operator::IDiv => Some("div"),
                 frontend::ast::Operator::IMod => Some("rem"),
+                frontend::ast::Operator::BitwiseAnd => Some("bitand"),
+                frontend::ast::Operator::BitwiseOr => Some("bitor"),
+                frontend::ast::Operator::BitwiseXor => Some("bitxor"),
+                frontend::ast::Operator::LeftShift => Some("shl"),
+                frontend::ast::Operator::RightShift => Some("shr"),
                 _ => None,
             };
             if let Some(method_name) = op_method {

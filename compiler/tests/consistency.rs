@@ -2462,6 +2462,94 @@ fn string_split_round_trip() {
 }
 
 #[test]
+fn struct_ord_cmp_operator_overload_round_trip() {
+    // OP-OVERLOAD-EXTEND Phase 2: `<` `<=` `>` `>=` dispatch to
+    // `lt` / `le` / `gt` / `ge` methods (each `(&self, &Self) -> bool`).
+    let src = r#"
+        struct N { v: i64 }
+        impl N {
+            fn lt(&self, other: &N) -> bool { self.v < other.v }
+            fn le(&self, other: &N) -> bool { self.v <= other.v }
+            fn gt(&self, other: &N) -> bool { self.v > other.v }
+            fn ge(&self, other: &N) -> bool { self.v >= other.v }
+            fn eq(&self, other: &N) -> bool { self.v == other.v }
+        }
+        fn main() -> u64 {
+            val a: N = N { v: 1i64 }
+            val b: N = N { v: 2i64 }
+            if !(a < b) { return 1u64 }
+            if a > b { return 2u64 }
+            if !(a <= b) { return 3u64 }
+            if a >= b { return 4u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_ord_cmp_operator_overload_round_trip");
+}
+
+#[test]
+fn struct_bitwise_operator_overload_round_trip() {
+    // OP-OVERLOAD-EXTEND Phase 3: `&` `|` `^` `<<` `>>` dispatch
+    // to `bitand` / `bitor` / `bitxor` / `shl` / `shr`. Self
+    // return → AOT routes through `let_lowering.rs::Binary` arm
+    // (CallStruct into fresh binding).
+    let src = r#"
+        struct Bits { v: u64 }
+        impl Bits {
+            fn bitand(&self, other: &Bits) -> Bits { Bits { v: self.v & other.v } }
+            fn bitor(&self, other: &Bits) -> Bits { Bits { v: self.v | other.v } }
+            fn bitxor(&self, other: &Bits) -> Bits { Bits { v: self.v ^ other.v } }
+            fn shl(&self, other: &Bits) -> Bits { Bits { v: self.v << other.v } }
+            fn shr(&self, other: &Bits) -> Bits { Bits { v: self.v >> other.v } }
+            fn eq(&self, other: &Bits) -> bool { self.v == other.v }
+        }
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 0xF0u64 }
+            val b: Bits = Bits { v: 0x0Fu64 }
+            val and_result: Bits = a & b
+            val expect_and: Bits = Bits { v: 0u64 }
+            if !(and_result == expect_and) { return 1u64 }
+            val or_result: Bits = a | b
+            val expect_or: Bits = Bits { v: 0xFFu64 }
+            if !(or_result == expect_or) { return 2u64 }
+            val sh: Bits = Bits { v: 4u64 }
+            val one: Bits = Bits { v: 1u64 }
+            val sl: Bits = one << sh
+            val expect_sl: Bits = Bits { v: 16u64 }
+            if !(sl == expect_sl) { return 3u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_bitwise_operator_overload_round_trip");
+}
+
+#[test]
+fn struct_unary_operator_overload_round_trip() {
+    // OP-OVERLOAD-EXTEND Phase 4: `-` `~` `!` dispatch to `neg`
+    // / `bitnot` / `not` (each `fn (&self) -> Self`). New
+    // single-arg path in `let_lowering.rs` for the `Self` return.
+    let src = r#"
+        struct Sign { v: i64 }
+        impl Sign {
+            fn neg(&self) -> Sign { Sign { v: 0i64 - self.v } }
+            fn bitnot(&self) -> Sign { Sign { v: ~self.v } }
+            fn eq(&self, other: &Sign) -> bool { self.v == other.v }
+        }
+        fn main() -> u64 {
+            val a: Sign = Sign { v: 5i64 }
+            val n: Sign = -a
+            val expect_n: Sign = Sign { v: 0i64 - 5i64 }
+            if !(n == expect_n) { return 1u64 }
+            val bn: Sign = ~a
+            val expect_bn: Sign = Sign { v: ~5i64 }
+            if !(bn == expect_bn) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_unary_operator_overload_round_trip");
+}
+
+#[test]
 fn struct_compound_assign_operator_overload_round_trip() {
     // OP-OVERLOAD-EXTEND Phase 1: `a += b` desugars to
     // `a = a + b`, which routes through `assign.rs::lower_assign`.

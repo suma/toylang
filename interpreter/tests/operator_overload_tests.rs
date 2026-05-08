@@ -113,6 +113,256 @@ fn struct_div_operator_dispatch() {
 // "compiler MVP cannot reassign a struct binding whole" fires.
 // ---------------------------------------------------------------
 
+// ---------------------------------------------------------------
+// OP-OVERLOAD-EXTEND Phase 2: ordering comparison (`<` `<=` `>`
+// `>=`). Frontend `struct_cmp_method_name` table + interpreter
+// `overload_method_name` extension + AOT `try_lower_struct_cmp`
+// (generalised from Phase B's `try_lower_struct_eq`).
+// ---------------------------------------------------------------
+
+const N_DECL: &str = r#"
+struct N { v: i64 }
+
+impl N {
+    fn lt(&self, other: &N) -> bool { self.v < other.v }
+    fn le(&self, other: &N) -> bool { self.v <= other.v }
+    fn gt(&self, other: &N) -> bool { self.v > other.v }
+    fn ge(&self, other: &N) -> bool { self.v >= other.v }
+    fn eq(&self, other: &N) -> bool { self.v == other.v }
+}
+"#;
+
+fn n_program(body: &str) -> String {
+    format!("{}\n{}", N_DECL, body)
+}
+
+#[test]
+fn struct_lt_operator_dispatch() {
+    let src = n_program(r#"
+        fn main() -> u64 {
+            val a: N = N { v: 1i64 }
+            val b: N = N { v: 2i64 }
+            assert(a < b, "a < b")
+            assert(!(b < a), "!(b < a)")
+            assert(!(a < a), "!(a < a)")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_le_operator_dispatch() {
+    let src = n_program(r#"
+        fn main() -> u64 {
+            val a: N = N { v: 1i64 }
+            val b: N = N { v: 2i64 }
+            assert(a <= b, "a <= b")
+            assert(a <= a, "a <= a (equal)")
+            assert(!(b <= a), "!(b <= a)")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_gt_operator_dispatch() {
+    let src = n_program(r#"
+        fn main() -> u64 {
+            val a: N = N { v: 1i64 }
+            val b: N = N { v: 2i64 }
+            assert(b > a, "b > a")
+            assert(!(a > b), "!(a > b)")
+            assert(!(a > a), "!(a > a)")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_ge_operator_dispatch() {
+    let src = n_program(r#"
+        fn main() -> u64 {
+            val a: N = N { v: 1i64 }
+            val b: N = N { v: 2i64 }
+            assert(b >= a, "b >= a")
+            assert(a >= a, "a >= a (equal)")
+            assert(!(a >= b), "!(a >= b)")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+// ---------------------------------------------------------------
+// OP-OVERLOAD-EXTEND Phase 3: bitwise (`&` `|` `^` `<<` `>>`).
+// Same shape as arithmetic — `Self` return, AOT routes through
+// `let_lowering.rs::Binary` arm.
+// ---------------------------------------------------------------
+
+const BITS_DECL: &str = r#"
+struct Bits { v: u64 }
+
+impl Bits {
+    fn bitand(&self, other: &Bits) -> Bits { Bits { v: self.v & other.v } }
+    fn bitor(&self, other: &Bits) -> Bits { Bits { v: self.v | other.v } }
+    fn bitxor(&self, other: &Bits) -> Bits { Bits { v: self.v ^ other.v } }
+    fn shl(&self, other: &Bits) -> Bits { Bits { v: self.v << other.v } }
+    fn shr(&self, other: &Bits) -> Bits { Bits { v: self.v >> other.v } }
+    fn eq(&self, other: &Bits) -> bool { self.v == other.v }
+}
+"#;
+
+fn bits_program(body: &str) -> String {
+    format!("{}\n{}", BITS_DECL, body)
+}
+
+#[test]
+fn struct_bitand_operator_dispatch() {
+    let src = bits_program(r#"
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 0xF0u64 }
+            val b: Bits = Bits { v: 0x0Fu64 }
+            val c: Bits = a & b
+            val expected: Bits = Bits { v: 0u64 }
+            assert(c == expected, "& dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_bitor_operator_dispatch() {
+    let src = bits_program(r#"
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 0xF0u64 }
+            val b: Bits = Bits { v: 0x0Fu64 }
+            val c: Bits = a | b
+            val expected: Bits = Bits { v: 0xFFu64 }
+            assert(c == expected, "| dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_bitxor_operator_dispatch() {
+    let src = bits_program(r#"
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 0xFFu64 }
+            val b: Bits = Bits { v: 0x0Fu64 }
+            val c: Bits = a ^ b
+            val expected: Bits = Bits { v: 0xF0u64 }
+            assert(c == expected, "^ dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_shl_operator_dispatch() {
+    let src = bits_program(r#"
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 1u64 }
+            val b: Bits = Bits { v: 4u64 }
+            val c: Bits = a << b
+            val expected: Bits = Bits { v: 16u64 }
+            assert(c == expected, "<< dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_shr_operator_dispatch() {
+    let src = bits_program(r#"
+        fn main() -> u64 {
+            val a: Bits = Bits { v: 0xF0u64 }
+            val b: Bits = Bits { v: 4u64 }
+            val c: Bits = a >> b
+            val expected: Bits = Bits { v: 0xFu64 }
+            assert(c == expected, ">> dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+// ---------------------------------------------------------------
+// OP-OVERLOAD-EXTEND Phase 4: unary operators (`-` neg, `~`
+// bitnot, `!` not). New dispatch path (binary と独立) — frontend
+// `visit_unary`, interpreter `evaluate_unary`, AOT
+// `let_lowering.rs` (`Self` return needs CallStruct).
+// ---------------------------------------------------------------
+
+const SIGN_DECL: &str = r#"
+struct Sign { v: i64 }
+
+impl Sign {
+    fn neg(&self) -> Sign { Sign { v: 0i64 - self.v } }
+    fn bitnot(&self) -> Sign { Sign { v: ~self.v } }
+    fn eq(&self, other: &Sign) -> bool { self.v == other.v }
+}
+"#;
+
+fn sign_program(body: &str) -> String {
+    format!("{}\n{}", SIGN_DECL, body)
+}
+
+#[test]
+fn struct_unary_neg_dispatch() {
+    let src = sign_program(r#"
+        fn main() -> u64 {
+            val a: Sign = Sign { v: 5i64 }
+            val n: Sign = -a
+            val expected: Sign = Sign { v: 0i64 - 5i64 }
+            assert(n == expected, "- dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_unary_bitnot_dispatch() {
+    let src = sign_program(r#"
+        fn main() -> u64 {
+            val a: Sign = Sign { v: 5i64 }
+            val n: Sign = ~a
+            val expected: Sign = Sign { v: ~5i64 }
+            assert(n == expected, "~ dispatch")
+            42u64
+        }
+    "#);
+    assert_program_result_u64(&src, 42);
+}
+
+#[test]
+fn struct_unary_logical_not_dispatch() {
+    // Bool-valued struct field with logical-not overload.
+    let src = r#"
+        struct Flag { v: bool }
+        impl Flag {
+            fn not(&self) -> Flag { Flag { v: !self.v } }
+            fn eq(&self, other: &Flag) -> bool { self.v == other.v }
+        }
+        fn main() -> u64 {
+            val t: Flag = Flag { v: true }
+            val f: Flag = !t
+            val expected: Flag = Flag { v: false }
+            assert(f == expected, "! dispatch")
+            42u64
+        }
+    "#;
+    assert_program_result_u64(src, 42);
+}
+
 #[test]
 fn struct_compound_add_assign_dispatch() {
     let src = vec3_program(r#"

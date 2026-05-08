@@ -892,6 +892,9 @@ pub struct StmtPool {
     pub impl_target_type_args: Vec<Option<Vec<TypeDecl>>>,
     pub enum_variants: Vec<Option<Vec<EnumVariantDef>>>,      // For enum declarations
     pub enum_generic_params: Vec<Option<Vec<DefaultSymbol>>>, // For enum generic parameters
+    /// LABEL: optional name for `@label: while/for` (None for unlabelled
+    /// loops). For `Break` / `Continue`, holds the optional target label.
+    pub loop_label: Vec<Option<DefaultSymbol>>,
     pub trait_methods: Vec<Option<Vec<TraitMethodSignature>>>, // For trait declarations
     /// ITER-PROTOCOL-TRAIT: generic params declared on a trait
     /// (`trait Foo<T, U, ...>`). `Some(Vec::new())` for non-generic
@@ -931,6 +934,7 @@ impl StmtPool {
             impl_target_type_args: Vec::new(),
             enum_variants: Vec::new(),
             enum_generic_params: Vec::new(),
+            loop_label: Vec::new(),
             trait_methods: Vec::new(),
             trait_generic_params: Vec::new(),
             impl_trait_type_args: Vec::new(),
@@ -957,6 +961,7 @@ impl StmtPool {
             impl_target_type_args: Vec::with_capacity(cap),
             enum_variants: Vec::with_capacity(cap),
             enum_generic_params: Vec::with_capacity(cap),
+            loop_label: Vec::with_capacity(cap),
             trait_methods: Vec::with_capacity(cap),
             trait_generic_params: Vec::with_capacity(cap),
             impl_trait_type_args: Vec::with_capacity(cap),
@@ -985,6 +990,7 @@ impl StmtPool {
             self.impl_target_type_args.resize(current_len + extend_count, None);
             self.enum_variants.resize(current_len + extend_count, None);
             self.enum_generic_params.resize(current_len + extend_count, None);
+            self.loop_label.resize(current_len + extend_count, None);
             self.trait_methods.resize(current_len + extend_count, None);
             self.trait_generic_params.resize(current_len + extend_count, None);
             self.impl_trait_type_args.resize(current_len + extend_count, None);
@@ -1016,21 +1022,25 @@ impl StmtPool {
                 self.stmt_types[index] = StmtType::Return;
                 self.expr_val[index] = value;
             }
-            Stmt::Break => {
+            Stmt::Break(label) => {
                 self.stmt_types[index] = StmtType::Break;
+                self.loop_label[index] = label;
             }
-            Stmt::Continue => {
+            Stmt::Continue(label) => {
                 self.stmt_types[index] = StmtType::Continue;
+                self.loop_label[index] = label;
             }
-            Stmt::For(var, start, end, block) => {
+            Stmt::For(label, var, start, end, block) => {
                 self.stmt_types[index] = StmtType::For;
+                self.loop_label[index] = label;
                 self.symbol_val[index] = Some(var);
                 self.start_expr[index] = Some(start);
                 self.end_expr[index] = Some(end);
                 self.block_expr[index] = Some(block);
             }
-            Stmt::While(cond, block) => {
+            Stmt::While(label, cond, block) => {
                 self.stmt_types[index] = StmtType::While;
+                self.loop_label[index] = label;
                 self.condition[index] = Some(cond);
                 self.block_expr[index] = Some(block);
             }
@@ -1111,6 +1121,7 @@ impl StmtPool {
         self.impl_target_type_args[index] = None;
         self.enum_variants[index] = None;
         self.enum_generic_params[index] = None;
+        self.loop_label[index] = None;
         self.trait_methods[index] = None;
 
         // Re-populate from the new statement (same shape as `add`).
@@ -1135,21 +1146,25 @@ impl StmtPool {
                 self.stmt_types[index] = StmtType::Return;
                 self.expr_val[index] = value;
             }
-            Stmt::Break => {
+            Stmt::Break(label) => {
                 self.stmt_types[index] = StmtType::Break;
+                self.loop_label[index] = label;
             }
-            Stmt::Continue => {
+            Stmt::Continue(label) => {
                 self.stmt_types[index] = StmtType::Continue;
+                self.loop_label[index] = label;
             }
-            Stmt::For(var, start, end, block) => {
+            Stmt::For(label, var, start, end, block) => {
                 self.stmt_types[index] = StmtType::For;
+                self.loop_label[index] = label;
                 self.symbol_val[index] = Some(var);
                 self.start_expr[index] = Some(start);
                 self.end_expr[index] = Some(end);
                 self.block_expr[index] = Some(block);
             }
-            Stmt::While(cond, block) => {
+            Stmt::While(label, cond, block) => {
                 self.stmt_types[index] = StmtType::While;
+                self.loop_label[index] = label;
                 self.condition[index] = Some(cond);
                 self.block_expr[index] = Some(block);
             }
@@ -1220,10 +1235,11 @@ impl StmtPool {
             StmtType::Return => {
                 Some(Stmt::Return(self.expr_val[index]))
             }
-            StmtType::Break => Some(Stmt::Break),
-            StmtType::Continue => Some(Stmt::Continue),
+            StmtType::Break => Some(Stmt::Break(self.loop_label[index])),
+            StmtType::Continue => Some(Stmt::Continue(self.loop_label[index])),
             StmtType::For => {
                 Some(Stmt::For(
+                    self.loop_label[index],
                     self.symbol_val[index]?,
                     self.start_expr[index]?,
                     self.end_expr[index]?,
@@ -1232,6 +1248,7 @@ impl StmtPool {
             }
             StmtType::While => {
                 Some(Stmt::While(
+                    self.loop_label[index],
                     self.condition[index]?,
                     self.block_expr[index]?,
                 ))

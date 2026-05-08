@@ -176,7 +176,11 @@ struct FunctionLower<'a> {
     /// (`AllocPop` + auto-drops) for any scopes opened *inside*
     /// the loop body but not yet closed, mirroring the
     /// linear-exit teardown.
-    loop_stack: Vec<(BlockId, BlockId, usize, usize)>,
+    /// LABEL: tuple `(label, continue, break, with_depth, drop_depth)` —
+    /// `label = Some(sym)` for `@sym: while/for`, `None` for unlabelled.
+    /// `Stmt::Break(target)` / `Continue(target)` walks rev-first matching
+    /// `target` (`None` means innermost).
+    loop_stack: Vec<(Option<DefaultSymbol>, BlockId, BlockId, usize, usize)>,
     /// #121 Phase B-rest Item 2: number of `with allocator = ...`
     /// scopes currently open at this point in the lowering walk.
     /// Incremented on entry to each `Expr::With` body, decremented
@@ -655,18 +659,18 @@ impl<'a> FunctionLower<'a> {
                     self.walk_closure_for_captures(e, bound, out, seen);
                 }
             }
-            Stmt::For(name, start, end, body) => {
+            Stmt::For(_label, name, start, end, body) => {
                 self.walk_closure_for_captures(start, bound, out, seen);
                 self.walk_closure_for_captures(end, bound, out, seen);
                 let mut inner = bound.clone();
                 inner.insert(*name);
                 self.walk_closure_for_captures(body, &mut inner, out, seen);
             }
-            Stmt::While(cond, body) => {
+            Stmt::While(_label, cond, body) => {
                 self.walk_closure_for_captures(cond, bound, out, seen);
                 self.walk_closure_for_captures(body, bound, out, seen);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StructDecl { .. }
             | Stmt::ImplBlock { .. }
             | Stmt::EnumDecl { .. }

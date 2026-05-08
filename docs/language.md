@@ -1043,8 +1043,47 @@ parser picks the desugaring based on what follows `EXPR`:
    writeback through `iter.next()` mutates the user's original
    binding correctly between iterations.
 
-`break` / `continue` apply to the innermost enclosing loop; labelled
-break is not implemented.
+By default, `break` / `continue` apply to the innermost enclosing
+loop. **Labelled loops** (LABEL feature) let you target an outer
+loop directly:
+
+- `@label: while cond { ... }` / `@label: for i in 0..N { ... }` /
+  `@label: for x in iter { ... }` — declare a name for the loop.
+  The label uses the `@` prefix (toylang reserves `@` only for
+  this) followed by an identifier and a `:`.
+- `break @label` — exit the named loop, possibly skipping over
+  one or more inner loops.
+- `continue @label` — skip to the next iteration of the named
+  loop (inner loops in between are abandoned).
+- Bare `break` / `continue` keep the innermost-loop semantics.
+
+```rust
+fn search() -> i64 {
+    @outer: for i in 0i64 to 10i64 {
+        for j in 0i64 to 10i64 {
+            if i * j == 42i64 {
+                return i * 100i64 + j
+            }
+            if j > 5i64 { continue @outer }   # skip rest of inner, advance i
+        }
+    }
+    -1i64
+}
+```
+
+The type checker validates that every `break` / `continue`
+references a label that's actually in scope (or is inside *some*
+loop, for the bare form). Forgetting to wrap a `break` in a loop
+or referencing a misspelled label both fail at type-check time
+rather than at runtime. Labels do not propagate across function
+boundaries — a closure / nested function cannot reference a
+label declared by its enclosing function.
+
+For `@label: for x in iter { ... }` (iterator-protocol form), the
+parser desugars to a synthetic `while true { match iter.next()
+{ Some(x) => body, None => break } }` and propagates the label
+to that synthetic while, so user-written `break @label` inside
+the body resolves to the correct loop.
 
 ### Match
 
@@ -2192,8 +2231,6 @@ These are real today; some appear in `todo.md` as planned work.
   prefer `val name = StructLiteral` (let inference handle it).
 - **Float literals require the `f64` suffix** — `1.5` is not a token;
   write `1.5f64`.
-- **No labelled break / continue** — only the innermost loop is
-  affected.
 - **`panic` / `assert` are always active by design** — there is no
   env-var to disable them in release builds. Stripping assertions in
   production is the failure mode D's `-release` flag is criticised

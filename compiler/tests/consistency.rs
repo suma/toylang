@@ -4242,3 +4242,44 @@ fn string_interp_chain_with_println_round_trip() {
     assert_consistent(src, "string_interp_chain_with_println");
 }
 
+// LABEL: 3-way pin for `@label: while/for` + `break @label` /
+// `continue @label`. Both round-trips exercise nested loops where
+// the label resolves through multiple loop_stack frames.
+
+#[test]
+fn labelled_break_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            var found: i64 = -1i64
+            @outer: for i in 0i64 to 5i64 {
+                for j in 0i64 to 5i64 {
+                    if i == 2i64 && j == 3i64 {
+                        found = i * 10i64 + j
+                        break @outer
+                    }
+                }
+            }
+            found
+        }
+    "#;
+    assert_consistent(src, "labelled_break");
+}
+
+#[test]
+fn labelled_continue_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            var hits: i64 = 0i64
+            @outer: for i in 0i64 to 4i64 {
+                for j in 0i64 to 4i64 {
+                    if j == 2i64 { continue @outer }
+                    hits = hits + 1i64
+                }
+                hits = hits + 100i64
+            }
+            hits
+        }
+    "#;
+    assert_consistent(src, "labelled_continue");
+}
+

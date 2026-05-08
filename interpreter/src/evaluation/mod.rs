@@ -118,8 +118,13 @@ pub enum EvaluationResult {
     /// without a value (Unit return); `Some(Value)` carries the
     /// returned value back through the call boundary.
     Return(Option<Value>),
-    Break,
-    Continue,
+    /// LABEL: optional target label for `break @label`. Loops match by
+    /// `Some(sym) == loop_label_sym`; bare `break` (`None`) exits the
+    /// innermost loop. The signal is forwarded up the block stack
+    /// until the matching loop consumes it.
+    Break(Option<DefaultSymbol>),
+    /// LABEL: same dispatch convention as `Break`.
+    Continue(Option<DefaultSymbol>),
 }
 
 pub struct EvaluationContext<'a> {
@@ -488,8 +493,8 @@ impl<'a> EvaluationContext<'a> {
         match result {
             EvaluationResult::Value(v) => Ok(v.into_rc()),
             EvaluationResult::Return(_)
-            | EvaluationResult::Break
-            | EvaluationResult::Continue
+            | EvaluationResult::Break(_)
+            | EvaluationResult::Continue(_)
             | EvaluationResult::None => Err(InterpreterError::InternalError(
                 "control-flow signal reached unwrap_value (use try_value! to extract values from positions where flow may occur)".to_string(),
             )),
@@ -526,8 +531,8 @@ macro_rules! try_value {
             Ok($crate::evaluation::EvaluationResult::Return(opt)) => {
                 return Ok($crate::evaluation::EvaluationResult::Return(opt));
             }
-            Ok(flow @ $crate::evaluation::EvaluationResult::Break) => return Ok(flow),
-            Ok(flow @ $crate::evaluation::EvaluationResult::Continue) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Break(_)) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Continue(_)) => return Ok(flow),
             Ok($crate::evaluation::EvaluationResult::None) => {
                 return Err($crate::error::InterpreterError::InternalError(
                     "unexpected None evaluation result".to_string(),
@@ -549,8 +554,8 @@ macro_rules! try_value_v {
             Ok($crate::evaluation::EvaluationResult::Return(opt)) => {
                 return Ok($crate::evaluation::EvaluationResult::Return(opt));
             }
-            Ok(flow @ $crate::evaluation::EvaluationResult::Break) => return Ok(flow),
-            Ok(flow @ $crate::evaluation::EvaluationResult::Continue) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Break(_)) => return Ok(flow),
+            Ok(flow @ $crate::evaluation::EvaluationResult::Continue(_)) => return Ok(flow),
             Ok($crate::evaluation::EvaluationResult::None) => {
                 return Err($crate::error::InterpreterError::InternalError(
                     "unexpected None evaluation result".to_string(),

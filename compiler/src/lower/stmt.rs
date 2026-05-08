@@ -270,11 +270,9 @@ impl<'a> FunctionLower<'a> {
                 }
                 Ok(None)
             }
-            Stmt::Break => {
-                let (_cont, brk, with_depth, drop_depth) = *self
-                    .loop_stack
-                    .last()
-                    .ok_or_else(|| "`break` outside of a loop".to_string())?;
+            Stmt::Break(label) => {
+                let (_lbl, _cont, brk, with_depth, drop_depth) = *self
+                    .resolve_loop_frame(label, "break")?;
                 // Phase 5 (汎用 RAII): emit auto-drops for any
                 // user-Drop bindings introduced inside the loop
                 // body before jumping to the exit block.
@@ -285,18 +283,16 @@ impl<'a> FunctionLower<'a> {
                 self.terminate(Terminator::Jump(brk));
                 Ok(None)
             }
-            Stmt::Continue => {
-                let (cont, _brk, with_depth, drop_depth) = *self
-                    .loop_stack
-                    .last()
-                    .ok_or_else(|| "`continue` outside of a loop".to_string())?;
+            Stmt::Continue(label) => {
+                let (_lbl, cont, _brk, with_depth, drop_depth) = *self
+                    .resolve_loop_frame(label, "continue")?;
                 self.emit_drop_scopes_to_depth(drop_depth)?;
                 self.emit_with_scope_cleanup(with_depth);
                 self.terminate(Terminator::Jump(cont));
                 Ok(None)
             }
-            Stmt::While(cond, body) => self.lower_while(&cond, &body),
-            Stmt::For(var_name, start, end, body) => self.lower_for(var_name, &start, &end, &body),
+            Stmt::While(label, cond, body) => self.lower_while(label, &cond, &body),
+            Stmt::For(label, var_name, start, end, body) => self.lower_for(label, var_name, &start, &end, &body),
             // Struct declarations are picked up by `collect_struct_defs`
             // before any function body is lowered; their presence inside
             // a function body (which the parser doesn't actually allow)

@@ -354,25 +354,45 @@ impl AstBuilder {
     }
 
     pub fn break_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Break);
+        self.break_stmt_with_label(None, location)
+    }
+
+    /// LABEL: emit `break` with an optional target label (`break @outer`).
+    pub fn break_stmt_with_label(&mut self, label: Option<DefaultSymbol>, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::Break(label));
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
 
     pub fn continue_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Continue);
+        self.continue_stmt_with_label(None, location)
+    }
+
+    /// LABEL: emit `continue` with an optional target label (`continue @outer`).
+    pub fn continue_stmt_with_label(&mut self, label: Option<DefaultSymbol>, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::Continue(label));
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
 
     pub fn for_stmt(&mut self, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::For(var, start, end, block));
+        self.for_stmt_with_label(None, var, start, end, block, location)
+    }
+
+    /// LABEL: emit `@label: for var in start..end { block }`.
+    pub fn for_stmt_with_label(&mut self, label: Option<DefaultSymbol>, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::For(label, var, start, end, block));
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }
 
     pub fn while_stmt(&mut self, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::While(cond, block));
+        self.while_stmt_with_label(None, cond, block, location)
+    }
+
+    /// LABEL: emit `@label: while cond { block }`.
+    pub fn while_stmt_with_label(&mut self, label: Option<DefaultSymbol>, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
+        let stmt_ref = self.stmt_pool.add(Stmt::While(label, cond, block));
         self.location_pool.add_stmt_location(location);
         stmt_ref
     }

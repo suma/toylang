@@ -11,7 +11,7 @@ use crate::type_checker::{
 impl<'a> TypeCheckerVisitor<'a> {
     /// Main entry point for statement type checking
     pub fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        let mut stmt_val = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break).clone();
+        let mut stmt_val = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break(None)).clone();
         
         let result = stmt_val.accept(self);
         
@@ -148,52 +148,81 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check for loops - internal implementation
-    pub fn visit_for_impl(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    pub fn visit_for_impl(&mut self, label: Option<DefaultSymbol>, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.push_context();
-        
+        self.context.loop_label_stack.push(label);
+
         let range_obj = self.core.expr_pool.get(&range)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
         let range_ty = range_obj.clone().accept(self)?;
         let ty = Some(range_ty);
-        
+
         self.process_val_type(init, &ty, &Some(*range))?;
-        
+
         let body_obj = self.core.expr_pool.get(&body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
         let res = body_obj.clone().accept(self);
-        
+
+        self.context.loop_label_stack.pop();
         self.pop_context();
         res
     }
 
     /// Type check while loops - internal implementation
-    pub fn visit_while_impl(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+    pub fn visit_while_impl(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first
         let cond_obj = self.core.expr_pool.get(&cond)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
         let cond_type = cond_obj.clone().accept(self)?;
-        
+
         // Verify condition is boolean
         if cond_type != TypeDecl::Bool {
             return Err(TypeCheckError::type_mismatch(TypeDecl::Bool, cond_type));
         }
-        
+
         // Create new scope for while body
         self.push_context();
+        self.context.loop_label_stack.push(label);
         let body_obj = self.core.expr_pool.get(&body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
         let res = body_obj.clone().accept(self);
+        self.context.loop_label_stack.pop();
         self.pop_context();
         res
     }
 
-    /// Type check break statements
-    pub fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check break statements. LABEL: validates that bare `break` is
+    /// inside a loop, and that `break @label` references an active label.
+    pub fn visit_break_impl(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.validate_loop_label("break", label)?;
         Ok(TypeDecl::Unit)
     }
 
-    /// Type check continue statements
-    pub fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError> {
+    /// Type check continue statements. Same validation as `break`.
+    pub fn visit_continue_impl(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.validate_loop_label("continue", label)?;
         Ok(TypeDecl::Unit)
+    }
+
+    fn validate_loop_label(&self, kw: &str, label: Option<DefaultSymbol>) -> Result<(), TypeCheckError> {
+        match label {
+            None => {
+                if self.context.loop_label_stack.is_empty() {
+                    Err(TypeCheckError::generic_error(&format!("`{kw}` outside of a loop")))
+                } else {
+                    Ok(())
+                }
+            }
+            Some(sym) => {
+                if self.context.loop_label_stack.iter().rev().any(|l| *l == Some(sym)) {
+                    Ok(())
+                } else {
+                    let name = self.core.string_interner.resolve(sym).unwrap_or("?");
+                    Err(TypeCheckError::generic_error(&format!(
+                        "`{kw}` references undefined loop label `@{name}`"
+                    )))
+                }
+            }
+        }
     }
 }

@@ -88,6 +88,12 @@ pub struct TypeCheckContext {
     /// collision-free. The `ExprPool` is append-only so indices stay
     /// stable across the type-check pass.
     pub closure_captures: HashMap<crate::ast::ExprRef, Vec<(DefaultSymbol, TypeDecl)>>,
+    /// LABEL: stack of currently-active loop labels (innermost on top).
+    /// `Some(sym)` for `@label: while`, `None` for an unlabelled loop.
+    /// `visit_break_impl` / `visit_continue_impl` walk this stack
+    /// (rev-iter for labelled targets) to validate that a label exists
+    /// in scope and that bare `break` / `continue` is inside *some* loop.
+    pub loop_label_stack: Vec<Option<DefaultSymbol>>,
 }
 
 impl TypeCheckContext {
@@ -110,6 +116,7 @@ impl TypeCheckContext {
             pending_trait_type_args: Vec::new(),
             struct_trait_impls: HashMap::new(),
             closure_captures: HashMap::new(),
+            loop_label_stack: Vec::new(),
         }
     }
 

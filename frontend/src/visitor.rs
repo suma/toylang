@@ -89,10 +89,10 @@ pub trait AstVisitor {
     fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_for(&mut self, init: DefaultSymbol, cond: &ExprRef, step: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_break(&mut self, ) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_for(&mut self, label: Option<DefaultSymbol>, init: DefaultSymbol, cond: &ExprRef, step: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_break(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
+    fn visit_continue(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     /// ITER-PROTOCOL-TRAIT: extended visit method that also receives

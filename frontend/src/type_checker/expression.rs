@@ -1395,18 +1395,18 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.collect_closure_free_vars(*e, bound, out, seen);
                 }
             }
-            Stmt::For(name, start, end, body) => {
+            Stmt::For(_label, name, start, end, body) => {
                 self.collect_closure_free_vars(*start, bound, out, seen);
                 self.collect_closure_free_vars(*end, bound, out, seen);
                 let mut inner = bound.clone();
                 inner.insert(*name);
                 self.collect_closure_free_vars(*body, &inner, out, seen);
             }
-            Stmt::While(cond, body) => {
+            Stmt::While(_label, cond, body) => {
                 self.collect_closure_free_vars(*cond, bound, out, seen);
                 self.collect_closure_free_vars(*body, bound, out, seen);
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue(_) => {}
             Stmt::StructDecl { .. }
             | Stmt::ImplBlock { .. }
             | Stmt::EnumDecl { .. }

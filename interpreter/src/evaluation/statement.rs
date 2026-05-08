@@ -48,6 +48,7 @@ fn apply_annotation_type_args(value: Value, annotation: Option<&TypeDecl>) -> Va
 impl EvaluationContext<'_> {
     pub(super) fn execute_for_loop<T>(
         &mut self,
+        loop_label: Option<DefaultSymbol>,
         identifier: DefaultSymbol,
         start: T,
         end: T,
@@ -78,10 +79,22 @@ impl EvaluationContext<'_> {
             match res_block {
                 Ok(EvaluationResult::Value(_)) => (),
                 Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                Ok(EvaluationResult::Break) => break,
-                Ok(EvaluationResult::Continue) => {
-                    current = current + one;
-                    continue;
+                // LABEL: bare `break` / `break @self_label` consume here,
+                // foreign labels propagate to the enclosing loop.
+                Ok(EvaluationResult::Break(target)) => {
+                    if target.is_none() || target == loop_label {
+                        break;
+                    } else {
+                        return Ok(EvaluationResult::Break(target));
+                    }
+                }
+                Ok(EvaluationResult::Continue(target)) => {
+                    if target.is_none() || target == loop_label {
+                        current = current + one;
+                        continue;
+                    } else {
+                        return Ok(EvaluationResult::Continue(target));
+                    }
                 }
                 Ok(EvaluationResult::None) => (),
                 Err(e) => return Err(e),
@@ -134,27 +147,27 @@ impl EvaluationContext<'_> {
                     // which we must surface to the enclosing function/loop.
                     match self.handle_val_declaration(name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
-                                | EvaluationResult::Break
-                                | EvaluationResult::Continue) => return Ok(flow),
+                                | EvaluationResult::Break(_)
+                                | EvaluationResult::Continue(_)) => return Ok(flow),
                         _ => last = None,
                     }
                 }
                 Stmt::Var(name, annotation, e) => {
                     match self.handle_var_declaration(name, annotation.as_ref(), &e)? {
                         flow @ (EvaluationResult::Return(_)
-                                | EvaluationResult::Break
-                                | EvaluationResult::Continue) => return Ok(flow),
+                                | EvaluationResult::Break(_)
+                                | EvaluationResult::Continue(_)) => return Ok(flow),
                         _ => last = None,
                     }
                 }
                 Stmt::Return(e) => {
                     return self.handle_return_statement(&e);
                 }
-                Stmt::Break => {
-                    return Ok(EvaluationResult::Break);
+                Stmt::Break(label) => {
+                    return Ok(EvaluationResult::Break(label));
                 }
-                Stmt::Continue => {
-                    return Ok(EvaluationResult::Continue);
+                Stmt::Continue(label) => {
+                    return Ok(EvaluationResult::Continue(label));
                 }
                 Stmt::StructDecl { .. } => {
                     // Struct declarations are handled at compile time
@@ -179,7 +192,7 @@ impl EvaluationContext<'_> {
                     // runtime effect.
                     last = None;
                 }
-                Stmt::While(cond, body) => {
+                Stmt::While(label, cond, body) => {
                     // DICT-RETURN-WHILE fix: the while-loop body
                     // may produce a `Return` (an explicit
                     // `return v` inside the loop). Storing the
@@ -190,20 +203,20 @@ impl EvaluationContext<'_> {
                     // immediately below: surface Return / Break
                     // / Continue to the enclosing block instead
                     // of treating them as a value.
-                    let result = self.handle_while_loop(&cond, &body)?;
+                    let result = self.handle_while_loop(label, &cond, &body)?;
                     match result {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                        EvaluationResult::Break(t) => return Ok(EvaluationResult::Break(t)),
+                        EvaluationResult::Continue(t) => return Ok(EvaluationResult::Continue(t)),
                         _ => last = Some(EvaluationResult::Value((Object::Unit).into())),
                     }
                 }
-                Stmt::For(identifier, start, end, block) => {
-                    let result = self.handle_for_loop(identifier, &start, &end, &block)?;
+                Stmt::For(label, identifier, start, end, block) => {
+                    let result = self.handle_for_loop(label, identifier, &start, &end, &block)?;
                     match result {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                        EvaluationResult::Break(t) => return Ok(EvaluationResult::Break(t)),
+                        EvaluationResult::Continue(t) => return Ok(EvaluationResult::Continue(t)),
                         _ => last = Some(EvaluationResult::Value((Object::Unit).into())),
                     }
                 }
@@ -211,8 +224,8 @@ impl EvaluationContext<'_> {
                     let result = self.handle_expression_statement(&expr)?;
                     match result {
                         EvaluationResult::Return(v) => return Ok(EvaluationResult::Return(v)),
-                        EvaluationResult::Break => return Ok(EvaluationResult::Break),
-                        EvaluationResult::Continue => return Ok(EvaluationResult::Continue),
+                        EvaluationResult::Break(t) => return Ok(EvaluationResult::Break(t)),
+                        EvaluationResult::Continue(t) => return Ok(EvaluationResult::Continue(t)),
                         other => last = Some(other),
                     }
                 }
@@ -284,14 +297,16 @@ impl EvaluationContext<'_> {
         match self.evaluate(expr.as_ref().ok_or_else(|| InterpreterError::InternalError("Missing expression in return".to_string()))?)? {
             EvaluationResult::Value(v) => Ok(EvaluationResult::Return(Some(v))),
             EvaluationResult::Return(v) => Ok(EvaluationResult::Return(v)),
-            EvaluationResult::Break => Err(InterpreterError::InternalError("break cannot be used in here".to_string())),
-            EvaluationResult::Continue => Err(InterpreterError::InternalError("continue cannot be used in here".to_string())),
+            EvaluationResult::Break(_) => Err(InterpreterError::InternalError("break cannot be used in here".to_string())),
+            EvaluationResult::Continue(_) => Err(InterpreterError::InternalError("continue cannot be used in here".to_string())),
             EvaluationResult::None => Err(InterpreterError::InternalError("unexpected None".to_string())),
         }
     }
 
-    /// Handles while loop execution
-    fn handle_while_loop(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+    /// Handles while loop execution. LABEL: `loop_label` (`Some(sym)` for
+    /// `@sym: while ...`) decides whether `Break(target)` / `Continue(target)`
+    /// is consumed locally or propagated to an enclosing loop.
+    fn handle_while_loop(&mut self, loop_label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         loop {
             let cond_result = self.evaluate(cond);
@@ -312,8 +327,20 @@ impl EvaluationContext<'_> {
                 match res {
                     Ok(EvaluationResult::Value(_)) => (),
                     Ok(EvaluationResult::Return(v)) => return Ok(EvaluationResult::Return(v)),
-                    Ok(EvaluationResult::Break) => break,
-                    Ok(EvaluationResult::Continue) => continue,
+                    Ok(EvaluationResult::Break(target)) => {
+                        if target.is_none() || target == loop_label {
+                            break;
+                        } else {
+                            return Ok(EvaluationResult::Break(target));
+                        }
+                    }
+                    Ok(EvaluationResult::Continue(target)) => {
+                        if target.is_none() || target == loop_label {
+                            continue;
+                        } else {
+                            return Ok(EvaluationResult::Continue(target));
+                        }
+                    }
                     Ok(EvaluationResult::None) => (),
                     Err(e) => return Err(e),
                 }
@@ -325,7 +352,7 @@ impl EvaluationContext<'_> {
     }
 
     /// Handles for loop execution
-    fn handle_for_loop(&mut self, identifier: DefaultSymbol, start: &ExprRef, end: &ExprRef, block: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+    fn handle_for_loop(&mut self, loop_label: Option<DefaultSymbol>, identifier: DefaultSymbol, start: &ExprRef, end: &ExprRef, block: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         let start = self.evaluate(start);
         let start_v = try_value_v!(start);
@@ -349,12 +376,12 @@ impl EvaluationContext<'_> {
                 TypeDecl::UInt64 => {
                     let start_val = start_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
                     let end_val = end_v.try_unwrap_uint64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(identifier, start_val, end_val, &statements, Object::UInt64)
+                    self.execute_for_loop(loop_label, identifier, start_val, end_val, &statements, Object::UInt64)
                 }
                 TypeDecl::Int64 => {
                     let start_val = start_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
                     let end_val = end_v.try_unwrap_int64().map_err(InterpreterError::ObjectError)?;
-                    self.execute_for_loop(identifier, start_val, end_val, &statements, Object::Int64)
+                    self.execute_for_loop(loop_label, identifier, start_val, end_val, &statements, Object::Int64)
                 }
                 _ => {
                     Err(InterpreterError::TypeError {

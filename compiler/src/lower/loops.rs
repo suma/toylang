@@ -14,11 +14,12 @@ use string_interner::DefaultSymbol;
 
 use super::bindings::Binding;
 use super::FunctionLower;
-use crate::ir::{BinOp, Const, InstKind, Terminator, Type, ValueId};
+use crate::ir::{BinOp, BlockId, Const, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
     pub(super) fn lower_while(
         &mut self,
+        label: Option<DefaultSymbol>,
         cond: &ExprRef,
         body: &ExprRef,
     ) -> Result<Option<ValueId>, String> {
@@ -40,7 +41,7 @@ impl<'a> FunctionLower<'a> {
         // loop entry so `break` / `continue` inside the loop body
         // emit `AllocPop` only for `with` scopes opened *inside*
         // the loop, not the outer ones.
-        self.loop_stack.push((header, exit, self.with_scope_depth, self.drop_scopes.len()));
+        self.loop_stack.push((label, header, exit, self.with_scope_depth, self.drop_scopes.len()));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {
@@ -50,6 +51,27 @@ impl<'a> FunctionLower<'a> {
         Ok(None)
     }
 
+    /// LABEL: walk loop_stack rev-first matching `label`. `None` returns
+    /// innermost. Type checker should already guarantee resolvability.
+    pub(super) fn resolve_loop_frame(
+        &self,
+        label: Option<DefaultSymbol>,
+        kw: &str,
+    ) -> Result<&(Option<DefaultSymbol>, BlockId, BlockId, usize, usize), String> {
+        match label {
+            None => self
+                .loop_stack
+                .last()
+                .ok_or_else(|| format!("`{kw}` outside of a loop")),
+            Some(sym) => self
+                .loop_stack
+                .iter()
+                .rev()
+                .find(|f| f.0 == Some(sym))
+                .ok_or_else(|| format!("`{kw}` references undefined loop label")),
+        }
+    }
+
 
     /// Evaluate a call's argument list (`Expr::ExprList(items)`) into
     /// a vector of `ValueId`s. Each argument is lowered through the
@@ -57,6 +79,7 @@ impl<'a> FunctionLower<'a> {
     /// expanded into per-field values matching the callee signature.
     pub(super) fn lower_for(
         &mut self,
+        label: Option<DefaultSymbol>,
         var_name: DefaultSymbol,
         start: &ExprRef,
         end: &ExprRef,
@@ -81,6 +104,11 @@ impl<'a> FunctionLower<'a> {
 
         let header = self.fresh_block();
         let body_blk = self.fresh_block();
+        // LABEL/CONTINUE-FIX: dedicated step block so `continue` (bare or
+        // labelled) jumps to the increment, not the header — otherwise
+        // `continue` would re-test the same `i` and loop forever.
+        // Linear body fall-through still goes through `step` too.
+        let step = self.fresh_block();
         let exit = self.fresh_block();
         self.terminate(Terminator::Jump(header));
 
@@ -108,41 +136,47 @@ impl<'a> FunctionLower<'a> {
             else_blk: exit,
         });
 
-        // Body, then increment + jump back.
+        // Body, then jump to step block (which increments + jumps to header).
         self.switch_to(body_blk);
         // #121 Phase B-rest Item 2: snapshot the with-scope depth at
         // loop entry so `break` / `continue` inside the loop body
         // emit `AllocPop` only for `with` scopes opened *inside*
         // the loop, not the outer ones.
-        self.loop_stack.push((header, exit, self.with_scope_depth, self.drop_scopes.len()));
+        // Continue target = step (increments before jumping back).
+        self.loop_stack.push((label, step, exit, self.with_scope_depth, self.drop_scopes.len()));
         let _ = self.lower_expr(body)?;
         self.loop_stack.pop();
         if !self.is_unreachable() {
-            let cur = self
-                .emit(InstKind::LoadLocal(local), Some(scalar))
-                .unwrap();
-            let one = self
-                .emit(
-                    InstKind::Const(match scalar {
-                        Type::I64 => Const::I64(1),
-                        _ => Const::U64(1),
-                    }),
-                    Some(scalar),
-                )
-                .unwrap();
-            let next = self
-                .emit(
-                    InstKind::BinOp {
-                        op: BinOp::Add,
-                        lhs: cur,
-                        rhs: one,
-                    },
-                    Some(scalar),
-                )
-                .unwrap();
-            self.emit(InstKind::StoreLocal { dst: local, src: next }, None);
-            self.terminate(Terminator::Jump(header));
+            self.terminate(Terminator::Jump(step));
         }
+
+        // Step block: increment local, jump back to header.
+        self.switch_to(step);
+        let cur = self
+            .emit(InstKind::LoadLocal(local), Some(scalar))
+            .unwrap();
+        let one = self
+            .emit(
+                InstKind::Const(match scalar {
+                    Type::I64 => Const::I64(1),
+                    _ => Const::U64(1),
+                }),
+                Some(scalar),
+            )
+            .unwrap();
+        let next = self
+            .emit(
+                InstKind::BinOp {
+                    op: BinOp::Add,
+                    lhs: cur,
+                    rhs: one,
+                },
+                Some(scalar),
+            )
+            .unwrap();
+        self.emit(InstKind::StoreLocal { dst: local, src: next }, None);
+        self.terminate(Terminator::Jump(header));
+
         self.switch_to(exit);
         Ok(None)
     }

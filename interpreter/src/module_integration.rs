@@ -552,8 +552,8 @@ impl<'a> AstIntegrationContext<'a> {
                 Ok(Stmt::Return(Some(new_expr_ref)))
             }
             Stmt::Return(None) => Ok(Stmt::Return(None)),
-            Stmt::Break => Ok(Stmt::Break),
-            Stmt::Continue => Ok(Stmt::Continue),
+            Stmt::Break(label) => Ok(Stmt::Break(self.remap_optional_label(*label)?)),
+            Stmt::Continue(label) => Ok(Stmt::Continue(self.remap_optional_label(*label)?)),
             Stmt::Var(name, typ, value) => {
                 let new_name = self.remap_symbol(*name)?;
                 let new_typ = match typ {
@@ -589,7 +589,8 @@ impl<'a> AstIntegrationContext<'a> {
                     .ok_or("Cannot find Val value expression mapping")?.clone();
                 Ok(Stmt::Val(new_name, new_typ, new_value))
             }
-            Stmt::For(variable, start, end, body) => {
+            Stmt::For(label, variable, start, end, body) => {
+                let new_label = self.remap_optional_label(*label)?;
                 let new_variable = self.remap_symbol(*variable)?;
                 let new_start = self.expr_mapping.get(&start.0)
                     .ok_or("Cannot find For start expression mapping")?.clone();
@@ -597,14 +598,15 @@ impl<'a> AstIntegrationContext<'a> {
                     .ok_or("Cannot find For end expression mapping")?.clone();
                 let new_body = self.expr_mapping.get(&body.0)
                     .ok_or("Cannot find For body expression mapping")?.clone();
-                Ok(Stmt::For(new_variable, new_start, new_end, new_body))
+                Ok(Stmt::For(new_label, new_variable, new_start, new_end, new_body))
             }
-            Stmt::While(condition, body) => {
+            Stmt::While(label, condition, body) => {
+                let new_label = self.remap_optional_label(*label)?;
                 let new_condition = self.expr_mapping.get(&condition.0)
                     .ok_or("Cannot find While condition expression mapping")?.clone();
                 let new_body = self.expr_mapping.get(&body.0)
                     .ok_or("Cannot find While body expression mapping")?.clone();
-                Ok(Stmt::While(new_condition, new_body))
+                Ok(Stmt::While(new_label, new_condition, new_body))
             }
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
                 // Every DefaultSymbol carried here was minted by the
@@ -843,6 +845,14 @@ impl<'a> AstIntegrationContext<'a> {
         Ok(self.main_string_interner.get_or_intern(symbol_str))
     }
 
+    /// LABEL: remap an optional loop label symbol; preserves `None`.
+    fn remap_optional_label(&mut self, label: Option<DefaultSymbol>) -> Result<Option<DefaultSymbol>, String> {
+        match label {
+            Some(s) => Ok(Some(self.remap_symbol(s)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Remap a function with all its symbols and AST references
     fn remap_function(&mut self, function: &Function) -> Result<Function, String> {
         let new_name = self.remap_symbol(function.name)?;
@@ -1016,7 +1026,7 @@ impl<'a> AstIntegrationContext<'a> {
 
         // Create placeholder mappings for all statements
         for index in 0..self.module_program.statement.len() {
-            let placeholder_stmt = Stmt::Break;
+            let placeholder_stmt = Stmt::Break(None);
             let main_stmt_ref = self.main_program.statement.add(placeholder_stmt);
             self.stmt_mapping.insert(index as u32, main_stmt_ref);
         }

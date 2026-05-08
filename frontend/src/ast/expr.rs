@@ -50,10 +50,15 @@ pub enum Stmt {
     Val(DefaultSymbol, Option<TypeDecl>, ExprRef),
     Var(DefaultSymbol, Option<TypeDecl>, Option<ExprRef>),
     Return(Option<ExprRef>),
-    Break,
-    Continue,
-    For(DefaultSymbol, ExprRef, ExprRef, ExprRef), // str, start, end, block
-    While(ExprRef, ExprRef), // cond, block
+    /// Optional `Some(label_sym)` for `break @label` (LABEL feature),
+    /// `None` for plain `break` which targets the innermost loop.
+    Break(Option<DefaultSymbol>),
+    /// Optional `Some(label_sym)` for `continue @label`.
+    Continue(Option<DefaultSymbol>),
+    /// Optional leading label for `@label: for ...` (LABEL feature).
+    For(Option<DefaultSymbol>, DefaultSymbol, ExprRef, ExprRef, ExprRef), // label?, var, start, end, block
+    /// Optional leading label for `@label: while ...`.
+    While(Option<DefaultSymbol>, ExprRef, ExprRef), // label?, cond, block
     StructDecl {
         name: DefaultSymbol,
         generic_params: Vec<DefaultSymbol>,  // Generic type parameters like <T>

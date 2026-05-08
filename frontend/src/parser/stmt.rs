@@ -39,15 +39,23 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
         Some(Kind::Val) | Some(Kind::Var) => {
             parse_var_def(parser)
         }
+        // LABEL: `@label: while/for ...` — consume `@`, the label name,
+        // and the `:`, then dispatch on the loop keyword. Bare `@`
+        // (without a following loop) is a parser error.
+        Some(Kind::At) => {
+            parse_labelled_loop(parser)
+        }
         Some(Kind::Break) => {
             let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.break_stmt(Some(location)))
+            let label = parse_optional_loop_label(parser)?;
+            Ok(parser.ast_builder.break_stmt_with_label(label, Some(location)))
         }
         Some(Kind::Continue) => {
             let location = parser.current_source_location();
             parser.next();
-            Ok(parser.ast_builder.continue_stmt(Some(location)))
+            let label = parse_optional_loop_label(parser)?;
+            Ok(parser.ast_builder.continue_stmt_with_label(label, Some(location)))
         }
         Some(Kind::Return) => {
             parser.next();
@@ -68,66 +76,126 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
                 }
             }
         }
-        Some(Kind::For) => {
+        Some(Kind::For) => parse_for_with_label(parser, None),
+        Some(Kind::While) => parse_while_with_label(parser, None),
+        _ => parser.parse_expr(),
+    }
+}
+
+/// LABEL: parse `@label: while/for ...`. The leading `@` is at
+/// `parser.peek()` on entry. Errors if the token after the label is
+/// not a loop keyword.
+fn parse_labelled_loop(parser: &mut Parser) -> ParserResult<StmtRef> {
+    parser.expect_err(&Kind::At)?;
+    let label_sym = match parser.peek().cloned() {
+        Some(Kind::Identifier(s)) => {
+            let sym = parser.string_interner.get_or_intern(s);
             parser.next();
-            let current_token = parser.peek().cloned();
-            match current_token {
-                Some(Kind::Identifier(s)) => {
-                    let ident = parser.string_interner.get_or_intern(s);
+            sym
+        }
+        other => {
+            let location = parser.current_source_location();
+            return Err(ParserError::generic_error(
+                location,
+                format!("expected loop label identifier after `@`, got {:?}", other),
+            ));
+        }
+    };
+    parser.expect_err(&Kind::Colon)?;
+    match parser.peek() {
+        Some(Kind::While) => parse_while_with_label(parser, Some(label_sym)),
+        Some(Kind::For) => parse_for_with_label(parser, Some(label_sym)),
+        other => {
+            let other_clone = other.cloned();
+            let location = parser.current_source_location();
+            Err(ParserError::generic_error(
+                location,
+                format!("`@label:` must be followed by `while` or `for`, got {:?}", other_clone),
+            ))
+        }
+    }
+}
+
+/// LABEL: peek for `@<ident>` after `break` / `continue`. Returns
+/// the interned label symbol or `None` for the unlabelled form.
+fn parse_optional_loop_label(parser: &mut Parser) -> ParserResult<Option<DefaultSymbol>> {
+    if !matches!(parser.peek(), Some(Kind::At)) {
+        return Ok(None);
+    }
+    parser.next(); // consume `@`
+    match parser.peek().cloned() {
+        Some(Kind::Identifier(s)) => {
+            let sym = parser.string_interner.get_or_intern(s);
+            parser.next();
+            Ok(Some(sym))
+        }
+        other => {
+            let location = parser.current_source_location();
+            Err(ParserError::generic_error(
+                location,
+                format!("expected loop label identifier after `@`, got {:?}", other),
+            ))
+        }
+    }
+}
+
+fn parse_while_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+    parser.expect_err(&Kind::While)?;
+    parser.push_context(crate::parser::core::ParseContext::Condition);
+    let cond = super::expr::parse_logical_expr(parser)?;
+    parser.pop_context();
+
+    let block = super::expr::parse_block(parser)?;
+    let location = parser.current_source_location();
+    Ok(parser.ast_builder.while_stmt_with_label(label, cond, block, Some(location)))
+}
+
+fn parse_for_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+    parser.expect_err(&Kind::For)?;
+    let current_token = parser.peek().cloned();
+    match current_token {
+        Some(Kind::Identifier(s)) => {
+            let ident = parser.string_interner.get_or_intern(s);
+            parser.next();
+            parser.expect_err(&Kind::In)?;
+            // Forbid struct literals in the iterable expression so
+            // `for x in MyIter { ... }` parses the `{` as the body
+            // block, not a `MyIter {}` struct literal — same trick
+            // as `if` / `while` conditions.
+            parser.push_context(crate::parser::core::ParseContext::Condition);
+            let start = super::expr::parse_logical_expr(parser)?;
+            parser.pop_context();
+            // Three-way fork on the next token:
+            //   `to` / `..`  → integer range fast path (Stmt::For)
+            //   `{`          → iterator-protocol form (desugar)
+            //   else         → error
+            match parser.peek() {
+                Some(Kind::To) | Some(Kind::DotDot) => {
                     parser.next();
-                    parser.expect_err(&Kind::In)?;
-                    // Forbid struct literals in the iterable expression so
-                    // `for x in MyIter { ... }` parses the `{` as the body
-                    // block, not a `MyIter {}` struct literal — same trick
-                    // as `if` / `while` conditions.
-                    parser.push_context(crate::parser::core::ParseContext::Condition);
-                    let start = super::expr::parse_logical_expr(parser)?;
-                    parser.pop_context();
-                    // Three-way fork on the next token:
-                    //   `to` / `..`  → integer range fast path (Stmt::For)
-                    //   `{`          → iterator-protocol form (desugar)
-                    //   else         → error
-                    match parser.peek() {
-                        Some(Kind::To) | Some(Kind::DotDot) => {
-                            parser.next();
-                            let end = super::expr::parse_logical_expr(parser)?;
-                            let block = super::expr::parse_block(parser)?;
-                            let location = parser.current_source_location();
-                            Ok(parser.ast_builder.for_stmt(ident, start, end, block, Some(location)))
-                        }
-                        Some(Kind::BraceOpen) => {
-                            let body = super::expr::parse_block(parser)?;
-                            let location = parser.current_source_location();
-                            Ok(desugar_for_in_iterator(parser, ident, start, body, location))
-                        }
-                        other => {
-                            let other_str = format!("{:?}", other);
-                            let location = parser.current_source_location();
-                            Err(ParserError::generic_error(
-                                location,
-                                format!("expected `to`, `..`, or `{{` in for header, got {}", other_str),
-                            ))
-                        }
-                    }
-                }
-                x => {
+                    let end = super::expr::parse_logical_expr(parser)?;
+                    let block = super::expr::parse_block(parser)?;
                     let location = parser.current_source_location();
-                    Err(ParserError::generic_error(location, format!("parse_stmt for: expected identifier but {:?}", x)))
-                },
+                    Ok(parser.ast_builder.for_stmt_with_label(label, ident, start, end, block, Some(location)))
+                }
+                Some(Kind::BraceOpen) => {
+                    let body = super::expr::parse_block(parser)?;
+                    let location = parser.current_source_location();
+                    Ok(desugar_for_in_iterator(parser, label, ident, start, body, location))
+                }
+                other => {
+                    let other_str = format!("{:?}", other);
+                    let location = parser.current_source_location();
+                    Err(ParserError::generic_error(
+                        location,
+                        format!("expected `to`, `..`, or `{{` in for header, got {}", other_str),
+                    ))
+                }
             }
         }
-        Some(Kind::While) => {
-            parser.next();
-            // Push condition context to prevent struct literals in while conditions
-            parser.push_context(crate::parser::core::ParseContext::Condition);
-            let cond = super::expr::parse_logical_expr(parser)?;
-            parser.pop_context();
-            
-            let block = super::expr::parse_block(parser)?;
+        x => {
             let location = parser.current_source_location();
-            Ok(parser.ast_builder.while_stmt(cond, block, Some(location)))
-        }
-        _ => parser.parse_expr(),
+            Err(ParserError::generic_error(location, format!("parse_stmt for: expected identifier but {:?}", x)))
+        },
     }
 }
 
@@ -152,6 +220,7 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
 /// `for x in EXPR { body }` shape (no `..` / `to`) lands here.
 fn desugar_for_in_iterator(
     parser: &mut Parser,
+    outer_label: Option<DefaultSymbol>,
     loop_var: DefaultSymbol,
     iter_expr: ExprRef,
     body: ExprRef,
@@ -252,9 +321,12 @@ fn desugar_for_in_iterator(
     let while_body = parser
         .ast_builder
         .block_expr(vec![match_stmt], Some(location.clone()));
+    // LABEL: propagate `@outer:` from `@outer: for x in iter { ... }` to
+    // the synthetic `while true { match ... }` so user-written
+    // `break @outer` inside the body resolves to this loop.
     let while_stmt = parser
         .ast_builder
-        .while_stmt(true_expr, while_body, Some(location.clone()));
+        .while_stmt_with_label(outer_label, true_expr, while_body, Some(location.clone()));
 
     // Outer block: { [optional var __iter = ...;] while ... { ... } }
     let mut outer_stmts = prelude_stmts;

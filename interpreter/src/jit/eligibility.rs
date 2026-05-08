@@ -2827,12 +2827,12 @@ fn walk_stmt_for_ptr_read(program: &Program, stmt_ref: &StmtRef, found: &mut boo
         Stmt::Val(_, _, e) => walk_expr_for_ptr_read(program, &e, found),
         Stmt::Var(_, _, Some(e)) => walk_expr_for_ptr_read(program, &e, found),
         Stmt::Return(Some(e)) => walk_expr_for_ptr_read(program, &e, found),
-        Stmt::For(_, s, e, body) => {
+        Stmt::For(_, _, s, e, body) => {
             walk_expr_for_ptr_read(program, &s, found);
             walk_expr_for_ptr_read(program, &e, found);
             walk_expr_for_ptr_read(program, &body, found);
         }
-        Stmt::While(c, body) => {
+        Stmt::While(_, c, body) => {
             walk_expr_for_ptr_read(program, &c, found);
             walk_expr_for_ptr_read(program, &body, found);
         }
@@ -3179,8 +3179,8 @@ fn check_stmt(
                 true
             }
         }
-        Stmt::Break | Stmt::Continue => true,
-        Stmt::For(var, start, end, block) => {
+        Stmt::Break(_) | Stmt::Continue(_) => true,
+        Stmt::For(_label, var, start, end, block) => {
             let start_ty = match check_expr(program, &start, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,
@@ -3208,7 +3208,7 @@ fn check_stmt(
             }
             body_ok
         }
-        Stmt::While(cond, block) => {
+        Stmt::While(_label, cond, block) => {
             let cond_ty = match check_expr(program, &cond, locals, compound_locals, substitutions, struct_layouts, callees, ptr_read_hints, reject_reason) {
                 Some(t) => t,
                 None => return false,

@@ -92,6 +92,7 @@ pub enum Kind {
     Arrow,       // ->
     FatArrow,    // =>
     Exclamation, // !
+    At,          // @ — labelled-loop prefix (`@outer: while ...`, `break @outer`)
 
     Equal,
 

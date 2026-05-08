@@ -70,10 +70,10 @@ impl Acceptable for Stmt {
             Stmt::Var(name, type_decl, expr) => visitor.visit_var(*name, type_decl, expr),
             Stmt::Val(name, type_decl, expr) => visitor.visit_val(*name, type_decl, expr),
             Stmt::Return(expr) => visitor.visit_return(expr),
-            Stmt::For(init, cond, step, body) => visitor.visit_for(*init, cond, step, body),
-            Stmt::While(cond, body) => visitor.visit_while(cond, body),
-            Stmt::Break => visitor.visit_break(),
-            Stmt::Continue => visitor.visit_continue(),
+            Stmt::For(label, init, cond, step, body) => visitor.visit_for(*label, *init, cond, step, body),
+            Stmt::While(label, cond, body) => visitor.visit_while(*label, cond, body),
+            Stmt::Break(label) => visitor.visit_break(*label),
+            Stmt::Continue(label) => visitor.visit_continue(*label),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
             Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => visitor.visit_impl_block_with_trait_args(*target_type, target_type_args, methods, *trait_name, trait_type_args),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
@@ -403,20 +403,20 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Control Flow Type Checking
     // =========================================================================
 
-    fn visit_for(&mut self, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_for_impl(init, _cond, range, body)
+    fn visit_for(&mut self, label: Option<DefaultSymbol>, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_for_impl(label, init, _cond, range, body)
     }
 
-    fn visit_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_while_impl(cond, body)
+    fn visit_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_while_impl(label, cond, body)
     }
 
-    fn visit_break(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Unit)
+    fn visit_break(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_break_impl(label)
     }
 
-    fn visit_continue(&mut self) -> Result<TypeDecl, TypeCheckError> {
-        Ok(TypeDecl::Unit)
+    fn visit_continue(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_continue_impl(label)
     }
 
     // =========================================================================

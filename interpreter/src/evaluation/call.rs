@@ -844,8 +844,8 @@ impl EvaluationContext<'_> {
             let v = match v {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(_)
-                | EvaluationResult::Break
-                | EvaluationResult::Continue
+                | EvaluationResult::Break(_)
+                | EvaluationResult::Continue(_)
                 | EvaluationResult::None => {
                     return Err(InterpreterError::InternalError(
                         "closure argument produced control-flow value".to_string(),
@@ -1315,8 +1315,8 @@ impl EvaluationContext<'_> {
                 let v = match result {
                     EvaluationResult::Value(v) => v,
                     EvaluationResult::Return(_)
-                    | EvaluationResult::Break
-                    | EvaluationResult::Continue
+                    | EvaluationResult::Break(_)
+                    | EvaluationResult::Continue(_)
                     | EvaluationResult::None => {
                         return Err(InterpreterError::InternalError(
                             "extern fn argument produced control-flow value".to_string(),
@@ -1347,7 +1347,7 @@ impl EvaluationContext<'_> {
                     self.environment.exit_block();
                     return Ok(v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))));
                 },
-                Ok(EvaluationResult::Break) | Ok(EvaluationResult::Continue) => {
+                Ok(EvaluationResult::Break(_)) | Ok(EvaluationResult::Continue(_)) => {
                     self.environment.exit_block();
                     return Ok(Rc::new(RefCell::new(Object::Unit)));
                 },
@@ -1370,7 +1370,7 @@ impl EvaluationContext<'_> {
                 EvaluationResult::Value(v) => v.into_rc(),
                 EvaluationResult::Return(None) => Rc::new(RefCell::new(Object::Unit)),
                 EvaluationResult::Return(v) => v.map(|x| x.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::null_unknown()))),
-                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
+                EvaluationResult::Break(_) | EvaluationResult::Continue(_) | EvaluationResult::None => Rc::new(RefCell::new(Object::Unit)),
             })
         }
     }
@@ -1456,7 +1456,7 @@ impl EvaluationContext<'_> {
                 EvaluationResult::Value(v) => v,
                 EvaluationResult::Return(None) => crate::value::Value::Unit,
                 EvaluationResult::Return(v) => v.unwrap_or_else(crate::value::Value::null_unknown),
-                EvaluationResult::Break | EvaluationResult::Continue | EvaluationResult::None => crate::value::Value::Unit,
+                EvaluationResult::Break(_) | EvaluationResult::Continue(_) | EvaluationResult::None => crate::value::Value::Unit,
             }
         };
 

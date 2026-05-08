@@ -794,6 +794,10 @@ pub(crate) struct EnumLocal {
 }
 
 struct LoopFrame {
+    /// LABEL: optional loop name for `@label: while/for`. `None` for
+    /// unlabelled loops. `break @label` / `continue @label` walks the
+    /// stack rev-first looking for a matching `Some(label)`.
+    label: Option<DefaultSymbol>,
     continue_block: Block,
     break_block: Block,
     /// `with_depth` snapshot at the moment this loop was entered.
@@ -1858,38 +1862,34 @@ impl<'a, 'b> State<'a, 'b> {
                     }
                     return Ok(None);
                 }
-                Stmt::Break => {
-                    let frame = self
-                        .loop_stack
-                        .last()
-                        .ok_or_else(|| "break outside loop".to_string())?;
+                Stmt::Break(label) => {
+                    let frame = self.resolve_loop_frame(label, "break")?;
                     let target = frame.break_block;
-                    let pop_count = self.with_depth - frame.with_depth_at_entry;
+                    let depth_at_entry = frame.with_depth_at_entry;
+                    let pop_count = self.with_depth - depth_at_entry;
                     for _ in 0..pop_count {
                         self.call_helper(HelperKind::WithAllocatorPop, &[])?;
                     }
                     self.jump(target);
                     return Ok(None);
                 }
-                Stmt::Continue => {
-                    let frame = self
-                        .loop_stack
-                        .last()
-                        .ok_or_else(|| "continue outside loop".to_string())?;
+                Stmt::Continue(label) => {
+                    let frame = self.resolve_loop_frame(label, "continue")?;
                     let target = frame.continue_block;
-                    let pop_count = self.with_depth - frame.with_depth_at_entry;
+                    let depth_at_entry = frame.with_depth_at_entry;
+                    let pop_count = self.with_depth - depth_at_entry;
                     for _ in 0..pop_count {
                         self.call_helper(HelperKind::WithAllocatorPop, &[])?;
                     }
                     self.jump(target);
                     return Ok(None);
                 }
-                Stmt::While(cond, body) => {
-                    self.gen_while(&cond, &body)?;
+                Stmt::While(label, cond, body) => {
+                    self.gen_while(label, &cond, &body)?;
                     last_value = None;
                 }
-                Stmt::For(var_name, start, end, body) => {
-                    self.gen_for(var_name, &start, &end, &body)?;
+                Stmt::For(label, var_name, start, end, body) => {
+                    self.gen_for(label, var_name, &start, &end, &body)?;
                     last_value = None;
                 }
                 Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
@@ -1984,7 +1984,7 @@ impl<'a, 'b> State<'a, 'b> {
         Ok(result_param)
     }
 
-    fn gen_while(&mut self, cond: &ExprRef, body: &ExprRef) -> Result<(), String> {
+    fn gen_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<(), String> {
         let header = self.builder.create_block();
         let body_blk = self.builder.create_block();
         let exit = self.builder.create_block();
@@ -1998,6 +1998,7 @@ impl<'a, 'b> State<'a, 'b> {
 
         self.switch_to(body_blk);
         self.loop_stack.push(LoopFrame {
+            label,
             continue_block: header,
             break_block: exit,
             with_depth_at_entry: self.with_depth,
@@ -2012,8 +2013,27 @@ impl<'a, 'b> State<'a, 'b> {
         Ok(())
     }
 
+    /// LABEL: walk loop_stack rev-first matching `label`. `None` returns
+    /// innermost. Errors out if nothing matches (TC should already
+    /// guarantee this, but JIT is best-effort and returns Err on miss).
+    fn resolve_loop_frame(&self, label: Option<DefaultSymbol>, kw: &str) -> Result<&LoopFrame, String> {
+        match label {
+            None => self
+                .loop_stack
+                .last()
+                .ok_or_else(|| format!("{kw} outside loop")),
+            Some(sym) => self
+                .loop_stack
+                .iter()
+                .rev()
+                .find(|f| f.label == Some(sym))
+                .ok_or_else(|| format!("{kw} references undefined loop label")),
+        }
+    }
+
     fn gen_for(
         &mut self,
+        label: Option<DefaultSymbol>,
         var_name: DefaultSymbol,
         start: &ExprRef,
         end: &ExprRef,
@@ -2057,6 +2077,7 @@ impl<'a, 'b> State<'a, 'b> {
 
         self.switch_to(body_blk);
         self.loop_stack.push(LoopFrame {
+            label,
             continue_block: step_blk,
             break_block: exit,
             with_depth_at_entry: self.with_depth,

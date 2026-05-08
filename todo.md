@@ -5,6 +5,7 @@
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
 ### 2026-05-08
+- **OP-OVERLOAD-EQ** (`286a613`) — `==` / `!=` operator が同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (Phase B)。型 checker `struct_eq_compatible`、interpreter `evaluate_binary` early dispatch、AOT `lower_binary::try_lower_struct_eq` (Call to eq FuncId + leaf flatten + `!=` は `bool_v == false` で negate) で 3 backend 対応。`s == t` で String 比較が動く。+6 tests (1374 → **1380**)。Phase A (String の nominal newtype 化) は spike で frontend symbol canonical 化の深い問題に当たり deferred (下記 STRING-NOMINAL 参照)。
 - **TYPE-ALIAS-QUALIFIER** (`ec83086`) — `frontend::alias_resolution` の expression loop に `Expr::AssociatedFunctionCall` qualifier rewrite を追加。`val s: String = String::from_str("hello")` / `String::new()` のような alias-qualified call が 3 backend で動作 (qualifier symbol を alias target の base name に substitute、type args は annotation hint から recover)。+3 tests (1371 → **1374**)。
 - **AOT-SIZEOF-COMPOUND** (`a57d9fe`) — `__builtin_sizeof(struct/tuple/enum)` を AOT で対応 (`compute_byte_size` 新設、`value_scalar` で struct/enum identifier を認識)。+1 test (1370 → **1371**)。
 - **STRING-API Phase 0〜4** (`a0cae0d` / `e9b2ee7` / `7335421` / `6a0fa3c`) — String API の本格拡充: (Phase 0) `type char = u32` 化 + `Vec<u8>::push_char` の UTF-8 encoding + module_integration の narrow int remap fix。(Phase 1) `Length` / `AsPtr` extension trait を `Vec<u8>` にも impl。(Phase 2) `Substring` / `Trim` / `CaseConvert` 追加 + 末尾式 chain workaround。(Phase 4) `Concat` / `Contains` / `ToString` 追加 + AOT lower の identifier-flatten path / primitive-receiver compound-return bind path 拡張。trait は `core/std/str_ops.t`、impl は `core/std/string.t`。詳細 git log。+44 tests (1326 → **1370**)。
@@ -63,6 +64,8 @@
 
 ## 未実装 📋
 
+
+STRING-NOMINAL. **`String` を `Vec<u8>` alias から nominal newtype struct に昇格** — 型システムレベルで Vec<u8> と区別 (Rust の String 相当)。Spike (2026-05-08) で frontend type checker の trait conformance check が trait 戻り型 `Identifier(String)` と impl 戻り型 `Struct(String, [])` を別物として扱う + cross-module remap で symbol id 不一致が発生することを確認。修正には: (1) trait/struct 名 canonical 化 (Identifier ↔ Struct の resolve)、(2) module integration の symbol remap で trait method 戻り型と impl method 戻り型を同 interner で揃える、(3) 既存 72 件の call site (`val s: String = Vec::from_str(...)` 等) を `String::from_str(...)` 等に migration、(4) 各 backend で nominal struct String の dispatch 確認、が必要。優先度: 中 (現状 `==` 演算子は Phase B で動くので、最大の user pain は解消)。
 
 STRING-API-SPLIT. **`Split<Sep, Out>` trait と `impl Split for Vec<u8>`** — Phase 4 で Concat / Contains / ToString は landed (2026-05-08, `6a0fa3c`)。残: `split(sep)` で string を境界で分割し `Vec<Vec<u8>>` を返す trait。spike (`a57d9fe`) で AOT 制約を 2 つ確認: (1) `__builtin_sizeof` の compound 対応 = ✅ 完了、(2) **`__builtin_ptr_write(p, off, struct_value)` / `__builtin_ptr_read(p, off) -> Struct` の AOT lower 未対応**。現状 `Vec<T>::push(value: T)` body が `__builtin_ptr_write` で `value: T` を直接書こうとするため、`T = Vec<u8>` 等 compound のとき "ptr_write value produced no value" で fail。実装には struct 値の per-leaf serialization (各 field を順次 `ptr_write_<scalar>` に展開) が必要、AOT compound element 全般の作業 (`AOT-COMPOUND-PTR-RW` として下記)。interpreter / JIT は両方とも動くので、stdlib 実装 + interpreter-only test 先行も可。優先度: 中。
 
@@ -145,7 +148,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1374 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / STRING-API-PHASE-1 / -2 / -4 + AOT-SIZEOF-COMPOUND + TYPE-ALIAS-QUALIFIER で計 48 件追加。compiler/e2e は 191、consistency は 50+）
+- 合計 1380 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / STRING-API-PHASE-1 / -2 / -4 + AOT-SIZEOF-COMPOUND + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD-EQ で計 54 件追加。compiler/e2e は 192、consistency は 50+）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (50+) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

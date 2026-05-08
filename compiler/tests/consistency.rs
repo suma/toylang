@@ -2462,6 +2462,44 @@ fn string_split_round_trip() {
 }
 
 #[test]
+fn struct_compound_assign_operator_overload_round_trip() {
+    // OP-OVERLOAD-EXTEND Phase 1: `a += b` desugars to
+    // `a = a + b`, which routes through `assign.rs::lower_assign`.
+    // The new struct-binding compound-assign arm there detects
+    // the desugared shape and emits `CallStruct` into the
+    // existing leaf locals (instead of bailing with the "compiler
+    // MVP cannot reassign a struct binding whole" diagnostic).
+    let src = r#"
+        struct Vec3 { x: i64, y: i64, z: i64 }
+
+        impl Vec3 {
+            fn add(&self, other: &Vec3) -> Vec3 {
+                Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+            }
+            fn sub(&self, other: &Vec3) -> Vec3 {
+                Vec3 { x: self.x - other.x, y: self.y - other.y, z: self.z - other.z }
+            }
+            fn eq(&self, other: &Vec3) -> bool {
+                self.x == other.x && self.y == other.y && self.z == other.z
+            }
+        }
+
+        fn main() -> u64 {
+            var a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            val b: Vec3 = Vec3 { x: 10i64, y: 20i64, z: 30i64 }
+            a += b
+            val expect_after_add: Vec3 = Vec3 { x: 11i64, y: 22i64, z: 33i64 }
+            if !(a == expect_after_add) { return 1u64 }
+            a -= b
+            val expect_after_sub: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+            if !(a == expect_after_sub) { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "struct_compound_assign_operator_overload_round_trip");
+}
+
+#[test]
 fn struct_arith_operator_overload_round_trip() {
     // Operator overload (Phase B continuation): `+` / `-` / `*` /
     // `/` / `%` between matching struct values dispatch to the

@@ -108,6 +108,132 @@ impl<'a> FunctionLower<'a> {
                 // can side-effect freely. `&T` (immutable) bindings
                 // reject assignment here — the type checker also
                 // catches this earlier, so this is a defence-in-depth.
+                // OP-OVERLOAD-EXTEND Phase 1: compound-assign
+                // shape (`a += b` desugared to `a = a + b`) for
+                // struct receivers. Without this arm the
+                // `Binding::Struct` case below would bail with
+                // "compiler MVP cannot reassign a struct binding
+                // whole". Detect the desugared shape (rhs is a
+                // `Binary` with one of the arithmetic overload
+                // ops + lhs identifier matches `sym`) and emit
+                // `CallStruct` into the binding's existing leaf
+                // locals — same dispatch as
+                // `let_lowering.rs::Binary` arm except the dest
+                // locals are reused instead of freshly allocated.
+                if let Some(Binding::Struct { struct_id, fields }) =
+                    self.bindings.get(&sym).cloned()
+                {
+                    if let Some(Expr::Binary(op, b_lhs, b_rhs)) =
+                        self.program.expression.get(rhs)
+                    {
+                        let op_method: Option<&'static str> = match op {
+                            frontend::ast::Operator::IAdd => Some("add"),
+                            frontend::ast::Operator::ISub => Some("sub"),
+                            frontend::ast::Operator::IMul => Some("mul"),
+                            frontend::ast::Operator::IDiv => Some("div"),
+                            frontend::ast::Operator::IMod => Some("rem"),
+                            _ => None,
+                        };
+                        if let Some(method_name) = op_method {
+                            let struct_def = self.module.struct_def(struct_id);
+                            let target_sym = struct_def.base_name;
+                            let type_args = struct_def.type_args.clone();
+                            if let Some(method_sym) = self.interner.get(method_name) {
+                                if let Some(func_id) =
+                                    super::method_registry::lookup_method_func(
+                                        self.method_func_ids,
+                                        target_sym,
+                                        method_sym,
+                                        &type_args,
+                                    )
+                                {
+                                    use super::bindings::flatten_struct_locals;
+                                    let lhs_leaves = match self
+                                        .program
+                                        .expression
+                                        .get(&b_lhs)
+                                    {
+                                        Some(Expr::Identifier(s)) => match self
+                                            .bindings
+                                            .get(&s)
+                                            .cloned()
+                                        {
+                                            Some(Binding::Struct { fields: f, .. }) => {
+                                                flatten_struct_locals(&f)
+                                            }
+                                            _ => {
+                                                return Err(
+                                                    "compound-assign: arith lhs needs struct binding".to_string(),
+                                                );
+                                            }
+                                        },
+                                        _ => {
+                                            return Err(
+                                                "compound-assign: arith lhs must be a bare identifier".to_string(),
+                                            );
+                                        }
+                                    };
+                                    let rhs_leaves = match self
+                                        .program
+                                        .expression
+                                        .get(&b_rhs)
+                                    {
+                                        Some(Expr::Identifier(s)) => match self
+                                            .bindings
+                                            .get(&s)
+                                            .cloned()
+                                        {
+                                            Some(Binding::Struct { fields: f, .. }) => {
+                                                flatten_struct_locals(&f)
+                                            }
+                                            _ => {
+                                                return Err(
+                                                    "compound-assign: arith rhs needs struct binding".to_string(),
+                                                );
+                                            }
+                                        },
+                                        _ => {
+                                            return Err(
+                                                "compound-assign: arith rhs must be a bare identifier".to_string(),
+                                            );
+                                        }
+                                    };
+                                    let mut all_args: Vec<ValueId> = Vec::with_capacity(
+                                        lhs_leaves.len() + rhs_leaves.len(),
+                                    );
+                                    for (local, ty) in
+                                        lhs_leaves.iter().chain(rhs_leaves.iter())
+                                    {
+                                        let v = self
+                                            .emit(
+                                                InstKind::LoadLocal(*local),
+                                                Some(*ty),
+                                            )
+                                            .expect("LoadLocal returns a value");
+                                        all_args.push(v);
+                                    }
+                                    // Dest = the existing binding's
+                                    // leaf locals (reuse, no fresh
+                                    // allocate).
+                                    let dests: Vec<crate::ir::LocalId> =
+                                        flatten_struct_locals(&fields)
+                                            .into_iter()
+                                            .map(|(l, _)| l)
+                                            .collect();
+                                    self.emit(
+                                        InstKind::CallStruct {
+                                            target: func_id,
+                                            args: all_args,
+                                            dests,
+                                        },
+                                        None,
+                                    );
+                                    return Ok(None);
+                                }
+                            }
+                        }
+                    }
+                }
                 if let Some(Binding::RefScalar { local, pointee_ty, is_mut }) =
                     self.bindings.get(&sym).cloned()
                 {

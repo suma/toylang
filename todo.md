@@ -5,6 +5,7 @@
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
 ### 2026-05-08
+- **STR-INTERP-COMPOUND** (`5c1038c`) — `"value: {struct_val}"` 形式の string interpolation を AOT で動かした (interpreter / JIT は既に動作)。新規 IR `InstKind::ConstStrBytes { bytes: Vec<u8> }` を導入し、frontend interner を経由せず `.rodata` に raw bytes を直接配置 (interner mutability 拡張不要)。codegen に `const_str_bytes: HashMap<Vec<u8>, DataId>` 追加 (content-keyed dedup で `", "` / `" }"` 等の separator は 1 entry 共有)。AOT lower の `BuiltinFunction::ToString` arm に struct 専用 path を追加: `lower_struct_to_string` が field を alphabetical sort して header / `name: ` prefix / value to_string / `, ` separator / ` }` footer を `ConstStrBytes` + `ToString(scalar)` + `StrConcat` chain で組み立て。新規 C runtime helper 不要 (既存 `toy_str_concat` / `toy_to_string_<ty>` で完結)。MVP 制約: all-scalar field の struct のみ (nested compound / tuple / enum は future phase)。1387 -> **1391 tests pass** (+4: 3 unit + 1 consistency)。
 - **STRING-NOMINAL** (`682331c`) — `type String = Vec<u8>` alias を削除し、`struct String { data, len, cap, elem_size }` の **flat-layout 独立 struct** に置き換え。Vec<u8> と同じ memory shape だが nominal identity は別。byte-specific helper を全部 `impl String` に移植 (new / from_str / push / pop / get / set / size / len / as_ptr / capacity / is_empty / clear / extend_bytes / push_str / push_char / eq / to_string)。trait 拡張 (Substring / Trim / CaseConvert / Concat<String> / Contains<String> / Split<String, Vec<String>>) も String target に re-impl。`ToString` trait は frontend canonicalisation 制約 (Identifier(String) vs Struct(String, []) の trait conformance mismatch) を回避するため inherent method 化、`str.to_string()` は user-side で `String::from_str(s)` に書き換え。test migration: `Vec::from_str(...)` → `String::from_str(...)` (~70 件)、`val s: String = Vec::new()` → `String::new()` 等。1387 tests pass (regression なし)。
 - **AOT-COMPOUND-PTR-RW + STRING-API Phase 5 (Split)** (`07a895d`) — AOT lower で `__builtin_ptr_write/read` の compound (struct/tuple) 値を per-leaf 展開 + `lower_param_or_return_type` の type args 再帰化。これにより `Vec<T>` で T が compound でも全 backend で動作。`STRING-API-SPLIT` も同 commit で着地: `Split<Vec<u8>, Vec<Vec<u8>>>` trait + impl 追加 (`core/std/str_ops.t` / `core/std/string.t`)、`s.split(sep) -> Vec<Vec<u8>>` が 3 backend で動作 (Rust `str::split` 風: trailing sep で empty 末尾、empty sep で panic)。新 helper `compute_leaf_layout` (compute_byte_size の leaf-walking 版)。+7 tests (1380 → **1387**)。
 - **OP-OVERLOAD-EQ** (`286a613`) — `==` / `!=` operator が同型 struct ペアで `eq(&self, other: &Self) -> bool` method に dispatch (Phase B)。型 checker `struct_eq_compatible`、interpreter `evaluate_binary` early dispatch、AOT `lower_binary::try_lower_struct_eq` (Call to eq FuncId + leaf flatten + `!=` は `bool_v == false` で negate) で 3 backend 対応。`s == t` で String 比較が動く。+6 tests (1374 → **1380**)。Phase A (String の nominal newtype 化) は spike で frontend symbol canonical 化の深い問題に当たり deferred (下記 STRING-NOMINAL 参照)。
@@ -67,7 +68,7 @@
 ## 未実装 📋
 
 
-STR-INTERP-COMPOUND. **string interpolation で struct / tuple / enum 値の補間** — 現状 AOT は primitives (i64/u64/f64/bool/str/narrow ints) のみ補間可能。compound 型を補間するには `__builtin_to_string` で動的 dispatch + 型ごとの format 関数生成が必要 (interpreter は `Object::to_display_string` で既に動いている)。優先度: 中 (struct / enum を `println` で表示する既存パスと統合できる)。
+STR-INTERP-COMPOUND-EXTEND. **struct 以外 (tuple / enum) + nested compound field の補間** — `5c1038c` で all-scalar field の struct までは AOT 対応済 (`{point}` で `Point { x: 3, y: 5 }` 出力)。残: (1) tuple `{(a, b)}` → `"(a_str, b_str)"`、(2) enum `{Option::Some(v)}` → `"Option::Some(v_str)"`、(3) nested compound field (struct field が struct や tuple) — それぞれ `lower_struct_to_string` 拡張または独立 helper。interpreter は既に動く。優先度: 中。
 
 
 NUM-W-AOT-pack-Phase3. **狭い数値型 AOT の compound element packing 続き**: NUM-W-AOT-pack Phase 1 (`747146c`) で homogeneous scalar 配列の packing は完了。残: compound element 配列 (`[PackedRgba; N]` で `struct PackedRgba { r:u8, g:u8, b:u8, a:u8 }` が現状 32 バイト消費、本来 4 バイト) の tighter layout。実装には `ArraySlotInfo` を per-leaf strides ベースに refactor、もしくは `ArrayLoad/Store` に element_index + leaf_offset_const の 2 値を取らせる IR 拡張が必要。優先度: 低 (機能は動くがメモリ効率の改善のみ)。
@@ -144,7 +145,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1387 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / STRING-API-PHASE-1 / -2 / -4 / -5 + AOT-SIZEOF-COMPOUND + AOT-COMPOUND-PTR-RW + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD-EQ で計 61 件追加。compiler/e2e は 194、consistency は 50+）
+- 合計 1391 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API-CHAR-U32 / -PHASE-1 / -2 / -4 / -5 + AOT-SIZEOF-COMPOUND + AOT-COMPOUND-PTR-RW + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD-EQ + STRING-NOMINAL + STR-INTERP-COMPOUND で計 65 件追加。compiler/e2e は 195、consistency は 50+）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (50+) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

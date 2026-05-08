@@ -283,25 +283,46 @@ Properties:
   boundaries — alias visibility currently flows through the
   global cross-module pass for any auto-loaded module.
 
-Stdlib aliases:
+Stdlib types:
 
 - `core/std/char.t::type char = u32` — Unicode codepoint alias.
   Char literals (`'a'` / `'\n'` / `'\u{1F600}'`) lex straight to
   `Kind::UInt32`, so a `c: char` parameter receives any Unicode
-  scalar value without truncation. `Vec<u8>::push_char(c: char)`
+  scalar value without truncation. `String::push_char(c: char)`
   UTF-8 encodes the codepoint into 1-4 bytes (RFC 3629); surrogate
   codepoints (U+D800..U+DFFF) and codepoints >= U+110000 panic.
-- `core/std/string.t::type String = Vec<u8>` — `String` *is*
-  `Vec<u8>`. The byte-specific helpers (`from_str`, `eq`,
-  `push_str`, `push_char`) live on `impl Vec<u8>`; the generic
-  helpers (`size`, `is_empty`, `as_ptr`, `clear`, `push`) come
-  from `impl<T> Vec<T>`. `String` also satisfies six extension
-  traits — `Length` / `AsPtr` / `ToString` from `core/std/str.t`
-  and `Substring` / `Trim` / `CaseConvert` / `Concat` / `Contains`
-  from `core/std/str_ops.t` — so `.len()` / `.as_ptr()` /
-  `.substring(start, end)` / `.trim()` / `.to_upper()` /
-  `.to_lower()` / `.concat(other)` / `.contains(needle)` /
-  `.to_string()` work uniformly on `str` and `String` receivers.
+- `core/std/string.t::struct String { data, len, cap, elem_size }`
+  — **nominal struct** (no longer a `type` alias for `Vec<u8>`).
+  Memory layout matches `Vec<u8>` exactly so the
+  `__builtin_heap_*` / `ptr_read` / `ptr_write` family operates
+  on the underlying byte buffer with no per-type special-casing,
+  but the type system treats `String` as its own identity (errors
+  say "expected String", `String` and `Vec<u8>` are not
+  interchangeable). Construction:
+
+  ```rust
+  val s: String = String::from_str("hello")
+  var t: String = String::new()
+  ```
+
+  Inherent methods on `impl String`: `new` / `from_str` / `push` /
+  `pop` / `get` / `set` / `size` / `len` / `as_ptr` / `capacity` /
+  `is_empty` / `clear` / `extend_bytes` / `push_str` / `push_char`
+  / `eq` / `to_string`. Extension trait impls (in
+  `core/std/str_ops.t`): `Substring` / `Trim` / `CaseConvert` /
+  `Concat<String>` / `Contains<String>` / `Split<String,
+  Vec<String>>` — so `.substring(s, e)` / `.trim()` /
+  `.to_upper()` / `.to_lower()` / `.concat(other)` /
+  `.contains(needle)` / `.split(sep)` work on both `str` and
+  `String` with the same call shape (`str` routes through
+  builtins, `String` through trait impls). `==` / `!=` between
+  Strings dispatches to `eq` via the operator-overload path.
+
+  `Vec<u8>` (the generic byte vector) remains available as a
+  distinct type for byte-level work that doesn't need String
+  semantics — the alias is gone, so byte-vector and string
+  values no longer collapse. Convert across the boundary with
+  explicit constructors / `as_ptr()` chains.
 
 ### Type inference
 
@@ -682,8 +703,34 @@ val n: i64 = 42i64
 `print` / `println` would emit (powered by
 `Object::to_display_string` in the interpreter), so every
 primitive (`i64` / `u64` / `f64` / `bool` / `str` / narrow ints)
-and user-defined struct / enum that has a stable display form
-participates.
+and user-defined struct / tuple participate. AOT side uses
+`toy_to_string_<ty>` runtime helpers for primitives, and the
+new `InstKind::ConstStrBytes` (raw `.rodata` bytes, no interner
+roundtrip) + `lower_struct_to_string` / `lower_tuple_to_string`
+for compound values — fields/elements are walked recursively so
+nested compounds (`Outer { inner: Inner { x: 3, y: 5 }, n: 7 }`,
+`((a, b), c)`) format correctly. Field order matches the
+interpreter (alphabetical for structs, declaration order for
+tuples).
+
+Compound interpolation examples:
+
+```rust
+struct Point { x: i64, y: i64 }
+val p: Point = Point { x: 3i64, y: 5i64 }
+println("p = {p}")        # p = Point { x: 3, y: 5 }
+
+val t: (i64, u64) = (3i64, 5u64)
+println("t = {t}")        # t = (3, 5)
+
+val single: (i64,) = (42i64,)
+println("{single}")       # (42,)
+```
+
+**Out of scope** (carried forward as STR-INTERP-COMPOUND-EXTEND-ENUM):
+- enum value interpolation (`{Option::Some(v)}`) — needs a
+  cranelift block-dispatch chain on the variant tag, different
+  shape from the linear concat chain struct/tuple use.
 
 Empty literal segments are filtered, so `"{a}{b}"` lowers
 directly to `__builtin_to_string(a).concat(__builtin_to_string(b))`
@@ -750,6 +797,53 @@ Listed lowest precedence first:
 Compound assignment desugars at parse time: `x += 1` is rewritten to
 `x = x + 1`. Supported forms: `+=`, `-=`, `*=`, `/=`, `%=`. The lhs may
 be an identifier or a field/index access.
+
+### Operator overload (struct receivers)
+
+Same-shape struct values can overload most binary and unary
+operators by implementing the matching method on the struct.
+The frontend short-circuits the overload before its primitive
+type-check rule, so overloaded operators don't conflict with
+the primitive paths (`i64 + i64` continues to lower as a
+direct `BinOp::Add`).
+
+| Operator | Method signature | Result |
+|---|---|---|
+| `==` `!=` | `fn eq(&self, other: &Self) -> bool` | `bool` (`!=` negates) |
+| `<` `<=` `>` `>=` | `fn lt/le/gt/ge(&self, other: &Self) -> bool` | `bool` |
+| `+` `-` `*` `/` `%` | `fn add/sub/mul/div/rem(&self, other: &Self) -> Self` | `Self` |
+| `+=` `-=` `*=` `/=` `%=` | (uses `add`/`sub`/`mul`/`div`/`rem` via desugar) | (mutates lhs) |
+| `&` `\|` `^` `<<` `>>` | `fn bitand/bitor/bitxor/shl/shr(&self, other: &Self) -> Self` | `Self` |
+| `-` (unary) `~` `!` | `fn neg/bitnot/not(&self) -> Self` | `Self` |
+
+```rust
+struct Vec3 { x: i64, y: i64, z: i64 }
+impl Vec3 {
+    fn add(&self, other: &Vec3) -> Vec3 {
+        Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+    }
+    fn eq(&self, other: &Vec3) -> bool { ... }
+    fn neg(&self) -> Vec3 { Vec3 { x: 0i64 - self.x, y: 0i64 - self.y, z: 0i64 - self.z } }
+}
+
+var a: Vec3 = Vec3 { x: 1i64, y: 2i64, z: 3i64 }
+val b: Vec3 = Vec3 { x: 10i64, y: 20i64, z: 30i64 }
+a += b              # uses add (compound assign)
+val c: Vec3 = a + b # uses add
+val n: Vec3 = -a    # uses neg
+if a == b { ... }   # uses eq
+```
+
+**Out of scope** (deliberate):
+- `&&` / `||` — short-circuit semantics make method dispatch
+  unsound (the rhs would always evaluate). Both operators stay
+  primitive-only.
+- Chained expression-position uses (`a + b + c`) — the MVP
+  routes overloads through `let_lowering.rs::Binary` /
+  `Unary`, which only triggers in let-rhs context. Bind
+  intermediates explicitly: `val tmp = a + b; val r = tmp + c`.
+- Binary operands that are inline struct literals
+  (`a & Bits { v: 1 }`) — bind via `val` first.
 
 ### Numeric semantics
 
@@ -1905,42 +1999,45 @@ Method-call syntax on `str` (the static-string primitive):
 
 ### `String` (heap byte buffer)
 
-`core/std/string.t::type String = Vec<u8>` is a `type` alias —
-`String` *is* `Vec<u8>` after alias resolution. There is no
-nominal `String` type. Construct via `Vec::from_str("text")`
-with a `String` annotation to disambiguate the generic parameter:
+`core/std/string.t::struct String { data, len, cap, elem_size }`
+is a **nominal struct**. Memory layout matches `Vec<u8>`
+exactly (the `__builtin_heap_*` / `ptr_read` / `ptr_write`
+family operates on the underlying byte buffer with no per-type
+special-casing) but the type system treats `String` as its own
+identity — it is not interchangeable with `Vec<u8>`.
 
 ```rust
-val s: String = Vec::from_str("hello")
-val n: u64 = s.len()          # 5  — Length trait, mirrors str.len()
-val also_n: u64 = s.size()    # 5  — same value via inherent method
+val s: String = String::from_str("hello")
+val n: u64 = s.len()          # 5
+val also_n: u64 = s.size()    # 5  — alias of len
 val empty: bool = s.is_empty()
-val p: ptr = s.as_ptr()       # AsPtr trait, mirrors str.as_ptr()
+val p: ptr = s.as_ptr()
 s.push_char('!')              # UTF-8 encoded into 1-4 bytes
-s.push_str(other)             # other: &Vec<u8> via auto-borrow
-val eq: bool = s.eq(other)
+s.push_str(other)             # other: &String via auto-borrow
+val eq: bool = s == other     # operator overload via String::eq
 s.clear()
 ```
 
-Method dispatch falls into three impl blocks:
+Method dispatch:
 
-- `impl<T> Vec<T>` (in `core/std/collections/vec.t`) — generic
-  helpers reused by `String`: `push`, `pop`, `get`, `set`,
-  `size`, `capacity`, `is_empty`, `as_ptr`, `clear`. (`size`
-  rather than `len` to dodge a field/method name clash with the
-  `Vec<T>.len` field.)
-- `impl Vec<u8>` (in `core/std/collections/vec.t`) — byte-specific
-  helpers: `from_str`, `eq`, `push_str`, `push_char`,
-  `extend_bytes`.
-- `impl Length for Vec<u8>` / `impl AsPtr for Vec<u8>` /
-  `impl Substring for Vec<u8>` / `impl Trim for Vec<u8>` /
-  `impl CaseConvert for Vec<u8>` / `impl Concat<Vec<u8>> for Vec<u8>` /
-  `impl Contains<Vec<u8>> for Vec<u8>` /
-  `impl ToString for Vec<u8>` (in `core/std/string.t`) —
-  extension trait impls so the same call shape works on `str` and
-  `String`. The traits live in `core/std/str.t` (`Length` /
-  `AsPtr` / `ToString`) and `core/std/str_ops.t` (`Substring` /
-  `Trim` / `CaseConvert` / `Concat` / `Contains`).
+- `impl String` (in `core/std/string.t`) — inherent byte-buffer
+  helpers: `new`, `from_str`, `push`, `pop`, `get`, `set`,
+  `size`, `len`, `as_ptr`, `capacity`, `is_empty`, `clear`,
+  `extend_bytes`, `push_str`, `push_char`, `eq`, `to_string`.
+- Extension trait impls (in `core/std/string.t`):
+  - `impl Substring for String` / `impl Trim for String` /
+    `impl CaseConvert for String` (from `core/std/str_ops.t`) —
+    `.substring(s, e)`, `.trim()`, `.to_upper()`, `.to_lower()`.
+  - `impl Concat<String> for String` /
+    `impl Contains<String> for String` /
+    `impl Split<String, Vec<String>> for String` — `.concat(t)`,
+    `.contains(needle)`, `.split(sep)`.
+
+`Vec<u8>` (in `core/std/collections/vec.t`) is a separate
+generic type for byte-level work that doesn't need string
+semantics. It is **not** `String` — convert across the boundary
+with `String::from_str(s)` (str → String) or `s.as_ptr()` +
+manual byte handling (String → raw pointer).
 
 ### `is_null` (universal)
 
@@ -2105,11 +2202,24 @@ These are real today; some appear in `todo.md` as planned work.
   `INTERPRETER_CONTRACTS` gate exists only because contract clauses
   can carry non-trivial cost; even there, `all` is the recommended
   setting — see "Operational guidance" above.)
-- **No string interpolation, raw strings, multi-line strings**.
-- **Trait limitations** — trait declarations themselves can't take
-  generic parameters (`trait Foo<T>`); no default method bodies; no
+- **String interpolation: enum values not yet supported** —
+  `"{point}"` (struct), `"{(a, b)}"` (tuple), nested compounds
+  all work in every backend, but `"{Option::Some(v)}"` is still
+  carried forward (variant-tag dispatch needs a cranelift block
+  chain, different shape from the linear concat the others use).
+  Tracked as `STR-INTERP-COMPOUND-EXTEND-ENUM` in `todo.md`.
+- **No raw strings or multi-line strings** — only the regular
+  `"..."` literal with backslash escapes today.
+- **Operator overload — chained / literal operands** — same-shape
+  struct overloads (`+` `-` `*` `/` `%` `+=` `<` etc., see
+  *Operator overload (struct receivers)*) only fire in let-rhs
+  context. `a + b + c` and `a & Bits { v: 1 }` need explicit
+  intermediates (`val tmp = a + b; val r = tmp + c`).
+- **Trait limitations** — no default method bodies; no
   multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
-  Trait`; no associated types. See *Traits → Out of scope*.
+  Trait`; no associated types. Generic trait declarations
+  (`trait Foo<T>`) are supported (see ITER-PROTOCOL-TRAIT in
+  `todo.md` 完了済み 2026-05-07). See *Traits → Out of scope*.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by

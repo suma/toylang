@@ -48,6 +48,24 @@ impl<'a> FunctionLower<'a> {
             Expr::Cast(_, target_ty) => lower_scalar(&target_ty),
             Expr::Identifier(sym) => match self.bindings.get(&sym) {
                 Some(Binding::Scalar { ty, .. }) => Some(*ty),
+                // Compound bindings — surface the IR type so callers
+                // like `__builtin_sizeof(value)` (compute_byte_size
+                // walks the def) can see the shape. The
+                // identifier-arg flatten paths in `method_call.rs`
+                // / `let_lowering.rs` skip this read entirely (they
+                // pull leaf locals straight out of the binding), so
+                // returning a Some here doesn't accidentally route
+                // through the IR value graph.
+                Some(Binding::Struct { struct_id, .. }) => Some(Type::Struct(*struct_id)),
+                Some(Binding::Tuple { elements }) => {
+                    // Tuple bindings only carry per-element shapes,
+                    // not the interned tuple_id. Fall back to None
+                    // so callers needing a concrete shape error out
+                    // explicitly.
+                    let _ = elements;
+                    None
+                }
+                Some(Binding::Enum(storage)) => Some(Type::Enum(storage.enum_id)),
                 Some(_) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },

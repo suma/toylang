@@ -25,6 +25,55 @@ use super::FunctionLower;
 use crate::ir::{Const, InstKind, Terminator, Type, ValueId};
 
 impl<'a> FunctionLower<'a> {
+    /// Mirror of `interpreter/src/evaluation/builtin.rs::object_byte_size`
+    /// for the AOT side. `__builtin_sizeof(value)` lowers to a
+    /// constant via this helper. The recursion sums field /
+    /// element sizes for structs / tuples / arrays and uses
+    /// `1-byte tag + max(payload)` for enums (matches the
+    /// interpreter's behaviour). Alignment / padding are not
+    /// modelled — the byte total is the natural sum, which lines
+    /// up with how the user-space `Vec<T>` body uses the result
+    /// (`self.cap * self.elem_size` for raw heap-alloc bookkeeping).
+    pub(super) fn compute_byte_size(&self, ty: Type) -> Option<u64> {
+        match ty {
+            Type::Bool | Type::I8 | Type::U8 => Some(1),
+            Type::I16 | Type::U16 => Some(2),
+            Type::I32 | Type::U32 => Some(4),
+            Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
+            Type::Unit => Some(0),
+            Type::Struct(struct_id) => {
+                let def = self.module.struct_def(struct_id);
+                let mut total: u64 = 0;
+                for (_name, field_ty) in &def.fields {
+                    total = total.saturating_add(self.compute_byte_size(*field_ty)?);
+                }
+                Some(total)
+            }
+            Type::Tuple(tuple_id) => {
+                let elements = self.module.tuple_defs[tuple_id.0 as usize].clone();
+                let mut total: u64 = 0;
+                for elem_ty in &elements {
+                    total = total.saturating_add(self.compute_byte_size(*elem_ty)?);
+                }
+                Some(total)
+            }
+            Type::Enum(enum_id) => {
+                let def = self.module.enum_def(enum_id);
+                let mut max_payload: u64 = 0;
+                for variant in &def.variants {
+                    let mut payload: u64 = 0;
+                    for ty in &variant.payload_types {
+                        payload = payload.saturating_add(self.compute_byte_size(*ty)?);
+                    }
+                    if payload > max_payload {
+                        max_payload = payload;
+                    }
+                }
+                Some(1u64.saturating_add(max_payload))
+            }
+        }
+    }
+
     pub(super) fn lower_call_args(&mut self, args_ref: &ExprRef) -> Result<Vec<ValueId>, String> {
         self.lower_call_args_with_target(args_ref, None)
     }
@@ -981,18 +1030,11 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| {
                         "__builtin_sizeof: could not infer arg type at AOT".to_string()
                     })?;
-                let size = match arg_ty {
-                    Type::I8 | Type::U8 | Type::Bool => 1u64,
-                    Type::I16 | Type::U16 => 2,
-                    Type::I32 | Type::U32 => 4,
-                    Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
-                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit => {
-                        return Err(format!(
-                            "compiler MVP cannot lower __builtin_sizeof of compound type \
-                             {arg_ty:?} yet"
-                        ));
-                    }
-                };
+                let size = self.compute_byte_size(arg_ty).ok_or_else(|| {
+                    format!(
+                        "compiler MVP cannot lower __builtin_sizeof of type {arg_ty:?}"
+                    )
+                })?;
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(size)), Some(Type::U64)))
             }
             BuiltinFunction::ToString => {

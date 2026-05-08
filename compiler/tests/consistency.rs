@@ -2383,6 +2383,33 @@ fn string_to_lower_round_trip() {
 }
 
 #[test]
+fn builtin_sizeof_struct_value_round_trip() {
+    // Pre-fix the AOT lower silently rejected
+    // `__builtin_sizeof(s)` whenever `s` was a struct binding —
+    // first because `value_scalar` returned None for
+    // `Binding::Struct`, then because `compute_byte_size` only
+    // handled scalar types. Now the recursion sums field sizes
+    // (matching `interpreter/src/evaluation/builtin.rs::object_byte_size`)
+    // so a struct probe round-trips on all 3 backends.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        struct Frame { p: Point, q: Point }
+        fn main() -> u64 {
+            val pt: Point = Point { x: 1i64, y: 2i64 }
+            if __builtin_sizeof(pt) != 16u64 { return 1u64 }
+            val fr: Frame = Frame {
+                p: Point { x: 3i64, y: 4i64 },
+                q: Point { x: 5i64, y: 6i64 },
+            }
+            # 16 (Point) + 16 (Point) = 32
+            if __builtin_sizeof(fr) != 32u64 { return 2u64 }
+            42u64
+        }
+    "#;
+    assert_consistent(src, "builtin_sizeof_struct_value_round_trip");
+}
+
+#[test]
 fn string_concat_round_trip() {
     // `Concat` trait + per-byte push body. Pinning confirms the
     // let-rhs path's identifier-flatten extension (which lets a

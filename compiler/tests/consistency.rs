@@ -3842,6 +3842,25 @@ fn string_interp_identifier_round_trip() {
 }
 
 #[test]
+fn string_interp_struct_round_trip() {
+    // STR-INTERP-COMPOUND: interpolating a struct value at AOT
+    // expands into per-field `toy_to_string_<ty>` +
+    // `toy_str_concat` chain with format prefixes flowing through
+    // `ConstStrBytes` (`.rodata` raw-bytes path). Result must
+    // match the interpreter's `Object::to_display_string` output
+    // byte-for-byte.
+    let src = r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> i64 {
+            val p: Point = Point { x: 3i64, y: 5i64 }
+            val s = "p = {p}"
+            s.len() as i64
+        }
+    "#;
+    assert_consistent(src, "string_interp_struct");
+}
+
+#[test]
 fn string_interp_arithmetic_round_trip() {
     let src = r#"
         fn main() -> i64 {

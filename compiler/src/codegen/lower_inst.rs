@@ -610,6 +610,25 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, addr);
                 }
             }
+            InstKind::ConstStrBytes { bytes } => {
+                // STR-INTERP-COMPOUND: same `.rodata` shape as
+                // `ConstStr`, but the symbol was registered by
+                // content rather than by a frontend-interner symbol
+                // (the format prefixes the lower assembles for
+                // struct/tuple/enum to_string don't have one).
+                let gv = *self
+                    .const_str_bytes_imports
+                    .get(bytes)
+                    .ok_or_else(|| {
+                        format!("missing ConstStrBytes import (len={})", bytes.len())
+                    })?;
+                let symbol_addr = self.builder.ins().symbol_value(types::I64, gv);
+                let len_field_offset = (bytes.len() as i64) + 1;
+                let addr = self.builder.ins().iadd_imm(symbol_addr, len_field_offset);
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, addr);
+                }
+            }
             InstKind::PrintRaw { text, newline } => {
                 let key = text.as_bytes();
                 let gv = *self

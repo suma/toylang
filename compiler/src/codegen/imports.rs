@@ -57,6 +57,38 @@ impl<M: Module> CodegenSession<M> {
         imports
     }
 
+    /// STR-INTERP-COMPOUND per-function GV map for `ConstStrBytes`
+    /// payloads. Mirrors `declare_raw_print_imports` (content-keyed)
+    /// but the underlying `.rodata` layout is the
+    /// `[bytes][NUL][u64 len LE]` str-handle shape, not the
+    /// NUL-only PrintRaw shape.
+    pub(super) fn declare_const_str_bytes_imports(
+        &mut self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> {
+        let mut imports: HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue> = HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                if let InstKind::ConstStrBytes { bytes } = &inst.kind {
+                    let key = bytes.clone();
+                    if imports.contains_key(&key) {
+                        continue;
+                    }
+                    let data_id = match self.const_str_bytes.get(&key).copied() {
+                        Some(id) => id,
+                        None => continue,
+                    };
+                    let gv = self.module.declare_data_in_func(data_id, func);
+                    imports.insert(key, gv);
+                }
+            }
+        }
+        imports
+    }
+
     /// Same idea as `declare_print_imports`, but keyed by literal
     /// bytes for `PrintRaw`. We surface a `Vec<u8>` rather than a
     /// `&[u8]` slice in the map so the per-function import table can

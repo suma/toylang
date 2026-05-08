@@ -207,3 +207,61 @@ fn interpolation_inside_concat_chain() {
     );
     assert_eq!(s, "HELLO WORLD");
 }
+
+// ---------------------------------------------------------------
+// STR-INTERP-COMPOUND: struct values can now be interpolated.
+// AOT side uses `ConstStrBytes` for format prefixes + per-field
+// `toy_to_string_<ty>` + `toy_str_concat` chain. Interpreter
+// already routes through `Object::to_display_string`, which the
+// AOT output matches byte-for-byte (alphabetical field order,
+// `TypeName { name: value, ... }`).
+// ---------------------------------------------------------------
+
+#[test]
+fn interpolation_with_struct_value() {
+    let s = run_returns_owned_string(
+        r#"
+        struct Point { x: i64, y: i64 }
+        fn main() -> str {
+            val p: Point = Point { x: 3i64, y: 5i64 }
+            "p = {p}"
+        }
+        "#,
+    );
+    assert_eq!(s, "p = Point { x: 3, y: 5 }");
+}
+
+#[test]
+fn interpolation_with_struct_alphabetical_field_order() {
+    // Declaration order is `(z, a)`; output must be sorted
+    // alphabetically (`a` before `z`) to match the interpreter's
+    // `Object::to_display_string` ordering.
+    let s = run_returns_owned_string(
+        r#"
+        struct Mixed { z: i64, a: i64 }
+        fn main() -> str {
+            val m: Mixed = Mixed { z: 9i64, a: 1i64 }
+            "{m}"
+        }
+        "#,
+    );
+    assert_eq!(s, "Mixed { a: 1, z: 9 }");
+}
+
+#[test]
+fn interpolation_with_struct_mixed_scalar_types() {
+    // struct fields restricted to i64 / u64 (the AOT lower
+    // already supports more, but the parser/type checker
+    // currently rejects narrow ints / f64 / bool in struct
+    // field positions — see "field type in struct" diagnostic).
+    let s = run_returns_owned_string(
+        r#"
+        struct Cell { count: u64, total: i64 }
+        fn main() -> str {
+            val c: Cell = Cell { count: 7u64, total: 42i64 }
+            "{c}"
+        }
+        "#,
+    );
+    assert_eq!(s, "Cell { count: 7, total: 42 }");
+}

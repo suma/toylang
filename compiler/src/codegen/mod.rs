@@ -251,6 +251,13 @@ pub(crate) struct CodegenSession<M: Module> {
     /// (e.g. `", "` separators repeated across many `println(struct)`
     /// sites) share a single `.rodata` entry.
     raw_print_strings: HashMap<Vec<u8>, DataId>,
+    /// STR-INTERP-COMPOUND: lower-time bytes for `ConstStrBytes`
+    /// instructions, laid out as `[bytes][NUL][u64 len LE]`
+    /// (matching the regular `ConstStr` layout so the runtime
+    /// str ABI is identical). Keyed by content so identical
+    /// format-prefix bytes (`", "`, `" }"`, etc.) collapse to a
+    /// single `.rodata` entry across every struct-format site.
+    const_str_bytes: HashMap<Vec<u8>, DataId>,
 }
 
 /// Construct the host-targeted ObjectModule used by the AOT pipeline.
@@ -622,6 +629,7 @@ impl<M: Module> CodegenSession<M> {
             panic_strings: HashMap::new(),
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
+            const_str_bytes: HashMap::new(),
         })
     }
 
@@ -706,6 +714,24 @@ impl<M: Module> CodegenSession<M> {
         for bytes in raw_needed {
             self.declare_raw_print_string(bytes)?;
         }
+        // STR-INTERP-COMPOUND: every `ConstStrBytes` instruction in
+        // the module pre-registers its payload as a `.rodata`
+        // entry. Content-keyed dedup means repeated separators
+        // (`", "` / `" }"`) only consume one slot.
+        let mut const_bytes_needed: std::collections::BTreeSet<Vec<u8>> =
+            std::collections::BTreeSet::new();
+        for func in &ir_module.functions {
+            for blk in &func.blocks {
+                for inst in &blk.instructions {
+                    if let InstKind::ConstStrBytes { bytes } = &inst.kind {
+                        const_bytes_needed.insert(bytes.clone());
+                    }
+                }
+            }
+        }
+        for bytes in const_bytes_needed {
+            self.declare_const_str_bytes(&bytes)?;
+        }
         Ok(())
     }
 
@@ -781,6 +807,37 @@ impl<M: Module> CodegenSession<M> {
             .define_data(data_id, &desc)
             .map_err(|e| format!("define data {name}: {e}"))?;
         self.print_strings.insert(sym, data_id);
+        Ok(())
+    }
+
+    /// STR-INTERP-COMPOUND: reserve a `.rodata` entry for raw
+    /// bytes that come from the AOT lower (struct/tuple/enum
+    /// format prefixes that don't have a frontend-interner
+    /// symbol). Layout matches `declare_print_string`
+    /// (`[bytes][NUL][u64 len LE]`) so the resulting handle is
+    /// runtime-ABI-identical to a regular str literal. Content
+    /// keying lets every `", "` / `" }"` / `"x: "` separator
+    /// share one `.rodata` slot across the whole binary.
+    fn declare_const_str_bytes(&mut self, payload: &[u8]) -> Result<(), String> {
+        if self.const_str_bytes.contains_key(payload) {
+            return Ok(());
+        }
+        let bytes_len = payload.len();
+        let mut bytes = Vec::with_capacity(bytes_len + 1 + 8);
+        bytes.extend_from_slice(payload);
+        bytes.push(0);
+        bytes.extend_from_slice(&(bytes_len as u64).to_le_bytes());
+        let name = format!("toy_const_str_bytes_{}", self.const_str_bytes.len());
+        let data_id = self
+            .module
+            .declare_data(&name, CLinkage::Local, false, false)
+            .map_err(|e| format!("declare data {name}: {e}"))?;
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| format!("define data {name}: {e}"))?;
+        self.const_str_bytes.insert(payload.to_vec(), data_id);
         Ok(())
     }
 
@@ -891,6 +948,8 @@ impl<M: Module> CodegenSession<M> {
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
+        let const_str_bytes_imports =
+            self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -903,6 +962,7 @@ impl<M: Module> CodegenSession<M> {
                 &panic_imports,
                 &print_imports,
                 &raw_print_imports,
+                &const_str_bytes_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -936,6 +996,8 @@ impl<M: Module> CodegenSession<M> {
         let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
         let raw_print_imports =
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
+        let const_str_bytes_imports =
+            self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -948,6 +1010,7 @@ impl<M: Module> CodegenSession<M> {
                 &panic_imports,
                 &print_imports,
                 &raw_print_imports,
+                &const_str_bytes_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -1144,6 +1207,10 @@ struct LowerCtx<'a, 'b> {
     /// Same idea, for codegen-synthesised `PrintRaw` fragments. Keyed
     /// by the raw bytes (no source-program symbol).
     raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
+    /// Same idea, for `ConstStrBytes` payloads (STR-INTERP-COMPOUND
+    /// struct-format bytes). Keyed by content; the `.rodata` layout
+    /// is the str-handle shape (`[bytes][NUL][u64 len LE]`).
+    const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
     runtime: &'a RuntimeRefs,
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
@@ -1203,6 +1270,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         panic_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
+        const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         runtime: &'a RuntimeRefs,
     ) -> Self {
         Self {
@@ -1213,6 +1281,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             panic_imports,
             print_imports,
             raw_print_imports,
+            const_str_bytes_imports,
             runtime,
             block_map: HashMap::new(),
             locals: HashMap::new(),

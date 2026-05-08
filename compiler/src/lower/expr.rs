@@ -100,6 +100,138 @@ impl<'a> FunctionLower<'a> {
         Some(leaves)
     }
 
+    /// STR-INTERP-COMPOUND struct-arm body. Builds the formatted
+    /// string `"TypeName { name: <to_string(value)>, ... }"`
+    /// inline, matching the interpreter's
+    /// `Object::to_display_string` (fields in alphabetical
+    /// order). Currently restricted to structs whose fields are
+    /// all scalar — nested compound fields would need recursive
+    /// expansion (or an enum/tuple-aware extension) and are
+    /// rejected with a precise message rather than silently
+    /// falling back. Format prefixes are emitted via
+    /// `ConstStrBytes` (raw `.rodata` bytes, no interner
+    /// roundtrip), and per-field values go through the existing
+    /// `InstKind::ToString` scalar runtime helper. Concatenation
+    /// uses `InstKind::StrConcat` (the same `toy_str_concat`
+    /// runtime helper string interpolation already relies on).
+    fn lower_struct_to_string(
+        &mut self,
+        struct_id: crate::ir::StructId,
+        arg_expr: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        let arg_inner = self
+            .program
+            .expression
+            .get(arg_expr)
+            .ok_or_else(|| "__builtin_to_string arg expr missing".to_string())?;
+        let sym = match arg_inner {
+            Expr::Identifier(s) => s,
+            _ => return Err(
+                "__builtin_to_string: struct arg must be a bare identifier (MVP)".to_string(),
+            ),
+        };
+        let fields = match self.bindings.get(&sym).cloned() {
+            Some(Binding::Struct { fields, .. }) => fields,
+            _ => return Err(
+                "__builtin_to_string: struct identifier needs a Struct binding".to_string(),
+            ),
+        };
+        let (type_name_sym, decl_fields): (string_interner::DefaultSymbol, Vec<(String, Type)>) = {
+            let def = self.module.struct_def(struct_id);
+            (def.base_name, def.fields.clone())
+        };
+        let type_name_str = self
+            .interner
+            .resolve(type_name_sym)
+            .unwrap_or("?")
+            .to_string();
+        let leaf_locals = flatten_struct_locals(&fields);
+        if leaf_locals.len() != decl_fields.len() {
+            return Err(format!(
+                "__builtin_to_string: struct {} has nested compound fields — \
+                 nested compound to_string is not supported in AOT yet",
+                type_name_str
+            ));
+        }
+        let mut sorted: Vec<(usize, String, Type)> = decl_fields
+            .iter()
+            .enumerate()
+            .map(|(i, (n, t))| (i, n.clone(), *t))
+            .collect();
+        sorted.sort_by(|a, b| a.1.cmp(&b.1));
+        for (_, name, ty) in &sorted {
+            if matches!(ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit) {
+                return Err(format!(
+                    "__builtin_to_string: struct {} field `{}` has compound type {:?} — \
+                     nested compound to_string is not supported in AOT yet",
+                    type_name_str, name, ty
+                ));
+            }
+        }
+        // Header `"TypeName { "` if there's at least one field;
+        // `"TypeName {}"` for an empty struct. Matches the
+        // interpreter's display format exactly.
+        let header_text = if sorted.is_empty() {
+            format!("{} {{}}", type_name_str)
+        } else {
+            format!("{} {{ ", type_name_str)
+        };
+        let mut acc = self
+            .emit(
+                InstKind::ConstStrBytes { bytes: header_text.into_bytes() },
+                Some(Type::Str),
+            )
+            .expect("ConstStrBytes returns a value");
+        for (i, (decl_idx, name, field_ty)) in sorted.iter().enumerate() {
+            let prefix = format!("{}: ", name);
+            let prefix_v = self
+                .emit(
+                    InstKind::ConstStrBytes { bytes: prefix.into_bytes() },
+                    Some(Type::Str),
+                )
+                .expect("ConstStrBytes returns a value");
+            acc = self
+                .emit(InstKind::StrConcat { a: acc, b: prefix_v }, Some(Type::Str))
+                .expect("StrConcat returns a value");
+            let (local, leaf_ty) = leaf_locals[*decl_idx];
+            let val = self
+                .emit(InstKind::LoadLocal(local), Some(leaf_ty))
+                .expect("LoadLocal returns a value");
+            let val_str = self
+                .emit(
+                    InstKind::ToString { value: val, value_ty: *field_ty },
+                    Some(Type::Str),
+                )
+                .expect("ToString returns a value");
+            acc = self
+                .emit(InstKind::StrConcat { a: acc, b: val_str }, Some(Type::Str))
+                .expect("StrConcat returns a value");
+            if i + 1 < sorted.len() {
+                let sep = self
+                    .emit(
+                        InstKind::ConstStrBytes { bytes: b", ".to_vec() },
+                        Some(Type::Str),
+                    )
+                    .expect("ConstStrBytes returns a value");
+                acc = self
+                    .emit(InstKind::StrConcat { a: acc, b: sep }, Some(Type::Str))
+                    .expect("StrConcat returns a value");
+            }
+        }
+        if !sorted.is_empty() {
+            let footer = self
+                .emit(
+                    InstKind::ConstStrBytes { bytes: b" }".to_vec() },
+                    Some(Type::Str),
+                )
+                .expect("ConstStrBytes returns a value");
+            acc = self
+                .emit(InstKind::StrConcat { a: acc, b: footer }, Some(Type::Str))
+                .expect("StrConcat returns a value");
+        }
+        Ok(Some(acc))
+    }
+
     fn collect_leaves(
         &self,
         ty: Type,
@@ -1183,11 +1315,24 @@ impl<'a> FunctionLower<'a> {
                 // `toy_to_string_<ty>` runtime helper. The arg's
                 // IR type is captured here so codegen can pick the
                 // right helper without re-inferring later.
+                //
+                // STR-INTERP-COMPOUND: when arg resolves to a
+                // struct identifier, expand into a per-field
+                // `ToString(scalar)` + `StrConcat` chain matching
+                // the interpreter's `Object::to_display_string`
+                // formatting (`TypeName { name: value, ... }`,
+                // fields in alphabetical order). Format prefixes
+                // are emitted as `ConstStrBytes` so we don't have
+                // to round-trip them through the immutable
+                // interner.
                 if args.len() != 1 {
                     return Err(format!(
                         "__builtin_to_string takes 1 argument, got {}",
                         args.len()
                     ));
+                }
+                if let Some(Type::Struct(struct_id)) = self.value_scalar(&args[0]) {
+                    return self.lower_struct_to_string(struct_id, &args[0]);
                 }
                 let arg_value = self
                     .lower_expr(&args[0])?
@@ -1197,17 +1342,13 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| {
                         "__builtin_to_string: could not infer arg IR type at lower time".to_string()
                     })?;
-                // Compound types aren't supported by the
-                // to_string_* runtime family. Reject early so the
-                // user gets a precise message rather than a
-                // codegen-time internal error.
                 if matches!(
                     value_ty,
                     Type::Struct(_) | Type::Tuple(_) | Type::Enum(_) | Type::Unit
                 ) {
                     return Err(format!(
                         "compiler MVP cannot lower __builtin_to_string of compound type {:?} \
-                         yet — interpolation supports primitives only at AOT",
+                         yet — interpolation supports primitives + struct only at AOT",
                         value_ty
                     ));
                 }

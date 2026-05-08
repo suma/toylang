@@ -704,6 +704,17 @@ pub enum InstKind {
     /// has the interner; codegen does not) so the cranelift
     /// `iadd_imm` offset is known statically.
     ConstStr { message: DefaultSymbol, bytes_len: u64 },
+    /// STR-INTERP-COMPOUND: emit a `.rodata` slot for raw bytes
+    /// that don't live in the frontend interner. The `__builtin_to_string`
+    /// struct lower needs to materialise format-prefix text
+    /// (`"Point { "`, `"x: "`, `", "`, `" }"`, etc.) at lower
+    /// time without forcing every such string through
+    /// `interner.get_or_intern` (which would require a `&mut`
+    /// caller chain). Codegen mirrors the `ConstStr` layout
+    /// (`[bytes][NUL][u64 len LE]`) so the resulting handle is
+    /// indistinguishable at the runtime ABI from regular str
+    /// literals.
+    ConstStrBytes { bytes: Vec<u8> },
     /// Read one element from an array stack slot at the given
     /// `index` value. Codegen emits `stack_addr` + offset
     /// arithmetic + `load.<elem_ty>`; constant indices fold into
@@ -1315,6 +1326,9 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::ConstStr { message, .. } => {
                 write!(f, "{prefix}const_str #{}", message.to_usize())
+            }
+            InstKind::ConstStrBytes { bytes } => {
+                write!(f, "{prefix}const_str_bytes len={}", bytes.len())
             }
             InstKind::PrintRaw { text, newline } => {
                 let kw = if *newline { "println_raw" } else { "print_raw" };

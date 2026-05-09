@@ -235,7 +235,17 @@ impl ExprPool {
     pub fn add(&mut self, expr: Expr) -> ExprRef {
         let index = self.expr_types.len();
         self.extend_to_index(index);
+        self.populate_expr_slot(index, expr);
+        ExprRef(index as u32)
+    }
 
+    /// POOL-DEDUP: per-variant dispatch shared by `add` (extends the
+    /// pool then writes) and `update` (clears then writes). Sets
+    /// `expr_types[index]` plus the variant's data columns; assumes
+    /// the slot is freshly allocated or freshly cleared (no
+    /// pre-existing values to reset). Adding a new `Expr` variant
+    /// requires one new arm here instead of two.
+    fn populate_expr_slot(&mut self, index: usize, expr: Expr) {
         match expr {
             Expr::Assign(lhs, rhs) => {
                 self.expr_types[index] = ExprType::Assign;
@@ -327,6 +337,11 @@ impl ExprPool {
                 self.expr_list[index] = Some(exprs);
             }
             Expr::Call(fn_name, args) => {
+                // Note: Call stores its args ExprRef in `operand`, not
+                // `rhs`. Earlier the `update` path mistakenly wrote to
+                // `rhs`, leaving the slot half-populated; the dedup
+                // resolves that drift by going through this single
+                // dispatch.
                 self.expr_types[index] = ExprType::Call;
                 self.symbol_val[index] = Some(fn_name);
                 self.operand[index] = Some(args);
@@ -430,8 +445,36 @@ impl ExprPool {
                 self.closure_params[index] = Some(params);
             }
         }
+    }
 
-        ExprRef(index as u32)
+    /// POOL-DEDUP: reset every per-variant data column at `index` to
+    /// `None` so `populate_expr_slot` can write the new variant
+    /// without leaving stale fields from the old one. Consumed only
+    /// by `update`; `add` operates on freshly extended slots whose
+    /// columns are already None from `extend_to_index`.
+    fn clear_expr_slot(&mut self, index: usize) {
+        self.lhs[index] = None;
+        self.rhs[index] = None;
+        self.operand[index] = None;
+        self.operator[index] = None;
+        self.unary_op[index] = None;
+        self.int64_val[index] = None;
+        self.uint64_val[index] = None;
+        self.float64_val[index] = None;
+        self.symbol_val[index] = None;
+        self.boolean_val[index] = None;
+        self.expr_list[index] = None;
+        self.stmt_list[index] = None;
+        self.symbol_list[index] = None;
+        self.field_list[index] = None;
+        self.entry_list[index] = None;
+        self.builtin_method[index] = None;
+        self.builtin_function[index] = None;
+        self.index_val[index] = None;
+        self.third_operand[index] = None;
+        self.match_arms[index] = None;
+        self.closure_params[index] = None;
+        self.target_type[index] = None;
     }
 
     pub fn get(&self, expr_ref: &ExprRef) -> Option<Expr> {
@@ -633,224 +676,8 @@ impl ExprPool {
         if index >= self.expr_types.len() {
             return;
         }
-
-        // Clear all fields for this index first
-        self.lhs[index] = None;
-        self.rhs[index] = None;
-        self.operand[index] = None;
-        self.operator[index] = None;
-        self.unary_op[index] = None;
-        self.int64_val[index] = None;
-        self.uint64_val[index] = None;
-        self.float64_val[index] = None;
-        self.symbol_val[index] = None;
-        self.boolean_val[index] = None;
-        self.expr_list[index] = None;
-        self.stmt_list[index] = None;
-        self.symbol_list[index] = None;
-        self.field_list[index] = None;
-        self.entry_list[index] = None;
-        self.builtin_method[index] = None;
-        self.builtin_function[index] = None;
-        self.index_val[index] = None;
-        self.third_operand[index] = None;
-        self.match_arms[index] = None;
-        self.closure_params[index] = None;
-        self.target_type[index] = None;
-
-        // Set the new expression data
-        match expr {
-            Expr::Assign(lhs, rhs) => {
-                self.expr_types[index] = ExprType::Assign;
-                self.lhs[index] = Some(lhs);
-                self.rhs[index] = Some(rhs);
-            }
-            Expr::IfElifElse(cond, then_expr, elif_branches, else_expr) => {
-                self.expr_types[index] = ExprType::IfElifElse;
-                self.lhs[index] = Some(cond);
-                self.rhs[index] = Some(then_expr);
-                self.entry_list[index] = Some(elif_branches);
-                self.third_operand[index] = Some(else_expr);
-            }
-            Expr::Binary(op, lhs, rhs) => {
-                self.expr_types[index] = ExprType::Binary;
-                self.operator[index] = Some(op);
-                self.lhs[index] = Some(lhs);
-                self.rhs[index] = Some(rhs);
-            }
-            Expr::Unary(op, operand) => {
-                self.expr_types[index] = ExprType::Unary;
-                self.unary_op[index] = Some(op);
-                self.operand[index] = Some(operand);
-            }
-            Expr::Block(stmts) => {
-                self.expr_types[index] = ExprType::Block;
-                self.stmt_list[index] = Some(stmts);
-            }
-            Expr::True => {
-                self.expr_types[index] = ExprType::True;
-            }
-            Expr::False => {
-                self.expr_types[index] = ExprType::False;
-            }
-            Expr::Int64(val) => {
-                self.expr_types[index] = ExprType::Int64;
-                self.int64_val[index] = Some(val);
-            }
-            Expr::UInt64(val) => {
-                self.expr_types[index] = ExprType::UInt64;
-                self.uint64_val[index] = Some(val);
-            }
-            Expr::Int8(val) => {
-                self.expr_types[index] = ExprType::Int8;
-                self.int64_val[index] = Some(val as i64);
-            }
-            Expr::Int16(val) => {
-                self.expr_types[index] = ExprType::Int16;
-                self.int64_val[index] = Some(val as i64);
-            }
-            Expr::Int32(val) => {
-                self.expr_types[index] = ExprType::Int32;
-                self.int64_val[index] = Some(val as i64);
-            }
-            Expr::UInt8(val) => {
-                self.expr_types[index] = ExprType::UInt8;
-                self.uint64_val[index] = Some(val as u64);
-            }
-            Expr::UInt16(val) => {
-                self.expr_types[index] = ExprType::UInt16;
-                self.uint64_val[index] = Some(val as u64);
-            }
-            Expr::UInt32(val) => {
-                self.expr_types[index] = ExprType::UInt32;
-                self.uint64_val[index] = Some(val as u64);
-            }
-            Expr::Float64(val) => {
-                self.expr_types[index] = ExprType::Float64;
-                self.float64_val[index] = Some(val);
-            }
-            Expr::Number(sym) => {
-                self.expr_types[index] = ExprType::Number;
-                self.symbol_val[index] = Some(sym);
-            }
-            Expr::Identifier(sym) => {
-                self.expr_types[index] = ExprType::Identifier;
-                self.symbol_val[index] = Some(sym);
-            }
-            Expr::ArrayLiteral(elements) => {
-                self.expr_types[index] = ExprType::ArrayLiteral;
-                self.expr_list[index] = Some(elements);
-            }
-            Expr::Call(func, args) => {
-                // Match `add` / `get`: Call stores its args ExprRef in
-                // `operand`, not `rhs`. Writing to the wrong column made
-                // the slot look populated to `expr_types` but `None`
-                // through `get`, and the divergence only surfaced when a
-                // remapped Call (e.g. an `extern fn` body call inside an
-                // imported module) tried to round-trip through the pool.
-                self.expr_types[index] = ExprType::Call;
-                self.symbol_val[index] = Some(func);
-                self.operand[index] = Some(args);
-            }
-            Expr::MethodCall(obj, method, args) => {
-                self.expr_types[index] = ExprType::MethodCall;
-                self.lhs[index] = Some(obj);
-                self.symbol_val[index] = Some(method);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::StructLiteral(name, fields) => {
-                self.expr_types[index] = ExprType::StructLiteral;
-                self.symbol_val[index] = Some(name);
-                self.field_list[index] = Some(fields);
-            }
-            Expr::QualifiedIdentifier(path) => {
-                self.expr_types[index] = ExprType::QualifiedIdentifier;
-                self.symbol_list[index] = Some(path);
-            }
-            Expr::BuiltinMethodCall(obj, method, args) => {
-                self.expr_types[index] = ExprType::BuiltinMethodCall;
-                self.lhs[index] = Some(obj);
-                self.builtin_method[index] = Some(method);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::BuiltinCall(func, args) => {
-                self.expr_types[index] = ExprType::BuiltinCall;
-                self.builtin_function[index] = Some(func);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::SliceAssign(obj, start_expr, end_expr, value) => {
-                self.expr_types[index] = ExprType::SliceAssign;
-                self.lhs[index] = Some(obj);
-                self.rhs[index] = start_expr;
-                self.operand[index] = end_expr;
-                self.third_operand[index] = Some(value);
-            }
-            Expr::AssociatedFunctionCall(struct_name, function_name, args) => {
-                self.expr_types[index] = ExprType::AssociatedFunctionCall;
-                self.symbol_list[index] = Some(vec![struct_name, function_name]);
-                self.expr_list[index] = Some(args);
-            }
-            Expr::SliceAccess(obj, slice_info) => {
-                self.expr_types[index] = ExprType::SliceAccess;
-                self.lhs[index] = Some(obj);
-                self.slice_info[index] = Some(slice_info);
-            }
-            Expr::DictLiteral(entries) => {
-                self.expr_types[index] = ExprType::DictLiteral;
-                self.entry_list[index] = Some(entries);
-            }
-            Expr::TupleLiteral(elements) => {
-                self.expr_types[index] = ExprType::TupleLiteral;
-                self.expr_list[index] = Some(elements);
-            }
-            Expr::TupleAccess(obj, idx) => {
-                self.expr_types[index] = ExprType::TupleAccess;
-                self.lhs[index] = Some(obj);
-                self.index_val[index] = Some(idx);
-            }
-            Expr::Cast(expr, type_decl) => {
-                self.expr_types[index] = ExprType::Cast;
-                self.lhs[index] = Some(expr);
-                self.target_type[index] = Some(type_decl);
-            }
-            Expr::With(allocator, body) => {
-                self.expr_types[index] = ExprType::With;
-                self.lhs[index] = Some(allocator);
-                self.rhs[index] = Some(body);
-            }
-            Expr::Null => {
-                self.expr_types[index] = ExprType::Null;
-            }
-            Expr::ExprList(exprs) => {
-                self.expr_types[index] = ExprType::ExprList;
-                self.expr_list[index] = Some(exprs);
-            }
-            Expr::String(sym) => {
-                self.expr_types[index] = ExprType::String;
-                self.symbol_val[index] = Some(sym);
-            }
-            Expr::FieldAccess(obj, field) => {
-                self.expr_types[index] = ExprType::FieldAccess;
-                self.lhs[index] = Some(obj);
-                self.symbol_val[index] = Some(field);
-            }
-            Expr::Match(scrutinee, arms) => {
-                self.expr_types[index] = ExprType::Match;
-                self.lhs[index] = Some(scrutinee);
-                self.match_arms[index] = Some(arms);
-            }
-            Expr::Range(start, end) => {
-                self.expr_types[index] = ExprType::Range;
-                self.lhs[index] = Some(start);
-                self.rhs[index] = Some(end);
-            }
-            Expr::Closure { params, return_type, body } => {
-                self.expr_types[index] = ExprType::Closure;
-                self.lhs[index] = Some(body);
-                self.target_type[index] = return_type;
-                self.closure_params[index] = Some(params);
-            }
-        }
+        self.clear_expr_slot(index);
+        self.populate_expr_slot(index, expr);
     }
 
     pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor)
@@ -1000,7 +827,31 @@ impl StmtPool {
     pub fn add(&mut self, stmt: Stmt) -> StmtRef {
         let index = self.stmt_types.len();
         self.extend_to_index(index);
+        self.populate_stmt_slot(index, stmt);
+        StmtRef(index as u32)
+    }
 
+    /// Replace the statement at `stmt_ref` with `stmt`. Mirrors
+    /// `ExprPool::update` and exists primarily so the module
+    /// integration pass can install placeholder slots up front and
+    /// fill them with the real remapped statements once every
+    /// `StmtRef` / `ExprRef` has been redirected. Out-of-range refs
+    /// are silently ignored, matching `ExprPool::update`.
+    pub fn update(&mut self, stmt_ref: &StmtRef, stmt: Stmt) {
+        let index = stmt_ref.to_index();
+        if index >= self.stmt_types.len() {
+            return;
+        }
+        self.clear_stmt_slot(index);
+        self.populate_stmt_slot(index, stmt);
+    }
+
+    /// POOL-DEDUP: per-variant dispatch shared by `add` and `update`.
+    /// Sets `stmt_types[index]` plus the variant's data columns;
+    /// assumes the slot is freshly allocated (from `extend_to_index`)
+    /// or freshly cleared (from `clear_stmt_slot`). Adding a new
+    /// `Stmt` variant requires one new arm here instead of two.
+    fn populate_stmt_slot(&mut self, index: usize, stmt: Stmt) {
         match stmt {
             Stmt::Expression(expr) => {
                 self.stmt_types[index] = StmtType::Expression;
@@ -1086,24 +937,16 @@ impl StmtPool {
                 self.struct_generic_params[index] = Some(generic_params);
             }
         }
-
-        StmtRef(index as u32)
     }
 
-    /// Replace the statement at `stmt_ref` with `stmt`. Mirrors
-    /// `ExprPool::update` and exists primarily so the module
-    /// integration pass can install placeholder slots up front and
-    /// fill them with the real remapped statements once every
-    /// `StmtRef` / `ExprRef` has been redirected. Out-of-range refs
-    /// are silently ignored, matching `ExprPool::update`.
-    pub fn update(&mut self, stmt_ref: &StmtRef, stmt: Stmt) {
-        let index = stmt_ref.to_index();
-        if index >= self.stmt_types.len() {
-            return;
-        }
-        // Clear every per-variant slot so the previous payload
-        // doesn't leak into the new variant. Mirrors the field
-        // list inside `extend_to_index` / `add`.
+    /// POOL-DEDUP: reset every per-variant data column at `index` to
+    /// `None` so `populate_stmt_slot` can write the new variant
+    /// without leaking stale fields. Mirrors the column list in
+    /// `extend_to_index`. (Pre-dedup, the inline clear in `update`
+    /// missed `trait_generic_params` and `impl_trait_type_args`,
+    /// which would silently leak generic-trait state when an
+    /// ImplBlock slot was overwritten.)
+    fn clear_stmt_slot(&mut self, index: usize) {
         self.expr_val[index] = None;
         self.symbol_val[index] = None;
         self.type_decl[index] = None;
@@ -1119,93 +962,12 @@ impl StmtPool {
         self.impl_methods[index] = None;
         self.impl_trait_name[index] = None;
         self.impl_target_type_args[index] = None;
+        self.impl_trait_type_args[index] = None;
         self.enum_variants[index] = None;
         self.enum_generic_params[index] = None;
         self.loop_label[index] = None;
         self.trait_methods[index] = None;
-
-        // Re-populate from the new statement (same shape as `add`).
-        match stmt {
-            Stmt::Expression(expr) => {
-                self.stmt_types[index] = StmtType::Expression;
-                self.expr_val[index] = Some(expr);
-            }
-            Stmt::Val(name, type_decl, value) => {
-                self.stmt_types[index] = StmtType::Val;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = type_decl;
-                self.expr_val[index] = Some(value);
-            }
-            Stmt::Var(name, type_decl, value) => {
-                self.stmt_types[index] = StmtType::Var;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = type_decl;
-                self.expr_val[index] = value;
-            }
-            Stmt::Return(value) => {
-                self.stmt_types[index] = StmtType::Return;
-                self.expr_val[index] = value;
-            }
-            Stmt::Break(label) => {
-                self.stmt_types[index] = StmtType::Break;
-                self.loop_label[index] = label;
-            }
-            Stmt::Continue(label) => {
-                self.stmt_types[index] = StmtType::Continue;
-                self.loop_label[index] = label;
-            }
-            Stmt::For(label, var, start, end, block) => {
-                self.stmt_types[index] = StmtType::For;
-                self.loop_label[index] = label;
-                self.symbol_val[index] = Some(var);
-                self.start_expr[index] = Some(start);
-                self.end_expr[index] = Some(end);
-                self.block_expr[index] = Some(block);
-            }
-            Stmt::While(label, cond, block) => {
-                self.stmt_types[index] = StmtType::While;
-                self.loop_label[index] = label;
-                self.condition[index] = Some(cond);
-                self.block_expr[index] = Some(block);
-            }
-            Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
-                self.stmt_types[index] = StmtType::StructDecl;
-                self.struct_name[index] = Some(name);
-                self.struct_generic_params[index] = Some(generic_params);
-                self.struct_generic_bounds[index] = Some(generic_bounds);
-                self.struct_fields[index] = Some(fields);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
-                self.stmt_types[index] = StmtType::ImplBlock;
-                self.struct_name[index] = Some(target_type);
-                self.impl_methods[index] = Some(methods);
-                self.impl_trait_name[index] = trait_name;
-                self.impl_target_type_args[index] = Some(target_type_args);
-                self.impl_trait_type_args[index] = Some(trait_type_args);
-            }
-            Stmt::EnumDecl { name, generic_params, variants, visibility } => {
-                self.stmt_types[index] = StmtType::EnumDecl;
-                self.struct_name[index] = Some(name);
-                self.enum_generic_params[index] = Some(generic_params);
-                self.enum_variants[index] = Some(variants);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::TraitDecl { name, generic_params, methods, visibility } => {
-                self.stmt_types[index] = StmtType::TraitDecl;
-                self.struct_name[index] = Some(name);
-                self.trait_methods[index] = Some(methods);
-                self.trait_generic_params[index] = Some(generic_params);
-                self.visibility[index] = Some(visibility);
-            }
-            Stmt::TypeAlias { name, generic_params, target, visibility } => {
-                self.stmt_types[index] = StmtType::TypeAlias;
-                self.symbol_val[index] = Some(name);
-                self.type_decl[index] = Some(target);
-                self.visibility[index] = Some(visibility);
-                self.struct_generic_params[index] = Some(generic_params);
-            }
-        }
+        self.trait_generic_params[index] = None;
     }
 
     pub fn get(&self, stmt_ref: &StmtRef) -> Option<Stmt> {

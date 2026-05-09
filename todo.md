@@ -4,6 +4,9 @@
 
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
+### 2026-05-09
+- **IF-VAL (`if val` / `while val`)** — pattern-binding 条件分岐 + ループ。Rust の `if let` 相当だが、toylang は `let` ではなく `val` を不変束縛キーワードに使うので construct 側も `val` で揃えた。**pure parser desugar** — `if val PAT = EXPR { THEN } else { ELSE }` → `match EXPR { PAT => THEN, _ => ELSE }`、`while val PAT = EXPR { BODY }` → `while true { match EXPR { PAT => { BODY; continue }, _ => break } }`。AST / type checker / interpreter / AOT / JIT すべて既存の match / while を再利用、追加 backend 作業ゼロ。**no-else 形** (`if val PAT = EXPR { THEN }`) は THEN を synthetic `val __ifval_dummy_<n> = ...` で wrap して Unit 化、else arm は empty block (match arm body の empty block を Unit 扱いするように pattern_match.rs も小修正)。labelled `@outer: while val PAT = ...` も label 伝播。**AOT 制約**: function-call enum scrutinee (`while val Some(x) = func(i)`) は match_lowering の MVP 制約で未対応 — method-call 形 (`c.next()`) で書く必要あり (interpreter は OK)。3-way consistency 3 件 + interpreter unit 9 件追加。1432 → **1444 tests pass** (+12)。
+
 ### 2026-05-08
 - **LABEL (labelled break / continue)** — `@label: while/for ...` + `break @label` / `continue @label` を 3 backend (interpreter / AOT / JIT) で実装。`@` token 新規追加 (Rust 風 `'label:` は char literal `'a'` との lexer 曖昧性で見送り)、AST: `Stmt::Break(Option<Symbol>)` / `Continue(Option<Symbol>)` / `While(Option<Symbol>, ...)` / `For(Option<Symbol>, ...)`、pool に `loop_label` 列追加。Type checker は `loop_label_stack` で undefined label / break-outside-loop を新規バリデーション (今までの 2 つは silent pass だったので副次的な型安全強化)。AOT は `loop_stack: Vec<(Option<Symbol>, ...)>`、JIT は `LoopFrame.label` で rev-find resolve、複数ループ跨ぎ break で with/drop scope cleanup を target depth まで遡って発行。**副次 fix**: AOT for-range loop に dedicated `step` block を追加 — 既存実装は increment が body 末尾に inline されていて、`continue` が header に直接 jump すると increment を skip して infinite loop になっていた (今まで integer-range for + continue を使う test が存在しなかったため未発覚)。iterator-form `@label: for x in iter { ... }` は desugar 後の synthetic `while true` にラベル伝播。3-way consistency 2 件 + interpreter unit 7 件追加。1423 → **1432 tests pass** (+9)。
 - **OP-OVERLOAD 完全コレクション** (`286a613` + `04eeb25` + `ae4d358` + `bda35dc`) — 同型 struct ペアの全 binary + unary operator を user method dispatch 化: `eq` (`==` / `!=`) / `lt` `le` `gt` `ge` (順序比較) / `add` `sub` `mul` `div` `rem` (`+ - * / %` + 複合代入 `+=` 等) / `bitand` `bitor` `bitxor` `shl` `shr` (ビット演算) / `neg` `bitnot` `not` (単項 `- ~ !`)。3 backend、let-rhs context only。`&& ||` は意図的 scope 外 (short-circuit)。**MVP 制約**: chained position (`a + b + c`)、binary struct literal operand (`a & Bits { v: 1 }`) は follow-up。1326 → **1423 tests pass** (+97 cumulative)。
@@ -103,7 +106,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 ## 実装済み機能サマリー
 
 ### コア言語機能
-- 基本言語機能: if/else/elif、for、while、break/continue (`@label:` でラベル付きループ + `break @label` / `continue @label`、3 backend)、return
+- 基本言語機能: if/else/elif、for、while、break/continue (`@label:` でラベル付きループ + `break @label` / `continue @label`、3 backend)、return、`if val PAT = EXPR { ... }` / `while val PAT = EXPR { ... }` (parser desugar、Rust の `if let` / `while let` 相当)
 - 変数: val（不変）/var（可変）、コンテキストベース型推論
 - 数値型: u64 / i64 / f64（f64 リテラルは `1.5f64` / `42f64` のように `f64` サフィックス必須、タプルアクセスとの曖昧性回避）。`as` による i64/u64 ↔ f64 変換、剰余 `%` と複合代入 `+= -= *= /= %=` 対応
 - 固定配列: 型推論対応、インデックス型推論、境界チェック、要素に struct / tuple / 別配列も可
@@ -142,7 +145,7 @@ REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut s
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1432 テスト, 31 skipped（100% 成功率、2026-05-08 時点 — STRING-API 全 Phase + AOT-SIZEOF-COMPOUND + AOT-COMPOUND-PTR-RW + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD (Eq + Arith + Phase 1-4 含む全 binary/unary) + STRING-NOMINAL + STR-INTERP-COMPOUND (struct/tuple/nested) + LABEL (labelled break/continue) で計 106 件追加。compiler/e2e は 202、consistency は 62+）
+- 合計 1444 テスト, 31 skipped（100% 成功率、2026-05-09 時点 — STRING-API 全 Phase + AOT-SIZEOF-COMPOUND + AOT-COMPOUND-PTR-RW + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD (Eq + Arith + Phase 1-4 含む全 binary/unary) + STRING-NOMINAL + STR-INTERP-COMPOUND (struct/tuple/nested) + LABEL (labelled break/continue) + IF-VAL (`if val` / `while val`) で計 118 件追加。compiler/e2e は 202、consistency は 65+）
 - 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (50+) — 後者は interpreter / JIT / AOT 3 経路一致を保証
 - パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
 

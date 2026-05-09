@@ -1090,6 +1090,60 @@ parser desugars to a synthetic `while true { match iter.next()
 to that synthetic while, so user-written `break @label` inside
 the body resolves to the correct loop.
 
+### `if val` / `while val`
+
+Pattern-binding conditional and loop. Toylang uses `val` (not `let`)
+as its immutable-binding keyword, so the construct is `if val` /
+`while val` rather than Rust's `if let` / `while let` — same
+shape, same semantics, consistent vocabulary:
+
+```rust
+# unwrap an Option succinctly
+if val Option::Some(x) = opt {
+    println("got {x}")
+} else {
+    println("none")
+}
+
+# drain an iterator-style enum until it returns None
+while val Option::Some(item) = it.next() {
+    process(item)
+}
+
+# user-defined enum variant
+enum Shape { Circle(i64), Square(i64), Point }
+val s: Shape = Shape::Circle(5i64)
+val area: i64 = if val Shape::Circle(r) = s { r * r * 3i64 } else { 0i64 }
+```
+
+The construct is **pure parser-level desugar** — it lowers to a
+two-arm `match` (and, for `while val`, an outer `while true`):
+
+| Surface | Desugars to |
+|---|---|
+| `if val PAT = EXPR { THEN } else { ELSE }` | `match EXPR { PAT => THEN, _ => ELSE }` |
+| `if val PAT = EXPR { THEN }` (no else) | same, with the else-arm Unit-yielding so the construct sits at statement position |
+| `while val PAT = EXPR { BODY }` | `while true { match EXPR { PAT => { BODY; continue }, _ => break } }` |
+
+Because the desugar produces only existing AST shapes, **all three
+backends** (interpreter / AOT / cranelift JIT) handle it without
+further changes. Labelled forms (`@label: while val ...`) propagate
+the label to the synthetic `while true` so user-written
+`break @label` from inside the body still escapes correctly.
+
+**Pattern surface**: any pattern that `match` accepts — enum
+variants (with sub-patterns, guards), literals, wildcard, and
+nested forms. `if var PAT = ...` (mutable binding) is not yet
+supported; bindings introduced by `if val` follow the standard
+match-arm immutability rule.
+
+**AOT note**: as with any `match`, the scrutinee must be either
+an enum-typed binding (`while val ... = c.next()` where `c` is a
+struct method receiver) or a scalar primitive. Free-function
+calls returning enums in scrutinee position are not yet supported
+in the AOT MVP — bind to a method receiver or a local first if
+you need 3-backend portability.
+
 ### Match
 
 See [Enums and pattern matching](#enums-and-pattern-matching).

@@ -4265,6 +4265,78 @@ fn labelled_break_round_trip() {
     assert_consistent(src, "labelled_break");
 }
 
+// IF-VAL: 3-way pin for `if val` / `while val` desugar. The construct
+// is purely parser-level (frontend desugars to `match` / `while true +
+// match`), so every backend should already see plain match/while —
+// these tests guard against accidental regressions in the desugar.
+
+#[test]
+fn if_val_some_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val opt: Option<i64> = Option::Some(42i64)
+            if val Option::Some(x) = opt {
+                x
+            } else {
+                -1i64
+            }
+        }
+    "#;
+    assert_consistent(src, "if_val_some");
+}
+
+#[test]
+fn if_val_none_round_trip() {
+    let src = r#"
+        fn main() -> i64 {
+            val opt: Option<i64> = Option::None
+            if val Option::Some(x) = opt {
+                x
+            } else {
+                -1i64
+            }
+        }
+    "#;
+    assert_consistent(src, "if_val_none");
+}
+
+#[test]
+fn while_val_drain_round_trip() {
+    // Counter struct with `&mut self` next() — same shape the iterator
+    // protocol uses, so AOT's method-call enum-scrutinee path applies.
+    // (Function-call enum scrutinees in match position aren't supported
+    // by the AOT MVP; pre-bind to a struct method when you want the
+    // 3-backend round-trip.)
+    let src = r#"
+        struct Counter { v: i64 }
+
+        impl Counter {
+            fn new(start: i64) -> Counter {
+                Counter { v: start }
+            }
+            fn next(&mut self) -> Option<i64> {
+                if self.v > 0i64 {
+                    val cur: i64 = self.v
+                    self.v = self.v - 1i64
+                    Option::Some(cur)
+                } else {
+                    Option::None
+                }
+            }
+        }
+
+        fn main() -> i64 {
+            var sum: i64 = 0i64
+            var c: Counter = Counter::new(4i64)
+            while val Option::Some(x) = c.next() {
+                sum = sum + x
+            }
+            sum
+        }
+    "#;
+    assert_consistent(src, "while_val_drain");
+}
+
 #[test]
 fn labelled_continue_round_trip() {
     let src = r#"

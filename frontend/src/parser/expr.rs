@@ -258,11 +258,22 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
 }
 
 pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
+    // IF-VAL: `if val PAT = EXPR { THEN } else { ELSE }` desugars to a
+    // two-arm match (`PAT => THEN`, `_ => ELSE`). Toylang uses `val` as
+    // its immutable-binding keyword, so the construct stays consistent
+    // with the rest of the language (Rust's `if let` is just `if <bind-kw>`,
+    // and our `<bind-kw>` is `val`). Detected here before falling through
+    // to the regular `if cond { ... }` form so a bare `val` token in
+    // condition position triggers the pattern-binding shape.
+    if matches!(parser.peek(), Some(Kind::Val)) {
+        return parse_if_val(parser);
+    }
+
     // Push condition context to prevent struct literals in conditions
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let cond = parse_logical_expr(parser)?;
     parser.pop_context();
-    
+
     let if_block = parse_block(parser)?;
 
     let mut elif_pairs = Vec::new();
@@ -290,6 +301,76 @@ pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
 
     let location = parser.current_source_location();
     Ok(parser.ast_builder.if_elif_else_expr(cond, if_block, elif_pairs, else_block, Some(location)))
+}
+
+/// IF-VAL: parse `if val PAT = EXPR { THEN } [else { ELSE }]` and desugar
+/// to `match EXPR { PAT => THEN, _ => ELSE }`. The leading `val` token
+/// must already be at `parser.peek()` — `parse_if` dispatches here.
+///
+/// `else` is optional; if absent, the catch-all arm gets a Unit block
+/// matching the existing if-without-else convention.
+fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let start_location = parser.current_source_location();
+    parser.expect_err(&Kind::Val)?;
+    let pattern = parse_match_pattern(parser)?;
+    parser.expect_err(&Kind::Equal)?;
+    // Same struct-literal-in-condition restriction as `if` / `while` /
+    // `match` so `if val Some(x) = MyIter { ... }` parses the `{` as
+    // the body block, not a `MyIter {}` struct literal.
+    parser.push_context(crate::parser::core::ParseContext::Condition);
+    let scrutinee = parse_logical_expr(parser)?;
+    parser.pop_context();
+
+    let then_block = parse_block(parser)?;
+    let (then_arm_body, else_arm_body): (ExprRef, ExprRef) = match parser.peek() {
+        Some(Kind::Else) => {
+            parser.next();
+            let else_block = parse_block(parser)?;
+            (then_block, else_block)
+        }
+        _ => {
+            // No `else` provided — the construct is a statement; wrap the
+            // THEN body so its trailing value is discarded (else both arms
+            // would have to share a non-Unit type). We use a synthetic
+            // `val` binding because `Stmt::Val` returns Unit and a block
+            // ending in a Val statement also resolves to Unit. The dummy
+            // binding's name is unique-per-occurrence; toylang doesn't
+            // warn on unused bindings, so this stays invisible.
+            let counter = parser.synthetic_counter;
+            parser.synthetic_counter += 1;
+            let dummy_name = format!("__ifval_dummy_{counter}");
+            let dummy_sym = parser.string_interner.get_or_intern(dummy_name.as_str());
+            let then_val_stmt = parser.ast_builder.val_stmt(
+                dummy_sym,
+                Some(crate::type_decl::TypeDecl::Unknown),
+                then_block,
+                Some(start_location.clone()),
+            );
+            let then_wrapped = parser
+                .ast_builder
+                .block_expr(vec![then_val_stmt], Some(start_location.clone()));
+            // Else arm: an empty block is treated as Unit by the match
+            // type-checker (mirrors the if/elif/else convention).
+            let else_empty = parser
+                .ast_builder
+                .block_expr(vec![], Some(start_location.clone()));
+            (then_wrapped, else_empty)
+        }
+    };
+
+    let arms = vec![
+        crate::ast::MatchArm { pattern, guard: None, body: then_arm_body },
+        crate::ast::MatchArm {
+            pattern: crate::ast::Pattern::Wildcard,
+            guard: None,
+            body: else_arm_body,
+        },
+    ];
+    let match_expr = parser.ast_builder.add_expr_with_location(
+        crate::ast::Expr::Match(scrutinee, arms),
+        Some(start_location),
+    );
+    Ok(match_expr)
 }
 
 // Parse `with allocator = expr { body }` — scoped allocator binding.
@@ -364,7 +445,7 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
     Ok(expr_ref)
 }
 
-fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+pub(super) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
     // Wildcard: an underscore identifier.
     if let Some(Kind::Identifier(s)) = parser.peek() {
         if s == "_" {

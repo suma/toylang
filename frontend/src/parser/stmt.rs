@@ -141,6 +141,13 @@ fn parse_optional_loop_label(parser: &mut Parser) -> ParserResult<Option<Default
 
 fn parse_while_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
     parser.expect_err(&Kind::While)?;
+    // IF-VAL: `while val PAT = EXPR { BODY }` desugars to
+    // `while true { match EXPR { PAT => BODY, _ => break @label } }`.
+    // The break inherits the outer label so a labelled `while val`
+    // still terminates correctly when the pattern fails to match.
+    if matches!(parser.peek(), Some(Kind::Val)) {
+        return parse_while_val(parser, label);
+    }
     parser.push_context(crate::parser::core::ParseContext::Condition);
     let cond = super::expr::parse_logical_expr(parser)?;
     parser.pop_context();
@@ -148,6 +155,73 @@ fn parse_while_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> 
     let block = super::expr::parse_block(parser)?;
     let location = parser.current_source_location();
     Ok(parser.ast_builder.while_stmt_with_label(label, cond, block, Some(location)))
+}
+
+/// IF-VAL: parse `while val PAT = EXPR { BODY }` (the leading `while`
+/// has already been consumed; the leading `val` is at `parser.peek()`).
+/// Desugars to:
+///
+/// ```text
+/// while true {
+///     match EXPR {
+///         PAT => { BODY; continue },
+///         _   => { break },
+///     }
+///     # `continue` and `break` are intentionally unlabelled — they
+///     # always target the synthetic `while true` immediately above.
+/// }
+/// ```
+///
+/// The synthetic `while true` propagates `outer_label`, so user-written
+/// `break @outer_label` in the body still escapes a labelled
+/// `while val` correctly.
+fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+    let location = parser.current_source_location();
+    parser.expect_err(&Kind::Val)?;
+    let pattern = super::expr::parse_match_pattern(parser)?;
+    parser.expect_err(&Kind::Equal)?;
+    parser.push_context(crate::parser::core::ParseContext::Condition);
+    let scrutinee = super::expr::parse_logical_expr(parser)?;
+    parser.pop_context();
+    let user_body = super::expr::parse_block(parser)?;
+
+    // Some(PAT) arm: `{ BODY; continue }`. The trailing `continue`
+    // unifies the arm's type with the None-arm's `{ break }` (both
+    // diverge to Unit) — same trick used by `desugar_for_in_iterator`.
+    let body_stmt = parser
+        .ast_builder
+        .add_stmt_with_location(Stmt::Expression(user_body), Some(location.clone()));
+    let continue_stmt = parser.ast_builder.continue_stmt(Some(location.clone()));
+    let some_arm_body = parser.ast_builder.block_expr(
+        vec![body_stmt, continue_stmt],
+        Some(location.clone()),
+    );
+    let some_arm = MatchArm { pattern, guard: None, body: some_arm_body };
+
+    let break_stmt = parser.ast_builder.break_stmt(Some(location.clone()));
+    let break_block = parser
+        .ast_builder
+        .block_expr(vec![break_stmt], Some(location.clone()));
+    let none_arm = MatchArm {
+        pattern: Pattern::Wildcard,
+        guard: None,
+        body: break_block,
+    };
+
+    let match_expr = parser.ast_builder.add_expr_with_location(
+        Expr::Match(scrutinee, vec![some_arm, none_arm]),
+        Some(location.clone()),
+    );
+    let match_stmt = parser
+        .ast_builder
+        .add_stmt_with_location(Stmt::Expression(match_expr), Some(location.clone()));
+    let while_body = parser
+        .ast_builder
+        .block_expr(vec![match_stmt], Some(location.clone()));
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+    Ok(parser
+        .ast_builder
+        .while_stmt_with_label(outer_label, true_expr, while_body, Some(location)))
 }
 
 fn parse_for_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {

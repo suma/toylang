@@ -459,7 +459,19 @@ impl<'a> TypeCheckerVisitor<'a> {
                     )));
                 }
             }
-            let body_ty = self.visit_expr(body)?;
+            // IF-VAL: an arm body that is a literal empty block (`=> {}`)
+            // is treated as Unit, mirroring `visit_if_elif_else`. This
+            // keeps `if val PAT = EXPR { THEN }` (no else) — which
+            // desugars to a two-arm match where the catch-all body is
+            // an empty block — well-typed at statement position. The
+            // body is still type-checked normally if it has any
+            // statements.
+            let body_ty = if matches!(self.core.expr_pool.get(body), Some(crate::ast::Expr::Block(stmts)) if stmts.is_empty())
+            {
+                TypeDecl::Unit
+            } else {
+                self.visit_expr(body)?
+            };
             if pushed_scope {
                 self.context.vars.pop();
             }

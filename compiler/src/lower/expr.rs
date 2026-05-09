@@ -18,7 +18,8 @@
 //!   invocations. Routes `print` / `println` / `panic` /
 //!   `assert` / `__builtin_*` to the matching helper.
 
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, StmtRef, UnaryOp};
+use string_interner::DefaultSymbol;
 
 use super::bindings::{flatten_struct_locals, flatten_tuple_element_locals, Binding};
 use super::FunctionLower;
@@ -683,27 +684,7 @@ impl<'a> FunctionLower<'a> {
             return Ok(None);
         }
         match expr {
-            Expr::Block(stmts) => {
-                // Phase 5 (汎用 RAII): every block opens a fresh
-                // drop scope. `Drop`-impling bindings registered
-                // in the body get drained at exit (linear here;
-                // early `return` / `break` / `continue` paths
-                // emit drops via `terminate_return` /
-                // `Stmt::Break` / `Stmt::Continue` before
-                // terminating). Errors propagate without running
-                // drops — same panic-safety policy the
-                // interpreter uses.
-                self.enter_drop_scope();
-                let mut last: Option<ValueId> = None;
-                for s in &stmts {
-                    last = self.lower_stmt(s)?;
-                    if self.is_unreachable() {
-                        break;
-                    }
-                }
-                self.pop_and_emit_drops()?;
-                Ok(last)
-            }
+            Expr::Block(stmts) => self.lower_expr_block(&stmts),
             Expr::Int64(v) => Ok(self.emit(InstKind::Const(Const::I64(v)), Some(Type::I64))),
             Expr::UInt64(v) => Ok(self.emit(InstKind::Const(Const::U64(v)), Some(Type::U64))),
             Expr::Float64(v) => Ok(self.emit(InstKind::Const(Const::F64(v)), Some(Type::F64))),
@@ -712,134 +693,8 @@ impl<'a> FunctionLower<'a> {
             ),
             Expr::True => Ok(self.emit(InstKind::Const(Const::Bool(true)), Some(Type::Bool))),
             Expr::False => Ok(self.emit(InstKind::Const(Const::Bool(false)), Some(Type::Bool))),
-            Expr::String(sym) => {
-                // String literals in value position emit `ConstStr`,
-                // which materialises a pointer-sized handle to the
-                // shared `.rodata` blob (the same one `PrintStr` uses
-                // for `print("literal")`).
-                let bytes_len = self
-                    .interner
-                    .resolve(sym)
-                    .map(|s| s.as_bytes().len() as u64)
-                    .unwrap_or(0);
-                Ok(self.emit(
-                    InstKind::ConstStr { message: sym, bytes_len },
-                    Some(Type::Str),
-                ))
-            }
-            Expr::Identifier(sym) => {
-                match self.bindings.get(&sym).cloned() {
-                    Some(Binding::Scalar { local, ty }) => {
-                        self.pending_struct_value = None;
-                        Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
-                    }
-                    Some(Binding::RefScalar { local, pointee_ty, .. }) => {
-                        // REF-Stage-2 (g): a `&T` / `&mut T` parameter
-                        // binding is auto-dereferenced when read in
-                        // value position. Load the pointer from the
-                        // local, then dereference it via LoadRef to
-                        // the pointee scalar.
-                        self.pending_struct_value = None;
-                        let ptr = self
-                            .emit(InstKind::LoadLocal(local), Some(Type::U64))
-                            .ok_or_else(|| "RefScalar load: LoadLocal returned no value".to_string())?;
-                        Ok(self.emit(InstKind::LoadRef { ptr, ty: pointee_ty }, Some(pointee_ty)))
-                    }
-                    Some(Binding::Struct { fields, .. }) => {
-                        // Tail-position use: stash the struct's field
-                        // list so `emit_implicit_return` can return it.
-                        // Non-tail uses (e.g. `5 + p`) will fail at
-                        // arithmetic lowering when no scalar value
-                        // materialises.
-                        self.pending_struct_value = Some(fields);
-                        Ok(None)
-                    }
-                    Some(Binding::Tuple { elements }) => {
-                        // Tail-position use: stash the elements list
-                        // so `emit_implicit_return` can pull element
-                        // values out for a tuple-returning function.
-                        // Non-tail uses fall through to errors when a
-                        // scalar value is later required.
-                        self.pending_tuple_value = Some(elements);
-                        Ok(None)
-                    }
-                    Some(Binding::Enum(storage)) => {
-                        // Tail-position use: stash the enum storage
-                        // so `emit_implicit_return` can flatten it
-                        // into a multi-value Return for an enum-
-                        // returning function. Other uses (passing to
-                        // a function, explicit Return) handle the
-                        // binding via a direct lookup, so the
-                        // channel is purely for the tail-implicit-
-                        // return path.
-                        self.pending_enum_value = Some(storage);
-                        Ok(None)
-                    }
-                    Some(Binding::Array { .. }) => {
-                        // Bare-identifier use of an array binding is
-                        // not supported in expression position yet —
-                        // arrays don't flow through the IR's value
-                        // graph. The user must access an element.
-                        Err(format!(
-                            "compiler MVP cannot use array `{}` as a value; access an element with `{}[i]`",
-                            self.interner.resolve(sym).unwrap_or("?"),
-                            self.interner.resolve(sym).unwrap_or("?"),
-                        ))
-                    }
-                    Some(Binding::FunctionPtr { local, .. }) => {
-                        // Closures Phase 5b: bare use of a fn-pointer
-                        // binding loads the U64 address. Used when
-                        // forwarding a HOF parameter to another HOF
-                        // call (`apply(g, x)` inside a body whose
-                        // `g` is itself a FunctionPtr param).
-                        self.pending_struct_value = None;
-                        Ok(self.emit(InstKind::LoadLocal(local), Some(Type::U64)))
-                    }
-                    None => {
-                        // Closures Phase 5b: a `val f = fn(...)` binding
-                        // registers the lifted FuncId in
-                        // `closure_bindings` (Phase 5a) without an
-                        // entry in `bindings`. When such a name is used
-                        // in expression position (passing the closure
-                        // to a HOF), emit FuncAddr to materialise the
-                        // function's runtime address as a U64.
-                        if let Some(link) = self.closure_bindings.get(&sym).copied() {
-                            self.pending_struct_value = None;
-                            // Phase 6b: env-based ABI — every
-                            // closure binding has an env_ptr
-                            // (Some) regardless of capture set.
-                            // Surfacing the closure as a value
-                            // returns the env_ptr; the receiving
-                            // HOF uses CallIndirect against it
-                            // (codegen loads fn_ptr from env+0).
-                            if let Some(env_ptr) = link.env_ptr {
-                                return Ok(Some(env_ptr));
-                            }
-                            // Defensive fallback (should never fire
-                            // post-Phase-6b — every closure binding
-                            // emits MakeClosure on entry): expose
-                            // the bare fn pointer.
-                            return Ok(self.emit(
-                                InstKind::FuncAddr { target: link.func_id },
-                                Some(Type::U64),
-                            ));
-                        }
-                        // Fall back to top-level `const` lookup. This
-                        // mirrors what the type-checker does: a name
-                        // that wasn't introduced by a local binding
-                        // can still resolve to a global const value.
-                        if let Some(c) = self.const_values.get(&sym).copied() {
-                            self.pending_struct_value = None;
-                            let ty = c.ty();
-                            return Ok(self.emit(InstKind::Const(c), Some(ty)));
-                        }
-                        Err(format!(
-                            "undefined identifier `{}`",
-                            self.interner.resolve(sym).unwrap_or("?")
-                        ))
-                    }
-                }
-            }
+            Expr::String(sym) => self.lower_expr_string(sym),
+            Expr::Identifier(sym) => self.lower_expr_identifier(sym),
             Expr::FieldAccess(obj, field) => {
                 self.pending_struct_value = None;
                 self.lower_field_access(&obj, field)
@@ -875,85 +730,14 @@ impl<'a> FunctionLower<'a> {
             }
             Expr::Call(fn_name, args_ref) => self.lower_call(fn_name, &args_ref),
             Expr::AssociatedFunctionCall(struct_name, fn_name, args) => {
-                // Module-qualified call (`math::add(args)`): when the
-                // qualifier doesn't refer to a struct / enum and the
-                // function exists in the (post-import) main function
-                // table, treat it as a plain `Call`. Module
-                // integration flattens imported `pub fn`s in, so the
-                // bare lookup hits without needing the qualifier.
-                // Real associated calls (`Container::new(...)`) keep
-                // the unsupported reject path below.
-                let is_struct = self.struct_defs.contains_key(&struct_name)
-                    || self.enum_defs.contains_key(&struct_name);
-                // Qualified call (`math::add(args)`): try
-                // `(Some(struct_name), fn_name)` first so cross-
-                // module collisions resolve unambiguously. Fall back
-                // to the bare lookup so legacy code paths that
-                // pre-date the per-module key still work — e.g.
-                // an integration that didn't record a module path
-                // (None entry) but flattened the function into the
-                // table by name.
-                let target_opt = if !is_struct {
-                    self.module
-                        .lookup_function(Some(struct_name), fn_name)
-                        .or_else(|| self.module.lookup_function(None, fn_name))
-                } else {
-                    None
-                };
-                if let Some(target) = target_opt {
-                    let ret_ty = self.module.function(target).return_type;
-                    if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-                        return Err(format!(
-                            "compiler MVP cannot use a compound-returning module call (`{}::{}`) in expression position; bind the result with `val`",
-                            self.interner.resolve(struct_name).unwrap_or("?"),
-                            self.interner.resolve(fn_name).unwrap_or("?"),
-                        ));
-                    }
-                    let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
-                    for a in &args {
-                        let v = self
-                            .lower_expr(a)?
-                            .ok_or_else(|| {
-                                "module function arg produced no value".to_string()
-                            })?;
-                        arg_values.push(v);
-                    }
-                    let result_ty = if ret_ty.produces_value() {
-                        Some(ret_ty)
-                    } else {
-                        None
-                    };
-                    return Ok(self.emit(
-                        InstKind::Call { target, args: arg_values },
-                        result_ty,
-                    ));
-                }
-                Err(format!(
-                    "compiler MVP cannot lower expression yet: {:?}",
-                    Expr::AssociatedFunctionCall(struct_name, fn_name, args)
-                ))
+                self.lower_expr_associated_call(struct_name, fn_name, args)
             }
             Expr::BuiltinCall(func, args) => self.lower_builtin_call(&func, &args),
             Expr::Cast(inner, target_ty) => self.lower_cast(&inner, &target_ty),
             Expr::Match(scrutinee, arms) => self.lower_match(&scrutinee, &arms),
             Expr::MethodCall(obj, method, args) => self.lower_method_call(&obj, method, &args),
             Expr::BuiltinMethodCall(_receiver, method, _args) => {
-                // NOTE: `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}`
-                // arms used to live here, lowering directly to
-                // `UnaryOp::{Abs, Sqrt}` cranelift instructions.
-                // Step F removed them — `x.abs()` / `x.sqrt()` now
-                // resolve through the prelude's extension-trait
-                // impls and reach `lower_method_call`'s
-                // primitive-receiver path (Step D), which emits a
-                // regular call into the prelude's wrapper body that
-                // forwards to `__extern_*` (resolved by
-                // `libm_import_name_for` to the matching libm
-                // symbol). String / `is_null` methods stay
-                // interpreter-only as before.
-                Err(format!(
-                    "compiler MVP cannot lower builtin method yet: {:?}",
-                    method
-                ))
+                self.lower_expr_builtin_method_call(method)
             }
             Expr::SliceAccess(obj, info) => self.lower_slice_access(&obj, &info),
             Expr::SliceAssign(obj, start, end, value) => {
@@ -981,177 +765,7 @@ impl<'a> FunctionLower<'a> {
             // on an early exit the cleanup helpers already
             // emitted it before terminating, so we just decrement
             // the depth without a duplicate pop.
-            Expr::With(allocator_expr, body_expr) => {
-                // Phase 5 (Design A scope-bound): detect a
-                // **temporary form** for an inline allocator and
-                // auto-release the slot at scope exit. Today the
-                // recognised forms are `Arena::new()` (no args) and
-                // `FixedBuffer::new(<capacity>)` (1 arg). `Global`
-                // aliases the process-wide default and needs no
-                // drop. Other shapes fall through to the existing
-                // wrapper-struct auto-extract path below.
-                enum InlineAlloc {
-                    Arena,
-                    FixedBuffer(frontend::ast::ExprRef),
-                }
-                let inline_kind: Option<InlineAlloc> = match self.program.expression.get(&allocator_expr) {
-                    Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) => {
-                        let s = self.interner.resolve(struct_sym);
-                        let f = self.interner.resolve(fn_sym);
-                        if f == Some("new") && s == Some("Arena") && args.is_empty() {
-                            Some(InlineAlloc::Arena)
-                        } else if f == Some("new") && s == Some("FixedBuffer") && args.len() == 1 {
-                            Some(InlineAlloc::FixedBuffer(args[0]))
-                        } else {
-                            None
-                        }
-                    }
-                    // #121 Phase B-rest leftover (1): the **raw builtin**
-                    // forms `__builtin_arena_allocator()` and
-                    // `__builtin_fixed_buffer_allocator(cap)` are
-                    // shorthand for `Arena::new()` / `FixedBuffer::new()`
-                    // — let them auto-drop too so users don't have to
-                    // call `__builtin_arena_drop` manually.
-                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args))
-                        if args.is_empty() =>
-                    {
-                        Some(InlineAlloc::Arena)
-                    }
-                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args))
-                        if args.len() == 1 =>
-                    {
-                        Some(InlineAlloc::FixedBuffer(args[0]))
-                    }
-                    _ => None,
-                };
-                if let Some(kind) = inline_kind {
-                    // Construct the handle inline so we don't have
-                    // to lower the associated-function call as a
-                    // struct-returning temporary binding.
-                    let (handle, cleanup) = match kind {
-                        InlineAlloc::Arena => {
-                            let h = self
-                                .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
-                                .expect("AllocArena returns a value");
-                            (h, super::WithScopeCleanup::ArenaDrop(h))
-                        }
-                        InlineAlloc::FixedBuffer(cap_ref) => {
-                            let cap_v = self
-                                .lower_expr(&cap_ref)?
-                                .ok_or_else(|| "FixedBuffer::new(cap): capacity produced no value".to_string())?;
-                            let h = self
-                                .emit(
-                                    InstKind::AllocFixedBuffer { capacity: cap_v },
-                                    Some(crate::ir::Type::U64),
-                                )
-                                .expect("AllocFixedBuffer returns a value");
-                            (h, super::WithScopeCleanup::FixedBufferDrop(h))
-                        }
-                    };
-                    self.emit(InstKind::AllocPush { handle }, None);
-                    self.with_scope_depth += 1;
-                    self.with_scope_arena_drops.push(cleanup);
-                    let body_value = self.lower_expr(&body_expr)?;
-                    if !self.is_unreachable() {
-                        // Linear exit: matching pop + drop here.
-                        // Early exits (`return` / `break` /
-                        // `continue`) already issued both via
-                        // `emit_with_scope_cleanup` so we don't
-                        // duplicate.
-                        self.emit(InstKind::AllocPop, None);
-                        match cleanup {
-                            super::WithScopeCleanup::ArenaDrop(h) => {
-                                self.emit(InstKind::AllocArenaDrop { handle: h }, None);
-                            }
-                            super::WithScopeCleanup::FixedBufferDrop(h) => {
-                                self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
-                            }
-                            super::WithScopeCleanup::None => {}
-                        }
-                    }
-                    self.with_scope_depth -= 1;
-                    self.with_scope_arena_drops.pop();
-                    return Ok(body_value);
-                }
-
-                // STDLIB-alloc-trait: when the allocator expression
-                // resolves to a struct value (a wrapper that impls
-                // `Alloc`), look up its single `Allocator`-typed
-                // field and emit a LoadLocal of that field instead
-                // of trying to lower the struct as a single value.
-                // The type checker (`visit_with`) has already
-                // verified the conformance + uniqueness.
-                //
-                // Detection: `value_scalar` returns None for struct
-                // bindings (struct values aren't single SSA scalars),
-                // so probe via `resolve_field_chain` — if it returns
-                // a Struct chain result, take the auto-extract path;
-                // otherwise fall through to the scalar handle path.
-                let chain_opt = self.resolve_field_chain(&allocator_expr).ok();
-                let handle = if let Some(super::bindings::FieldChainResult::Struct { struct_id, fields }) = chain_opt {
-                    // Identify the `Allocator`-typed field by walking
-                    // the *frontend* StructTemplate (which preserves
-                    // the source-level `TypeDecl::Allocator`)
-                    // rather than the IR-level `StructDef.fields`
-                    // (where `Allocator` and other `u64` fields both
-                    // lower to `Type::U64` and become indistinguishable).
-                    // The type checker has already verified there's
-                    // exactly one such field.
-                    let base_name = self.module.struct_def(struct_id).base_name;
-                    let template = self.struct_defs.get(&base_name).ok_or_else(|| {
-                        format!(
-                            "with-allocator: missing frontend template for struct `{}`",
-                            self.interner.resolve(base_name).unwrap_or("?")
-                        )
-                    })?;
-                    let mut alloc_field_name: Option<String> = None;
-                    let mut alloc_field_count = 0;
-                    for (fname, fty) in &template.fields {
-                        if matches!(fty, frontend::type_decl::TypeDecl::Allocator) {
-                            alloc_field_count += 1;
-                            alloc_field_name = Some(fname.clone());
-                        }
-                    }
-                    if alloc_field_count != 1 {
-                        return Err(format!(
-                            "with-allocator: struct `{}` must have exactly one Allocator-typed field, got {}",
-                            self.interner.resolve(base_name).unwrap_or("?"),
-                            alloc_field_count
-                        ));
-                    }
-                    let fname = alloc_field_name.unwrap();
-                    let fb = fields
-                        .iter()
-                        .find(|f| f.name == fname)
-                        .ok_or_else(|| format!(
-                            "with-allocator: struct binding missing field `{}`",
-                            fname
-                        ))?;
-                    let local = match &fb.shape {
-                        super::bindings::FieldShape::Scalar { local, .. } => *local,
-                        other => return Err(format!(
-                            "with-allocator: Allocator field has unexpected shape {:?}",
-                            other
-                        )),
-                    };
-                    self.emit(InstKind::LoadLocal(local), Some(crate::ir::Type::U64))
-                        .expect("LoadLocal returns a value")
-                } else {
-                    self
-                        .lower_expr(&allocator_expr)?
-                        .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?
-                };
-                self.emit(InstKind::AllocPush { handle }, None);
-                self.with_scope_depth += 1;
-                self.with_scope_arena_drops.push(super::WithScopeCleanup::None);
-                let body_value = self.lower_expr(&body_expr)?;
-                if !self.is_unreachable() {
-                    self.emit(InstKind::AllocPop, None);
-                }
-                self.with_scope_depth -= 1;
-                self.with_scope_arena_drops.pop();
-                Ok(body_value)
-            }
+            Expr::With(allocator_expr, body_expr) => self.lower_expr_with(&allocator_expr, &body_expr),
             // Closures Phase 5b: a `Expr::Closure` literal in
             // expression position (e.g. as a HOF argument:
             // `apply(fn(x: i64) -> i64 { x }, 5i64)`). We lift the
@@ -1170,6 +784,422 @@ impl<'a> FunctionLower<'a> {
                 other
             )),
         }
+    }
+
+    /// Phase 5 (汎用 RAII): every block opens a fresh drop scope.
+    /// `Drop`-impling bindings registered in the body get drained at
+    /// exit (linear here; early `return` / `break` / `continue` paths
+    /// emit drops via `terminate_return` / `Stmt::Break` /
+    /// `Stmt::Continue` before terminating). Errors propagate without
+    /// running drops — same panic-safety policy the interpreter uses.
+    fn lower_expr_block(&mut self, stmts: &[StmtRef]) -> Result<Option<ValueId>, String> {
+        self.enter_drop_scope();
+        let mut last: Option<ValueId> = None;
+        for s in stmts {
+            last = self.lower_stmt(s)?;
+            if self.is_unreachable() {
+                break;
+            }
+        }
+        self.pop_and_emit_drops()?;
+        Ok(last)
+    }
+
+    /// String literals in value position emit `ConstStr`, which
+    /// materialises a pointer-sized handle to the shared `.rodata`
+    /// blob (the same one `PrintStr` uses for `print("literal")`).
+    fn lower_expr_string(&mut self, sym: DefaultSymbol) -> Result<Option<ValueId>, String> {
+        let bytes_len = self
+            .interner
+            .resolve(sym)
+            .map(|s| s.as_bytes().len() as u64)
+            .unwrap_or(0);
+        Ok(self.emit(
+            InstKind::ConstStr { message: sym, bytes_len },
+            Some(Type::Str),
+        ))
+    }
+
+    /// Bare-identifier use: dispatch through the binding table to load
+    /// the right local / pending-compound storage.
+    fn lower_expr_identifier(&mut self, sym: DefaultSymbol) -> Result<Option<ValueId>, String> {
+        match self.bindings.get(&sym).cloned() {
+            Some(Binding::Scalar { local, ty }) => {
+                self.pending_struct_value = None;
+                Ok(self.emit(InstKind::LoadLocal(local), Some(ty)))
+            }
+            Some(Binding::RefScalar { local, pointee_ty, .. }) => {
+                // REF-Stage-2 (g): a `&T` / `&mut T` parameter
+                // binding is auto-dereferenced when read in
+                // value position. Load the pointer from the
+                // local, then dereference it via LoadRef to
+                // the pointee scalar.
+                self.pending_struct_value = None;
+                let ptr = self
+                    .emit(InstKind::LoadLocal(local), Some(Type::U64))
+                    .ok_or_else(|| "RefScalar load: LoadLocal returned no value".to_string())?;
+                Ok(self.emit(InstKind::LoadRef { ptr, ty: pointee_ty }, Some(pointee_ty)))
+            }
+            Some(Binding::Struct { fields, .. }) => {
+                // Tail-position use: stash the struct's field
+                // list so `emit_implicit_return` can return it.
+                // Non-tail uses (e.g. `5 + p`) will fail at
+                // arithmetic lowering when no scalar value
+                // materialises.
+                self.pending_struct_value = Some(fields);
+                Ok(None)
+            }
+            Some(Binding::Tuple { elements }) => {
+                // Tail-position use: stash the elements list
+                // so `emit_implicit_return` can pull element
+                // values out for a tuple-returning function.
+                // Non-tail uses fall through to errors when a
+                // scalar value is later required.
+                self.pending_tuple_value = Some(elements);
+                Ok(None)
+            }
+            Some(Binding::Enum(storage)) => {
+                // Tail-position use: stash the enum storage
+                // so `emit_implicit_return` can flatten it
+                // into a multi-value Return for an enum-
+                // returning function. Other uses (passing to
+                // a function, explicit Return) handle the
+                // binding via a direct lookup, so the
+                // channel is purely for the tail-implicit-
+                // return path.
+                self.pending_enum_value = Some(storage);
+                Ok(None)
+            }
+            Some(Binding::Array { .. }) => {
+                // Bare-identifier use of an array binding is
+                // not supported in expression position yet —
+                // arrays don't flow through the IR's value
+                // graph. The user must access an element.
+                Err(format!(
+                    "compiler MVP cannot use array `{}` as a value; access an element with `{}[i]`",
+                    self.interner.resolve(sym).unwrap_or("?"),
+                    self.interner.resolve(sym).unwrap_or("?"),
+                ))
+            }
+            Some(Binding::FunctionPtr { local, .. }) => {
+                // Closures Phase 5b: bare use of a fn-pointer
+                // binding loads the U64 address. Used when
+                // forwarding a HOF parameter to another HOF
+                // call (`apply(g, x)` inside a body whose
+                // `g` is itself a FunctionPtr param).
+                self.pending_struct_value = None;
+                Ok(self.emit(InstKind::LoadLocal(local), Some(Type::U64)))
+            }
+            None => {
+                // Closures Phase 5b: a `val f = fn(...)` binding
+                // registers the lifted FuncId in
+                // `closure_bindings` (Phase 5a) without an
+                // entry in `bindings`. When such a name is used
+                // in expression position (passing the closure
+                // to a HOF), emit FuncAddr to materialise the
+                // function's runtime address as a U64.
+                if let Some(link) = self.closure_bindings.get(&sym).copied() {
+                    self.pending_struct_value = None;
+                    // Phase 6b: env-based ABI — every
+                    // closure binding has an env_ptr
+                    // (Some) regardless of capture set.
+                    // Surfacing the closure as a value
+                    // returns the env_ptr; the receiving
+                    // HOF uses CallIndirect against it
+                    // (codegen loads fn_ptr from env+0).
+                    if let Some(env_ptr) = link.env_ptr {
+                        return Ok(Some(env_ptr));
+                    }
+                    // Defensive fallback (should never fire
+                    // post-Phase-6b — every closure binding
+                    // emits MakeClosure on entry): expose
+                    // the bare fn pointer.
+                    return Ok(self.emit(
+                        InstKind::FuncAddr { target: link.func_id },
+                        Some(Type::U64),
+                    ));
+                }
+                // Fall back to top-level `const` lookup. This
+                // mirrors what the type-checker does: a name
+                // that wasn't introduced by a local binding
+                // can still resolve to a global const value.
+                if let Some(c) = self.const_values.get(&sym).copied() {
+                    self.pending_struct_value = None;
+                    let ty = c.ty();
+                    return Ok(self.emit(InstKind::Const(c), Some(ty)));
+                }
+                Err(format!(
+                    "undefined identifier `{}`",
+                    self.interner.resolve(sym).unwrap_or("?")
+                ))
+            }
+        }
+    }
+
+    /// Module-qualified call (`math::add(args)`): when the qualifier
+    /// doesn't refer to a struct / enum and the function exists in the
+    /// (post-import) main function table, treat it as a plain `Call`.
+    /// Module integration flattens imported `pub fn`s in, so the bare
+    /// lookup hits without needing the qualifier. Real associated
+    /// calls (`Container::new(...)`) keep the unsupported reject path
+    /// below.
+    fn lower_expr_associated_call(
+        &mut self,
+        struct_name: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        args: Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        let is_struct = self.struct_defs.contains_key(&struct_name)
+            || self.enum_defs.contains_key(&struct_name);
+        // Qualified call (`math::add(args)`): try
+        // `(Some(struct_name), fn_name)` first so cross-
+        // module collisions resolve unambiguously. Fall back
+        // to the bare lookup so legacy code paths that
+        // pre-date the per-module key still work — e.g.
+        // an integration that didn't record a module path
+        // (None entry) but flattened the function into the
+        // table by name.
+        let target_opt = if !is_struct {
+            self.module
+                .lookup_function(Some(struct_name), fn_name)
+                .or_else(|| self.module.lookup_function(None, fn_name))
+        } else {
+            None
+        };
+        if let Some(target) = target_opt {
+            let ret_ty = self.module.function(target).return_type;
+            if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+                return Err(format!(
+                    "compiler MVP cannot use a compound-returning module call (`{}::{}`) in expression position; bind the result with `val`",
+                    self.interner.resolve(struct_name).unwrap_or("?"),
+                    self.interner.resolve(fn_name).unwrap_or("?"),
+                ));
+            }
+            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+            for a in &args {
+                let v = self
+                    .lower_expr(a)?
+                    .ok_or_else(|| {
+                        "module function arg produced no value".to_string()
+                    })?;
+                arg_values.push(v);
+            }
+            let result_ty = if ret_ty.produces_value() {
+                Some(ret_ty)
+            } else {
+                None
+            };
+            return Ok(self.emit(
+                InstKind::Call { target, args: arg_values },
+                result_ty,
+            ));
+        }
+        Err(format!(
+            "compiler MVP cannot lower expression yet: {:?}",
+            Expr::AssociatedFunctionCall(struct_name, fn_name, args)
+        ))
+    }
+
+    /// `BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` arms used to live
+    /// here, lowering directly to `UnaryOp::{Abs, Sqrt}` cranelift
+    /// instructions. Step F removed them — `x.abs()` / `x.sqrt()` now
+    /// resolve through the prelude's extension-trait impls and reach
+    /// `lower_method_call`'s primitive-receiver path (Step D), which
+    /// emits a regular call into the prelude's wrapper body that
+    /// forwards to `__extern_*` (resolved by `libm_import_name_for`
+    /// to the matching libm symbol). String / `is_null` methods stay
+    /// interpreter-only as before.
+    fn lower_expr_builtin_method_call(
+        &mut self,
+        method: frontend::ast::BuiltinMethod,
+    ) -> Result<Option<ValueId>, String> {
+        Err(format!(
+            "compiler MVP cannot lower builtin method yet: {:?}",
+            method
+        ))
+    }
+
+    /// `with allocator = expr { body }` lowering. #121 Phase B-rest
+    /// Item 2: push the allocator handle, increment the with-scope
+    /// depth so `terminate_return` / `break` / `continue` know to emit
+    /// cleanup pops, then lower the body. On a normal (linear) exit
+    /// emit the matching pop here; on an early exit the cleanup
+    /// helpers already emitted it before terminating, so we just
+    /// decrement the depth without a duplicate pop.
+    fn lower_expr_with(
+        &mut self,
+        allocator_expr: &ExprRef,
+        body_expr: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
+        // Phase 5 (Design A scope-bound): detect a
+        // **temporary form** for an inline allocator and
+        // auto-release the slot at scope exit. Today the
+        // recognised forms are `Arena::new()` (no args) and
+        // `FixedBuffer::new(<capacity>)` (1 arg). `Global`
+        // aliases the process-wide default and needs no
+        // drop. Other shapes fall through to the existing
+        // wrapper-struct auto-extract path below.
+        enum InlineAlloc {
+            Arena,
+            FixedBuffer(frontend::ast::ExprRef),
+        }
+        let inline_kind: Option<InlineAlloc> = match self.program.expression.get(allocator_expr) {
+            Some(Expr::AssociatedFunctionCall(struct_sym, fn_sym, args)) => {
+                let s = self.interner.resolve(struct_sym);
+                let f = self.interner.resolve(fn_sym);
+                if f == Some("new") && s == Some("Arena") && args.is_empty() {
+                    Some(InlineAlloc::Arena)
+                } else if f == Some("new") && s == Some("FixedBuffer") && args.len() == 1 {
+                    Some(InlineAlloc::FixedBuffer(args[0]))
+                } else {
+                    None
+                }
+            }
+            // #121 Phase B-rest leftover (1): the **raw builtin**
+            // forms `__builtin_arena_allocator()` and
+            // `__builtin_fixed_buffer_allocator(cap)` are
+            // shorthand for `Arena::new()` / `FixedBuffer::new()`
+            // — let them auto-drop too so users don't have to
+            // call `__builtin_arena_drop` manually.
+            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args))
+                if args.is_empty() =>
+            {
+                Some(InlineAlloc::Arena)
+            }
+            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args))
+                if args.len() == 1 =>
+            {
+                Some(InlineAlloc::FixedBuffer(args[0]))
+            }
+            _ => None,
+        };
+        if let Some(kind) = inline_kind {
+            // Construct the handle inline so we don't have
+            // to lower the associated-function call as a
+            // struct-returning temporary binding.
+            let (handle, cleanup) = match kind {
+                InlineAlloc::Arena => {
+                    let h = self
+                        .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
+                        .expect("AllocArena returns a value");
+                    (h, super::WithScopeCleanup::ArenaDrop(h))
+                }
+                InlineAlloc::FixedBuffer(cap_ref) => {
+                    let cap_v = self
+                        .lower_expr(&cap_ref)?
+                        .ok_or_else(|| "FixedBuffer::new(cap): capacity produced no value".to_string())?;
+                    let h = self
+                        .emit(
+                            InstKind::AllocFixedBuffer { capacity: cap_v },
+                            Some(crate::ir::Type::U64),
+                        )
+                        .expect("AllocFixedBuffer returns a value");
+                    (h, super::WithScopeCleanup::FixedBufferDrop(h))
+                }
+            };
+            self.emit(InstKind::AllocPush { handle }, None);
+            self.with_scope_depth += 1;
+            self.with_scope_arena_drops.push(cleanup);
+            let body_value = self.lower_expr(body_expr)?;
+            if !self.is_unreachable() {
+                // Linear exit: matching pop + drop here.
+                // Early exits (`return` / `break` /
+                // `continue`) already issued both via
+                // `emit_with_scope_cleanup` so we don't
+                // duplicate.
+                self.emit(InstKind::AllocPop, None);
+                match cleanup {
+                    super::WithScopeCleanup::ArenaDrop(h) => {
+                        self.emit(InstKind::AllocArenaDrop { handle: h }, None);
+                    }
+                    super::WithScopeCleanup::FixedBufferDrop(h) => {
+                        self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
+                    }
+                    super::WithScopeCleanup::None => {}
+                }
+            }
+            self.with_scope_depth -= 1;
+            self.with_scope_arena_drops.pop();
+            return Ok(body_value);
+        }
+
+        // STDLIB-alloc-trait: when the allocator expression
+        // resolves to a struct value (a wrapper that impls
+        // `Alloc`), look up its single `Allocator`-typed
+        // field and emit a LoadLocal of that field instead
+        // of trying to lower the struct as a single value.
+        // The type checker (`visit_with`) has already
+        // verified the conformance + uniqueness.
+        //
+        // Detection: `value_scalar` returns None for struct
+        // bindings (struct values aren't single SSA scalars),
+        // so probe via `resolve_field_chain` — if it returns
+        // a Struct chain result, take the auto-extract path;
+        // otherwise fall through to the scalar handle path.
+        let chain_opt = self.resolve_field_chain(allocator_expr).ok();
+        let handle = if let Some(super::bindings::FieldChainResult::Struct { struct_id, fields }) = chain_opt {
+            // Identify the `Allocator`-typed field by walking
+            // the *frontend* StructTemplate (which preserves
+            // the source-level `TypeDecl::Allocator`)
+            // rather than the IR-level `StructDef.fields`
+            // (where `Allocator` and other `u64` fields both
+            // lower to `Type::U64` and become indistinguishable).
+            // The type checker has already verified there's
+            // exactly one such field.
+            let base_name = self.module.struct_def(struct_id).base_name;
+            let template = self.struct_defs.get(&base_name).ok_or_else(|| {
+                format!(
+                    "with-allocator: missing frontend template for struct `{}`",
+                    self.interner.resolve(base_name).unwrap_or("?")
+                )
+            })?;
+            let mut alloc_field_name: Option<String> = None;
+            let mut alloc_field_count = 0;
+            for (fname, fty) in &template.fields {
+                if matches!(fty, frontend::type_decl::TypeDecl::Allocator) {
+                    alloc_field_count += 1;
+                    alloc_field_name = Some(fname.clone());
+                }
+            }
+            if alloc_field_count != 1 {
+                return Err(format!(
+                    "with-allocator: struct `{}` must have exactly one Allocator-typed field, got {}",
+                    self.interner.resolve(base_name).unwrap_or("?"),
+                    alloc_field_count
+                ));
+            }
+            let fname = alloc_field_name.unwrap();
+            let fb = fields
+                .iter()
+                .find(|f| f.name == fname)
+                .ok_or_else(|| format!(
+                    "with-allocator: struct binding missing field `{}`",
+                    fname
+                ))?;
+            let local = match &fb.shape {
+                super::bindings::FieldShape::Scalar { local, .. } => *local,
+                other => return Err(format!(
+                    "with-allocator: Allocator field has unexpected shape {:?}",
+                    other
+                )),
+            };
+            self.emit(InstKind::LoadLocal(local), Some(crate::ir::Type::U64))
+                .expect("LoadLocal returns a value")
+        } else {
+            self
+                .lower_expr(allocator_expr)?
+                .ok_or_else(|| "with-allocator handle expression produced no value".to_string())?
+        };
+        self.emit(InstKind::AllocPush { handle }, None);
+        self.with_scope_depth += 1;
+        self.with_scope_arena_drops.push(super::WithScopeCleanup::None);
+        let body_value = self.lower_expr(body_expr)?;
+        if !self.is_unreachable() {
+            self.emit(InstKind::AllocPop, None);
+        }
+        self.with_scope_depth -= 1;
+        self.with_scope_arena_drops.pop();
+        Ok(body_value)
     }
 
     /// Lower the user-facing builtins this MVP supports. Today that's

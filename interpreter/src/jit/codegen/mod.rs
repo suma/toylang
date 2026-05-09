@@ -1,8 +1,17 @@
 //! AST -> Cranelift IR for the eligible numeric/bool subset.
+//!
+//! `mod.rs` holds `translate_function`, the `State<'a, 'b>` type, and the
+//! per-`Expr` / `Stmt` lowering. The submodules carry the State-free
+//! helpers so navigation reflects coupling: `types::ir_type` (ScalarTy ->
+//! cranelift type) and `signature::make_signature` (FuncSignature ->
+//! cranelift Signature) live next door but don't see State.
+
+mod signature;
+mod ty;
 
 use std::collections::HashMap;
 
-use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, AbiParam, FuncRef, InstBuilder, Signature, TrapCode};
+use cranelift::codegen::ir::{condcodes::{FloatCC, IntCC}, types, FuncRef, InstBuilder, TrapCode};
 use cranelift::frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
@@ -18,123 +27,8 @@ use super::eligibility::{
 };
 use super::runtime::HelperKind;
 
-pub fn ir_type(ty: ScalarTy) -> Option<types::Type> {
-    match ty {
-        ScalarTy::I64 | ScalarTy::U64 | ScalarTy::Ptr | ScalarTy::Allocator => {
-            Some(types::I64)
-        }
-        ScalarTy::F64 => Some(types::F64),
-        ScalarTy::Bool => Some(types::I8),
-        // NUM-W: narrow integer widths each get their own cranelift
-        // type. Sign-vs-zero distinction is encoded at the ABI
-        // boundary (see `make_signature`) and at cast / cmp sites,
-        // not in the cranelift type itself.
-        ScalarTy::I8 | ScalarTy::U8 => Some(types::I8),
-        ScalarTy::I16 | ScalarTy::U16 => Some(types::I16),
-        ScalarTy::I32 | ScalarTy::U32 => Some(types::I32),
-        // STR-INTERP-INTERP-JIT: str values are heap pointers
-        // (i64-sized) following the toylang str layout — same
-        // representation as `Ptr`, but kept distinct in the type
-        // system so codegen can pick the str-specific helpers
-        // (`jit_print_str` / `jit_str_concat`) at use sites.
-        ScalarTy::Str => Some(types::I64),
-        // Unit and Never both produce no IR value: Unit because there's
-        // nothing to materialise; Never because the expression diverges
-        // before any value can be observed.
-        ScalarTy::Unit | ScalarTy::Never => None,
-    }
-}
-
-pub fn make_signature<M: Module>(
-    module: &M,
-    sig: &FuncSignature,
-    struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
-) -> Signature {
-    let call_conv = module.target_config().default_call_conv;
-    let mut s = Signature::new(call_conv);
-    for (_, t) in &sig.params {
-        match t {
-            ParamTy::Scalar(scalar) => {
-                s.params.push(AbiParam::new(
-                    ir_type(*scalar).expect("param cannot be Unit"),
-                ));
-            }
-            ParamTy::Struct(struct_name) => {
-                // A struct parameter expands into one cranelift parameter
-                // per scalar field, matching the order in the layout.
-                let layout = struct_layouts
-                    .get(struct_name)
-                    .expect("struct layout missing for declared param");
-                for (_, field_ty) in &layout.fields {
-                    s.params.push(AbiParam::new(
-                        ir_type(*field_ty).expect("struct field cannot be Unit"),
-                    ));
-                }
-            }
-            ParamTy::Tuple(elements) => {
-                // A tuple parameter expands into one cranelift parameter
-                // per element, in declaration order.
-                for el in elements {
-                    s.params.push(AbiParam::new(
-                        ir_type(*el).expect("tuple element cannot be Unit"),
-                    ));
-                }
-            }
-            // Phase JE-2d/JE-5: enum parameter expands to (tag: I64)
-            // for unit-only enums and (tag: I64, payload: <payload_ty>)
-            // when the per-monomorph payload is non-None.
-            // ParamTy::Enum carries the resolved payload_ty (JE-5),
-            // so generic monomorphs (`Opt<i64>`) and non-generic
-            // enums share the same boundary expansion.
-            ParamTy::Enum { payload_ty, .. } => {
-                s.params.push(AbiParam::new(types::I64));
-                if let Some(pty) = payload_ty {
-                    s.params.push(AbiParam::new(
-                        ir_type(*pty).expect("enum payload type must be representable"),
-                    ));
-                }
-            }
-        }
-    }
-    match &sig.ret {
-        ParamTy::Scalar(scalar) => {
-            if let Some(rt) = ir_type(*scalar) {
-                s.returns.push(AbiParam::new(rt));
-            }
-        }
-        ParamTy::Struct(struct_name) => {
-            // Struct returns expand into one cranelift return per field.
-            let layout = struct_layouts
-                .get(struct_name)
-                .expect("struct layout missing for declared return");
-            for (_, field_ty) in &layout.fields {
-                s.returns.push(AbiParam::new(
-                    ir_type(*field_ty).expect("struct return field cannot be Unit"),
-                ));
-            }
-        }
-        ParamTy::Tuple(elements) => {
-            // Tuple returns expand into one cranelift return per element.
-            for el in elements {
-                s.returns.push(AbiParam::new(
-                    ir_type(*el).expect("tuple return element cannot be Unit"),
-                ));
-            }
-        }
-        ParamTy::Enum { payload_ty, .. } => {
-            // Phase JE-2d/JE-5: enum return = (tag) or (tag, payload).
-            // Per-monomorph payload type comes from ParamTy::Enum
-            // directly (JE-5), so generic enum returns work too.
-            s.returns.push(AbiParam::new(types::I64));
-            if let Some(pty) = payload_ty {
-                s.returns.push(AbiParam::new(
-                    ir_type(*pty).expect("enum payload type must be representable"),
-                ));
-            }
-        }
-    }
-    s
-}
+pub(crate) use self::signature::make_signature;
+use self::ty::ir_type;
 
 /// Compiles `func` into the cranelift `ctx`, ready to be passed to
 /// `Module::define_function`.

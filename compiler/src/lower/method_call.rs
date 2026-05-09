@@ -534,134 +534,14 @@ impl<'a> FunctionLower<'a> {
         if let Some(field_call) = self.try_lower_field_closure_call(obj, method, args)? {
             return Ok(field_call);
         }
-        // STR-INTERP-AOT: built-in str methods that don't have a
-        // user-visible `impl` block. Today the type checker
-        // registers `concat` directly through
-        // `BuiltinMethod::StrConcat` (see
-        // `frontend/src/type_checker/builtin.rs`), so the Step D
-        // extension-trait lookup below would miss them. Intercept
-        // before that path and emit a direct call to the runtime
-        // helper. Restricted to str receivers; numeric
-        // BuiltinMethods (StrLen on str / I64Abs etc.) either go
-        // through `__builtin_str_len(s)` already or were migrated
-        // to extension-trait impls in the prelude (Step F).
-        if let Some(Type::Str) = self.value_scalar(obj) {
-            let method_name = self.interner.resolve(method).unwrap_or("");
-            if method_name == "concat" {
-                if args.len() != 1 {
-                    return Err(format!(
-                        "str.concat takes 1 argument, got {}",
-                        args.len()
-                    ));
-                }
-                let recv_v = self
-                    .lower_expr(obj)?
-                    .ok_or_else(|| "str.concat receiver produced no value".to_string())?;
-                let arg_v = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "str.concat argument produced no value".to_string())?;
-                return Ok(self.emit(
-                    InstKind::StrConcat { a: recv_v, b: arg_v },
-                    Some(Type::Str),
-                ));
-            }
+        if let Some(result) = self.try_lower_str_concat_call(obj, method, args)? {
+            return Ok(result);
         }
-        // Step D + F: extension-trait dispatch on a primitive
-        // receiver. Run *before* the bare-identifier check so
-        // chained primitive method calls (`x.abs().abs()`) — whose
-        // receiver is itself a `MethodCall`, not an
-        // `Expr::Identifier` — also lower correctly. We can use
-        // `value_scalar` to discover the receiver's IR type
-        // without committing to lowering it twice; a hit then
-        // requires another `lower_expr` pass to actually emit the
-        // value (cheap because most receivers are simple).
-        if let Some(recv_ty) = self.value_scalar(obj) {
-            if let Some(target_sym) =
-                primitive_target_sym_for_ir_type(recv_ty, self.interner)
-            {
-                // Primitive receiver: empty type args (no `impl Foo for u8<...>`).
-                if let Some(func_id) = super::method_registry::lookup_method_func(
-                    self.method_func_ids, target_sym, method, &[],
-                ) {
-                    let receiver_value = self
-                        .lower_expr(obj)?
-                        .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
-                    let mut values: Vec<ValueId> = vec![receiver_value];
-                    for a in args {
-                        let v = self
-                            .lower_expr(a)?
-                            .ok_or_else(|| {
-                                "primitive method argument produced no value".to_string()
-                            })?;
-                        values.push(v);
-                    }
-                    let ret_ty = self.module.function(func_id).return_type;
-                    if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
-                        return Err(format!(
-                            "compiler MVP cannot use a compound-returning method (`{}::{}`) in expression position; bind the result with `val`",
-                            self.interner.resolve(target_sym).unwrap_or("?"),
-                            self.interner.resolve(method).unwrap_or("?"),
-                        ));
-                    }
-                    let inst = InstKind::Call { target: func_id, args: values };
-                    let result_ty = if ret_ty.produces_value() {
-                        Some(ret_ty)
-                    } else {
-                        None
-                    };
-                    return Ok(self.emit(inst, result_ty));
-                }
-            }
+        if let Some(result) = self.try_lower_primitive_method_call(obj, method, args)? {
+            return Ok(result);
         }
 
-        let obj_expr = self
-            .program
-            .expression
-            .get(obj)
-            .ok_or_else(|| "method-call receiver missing".to_string())?;
-        // Receiver shapes accepted by the compiler MVP method
-        // dispatcher:
-        //   - bare identifier (`a.foo()`): look up the binding
-        //     directly.
-        //   - field access chain (`self.vec.size()`): resolve via
-        //     `resolve_field_chain` and synthesise a Binding::Struct
-        //     from the resulting FieldChainResult so the rest of
-        //     the dispatch / arg-loading code can run unchanged.
-        //     This keeps the `String` → `Vec` boundary clean —
-        //     `String` methods can call `self.vec.size()` instead
-        //     of reading `self.vec.len` directly.
-        let binding: Binding = match obj_expr {
-            Expr::Identifier(sym) => self
-                .bindings
-                .get(&sym)
-                .cloned()
-                .ok_or_else(|| {
-                    format!(
-                        "undefined receiver `{}` for method call",
-                        self.interner.resolve(sym).unwrap_or("?")
-                    )
-                })?,
-            Expr::FieldAccess(_, _) => {
-                let chain = self.resolve_field_chain(obj)?;
-                match chain {
-                    super::bindings::FieldChainResult::Struct { struct_id, fields } => {
-                        Binding::Struct { struct_id, fields }
-                    }
-                    _ => {
-                        return Err(format!(
-                            "compiler MVP requires nested-field method receivers to resolve to a struct (got {:?})",
-                            chain
-                        ));
-                    }
-                }
-            }
-            _ => {
-                return Err(format!(
-                    "compiler MVP only supports method calls on a bare identifier or a field-access chain (got {:?})",
-                    obj_expr
-                ));
-            }
-        };
+        let binding = self.resolve_method_receiver_binding(obj)?;
 
         // CONCRETE-IMPL Phase 2b: extract receiver's IR type args
         // for spec-aware dispatch.
@@ -737,11 +617,247 @@ impl<'a> FunctionLower<'a> {
                 self.interner.resolve(method).unwrap_or("?"),
             ));
         }
-        // Build the call args: receiver leaf scalars first, then
-        // method args (per-arg expansion for struct/tuple/enum
-        // identifier args mirrors `lower_call_args`).
+        let values = self.build_method_call_values(&binding, args)?;
+        // Stage 1 of `&` references: if the method is `&mut self`,
+        // emit `CallWithSelfWriteback` so the cranelift call's
+        // trailing self-leaf return values are stored back into
+        // the receiver binding's leaf locals — propagating the
+        // mutation to the caller. Restricted to struct receivers
+        // because writeback for enum receivers needs additional
+        // tag/payload-slot plumbing (deferred). Falls through to
+        // a regular `Call` for `self: Self` / `&self` methods.
+        // CONCRETE-IMPL Phase 2b: pick the matching template spec by
+        // receiver type args (same priority as `lookup_method_func`).
+        let template_self_is_mut = super::method_registry::lookup_method_template(
+            self.method_registry, target_sym, method, &[],
+        )
+            .map(|m| m.self_is_mut && m.has_self_param)
+            .unwrap_or(false);
+        // REF-Stage-2 (ii-method): the callee may declare writeback
+        // returns from `&mut self` AND/OR compound `&mut T` arg
+        // params. Pull the receiver-leaf dests when the method is
+        // `&mut self`, then append any compound-`&mut T` arg dests.
+        // The combined order must match the callee's
+        // `self_writeback_types` (which is built body-time as
+        // receiver leaves first, then args in declaration order).
+        let needs_writeback = !self.module.function(target).self_writeback_types.is_empty();
+        if needs_writeback {
+            let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
+            if template_self_is_mut {
+                match &binding {
+                    Binding::Struct { fields, .. } => {
+                        for (l, _) in flatten_struct_locals(fields) {
+                            self_dests.push(l);
+                        }
+                    }
+                    Binding::Enum(storage) => {
+                        Self::flatten_enum_dests_into(storage, &mut self_dests);
+                    }
+                    _ => {}
+                }
+            }
+            self_dests.extend(self.collect_compound_writeback_dests_slice(args)?);
+            // Sanity: caller dest count must match callee writeback type count.
+            let expected = self.module.function(target).self_writeback_types.len();
+            if self_dests.len() == expected {
+                let ret_ty_opt = if ret_ty.produces_value() {
+                    Some(ret_ty)
+                } else {
+                    None
+                };
+                let ret_dest = ret_ty_opt.map(|ty| {
+                    self.module.function_mut(self.func_id).add_local(ty)
+                });
+                self.emit(
+                    InstKind::CallWithSelfWriteback {
+                        target,
+                        args: values,
+                        ret_dest,
+                        ret_ty: ret_ty_opt,
+                        self_dests,
+                    },
+                    None,
+                );
+                let result = match (ret_dest, ret_ty_opt) {
+                    (Some(local), Some(ty)) => Some(
+                        self.emit(InstKind::LoadLocal(local), Some(ty))
+                            .expect("LoadLocal returns a value"),
+                    ),
+                    _ => None,
+                };
+                return Ok(result);
+            }
+            // Fall through to plain Call when the dest count is
+            // wrong — surfaces via the codegen mismatch error
+            // (rare; means we missed an arg shape).
+        }
+        let inst = InstKind::Call { target, args: values };
+        let result_ty = if ret_ty.produces_value() {
+            Some(ret_ty)
+        } else {
+            None
+        };
+        Ok(self.emit(inst, result_ty))
+    }
+
+    /// STR-INTERP-AOT: built-in str methods that don't have a
+    /// user-visible `impl` block. Today the type checker registers
+    /// `concat` directly through `BuiltinMethod::StrConcat` (see
+    /// `frontend/src/type_checker/builtin.rs`), so the Step D
+    /// extension-trait lookup below would miss them. Intercept
+    /// before that path and emit a direct call to the runtime
+    /// helper. Restricted to str receivers; numeric BuiltinMethods
+    /// (StrLen on str / I64Abs etc.) either go through
+    /// `__builtin_str_len(s)` already or were migrated to extension-
+    /// trait impls in the prelude (Step F).
+    ///
+    /// Returns `Some(result)` when the method was handled here,
+    /// `None` to let the dispatcher fall through.
+    fn try_lower_str_concat_call(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some(Type::Str) = self.value_scalar(obj) else {
+            return Ok(None);
+        };
+        let method_name = self.interner.resolve(method).unwrap_or("");
+        if method_name != "concat" {
+            return Ok(None);
+        }
+        if args.len() != 1 {
+            return Err(format!(
+                "str.concat takes 1 argument, got {}",
+                args.len()
+            ));
+        }
+        let recv_v = self
+            .lower_expr(obj)?
+            .ok_or_else(|| "str.concat receiver produced no value".to_string())?;
+        let arg_v = self
+            .lower_expr(&args[0])?
+            .ok_or_else(|| "str.concat argument produced no value".to_string())?;
+        Ok(Some(self.emit(
+            InstKind::StrConcat { a: recv_v, b: arg_v },
+            Some(Type::Str),
+        )))
+    }
+
+    /// Step D + F: extension-trait dispatch on a primitive receiver.
+    /// Run *before* the bare-identifier check so chained primitive
+    /// method calls (`x.abs().abs()`) — whose receiver is itself a
+    /// `MethodCall`, not an `Expr::Identifier` — also lower correctly.
+    /// We can use `value_scalar` to discover the receiver's IR type
+    /// without committing to lowering it twice; a hit then requires
+    /// another `lower_expr` pass to actually emit the value (cheap
+    /// because most receivers are simple).
+    ///
+    /// Returns `Some(result)` when the dispatch resolved, `None`
+    /// otherwise.
+    fn try_lower_primitive_method_call(
+        &mut self,
+        obj: &ExprRef,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let Some(recv_ty) = self.value_scalar(obj) else {
+            return Ok(None);
+        };
+        let Some(target_sym) = primitive_target_sym_for_ir_type(recv_ty, self.interner) else {
+            return Ok(None);
+        };
+        // Primitive receiver: empty type args (no `impl Foo for u8<...>`).
+        let Some(func_id) = super::method_registry::lookup_method_func(
+            self.method_func_ids, target_sym, method, &[],
+        ) else {
+            return Ok(None);
+        };
+        let receiver_value = self
+            .lower_expr(obj)?
+            .ok_or_else(|| "primitive method receiver produced no value".to_string())?;
+        let mut values: Vec<ValueId> = vec![receiver_value];
+        for a in args {
+            let v = self
+                .lower_expr(a)?
+                .ok_or_else(|| {
+                    "primitive method argument produced no value".to_string()
+                })?;
+            values.push(v);
+        }
+        let ret_ty = self.module.function(func_id).return_type;
+        if matches!(ret_ty, Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)) {
+            return Err(format!(
+                "compiler MVP cannot use a compound-returning method (`{}::{}`) in expression position; bind the result with `val`",
+                self.interner.resolve(target_sym).unwrap_or("?"),
+                self.interner.resolve(method).unwrap_or("?"),
+            ));
+        }
+        let inst = InstKind::Call { target: func_id, args: values };
+        let result_ty = if ret_ty.produces_value() {
+            Some(ret_ty)
+        } else {
+            None
+        };
+        Ok(Some(self.emit(inst, result_ty)))
+    }
+
+    /// Receiver shapes accepted by the compiler MVP method
+    /// dispatcher:
+    ///   - bare identifier (`a.foo()`): look up the binding directly.
+    ///   - field access chain (`self.vec.size()`): resolve via
+    ///     `resolve_field_chain` and synthesise a `Binding::Struct`
+    ///     from the resulting `FieldChainResult` so the rest of the
+    ///     dispatch / arg-loading code can run unchanged. This keeps
+    ///     the `String` → `Vec` boundary clean — `String` methods
+    ///     can call `self.vec.size()` instead of reading
+    ///     `self.vec.len` directly.
+    fn resolve_method_receiver_binding(&mut self, obj: &ExprRef) -> Result<Binding, String> {
+        let obj_expr = self
+            .program
+            .expression
+            .get(obj)
+            .ok_or_else(|| "method-call receiver missing".to_string())?;
+        match obj_expr {
+            Expr::Identifier(sym) => self
+                .bindings
+                .get(&sym)
+                .cloned()
+                .ok_or_else(|| {
+                    format!(
+                        "undefined receiver `{}` for method call",
+                        self.interner.resolve(sym).unwrap_or("?")
+                    )
+                }),
+            Expr::FieldAccess(_, _) => {
+                let chain = self.resolve_field_chain(obj)?;
+                match chain {
+                    super::bindings::FieldChainResult::Struct { struct_id, fields } => {
+                        Ok(Binding::Struct { struct_id, fields })
+                    }
+                    _ => Err(format!(
+                        "compiler MVP requires nested-field method receivers to resolve to a struct (got {:?})",
+                        chain
+                    )),
+                }
+            }
+            _ => Err(format!(
+                "compiler MVP only supports method calls on a bare identifier or a field-access chain (got {:?})",
+                obj_expr
+            )),
+        }
+    }
+
+    /// Build the call args: receiver leaf scalars first, then method
+    /// args (per-arg expansion for struct/tuple/enum identifier args
+    /// mirrors `lower_call_args`).
+    fn build_method_call_values(
+        &mut self,
+        binding: &Binding,
+        args: &Vec<ExprRef>,
+    ) -> Result<Vec<ValueId>, String> {
         let mut values: Vec<ValueId> = Vec::new();
-        match &binding {
+        match binding {
             Binding::Struct { fields, .. } => {
                 let leaves = flatten_struct_locals(fields);
                 for (local, ty) in &leaves {
@@ -915,85 +1031,6 @@ impl<'a> FunctionLower<'a> {
                 .ok_or_else(|| "method argument produced no value".to_string())?;
             values.push(v);
         }
-        // Stage 1 of `&` references: if the method is `&mut self`,
-        // emit `CallWithSelfWriteback` so the cranelift call's
-        // trailing self-leaf return values are stored back into
-        // the receiver binding's leaf locals — propagating the
-        // mutation to the caller. Restricted to struct receivers
-        // because writeback for enum receivers needs additional
-        // tag/payload-slot plumbing (deferred). Falls through to
-        // a regular `Call` for `self: Self` / `&self` methods.
-        // CONCRETE-IMPL Phase 2b: pick the matching template spec by
-        // receiver type args (same priority as `lookup_method_func`).
-        let template_self_is_mut = super::method_registry::lookup_method_template(
-            self.method_registry, target_sym, method, &[],
-        )
-            .map(|m| m.self_is_mut && m.has_self_param)
-            .unwrap_or(false);
-        // REF-Stage-2 (ii-method): the callee may declare writeback
-        // returns from `&mut self` AND/OR compound `&mut T` arg
-        // params. Pull the receiver-leaf dests when the method is
-        // `&mut self`, then append any compound-`&mut T` arg dests.
-        // The combined order must match the callee's
-        // `self_writeback_types` (which is built body-time as
-        // receiver leaves first, then args in declaration order).
-        let needs_writeback = !self.module.function(target).self_writeback_types.is_empty();
-        if needs_writeback {
-            let mut self_dests: Vec<crate::ir::LocalId> = Vec::new();
-            if template_self_is_mut {
-                match &binding {
-                    Binding::Struct { fields, .. } => {
-                        for (l, _) in flatten_struct_locals(fields) {
-                            self_dests.push(l);
-                        }
-                    }
-                    Binding::Enum(storage) => {
-                        Self::flatten_enum_dests_into(storage, &mut self_dests);
-                    }
-                    _ => {}
-                }
-            }
-            self_dests.extend(self.collect_compound_writeback_dests_slice(args)?);
-            // Sanity: caller dest count must match callee writeback type count.
-            let expected = self.module.function(target).self_writeback_types.len();
-            if self_dests.len() == expected {
-                let ret_ty_opt = if ret_ty.produces_value() {
-                    Some(ret_ty)
-                } else {
-                    None
-                };
-                let ret_dest = ret_ty_opt.map(|ty| {
-                    self.module.function_mut(self.func_id).add_local(ty)
-                });
-                self.emit(
-                    InstKind::CallWithSelfWriteback {
-                        target,
-                        args: values,
-                        ret_dest,
-                        ret_ty: ret_ty_opt,
-                        self_dests,
-                    },
-                    None,
-                );
-                let result = match (ret_dest, ret_ty_opt) {
-                    (Some(local), Some(ty)) => Some(
-                        self.emit(InstKind::LoadLocal(local), Some(ty))
-                            .expect("LoadLocal returns a value"),
-                    ),
-                    _ => None,
-                };
-                return Ok(result);
-            }
-            // Fall through to plain Call when the dest count is
-            // wrong — surfaces via the codegen mismatch error
-            // (rare; means we missed an arg shape).
-        }
-        let inst = InstKind::Call { target, args: values };
-        let result_ty = if ret_ty.produces_value() {
-            Some(ret_ty)
-        } else {
-            None
-        };
-        Ok(self.emit(inst, result_ty))
+        Ok(values)
     }
 }

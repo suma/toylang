@@ -30,3 +30,10 @@ opt-level = 3
 
 [profile.test.package."*"]
 opt-level = 3
+
+# Release-equivalent build with line tables for samply / instruments.
+# Use with: cargo build --profile profiling --tests
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"

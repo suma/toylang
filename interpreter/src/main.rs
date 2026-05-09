@@ -2,9 +2,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process;
-use interpreter::error_formatter::ErrorFormatter;
-use interpreter::object::Object;
-use compiler_core::CompilerSession;
+use interpreter::{RunOptions, RunOutcome};
 
 /// Resolve the core-modules directory using a small priority chain:
 ///
@@ -51,71 +49,6 @@ fn resolve_core_modules_dir(cli_override: Option<PathBuf>) -> Option<PathBuf> {
         }
     }
     None
-}
-
-/// Parse the source file using CompilerSession and handle parse errors
-#[allow(dead_code)]
-fn handle_parsing_from_source(source: &str, filename: &str) -> Result<frontend::ast::Program, ()> {
-    let mut session = CompilerSession::new();
-    let formatter = ErrorFormatter::new(source, filename);
-    
-    // Use CompilerSession's parse_program method which ensures consistent string interning
-    match session.parse_program(source) {
-        Ok(program) => Ok(program),
-        Err(err) => {
-            formatter.format_parse_error(&err);
-            Err(())
-        }
-    }
-}
-
-/// Perform type checking and handle type check errors
-fn handle_type_checking(
-    program: &mut frontend::ast::Program,
-    string_interner: &mut string_interner::DefaultStringInterner,
-    source: &str,
-    filename: &str,
-    core_modules_dir: Option<&std::path::Path>,
-) -> Result<(), ()> {
-    let formatter = ErrorFormatter::new(source, filename);
-
-    match interpreter::check_typing_with_core_modules(
-        program,
-        string_interner,
-        Some(source),
-        Some(filename),
-        core_modules_dir,
-    ) {
-        Ok(()) => Ok(()),
-        Err(errors) => {
-            formatter.display_type_check_errors(&errors);
-            Err(())
-        }
-    }
-}
-
-/// Execute the program and handle runtime errors.
-///
-/// Returns `Ok(Some(code))` when `main` produced a numeric value that should
-/// become the process exit code; `Ok(None)` for non-numeric results (which are
-/// printed as before). `Err(())` indicates a runtime error.
-fn handle_execution(program: &frontend::ast::Program, string_interner: &string_interner::DefaultStringInterner, source: &str, filename: &str) -> Result<Option<i32>, ()> {
-    let formatter = ErrorFormatter::new(source, filename);
-
-    match interpreter::execute_program(program, string_interner, Some(source), Some(filename)) {
-        Ok(result) => {
-            let code = match &*result.borrow() {
-                Object::Int64(v) => Some(*v as i32),
-                Object::UInt64(v) => Some(*v as i32),
-                _ => None,
-            };
-            Ok(code)
-        }
-        Err(error) => {
-            formatter.display_runtime_error(&error);
-            Err(())
-        }
-    }
 }
 
 /// Parsed command-line arguments. `core_modules_cli` is `Some` when
@@ -182,10 +115,6 @@ fn main() {
         }
     }
 
-    // Create a compiler session as the central compilation context
-    let mut session = CompilerSession::new();
-
-    // Read source first for error formatting
     let source = match fs::read_to_string(&filename) {
         Ok(content) => content,
         Err(e) => {
@@ -194,43 +123,18 @@ fn main() {
         }
     };
 
-    // Parse the source file within the compiler session context
-    if verbose {
-        println!("Parsing source file: {}", filename);
-    }
-    let mut program = match session.parse_program(&source) {
-        Ok(prog) => prog,
-        Err(err) => {
-            let formatter = ErrorFormatter::new(&source, &filename);
-            formatter.format_parse_error(&err);
-            return;
-        }
+    let jit = matches!(env::var("INTERPRETER_JIT").as_deref(), Ok("1"));
+    let options = RunOptions {
+        jit,
+        core_modules_dir: core_modules_dir.as_deref(),
     };
-
-    // Perform type checking with session's shared resources
-    if verbose {
-        println!("Performing type checking");
-    }
-    if handle_type_checking(
-        &mut program,
-        session.string_interner_mut(),
-        &source,
-        &filename,
-        core_modules_dir.as_deref(),
-    )
-    .is_err()
-    {
-        return;
-    }
-    
-    // Execute the program using session's context
-    if verbose {
-        println!("Executing program");
-    }
-    match handle_execution(&program, session.string_interner(), &source, &filename) {
-        Ok(Some(code)) => process::exit(code),
-        Ok(None) => {}
-        Err(()) => {
+    match interpreter::run_source(&source, &filename, &options) {
+        Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),
+        Ok(RunOutcome { exit_code: None }) => {}
+        Err(_diagnostic) => {
+            // `run_source` already routed the diagnostic through
+            // `ErrorFormatter::display_*`, matching the binary's prior
+            // behavior. Just propagate the failure exit code.
             if verbose {
                 println!("Execution failed");
             }

@@ -37,9 +37,11 @@ fn main() {
         verbose: false,
         release: false,
         core_modules_dir: Some(core.clone()),
+            link_cache_dir: None,
     };
     let opts_no_core = compiler::CompilerOptions {
         core_modules_dir: None,
+            link_cache_dir: None,
         ..opts_full.clone()
     };
 

@@ -182,6 +182,7 @@ pub fn compile_to_jit_main(source: &str) -> Result<JitProgram, String> {
         verbose: false,
         release: false,
         core_modules_dir: None,
+        link_cache_dir: None,
     };
     compile_to_jit_main_with_options(source, &options)
 }

@@ -93,6 +93,7 @@ fn jit_options_with_core() -> CompilerOptions {
         verbose: false,
         release: false,
         core_modules_dir: Some(core_modules_dir()),
+            link_cache_dir: None,
     }
 }
 
@@ -113,6 +114,7 @@ fn compile_to_jit_lazy_core(
 ) -> Result<compiler::JitProgram, String> {
     let no_core = CompilerOptions {
         core_modules_dir: None,
+            link_cache_dir: None,
         ..full_opts.clone()
     };
     if let Ok(prog) = compile_to_jit_main_with_options(source, &no_core) {

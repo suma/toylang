@@ -6,23 +6,27 @@
 //!    process.
 //! 2. **compiler** — `compile_file` produces an executable; we spawn
 //!    it and observe its exit code.
-//! 3. **JIT** — the interpreter binary spawned with `INTERPRETER_JIT=1`,
-//!    forcing the Cranelift JIT path. The interpreter binary is
-//!    built once per test run and cached.
+//! 3. **JIT** — `interpreter::run_source` with `RunOptions::jit = true`,
+//!    forcing the Cranelift JIT path **in-process**. The previous
+//!    spawn-based design (`target/debug/interpreter` per test) was the
+//!    largest hot spot in `samply` profiles — see
+//!    `interpreter/src/output.rs` and `interpreter::jit::with_jit_override`
+//!    for the per-call JIT/output overrides that make this safe under
+//!    libtest's threaded execution.
 //!
 //! All three paths must agree on the value `main` would have returned,
 //! with the standard POSIX truncation `& 0xff` applied uniformly so
 //! programs need not keep their result under 256 to pass.
 //!
-//! These tests are slow because they invoke `cc` and (once) `cargo
-//! build`. Set `COMPILER_E2E=skip` to opt out (mirrors `e2e.rs`).
+//! These tests are slow because they invoke `cc`. Set `COMPILER_E2E=skip`
+//! to opt out (mirrors `e2e.rs`).
 
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::OnceLock;
 
 use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions, EmitKind};
 use interpreter::object::Object;
+use interpreter::{RunOptions, RunOutcome};
 
 /// Wrapper around `compile_to_jit_main_with_options` that mirrors
 /// the lite-path pattern: try without core auto-load first, fall
@@ -36,6 +40,7 @@ fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
         verbose: false,
         release: false,
         core_modules_dir: None,
+        link_cache_dir: None,
     };
     if let Ok(prog) = compile_to_jit_main_with_options(source, &lite) {
         return Ok(prog);
@@ -45,6 +50,15 @@ fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
         ..lite
     };
     compile_to_jit_main_with_options(source, &full)
+}
+
+/// Repo-relative content-addressed link cache. Pinned outside `/tmp` so
+/// the cache survives across `cargo nextest` invocations on a single
+/// developer machine — repeat runs hit cached binaries and skip the
+/// `cc` invocation that previously dominated post-spawn-removal wall
+/// time. The directory is created lazily inside `link_executable`.
+fn link_cache_dir_for_tests() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../target/.toy-link-cache"))
 }
 
 fn skip_e2e() -> bool {
@@ -113,67 +127,28 @@ fn interpreter_value_with_core(
     Some(v)
 }
 
-/// Build the interpreter binary once per test run and return its
-/// path. We can't use `env!("CARGO_BIN_EXE_*")` here because the
-/// macro only resolves bins in the *current* crate, and the
-/// interpreter lives in a sibling crate. Instead we shell out to
-/// `cargo build`, which is a no-op when the binary is already
-/// fresh.
-fn interpreter_bin() -> PathBuf {
-    static BUILT: OnceLock<PathBuf> = OnceLock::new();
-    BUILT
-        .get_or_init(|| {
-            let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-            let status = Command::new(&cargo)
-                .args(["build", "--quiet", "-p", "interpreter", "--bin", "interpreter"])
-                .status()
-                .expect("cargo build interpreter");
-            if !status.success() {
-                panic!("cargo build interpreter failed");
-            }
-            // The compiler crate sits alongside `interpreter` in the
-            // workspace; the resulting binary lives in
-            // `<workspace>/target/debug/interpreter` regardless of
-            // which package's tests are running.
-            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-            let bin = manifest_dir
-                .parent()
-                .expect("compiler dir has a parent")
-                .join("target")
-                .join("debug")
-                .join("interpreter");
-            assert!(
-                bin.exists(),
-                "interpreter binary missing at {}",
-                bin.display()
-            );
-            bin
-        })
-        .clone()
-}
-
-/// Run `source` through the interpreter binary with `INTERPRETER_JIT=1`
-/// set, forcing the Cranelift JIT path. Returns the observed exit
-/// code (already `& 0xff`). When `with_core` is false the spawn
-/// gets `TOYLANG_CORE_MODULES=""` so the binary skips auto-loading
-/// the ~11 stdlib modules (~150 ms savings per spawn in debug
-/// builds). Callers should set `with_core=false` only after the
-/// in-process interpreter check has confirmed the program compiles
-/// without the core modules.
-fn jit_exit_code(source: &str, stem: &str, with_core: bool) -> i32 {
-    let bin = interpreter_bin();
-    let src_path = unique_path(&format!("{stem}.t"));
-    std::fs::write(&src_path, source).expect("write source");
-    let mut cmd = Command::new(&bin);
-    cmd.arg(&src_path).env("INTERPRETER_JIT", "1");
-    if !with_core {
-        // Empty value disables auto-load (see `interpreter::main::resolve_core_modules_dir`).
-        cmd.env("TOYLANG_CORE_MODULES", "");
+/// Run `source` through the in-process interpreter with the JIT path
+/// forced on. Returns the exit code `main` would have produced, already
+/// `& 0xff`. When `with_core` is false the call skips auto-loading the
+/// ~11 stdlib modules (~150 ms saved per call in debug builds). Callers
+/// should pass `with_core=false` only after the in-process tree-walker
+/// check has confirmed the program compiles without the core modules.
+///
+/// Replaces the previous spawn of `target/debug/interpreter` with
+/// `INTERPRETER_JIT=1`. `interpreter::jit::with_jit_override` provides
+/// the per-call JIT toggle (no env-var race under threaded test
+/// execution).
+fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
+    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
+    let options = RunOptions {
+        jit: true,
+        core_modules_dir: core_dir.as_deref(),
+    };
+    match interpreter::run_source(source, "test.t", &options) {
+        Ok(RunOutcome { exit_code: Some(code) }) => (code as i32) & 0xff,
+        Ok(RunOutcome { exit_code: None }) => 0,
+        Err(diag) => panic!("interpreter run_source (jit) failed: {diag}"),
     }
-    let status = cmd.status().expect("spawn interpreter+jit");
-    let code = status.code().expect("exit code");
-    let _ = std::fs::remove_file(&src_path);
-    code
 }
 
 /// Compile `source` into a fresh executable, run it, and return the
@@ -199,6 +174,7 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
         verbose: false,
         release: false,
         core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
+        link_cache_dir: Some(link_cache_dir_for_tests()),
     };
     let compile_ok = compile_file(&options).is_ok();
     let result = if compile_ok {
@@ -265,42 +241,44 @@ fn assert_consistent(source: &str, stem: &str) {
     );
 }
 
-/// Spawn the interpreter binary on the source and capture stdout.
-/// Used by `assert_stdout_consistent` so the same `cc`-built
-/// interpreter binary serves both the JIT and the plain-interpreter
-/// reference outputs (no in-process redirection needed).
+/// Run `source` through the in-process interpreter (tree-walker) and
+/// return everything its `print` / `println` builtins emit.
+/// `interpreter::output::with_capture` installs a thread-local sink
+/// that the print sites write to, so this is safe under libtest's
+/// threaded execution (each test thread gets its own buffer).
 ///
-/// `with_core` — same convention as `jit_exit_code`. When false the
-/// spawn skips stdlib auto-load (~150 ms savings).
-fn interpreter_stdout(source: &str, stem: &str, with_core: bool) -> String {
-    let bin = interpreter_bin();
-    let src_path = unique_path(&format!("{stem}.t"));
-    std::fs::write(&src_path, source).expect("write source");
-    let mut cmd = Command::new(&bin);
-    cmd.arg(&src_path);
-    if !with_core {
-        cmd.env("TOYLANG_CORE_MODULES", "");
+/// `with_core` — same convention as `jit_exit_code`.
+fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
+    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
+    let options = RunOptions {
+        jit: false,
+        core_modules_dir: core_dir.as_deref(),
+    };
+    let (result, captured) = interpreter::output::with_capture(|| {
+        interpreter::run_source(source, "test.t", &options)
+    });
+    if let Err(diag) = result {
+        panic!("interpreter run_source (no jit) failed: {diag}");
     }
-    let out = cmd.output().expect("spawn interpreter");
-    let _ = std::fs::remove_file(&src_path);
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    captured
 }
 
-/// JIT counterpart to `interpreter_stdout` — same binary, with the
-/// `INTERPRETER_JIT=1` env var that flips on the cranelift JIT path.
-/// `with_core` follows the same convention.
-fn jit_stdout(source: &str, stem: &str, with_core: bool) -> String {
-    let bin = interpreter_bin();
-    let src_path = unique_path(&format!("{stem}.t"));
-    std::fs::write(&src_path, source).expect("write source");
-    let mut cmd = Command::new(&bin);
-    cmd.arg(&src_path).env("INTERPRETER_JIT", "1");
-    if !with_core {
-        cmd.env("TOYLANG_CORE_MODULES", "");
+/// JIT counterpart to `interpreter_stdout` — same in-process pipeline,
+/// with `RunOptions::jit = true` so the JIT path's `jit_print_*`
+/// helpers fire. They route through the same thread-local sink.
+fn jit_stdout(source: &str, _stem: &str, with_core: bool) -> String {
+    let core_dir = if with_core { Some(core_modules_dir()) } else { None };
+    let options = RunOptions {
+        jit: true,
+        core_modules_dir: core_dir.as_deref(),
+    };
+    let (result, captured) = interpreter::output::with_capture(|| {
+        interpreter::run_source(source, "test.t", &options)
+    });
+    if let Err(diag) = result {
+        panic!("interpreter run_source (jit) failed: {diag}");
     }
-    let out = cmd.output().expect("spawn interpreter+jit");
-    let _ = std::fs::remove_file(&src_path);
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    captured
 }
 
 /// Compile to a binary, run it, and capture stdout. Mirrors
@@ -318,6 +296,7 @@ fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> Option<Stri
         verbose: false,
         release: false,
         core_modules_dir: if with_core { Some(core_modules_dir()) } else { None },
+        link_cache_dir: Some(link_cache_dir_for_tests()),
     };
     let result = if compile_file(&options).is_ok() {
         let out = Command::new(&exe_path).output().expect("spawn binary");

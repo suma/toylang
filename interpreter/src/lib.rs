@@ -8,6 +8,7 @@ pub mod heap;
 #[cfg(feature = "jit")]
 pub mod jit;
 pub mod module_integration;
+pub mod output;
 
 use std::rc::Rc;
 use std::collections::HashMap;
@@ -818,4 +819,87 @@ pub fn execute_program(program: &Program, string_interner: &DefaultStringInterne
             Err(formatted_error)
         }
     }
+}
+
+/// Options for [`run_source`]: parameters that the `interpreter` binary
+/// previously read from CLI flags or env vars.
+///
+/// `jit` mirrors the `INTERPRETER_JIT=1` env var but is per-call so
+/// in-process callers can drive the JIT and tree-walker paths in the
+/// same process without poisoning a sibling thread's run. `core_modules_dir`
+/// mirrors `--core-modules` / `TOYLANG_CORE_MODULES`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RunOptions<'a> {
+    pub jit: bool,
+    pub core_modules_dir: Option<&'a std::path::Path>,
+}
+
+/// Outcome of [`run_source`]. `exit_code` mirrors the value the
+/// `interpreter` binary would have passed to `process::exit` —
+/// `None` for non-numeric main results (which the binary prints
+/// instead of exiting with).
+#[derive(Debug, Clone)]
+pub struct RunOutcome {
+    pub exit_code: Option<i32>,
+}
+
+/// Drive the same parse → type-check → execute pipeline as the
+/// `interpreter` binary, but as a library call so tests don't have to
+/// fork & exec the debug build (~250–500 ms / spawn) just to compare an
+/// exit code.
+///
+/// The error string is the formatted diagnostic that the binary would
+/// have written to stderr. `RunOutcome::exit_code` is `Some(_)` when
+/// the program's `main` returned a numeric value.
+pub fn run_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<RunOutcome, String> {
+    let formatter = ErrorFormatter::new(source, filename);
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = match session.parse_program(source) {
+        Ok(p) => p,
+        Err(err) => {
+            // Print the same diagnostic the binary used to emit, then
+            // hand a short summary back to the caller so it can decide
+            // how to surface it (e.g. test assertions vs. process exit).
+            formatter.format_parse_error(&err);
+            return Err(format!("parse error: {err:?}"));
+        }
+    };
+    if let Err(errors) = check_typing_with_core_modules(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some(filename),
+        options.core_modules_dir,
+    ) {
+        formatter.display_type_check_errors(&errors);
+        return Err(format!("{} type-check error(s)", errors.len()));
+    }
+
+    #[cfg(feature = "jit")]
+    let exec_result = jit::with_jit_override(options.jit, || {
+        execute_program(&program, session.string_interner(), Some(source), Some(filename))
+    });
+    #[cfg(not(feature = "jit"))]
+    let exec_result = {
+        let _ = options.jit;
+        execute_program(&program, session.string_interner(), Some(source), Some(filename))
+    };
+
+    let result = match exec_result {
+        Ok(r) => r,
+        Err(diagnostic) => {
+            formatter.display_runtime_error(&diagnostic);
+            return Err(diagnostic);
+        }
+    };
+    let exit_code = match &*result.borrow() {
+        crate::object::Object::Int64(v) => Some(*v as i32),
+        crate::object::Object::UInt64(v) => Some(*v as i32),
+        _ => None,
+    };
+    Ok(RunOutcome { exit_code })
 }

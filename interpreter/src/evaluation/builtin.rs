@@ -804,9 +804,9 @@ impl EvaluationContext<'_> {
                 let value = try_value!(Ok(value));
                 let rendered = value.borrow().to_display_string(&self.string_interner);
                 if matches!(func, BuiltinFunction::Println) {
-                    println!("{}", rendered);
+                    crate::output::println_text(&rendered);
                 } else {
-                    print!("{}", rendered);
+                    crate::output::print_text(&rendered);
                 }
                 Ok(EvaluationResult::Value((Object::Unit).into()))
             }

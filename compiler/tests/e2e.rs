@@ -72,6 +72,7 @@ fn try_compile_and_run(
         verbose: false,
         release: false,
         core_modules_dir: core_dir,
+            link_cache_dir: None,
     };
     let result = if compile_file(&options).is_ok() {
         let status = Command::new(&exe_path)
@@ -117,6 +118,7 @@ fn compile_and_capture(source: &str, stem: &str) -> Output {
         verbose: false,
         release: false,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let output = Command::new(&exe_path).output().expect("spawn binary");
@@ -601,6 +603,7 @@ fn release_flag_skips_requires_check() {
         verbose: false,
         release: false,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&opts_chk).expect("compile checked");
     let out_chk = Command::new(&exe_chk).output().expect("spawn checked");
@@ -616,6 +619,7 @@ fn release_flag_skips_requires_check() {
         verbose: false,
         release: true,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&opts_rel).expect("compile release");
     let out_rel = Command::new(&exe_rel).output().expect("spawn release");
@@ -769,6 +773,7 @@ fn emit_object_writes_o_file() {
         verbose: false,
         release: false,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let metadata = std::fs::metadata(&obj_path).expect("object file exists");
@@ -795,6 +800,7 @@ fn emit_ir_writes_compiler_ir() {
         verbose: false,
         release: false,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&ir_path).expect("ir file exists");
@@ -821,6 +827,7 @@ fn emit_clif_writes_cranelift_ir() {
         verbose: false,
         release: false,
         core_modules_dir: None,
+            link_cache_dir: None,
     };
     compile_file(&options).expect("compile_file failed");
     let text = std::fs::read_to_string(&clif_path).expect("clif file exists");

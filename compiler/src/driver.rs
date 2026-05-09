@@ -52,7 +52,10 @@ const LINK_CACHE_VERSION: u32 = 1;
 ///
 /// Production users don't set the env var so behaviour stays
 /// identical to the uncached path.
-fn link_cache_dir() -> Option<PathBuf> {
+fn link_cache_dir(cli_override: Option<&Path>) -> Option<PathBuf> {
+    if let Some(p) = cli_override {
+        return Some(p.to_path_buf());
+    }
     let raw = std::env::var_os("TOY_LINK_CACHE_DIR")?;
     if raw.is_empty() {
         return None;
@@ -81,10 +84,15 @@ fn compute_link_hash(object_bytes: &[u8], cc: &str) -> u64 {
     h.finish()
 }
 
-pub fn link_executable(object_bytes: &[u8], output: &Path, verbose: bool) -> Result<(), String> {
+pub fn link_executable(
+    object_bytes: &[u8],
+    output: &Path,
+    verbose: bool,
+    cache_dir_override: Option<&Path>,
+) -> Result<(), String> {
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
     // Opt-in cache hit: copy cached binary to `output`.
-    if let Some(dir) = link_cache_dir() {
+    if let Some(dir) = link_cache_dir(cache_dir_override) {
         let hash = compute_link_hash(object_bytes, &cc);
         let cached = dir.join(format!("{hash:016x}.bin"));
         if cached.is_file() {

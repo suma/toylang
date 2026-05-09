@@ -116,7 +116,12 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
         }
         EmitKind::Executable => {
             let out = options.output.clone().unwrap_or_else(|| default_exe_path(&options.input));
-            driver::link_executable(&object_bytes, &out, options.verbose)?;
+            driver::link_executable(
+                &object_bytes,
+                &out,
+                options.verbose,
+                options.link_cache_dir.as_deref(),
+            )?;
             if options.verbose {
                 eprintln!("wrote {}", out.display());
             }

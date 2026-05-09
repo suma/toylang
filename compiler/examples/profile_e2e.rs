@@ -62,6 +62,7 @@ fn main() {
                 verbose: false,
                 release: false,
                 core_modules_dir: Some(core.clone()),
+            link_cache_dir: None,
             };
             let t_obj0 = Instant::now();
             compile_file(&obj_opts).expect("compile object");
@@ -78,6 +79,7 @@ fn main() {
                 verbose: false,
                 release: false,
                 core_modules_dir: Some(core.clone()),
+            link_cache_dir: None,
             };
             let t_exe0 = Instant::now();
             compile_file(&exe_opts).expect("compile exec");

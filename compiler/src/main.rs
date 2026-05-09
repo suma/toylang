@@ -95,6 +95,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
         verbose,
         release,
         core_modules_dir,
+        link_cache_dir: None,
     })
 }
 

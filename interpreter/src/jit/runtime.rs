@@ -104,32 +104,32 @@ fn with_active_allocator<R>(f: impl FnOnce(&Rc<dyn Allocator>) -> R) -> Option<R
 // the loader can resolve calls into Rust.
 
 extern "C" fn jit_print_i64(v: i64) {
-    print!("{v}");
+    crate::output::print_text(&format!("{v}"));
 }
 extern "C" fn jit_println_i64(v: i64) {
-    println!("{v}");
+    crate::output::println_text(&format!("{v}"));
 }
 extern "C" fn jit_print_u64(v: u64) {
-    print!("{v}");
+    crate::output::print_text(&format!("{v}"));
 }
 extern "C" fn jit_println_u64(v: u64) {
-    println!("{v}");
+    crate::output::println_text(&format!("{v}"));
 }
 extern "C" fn jit_print_bool(v: u8) {
-    print!("{}", v != 0);
+    crate::output::print_text(&format!("{}", v != 0));
 }
 extern "C" fn jit_println_bool(v: u8) {
-    println!("{}", v != 0);
+    crate::output::println_text(&format!("{}", v != 0));
 }
 // f64 helpers go through the same display formatter as the tree-walking
 // interpreter so JIT and non-JIT runs produce byte-identical output.
 extern "C" fn jit_print_f64(v: f64) {
-    print!("{}", crate::object::Object::Float64(v).to_display_string(
+    crate::output::print_text(&crate::object::Object::Float64(v).to_display_string(
         &string_interner::DefaultStringInterner::new(),
     ));
 }
 extern "C" fn jit_println_f64(v: f64) {
-    println!("{}", crate::object::Object::Float64(v).to_display_string(
+    crate::output::println_text(&crate::object::Object::Float64(v).to_display_string(
         &string_interner::DefaultStringInterner::new(),
     ));
 }
@@ -140,18 +140,18 @@ extern "C" fn jit_println_f64(v: f64) {
 // side then formats with the native Rust width's `Display` impl
 // — matches the AOT print helpers (`compiler/src/jit.rs`) and
 // the tree-walking interpreter's `Object::to_display_string`.
-extern "C" fn jit_print_i8(v: i8) { print!("{v}"); }
-extern "C" fn jit_println_i8(v: i8) { println!("{v}"); }
-extern "C" fn jit_print_i16(v: i16) { print!("{v}"); }
-extern "C" fn jit_println_i16(v: i16) { println!("{v}"); }
-extern "C" fn jit_print_i32(v: i32) { print!("{v}"); }
-extern "C" fn jit_println_i32(v: i32) { println!("{v}"); }
-extern "C" fn jit_print_u8(v: u8) { print!("{v}"); }
-extern "C" fn jit_println_u8(v: u8) { println!("{v}"); }
-extern "C" fn jit_print_u16(v: u16) { print!("{v}"); }
-extern "C" fn jit_println_u16(v: u16) { println!("{v}"); }
-extern "C" fn jit_print_u32(v: u32) { print!("{v}"); }
-extern "C" fn jit_println_u32(v: u32) { println!("{v}"); }
+extern "C" fn jit_print_i8(v: i8) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_i8(v: i8) { crate::output::println_text(&format!("{v}")); }
+extern "C" fn jit_print_i16(v: i16) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_i16(v: i16) { crate::output::println_text(&format!("{v}")); }
+extern "C" fn jit_print_i32(v: i32) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_i32(v: i32) { crate::output::println_text(&format!("{v}")); }
+extern "C" fn jit_print_u8(v: u8) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_u8(v: u8) { crate::output::println_text(&format!("{v}")); }
+extern "C" fn jit_print_u16(v: u16) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_u16(v: u16) { crate::output::println_text(&format!("{v}")); }
+extern "C" fn jit_print_u32(v: u32) { crate::output::print_text(&format!("{v}")); }
+extern "C" fn jit_println_u32(v: u32) { crate::output::println_text(&format!("{v}")); }
 
 extern "C" fn jit_heap_alloc(size: u64) -> u64 {
     with_active_allocator(|a| a.alloc(size as usize) as u64).unwrap_or(0)
@@ -526,7 +526,7 @@ extern "C" fn jit_print_str(s: u64) {
         // valid UTF-8. Use `from_utf8_unchecked` to skip a redundant
         // verification at every print site.
         let s = std::str::from_utf8_unchecked(slice);
-        print!("{}", s);
+        crate::output::print_text(s);
     }
 }
 extern "C" fn jit_println_str(s: u64) {
@@ -536,7 +536,7 @@ extern "C" fn jit_println_str(s: u64) {
         let bytes_start = s_ptr.sub((len as usize) + 1);
         let slice = std::slice::from_raw_parts(bytes_start, len as usize);
         let s = std::str::from_utf8_unchecked(slice);
-        println!("{}", s);
+        crate::output::println_text(s);
     }
 }
 
@@ -923,7 +923,35 @@ impl HelperKind {
     ];
 }
 
+thread_local! {
+    /// Per-thread override for the JIT enable flag. When `Some`, takes
+    /// precedence over the `INTERPRETER_JIT` env var so in-process
+    /// callers (notably `compiler/tests/consistency.rs`) can drive both
+    /// the JIT and tree-walker paths within a single test binary
+    /// without racing on a process-global env var.
+    static JIT_ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the JIT enable flag forced to `enabled`, restoring the
+/// previous override (typically `None` = "fall back to env var") on
+/// return — even if `f` panics.
+pub fn with_jit_override<R>(enabled: bool, f: impl FnOnce() -> R) -> R {
+    let prev = JIT_ENABLED_OVERRIDE.with(|c| c.replace(Some(enabled)));
+    struct Guard(Option<bool>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let prev = self.0;
+            JIT_ENABLED_OVERRIDE.with(|c| c.set(prev));
+        }
+    }
+    let _guard = Guard(prev);
+    f()
+}
+
 fn jit_enabled_via_env() -> bool {
+    if let Some(forced) = JIT_ENABLED_OVERRIDE.with(|c| c.get()) {
+        return forced;
+    }
     matches!(std::env::var("INTERPRETER_JIT").as_deref(), Ok("1"))
 }
 

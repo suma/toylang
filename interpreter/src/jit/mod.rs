@@ -10,3 +10,4 @@ mod codegen;
 mod runtime;
 
 pub use runtime::try_execute_main;
+pub use runtime::with_jit_override;

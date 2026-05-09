@@ -37,6 +37,15 @@ pub struct CompilerOptions {
     /// `compiler::resolve_core_modules_dir`). Set explicitly via the
     /// `--core-modules <DIR>` CLI flag or by direct API consumers.
     pub core_modules_dir: Option<PathBuf>,
+    /// Content-addressed link cache directory. When `Some`, the linker
+    /// driver looks up `<dir>/<hash>.bin` keyed on the toylang object
+    /// bytes + cc + platform; cache hits skip the `cc` invocation and
+    /// just copy the cached binary to `output`. `None` falls back to
+    /// the `TOY_LINK_CACHE_DIR` env var, then to no cache. The
+    /// integration tests pin a stable per-suite cache dir here so
+    /// repeat runs of `cargo nextest` reuse linked binaries instead
+    /// of re-invoking `cc` on every test.
+    pub link_cache_dir: Option<PathBuf>,
 }
 
 impl CompilerOptions {
@@ -48,6 +57,7 @@ impl CompilerOptions {
             verbose: false,
             release: false,
             core_modules_dir: None,
+            link_cache_dir: None,
         }
     }
 }

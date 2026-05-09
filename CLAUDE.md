@@ -41,27 +41,29 @@ cd interpreter && cargo run example/fib.t
 
 **推奨**: `cargo nextest` を使用する。並列実行で速く、出力もパッケージ・テストごとに整理される。
 
+**重要**: `cargo nextest run` / `cargo test` を実行する際は、必ず環境変数 `PROPTEST_CASES=32` を設定すること。frontend / interpreter には proptest によるプロパティベーステストが多数含まれており、デフォルトの case 数 (256) では非常に時間がかかるため。
+
 ```bash
 # Run all tests across the workspace with nextest (preferred)
-cargo nextest run
+PROPTEST_CASES=32 cargo nextest run
 
 # Filter by package / test name
-cargo nextest run -p compiler
-cargo nextest run -p interpreter proptest
-cargo nextest run -E 'test(=basic_arithmetic)'
+PROPTEST_CASES=32 cargo nextest run -p compiler
+PROPTEST_CASES=32 cargo nextest run -p interpreter proptest
+PROPTEST_CASES=32 cargo nextest run -E 'test(=basic_arithmetic)'
 ```
 
 `cargo test` も引き続き使用可能 (doc-tests は nextest が実行しないので必要なときは併用):
 
 ```bash
 # Run all tests in interpreter (includes property-based tests)
-cd interpreter && cargo test
+cd interpreter && PROPTEST_CASES=32 cargo test
 
 # Run frontend tests
-cd frontend && cargo test
+cd frontend && PROPTEST_CASES=32 cargo test
 
 # Run property tests only
-cd interpreter && cargo test proptest
+cd interpreter && PROPTEST_CASES=32 cargo test proptest
 ```
 
 **Note**: インタープリターの`cargo test`は3つのフェーズで実行されます：

@@ -1173,225 +1173,250 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         return parse_interpolated_string(parser);
     }
     match parser.peek() {
-        Some(Kind::ParenOpen) => {
-            parse_tuple_or_grouped_expr(parser)
-        }
+        Some(Kind::ParenOpen) => parse_tuple_or_grouped_expr(parser),
         Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match) => {
             let location = parser.current_source_location();
-            return Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
+            Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
         }
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
             let s = parser.string_interner.get_or_intern(s);
             parser.next();
-            
-            // Check for qualified identifier (module::function)
-            if parser.peek() == Some(&Kind::DoubleColon) {
-                let mut qualified_path = vec![s];
-                
-                while parser.peek() == Some(&Kind::DoubleColon) {
-                    parser.next(); // consume '::'
-                    
-                    if let Some(Kind::Identifier(next_part)) = parser.peek() {
-                        let next_part = next_part.to_string();
-                        let next_symbol = parser.string_interner.get_or_intern(next_part);
-                        qualified_path.push(next_symbol);
-                        parser.next();
-                    } else {
-                        parser.collect_error("expected identifier after '::'");
-                        break;
-                    }
-                }
-                
-                // Handle qualified function calls
-                match parser.peek() {
-                    Some(Kind::ParenOpen) => {
-                        let location = parser.current_source_location();
-                        parser.next();
-                        let args = parse_expr_list(parser, vec![])?;
-                        parser.expect_err(&Kind::ParenClose)?;
-                        // Check if this is a struct associated function call (like Container::new)
-                        if qualified_path.len() == 2 {
-                            // For two-part paths like Container::new, treat as associated function call
-                            let struct_name = qualified_path[0];
-                            let function_name = qualified_path[1];
-                            let expr = parser.ast_builder.associated_function_call_expr(struct_name, function_name, args, Some(location));
-                            Ok(expr)
-                        } else {
-                            // For other qualified paths, use the last part as function name
-                            let function_name = qualified_path.last().copied().unwrap_or(s);
-                            let expr = parser.ast_builder.call_expr(function_name, args, Some(location));
-                            Ok(expr)
-                        }
-                    }
-                    _ => {
-                        let location = parser.current_source_location();
-                        Ok(parser.ast_builder.qualified_identifier_expr(qualified_path, Some(location)))
-                    }
-                }
+            parse_primary_after_identifier(parser, s)
+        }
+        _ => parse_primary_atom_or_form(parser),
+    }
+}
+
+/// Parse what follows an identifier head in primary position: a
+/// qualified path (`a::b::c[(...)]`), a call (`f(...)`), an indexed
+/// access (`f[...]`), a struct literal (`F { ... }`, only when
+/// allowed by context), or just a bare identifier expression.
+/// `name` is the already-consumed leading identifier symbol.
+fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> ParserResult<ExprRef> {
+    // Qualified identifier (module::function / Struct::associated_fn).
+    if parser.peek() == Some(&Kind::DoubleColon) {
+        let mut qualified_path = vec![name];
+        while parser.peek() == Some(&Kind::DoubleColon) {
+            parser.next(); // consume '::'
+            if let Some(Kind::Identifier(next_part)) = parser.peek() {
+                let next_part = next_part.to_string();
+                let next_symbol = parser.string_interner.get_or_intern(next_part);
+                qualified_path.push(next_symbol);
+                parser.next();
             } else {
-                // Regular identifier handling
-                // Check struct literal condition before matching to avoid borrow issues
-                let struct_literal_allowed = parser.is_struct_literal_allowed();
-                
-                match parser.peek() {
-                    Some(Kind::ParenOpen) => {
-                        let location = parser.current_source_location();
-                        parser.next();
-                        let args = parse_expr_list(parser, vec![])?;
-                        parser.expect_err(&Kind::ParenClose)?;
-                        
-                        // Check if this is a builtin function using symbol comparison
-                        if let Some(builtin_func) = parser.builtin_symbols.symbol_to_builtin(s) {
-                            let expr = parser.ast_builder.builtin_call_expr(builtin_func, args, Some(location));
-                            Ok(expr)
-                        } else {
-                            let expr = parser.ast_builder.call_expr(s, args, Some(location));
-                            Ok(expr)
-                        }
-                    }
-                    Some(Kind::BracketOpen) => {
-                        let location = parser.current_source_location();
-                        parser.next();
-                        let object_ref = parser.ast_builder.identifier_expr(s, None);
-                        parse_bracket_access(parser, object_ref, location)
-                    }
-                    Some(Kind::BraceOpen) if struct_literal_allowed => {
-                        // Only parse as struct literal if allowed in current context
-                        let location = parser.current_source_location();
-                        parser.next();
-                        let fields = parse_struct_literal_fields(parser, vec![])?;
-                        parser.expect_err(&Kind::BraceClose)?;
-                        Ok(parser.ast_builder.struct_literal_expr(s, fields, Some(location)))
-                    }
-                    _ => {
-                        // Return as identifier - let the statement parser handle any following '{'
-                        let location = parser.current_source_location();
-                        Ok(parser.ast_builder.identifier_expr(s, Some(location)))
-                    }
-                }
+                parser.collect_error("expected identifier after '::'");
+                break;
             }
         }
-        x => {
-            let e = Ok(match x {
-                Some(&Kind::UInt64(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.uint64_expr(num, Some(location))
-                },
-                Some(&Kind::Int64(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.int64_expr(num, Some(location))
-                },
-                Some(&Kind::UInt32(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.uint32_expr(num, Some(location))
-                },
-                Some(&Kind::Int32(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.int32_expr(num, Some(location))
-                },
-                Some(&Kind::UInt16(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.uint16_expr(num, Some(location))
-                },
-                Some(&Kind::Int16(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.int16_expr(num, Some(location))
-                },
-                Some(&Kind::UInt8(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.uint8_expr(num, Some(location))
-                },
-                Some(&Kind::Int8(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.int8_expr(num, Some(location))
-                },
-                Some(&Kind::Float64(num)) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.float64_expr(num, Some(location))
-                },
-                Some(&Kind::Null) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.null_expr(Some(location))
-                },
-                Some(&Kind::True) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.bool_true_expr(Some(location))
-                },
-                Some(&Kind::False) => {
-                    let location = parser.current_source_location();
-                    parser.ast_builder.bool_false_expr(Some(location))
-                },
-                Some(Kind::String(s)) => {
-                    let s_copy = s.to_string();
-                    let location = parser.current_source_location();
-                    let s = parser.string_interner.get_or_intern(s_copy);
-                    parser.ast_builder.string_expr(s, Some(location))
+        // Qualified function call (`Foo::bar(...)`) vs bare path (`Foo::bar`).
+        return match parser.peek() {
+            Some(Kind::ParenOpen) => {
+                let location = parser.current_source_location();
+                parser.next();
+                let args = parse_expr_list(parser, vec![])?;
+                parser.expect_err(&Kind::ParenClose)?;
+                if qualified_path.len() == 2 {
+                    // Two-part path → associated function call (e.g. `Container::new`).
+                    let struct_name = qualified_path[0];
+                    let function_name = qualified_path[1];
+                    Ok(parser.ast_builder.associated_function_call_expr(struct_name, function_name, args, Some(location)))
+                } else {
+                    // 3+ parts → fall back to plain call on the last segment.
+                    let function_name = qualified_path.last().copied().unwrap_or(name);
+                    Ok(parser.ast_builder.call_expr(function_name, args, Some(location)))
                 }
-                Some(Kind::Integer(s)) => {
-                    let s_copy = s.to_string();
-                    let location = parser.current_source_location();
-                    let s = parser.string_interner.get_or_intern(s_copy);
-                    parser.ast_builder.number_expr(s, Some(location))
-                }
-                x => {
-                    return match x {
-                        Some(Kind::ParenOpen) => {
-                            parser.next();
-                            let e = parser.parse_expr_impl()?;
-                            parser.expect_err(&Kind::ParenClose)?;
-                            Ok(e)
-                        }
-                        Some(Kind::BraceOpen) => {
-                            parse_block(parser)
-                        }
-                        Some(Kind::BracketOpen) => {
-                            let location = parser.current_source_location();
-                            parser.next();
-                            let elements = parse_array_elements(parser, vec![])?;
-                            parser.expect_err(&Kind::BracketClose)?;
-                            Ok(parser.ast_builder.array_literal_expr(elements, Some(location)))
-                        }
-                        Some(Kind::If) => {
-                            parser.next();
-                            parse_if(parser)
-                        }
-                        Some(Kind::With) => {
-                            parser.next();
-                            parse_with(parser)
-                        }
-                        Some(Kind::Ambient) => {
-                            // `ambient` is sugar for `__builtin_current_allocator()`.
-                            // It reads naturally at allocator argument positions and
-                            // inside `with allocator = ambient { ... }`.
-                            let location = parser.current_source_location();
-                            parser.next();
-                            Ok(parser.ast_builder.builtin_call_expr(
-                                crate::ast::BuiltinFunction::CurrentAllocator,
-                                vec![],
-                                Some(location),
-                            ))
-                        }
-                        Some(Kind::Dict) => {
-                            parser.next();
-                            parse_dict_literal(parser)
-                        }
-                        Some(Kind::Match) => {
-                            parser.next();
-                            parse_match(parser)
-                        }
-                        _ => {
-                            let x_cloned = x.cloned();
-                            parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
-                            // Don't consume the token here - let the caller handle it
-                            // This is inside a nested return statement, so we don't call parser.next()
-                            Ok(parser.ast_builder.null_expr(None)) // Return dummy expression
-                        }
-                    }
-                }
-            });
+            }
+            _ => {
+                let location = parser.current_source_location();
+                Ok(parser.ast_builder.qualified_identifier_expr(qualified_path, Some(location)))
+            }
+        };
+    }
+
+    // Bare identifier — distinguish call / indexed access / struct literal /
+    // plain identifier based on the next token. Struct-literal recognition
+    // is gated by context (suppressed inside `if` / `while` / `match`
+    // conditions to avoid `if x { ... }` being misread as `x{...}`).
+    let struct_literal_allowed = parser.is_struct_literal_allowed();
+    match parser.peek() {
+        Some(Kind::ParenOpen) => {
+            let location = parser.current_source_location();
             parser.next();
-            e
+            let args = parse_expr_list(parser, vec![])?;
+            parser.expect_err(&Kind::ParenClose)?;
+            // Builtin functions go through a dedicated AST node so the
+            // type-checker / backends can short-circuit dispatch.
+            if let Some(builtin_func) = parser.builtin_symbols.symbol_to_builtin(name) {
+                Ok(parser.ast_builder.builtin_call_expr(builtin_func, args, Some(location)))
+            } else {
+                Ok(parser.ast_builder.call_expr(name, args, Some(location)))
+            }
+        }
+        Some(Kind::BracketOpen) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let object_ref = parser.ast_builder.identifier_expr(name, None);
+            parse_bracket_access(parser, object_ref, location)
+        }
+        Some(Kind::BraceOpen) if struct_literal_allowed => {
+            let location = parser.current_source_location();
+            parser.next();
+            let fields = parse_struct_literal_fields(parser, vec![])?;
+            parser.expect_err(&Kind::BraceClose)?;
+            Ok(parser.ast_builder.struct_literal_expr(name, fields, Some(location)))
+        }
+        _ => {
+            // Plain identifier — postfix / statement parser handles a
+            // following `{` (which might still start a block).
+            let location = parser.current_source_location();
+            Ok(parser.ast_builder.identifier_expr(name, Some(location)))
+        }
+    }
+}
+
+/// Parse the non-identifier head of a primary expression: an atomic
+/// literal (numeric / bool / null / string), or a structured form
+/// keyed on a leading keyword / punctuation (`(`, `{`, `[`, `if`,
+/// `with`, `ambient`, `dict`, `match`).
+///
+/// Two consumption disciplines are at play and intentionally
+/// preserved from the original `parse_primary_impl`:
+/// - Atomic literals are built **before** the token is consumed and
+///   the trailing `parser.next()` runs at the end of this function.
+/// - Structured forms call their own sub-parser, which is responsible
+///   for consuming both its leading keyword and its trailing
+///   delimiter; these branches return early.
+fn parse_primary_atom_or_form(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let x = parser.peek();
+    let e = Ok(match x {
+        Some(&Kind::UInt64(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.uint64_expr(num, Some(location))
+        }
+        Some(&Kind::Int64(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.int64_expr(num, Some(location))
+        }
+        Some(&Kind::UInt32(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.uint32_expr(num, Some(location))
+        }
+        Some(&Kind::Int32(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.int32_expr(num, Some(location))
+        }
+        Some(&Kind::UInt16(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.uint16_expr(num, Some(location))
+        }
+        Some(&Kind::Int16(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.int16_expr(num, Some(location))
+        }
+        Some(&Kind::UInt8(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.uint8_expr(num, Some(location))
+        }
+        Some(&Kind::Int8(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.int8_expr(num, Some(location))
+        }
+        Some(&Kind::Float64(num)) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.float64_expr(num, Some(location))
+        }
+        Some(&Kind::Null) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.null_expr(Some(location))
+        }
+        Some(&Kind::True) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.bool_true_expr(Some(location))
+        }
+        Some(&Kind::False) => {
+            let location = parser.current_source_location();
+            parser.ast_builder.bool_false_expr(Some(location))
+        }
+        Some(Kind::String(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            let s = parser.string_interner.get_or_intern(s_copy);
+            parser.ast_builder.string_expr(s, Some(location))
+        }
+        Some(Kind::Integer(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            let s = parser.string_interner.get_or_intern(s_copy);
+            parser.ast_builder.number_expr(s, Some(location))
+        }
+        // Anything else is a structured form (or an unexpected token).
+        // Each sub-parser is responsible for consuming its own tokens;
+        // we return early so the trailing `parser.next()` below doesn't
+        // double-consume.
+        _ => return parse_primary_keyword_form(parser),
+    });
+    parser.next();
+    e
+}
+
+/// Parse a primary expression starting with a structural keyword or
+/// opening punctuation. Each branch consumes its own tokens and
+/// hands off to a dedicated sub-parser.
+fn parse_primary_keyword_form(parser: &mut Parser) -> ParserResult<ExprRef> {
+    let x = parser.peek();
+    match x {
+        Some(Kind::ParenOpen) => {
+            // Parenthesised single expression. (`parse_tuple_or_grouped_expr`
+            // also handles `(a, b)` tuples but is dispatched from
+            // `parse_primary_impl` directly; this branch is reached only
+            // for tokens that fell through the literal arm.)
+            parser.next();
+            let e = parser.parse_expr_impl()?;
+            parser.expect_err(&Kind::ParenClose)?;
+            Ok(e)
+        }
+        Some(Kind::BraceOpen) => parse_block(parser),
+        Some(Kind::BracketOpen) => {
+            let location = parser.current_source_location();
+            parser.next();
+            let elements = parse_array_elements(parser, vec![])?;
+            parser.expect_err(&Kind::BracketClose)?;
+            Ok(parser.ast_builder.array_literal_expr(elements, Some(location)))
+        }
+        Some(Kind::If) => {
+            parser.next();
+            parse_if(parser)
+        }
+        Some(Kind::With) => {
+            parser.next();
+            parse_with(parser)
+        }
+        Some(Kind::Ambient) => {
+            // `ambient` is sugar for `__builtin_current_allocator()`.
+            // It reads naturally at allocator argument positions and
+            // inside `with allocator = ambient { ... }`.
+            let location = parser.current_source_location();
+            parser.next();
+            Ok(parser.ast_builder.builtin_call_expr(
+                crate::ast::BuiltinFunction::CurrentAllocator,
+                vec![],
+                Some(location),
+            ))
+        }
+        Some(Kind::Dict) => {
+            parser.next();
+            parse_dict_literal(parser)
+        }
+        Some(Kind::Match) => {
+            parser.next();
+            parse_match(parser)
+        }
+        _ => {
+            let x_cloned = x.cloned();
+            parser.collect_error(&format!("unexpected token in primary expression: {:?}", x_cloned));
+            // Don't consume the token here — let the caller handle it.
+            Ok(parser.ast_builder.null_expr(None)) // dummy
         }
     }
 }

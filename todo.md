@@ -88,7 +88,33 @@ CONCRETE-IMPL-Phase-2c. **annotation hint threading + 型 checker registry refac
 
 REF-Stage-2 (residual). **`&T` reference の残perf作業** — Stage 1 (`&mut self`) と Stage 2 (a/d/e/f/b/c/g/i/iv: `&T`/`&mut T` 引数 + writeback + escape reject + ref chain など) は完了済み (詳細は git log)。残: (ii-true-pointer) compound `&mut T` を真の pointer-passing で渡して copy 削減、(iv-compound) `&T` (immutable) compound 型の RefScalar 経路活用で copy 削減。優先度: 低 (perf 改善のみ、機能的には差分なし)。
 
-65. **frontend の改善課題** — docコメント拡充、プロパティベーステスト追加、コード重複削減
+65. **frontend リファクタリング候補** (2026-05-09 棚卸し):
+   - **(a) `ast/pool.rs::add` / `update` の dedupe** — `ExprPool::{add,update}` (各 200+ 行) と `StmtPool::{add,update}` (各 100+ 行) は完全に同形の per-variant dispatch を 2 度書いている。`populate_expr_slot(index, expr)` / `populate_stmt_slot(index, stmt)` ヘルパに抽出すれば ~400 行削減 + 新 variant 追加時の漏れ防止 (IF-VAL でも `loop_label` 列追加時に両側更新が必要だった)。優先度 ★★★、機械的・低リスク
+   - **(b) `type_checker/expression.rs::visit_binary` (267 行) の op category 分割** — arith / compare / bitwise / shift / logical の 5 系統が 1 関数に同居。`visit_arith_binary` / `visit_compare_binary` / `visit_bitwise_binary` / `visit_logical_binary` / `visit_shift_binary` に分割し、`visit_binary` 自体は dispatch table に。OP-OVERLOAD で各 arm が肥大化している経緯。優先度 ★★
+   - **(c) `parser/expr.rs::parse_primary_impl` (244 行) の分解** — `parse_primary_keyword` / `parse_primary_literal` / `parse_primary_paren` 系のヘルパに分割。優先度 ★★
+   - **(d) `AstVisitor` trait の per-category 分割** — `visitor.rs` (717 行) + `visitor_impl.rs` (743 行) を `ExprVisitor` / `StmtVisitor` / `DeclVisitor` のサブ trait に分離。`Acceptable` も対称に分割。trait API 破壊変更で外部 implementor 影響あり (workspace 内のみ前提)。優先度 ★、大規模
+   - **(e) `ast/builder.rs` の 63 関数を macro で簡潔化** — `*_with_label` / `*_stmt` / `*_expr` の boilerplate が多い。`builder_method!` macro で signature + body を 1 行に。優先度 ★
+   - **(f) 細かい関数分解** — `visit_call` (153 行), `visit_unary` (152 行 — 主に struct overload 周り), `visit_closure_impl` (92 行), `parse_match_pattern` (156 行) を内部 helper 切り出しで 50 行以下に。優先度 ★
+   - **(g) `type_checker/utility.rs` (439 行) と `context.rs` (403 行) の責務再整理** — 雑多な utility 関数を topic 別 module へ移動 (variable-scope / type-resolve / error-helpers 等)。優先度 ★
+   - **既存の課題**: docコメント拡充、プロパティベーステスト追加 (進行中)
+
+AOT-MATCH-SCRUTINEE-EXPAND. **AOT match scrutinee に function-call enum を許可** — 現状 `compiler/src/lower/match_lowering.rs::classify_match_scrutinee` は (1) enum-bound identifier、(2) enum-returning method-call (ITER-PROTOCOL-AOT で導入)、(3) scalar primitive のみ受理。`while val Some(x) = func(i)` のような **enum-returning function-call scrutinee** は未対応で、IF-VAL の MVP 制約として `docs/language.md` に明記済み。method-call path の構造をそのまま `Expr::Call` 用にも書けば対応可能 (CallEnum + writeback 不要 — function は Self を持たない)。優先度 中。
+
+NEW-FEATURES. **新規 syntactic-sugar 候補** (2026-05-09 棚卸し、未着手):
+   - **`?` 演算子** — `Result::?` / `Option::?` で early-return。`expr?` を `match expr { Ok(v) => v, Err(e) => return Err(e) }` に desugar (closures landed 済で blocker なし)。優先度 ★★★
+   - **OP-OVERLOAD-CHAIN** — `a + b + c` chained position 対応。今は let-rhs のみ MVP (`bda35dc`)。chained / binary struct literal operand (`a & Bits { v: 1 }`) を解消。優先度 ★★
+   - **comparison chain** — `a < b < c` を `a < b && b < c` に desugar (Python 風)。frontend desugar のみ。優先度 ★
+   - **`??` (null-coalesce)** — `opt ?? default` で `unwrap_or` の糖衣。優先度 ★
+   - **labelled `loop {}`** — `loop { ... }` (条件なし無限ループ) + LABEL 連携。新キーワード必要。優先度 ★
+   - **raw / multi-line string literal** — `r"\path"` / `"""..."""`。lexer 拡張のみ。優先度 ★
+
+NEW-TYPE-SYSTEM. **型システム拡張候補** (2026-05-09 棚卸し、未着手):
+   - **Trait 拡張** — default method body / 多重 bound (`<T: A + B>`) / trait inheritance / `dyn Trait` / associated types。stdlib HOF (`Option::map`) の前提。優先度 ★★★、大規模
+   - **Trait-bounded generic API** — `fn first<I: Iterator<i64>>(iter: I)` の bound check (現状 `<T: Trait>` は struct で動くが Iterator 等 generic trait の bound は未強制)。優先度 ★★
+   - **`Display` trait** — user-defined `to_string` で STR-INTERP の default 動作を拡張可能に。優先度 ★★
+   - **`From` / `Into` 自動変換** — `let s: String = "hi".into()` の自然変換。優先度 ★★
+   - **slice 型 `&[T]`** — 配列 borrow を first-class に。優先度 ★、中〜大
+   - **const generics** — `struct Array<T, const N: usize>`。優先度 ★、大規模
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント (`docs/language.md` は最新化済み、`compiler/README.md` / `interpreter/README.md` も追従済み。残: API リファレンス、advanced topics)
 183. **コンパイラ MVP** — Phase A〜D + Phase E〜Z 系列まで全て完了 (詳細は git log `compiler/` 関連コミット)。残: lower 周辺の compound-returning method の expression position 制約、generic struct の JIT (`159`)、tuple JIT のネスト対応 (`160`)、CONCRETE-IMPL Phase 2c (annotation hint threading)、3+ part qualified call (`185残`)、extern fn の JIT/AOT monomorph 化 (`195b`)、NUM-W-AOT-pack Phase 3 (compound element packing) など個別エントリで継続管理。AOT live state の現在の制約は `compiler/README.md` を参照。
 

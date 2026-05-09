@@ -2311,6 +2311,15 @@ These are real today; some appear in `todo.md` as planned work.
   *Operator overload (struct receivers)*) only fire in let-rhs
   context. `a + b + c` and `a & Bits { v: 1 }` need explicit
   intermediates (`val tmp = a + b; val r = tmp + c`).
+- **AOT `match` scrutinee — function-call enums not supported** —
+  the AOT compiler accepts (1) an enum-bound identifier, (2) a
+  method call returning an enum (`c.next()` from
+  ITER-PROTOCOL-AOT), and (3) scalar primitives in `match` /
+  `if val` / `while val` scrutinee position. A bare
+  enum-returning **function call** (`while val Some(x) =
+  func(i)`) is rejected at lower time. Pre-bind to a struct
+  method or a local first if you need 3-backend portability.
+  Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `todo.md`.
 - **Trait limitations** — no default method bodies; no
   multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
   Trait`; no associated types. Generic trait declarations

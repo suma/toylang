@@ -70,38 +70,7 @@ impl<'a> FunctionLower<'a> {
         // `val tmp = e; val a = tmp.0; val b = tmp.1`, so this branch
         // also handles destructuring.
         if let Expr::TupleLiteral(elems) = rhs.clone() {
-            let mut bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
-            // Pre-allocate locals so element-rhs evaluation order
-            // doesn't matter. For nested tuple / struct elements
-            // (`((a, b), c)`, `(Point, i64)`) we recurse into the
-            // literal to determine the type and intern any new
-            // tuple shapes along the way.
-            for (i, elem_ref) in elems.iter().enumerate() {
-                let elem_ty = self
-                    .infer_tuple_element_type(elem_ref)
-                    .ok_or_else(|| {
-                        format!(
-                            "compiler MVP could not infer type for tuple element #{i}"
-                        )
-                    })?;
-                let shape = self.allocate_tuple_element_shape(elem_ty)?;
-                bindings.push(TupleElementBinding { index: i, shape });
-            }
-            self.bindings.insert(
-                name,
-                Binding::Tuple {
-                    elements: bindings.clone(),
-                },
-            );
-            // Evaluate and store each element's value. Scalar
-            // elements take the fast path; compound elements (struct
-            // / nested tuple) route through the same helpers used
-            // for enum-payload slots.
-            for (i, elem_ref) in elems.iter().enumerate() {
-                let shape = bindings[i].shape.clone();
-                self.store_value_into_tuple_element_shape(elem_ref, i, &shape)?;
-            }
-            return Ok(None);
+            return self.lower_let_tuple_literal(name, elems);
         }
         // Array-literal RHS. Phase S supports a fixed-size array of
         // scalars: `val arr = [a, b, c]`. Each element gets its own
@@ -116,105 +85,7 @@ impl<'a> FunctionLower<'a> {
         // an `ArrayLoad` + `ArrayStore` pair.
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
             if matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
-                let arr_expr = self
-                    .program
-                    .expression
-                    .get(&arr_obj)
-                    .ok_or_else(|| "array-access object missing".to_string())?;
-                let arr_sym = match arr_expr {
-                    Expr::Identifier(s) => s,
-                    _ => {
-                        return Err(
-                            "compiler MVP only supports range slicing on a bare identifier"
-                                .to_string(),
-                        );
-                    }
-                };
-                let (element_ty, length, src_slot) = match self.bindings.get(&arr_sym).cloned() {
-                    Some(Binding::Array { element_ty, length, slot }) => {
-                        (element_ty, length, slot)
-                    }
-                    _ => {
-                        return Err(format!(
-                            "`{}` is not an array binding",
-                            self.interner.resolve(arr_sym).unwrap_or("?")
-                        ));
-                    }
-                };
-                // Defaults for omitted endpoints follow the
-                // interpreter: `..end` starts at 0, `start..` ends
-                // at `length`, `..` is the whole array.
-                let start = match info.start {
-                    Some(s) => self.try_constant_index(&s).ok_or_else(|| {
-                        "compiler MVP only supports constant range-slice bounds".to_string()
-                    })?,
-                    None => 0,
-                };
-                let end = match info.end {
-                    Some(e) => self.try_constant_index(&e).ok_or_else(|| {
-                        "compiler MVP only supports constant range-slice bounds".to_string()
-                    })?,
-                    None => length,
-                };
-                if start > end || end > length {
-                    return Err(format!(
-                        "range slice {start}..{end} out of bounds (array length {length})"
-                    ));
-                }
-                let new_len = end - start;
-                let leaf_count = leaf_scalar_count(self.module, element_ty);
-                let stride = elem_stride_bytes(element_ty, self.module);
-                let dst_slot = self
-                    .module
-                    .function_mut(self.func_id)
-                    .add_array_slot(element_ty, new_len * leaf_count, stride);
-                for i in 0..new_len {
-                    for j in 0..leaf_count {
-                        let src_idx = (start + i) * leaf_count + j;
-                        let dst_idx = i * leaf_count + j;
-                        let leaf_ty = leaf_type_at(self.module, element_ty, j);
-                        let src_idx_v = self
-                            .emit(
-                                InstKind::Const(Const::U64(src_idx as u64)),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns");
-                        let v = self
-                            .emit(
-                                InstKind::ArrayLoad {
-                                    slot: src_slot,
-                                    index: src_idx_v,
-                                    elem_ty: leaf_ty,
-                                },
-                                Some(leaf_ty),
-                            )
-                            .expect("ArrayLoad returns");
-                        let dst_idx_v = self
-                            .emit(
-                                InstKind::Const(Const::U64(dst_idx as u64)),
-                                Some(Type::U64),
-                            )
-                            .expect("Const returns");
-                        self.emit(
-                            InstKind::ArrayStore {
-                                slot: dst_slot,
-                                index: dst_idx_v,
-                                value: v,
-                                elem_ty: leaf_ty,
-                            },
-                            None,
-                        );
-                    }
-                }
-                self.bindings.insert(
-                    name,
-                    Binding::Array {
-                        element_ty,
-                        length: new_len,
-                        slot: dst_slot,
-                    },
-                );
-                return Ok(None);
+                return self.lower_let_range_slice(name, arr_obj, info);
             }
         }
         // Compound-element array read: `val p: Point = arr[i]`.
@@ -225,106 +96,15 @@ impl<'a> FunctionLower<'a> {
         // through the existing struct-binding path.
         if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
             if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
-                let arr_expr = self
-                    .program
-                    .expression
-                    .get(&arr_obj)
-                    .ok_or_else(|| "array-access object missing".to_string())?;
-                if let Expr::Identifier(arr_sym) = arr_expr {
-                    if let Some(Binding::Array { element_ty, .. }) =
-                        self.bindings.get(&arr_sym).cloned()
-                    {
-                        match element_ty {
-                            Type::Struct(struct_id) => {
-                                // Lower the element read, which stashes
-                                // a pending_struct_value with freshly
-                                // allocated leaves filled in.
-                                self.pending_struct_value = None;
-                                let _ = self.lower_slice_access(&arr_obj, &info)?;
-                                if let Some(fields) =
-                                    self.pending_struct_value.take()
-                                {
-                                    self.register_drop_for_struct_binding(struct_id, &fields);
-                                    self.bindings.insert(
-                                        name,
-                                        Binding::Struct { struct_id, fields },
-                                    );
-                                    return Ok(None);
-                                }
-                            }
-                            Type::Tuple(_) => {
-                                self.pending_tuple_value = None;
-                                let _ = self.lower_slice_access(&arr_obj, &info)?;
-                                if let Some(elements) =
-                                    self.pending_tuple_value.take()
-                                {
-                                    self.bindings.insert(
-                                        name,
-                                        Binding::Tuple { elements },
-                                    );
-                                    return Ok(None);
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
+                if let Some(result) =
+                    self.lower_let_slice_single_element(name, arr_obj, info)?
+                {
+                    return Ok(result);
                 }
             }
         }
         if let Expr::ArrayLiteral(elems) = rhs.clone() {
-            if elems.is_empty() {
-                return Err(
-                    "compiler MVP cannot infer element type for empty array literal".to_string(),
-                );
-            }
-            // Element type comes from the first element. Scalars
-            // resolve via `value_scalar`; struct literals resolve
-            // through the struct table.
-            let elem_ty = self.infer_array_element_type(&elems[0])?;
-            if !matches!(
-                elem_ty,
-                Type::I64
-                    | Type::U64
-                    | Type::F64
-                    | Type::Bool
-                    | Type::I8
-                    | Type::U8
-                    | Type::I16
-                    | Type::U16
-                    | Type::I32
-                    | Type::U32
-                    | Type::Struct(_)
-                    | Type::Tuple(_)
-            ) {
-                return Err(format!(
-                    "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
-                ));
-            }
-            // For homogeneous scalar element arrays the stride is
-            // the scalar's actual byte size (1/2/4/8 — see
-            // `array_layout::elem_stride_bytes`); for compound
-            // elements each leaf gets a uniform 8-byte slot in the
-            // same buffer. The slot's `length` therefore counts
-            // leaves, not elements.
-            let leaf_count = leaf_scalar_count(self.module, elem_ty);
-            let stride = elem_stride_bytes(elem_ty, self.module);
-            let slot_len = elems.len() * leaf_count;
-            let slot = self
-                .module
-                .function_mut(self.func_id)
-                .add_array_slot(elem_ty, slot_len, stride);
-            for (i, e) in elems.iter().enumerate() {
-                self.store_array_element(slot, elem_ty, i, leaf_count, e)?;
-            }
-            self.bindings.insert(
-                name,
-                Binding::Array {
-                    element_ty: elem_ty,
-                    length: elems.len(),
-                    slot,
-                },
-            );
-            return Ok(None);
+            return self.lower_let_array_literal(name, elems);
         }
         // Enum-construction RHS. `Enum::Variant` (unit) parses as a
         // `QualifiedIdentifier(vec![enum, variant])`; `Enum::Variant(args)`
@@ -333,68 +113,19 @@ impl<'a> FunctionLower<'a> {
         // + per-variant payload locals) and stores the chosen tag plus
         // the supplied arguments in this variant's payload slots.
         if let Expr::QualifiedIdentifier(path) = rhs.clone() {
-            if path.len() == 2 {
-                if self.enum_defs.contains_key(&path[0]) {
-                    let enum_id = self.resolve_enum_instance(path[0], annotation)?;
-                    let enum_def = self.module.enum_def(enum_id).clone();
-                    let variant_idx = enum_def
-                        .variants
-                        .iter()
-                        .position(|v| v.name == path[1])
-                        .ok_or_else(|| {
-                            format!(
-                                "unknown enum variant `{}::{}`",
-                                self.interner.resolve(path[0]).unwrap_or("?"),
-                                self.interner.resolve(path[1]).unwrap_or("?"),
-                            )
-                        })?;
-                    if !enum_def.variants[variant_idx].payload_types.is_empty() {
-                        return Err(format!(
-                            "enum variant `{}::{}` is a tuple variant; supply its arguments \
-                             via `{}::{}(...)`",
-                            self.interner.resolve(path[0]).unwrap_or("?"),
-                            self.interner.resolve(path[1]).unwrap_or("?"),
-                            self.interner.resolve(path[0]).unwrap_or("?"),
-                            self.interner.resolve(path[1]).unwrap_or("?"),
-                        ));
-                    }
-                    self.bind_enum(name, enum_id, variant_idx, &[])?;
-                    return Ok(None);
-                }
+            if path.len() == 2 && self.enum_defs.contains_key(&path[0]) {
+                return self.lower_let_enum_unit_variant(name, annotation, &path);
             }
         }
         if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone() {
             if self.enum_defs.contains_key(&enum_name) {
-                let enum_id = self.resolve_enum_instance_with_args(
+                return self.lower_let_enum_tuple_variant(
+                    name,
+                    annotation,
                     enum_name,
                     variant_name,
-                    &args,
-                    annotation,
-                )?;
-                let enum_def = self.module.enum_def(enum_id).clone();
-                let variant_idx = enum_def
-                    .variants
-                    .iter()
-                    .position(|v| v.name == variant_name)
-                    .ok_or_else(|| {
-                        format!(
-                            "unknown enum variant `{}::{}`",
-                            self.interner.resolve(enum_name).unwrap_or("?"),
-                            self.interner.resolve(variant_name).unwrap_or("?"),
-                        )
-                    })?;
-                let expected = enum_def.variants[variant_idx].payload_types.len();
-                if args.len() != expected {
-                    return Err(format!(
-                        "enum variant `{}::{}` expects {} payload value(s), got {}",
-                        self.interner.resolve(enum_name).unwrap_or("?"),
-                        self.interner.resolve(variant_name).unwrap_or("?"),
-                        expected,
-                        args.len(),
-                    ));
-                }
-                self.bind_enum(name, enum_id, variant_idx, &args)?;
-                return Ok(None);
+                    args,
+                );
             }
         }
         // Composite enum-producing RHS: `if`-chain / `match` / block
@@ -404,38 +135,14 @@ impl<'a> FunctionLower<'a> {
         // them; cranelift's `def_var` walk turns the per-branch
         // writes into proper SSA at the merge.
         if let Some(base_name) = self.detect_enum_result(rhs_ref) {
-            let enum_id = self.resolve_enum_instance(base_name, annotation)?;
-            let storage = self.allocate_enum_storage(enum_id);
-            self.bindings
-                .insert(name, Binding::Enum(storage.clone()));
-            self.lower_into_enum_storage(rhs_ref, &storage)?;
-            return Ok(None);
+            return self.lower_let_enum_composite(name, annotation, rhs_ref, base_name);
         }
         // Struct-literal RHS: allocate one local per field (recursing
         // into nested struct fields), evaluate each field expression,
         // store into the matching local. The IR layer never sees a
         // struct value — we decompose at the lowering boundary.
         if let Expr::StructLiteral(struct_name, fields) = rhs {
-            // Resolve to the right monomorphised instance. Generic
-            // structs need an annotation to pick T; non-generic
-            // ones short-circuit to a single instance.
-            let struct_id =
-                self.resolve_struct_instance(struct_name, annotation)?;
-            let field_bindings = self.allocate_struct_fields(struct_id);
-            // Insert the binding before evaluating field rhs
-            // expressions so an inner literal that walks back to the
-            // same name (currently unsupported but defensive) doesn't
-            // see a missing binding.
-            self.register_drop_for_struct_binding(struct_id, &field_bindings);
-            self.bindings.insert(
-                name,
-                Binding::Struct {
-                    struct_id,
-                    fields: field_bindings.clone(),
-                },
-            );
-            self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
-            return Ok(None);
+            return self.lower_let_struct_literal(name, annotation, struct_name, fields);
         }
         // DICT-AOT-NEW: `var d: Dict<i64, u64> = Dict::new()` —
         // associated function call on a generic struct. The
@@ -450,188 +157,14 @@ impl<'a> FunctionLower<'a> {
         // `Expr::AssociatedFunctionCall` handling below.
         if let Expr::AssociatedFunctionCall(struct_name, fn_name, ref args_vec) = rhs.clone() {
             if self.struct_defs.contains_key(&struct_name) {
-                let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
-                let recv_type_args = self
-                    .module
-                    .struct_def(struct_id)
-                    .type_args
-                    .clone();
-                // Look up the associated function in the method
-                // registry. Generic templates live in
-                // `generic_methods`; non-generic ones in
-                // `method_func_ids`. The Dict::new path always
-                // hits the generic registry because dict.t's
-                // `impl<K, V> Dict<K, V>` carries (K, V) onto
-                // every method.
-                //
-                // Non-generic impls of generic structs (e.g.
-                // `impl FromStr for Vec<u8>` in
-                // `core/std/collections/vec.t`) land in
-                // `method_func_ids` because the parser drops the
-                // `<u8>` type args from the impl target. The
-                // pre-declared FuncId already has its return
-                // type resolved at registration time (the
-                // `lower_program` non-generic loop substitutes
-                // `Self` to the bare struct symbol's `Identifier`
-                // resolution), so we can dispatch with a plain
-                // `Call` / `CallStruct` here without going
-                // through `instantiate_generic_method_with_self_type`.
-                if let Some(func_id) = super::method_registry::lookup_method_func(
-                    self.method_func_ids, struct_name, fn_name, &recv_type_args,
-                ) {
-                    let target_ret = self.module.function(func_id).return_type;
-                    if let Type::Struct(ret_struct_id) = target_ret {
-                        let field_bindings = self.allocate_struct_fields(ret_struct_id);
-                        let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
-                            .into_iter()
-                            .map(|(l, _)| l)
-                            .collect();
-                        self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
-                        self.bindings.insert(
-                            name,
-                            Binding::Struct {
-                                struct_id: ret_struct_id,
-                                fields: field_bindings,
-                            },
-                        );
-                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-                        for a in args_vec {
-                            let v = self.lower_expr(a)?
-                                .ok_or_else(|| {
-                                    "associated-function arg produced no value".to_string()
-                                })?;
-                            arg_values.push(v);
-                        }
-                        self.emit(
-                            InstKind::CallStruct {
-                                target: func_id,
-                                args: arg_values,
-                                dests,
-                            },
-                            None,
-                        );
-                        return Ok(None);
-                    }
-                    if target_ret.produces_value() {
-                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-                        for a in args_vec {
-                            let v = self.lower_expr(a)?
-                                .ok_or_else(|| {
-                                    "associated-function arg produced no value".to_string()
-                                })?;
-                            arg_values.push(v);
-                        }
-                        let v = self
-                            .emit(
-                                InstKind::Call { target: func_id, args: arg_values },
-                                Some(target_ret),
-                            )
-                            .expect("Call returns a value");
-                        let local = self
-                            .module
-                            .function_mut(self.func_id)
-                            .add_local(target_ret);
-                        self.bindings.insert(
-                            name,
-                            Binding::Scalar { local, ty: target_ret },
-                        );
-                        self.emit(
-                            InstKind::StoreLocal { dst: local, src: v },
-                            None,
-                        );
-                        return Ok(None);
-                    }
-                }
-                // Suppress unused warning when no generic_methods
-                // entry exists (older paths only cared about generics).
-                let _ = recv_type_args;
-                let _ = struct_id;
-                let template = super::method_registry::lookup_method_template(
-                    self.generic_methods, struct_name, fn_name, &[],
-                );
-                if let Some(template) = template {
-                    // Re-resolve to use the right type_args path for
-                    // generic methods.
-                    let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
-                    let recv_type_args = self
-                        .module
-                        .struct_def(struct_id)
-                        .type_args
-                        .clone();
-                    let func_id = self.instantiate_generic_method_with_self_type(
-                        struct_name,
-                        fn_name,
-                        &template,
-                        Type::Struct(struct_id),
-                        recv_type_args,
-                        args_vec,
-                    )?;
-                    let target_ret = self.module.function(func_id).return_type;
-                    if let Type::Struct(ret_struct_id) = target_ret {
-                        let field_bindings = self.allocate_struct_fields(ret_struct_id);
-                        let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
-                            .into_iter()
-                            .map(|(l, _)| l)
-                            .collect();
-                        self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
-                        self.bindings.insert(
-                            name,
-                            Binding::Struct {
-                                struct_id: ret_struct_id,
-                                fields: field_bindings,
-                            },
-                        );
-                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-                        for a in args_vec {
-                            let v = self.lower_expr(a)?
-                                .ok_or_else(|| {
-                                    "associated-function arg produced no value".to_string()
-                                })?;
-                            arg_values.push(v);
-                        }
-                        self.emit(
-                            InstKind::CallStruct {
-                                target: func_id,
-                                args: arg_values,
-                                dests,
-                            },
-                            None,
-                        );
-                        return Ok(None);
-                    }
-                    // Scalar return — emit a regular Call.
-                    if target_ret.produces_value() {
-                        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
-                        for a in args_vec {
-                            let v = self.lower_expr(a)?
-                                .ok_or_else(|| {
-                                    "associated-function arg produced no value".to_string()
-                                })?;
-                            arg_values.push(v);
-                        }
-                        let v = self
-                            .emit(
-                                InstKind::Call {
-                                    target: func_id,
-                                    args: arg_values,
-                                },
-                                Some(target_ret),
-                            )
-                            .expect("Call returns a value");
-                        let local = self
-                            .module
-                            .function_mut(self.func_id)
-                            .add_local(target_ret);
-                        self.bindings.insert(
-                            name,
-                            Binding::Scalar { local, ty: target_ret },
-                        );
-                        self.emit(
-                            InstKind::StoreLocal { dst: local, src: v },
-                            None,
-                        );
-                        return Ok(None);
-                    }
+                if let Some(result) = self.lower_let_struct_associated_call(
+                    name,
+                    annotation,
+                    struct_name,
+                    fn_name,
+                    args_vec,
+                )? {
+                    return Ok(result);
                 }
             }
         }
@@ -642,73 +175,10 @@ impl<'a> FunctionLower<'a> {
         // `lower_unary`'s `Result<Option<ValueId>, _>` shape
         // doesn't have to deal with multi-leaf returns.
         if let Expr::Unary(unary_op, operand_ref) = rhs.clone() {
-            let unary_method: Option<&'static str> = match unary_op {
-                frontend::ast::UnaryOp::Negate => Some("neg"),
-                frontend::ast::UnaryOp::BitwiseNot => Some("bitnot"),
-                frontend::ast::UnaryOp::LogicalNot => Some("not"),
-                _ => None,
-            };
-            if let Some(method_name) = unary_method {
-                if let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
-                    let struct_def = self.module.struct_def(struct_id);
-                    let target_sym = struct_def.base_name;
-                    let type_args = struct_def.type_args.clone();
-                    if let Some(method_sym) = self.interner.get(method_name) {
-                        if let Some(func_id) = super::method_registry::lookup_method_func(
-                            self.method_func_ids, target_sym, method_sym, &type_args,
-                        ) {
-                            let operand_leaves = match self.program.expression.get(&operand_ref) {
-                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                    Some(Binding::Struct { fields, .. }) => {
-                                        flatten_struct_locals(&fields)
-                                    }
-                                    _ => return Err(
-                                        "unary overload: operand needs struct binding (MVP)".to_string(),
-                                    ),
-                                },
-                                _ => return Err(
-                                    "unary overload: operand must be a bare identifier (MVP)".to_string(),
-                                ),
-                            };
-                            let mut all_args: Vec<ValueId> =
-                                Vec::with_capacity(operand_leaves.len());
-                            for (local, ty) in operand_leaves.iter() {
-                                let v = self
-                                    .emit(InstKind::LoadLocal(*local), Some(*ty))
-                                    .expect("LoadLocal returns a value");
-                                all_args.push(v);
-                            }
-                            let target_ret = self.module.function(func_id).return_type;
-                            let dest_struct_id = match target_ret {
-                                Type::Struct(id) => id,
-                                _ => return Err(format!(
-                                    "unary overload: {} method must return Self (got {:?})",
-                                    method_name, target_ret
-                                )),
-                            };
-                            let fields = self.allocate_struct_fields(dest_struct_id);
-                            let dests: Vec<LocalId> =
-                                flatten_struct_locals(&fields)
-                                    .into_iter()
-                                    .map(|(l, _)| l)
-                                    .collect();
-                            self.register_drop_for_struct_binding(dest_struct_id, &fields);
-                            self.bindings.insert(
-                                name,
-                                Binding::Struct { struct_id: dest_struct_id, fields },
-                            );
-                            self.emit(
-                                InstKind::CallStruct {
-                                    target: func_id,
-                                    args: all_args,
-                                    dests,
-                                },
-                                None,
-                            );
-                            return Ok(None);
-                        }
-                    }
-                }
+            if let Some(result) =
+                self.lower_let_unary_overload(name, unary_op, operand_ref)?
+            {
+                return Ok(result);
             }
         }
         // Operator overload (Phase B continuation): arithmetic
@@ -726,99 +196,10 @@ impl<'a> FunctionLower<'a> {
         // extension that needs the call result to flow back as
         // an `Expr::Binary` ValueId.
         if let Expr::Binary(op, lhs_ref, rhs_ref) = rhs.clone() {
-            let op_method: Option<&'static str> = match op {
-                frontend::ast::Operator::IAdd => Some("add"),
-                frontend::ast::Operator::ISub => Some("sub"),
-                frontend::ast::Operator::IMul => Some("mul"),
-                frontend::ast::Operator::IDiv => Some("div"),
-                frontend::ast::Operator::IMod => Some("rem"),
-                frontend::ast::Operator::BitwiseAnd => Some("bitand"),
-                frontend::ast::Operator::BitwiseOr => Some("bitor"),
-                frontend::ast::Operator::BitwiseXor => Some("bitxor"),
-                frontend::ast::Operator::LeftShift => Some("shl"),
-                frontend::ast::Operator::RightShift => Some("shr"),
-                _ => None,
-            };
-            if let Some(method_name) = op_method {
-                if let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
-                    let struct_def = self.module.struct_def(struct_id);
-                    let target_sym = struct_def.base_name;
-                    let type_args = struct_def.type_args.clone();
-                    if let Some(method_sym) = self.interner.get(method_name) {
-                        if let Some(func_id) = super::method_registry::lookup_method_func(
-                            self.method_func_ids, target_sym, method_sym, &type_args,
-                        ) {
-                            // Flatten both struct receivers' leaf
-                            // locals — must come from bare struct
-                            // identifier bindings, same as the
-                            // `try_lower_struct_eq` shape.
-                            let lhs_leaves = match self.program.expression.get(&lhs_ref) {
-                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                    Some(Binding::Struct { fields, .. }) => {
-                                        flatten_struct_locals(&fields)
-                                    }
-                                    _ => return Err(
-                                        "operator overload: arith lhs needs struct binding (MVP)".to_string(),
-                                    ),
-                                },
-                                _ => return Err(
-                                    "operator overload: arith lhs must be a bare identifier (MVP)".to_string(),
-                                ),
-                            };
-                            let rhs_leaves = match self.program.expression.get(&rhs_ref) {
-                                Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                                    Some(Binding::Struct { fields, .. }) => {
-                                        flatten_struct_locals(&fields)
-                                    }
-                                    _ => return Err(
-                                        "operator overload: arith rhs needs struct binding (MVP)".to_string(),
-                                    ),
-                                },
-                                _ => return Err(
-                                    "operator overload: arith rhs must be a bare identifier (MVP)".to_string(),
-                                ),
-                            };
-                            let mut all_args: Vec<ValueId> =
-                                Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
-                            for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
-                                let v = self
-                                    .emit(InstKind::LoadLocal(*local), Some(*ty))
-                                    .expect("LoadLocal returns a value");
-                                all_args.push(v);
-                            }
-                            // Compound Self return — allocate dest
-                            // binding then emit `CallStruct`.
-                            let target_ret = self.module.function(func_id).return_type;
-                            let dest_struct_id = match target_ret {
-                                Type::Struct(id) => id,
-                                _ => return Err(format!(
-                                    "operator overload: {} method must return Self (got {:?})",
-                                    method_name, target_ret
-                                )),
-                            };
-                            let fields = self.allocate_struct_fields(dest_struct_id);
-                            let dests: Vec<LocalId> =
-                                flatten_struct_locals(&fields)
-                                    .into_iter()
-                                    .map(|(l, _)| l)
-                                    .collect();
-                            self.register_drop_for_struct_binding(dest_struct_id, &fields);
-                            self.bindings.insert(
-                                name,
-                                Binding::Struct { struct_id: dest_struct_id, fields },
-                            );
-                            self.emit(
-                                InstKind::CallStruct {
-                                    target: func_id,
-                                    args: all_args,
-                                    dests,
-                                },
-                                None,
-                            );
-                            return Ok(None);
-                        }
-                    }
-                }
+            if let Some(result) =
+                self.lower_let_binary_overload(name, op, lhs_ref, rhs_ref)?
+            {
+                return Ok(result);
             }
         }
         // Primitive-receiver compound-returning method RHS:
@@ -832,138 +213,13 @@ impl<'a> FunctionLower<'a> {
         // would otherwise fall through to `lower_method_call`'s
         // Step D path and bail at the compound-return guard.
         if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
-            if let Some(recv_ty) = self.value_scalar(&recv) {
-                if let Some(target_sym) =
-                    super::method_call::primitive_target_sym_for_ir_type(recv_ty, self.interner)
-                {
-                    if let Some(func_id) = super::method_registry::lookup_method_func(
-                        self.method_func_ids, target_sym, method_sym, &[],
-                    ) {
-                        let target_ret = self.module.function(func_id).return_type;
-                        if matches!(
-                            target_ret,
-                            Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
-                        ) {
-                            let recv_value = self
-                                .lower_expr(&recv)?
-                                .ok_or_else(|| {
-                                    "primitive method receiver produced no value".to_string()
-                                })?;
-                            let mut all_args: Vec<ValueId> = vec![recv_value];
-                            for a in &method_args {
-                                let arg_expr_ref = match self.program.expression.get(a) {
-                                    Some(Expr::Unary(op, inner))
-                                        if matches!(
-                                            op,
-                                            frontend::ast::UnaryOp::Borrow
-                                                | frontend::ast::UnaryOp::BorrowMut
-                                        ) =>
-                                    {
-                                        inner
-                                    }
-                                    _ => *a,
-                                };
-                                if let Some(Expr::Identifier(sym)) =
-                                    self.program.expression.get(&arg_expr_ref)
-                                {
-                                    if let Some(Binding::Struct { fields, .. }) =
-                                        self.bindings.get(&sym).cloned()
-                                    {
-                                        for (local, ty) in flatten_struct_locals(&fields) {
-                                            let v = self
-                                                .emit(InstKind::LoadLocal(local), Some(ty))
-                                                .expect("LoadLocal returns a value");
-                                            all_args.push(v);
-                                        }
-                                        continue;
-                                    }
-                                    if let Some(Binding::Tuple { elements }) =
-                                        self.bindings.get(&sym).cloned()
-                                    {
-                                        for (local, ty) in flatten_tuple_element_locals(&elements) {
-                                            let v = self
-                                                .emit(InstKind::LoadLocal(local), Some(ty))
-                                                .expect("LoadLocal returns a value");
-                                            all_args.push(v);
-                                        }
-                                        continue;
-                                    }
-                                    if let Some(Binding::Enum(storage)) =
-                                        self.bindings.get(&sym).cloned()
-                                    {
-                                        let vs = self.load_enum_locals(&storage);
-                                        all_args.extend(vs);
-                                        continue;
-                                    }
-                                }
-                                let v = self
-                                    .lower_expr(&arg_expr_ref)?
-                                    .ok_or_else(|| {
-                                        "method argument produced no value".to_string()
-                                    })?;
-                                all_args.push(v);
-                            }
-                            match target_ret {
-                                Type::Struct(struct_id) => {
-                                    let fields = self.allocate_struct_fields(struct_id);
-                                    let dests: Vec<LocalId> =
-                                        flatten_struct_locals(&fields)
-                                            .into_iter()
-                                            .map(|(l, _)| l)
-                                            .collect();
-                                    self.register_drop_for_struct_binding(struct_id, &fields);
-                                    self.bindings.insert(
-                                        name,
-                                        Binding::Struct { struct_id, fields },
-                                    );
-                                    self.emit(
-                                        InstKind::CallStruct {
-                                            target: func_id,
-                                            args: all_args,
-                                            dests,
-                                        },
-                                        None,
-                                    );
-                                }
-                                Type::Tuple(tuple_id) => {
-                                    let elements = self.allocate_tuple_elements(tuple_id)?;
-                                    let dests: Vec<LocalId> =
-                                        flatten_tuple_element_locals(&elements)
-                                            .into_iter()
-                                            .map(|(l, _)| l)
-                                            .collect();
-                                    self.bindings.insert(
-                                        name,
-                                        Binding::Tuple { elements },
-                                    );
-                                    self.emit(
-                                        InstKind::CallTuple {
-                                            target: func_id,
-                                            args: all_args,
-                                            dests,
-                                        },
-                                        None,
-                                    );
-                                }
-                                Type::Enum(enum_id) => {
-                                    let storage = self.allocate_enum_storage(enum_id);
-                                    let dests = Self::flatten_enum_dests(&storage);
-                                    self.bindings.insert(name, Binding::Enum(storage));
-                                    self.emit(
-                                        InstKind::CallEnum {
-                                            target: func_id,
-                                            args: all_args,
-                                            dests,
-                                        },
-                                        None,
-                                    );
-                                }
-                                _ => unreachable!("guard ensured compound return"),
-                            }
-                            return Ok(None);
-                        }
-                    }
-                }
+            if let Some(result) = self.lower_let_primitive_method_compound(
+                name,
+                recv,
+                method_sym,
+                &method_args,
+            )? {
+                return Ok(result);
             }
         }
         // Compound-returning method call RHS: `val q = p.swap()`.
@@ -973,207 +229,13 @@ impl<'a> FunctionLower<'a> {
         // freshly-allocated binding. Mirrors the per-target
         // branches below for plain function calls.
         if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
-            if let Some((target_id, recv_binding)) =
-                self.resolve_method_target(&recv, method_sym, &method_args)?
-            {
-                let target_ret = self.module.function(target_id).return_type;
-                if matches!(
-                    target_ret,
-                    Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
-                ) {
-                    // Build the call args: receiver leaf scalars
-                    // first, then method arguments (each lowered
-                    // individually so identifier-arg expansion for
-                    // struct / tuple / enum stays intact).
-                    let mut all_args: Vec<ValueId> = Vec::new();
-                    match &recv_binding {
-                        Binding::Struct { fields, .. } => {
-                            for (local, ty) in flatten_struct_locals(fields) {
-                                let v = self
-                                    .emit(InstKind::LoadLocal(local), Some(ty))
-                                    .expect("LoadLocal returns");
-                                all_args.push(v);
-                            }
-                        }
-                        Binding::Enum(storage) => {
-                            let storage = storage.clone();
-                            let vs = self.load_enum_locals(&storage);
-                            all_args.extend(vs);
-                        }
-                        _ => unreachable!(
-                            "resolve_method_target only returns struct/enum receivers"
-                        ),
-                    }
-                    for a in &method_args {
-                        // Mirror `method_call.rs::lower_method_call`'s
-                        // identifier-arg flatten path so a struct /
-                        // tuple / enum argument (auto-borrowed or
-                        // not) decomposes into leaf locals before
-                        // landing in the cranelift call ABI. Without
-                        // this, a `concat(other: &Vec<u8>)` / similar
-                        // signature on a compound-returning method
-                        // would bail with "method argument produced
-                        // no value" because `lower_expr` on a struct
-                        // identifier intentionally returns `Ok(None)`
-                        // (the value is held in the binding's leaf
-                        // locals, not in the IR value graph).
-                        let arg_expr_ref = match self.program.expression.get(a) {
-                            Some(Expr::Unary(op, inner))
-                                if matches!(
-                                    op,
-                                    frontend::ast::UnaryOp::Borrow
-                                        | frontend::ast::UnaryOp::BorrowMut
-                                ) =>
-                            {
-                                inner
-                            }
-                            _ => *a,
-                        };
-                        if let Some(Expr::Identifier(sym)) =
-                            self.program.expression.get(&arg_expr_ref)
-                        {
-                            if let Some(Binding::Struct { fields, .. }) =
-                                self.bindings.get(&sym).cloned()
-                            {
-                                for (local, ty) in flatten_struct_locals(&fields) {
-                                    let v = self
-                                        .emit(InstKind::LoadLocal(local), Some(ty))
-                                        .expect("LoadLocal returns a value");
-                                    all_args.push(v);
-                                }
-                                continue;
-                            }
-                            if let Some(Binding::Tuple { elements }) =
-                                self.bindings.get(&sym).cloned()
-                            {
-                                for (local, ty) in flatten_tuple_element_locals(&elements) {
-                                    let v = self
-                                        .emit(InstKind::LoadLocal(local), Some(ty))
-                                        .expect("LoadLocal returns a value");
-                                    all_args.push(v);
-                                }
-                                continue;
-                            }
-                            if let Some(Binding::Enum(storage)) =
-                                self.bindings.get(&sym).cloned()
-                            {
-                                let vs = self.load_enum_locals(&storage);
-                                all_args.extend(vs);
-                                continue;
-                            }
-                        }
-                        let v = self
-                            .lower_expr(&arg_expr_ref)?
-                            .ok_or_else(|| "method argument produced no value".to_string())?;
-                        all_args.push(v);
-                    }
-                    // ITER-PROTOCOL-AOT: when the callee is `&mut self`
-                    // (or has compound `&mut T` arg writeback declared),
-                    // its cranelift signature carries extra return
-                    // values for the writeback leaves. Compute the
-                    // additional dests so the caller-side bindings
-                    // receive the modified leaves alongside the
-                    // compound result. Order matches
-                    // `populate_method_writeback_types`: receiver
-                    // leaves first, then args in declaration order.
-                    let needs_writeback = !self
-                        .module
-                        .function(target_id)
-                        .self_writeback_types
-                        .is_empty();
-                    let receiver_writeback_dests: Vec<LocalId> = if needs_writeback {
-                        match &recv_binding {
-                            Binding::Struct { fields, .. } => flatten_struct_locals(fields)
-                                .into_iter()
-                                .map(|(l, _)| l)
-                                .collect(),
-                            Binding::Enum(storage) => {
-                                let mut out = Vec::new();
-                                Self::flatten_enum_dests_into(storage, &mut out);
-                                out
-                            }
-                            _ => Vec::new(),
-                        }
-                    } else {
-                        Vec::new()
-                    };
-                    let arg_writeback_dests: Vec<LocalId> = if needs_writeback {
-                        // Build a synthetic ExprList for the args so
-                        // `collect_compound_writeback_dests` can scan
-                        // them. We can't reuse the existing helper
-                        // (`collect_compound_writeback_dests_slice`)
-                        // because it lives on the same module; the
-                        // helper takes a slice of ExprRefs, which is
-                        // exactly `&method_args`.
-                        self.collect_compound_writeback_dests_slice(&method_args)?
-                    } else {
-                        Vec::new()
-                    };
-                    match target_ret {
-                        Type::Struct(struct_id) => {
-                            let fields = self.allocate_struct_fields(struct_id);
-                            let mut dests: Vec<LocalId> =
-                                flatten_struct_locals(&fields)
-                                    .into_iter()
-                                    .map(|(l, _)| l)
-                                    .collect();
-                            dests.extend(receiver_writeback_dests.iter().copied());
-                            dests.extend(arg_writeback_dests.iter().copied());
-                            self.register_drop_for_struct_binding(struct_id, &fields);
-                            self.bindings.insert(
-                                name,
-                                Binding::Struct { struct_id, fields },
-                            );
-                            self.emit(
-                                InstKind::CallStruct {
-                                    target: target_id,
-                                    args: all_args,
-                                    dests,
-                                },
-                                None,
-                            );
-                        }
-                        Type::Tuple(tuple_id) => {
-                            let elements = self.allocate_tuple_elements(tuple_id)?;
-                            let mut dests: Vec<LocalId> =
-                                flatten_tuple_element_locals(&elements)
-                                    .into_iter()
-                                    .map(|(l, _)| l)
-                                    .collect();
-                            dests.extend(receiver_writeback_dests.iter().copied());
-                            dests.extend(arg_writeback_dests.iter().copied());
-                            self.bindings.insert(
-                                name,
-                                Binding::Tuple { elements },
-                            );
-                            self.emit(
-                                InstKind::CallTuple {
-                                    target: target_id,
-                                    args: all_args,
-                                    dests,
-                                },
-                                None,
-                            );
-                        }
-                        Type::Enum(enum_id) => {
-                            let storage = self.allocate_enum_storage(enum_id);
-                            let mut dests = Self::flatten_enum_dests(&storage);
-                            dests.extend(receiver_writeback_dests.iter().copied());
-                            dests.extend(arg_writeback_dests.iter().copied());
-                            self.bindings.insert(name, Binding::Enum(storage));
-                            self.emit(
-                                InstKind::CallEnum {
-                                    target: target_id,
-                                    args: all_args,
-                                    dests,
-                                },
-                                None,
-                            );
-                        }
-                        _ => unreachable!("guard ensured compound return"),
-                    }
-                    return Ok(None);
-                }
+            if let Some(result) = self.lower_let_struct_enum_method_compound(
+                name,
+                recv,
+                method_sym,
+                method_args,
+            )? {
+                return Ok(result);
             }
         }
         // Tuple-returning call RHS: `val pair = make_pair()`. Same
@@ -1183,115 +245,20 @@ impl<'a> FunctionLower<'a> {
         // `val tmp = make_pair(); val a = tmp.0; val b = tmp.1`) is
         // also handled here without special-casing destructuring.
         if let Expr::Call(fn_name, args_ref) = rhs.clone() {
-            if let Some(target_id) = self.module.lookup_function(None, fn_name) {
-                let target_ret = self.module.function(target_id).return_type;
-                if let Type::Tuple(tuple_id) = target_ret {
-                    let element_bindings = self.allocate_tuple_elements(tuple_id)?;
-                    let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
-                        .into_iter()
-                        .map(|(local, _)| local)
-                        .collect();
-                    // REF-Stage-2 (ii-let-rhs): if the callee declares
-                    // writeback returns from compound `&mut T` params,
-                    // append those dests so the caller-side bindings
-                    // receive the modified leaves alongside the
-                    // tuple result.
-                    if !self.module.function(target_id).self_writeback_types.is_empty() {
-                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
-                    }
-                    self.bindings.insert(
-                        name,
-                        Binding::Tuple { elements: element_bindings },
-                    );
-                    let arg_values = self.lower_call_args(&args_ref)?;
-                    self.emit(
-                        InstKind::CallTuple {
-                            target: target_id,
-                            args: arg_values,
-                            dests,
-                        },
-                        None,
-                    );
-                    return Ok(None);
-                }
-                if let Type::Enum(enum_id) = target_ret {
-                    // Enum-returning call: pre-allocate the binding's
-                    // storage tree, flatten it into the CallEnum dest
-                    // list (tag first, then each variant's payloads
-                    // in declaration order, recursing through nested
-                    // enum slots). Codegen then routes the multi-
-                    // return slots straight into our locals.
-                    let storage = self.allocate_enum_storage(enum_id);
-                    let mut dests = Self::flatten_enum_dests(&storage);
-                    // REF-Stage-2 (ii-let-rhs): see Tuple branch.
-                    if !self.module.function(target_id).self_writeback_types.is_empty() {
-                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
-                    }
-                    self.bindings
-                        .insert(name, Binding::Enum(storage));
-                    let arg_values = self.lower_call_args(&args_ref)?;
-                    self.emit(
-                        InstKind::CallEnum {
-                            target: target_id,
-                            args: arg_values,
-                            dests,
-                        },
-                        None,
-                    );
-                    return Ok(None);
-                }
+            if let Some(result) =
+                self.lower_let_call_tuple_or_enum(name, fn_name, &args_ref)?
+            {
+                return Ok(result);
             }
         }
         // Struct-returning call RHS: `val p = make_point()`. Allocate
         // a struct binding and use `CallStruct` so codegen can route
         // the multi-return values into the per-field locals.
         if let Expr::Call(fn_name, args_ref) = rhs {
-            if let Some(target_id) = self.module.lookup_function(None, fn_name) {
-                let target_ret = self.module.function(target_id).return_type;
-                if let Type::Struct(struct_id) = target_ret {
-                    let field_bindings = self.allocate_struct_fields(struct_id);
-                    // CallStruct dests are the leaf scalar locals in
-                    // declaration order — exactly what the cranelift
-                    // multi-result call gives us back.
-                    let mut dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
-                        .into_iter()
-                        .map(|(l, _)| l)
-                        .collect();
-                    // REF-Stage-2 (ii-let-rhs): if the callee declares
-                    // writeback returns from compound `&mut T` params,
-                    // append those dests after the struct fields so
-                    // the caller-side `&mut <var>` bindings absorb
-                    // the modified leaves in the canonical order
-                    // (`flatten_compound_leaf_types` ensures both
-                    // sides use the same shape).
-                    if !self.module.function(target_id).self_writeback_types.is_empty() {
-                        dests.extend(self.collect_compound_writeback_dests(&args_ref)?);
-                    }
-                    self.register_drop_for_struct_binding(struct_id, &field_bindings);
-                    self.bindings.insert(
-                        name,
-                        Binding::Struct {
-                            struct_id,
-                            fields: field_bindings,
-                        },
-                    );
-                    // Lower the args separately so we can hand them to
-                    // `CallStruct` directly. The argument expressions
-                    // themselves are scalar (struct args resolve via
-                    // identifiers; cross-struct call args are handled by
-                    // the regular `lower_call` path below if they show up
-                    // in this position).
-                    let arg_values = self.lower_call_args(&args_ref)?;
-                    self.emit(
-                        InstKind::CallStruct {
-                            target: target_id,
-                            args: arg_values,
-                            dests,
-                        },
-                        None,
-                    );
-                    return Ok(None);
-                }
+            if let Some(result) =
+                self.lower_let_call_struct(name, fn_name, &args_ref)?
+            {
+                return Ok(result);
             }
         }
         // #121 Phase A: `val name: T = __builtin_ptr_read(p, off)` —
@@ -1309,114 +276,10 @@ impl<'a> FunctionLower<'a> {
         // continue through the original single-PtrRead path.
         if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone() {
             if args.len() == 2 {
-                // Resolve the annotation type with the active
-                // monomorphisation substitution applied. Without
-                // the subst, an annotation that names a generic
-                // param (e.g. `K` in
-                // `core/std/dict.t::insert`'s
-                // `val existing: K = __builtin_ptr_read(...)`)
-                // wouldn't be reachable through `lower_scalar`,
-                // which only knows the leaf-primitive `TypeDecl`s.
-                let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));
-                if let Some(elem_ty) = elem_ty {
-                    if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_)) {
-                        let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {
-                            format!(
-                                "__builtin_ptr_read: unable to compute leaf layout for {:?}",
-                                elem_ty
-                            )
-                        })?;
-                        let ptr = self
-                            .lower_expr(&args[0])?
-                            .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
-                        let base_offset = self
-                            .lower_expr(&args[1])?
-                            .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
-                        // Allocate the destination binding's leaf
-                        // locals up front so we can store each
-                        // PtrRead value straight into them in
-                        // declaration order.
-                        let (leaf_locals, binding) = match elem_ty {
-                            Type::Struct(struct_id) => {
-                                let fields = self.allocate_struct_fields(struct_id);
-                                let locals = flatten_struct_locals(&fields);
-                                self.register_drop_for_struct_binding(struct_id, &fields);
-                                (locals, Binding::Struct { struct_id, fields })
-                            }
-                            Type::Tuple(tuple_id) => {
-                                let elements = self.allocate_tuple_elements(tuple_id)?;
-                                let locals = flatten_tuple_element_locals(&elements);
-                                (locals, Binding::Tuple { elements })
-                            }
-                            _ => unreachable!("guarded above"),
-                        };
-                        if leaf_locals.len() != leaves.len() {
-                            return Err(format!(
-                                "__builtin_ptr_read: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
-                                leaf_locals.len(),
-                                leaves.len(),
-                                elem_ty
-                            ));
-                        }
-                        for ((leaf_off, leaf_ty), (local, _local_ty)) in
-                            leaves.iter().zip(leaf_locals.iter())
-                        {
-                            let leaf_off_v = self
-                                .emit(
-                                    InstKind::Const(crate::ir::Const::U64(*leaf_off)),
-                                    Some(Type::U64),
-                                )
-                                .expect("Const returns a value");
-                            let off_v = self
-                                .emit(
-                                    InstKind::BinOp {
-                                        op: crate::ir::BinOp::Add,
-                                        lhs: base_offset,
-                                        rhs: leaf_off_v,
-                                    },
-                                    Some(Type::U64),
-                                )
-                                .expect("BinOp returns a value");
-                            let v = self
-                                .emit(
-                                    InstKind::PtrRead { ptr, offset: off_v, elem_ty: *leaf_ty },
-                                    Some(*leaf_ty),
-                                )
-                                .expect("PtrRead returns a value");
-                            self.emit(
-                                InstKind::StoreLocal { dst: *local, src: v },
-                                None,
-                            );
-                        }
-                        self.bindings.insert(name, binding);
-                        return Ok(None);
-                    }
-                    let ptr = self
-                        .lower_expr(&args[0])?
-                        .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
-                    let offset = self
-                        .lower_expr(&args[1])?
-                        .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
-                    let v = self.emit(
-                        InstKind::PtrRead { ptr, offset, elem_ty },
-                        Some(elem_ty),
-                    );
-                    let local = self
-                        .module
-                        .function_mut(self.func_id)
-                        .add_local(elem_ty);
-                    self.bindings.insert(
-                        name,
-                        Binding::Scalar { local, ty: elem_ty },
-                    );
-                    self.emit(
-                        InstKind::StoreLocal {
-                            dst: local,
-                            src: v.expect("PtrRead produces a value"),
-                        },
-                        None,
-                    );
-                    return Ok(None);
+                if let Some(result) =
+                    self.lower_let_builtin_ptr_read(name, annotation, &args)?
+                {
+                    return Ok(result);
                 }
             }
         }
@@ -1429,52 +292,25 @@ impl<'a> FunctionLower<'a> {
         // and `lower_call` would then fail to find `name` in the
         // function table.
         if let Expr::Call(callee_name, _) = rhs.clone() {
-            if let Some(callee_id) = self.module.lookup_function(None, callee_name) {
-                if let Some(callee_fn) = self
-                    .program
-                    .function
-                    .iter()
-                    .find(|f| f.name == callee_name)
-                {
-                    if let Some(frontend::type_decl::TypeDecl::Function(p_tys, r_ty)) =
-                        callee_fn.return_type.as_ref()
-                    {
-                        let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
-                        let mut ok = true;
-                        for pt in p_tys {
-                            match super::types::lower_scalar(pt) {
-                                Some(t) => ir_param_tys.push(t),
-                                None => {
-                                    ok = false;
-                                    break;
-                                }
-                            }
-                        }
-                        if let (true, Some(ir_ret_ty)) = (ok, super::types::lower_scalar(r_ty)) {
-                            let _ = callee_id; // resolved at the existing scalar fall-through
-                            let v = self
-                                .lower_expr(rhs_ref)?
-                                .ok_or_else(|| "val/var rhs produced no value".to_string())?;
-                            let local = self
-                                .module
-                                .function_mut(self.func_id)
-                                .add_local(Type::U64);
-                            self.bindings.insert(
-                                name,
-                                Binding::FunctionPtr {
-                                    local,
-                                    param_tys: ir_param_tys,
-                                    ret_ty: ir_ret_ty,
-                                },
-                            );
-                            self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
-                            return Ok(None);
-                        }
-                    }
-                }
+            if let Some(result) =
+                self.lower_let_call_function_pointer(name, rhs_ref, callee_name)?
+            {
+                return Ok(result);
             }
         }
         // Scalar fallback (existing behaviour).
+        self.lower_let_scalar_fallback(name, rhs_ref)
+    }
+
+    /// Scalar fallback for `lower_let`: any RHS shape not picked up
+    /// by the earlier early-return arms lands here. Lowers the
+    /// expression to a single value, infers its scalar type, and
+    /// stores it into a freshly-allocated `Binding::Scalar` local.
+    fn lower_let_scalar_fallback(
+        &mut self,
+        name: DefaultSymbol,
+        rhs_ref: &ExprRef,
+    ) -> Result<Option<ValueId>, String> {
         let v = self
             .lower_expr(rhs_ref)?
             .ok_or_else(|| "val/var rhs produced no value".to_string())?;
@@ -1485,6 +321,1500 @@ impl<'a> FunctionLower<'a> {
         self.bindings
             .insert(name, Binding::Scalar { local, ty: scalar });
         self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+        Ok(None)
+    }
+
+    /// `__builtin_ptr_read` RHS helper
+    /// (`val name: T = __builtin_ptr_read(p, off)`). Reads the
+    /// width from the annotation. For a compound `T` (struct /
+    /// tuple) the call expands into one `PtrRead` per leaf
+    /// scalar at `off + leaf_off`, mirroring the per-leaf write
+    /// loop in `expr.rs::PtrWrite`. Scalar callers continue
+    /// through the original single-PtrRead path. Returns
+    /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
+    /// annotation didn't resolve to a usable element type.
+    fn lower_let_builtin_ptr_read(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        args: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        // Resolve the annotation type with the active
+        // monomorphisation substitution applied. Without
+        // the subst, an annotation that names a generic
+        // param (e.g. `K` in
+        // `core/std/dict.t::insert`'s
+        // `val existing: K = __builtin_ptr_read(...)`)
+        // wouldn't be reachable through `lower_scalar`,
+        // which only knows the leaf-primitive `TypeDecl`s.
+        let elem_ty = annotation.and_then(|a| self.lower_scalar_with_subst(a));
+        if let Some(elem_ty) = elem_ty {
+            if matches!(elem_ty, Type::Struct(_) | Type::Tuple(_)) {
+                let leaves = self.compute_leaf_layout(elem_ty).ok_or_else(|| {
+                    format!(
+                        "__builtin_ptr_read: unable to compute leaf layout for {:?}",
+                        elem_ty
+                    )
+                })?;
+                let ptr = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
+                let base_offset = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+                // Allocate the destination binding's leaf
+                // locals up front so we can store each
+                // PtrRead value straight into them in
+                // declaration order.
+                let (leaf_locals, binding) = match elem_ty {
+                    Type::Struct(struct_id) => {
+                        let fields = self.allocate_struct_fields(struct_id);
+                        let locals = flatten_struct_locals(&fields);
+                        self.register_drop_for_struct_binding(struct_id, &fields);
+                        (locals, Binding::Struct { struct_id, fields })
+                    }
+                    Type::Tuple(tuple_id) => {
+                        let elements = self.allocate_tuple_elements(tuple_id)?;
+                        let locals = flatten_tuple_element_locals(&elements);
+                        (locals, Binding::Tuple { elements })
+                    }
+                    _ => unreachable!("guarded above"),
+                };
+                if leaf_locals.len() != leaves.len() {
+                    return Err(format!(
+                        "__builtin_ptr_read: leaf count mismatch ({} locals vs {} layout entries) for {:?}",
+                        leaf_locals.len(),
+                        leaves.len(),
+                        elem_ty
+                    ));
+                }
+                for ((leaf_off, leaf_ty), (local, _local_ty)) in
+                    leaves.iter().zip(leaf_locals.iter())
+                {
+                    let leaf_off_v = self
+                        .emit(
+                            InstKind::Const(crate::ir::Const::U64(*leaf_off)),
+                            Some(Type::U64),
+                        )
+                        .expect("Const returns a value");
+                    let off_v = self
+                        .emit(
+                            InstKind::BinOp {
+                                op: crate::ir::BinOp::Add,
+                                lhs: base_offset,
+                                rhs: leaf_off_v,
+                            },
+                            Some(Type::U64),
+                        )
+                        .expect("BinOp returns a value");
+                    let v = self
+                        .emit(
+                            InstKind::PtrRead { ptr, offset: off_v, elem_ty: *leaf_ty },
+                            Some(*leaf_ty),
+                        )
+                        .expect("PtrRead returns a value");
+                    self.emit(
+                        InstKind::StoreLocal { dst: *local, src: v },
+                        None,
+                    );
+                }
+                self.bindings.insert(name, binding);
+                return Ok(Some(None));
+            }
+            let ptr = self
+                .lower_expr(&args[0])?
+                .ok_or_else(|| "ptr_read ptr produced no value".to_string())?;
+            let offset = self
+                .lower_expr(&args[1])?
+                .ok_or_else(|| "ptr_read offset produced no value".to_string())?;
+            let v = self.emit(
+                InstKind::PtrRead { ptr, offset, elem_ty },
+                Some(elem_ty),
+            );
+            let local = self
+                .module
+                .function_mut(self.func_id)
+                .add_local(elem_ty);
+            self.bindings.insert(
+                name,
+                Binding::Scalar { local, ty: elem_ty },
+            );
+            self.emit(
+                InstKind::StoreLocal {
+                    dst: local,
+                    src: v.expect("PtrRead produces a value"),
+                },
+                None,
+            );
+            return Ok(Some(None));
+        }
+        Ok(None)
+    }
+
+    /// Function-pointer-returning call RHS helper
+    /// (Phase 6b/6c). A Call RHS whose callee returns a
+    /// function type (`TypeDecl::Function`) lands as a
+    /// fn-pointer value (Type::U64 in IR). Binds under
+    /// `Binding::FunctionPtr` so a subsequent `name(args)`
+    /// dispatches through the env-based CallIndirect path.
+    /// Returns `Ok(Some(_))` if it dispatched, `Ok(None)` if
+    /// the callee doesn't return a function type and the
+    /// caller should fall through to the scalar fallback.
+    fn lower_let_call_function_pointer(
+        &mut self,
+        name: DefaultSymbol,
+        rhs_ref: &ExprRef,
+        callee_name: DefaultSymbol,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if let Some(callee_id) = self.module.lookup_function(None, callee_name) {
+            if let Some(callee_fn) = self
+                .program
+                .function
+                .iter()
+                .find(|f| f.name == callee_name)
+            {
+                if let Some(frontend::type_decl::TypeDecl::Function(p_tys, r_ty)) =
+                    callee_fn.return_type.as_ref()
+                {
+                    let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
+                    let mut ok = true;
+                    for pt in p_tys {
+                        match super::types::lower_scalar(pt) {
+                            Some(t) => ir_param_tys.push(t),
+                            None => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if let (true, Some(ir_ret_ty)) = (ok, super::types::lower_scalar(r_ty)) {
+                        let _ = callee_id; // resolved at the existing scalar fall-through
+                        let v = self
+                            .lower_expr(rhs_ref)?
+                            .ok_or_else(|| "val/var rhs produced no value".to_string())?;
+                        let local = self
+                            .module
+                            .function_mut(self.func_id)
+                            .add_local(Type::U64);
+                        self.bindings.insert(
+                            name,
+                            Binding::FunctionPtr {
+                                local,
+                                param_tys: ir_param_tys,
+                                ret_ty: ir_ret_ty,
+                            },
+                        );
+                        self.emit(InstKind::StoreLocal { dst: local, src: v }, None);
+                        return Ok(Some(None));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Tuple- or enum-returning call RHS helper. Allocates the
+    /// matching binding shape and emits a `CallTuple` /
+    /// `CallEnum` so codegen can route multi-return slots
+    /// into the per-leaf locals. Returns `Ok(Some(_))` if the
+    /// callee returns Tuple / Enum, `Ok(None)` if not (caller
+    /// should fall through to the struct-returning variant).
+    fn lower_let_call_tuple_or_enum(
+        &mut self,
+        name: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if let Some(target_id) = self.module.lookup_function(None, fn_name) {
+            let target_ret = self.module.function(target_id).return_type;
+            if let Type::Tuple(tuple_id) = target_ret {
+                let element_bindings = self.allocate_tuple_elements(tuple_id)?;
+                let mut dests: Vec<LocalId> = flatten_tuple_element_locals(&element_bindings)
+                    .into_iter()
+                    .map(|(local, _)| local)
+                    .collect();
+                // REF-Stage-2 (ii-let-rhs): if the callee declares
+                // writeback returns from compound `&mut T` params,
+                // append those dests so the caller-side bindings
+                // receive the modified leaves alongside the
+                // tuple result.
+                if !self.module.function(target_id).self_writeback_types.is_empty() {
+                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
+                }
+                self.bindings.insert(
+                    name,
+                    Binding::Tuple { elements: element_bindings },
+                );
+                let arg_values = self.lower_call_args(args_ref)?;
+                self.emit(
+                    InstKind::CallTuple {
+                        target: target_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+            if let Type::Enum(enum_id) = target_ret {
+                // Enum-returning call: pre-allocate the binding's
+                // storage tree, flatten it into the CallEnum dest
+                // list (tag first, then each variant's payloads
+                // in declaration order, recursing through nested
+                // enum slots). Codegen then routes the multi-
+                // return slots straight into our locals.
+                let storage = self.allocate_enum_storage(enum_id);
+                let mut dests = Self::flatten_enum_dests(&storage);
+                // REF-Stage-2 (ii-let-rhs): see Tuple branch.
+                if !self.module.function(target_id).self_writeback_types.is_empty() {
+                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
+                }
+                self.bindings
+                    .insert(name, Binding::Enum(storage));
+                let arg_values = self.lower_call_args(args_ref)?;
+                self.emit(
+                    InstKind::CallEnum {
+                        target: target_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Struct-returning call RHS helper. Allocates a struct
+    /// binding and uses `CallStruct` so codegen can route the
+    /// multi-return values into the per-field locals.
+    fn lower_let_call_struct(
+        &mut self,
+        name: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if let Some(target_id) = self.module.lookup_function(None, fn_name) {
+            let target_ret = self.module.function(target_id).return_type;
+            if let Type::Struct(struct_id) = target_ret {
+                let field_bindings = self.allocate_struct_fields(struct_id);
+                // CallStruct dests are the leaf scalar locals in
+                // declaration order — exactly what the cranelift
+                // multi-result call gives us back.
+                let mut dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                // REF-Stage-2 (ii-let-rhs): if the callee declares
+                // writeback returns from compound `&mut T` params,
+                // append those dests after the struct fields so
+                // the caller-side `&mut <var>` bindings absorb
+                // the modified leaves in the canonical order
+                // (`flatten_compound_leaf_types` ensures both
+                // sides use the same shape).
+                if !self.module.function(target_id).self_writeback_types.is_empty() {
+                    dests.extend(self.collect_compound_writeback_dests(args_ref)?);
+                }
+                self.register_drop_for_struct_binding(struct_id, &field_bindings);
+                self.bindings.insert(
+                    name,
+                    Binding::Struct {
+                        struct_id,
+                        fields: field_bindings,
+                    },
+                );
+                // Lower the args separately so we can hand them to
+                // `CallStruct` directly. The argument expressions
+                // themselves are scalar (struct args resolve via
+                // identifiers; cross-struct call args are handled by
+                // the regular `lower_call` path below if they show up
+                // in this position).
+                let arg_values = self.lower_call_args(args_ref)?;
+                self.emit(
+                    InstKind::CallStruct {
+                        target: target_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Struct/enum-receiver compound-returning method RHS helper
+    /// (`val q = p.swap()`). Resolves the receiver / method
+    /// target via `resolve_method_target` then routes the
+    /// multi-result through `CallStruct` / `CallTuple` /
+    /// `CallEnum` into a freshly-allocated binding. Returns
+    /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
+    /// receiver / method doesn't match this shape and the
+    /// caller should fall through.
+    fn lower_let_struct_enum_method_compound(
+        &mut self,
+        name: DefaultSymbol,
+        recv: ExprRef,
+        method_sym: DefaultSymbol,
+        method_args: Vec<ExprRef>,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if let Some((target_id, recv_binding)) =
+            self.resolve_method_target(&recv, method_sym, &method_args)?
+        {
+            let target_ret = self.module.function(target_id).return_type;
+            if matches!(
+                target_ret,
+                Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
+            ) {
+                // Build the call args: receiver leaf scalars
+                // first, then method arguments (each lowered
+                // individually so identifier-arg expansion for
+                // struct / tuple / enum stays intact).
+                let mut all_args: Vec<ValueId> = Vec::new();
+                match &recv_binding {
+                    Binding::Struct { fields, .. } => {
+                        for (local, ty) in flatten_struct_locals(fields) {
+                            let v = self
+                                .emit(InstKind::LoadLocal(local), Some(ty))
+                                .expect("LoadLocal returns");
+                            all_args.push(v);
+                        }
+                    }
+                    Binding::Enum(storage) => {
+                        let storage = storage.clone();
+                        let vs = self.load_enum_locals(&storage);
+                        all_args.extend(vs);
+                    }
+                    _ => unreachable!(
+                        "resolve_method_target only returns struct/enum receivers"
+                    ),
+                }
+                for a in &method_args {
+                    // Mirror `method_call.rs::lower_method_call`'s
+                    // identifier-arg flatten path so a struct /
+                    // tuple / enum argument (auto-borrowed or
+                    // not) decomposes into leaf locals before
+                    // landing in the cranelift call ABI. Without
+                    // this, a `concat(other: &Vec<u8>)` / similar
+                    // signature on a compound-returning method
+                    // would bail with "method argument produced
+                    // no value" because `lower_expr` on a struct
+                    // identifier intentionally returns `Ok(None)`
+                    // (the value is held in the binding's leaf
+                    // locals, not in the IR value graph).
+                    let arg_expr_ref = match self.program.expression.get(a) {
+                        Some(Expr::Unary(op, inner))
+                            if matches!(
+                                op,
+                                frontend::ast::UnaryOp::Borrow
+                                    | frontend::ast::UnaryOp::BorrowMut
+                            ) =>
+                        {
+                            inner
+                        }
+                        _ => *a,
+                    };
+                    if let Some(Expr::Identifier(sym)) =
+                        self.program.expression.get(&arg_expr_ref)
+                    {
+                        if let Some(Binding::Struct { fields, .. }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            for (local, ty) in flatten_struct_locals(&fields) {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(local), Some(ty))
+                                    .expect("LoadLocal returns a value");
+                                all_args.push(v);
+                            }
+                            continue;
+                        }
+                        if let Some(Binding::Tuple { elements }) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            for (local, ty) in flatten_tuple_element_locals(&elements) {
+                                let v = self
+                                    .emit(InstKind::LoadLocal(local), Some(ty))
+                                    .expect("LoadLocal returns a value");
+                                all_args.push(v);
+                            }
+                            continue;
+                        }
+                        if let Some(Binding::Enum(storage)) =
+                            self.bindings.get(&sym).cloned()
+                        {
+                            let vs = self.load_enum_locals(&storage);
+                            all_args.extend(vs);
+                            continue;
+                        }
+                    }
+                    let v = self
+                        .lower_expr(&arg_expr_ref)?
+                        .ok_or_else(|| "method argument produced no value".to_string())?;
+                    all_args.push(v);
+                }
+                // ITER-PROTOCOL-AOT: when the callee is `&mut self`
+                // (or has compound `&mut T` arg writeback declared),
+                // its cranelift signature carries extra return
+                // values for the writeback leaves. Compute the
+                // additional dests so the caller-side bindings
+                // receive the modified leaves alongside the
+                // compound result. Order matches
+                // `populate_method_writeback_types`: receiver
+                // leaves first, then args in declaration order.
+                let needs_writeback = !self
+                    .module
+                    .function(target_id)
+                    .self_writeback_types
+                    .is_empty();
+                let receiver_writeback_dests: Vec<LocalId> = if needs_writeback {
+                    match &recv_binding {
+                        Binding::Struct { fields, .. } => flatten_struct_locals(fields)
+                            .into_iter()
+                            .map(|(l, _)| l)
+                            .collect(),
+                        Binding::Enum(storage) => {
+                            let mut out = Vec::new();
+                            Self::flatten_enum_dests_into(storage, &mut out);
+                            out
+                        }
+                        _ => Vec::new(),
+                    }
+                } else {
+                    Vec::new()
+                };
+                let arg_writeback_dests: Vec<LocalId> = if needs_writeback {
+                    // Build a synthetic ExprList for the args so
+                    // `collect_compound_writeback_dests` can scan
+                    // them. We can't reuse the existing helper
+                    // (`collect_compound_writeback_dests_slice`)
+                    // because it lives on the same module; the
+                    // helper takes a slice of ExprRefs, which is
+                    // exactly `&method_args`.
+                    self.collect_compound_writeback_dests_slice(&method_args)?
+                } else {
+                    Vec::new()
+                };
+                match target_ret {
+                    Type::Struct(struct_id) => {
+                        let fields = self.allocate_struct_fields(struct_id);
+                        let mut dests: Vec<LocalId> =
+                            flatten_struct_locals(&fields)
+                                .into_iter()
+                                .map(|(l, _)| l)
+                                .collect();
+                        dests.extend(receiver_writeback_dests.iter().copied());
+                        dests.extend(arg_writeback_dests.iter().copied());
+                        self.register_drop_for_struct_binding(struct_id, &fields);
+                        self.bindings.insert(
+                            name,
+                            Binding::Struct { struct_id, fields },
+                        );
+                        self.emit(
+                            InstKind::CallStruct {
+                                target: target_id,
+                                args: all_args,
+                                dests,
+                            },
+                            None,
+                        );
+                    }
+                    Type::Tuple(tuple_id) => {
+                        let elements = self.allocate_tuple_elements(tuple_id)?;
+                        let mut dests: Vec<LocalId> =
+                            flatten_tuple_element_locals(&elements)
+                                .into_iter()
+                                .map(|(l, _)| l)
+                                .collect();
+                        dests.extend(receiver_writeback_dests.iter().copied());
+                        dests.extend(arg_writeback_dests.iter().copied());
+                        self.bindings.insert(
+                            name,
+                            Binding::Tuple { elements },
+                        );
+                        self.emit(
+                            InstKind::CallTuple {
+                                target: target_id,
+                                args: all_args,
+                                dests,
+                            },
+                            None,
+                        );
+                    }
+                    Type::Enum(enum_id) => {
+                        let storage = self.allocate_enum_storage(enum_id);
+                        let mut dests = Self::flatten_enum_dests(&storage);
+                        dests.extend(receiver_writeback_dests.iter().copied());
+                        dests.extend(arg_writeback_dests.iter().copied());
+                        self.bindings.insert(name, Binding::Enum(storage));
+                        self.emit(
+                            InstKind::CallEnum {
+                                target: target_id,
+                                args: all_args,
+                                dests,
+                            },
+                            None,
+                        );
+                    }
+                    _ => unreachable!("guard ensured compound return"),
+                }
+                return Ok(Some(None));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Primitive-receiver compound-returning method RHS helper
+    /// (`val s: String = lit.to_string()`). Routes through
+    /// `primitive_target_sym_for_ir_type` because primitive
+    /// bindings don't carry a struct_id we could feed to
+    /// `resolve_method_target`. Returns `Ok(Some(_))` if it
+    /// dispatched, `Ok(None)` if the receiver / method doesn't
+    /// match this shape and the caller should fall through.
+    fn lower_let_primitive_method_compound(
+        &mut self,
+        name: DefaultSymbol,
+        recv: ExprRef,
+        method_sym: DefaultSymbol,
+        method_args: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        if let Some(recv_ty) = self.value_scalar(&recv) {
+            if let Some(target_sym) =
+                super::method_call::primitive_target_sym_for_ir_type(recv_ty, self.interner)
+            {
+                if let Some(func_id) = super::method_registry::lookup_method_func(
+                    self.method_func_ids, target_sym, method_sym, &[],
+                ) {
+                    let target_ret = self.module.function(func_id).return_type;
+                    if matches!(
+                        target_ret,
+                        Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
+                    ) {
+                        let recv_value = self
+                            .lower_expr(&recv)?
+                            .ok_or_else(|| {
+                                "primitive method receiver produced no value".to_string()
+                            })?;
+                        let mut all_args: Vec<ValueId> = vec![recv_value];
+                        for a in method_args {
+                            let arg_expr_ref = match self.program.expression.get(a) {
+                                Some(Expr::Unary(op, inner))
+                                    if matches!(
+                                        op,
+                                        frontend::ast::UnaryOp::Borrow
+                                            | frontend::ast::UnaryOp::BorrowMut
+                                    ) =>
+                                {
+                                    inner
+                                }
+                                _ => *a,
+                            };
+                            if let Some(Expr::Identifier(sym)) =
+                                self.program.expression.get(&arg_expr_ref)
+                            {
+                                if let Some(Binding::Struct { fields, .. }) =
+                                    self.bindings.get(&sym).cloned()
+                                {
+                                    for (local, ty) in flatten_struct_locals(&fields) {
+                                        let v = self
+                                            .emit(InstKind::LoadLocal(local), Some(ty))
+                                            .expect("LoadLocal returns a value");
+                                        all_args.push(v);
+                                    }
+                                    continue;
+                                }
+                                if let Some(Binding::Tuple { elements }) =
+                                    self.bindings.get(&sym).cloned()
+                                {
+                                    for (local, ty) in flatten_tuple_element_locals(&elements) {
+                                        let v = self
+                                            .emit(InstKind::LoadLocal(local), Some(ty))
+                                            .expect("LoadLocal returns a value");
+                                        all_args.push(v);
+                                    }
+                                    continue;
+                                }
+                                if let Some(Binding::Enum(storage)) =
+                                    self.bindings.get(&sym).cloned()
+                                {
+                                    let vs = self.load_enum_locals(&storage);
+                                    all_args.extend(vs);
+                                    continue;
+                                }
+                            }
+                            let v = self
+                                .lower_expr(&arg_expr_ref)?
+                                .ok_or_else(|| {
+                                    "method argument produced no value".to_string()
+                                })?;
+                            all_args.push(v);
+                        }
+                        match target_ret {
+                            Type::Struct(struct_id) => {
+                                let fields = self.allocate_struct_fields(struct_id);
+                                let dests: Vec<LocalId> =
+                                    flatten_struct_locals(&fields)
+                                        .into_iter()
+                                        .map(|(l, _)| l)
+                                        .collect();
+                                self.register_drop_for_struct_binding(struct_id, &fields);
+                                self.bindings.insert(
+                                    name,
+                                    Binding::Struct { struct_id, fields },
+                                );
+                                self.emit(
+                                    InstKind::CallStruct {
+                                        target: func_id,
+                                        args: all_args,
+                                        dests,
+                                    },
+                                    None,
+                                );
+                            }
+                            Type::Tuple(tuple_id) => {
+                                let elements = self.allocate_tuple_elements(tuple_id)?;
+                                let dests: Vec<LocalId> =
+                                    flatten_tuple_element_locals(&elements)
+                                        .into_iter()
+                                        .map(|(l, _)| l)
+                                        .collect();
+                                self.bindings.insert(
+                                    name,
+                                    Binding::Tuple { elements },
+                                );
+                                self.emit(
+                                    InstKind::CallTuple {
+                                        target: func_id,
+                                        args: all_args,
+                                        dests,
+                                    },
+                                    None,
+                                );
+                            }
+                            Type::Enum(enum_id) => {
+                                let storage = self.allocate_enum_storage(enum_id);
+                                let dests = Self::flatten_enum_dests(&storage);
+                                self.bindings.insert(name, Binding::Enum(storage));
+                                self.emit(
+                                    InstKind::CallEnum {
+                                        target: func_id,
+                                        args: all_args,
+                                        dests,
+                                    },
+                                    None,
+                                );
+                            }
+                            _ => unreachable!("guard ensured compound return"),
+                        }
+                        return Ok(Some(None));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Binary arithmetic / bitwise operator overload RHS helper
+    /// (`val c = a + b`). Resolves the user-defined method on
+    /// the lhs struct, flattens both receivers' leaf locals, and
+    /// emits `CallStruct` into a fresh binding for the compound
+    /// `Self` return. Returns `Ok(Some(_))` if it dispatched,
+    /// `Ok(None)` if the operator / lhs doesn't match the
+    /// overload shape and the caller should fall through.
+    fn lower_let_binary_overload(
+        &mut self,
+        name: DefaultSymbol,
+        op: frontend::ast::Operator,
+        lhs_ref: ExprRef,
+        rhs_ref: ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let op_method: Option<&'static str> = match op {
+            frontend::ast::Operator::IAdd => Some("add"),
+            frontend::ast::Operator::ISub => Some("sub"),
+            frontend::ast::Operator::IMul => Some("mul"),
+            frontend::ast::Operator::IDiv => Some("div"),
+            frontend::ast::Operator::IMod => Some("rem"),
+            frontend::ast::Operator::BitwiseAnd => Some("bitand"),
+            frontend::ast::Operator::BitwiseOr => Some("bitor"),
+            frontend::ast::Operator::BitwiseXor => Some("bitxor"),
+            frontend::ast::Operator::LeftShift => Some("shl"),
+            frontend::ast::Operator::RightShift => Some("shr"),
+            _ => None,
+        };
+        if let Some(method_name) = op_method {
+            if let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
+                let struct_def = self.module.struct_def(struct_id);
+                let target_sym = struct_def.base_name;
+                let type_args = struct_def.type_args.clone();
+                if let Some(method_sym) = self.interner.get(method_name) {
+                    if let Some(func_id) = super::method_registry::lookup_method_func(
+                        self.method_func_ids, target_sym, method_sym, &type_args,
+                    ) {
+                        // Flatten both struct receivers' leaf
+                        // locals — must come from bare struct
+                        // identifier bindings, same as the
+                        // `try_lower_struct_eq` shape.
+                        let lhs_leaves = match self.program.expression.get(&lhs_ref) {
+                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                Some(Binding::Struct { fields, .. }) => {
+                                    flatten_struct_locals(&fields)
+                                }
+                                _ => return Err(
+                                    "operator overload: arith lhs needs struct binding (MVP)".to_string(),
+                                ),
+                            },
+                            _ => return Err(
+                                "operator overload: arith lhs must be a bare identifier (MVP)".to_string(),
+                            ),
+                        };
+                        let rhs_leaves = match self.program.expression.get(&rhs_ref) {
+                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                Some(Binding::Struct { fields, .. }) => {
+                                    flatten_struct_locals(&fields)
+                                }
+                                _ => return Err(
+                                    "operator overload: arith rhs needs struct binding (MVP)".to_string(),
+                                ),
+                            },
+                            _ => return Err(
+                                "operator overload: arith rhs must be a bare identifier (MVP)".to_string(),
+                            ),
+                        };
+                        let mut all_args: Vec<ValueId> =
+                            Vec::with_capacity(lhs_leaves.len() + rhs_leaves.len());
+                        for (local, ty) in lhs_leaves.iter().chain(rhs_leaves.iter()) {
+                            let v = self
+                                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                                .expect("LoadLocal returns a value");
+                            all_args.push(v);
+                        }
+                        // Compound Self return — allocate dest
+                        // binding then emit `CallStruct`.
+                        let target_ret = self.module.function(func_id).return_type;
+                        let dest_struct_id = match target_ret {
+                            Type::Struct(id) => id,
+                            _ => return Err(format!(
+                                "operator overload: {} method must return Self (got {:?})",
+                                method_name, target_ret
+                            )),
+                        };
+                        let fields = self.allocate_struct_fields(dest_struct_id);
+                        let dests: Vec<LocalId> =
+                            flatten_struct_locals(&fields)
+                                .into_iter()
+                                .map(|(l, _)| l)
+                                .collect();
+                        self.register_drop_for_struct_binding(dest_struct_id, &fields);
+                        self.bindings.insert(
+                            name,
+                            Binding::Struct { struct_id: dest_struct_id, fields },
+                        );
+                        self.emit(
+                            InstKind::CallStruct {
+                                target: func_id,
+                                args: all_args,
+                                dests,
+                            },
+                            None,
+                        );
+                        return Ok(Some(None));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Unary operator overload RHS helper
+    /// (`val r: Vec3 = -a`). Compound `Self` return needs
+    /// `CallStruct` into a fresh binding. Returns
+    /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
+    /// operator / operand doesn't match the overload shape
+    /// and the caller should fall through.
+    fn lower_let_unary_overload(
+        &mut self,
+        name: DefaultSymbol,
+        unary_op: frontend::ast::UnaryOp,
+        operand_ref: ExprRef,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let unary_method: Option<&'static str> = match unary_op {
+            frontend::ast::UnaryOp::Negate => Some("neg"),
+            frontend::ast::UnaryOp::BitwiseNot => Some("bitnot"),
+            frontend::ast::UnaryOp::LogicalNot => Some("not"),
+            _ => None,
+        };
+        if let Some(method_name) = unary_method {
+            if let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
+                let struct_def = self.module.struct_def(struct_id);
+                let target_sym = struct_def.base_name;
+                let type_args = struct_def.type_args.clone();
+                if let Some(method_sym) = self.interner.get(method_name) {
+                    if let Some(func_id) = super::method_registry::lookup_method_func(
+                        self.method_func_ids, target_sym, method_sym, &type_args,
+                    ) {
+                        let operand_leaves = match self.program.expression.get(&operand_ref) {
+                            Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                                Some(Binding::Struct { fields, .. }) => {
+                                    flatten_struct_locals(&fields)
+                                }
+                                _ => return Err(
+                                    "unary overload: operand needs struct binding (MVP)".to_string(),
+                                ),
+                            },
+                            _ => return Err(
+                                "unary overload: operand must be a bare identifier (MVP)".to_string(),
+                            ),
+                        };
+                        let mut all_args: Vec<ValueId> =
+                            Vec::with_capacity(operand_leaves.len());
+                        for (local, ty) in operand_leaves.iter() {
+                            let v = self
+                                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                                .expect("LoadLocal returns a value");
+                            all_args.push(v);
+                        }
+                        let target_ret = self.module.function(func_id).return_type;
+                        let dest_struct_id = match target_ret {
+                            Type::Struct(id) => id,
+                            _ => return Err(format!(
+                                "unary overload: {} method must return Self (got {:?})",
+                                method_name, target_ret
+                            )),
+                        };
+                        let fields = self.allocate_struct_fields(dest_struct_id);
+                        let dests: Vec<LocalId> =
+                            flatten_struct_locals(&fields)
+                                .into_iter()
+                                .map(|(l, _)| l)
+                                .collect();
+                        self.register_drop_for_struct_binding(dest_struct_id, &fields);
+                        self.bindings.insert(
+                            name,
+                            Binding::Struct { struct_id: dest_struct_id, fields },
+                        );
+                        self.emit(
+                            InstKind::CallStruct {
+                                target: func_id,
+                                args: all_args,
+                                dests,
+                            },
+                            None,
+                        );
+                        return Ok(Some(None));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Struct associated-function-call RHS helper
+    /// (`var d: Dict<i64, u64> = Dict::new()`). Looks up the
+    /// associated function in the method registry (non-generic
+    /// `method_func_ids` first, then `generic_methods` for
+    /// templates) and dispatches a `CallStruct` for compound
+    /// `Self` returns or a regular `Call` for scalar returns.
+    /// Returns `Ok(Some(_))` if it handled the binding,
+    /// `Ok(None)` if the caller should fall through to the
+    /// generic associated-function path below.
+    fn lower_let_struct_associated_call(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        struct_name: DefaultSymbol,
+        fn_name: DefaultSymbol,
+        args_vec: &[ExprRef],
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
+        let recv_type_args = self
+            .module
+            .struct_def(struct_id)
+            .type_args
+            .clone();
+        // Look up the associated function in the method
+        // registry. Generic templates live in
+        // `generic_methods`; non-generic ones in
+        // `method_func_ids`. The Dict::new path always
+        // hits the generic registry because dict.t's
+        // `impl<K, V> Dict<K, V>` carries (K, V) onto
+        // every method.
+        //
+        // Non-generic impls of generic structs (e.g.
+        // `impl FromStr for Vec<u8>` in
+        // `core/std/collections/vec.t`) land in
+        // `method_func_ids` because the parser drops the
+        // `<u8>` type args from the impl target. The
+        // pre-declared FuncId already has its return
+        // type resolved at registration time (the
+        // `lower_program` non-generic loop substitutes
+        // `Self` to the bare struct symbol's `Identifier`
+        // resolution), so we can dispatch with a plain
+        // `Call` / `CallStruct` here without going
+        // through `instantiate_generic_method_with_self_type`.
+        if let Some(func_id) = super::method_registry::lookup_method_func(
+            self.method_func_ids, struct_name, fn_name, &recv_type_args,
+        ) {
+            let target_ret = self.module.function(func_id).return_type;
+            if let Type::Struct(ret_struct_id) = target_ret {
+                let field_bindings = self.allocate_struct_fields(ret_struct_id);
+                let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
+                self.bindings.insert(
+                    name,
+                    Binding::Struct {
+                        struct_id: ret_struct_id,
+                        fields: field_bindings,
+                    },
+                );
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                for a in args_vec {
+                    let v = self.lower_expr(a)?
+                        .ok_or_else(|| {
+                            "associated-function arg produced no value".to_string()
+                        })?;
+                    arg_values.push(v);
+                }
+                self.emit(
+                    InstKind::CallStruct {
+                        target: func_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+            if target_ret.produces_value() {
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                for a in args_vec {
+                    let v = self.lower_expr(a)?
+                        .ok_or_else(|| {
+                            "associated-function arg produced no value".to_string()
+                        })?;
+                    arg_values.push(v);
+                }
+                let v = self
+                    .emit(
+                        InstKind::Call { target: func_id, args: arg_values },
+                        Some(target_ret),
+                    )
+                    .expect("Call returns a value");
+                let local = self
+                    .module
+                    .function_mut(self.func_id)
+                    .add_local(target_ret);
+                self.bindings.insert(
+                    name,
+                    Binding::Scalar { local, ty: target_ret },
+                );
+                self.emit(
+                    InstKind::StoreLocal { dst: local, src: v },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+        }
+        // Suppress unused warning when no generic_methods
+        // entry exists (older paths only cared about generics).
+        let _ = recv_type_args;
+        let _ = struct_id;
+        let template = super::method_registry::lookup_method_template(
+            self.generic_methods, struct_name, fn_name, &[],
+        );
+        if let Some(template) = template {
+            // Re-resolve to use the right type_args path for
+            // generic methods.
+            let struct_id = self.resolve_struct_instance(struct_name, annotation)?;
+            let recv_type_args = self
+                .module
+                .struct_def(struct_id)
+                .type_args
+                .clone();
+            let func_id = self.instantiate_generic_method_with_self_type(
+                struct_name,
+                fn_name,
+                &template,
+                Type::Struct(struct_id),
+                recv_type_args,
+                args_vec,
+            )?;
+            let target_ret = self.module.function(func_id).return_type;
+            if let Type::Struct(ret_struct_id) = target_ret {
+                let field_bindings = self.allocate_struct_fields(ret_struct_id);
+                let dests: Vec<LocalId> = flatten_struct_locals(&field_bindings)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+                self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
+                self.bindings.insert(
+                    name,
+                    Binding::Struct {
+                        struct_id: ret_struct_id,
+                        fields: field_bindings,
+                    },
+                );
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                for a in args_vec {
+                    let v = self.lower_expr(a)?
+                        .ok_or_else(|| {
+                            "associated-function arg produced no value".to_string()
+                        })?;
+                    arg_values.push(v);
+                }
+                self.emit(
+                    InstKind::CallStruct {
+                        target: func_id,
+                        args: arg_values,
+                        dests,
+                    },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+            // Scalar return — emit a regular Call.
+            if target_ret.produces_value() {
+                let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_vec.len());
+                for a in args_vec {
+                    let v = self.lower_expr(a)?
+                        .ok_or_else(|| {
+                            "associated-function arg produced no value".to_string()
+                        })?;
+                    arg_values.push(v);
+                }
+                let v = self
+                    .emit(
+                        InstKind::Call {
+                            target: func_id,
+                            args: arg_values,
+                        },
+                        Some(target_ret),
+                    )
+                    .expect("Call returns a value");
+                let local = self
+                    .module
+                    .function_mut(self.func_id)
+                    .add_local(target_ret);
+                self.bindings.insert(
+                    name,
+                    Binding::Scalar { local, ty: target_ret },
+                );
+                self.emit(
+                    InstKind::StoreLocal { dst: local, src: v },
+                    None,
+                );
+                return Ok(Some(None));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Struct-literal RHS helper (`val p = Point { x: 1, y: 2 }`).
+    /// Allocates one local per field (recursing into nested
+    /// struct fields), evaluates each field expression, stores
+    /// into the matching local.
+    fn lower_let_struct_literal(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        struct_name: DefaultSymbol,
+        fields: Vec<(DefaultSymbol, ExprRef)>,
+    ) -> Result<Option<ValueId>, String> {
+        // Resolve to the right monomorphised instance. Generic
+        // structs need an annotation to pick T; non-generic
+        // ones short-circuit to a single instance.
+        let struct_id =
+            self.resolve_struct_instance(struct_name, annotation)?;
+        let field_bindings = self.allocate_struct_fields(struct_id);
+        // Insert the binding before evaluating field rhs
+        // expressions so an inner literal that walks back to the
+        // same name (currently unsupported but defensive) doesn't
+        // see a missing binding.
+        self.register_drop_for_struct_binding(struct_id, &field_bindings);
+        self.bindings.insert(
+            name,
+            Binding::Struct {
+                struct_id,
+                fields: field_bindings.clone(),
+            },
+        );
+        self.store_struct_literal_fields(struct_id, &field_bindings, &fields)?;
+        Ok(None)
+    }
+
+    /// Enum unit-variant RHS helper (`val c = Color::Red`).
+    /// Allocates an `Enum` binding and stores the chosen tag.
+    fn lower_let_enum_unit_variant(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        path: &[DefaultSymbol],
+    ) -> Result<Option<ValueId>, String> {
+        let enum_id = self.resolve_enum_instance(path[0], annotation)?;
+        let enum_def = self.module.enum_def(enum_id).clone();
+        let variant_idx = enum_def
+            .variants
+            .iter()
+            .position(|v| v.name == path[1])
+            .ok_or_else(|| {
+                format!(
+                    "unknown enum variant `{}::{}`",
+                    self.interner.resolve(path[0]).unwrap_or("?"),
+                    self.interner.resolve(path[1]).unwrap_or("?"),
+                )
+            })?;
+        if !enum_def.variants[variant_idx].payload_types.is_empty() {
+            return Err(format!(
+                "enum variant `{}::{}` is a tuple variant; supply its arguments \
+                 via `{}::{}(...)`",
+                self.interner.resolve(path[0]).unwrap_or("?"),
+                self.interner.resolve(path[1]).unwrap_or("?"),
+                self.interner.resolve(path[0]).unwrap_or("?"),
+                self.interner.resolve(path[1]).unwrap_or("?"),
+            ));
+        }
+        self.bind_enum(name, enum_id, variant_idx, &[])?;
+        Ok(None)
+    }
+
+    /// Enum tuple-variant RHS helper (`val s = Shape::Circle(5i64)`).
+    /// Allocates an `Enum` binding and stores tag + payload.
+    fn lower_let_enum_tuple_variant(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        enum_name: DefaultSymbol,
+        variant_name: DefaultSymbol,
+        args: Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        let enum_id = self.resolve_enum_instance_with_args(
+            enum_name,
+            variant_name,
+            &args,
+            annotation,
+        )?;
+        let enum_def = self.module.enum_def(enum_id).clone();
+        let variant_idx = enum_def
+            .variants
+            .iter()
+            .position(|v| v.name == variant_name)
+            .ok_or_else(|| {
+                format!(
+                    "unknown enum variant `{}::{}`",
+                    self.interner.resolve(enum_name).unwrap_or("?"),
+                    self.interner.resolve(variant_name).unwrap_or("?"),
+                )
+            })?;
+        let expected = enum_def.variants[variant_idx].payload_types.len();
+        if args.len() != expected {
+            return Err(format!(
+                "enum variant `{}::{}` expects {} payload value(s), got {}",
+                self.interner.resolve(enum_name).unwrap_or("?"),
+                self.interner.resolve(variant_name).unwrap_or("?"),
+                expected,
+                args.len(),
+            ));
+        }
+        self.bind_enum(name, enum_id, variant_idx, &args)?;
+        Ok(None)
+    }
+
+    /// Composite enum-producing RHS helper: `if`-chain / `match` /
+    /// block whose every branch ends in an enum construction or an
+    /// enum binding identifier of the same enum. Pre-allocates the
+    /// shared target locals and dispatches each branch through
+    /// `lower_into_enum_storage`.
+    fn lower_let_enum_composite(
+        &mut self,
+        name: DefaultSymbol,
+        annotation: Option<&TypeDecl>,
+        rhs_ref: &ExprRef,
+        base_name: DefaultSymbol,
+    ) -> Result<Option<ValueId>, String> {
+        let enum_id = self.resolve_enum_instance(base_name, annotation)?;
+        let storage = self.allocate_enum_storage(enum_id);
+        self.bindings
+            .insert(name, Binding::Enum(storage.clone()));
+        self.lower_into_enum_storage(rhs_ref, &storage)?;
+        Ok(None)
+    }
+
+    /// Array-literal RHS helper (`val arr = [a, b, c]`).
+    /// Allocates a fresh stack slot sized for the element
+    /// stride and stores each element through
+    /// `store_array_element`.
+    fn lower_let_array_literal(
+        &mut self,
+        name: DefaultSymbol,
+        elems: Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        if elems.is_empty() {
+            return Err(
+                "compiler MVP cannot infer element type for empty array literal".to_string(),
+            );
+        }
+        // Element type comes from the first element. Scalars
+        // resolve via `value_scalar`; struct literals resolve
+        // through the struct table.
+        let elem_ty = self.infer_array_element_type(&elems[0])?;
+        if !matches!(
+            elem_ty,
+            Type::I64
+                | Type::U64
+                | Type::F64
+                | Type::Bool
+                | Type::I8
+                | Type::U8
+                | Type::I16
+                | Type::U16
+                | Type::I32
+                | Type::U32
+                | Type::Struct(_)
+                | Type::Tuple(_)
+        ) {
+            return Err(format!(
+                "compiler MVP only supports scalar / struct / tuple array elements; got {elem_ty:?}"
+            ));
+        }
+        // For homogeneous scalar element arrays the stride is
+        // the scalar's actual byte size (1/2/4/8 — see
+        // `array_layout::elem_stride_bytes`); for compound
+        // elements each leaf gets a uniform 8-byte slot in the
+        // same buffer. The slot's `length` therefore counts
+        // leaves, not elements.
+        let leaf_count = leaf_scalar_count(self.module, elem_ty);
+        let stride = elem_stride_bytes(elem_ty, self.module);
+        let slot_len = elems.len() * leaf_count;
+        let slot = self
+            .module
+            .function_mut(self.func_id)
+            .add_array_slot(elem_ty, slot_len, stride);
+        for (i, e) in elems.iter().enumerate() {
+            self.store_array_element(slot, elem_ty, i, leaf_count, e)?;
+        }
+        self.bindings.insert(
+            name,
+            Binding::Array {
+                element_ty: elem_ty,
+                length: elems.len(),
+                slot,
+            },
+        );
+        Ok(None)
+    }
+
+    /// Range-slice RHS helper (`val sub = arr[start..end]`).
+    /// Constant bounds only — both endpoints must fold via
+    /// `try_constant_index`. Allocates a fresh fixed-length
+    /// array binding and copies each leaf scalar with an
+    /// `ArrayLoad` + `ArrayStore` pair.
+    fn lower_let_range_slice(
+        &mut self,
+        name: DefaultSymbol,
+        arr_obj: ExprRef,
+        info: frontend::ast::SliceInfo,
+    ) -> Result<Option<ValueId>, String> {
+        let arr_expr = self
+            .program
+            .expression
+            .get(&arr_obj)
+            .ok_or_else(|| "array-access object missing".to_string())?;
+        let arr_sym = match arr_expr {
+            Expr::Identifier(s) => s,
+            _ => {
+                return Err(
+                    "compiler MVP only supports range slicing on a bare identifier"
+                        .to_string(),
+                );
+            }
+        };
+        let (element_ty, length, src_slot) = match self.bindings.get(&arr_sym).cloned() {
+            Some(Binding::Array { element_ty, length, slot }) => {
+                (element_ty, length, slot)
+            }
+            _ => {
+                return Err(format!(
+                    "`{}` is not an array binding",
+                    self.interner.resolve(arr_sym).unwrap_or("?")
+                ));
+            }
+        };
+        // Defaults for omitted endpoints follow the
+        // interpreter: `..end` starts at 0, `start..` ends
+        // at `length`, `..` is the whole array.
+        let start = match info.start {
+            Some(s) => self.try_constant_index(&s).ok_or_else(|| {
+                "compiler MVP only supports constant range-slice bounds".to_string()
+            })?,
+            None => 0,
+        };
+        let end = match info.end {
+            Some(e) => self.try_constant_index(&e).ok_or_else(|| {
+                "compiler MVP only supports constant range-slice bounds".to_string()
+            })?,
+            None => length,
+        };
+        if start > end || end > length {
+            return Err(format!(
+                "range slice {start}..{end} out of bounds (array length {length})"
+            ));
+        }
+        let new_len = end - start;
+        let leaf_count = leaf_scalar_count(self.module, element_ty);
+        let stride = elem_stride_bytes(element_ty, self.module);
+        let dst_slot = self
+            .module
+            .function_mut(self.func_id)
+            .add_array_slot(element_ty, new_len * leaf_count, stride);
+        for i in 0..new_len {
+            for j in 0..leaf_count {
+                let src_idx = (start + i) * leaf_count + j;
+                let dst_idx = i * leaf_count + j;
+                let leaf_ty = leaf_type_at(self.module, element_ty, j);
+                let src_idx_v = self
+                    .emit(
+                        InstKind::Const(Const::U64(src_idx as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns");
+                let v = self
+                    .emit(
+                        InstKind::ArrayLoad {
+                            slot: src_slot,
+                            index: src_idx_v,
+                            elem_ty: leaf_ty,
+                        },
+                        Some(leaf_ty),
+                    )
+                    .expect("ArrayLoad returns");
+                let dst_idx_v = self
+                    .emit(
+                        InstKind::Const(Const::U64(dst_idx as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns");
+                self.emit(
+                    InstKind::ArrayStore {
+                        slot: dst_slot,
+                        index: dst_idx_v,
+                        value: v,
+                        elem_ty: leaf_ty,
+                    },
+                    None,
+                );
+            }
+        }
+        self.bindings.insert(
+            name,
+            Binding::Array {
+                element_ty,
+                length: new_len,
+                slot: dst_slot,
+            },
+        );
+        Ok(None)
+    }
+
+    /// Compound-element single-index slice RHS helper
+    /// (`val p: Point = arr[i]`). Returns `Ok(Some(_))` if it
+    /// handled the binding, `Ok(None)` if the caller should
+    /// fall through to the next branch (e.g. scalar element
+    /// type, or the slice doesn't resolve to an array binding).
+    fn lower_let_slice_single_element(
+        &mut self,
+        name: DefaultSymbol,
+        arr_obj: ExprRef,
+        info: frontend::ast::SliceInfo,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        let arr_expr = self
+            .program
+            .expression
+            .get(&arr_obj)
+            .ok_or_else(|| "array-access object missing".to_string())?;
+        if let Expr::Identifier(arr_sym) = arr_expr {
+            if let Some(Binding::Array { element_ty, .. }) =
+                self.bindings.get(&arr_sym).cloned()
+            {
+                match element_ty {
+                    Type::Struct(struct_id) => {
+                        // Lower the element read, which stashes
+                        // a pending_struct_value with freshly
+                        // allocated leaves filled in.
+                        self.pending_struct_value = None;
+                        let _ = self.lower_slice_access(&arr_obj, &info)?;
+                        if let Some(fields) =
+                            self.pending_struct_value.take()
+                        {
+                            self.register_drop_for_struct_binding(struct_id, &fields);
+                            self.bindings.insert(
+                                name,
+                                Binding::Struct { struct_id, fields },
+                            );
+                            return Ok(Some(None));
+                        }
+                    }
+                    Type::Tuple(_) => {
+                        self.pending_tuple_value = None;
+                        let _ = self.lower_slice_access(&arr_obj, &info)?;
+                        if let Some(elements) =
+                            self.pending_tuple_value.take()
+                        {
+                            self.bindings.insert(
+                                name,
+                                Binding::Tuple { elements },
+                            );
+                            return Ok(Some(None));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Tuple-literal RHS helper. Allocates one local per element
+    /// and stores each element value through
+    /// `store_value_into_tuple_element_shape`.
+    fn lower_let_tuple_literal(
+        &mut self,
+        name: DefaultSymbol,
+        elems: Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        let mut bindings: Vec<TupleElementBinding> = Vec::with_capacity(elems.len());
+        // Pre-allocate locals so element-rhs evaluation order
+        // doesn't matter. For nested tuple / struct elements
+        // (`((a, b), c)`, `(Point, i64)`) we recurse into the
+        // literal to determine the type and intern any new
+        // tuple shapes along the way.
+        for (i, elem_ref) in elems.iter().enumerate() {
+            let elem_ty = self
+                .infer_tuple_element_type(elem_ref)
+                .ok_or_else(|| {
+                    format!(
+                        "compiler MVP could not infer type for tuple element #{i}"
+                    )
+                })?;
+            let shape = self.allocate_tuple_element_shape(elem_ty)?;
+            bindings.push(TupleElementBinding { index: i, shape });
+        }
+        self.bindings.insert(
+            name,
+            Binding::Tuple {
+                elements: bindings.clone(),
+            },
+        );
+        // Evaluate and store each element's value. Scalar
+        // elements take the fast path; compound elements (struct
+        // / nested tuple) route through the same helpers used
+        // for enum-payload slots.
+        for (i, elem_ref) in elems.iter().enumerate() {
+            let shape = bindings[i].shape.clone();
+            self.store_value_into_tuple_element_shape(elem_ref, i, &shape)?;
+        }
         Ok(None)
     }
 }

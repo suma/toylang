@@ -247,29 +247,28 @@ impl<'a> TypeCheckerVisitor<'a> {
         let op = op.clone();
         let lhs = lhs.clone();
         let rhs = rhs.clone();
-        
+
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
             lhs_obj.clone().accept(self)?
         };
-        
+
         let rhs_ty = {
             let rhs_obj = self.core.expr_pool.get(&rhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
             rhs_obj.clone().accept(self)?
         };
-        
-        // Operator overload (Phase B continuation): arithmetic /
-        // comparison ops between matching struct values dispatch
-        // to `add` / `sub` / `mul` / `div` / `rem` / `eq` methods
-        // on the struct. Catch this *before* `resolve_numeric_types`
-        // because that helper rejects struct-typed operands with
-        // the generic "incompatible types" diagnostic — defeating
-        // the user's overload. The `==` / `!=` flow already had
-        // its own arm below; this short-circuit handles arithmetic
-        // overloads symmetrically (returning the struct as result
-        // type so `a + b + c` chains keep checking).
+
+        // Operator overload (Phase B continuation): arithmetic ops
+        // between matching struct values dispatch to `add` / `sub` /
+        // `mul` / `div` / `rem` methods on the struct. Catch this
+        // *before* `resolve_numeric_types` because that helper
+        // rejects struct-typed operands with the generic "incompatible
+        // types" diagnostic — defeating the user's overload. Returns
+        // the struct as result type so `a + b + c` chains keep
+        // checking. (Comparison overloads are reached later via the
+        // compare arm below.)
         if let Some(method_name) = Self::struct_arith_method_name(&op) {
             if self.struct_method_compatible(&lhs_ty, &rhs_ty, method_name) {
                 return Ok(lhs_ty);
@@ -284,229 +283,292 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .map_err(|error| self.error_with_location(error, &lhs))?
         };
 
-        // Context propagation: if we have a type hint, propagate it to Number expressions
-        if let Some(hint) = self.type_inference.type_hint.clone() {
-            if lhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
-                self.propagate_type_to_number_expr(&lhs, &hint)?;
-            }
-            if rhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
-                self.propagate_type_to_number_expr(&rhs, &hint)?;
-            }
-        }
-        
-        // Record Number usage context for later finalization
-        self.record_number_usage_context(&lhs, &lhs_ty, &resolved_lhs_ty)?;
-        self.record_number_usage_context(&rhs, &rhs_ty, &resolved_rhs_ty)?;
-        
-        // Immediate propagation: if one side has concrete type, propagate to Number variables
-        if resolved_lhs_ty != TypeDecl::Number && rhs_ty == TypeDecl::Number {
-            self.propagate_to_number_variable(&rhs, &resolved_lhs_ty)?;
-        }
-        if resolved_rhs_ty != TypeDecl::Number && lhs_ty == TypeDecl::Number {
-            self.propagate_to_number_variable(&lhs, &resolved_rhs_ty)?;
-        }
-        
-        // Transform AST nodes if type conversion occurred
-        if lhs_ty == TypeDecl::Number && resolved_lhs_ty != TypeDecl::Number {
-            self.transform_numeric_expr(&lhs, &resolved_lhs_ty)?;
-        }
-        if rhs_ty == TypeDecl::Number && resolved_rhs_ty != TypeDecl::Number {
-            self.transform_numeric_expr(&rhs, &resolved_rhs_ty)?;
-        }
-        
-        // Update variable types if identifiers were involved in type conversion
-        self.update_identifier_types(&lhs, &lhs_ty, &resolved_lhs_ty)?;
-        self.update_identifier_types(&rhs, &rhs_ty, &resolved_rhs_ty)?;
-        
-        // Determine result type based on operator
+        // Type-hint propagation, Number resolution, and AST transform
+        // for any side that resolved to a concrete type. Shared by
+        // every operator category; the per-category result-type rule
+        // below operates on the post-propagation `resolved_*` types.
+        self.propagate_number_types(&lhs, &rhs, &lhs_ty, &rhs_ty, &resolved_lhs_ty, &resolved_rhs_ty)?;
+
+        // Per-category result type computation. Each helper handles
+        // its own struct-overload short-circuit and produces a
+        // `TypeCheckError` with a category-specific label on
+        // mismatch.
         let result_type = match op {
             Operator::IAdd if resolved_lhs_ty == TypeDecl::String && resolved_rhs_ty == TypeDecl::String => {
+                // String concat is a special case of `+` that lives
+                // outside `check_arith_binary`'s numeric-only rule.
                 TypeDecl::String
             }
             Operator::IAdd | Operator::ISub | Operator::IDiv | Operator::IMul | Operator::IMod => {
-                if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
-                    TypeDecl::UInt64
-                } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
-                    TypeDecl::Int64
-                // NUM-W narrow integers — same-width only, mirrors
-                // the i64 / u64 rule. No implicit widening: `as`
-                // cast required to mix widths.
-                } else if resolved_lhs_ty == TypeDecl::UInt32 && resolved_rhs_ty == TypeDecl::UInt32 {
-                    TypeDecl::UInt32
-                } else if resolved_lhs_ty == TypeDecl::Int32 && resolved_rhs_ty == TypeDecl::Int32 {
-                    TypeDecl::Int32
-                } else if resolved_lhs_ty == TypeDecl::UInt16 && resolved_rhs_ty == TypeDecl::UInt16 {
-                    TypeDecl::UInt16
-                } else if resolved_lhs_ty == TypeDecl::Int16 && resolved_rhs_ty == TypeDecl::Int16 {
-                    TypeDecl::Int16
-                } else if resolved_lhs_ty == TypeDecl::UInt8 && resolved_rhs_ty == TypeDecl::UInt8 {
-                    TypeDecl::UInt8
-                } else if resolved_lhs_ty == TypeDecl::Int8 && resolved_rhs_ty == TypeDecl::Int8 {
-                    TypeDecl::Int8
-                } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
-                    // f64 supports +, -, *, /, %. `%` follows Rust's `f64::rem`,
-                    // matching the IEEE 754 remainder via fmod-style truncation.
-                    TypeDecl::Float64
-                } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (&resolved_lhs_ty, &resolved_rhs_ty) {
-                    // Allow arithmetic operations on generic types if they are the same parameter
-                    if left_param == right_param {
-                        resolved_lhs_ty.clone()
-                    } else {
-                        return Err(self.error_with_location(
-                            TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                            &lhs,
-                        ));
-                    }
-                } else if let Some(method_name) = Self::struct_arith_method_name(&op) {
-                    // Operator overload (Phase B continuation): two
-                    // struct values of the same nominal type are
-                    // comparable with `+` / `-` / `*` / `/` / `%`
-                    // when the struct exposes the matching `add` /
-                    // `sub` / `mul` / `div` / `rem` method
-                    // (`fn ___(&self, other: &Self) -> Self`). Each
-                    // backend's binary evaluator dispatches the
-                    // operator to the method the same way Phase B
-                    // routes `==` to `eq`. Result type is the
-                    // struct itself so chained expressions
-                    // (`a + b + c`) keep type-checking.
-                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
-                        resolved_lhs_ty.clone()
-                    } else {
-                        return Err(self.error_with_location(
-                            TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                            &lhs,
-                        ));
-                    }
-                } else {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("arithmetic", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                        &lhs,
-                    ));
-                }
+                self.check_arith_binary(&op, &lhs, &resolved_lhs_ty, &resolved_rhs_ty)?
             }
             Operator::LE | Operator::LT | Operator::GE | Operator::GT | Operator::EQ | Operator::NE => {
-                // NUM-W: same-width comparisons for narrow ints
-                // (mirrors the i64/u64 rule). Cross-width / cross-
-                // signedness compares need an explicit `as` cast.
-                let same_int_width = matches!((&resolved_lhs_ty, &resolved_rhs_ty),
-                    (TypeDecl::UInt32, TypeDecl::UInt32)
-                    | (TypeDecl::Int32, TypeDecl::Int32)
-                    | (TypeDecl::UInt16, TypeDecl::UInt16)
-                    | (TypeDecl::Int16, TypeDecl::Int16)
-                    | (TypeDecl::UInt8, TypeDecl::UInt8)
-                    | (TypeDecl::Int8, TypeDecl::Int8));
-                if (resolved_lhs_ty == TypeDecl::UInt64 || resolved_lhs_ty == TypeDecl::Int64) &&
-                   (resolved_rhs_ty == TypeDecl::UInt64 || resolved_rhs_ty == TypeDecl::Int64) {
-                    TypeDecl::Bool
-                } else if same_int_width {
-                    TypeDecl::Bool
-                } else if resolved_lhs_ty == TypeDecl::Float64 && resolved_rhs_ty == TypeDecl::Float64 {
-                    // f64 comparisons use IEEE 754 semantics — NaN compares
-                    // false for ordering and equality, matching Rust's PartialOrd.
-                    TypeDecl::Bool
-                } else if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
-                    TypeDecl::Bool
-                } else if matches!(op, Operator::EQ | Operator::NE)
-                          && self.is_allocator_compatible(&resolved_lhs_ty)
-                          && self.is_allocator_compatible(&resolved_rhs_ty) {
-                    // Allocator handles support only identity (== / !=), not ordering.
-                    // A generic parameter bounded by Allocator counts as allocator-compatible
-                    // so expressions like `current_allocator() == a` type-check inside a
-                    // `<A: Allocator>` function body.
-                    TypeDecl::Bool
-                } else if let Some(method_name) = Self::struct_cmp_method_name(&op) {
-                    // Operator overload (Phase B + Phase 2 ext):
-                    // two struct values of the same nominal type
-                    // are comparable with `==` / `!=` / `<` / `<=` /
-                    // `>` / `>=` iff the struct exposes the
-                    // matching `eq` / `lt` / `le` / `gt` / `ge`
-                    // method (`fn ___(&self, other: &Self) -> bool`).
-                    // Each backend's comparison evaluator
-                    // dispatches the operator to that method for
-                    // struct receivers — `s OP t` becomes
-                    // semantically equivalent to `s.OP(t)`. Result
-                    // is `Bool` (per the trait method's return).
-                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
-                        TypeDecl::Bool
-                    } else {
-                        return Err(self.error_with_location(
-                            TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                            &lhs,
-                        ));
-                    }
-                } else {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("comparison", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                        &lhs,
-                    ));
-                }
+                self.check_compare_binary(&op, &lhs, &resolved_lhs_ty, &resolved_rhs_ty)?
             }
             Operator::LogicalAnd | Operator::LogicalOr => {
-                if resolved_lhs_ty == TypeDecl::Bool && resolved_rhs_ty == TypeDecl::Bool {
-                    TypeDecl::Bool
-                } else {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("logical", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                        &lhs,
-                    ));
-                }
+                self.check_logical_binary(&lhs, &resolved_lhs_ty, &resolved_rhs_ty)?
             }
             Operator::BitwiseAnd | Operator::BitwiseOr | Operator::BitwiseXor => {
-                if resolved_lhs_ty == TypeDecl::UInt64 && resolved_rhs_ty == TypeDecl::UInt64 {
-                    TypeDecl::UInt64
-                } else if resolved_lhs_ty == TypeDecl::Int64 && resolved_rhs_ty == TypeDecl::Int64 {
-                    TypeDecl::Int64
-                } else if let Some(method_name) = Self::struct_self_returning_method_name(&op) {
-                    // Phase 3 operator overload: `&` / `|` / `^`
-                    // dispatch to `bitand` / `bitor` / `bitxor`.
-                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
-                        resolved_lhs_ty.clone()
-                    } else {
-                        return Err(self.error_with_location(
-                            TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                            &lhs,
-                        ));
-                    }
-                } else {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("bitwise", resolved_lhs_ty.clone(), resolved_rhs_ty.clone()),
-                        &lhs,
-                    ));
-                }
+                self.check_bitwise_binary(&op, &lhs, &resolved_lhs_ty, &resolved_rhs_ty)?
             }
             Operator::LeftShift | Operator::RightShift => {
-                // Phase 3 operator overload: `<<` / `>>` for matching
-                // structs dispatch to `shl` / `shr`. Catch this
-                // before the primitive-only "right operand must be
-                // UInt64" rule (which would otherwise reject the
-                // struct-struct shape).
-                if let Some(method_name) = Self::struct_self_returning_method_name(&op) {
-                    if self.struct_method_compatible(&resolved_lhs_ty, &resolved_rhs_ty, method_name) {
-                        return Ok(resolved_lhs_ty.clone());
-                    }
-                }
-                // For shift operations, right operand must be UInt64
-                if resolved_rhs_ty != TypeDecl::UInt64 {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, resolved_rhs_ty.clone()),
-                        &rhs,
-                    ));
-                }
-                // Left operand can be either UInt64 or Int64
-                if resolved_lhs_ty == TypeDecl::UInt64 {
-                    TypeDecl::UInt64
-                } else if resolved_lhs_ty == TypeDecl::Int64 {
-                    TypeDecl::Int64
-                } else {
-                    return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("shift", resolved_lhs_ty.clone(), TypeDecl::UInt64),
-                        &lhs,
-                    ));
-                }
+                self.check_shift_binary(&op, &lhs, &rhs, &resolved_lhs_ty, &resolved_rhs_ty)?
             }
         };
-        
+
         Ok(result_type)
+    }
+
+    /// Shared Number-type bookkeeping for `visit_binary`: propagate
+    /// type hints, immediate-propagate concrete types into bare
+    /// `Number` literals, transform Number AST nodes whose target
+    /// type just settled, and update identifier types. Extracted
+    /// from `visit_binary` so the per-category result-type helpers
+    /// can be small.
+    fn propagate_number_types(
+        &mut self,
+        lhs: &ExprRef,
+        rhs: &ExprRef,
+        lhs_ty: &TypeDecl,
+        rhs_ty: &TypeDecl,
+        resolved_lhs_ty: &TypeDecl,
+        resolved_rhs_ty: &TypeDecl,
+    ) -> Result<(), TypeCheckError> {
+        // Context propagation: if we have a type hint, propagate it to Number expressions
+        if let Some(hint) = self.type_inference.type_hint.clone() {
+            if *lhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
+                self.propagate_type_to_number_expr(lhs, &hint)?;
+            }
+            if *rhs_ty == TypeDecl::Number && (hint == TypeDecl::Int64 || hint == TypeDecl::UInt64) {
+                self.propagate_type_to_number_expr(rhs, &hint)?;
+            }
+        }
+
+        // Record Number usage context for later finalization
+        self.record_number_usage_context(lhs, lhs_ty, resolved_lhs_ty)?;
+        self.record_number_usage_context(rhs, rhs_ty, resolved_rhs_ty)?;
+
+        // Immediate propagation: if one side has concrete type, propagate to Number variables
+        if *resolved_lhs_ty != TypeDecl::Number && *rhs_ty == TypeDecl::Number {
+            self.propagate_to_number_variable(rhs, resolved_lhs_ty)?;
+        }
+        if *resolved_rhs_ty != TypeDecl::Number && *lhs_ty == TypeDecl::Number {
+            self.propagate_to_number_variable(lhs, resolved_rhs_ty)?;
+        }
+
+        // Transform AST nodes if type conversion occurred
+        if *lhs_ty == TypeDecl::Number && *resolved_lhs_ty != TypeDecl::Number {
+            self.transform_numeric_expr(lhs, resolved_lhs_ty)?;
+        }
+        if *rhs_ty == TypeDecl::Number && *resolved_rhs_ty != TypeDecl::Number {
+            self.transform_numeric_expr(rhs, resolved_rhs_ty)?;
+        }
+
+        // Update variable types if identifiers were involved in type conversion
+        self.update_identifier_types(lhs, lhs_ty, resolved_lhs_ty)?;
+        self.update_identifier_types(rhs, rhs_ty, resolved_rhs_ty)?;
+        Ok(())
+    }
+
+    /// Result-type rule for `+ - * / %` between numeric / generic /
+    /// struct-overload pairs. String concat is handled before the
+    /// dispatch (see `visit_binary`). NUM-W narrow integers follow
+    /// the same-width rule as i64/u64 — no implicit widening.
+    fn check_arith_binary(
+        &self,
+        op: &Operator,
+        lhs: &ExprRef,
+        l: &TypeDecl,
+        r: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if *l == TypeDecl::UInt64 && *r == TypeDecl::UInt64 {
+            Ok(TypeDecl::UInt64)
+        } else if *l == TypeDecl::Int64 && *r == TypeDecl::Int64 {
+            Ok(TypeDecl::Int64)
+        } else if *l == TypeDecl::UInt32 && *r == TypeDecl::UInt32 {
+            Ok(TypeDecl::UInt32)
+        } else if *l == TypeDecl::Int32 && *r == TypeDecl::Int32 {
+            Ok(TypeDecl::Int32)
+        } else if *l == TypeDecl::UInt16 && *r == TypeDecl::UInt16 {
+            Ok(TypeDecl::UInt16)
+        } else if *l == TypeDecl::Int16 && *r == TypeDecl::Int16 {
+            Ok(TypeDecl::Int16)
+        } else if *l == TypeDecl::UInt8 && *r == TypeDecl::UInt8 {
+            Ok(TypeDecl::UInt8)
+        } else if *l == TypeDecl::Int8 && *r == TypeDecl::Int8 {
+            Ok(TypeDecl::Int8)
+        } else if *l == TypeDecl::Float64 && *r == TypeDecl::Float64 {
+            // f64 supports +, -, *, /, %. `%` follows Rust's `f64::rem`,
+            // matching the IEEE 754 remainder via fmod-style truncation.
+            Ok(TypeDecl::Float64)
+        } else if let (TypeDecl::Generic(left_param), TypeDecl::Generic(right_param)) = (l, r) {
+            // Generic-type arithmetic when both sides are the same parameter.
+            if left_param == right_param {
+                Ok(l.clone())
+            } else {
+                Err(self.error_with_location(
+                    TypeCheckError::type_mismatch_operation("arithmetic", l.clone(), r.clone()),
+                    lhs,
+                ))
+            }
+        } else if let Some(method_name) = Self::struct_arith_method_name(op) {
+            // Operator overload fallback: same-shape struct pair with
+            // the matching `add` / `sub` / `mul` / `div` / `rem` method
+            // (`fn ___(&self, other: &Self) -> Self`). Result is the
+            // struct itself so chained expressions keep type-checking.
+            if self.struct_method_compatible(l, r, method_name) {
+                Ok(l.clone())
+            } else {
+                Err(self.error_with_location(
+                    TypeCheckError::type_mismatch_operation("arithmetic", l.clone(), r.clone()),
+                    lhs,
+                ))
+            }
+        } else {
+            Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("arithmetic", l.clone(), r.clone()),
+                lhs,
+            ))
+        }
+    }
+
+    /// Result-type rule for `< <= > >= == !=`: bool for any
+    /// matching int width, f64, bool, allocator-handle (== / != only),
+    /// or struct overload (eq / lt / le / gt / ge).
+    fn check_compare_binary(
+        &self,
+        op: &Operator,
+        lhs: &ExprRef,
+        l: &TypeDecl,
+        r: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // NUM-W: same-width narrow-int compares.
+        let same_int_width = matches!((l, r),
+            (TypeDecl::UInt32, TypeDecl::UInt32)
+            | (TypeDecl::Int32, TypeDecl::Int32)
+            | (TypeDecl::UInt16, TypeDecl::UInt16)
+            | (TypeDecl::Int16, TypeDecl::Int16)
+            | (TypeDecl::UInt8, TypeDecl::UInt8)
+            | (TypeDecl::Int8, TypeDecl::Int8));
+        if (*l == TypeDecl::UInt64 || *l == TypeDecl::Int64) &&
+           (*r == TypeDecl::UInt64 || *r == TypeDecl::Int64) {
+            Ok(TypeDecl::Bool)
+        } else if same_int_width {
+            Ok(TypeDecl::Bool)
+        } else if *l == TypeDecl::Float64 && *r == TypeDecl::Float64 {
+            // f64 compares use IEEE 754 — NaN is false for ordering / equality.
+            Ok(TypeDecl::Bool)
+        } else if *l == TypeDecl::Bool && *r == TypeDecl::Bool {
+            Ok(TypeDecl::Bool)
+        } else if matches!(op, Operator::EQ | Operator::NE)
+                  && self.is_allocator_compatible(l)
+                  && self.is_allocator_compatible(r) {
+            // Allocator handles support only identity (== / !=), not ordering.
+            // A generic parameter bounded by Allocator counts as allocator-compatible
+            // so expressions like `current_allocator() == a` type-check inside a
+            // `<A: Allocator>` function body.
+            Ok(TypeDecl::Bool)
+        } else if let Some(method_name) = Self::struct_cmp_method_name(op) {
+            // Operator overload (Phase B + Phase 2 ext): same-shape
+            // struct pair with `eq` / `lt` / `le` / `gt` / `ge`
+            // method (`fn ___(&self, other: &Self) -> bool`).
+            if self.struct_method_compatible(l, r, method_name) {
+                Ok(TypeDecl::Bool)
+            } else {
+                Err(self.error_with_location(
+                    TypeCheckError::type_mismatch_operation("comparison", l.clone(), r.clone()),
+                    lhs,
+                ))
+            }
+        } else {
+            Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("comparison", l.clone(), r.clone()),
+                lhs,
+            ))
+        }
+    }
+
+    /// Result-type rule for `&& ||`: bool only. (No struct overload —
+    /// short-circuit semantics are not user-redefinable.)
+    fn check_logical_binary(
+        &self,
+        lhs: &ExprRef,
+        l: &TypeDecl,
+        r: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if *l == TypeDecl::Bool && *r == TypeDecl::Bool {
+            Ok(TypeDecl::Bool)
+        } else {
+            Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("logical", l.clone(), r.clone()),
+                lhs,
+            ))
+        }
+    }
+
+    /// Result-type rule for `& | ^`: u64/i64 same-width pairs, or
+    /// struct overload (`bitand` / `bitor` / `bitxor`).
+    fn check_bitwise_binary(
+        &self,
+        op: &Operator,
+        lhs: &ExprRef,
+        l: &TypeDecl,
+        r: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if *l == TypeDecl::UInt64 && *r == TypeDecl::UInt64 {
+            Ok(TypeDecl::UInt64)
+        } else if *l == TypeDecl::Int64 && *r == TypeDecl::Int64 {
+            Ok(TypeDecl::Int64)
+        } else if let Some(method_name) = Self::struct_self_returning_method_name(op) {
+            if self.struct_method_compatible(l, r, method_name) {
+                Ok(l.clone())
+            } else {
+                Err(self.error_with_location(
+                    TypeCheckError::type_mismatch_operation("bitwise", l.clone(), r.clone()),
+                    lhs,
+                ))
+            }
+        } else {
+            Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("bitwise", l.clone(), r.clone()),
+                lhs,
+            ))
+        }
+    }
+
+    /// Result-type rule for `<< >>`: struct overload (`shl` / `shr`)
+    /// is checked first so the primitive `rhs must be UInt64` rule
+    /// doesn't preempt it. Otherwise rhs must be `UInt64` and lhs
+    /// must be `UInt64` / `Int64`; result matches the lhs's signedness.
+    fn check_shift_binary(
+        &self,
+        op: &Operator,
+        lhs: &ExprRef,
+        rhs: &ExprRef,
+        l: &TypeDecl,
+        r: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if let Some(method_name) = Self::struct_self_returning_method_name(op) {
+            if self.struct_method_compatible(l, r, method_name) {
+                return Ok(l.clone());
+            }
+        }
+        if *r != TypeDecl::UInt64 {
+            return Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, r.clone()),
+                rhs,
+            ));
+        }
+        if *l == TypeDecl::UInt64 {
+            Ok(TypeDecl::UInt64)
+        } else if *l == TypeDecl::Int64 {
+            Ok(TypeDecl::Int64)
+        } else {
+            Err(self.error_with_location(
+                TypeCheckError::type_mismatch_operation("shift", l.clone(), TypeDecl::UInt64),
+                lhs,
+            ))
+        }
     }
 
     /// Type check block expressions

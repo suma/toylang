@@ -9,7 +9,8 @@
 
 use std::env;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use frontend::Parser;
 use interpreter::{check_typing, execute_program};
 use string_interner::DefaultStringInterner;

@@ -131,88 +131,41 @@ impl<'a> AstIntegrationContext<'a> {
             Expr::UInt16(v) => Ok(Expr::UInt16(*v)),
             Expr::UInt32(v) => Ok(Expr::UInt32(*v)),
             Expr::Float64(v) => Ok(Expr::Float64(*v)),
-            Expr::Number(symbol) => {
-                // Remap symbol to main program's string interner
-                let symbol_str = self.module_string_interner.resolve(*symbol)
-                    .ok_or("Cannot resolve Number symbol")?;
-                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
-                Ok(Expr::Number(new_symbol))
-            }
-            Expr::String(symbol) => {
-                // Remap symbol to main program's string interner
-                let symbol_str = self.module_string_interner.resolve(*symbol)
-                    .ok_or("Cannot resolve String symbol")?;
-                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
-                Ok(Expr::String(new_symbol))
-            }
-            Expr::Identifier(symbol) => {
-                // Remap symbol to main program's string interner
-                let symbol_str = self.module_string_interner.resolve(*symbol)
-                    .ok_or("Cannot resolve Identifier symbol")?;
-                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
-                Ok(Expr::Identifier(new_symbol))
-            }
-            Expr::Binary(op, lhs, rhs) => {
-                let new_lhs = self.expr_mapping.get(&lhs.0)
-                    .ok_or("Cannot find LHS expression mapping")?.clone();
-                let new_rhs = self.expr_mapping.get(&rhs.0)
-                    .ok_or("Cannot find RHS expression mapping")?.clone();
-                Ok(Expr::Binary(op.clone(), new_lhs, new_rhs))
-            }
-            Expr::Call(symbol, args) => {
-                // Remap function name symbol
-                let symbol_str = self.module_string_interner.resolve(*symbol)
-                    .ok_or("Cannot resolve Call symbol")?;
-                let new_symbol = self.main_string_interner.get_or_intern(symbol_str);
-
-                // Remap arguments expression reference
-                let new_args = self.expr_mapping.get(&args.0)
-                    .ok_or("Cannot find Call args expression mapping")?.clone();
-                Ok(Expr::Call(new_symbol, new_args))
-            }
-            Expr::ExprList(exprs) => {
-                let mut new_exprs = Vec::new();
-                for expr_ref in exprs {
-                    let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
-                        .ok_or("Cannot find ExprList expression mapping")?.clone();
-                    new_exprs.push(new_expr_ref);
-                }
-                Ok(Expr::ExprList(new_exprs))
-            }
+            Expr::Number(symbol) => Ok(Expr::Number(self.remap_symbol(*symbol)?)),
+            Expr::String(symbol) => Ok(Expr::String(self.remap_symbol(*symbol)?)),
+            Expr::Identifier(symbol) => Ok(Expr::Identifier(self.remap_symbol(*symbol)?)),
+            Expr::Binary(op, lhs, rhs) => Ok(Expr::Binary(
+                op.clone(),
+                self.map_expr(lhs, "Binary LHS")?,
+                self.map_expr(rhs, "Binary RHS")?,
+            )),
+            Expr::Call(symbol, args) => Ok(Expr::Call(
+                self.remap_symbol(*symbol)?,
+                self.map_expr(args, "Call args")?,
+            )),
+            Expr::ExprList(exprs) => Ok(Expr::ExprList(self.map_exprs(exprs, "ExprList")?)),
             Expr::Block(stmts) => {
-                let mut new_stmts = Vec::new();
+                let mut new_stmts = Vec::with_capacity(stmts.len());
                 for stmt_ref in stmts {
-                    let new_stmt_ref = self.stmt_mapping.get(&stmt_ref.0)
-                        .ok_or_else(|| format!("Cannot find Block statement mapping for StmtRef({})", stmt_ref.0))?.clone();
-                    new_stmts.push(new_stmt_ref);
+                    new_stmts.push(self.map_stmt(stmt_ref, "Block")?);
                 }
                 Ok(Expr::Block(new_stmts))
             }
-            Expr::Assign(lhs, rhs) => {
-                let new_lhs = self.expr_mapping.get(&lhs.0)
-                    .ok_or("Cannot find Assign LHS expression mapping")?.clone();
-                let new_rhs = self.expr_mapping.get(&rhs.0)
-                    .ok_or("Cannot find Assign RHS expression mapping")?.clone();
-                Ok(Expr::Assign(new_lhs, new_rhs))
-            }
+            Expr::Assign(lhs, rhs) => Ok(Expr::Assign(
+                self.map_expr(lhs, "Assign LHS")?,
+                self.map_expr(rhs, "Assign RHS")?,
+            )),
             Expr::IfElifElse(if_cond, if_block, elif_pairs, else_block) => {
-                let new_if_cond = self.expr_mapping.get(&if_cond.0)
-                    .ok_or("Cannot find IfElifElse condition expression mapping")?.clone();
-                let new_if_block = self.expr_mapping.get(&if_block.0)
-                    .ok_or("Cannot find IfElifElse if_block expression mapping")?.clone();
-
-                let mut new_elif_pairs = Vec::new();
+                let new_if_cond = self.map_expr(if_cond, "IfElifElse condition")?;
+                let new_if_block = self.map_expr(if_block, "IfElifElse if_block")?;
+                let mut new_elif_pairs = Vec::with_capacity(elif_pairs.len());
                 for (elif_cond, elif_block) in elif_pairs {
-                    let new_elif_cond = self.expr_mapping.get(&elif_cond.0)
-                        .ok_or("Cannot find IfElifElse elif_cond expression mapping")?.clone();
-                    let new_elif_block = self.expr_mapping.get(&elif_block.0)
-                        .ok_or("Cannot find IfElifElse elif_block expression mapping")?.clone();
-                    new_elif_pairs.push((new_elif_cond, new_elif_block));
+                    new_elif_pairs.push((
+                        self.map_expr(elif_cond, "IfElifElse elif_cond")?,
+                        self.map_expr(elif_block, "IfElifElse elif_block")?,
+                    ));
                 }
-
-                let new_else_block = self.expr_mapping.get(&else_block.0)
-                    .ok_or("Cannot find IfElifElse else_block expression mapping")?.clone();
-
+                let new_else_block = self.map_expr(else_block, "IfElifElse else_block")?;
                 Ok(Expr::IfElifElse(new_if_cond, new_if_block, new_elif_pairs, new_else_block))
             }
             Expr::QualifiedIdentifier(path) => {
@@ -244,16 +197,10 @@ impl<'a> AstIntegrationContext<'a> {
                 // table dependency), so the variant survives the
                 // remap untouched. Only the per-arg ExprRefs need
                 // re-pointing into the main program's pools.
-                let mut new_args = Vec::new();
-                for arg in args {
-                    let new_arg = self
-                        .expr_mapping
-                        .get(&arg.0)
-                        .ok_or("Cannot find BuiltinCall argument mapping")?
-                        .clone();
-                    new_args.push(new_arg);
-                }
-                Ok(Expr::BuiltinCall(func.clone(), new_args))
+                Ok(Expr::BuiltinCall(
+                    func.clone(),
+                    self.map_exprs(args, "BuiltinCall argument")?,
+                ))
             }
             Expr::AssociatedFunctionCall(target, method, args) => {
                 // Module-qualified calls (`math::abs(x)` parses as
@@ -268,18 +215,11 @@ impl<'a> AstIntegrationContext<'a> {
                 // stdlib aliasing (DICT-CROSS-MODULE-OPTION). The
                 // `method` symbol is the function/variant name and
                 // stays plain.
-                let new_target = self.remap_type_symbol(*target)?;
-                let new_method = self.remap_symbol(*method)?;
-                let mut new_args = Vec::new();
-                for arg in args {
-                    let new_arg = self
-                        .expr_mapping
-                        .get(&arg.0)
-                        .ok_or("Cannot find AssociatedFunctionCall argument mapping")?
-                        .clone();
-                    new_args.push(new_arg);
-                }
-                Ok(Expr::AssociatedFunctionCall(new_target, new_method, new_args))
+                Ok(Expr::AssociatedFunctionCall(
+                    self.remap_type_symbol(*target)?,
+                    self.remap_symbol(*method)?,
+                    self.map_exprs(args, "AssociatedFunctionCall argument")?,
+                ))
             }
             Expr::Match(scrutinee, arms) => {
                 // `match` body remap: scrutinee ExprRef + each arm's
@@ -288,32 +228,13 @@ impl<'a> AstIntegrationContext<'a> {
                 // carry their own DefaultSymbol fields (enum name,
                 // variant name, name bindings) that all need
                 // re-interning into the main interner.
-                let new_scrutinee = self
-                    .expr_mapping
-                    .get(&scrutinee.0)
-                    .ok_or("Cannot find Match scrutinee mapping")?
-                    .clone();
+                let new_scrutinee = self.map_expr(scrutinee, "Match scrutinee")?;
                 let mut new_arms: Vec<MatchArm> = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    let new_pat = self.remap_pattern(&arm.pattern)?;
-                    let new_guard = match arm.guard {
-                        Some(g) => Some(
-                            self.expr_mapping
-                                .get(&g.0)
-                                .ok_or("Cannot find Match arm guard mapping")?
-                                .clone(),
-                        ),
-                        None => None,
-                    };
-                    let new_body = self
-                        .expr_mapping
-                        .get(&arm.body.0)
-                        .ok_or("Cannot find Match arm body mapping")?
-                        .clone();
                     new_arms.push(MatchArm {
-                        pattern: new_pat,
-                        guard: new_guard,
-                        body: new_body,
+                        pattern: self.remap_pattern(&arm.pattern)?,
+                        guard: self.map_opt_expr(arm.guard.as_ref(), "Match arm guard")?,
+                        body: self.map_expr(&arm.body, "Match arm body")?,
                     });
                 }
                 Ok(Expr::Match(new_scrutinee, new_arms))
@@ -330,54 +251,28 @@ impl<'a> AstIntegrationContext<'a> {
                 let new_name = self.remap_type_symbol(*name)?;
                 let mut new_fields = Vec::with_capacity(fields.len());
                 for (fname, fexpr) in fields {
-                    let new_fname = self.remap_symbol(*fname)?;
-                    let new_fexpr = self
-                        .expr_mapping
-                        .get(&fexpr.0)
-                        .ok_or("Cannot find StructLiteral field expression mapping")?
-                        .clone();
-                    new_fields.push((new_fname, new_fexpr));
+                    new_fields.push((
+                        self.remap_symbol(*fname)?,
+                        self.map_expr(fexpr, "StructLiteral field expression")?,
+                    ));
                 }
                 Ok(Expr::StructLiteral(new_name, new_fields))
             }
-            Expr::FieldAccess(receiver, field) => {
-                // `obj.field` — receiver ExprRef + field name symbol.
-                let new_receiver = self
-                    .expr_mapping
-                    .get(&receiver.0)
-                    .ok_or("Cannot find FieldAccess receiver mapping")?
-                    .clone();
-                let new_field = self.remap_symbol(*field)?;
-                Ok(Expr::FieldAccess(new_receiver, new_field))
-            }
-            Expr::TupleLiteral(elements) => {
-                let mut new_elements = Vec::with_capacity(elements.len());
-                for e in elements {
-                    let new_e = self
-                        .expr_mapping
-                        .get(&e.0)
-                        .ok_or("Cannot find TupleLiteral element mapping")?
-                        .clone();
-                    new_elements.push(new_e);
-                }
-                Ok(Expr::TupleLiteral(new_elements))
-            }
-            Expr::TupleAccess(obj, idx) => {
-                let new_obj = self
-                    .expr_mapping
-                    .get(&obj.0)
-                    .ok_or("Cannot find TupleAccess obj mapping")?
-                    .clone();
-                Ok(Expr::TupleAccess(new_obj, *idx))
-            }
-            Expr::Unary(op, operand) => {
-                let new_operand = self
-                    .expr_mapping
-                    .get(&operand.0)
-                    .ok_or("Cannot find Unary operand mapping")?
-                    .clone();
-                Ok(Expr::Unary(op.clone(), new_operand))
-            }
+            Expr::FieldAccess(receiver, field) => Ok(Expr::FieldAccess(
+                self.map_expr(receiver, "FieldAccess receiver")?,
+                self.remap_symbol(*field)?,
+            )),
+            Expr::TupleLiteral(elements) => Ok(Expr::TupleLiteral(
+                self.map_exprs(elements, "TupleLiteral element")?,
+            )),
+            Expr::TupleAccess(obj, idx) => Ok(Expr::TupleAccess(
+                self.map_expr(obj, "TupleAccess obj")?,
+                *idx,
+            )),
+            Expr::Unary(op, operand) => Ok(Expr::Unary(
+                op.clone(),
+                self.map_expr(operand, "Unary operand")?,
+            )),
             Expr::With(allocator_expr, body) => {
                 // `with allocator = expr { body }` — both child
                 // ExprRefs need remap. Used by user code in
@@ -386,50 +281,29 @@ impl<'a> AstIntegrationContext<'a> {
                 // is harmless for the moment and unlocks the
                 // wider universe of allocator-scope-using
                 // module code).
-                let new_alloc = self
-                    .expr_mapping
-                    .get(&allocator_expr.0)
-                    .ok_or("Cannot find With allocator expression mapping")?
-                    .clone();
-                let new_body = self
-                    .expr_mapping
-                    .get(&body.0)
-                    .ok_or("Cannot find With body expression mapping")?
-                    .clone();
-                Ok(Expr::With(new_alloc, new_body))
+                Ok(Expr::With(
+                    self.map_expr(allocator_expr, "With allocator expression")?,
+                    self.map_expr(body, "With body expression")?,
+                ))
             }
             Expr::Cast(value, ty) => {
                 // `expr as Type`. The inner ExprRef goes through the
                 // standard expr_mapping; the TypeDecl can carry struct
                 // / enum / nested generic symbols that need re-interning,
                 // so route through remap_type_decl.
-                let new_value = self
-                    .expr_mapping
-                    .get(&value.0)
-                    .ok_or("Cannot find Cast value mapping")?
-                    .clone();
-                let new_ty = self.remap_type_decl(ty)?;
-                Ok(Expr::Cast(new_value, new_ty))
+                Ok(Expr::Cast(
+                    self.map_expr(value, "Cast value")?,
+                    self.remap_type_decl(ty)?,
+                ))
             }
             Expr::MethodCall(receiver, method, args) => {
                 // `obj.method(args)` — receiver ExprRef + method
                 // symbol + per-arg ExprRefs all need remap.
-                let new_receiver = self
-                    .expr_mapping
-                    .get(&receiver.0)
-                    .ok_or("Cannot find MethodCall receiver mapping")?
-                    .clone();
-                let new_method = self.remap_symbol(*method)?;
-                let mut new_args = Vec::new();
-                for arg in args {
-                    let new_arg = self
-                        .expr_mapping
-                        .get(&arg.0)
-                        .ok_or("Cannot find MethodCall argument mapping")?
-                        .clone();
-                    new_args.push(new_arg);
-                }
-                Ok(Expr::MethodCall(new_receiver, new_method, new_args))
+                Ok(Expr::MethodCall(
+                    self.map_expr(receiver, "MethodCall receiver")?,
+                    self.remap_symbol(*method)?,
+                    self.map_exprs(args, "MethodCall argument")?,
+                ))
             }
             // Add other expression types as needed
             _ => Err(format!("Unsupported expression type for remapping: {:?}", expr))
@@ -515,14 +389,7 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 Ok(Pattern::EnumVariant(new_enum, new_variant, new_subs))
             }
-            Pattern::Literal(eref) => {
-                let new_ref = self
-                    .expr_mapping
-                    .get(&eref.0)
-                    .ok_or("Cannot find Pattern::Literal mapping")?
-                    .clone();
-                Ok(Pattern::Literal(new_ref))
-            }
+            Pattern::Literal(eref) => Ok(Pattern::Literal(self.map_expr(eref, "Pattern::Literal")?)),
             Pattern::Name(sym) => {
                 let new_sym = self.remap_symbol(*sym)?;
                 Ok(Pattern::Name(new_sym))
@@ -541,36 +408,18 @@ impl<'a> AstIntegrationContext<'a> {
     /// Remap statement with updated references to main program's AST pools
     fn remap_statement(&mut self, stmt: &Stmt) -> Result<Stmt, String> {
         match stmt {
-            Stmt::Expression(expr_ref) => {
-                let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
-                    .ok_or("Cannot find Expression statement mapping")?.clone();
-                Ok(Stmt::Expression(new_expr_ref))
-            }
-            Stmt::Return(Some(expr_ref)) => {
-                let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
-                    .ok_or("Cannot find Return expression mapping")?.clone();
-                Ok(Stmt::Return(Some(new_expr_ref)))
-            }
-            Stmt::Return(None) => Ok(Stmt::Return(None)),
+            Stmt::Expression(expr_ref) => Ok(Stmt::Expression(
+                self.map_expr(expr_ref, "Expression")?,
+            )),
+            Stmt::Return(opt) => Ok(Stmt::Return(self.map_opt_expr(opt.as_ref(), "Return")?)),
             Stmt::Break(label) => Ok(Stmt::Break(self.remap_optional_label(*label)?)),
             Stmt::Continue(label) => Ok(Stmt::Continue(self.remap_optional_label(*label)?)),
-            Stmt::Var(name, typ, value) => {
-                let new_name = self.remap_symbol(*name)?;
-                let new_typ = match typ {
-                    Some(t) => Some(self.remap_type_decl(t)?),
-                    None => None,
-                };
-                let new_value = if let Some(expr_ref) = value {
-                    let new_expr_ref = self.expr_mapping.get(&expr_ref.0)
-                        .ok_or("Cannot find Var value expression mapping")?.clone();
-                    Some(new_expr_ref)
-                } else {
-                    None
-                };
-                Ok(Stmt::Var(new_name, new_typ, new_value))
-            }
+            Stmt::Var(name, typ, value) => Ok(Stmt::Var(
+                self.remap_symbol(*name)?,
+                self.remap_opt_type_decl(typ.as_ref())?,
+                self.map_opt_expr(value.as_ref(), "Var value")?,
+            )),
             Stmt::Val(name, typ, value) => {
-                let new_name = self.remap_symbol(*name)?;
                 // The annotation `T` in `val x: T = ...` carries
                 // a module-interner symbol when written inside a
                 // generic method body (e.g.
@@ -581,33 +430,24 @@ impl<'a> AstIntegrationContext<'a> {
                 // and rejects it as "not found" / type-mismatch
                 // when the rhs (e.g. the generic ptr_read return)
                 // resolves to a known type.
-                let new_typ = match typ {
-                    Some(t) => Some(self.remap_type_decl(t)?),
-                    None => None,
-                };
-                let new_value = self.expr_mapping.get(&value.0)
-                    .ok_or("Cannot find Val value expression mapping")?.clone();
-                Ok(Stmt::Val(new_name, new_typ, new_value))
+                Ok(Stmt::Val(
+                    self.remap_symbol(*name)?,
+                    self.remap_opt_type_decl(typ.as_ref())?,
+                    self.map_expr(value, "Val value")?,
+                ))
             }
-            Stmt::For(label, variable, start, end, body) => {
-                let new_label = self.remap_optional_label(*label)?;
-                let new_variable = self.remap_symbol(*variable)?;
-                let new_start = self.expr_mapping.get(&start.0)
-                    .ok_or("Cannot find For start expression mapping")?.clone();
-                let new_end = self.expr_mapping.get(&end.0)
-                    .ok_or("Cannot find For end expression mapping")?.clone();
-                let new_body = self.expr_mapping.get(&body.0)
-                    .ok_or("Cannot find For body expression mapping")?.clone();
-                Ok(Stmt::For(new_label, new_variable, new_start, new_end, new_body))
-            }
-            Stmt::While(label, condition, body) => {
-                let new_label = self.remap_optional_label(*label)?;
-                let new_condition = self.expr_mapping.get(&condition.0)
-                    .ok_or("Cannot find While condition expression mapping")?.clone();
-                let new_body = self.expr_mapping.get(&body.0)
-                    .ok_or("Cannot find While body expression mapping")?.clone();
-                Ok(Stmt::While(new_label, new_condition, new_body))
-            }
+            Stmt::For(label, variable, start, end, body) => Ok(Stmt::For(
+                self.remap_optional_label(*label)?,
+                self.remap_symbol(*variable)?,
+                self.map_expr(start, "For start")?,
+                self.map_expr(end, "For end")?,
+                self.map_expr(body, "For body")?,
+            )),
+            Stmt::While(label, condition, body) => Ok(Stmt::While(
+                self.remap_optional_label(*label)?,
+                self.map_expr(condition, "While condition")?,
+                self.map_expr(body, "While body")?,
+            )),
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => {
                 // Every DefaultSymbol carried here was minted by the
                 // module's own `DefaultStringInterner`; without
@@ -843,6 +683,41 @@ impl<'a> AstIntegrationContext<'a> {
         let symbol_str = self.module_string_interner.resolve(symbol)
             .ok_or("Cannot resolve symbol")?;
         Ok(self.main_string_interner.get_or_intern(symbol_str))
+    }
+
+    /// Look up a module `ExprRef` in the expr-mapping table and return the
+    /// corresponding main-program `ExprRef`. `ctx` is the human label for
+    /// the lookup site, used only on the (theoretically unreachable) error
+    /// path where a child id is missing from the placeholder phase.
+    fn map_expr(&self, eref: &ExprRef, ctx: &str) -> Result<ExprRef, String> {
+        self.expr_mapping
+            .get(&eref.0)
+            .cloned()
+            .ok_or_else(|| format!("Cannot find {} expression mapping", ctx))
+    }
+
+    /// Vector form of `map_expr` — keeps the per-element ctx label for
+    /// debuggability when a list lookup fails.
+    fn map_exprs(&self, erefs: &[ExprRef], ctx: &str) -> Result<Vec<ExprRef>, String> {
+        erefs.iter().map(|e| self.map_expr(e, ctx)).collect()
+    }
+
+    /// Optional form of `map_expr`; passes `None` through unchanged.
+    fn map_opt_expr(&self, opt: Option<&ExprRef>, ctx: &str) -> Result<Option<ExprRef>, String> {
+        opt.map(|e| self.map_expr(e, ctx)).transpose()
+    }
+
+    /// Look up a module `StmtRef` in the stmt-mapping table.
+    fn map_stmt(&self, sref: &StmtRef, ctx: &str) -> Result<StmtRef, String> {
+        self.stmt_mapping
+            .get(&sref.0)
+            .cloned()
+            .ok_or_else(|| format!("Cannot find {} statement mapping", ctx))
+    }
+
+    /// Optional form of `remap_type_decl` — `None` passes through unchanged.
+    fn remap_opt_type_decl(&mut self, ty: Option<&TypeDecl>) -> Result<Option<TypeDecl>, String> {
+        ty.map(|t| self.remap_type_decl(t)).transpose()
     }
 
     /// LABEL: remap an optional loop label symbol; preserves `None`.

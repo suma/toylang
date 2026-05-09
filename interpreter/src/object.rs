@@ -528,6 +528,32 @@ fn format_type_decl_for_display(
     }
 }
 
+/// Generate paired `unwrap_*` (panic on mismatch) and `try_unwrap_*`
+/// (`Result<_, ObjectError>`) accessors for primitive `Object` variants.
+/// Each row is `(unwrap_name, try_name, Object::Variant, return_ty,
+/// TypeDecl::Expected, "label")`. The label is only used in the panic
+/// message so it can stay distinct from the variant identifier (e.g.
+/// `unwrap_string` reports `ConstString`).
+macro_rules! object_unwrap_methods {
+    ($(($unwrap:ident, $try_unwrap:ident, $variant:path, $ty:ty, $expected:expr, $label:literal)),+ $(,)?) => {
+        $(
+            pub fn $unwrap(&self) -> $ty {
+                match self {
+                    $variant(v) => *v,
+                    _ => panic!(concat!(stringify!($unwrap), ": expected ", $label, " but {:?}"), self),
+                }
+            }
+
+            pub fn $try_unwrap(&self) -> Result<$ty, ObjectError> {
+                match self {
+                    $variant(v) => Ok(*v),
+                    _ => Err(ObjectError::TypeMismatch { expected: $expected, found: self.get_type() }),
+                }
+            }
+        )+
+    };
+}
+
 impl Object {
     // Helper to create a null object with specific type
     pub fn null_of_type(type_decl: TypeDecl) -> Object {
@@ -613,92 +639,17 @@ impl Object {
         matches!(self, Object::Unit)
     }
 
-    pub fn unwrap_bool(&self) -> bool {
-        match self {
-            Object::Bool(v) => *v,
-            _ => panic!("unwrap_bool: expected bool but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_bool(&self) -> Result<bool, ObjectError> {
-        match self {
-            Object::Bool(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Bool, found: self.get_type() }),
-        }
-    }
-
-    pub fn unwrap_int64(&self) -> i64 {
-        match self {
-            Object::Int64(v) => *v,
-            _ => panic!("unwrap_int64: expected int64 but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_int64(&self) -> Result<i64, ObjectError> {
-        match self {
-            Object::Int64(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Int64, found: self.get_type() }),
-        }
-    }
-
-    pub fn unwrap_uint64(&self) -> u64 {
-        match self {
-            Object::UInt64(v) => *v,
-            _ => panic!("unwrap_uint64: expected uint64 but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_uint64(&self) -> Result<u64, ObjectError> {
-        match self {
-            Object::UInt64(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::UInt64, found: self.get_type() }),
-        }
-    }
-
-    pub fn unwrap_float64(&self) -> f64 {
-        match self {
-            Object::Float64(v) => *v,
-            _ => panic!("unwrap_float64: expected float64 but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_float64(&self) -> Result<f64, ObjectError> {
-        match self {
-            Object::Float64(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Float64, found: self.get_type() }),
-        }
-    }
-
-    pub fn unwrap_pointer(&self) -> usize {
-        match self {
-            Object::Pointer(v) => *v,
-            _ => panic!("unwrap_pointer: expected pointer but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_pointer(&self) -> Result<usize, ObjectError> {
-        match self {
-            Object::Pointer(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::Ptr, found: self.get_type() }),
-        }
+    object_unwrap_methods! {
+        (unwrap_bool,    try_unwrap_bool,    Object::Bool,        bool,          TypeDecl::Bool,    "bool"),
+        (unwrap_int64,   try_unwrap_int64,   Object::Int64,       i64,           TypeDecl::Int64,   "int64"),
+        (unwrap_uint64,  try_unwrap_uint64,  Object::UInt64,      u64,           TypeDecl::UInt64,  "uint64"),
+        (unwrap_float64, try_unwrap_float64, Object::Float64,     f64,           TypeDecl::Float64, "float64"),
+        (unwrap_pointer, try_unwrap_pointer, Object::Pointer,     usize,         TypeDecl::Ptr,     "pointer"),
+        (unwrap_string,  try_unwrap_string,  Object::ConstString, DefaultSymbol, TypeDecl::String,  "ConstString"),
     }
 
     pub fn is_null_pointer(&self) -> bool {
         matches!(self, Object::Pointer(0))
-    }
-
-    pub fn unwrap_string(&self) -> DefaultSymbol {
-        match self {
-            Object::ConstString(v) => *v,
-            _ => panic!("unwrap_string: expected ConstString but {self:?}"),
-        }
-    }
-
-    pub fn try_unwrap_string(&self) -> Result<DefaultSymbol, ObjectError> {
-        match self {
-            Object::ConstString(v) => Ok(*v),
-            _ => Err(ObjectError::TypeMismatch { expected: TypeDecl::String, found: self.get_type() }),
-        }
     }
 
     /// Get string value as String regardless of internal representation

@@ -99,55 +99,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
             operand_obj.clone().accept(self)?
         };
-        
+
         // REF-Stage-2: explicit `&expr` / `&mut expr` short-circuit
         // before the Number/coercion logic runs, since wrapping an
         // unresolved Number literal in a borrow doesn't make sense.
         if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
-            let is_mut = matches!(op, UnaryOp::BorrowMut);
-            // REF-Stage-2 (f) + (iii): `&mut <expr>` is only valid
-            // against a mutable lvalue. Recognised lvalue shapes:
-            //   - bare identifier (`&mut name`)
-            //   - field-access chain (`&mut s.field`, `&mut s.a.b`)
-            //   - tuple-access chain (`&mut t.0`, `&mut t.0.1`)
-            // The root binding of the chain must be `var`-declared.
-            // Index-borrow (`&mut arr[i]`) is still future work.
-            if is_mut {
-                let root = self.find_borrow_lvalue_root(&operand)?;
-                match self.context.is_var_mutable(root) {
-                    Some(true) => {}
-                    Some(false) => {
-                        let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
-                        return Err(self.error_with_location(
-                            TypeCheckError::generic_error(&format!(
-                                "cannot borrow `{}` as mutable: binding is not declared `var`",
-                                name
-                            )),
-                            &operand,
-                        ));
-                    }
-                    None => {
-                        // Identifier resolves to something other than a
-                        // local binding (e.g. a top-level const). Those
-                        // are also not mutable lvalues.
-                        let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
-                        return Err(self.error_with_location(
-                            TypeCheckError::generic_error(&format!(
-                                "cannot take a mutable borrow of `{}`: not a mutable local binding",
-                                name
-                            )),
-                            &operand,
-                        ));
-                    }
-                }
-            }
-            // If the operand is itself already a reference, just
-            // pass it through (no double-borrow).
-            let inner_ty = match operand_ty {
-                TypeDecl::Ref { inner, .. } => *inner,
-                other => other,
-            };
-            return Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner_ty) });
+            return self.check_unary_borrow(&op, &operand, operand_ty);
         }
 
         // Resolve type with automatic conversion for Number type. Negation
@@ -163,12 +120,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             operand_ty.clone()
         };
-        
+
         // Transform AST node if type conversion occurred
         if operand_ty == TypeDecl::Number && resolved_ty != TypeDecl::Number {
             self.transform_numeric_expr(&operand, &resolved_ty)?;
         }
-        
+
         // OP-OVERLOAD-EXTEND Phase 4: unary operator overload.
         // `-x` / `~x` / `!x` for matching struct values dispatch
         // to the user-defined `neg` / `bitnot` / `not` method
@@ -182,49 +139,110 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        let result_type = match op {
-            UnaryOp::BitwiseNot => {
-                if resolved_ty == TypeDecl::UInt64 {
-                    TypeDecl::UInt64
-                } else if resolved_ty == TypeDecl::Int64 {
-                    TypeDecl::Int64
-                } else {
+        self.check_unary_primitive(&op, &operand, &resolved_ty)
+    }
+
+    /// REF-Stage-2: type-check `&expr` / `&mut expr`. `&mut` requires
+    /// the operand to be a mutable lvalue (bare identifier or
+    /// field/tuple-access chain rooted at a `var`-declared name);
+    /// `&` accepts any operand. Result is `Ref { is_mut, inner }`,
+    /// collapsing nested borrows so `&(&x)` doesn't double-wrap.
+    fn check_unary_borrow(
+        &mut self,
+        op: &UnaryOp,
+        operand: &ExprRef,
+        operand_ty: TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        let is_mut = matches!(op, UnaryOp::BorrowMut);
+        // REF-Stage-2 (f) + (iii): `&mut <expr>` is only valid against a
+        // mutable lvalue (bare identifier, field-access chain, or
+        // tuple-access chain rooted at a `var`-declared binding).
+        // Index-borrow (`&mut arr[i]`) is still future work.
+        if is_mut {
+            let root = self.find_borrow_lvalue_root(operand)?;
+            match self.context.is_var_mutable(root) {
+                Some(true) => {}
+                Some(false) => {
+                    let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
                     return Err(self.error_with_location(
-                        TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit),
-                        &operand,
+                        TypeCheckError::generic_error(&format!(
+                            "cannot borrow `{}` as mutable: binding is not declared `var`",
+                            name
+                        )),
+                        operand,
                     ));
+                }
+                None => {
+                    // Identifier resolves to something other than a
+                    // local binding (e.g. a top-level const). Those
+                    // are also not mutable lvalues.
+                    let name = self.core.string_interner.resolve(root).unwrap_or("?").to_string();
+                    return Err(self.error_with_location(
+                        TypeCheckError::generic_error(&format!(
+                            "cannot take a mutable borrow of `{}`: not a mutable local binding",
+                            name
+                        )),
+                        operand,
+                    ));
+                }
+            }
+        }
+        // Collapse `&(&x)` to a single Ref so the type doesn't grow on
+        // re-borrow.
+        let inner_ty = match operand_ty {
+            TypeDecl::Ref { inner, .. } => *inner,
+            other => other,
+        };
+        Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner_ty) })
+    }
+
+    /// Per-op result-type rule for primitive unary operators after the
+    /// borrow short-circuit and Number-resolution. `Negate` rejects
+    /// u64 to avoid the silent-wraparound surprise
+    /// `-(1u64) == 2^64 - 1`; cast first if you really want that.
+    fn check_unary_primitive(
+        &self,
+        op: &UnaryOp,
+        operand: &ExprRef,
+        resolved_ty: &TypeDecl,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        match op {
+            UnaryOp::BitwiseNot => {
+                if *resolved_ty == TypeDecl::UInt64 {
+                    Ok(TypeDecl::UInt64)
+                } else if *resolved_ty == TypeDecl::Int64 {
+                    Ok(TypeDecl::Int64)
+                } else {
+                    Err(self.error_with_location(
+                        TypeCheckError::type_mismatch_operation("bitwise NOT", resolved_ty.clone(), TypeDecl::Unit),
+                        operand,
+                    ))
                 }
             }
             UnaryOp::LogicalNot => {
-                if resolved_ty == TypeDecl::Bool {
-                    TypeDecl::Bool
+                if *resolved_ty == TypeDecl::Bool {
+                    Ok(TypeDecl::Bool)
                 } else {
-                    return Err(self.error_with_location(
+                    Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("logical NOT", resolved_ty.clone(), TypeDecl::Unit),
-                        &operand,
-                    ));
+                        operand,
+                    ))
                 }
             }
             UnaryOp::Negate => {
-                // Only signed integers and f64 may be negated. Rejecting u64
-                // avoids the silent-wraparound surprise `-(1u64) == 2^64 - 1`;
-                // users who really want the two's-complement representation
-                // can cast first.
-                if resolved_ty == TypeDecl::Int64 {
-                    TypeDecl::Int64
-                } else if resolved_ty == TypeDecl::Float64 {
-                    TypeDecl::Float64
+                if *resolved_ty == TypeDecl::Int64 {
+                    Ok(TypeDecl::Int64)
+                } else if *resolved_ty == TypeDecl::Float64 {
+                    Ok(TypeDecl::Float64)
                 } else {
-                    return Err(self.error_with_location(
+                    Err(self.error_with_location(
                         TypeCheckError::type_mismatch_operation("unary minus", resolved_ty.clone(), TypeDecl::Int64),
-                        &operand,
-                    ));
+                        operand,
+                    ))
                 }
             }
-            UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("borrow handled above"),
-        };
-
-        Ok(result_type)
+            UnaryOp::Borrow | UnaryOp::BorrowMut => unreachable!("borrow handled in check_unary_borrow"),
+        }
     }
 
     /// Unary operator overload table (Phase 4 extension). Maps
@@ -1006,81 +1024,16 @@ impl<'a> TypeCheckerVisitor<'a> {
                 self.type_check(fun_copy.clone())?;
             }
 
-            // Type check function arguments with proper type hints
-            // Clone data we need to avoid borrowing conflicts
-            let args_data = if let Some(args_expr) = self.core.expr_pool.get(&args_ref) {
-                if let Expr::ExprList(args) = args_expr {
-                    Some(args.clone())
-                } else {
-                    None
-                }
-            } else {
+            // Type-check the argument list against the resolved function
+            // parameters, restoring the type-hint state and popping the
+            // context-frame on every exit path.
+            if let Err(err) = self.check_call_args_against_params(fn_name, args_ref, &fun) {
                 self.pop_context();
-                return Err(TypeCheckError::generic_error("Invalid arguments reference"));
-            };
-            
-            if let Some(args) = args_data {
-                let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| {
-                    // Normalize Identifier to Struct for known struct types
-                    if let TypeDecl::Identifier(name) = ty {
-                        if self.context.struct_definitions.contains_key(name) {
-                            return TypeDecl::Struct(*name, vec![]);
-                        }
-                    }
-                    ty.clone()
-                }).collect();
-                
-                // Check argument count
-                if args.len() != param_types.len() {
-                    self.pop_context();
-                    let fn_name_str = self.resolve_symbol_name(fn_name);
-                    return Err(TypeCheckError::generic_error(&format!(
-                        "Function '{}' argument count mismatch: expected {}, found {}",
-                        fn_name_str, param_types.len(), args.len()
-                    )));
-                }
-                
-                // Type check each argument with expected type as hint
-                let original_hint = self.type_inference.type_hint.clone();
-                for (arg_index, (arg, expected_type)) in args.iter().zip(&param_types).enumerate() {
-                    // Set type hint for this argument
-                    self.type_inference.type_hint = Some(expected_type.clone());
-                    let arg_type = self.visit_expr(arg)?;
-
-                    // Check type compatibility — `is_arg_compatible` handles
-                    // the Identifier↔Struct and Identifier↔Enum cases so
-                    // user-named types unify with their resolved form, plus
-                    // the REF-Stage-2 auto-borrow (`T` → `&T` at call sites).
-                    if !TypeDecl::is_arg_compatible(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
-                        // Restore hint before returning error
-                        self.type_inference.type_hint = original_hint;
-                        self.pop_context();
-                        let fn_name_str = self.resolve_symbol_name(fn_name);
-                        return Err(TypeCheckError::generic_error(&format!(
-                            "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
-                            expected_type, arg_type, fn_name_str, arg_index + 1
-                        )));
-                    }
-                }
-                // Restore original hint
-                self.type_inference.type_hint = original_hint;
+                return Err(err);
             }
-            
+
             self.pop_context();
-            // Normalize `Identifier(name)` return types to `Struct(name, [])` for
-            // known structs so downstream method dispatch (which matches on
-            // Struct) works on values produced by `fn make_list() -> List { ... }`.
-            let ret = fun.return_type.clone().unwrap_or(TypeDecl::Unknown);
-            let ret = if let TypeDecl::Identifier(name) = &ret {
-                if self.context.struct_definitions.contains_key(name) {
-                    TypeDecl::Struct(*name, vec![])
-                } else {
-                    ret
-                }
-            } else {
-                ret
-            };
-            Ok(ret)
+            Ok(self.normalize_call_return_type(fun.return_type.clone().unwrap_or(TypeDecl::Unknown)))
         } else {
             // Function lookup miss — try the indirect-call path.
             // Closures Phase 2: when a binding holds a value of type
@@ -1098,6 +1051,89 @@ impl<'a> TypeCheckerVisitor<'a> {
             let fn_name_str = self.resolve_symbol_name(fn_name);
             Err(TypeCheckError::not_found("Function", &fn_name_str))
         }
+    }
+
+    /// Type-check the argument list of a non-generic direct call
+    /// against a resolved `Function`. Extracted from `visit_call` so
+    /// the orchestrator stays focused on lookup + dispatch. The
+    /// caller is responsible for `pop_context` on the way out
+    /// (success or failure); this helper restores `type_hint` on
+    /// every return path.
+    fn check_call_args_against_params(
+        &mut self,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+        fun: &Function,
+    ) -> Result<(), TypeCheckError> {
+        // Pull the argument list. A non-ExprList is an internal IR drift
+        // (parser only produces ExprList here); a missing slot means
+        // the args ref dangles.
+        let args = match self.core.expr_pool.get(args_ref) {
+            Some(Expr::ExprList(args)) => args.clone(),
+            Some(_) => return Ok(()),
+            None => return Err(TypeCheckError::generic_error("Invalid arguments reference")),
+        };
+
+        // Normalize Identifier params to Struct for known struct types
+        // so the per-arg compatibility check below sees the canonical
+        // shape regardless of how the user spelled the parameter type.
+        let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| {
+            if let TypeDecl::Identifier(name) = ty {
+                if self.context.struct_definitions.contains_key(name) {
+                    return TypeDecl::Struct(*name, vec![]);
+                }
+            }
+            ty.clone()
+        }).collect();
+
+        if args.len() != param_types.len() {
+            let fn_name_str = self.resolve_symbol_name(fn_name);
+            return Err(TypeCheckError::generic_error(&format!(
+                "Function '{}' argument count mismatch: expected {}, found {}",
+                fn_name_str, param_types.len(), args.len()
+            )));
+        }
+
+        // Type-check each argument with the parameter type as the hint
+        // so Number literals resolve to the expected concrete type.
+        let original_hint = self.type_inference.type_hint.clone();
+        for (arg_index, (arg, expected_type)) in args.iter().zip(&param_types).enumerate() {
+            self.type_inference.type_hint = Some(expected_type.clone());
+            let arg_type = match self.visit_expr(arg) {
+                Ok(t) => t,
+                Err(e) => {
+                    self.type_inference.type_hint = original_hint;
+                    return Err(e);
+                }
+            };
+            // `is_arg_compatible` handles the Identifier↔Struct /
+            // Identifier↔Enum cases plus REF-Stage-2 auto-borrow
+            // (`T` → `&T` at call sites).
+            if !TypeDecl::is_arg_compatible(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
+                self.type_inference.type_hint = original_hint;
+                let fn_name_str = self.resolve_symbol_name(fn_name);
+                return Err(TypeCheckError::generic_error(&format!(
+                    "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
+                    expected_type, arg_type, fn_name_str, arg_index + 1
+                )));
+            }
+        }
+        self.type_inference.type_hint = original_hint;
+        Ok(())
+    }
+
+    /// Normalize a function's declared return type. Bare
+    /// `Identifier(name)` for known structs is rewritten to
+    /// `Struct(name, [])` so downstream method dispatch (which
+    /// matches on `Struct`) works on values produced by
+    /// `fn make_list() -> List { ... }`.
+    fn normalize_call_return_type(&self, ret: TypeDecl) -> TypeDecl {
+        if let TypeDecl::Identifier(name) = &ret {
+            if self.context.struct_definitions.contains_key(name) {
+                return TypeDecl::Struct(*name, vec![]);
+            }
+        }
+        ret
     }
 
     /// Closures Phase 2: type check a call site whose callee is a
@@ -1167,42 +1203,22 @@ impl<'a> TypeCheckerVisitor<'a> {
         return_type: &Option<TypeDecl>,
         body: &ExprRef,
     ) -> Result<TypeDecl, TypeCheckError> {
-        // Reject generic-param leakage. Any `TypeDecl::Generic(_)`
-        // appearance in the closure signature or its captures means
-        // the closure body's type depends on the enclosing function's
-        // type parameters, which the MVP can't lower into either an
-        // independent function value or a monomorphic instantiation.
-        // The check uses a `Generic(_)` predicate (no symbol set
-        // needed) because every enclosing generic introduces a
-        // `Generic(sym)` placeholder either in the param type, the
-        // return type, or in a captured variable's recorded type.
-        for (_, ty) in params {
-            if Self::type_mentions_any_generic(ty) {
-                return Err(TypeCheckError::generic_error(
-                    "generic-parameterised closures are not yet supported",
-                ));
-            }
-        }
-        if let Some(ret) = return_type {
-            if Self::type_mentions_any_generic(ret) {
-                return Err(TypeCheckError::generic_error(
-                    "generic-parameterised closures are not yet supported",
-                ));
-            }
-        }
+        // Generic-param leakage in the closure signature is rejected
+        // up front (captures get the same check below, after the body
+        // type-checks).
+        Self::reject_generic_in_closure_signature(params, return_type)?;
 
         // Push a fresh scope and bind each parameter.
         self.push_context();
         for (name, ty) in params {
             self.context.set_var(*name, ty.clone());
         }
-
         let body_result = self.visit_expr(body);
-
         self.pop_context();
-
         let body_ty = body_result?;
 
+        // Validate body type against the declared return type when
+        // present; otherwise the body type drives the inferred return.
         let ret_ty = match return_type {
             Some(declared) => {
                 if !TypeDecl::is_arg_compatible(&body_ty, declared)
@@ -1218,10 +1234,54 @@ impl<'a> TypeCheckerVisitor<'a> {
             None => body_ty,
         };
 
-        // Capture analysis. The body type-check already enforced that
-        // every identifier resolves somewhere on the stack (otherwise
-        // `visit_identifier` would have errored), so any free var
-        // here is one bound in the enclosing scope.
+        // Capture analysis is also a side-effect (records into
+        // `context.closure_captures`); see helper for details.
+        self.record_closure_captures(params, body)?;
+
+        let param_tys: Vec<_> = params.iter().map(|(_, t)| t.clone()).collect();
+        Ok(TypeDecl::Function(param_tys, Box::new(ret_ty)))
+    }
+
+    /// Closures Phase 2: reject any `TypeDecl::Generic(_)` that
+    /// reaches the closure signature. The body's type would then
+    /// depend on the enclosing function's generic params, which the
+    /// MVP can't lower into either an independent function value or
+    /// a monomorphic instantiation. Captures are checked separately
+    /// in `record_closure_captures` after the body type-checks.
+    fn reject_generic_in_closure_signature(
+        params: &ParameterList,
+        return_type: &Option<TypeDecl>,
+    ) -> Result<(), TypeCheckError> {
+        for (_, ty) in params {
+            if Self::type_mentions_any_generic(ty) {
+                return Err(TypeCheckError::generic_error(
+                    "generic-parameterised closures are not yet supported",
+                ));
+            }
+        }
+        if let Some(ret) = return_type {
+            if Self::type_mentions_any_generic(ret) {
+                return Err(TypeCheckError::generic_error(
+                    "generic-parameterised closures are not yet supported",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Closures Phase 2: walk the body to enumerate identifiers that
+    /// are not bound by the closure's own parameter scope. The body
+    /// type-check has already proven each free identifier resolves
+    /// somewhere on the enclosing stack, so each capture's type can
+    /// be looked up directly. Captures whose type still mentions an
+    /// enclosing generic param are rejected here (the signature
+    /// check earlier doesn't see them). Records the result into
+    /// `context.closure_captures` keyed by the body's `ExprRef`.
+    fn record_closure_captures(
+        &mut self,
+        params: &ParameterList,
+        body: &ExprRef,
+    ) -> Result<(), TypeCheckError> {
         let bound: std::collections::HashSet<DefaultSymbol> =
             params.iter().map(|(n, _)| *n).collect();
         let mut captures: Vec<(DefaultSymbol, TypeDecl)> = Vec::new();
@@ -1237,14 +1297,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             }
         }
 
-        // Side-table is keyed by the body's ExprRef. Each closure
-        // has a unique body block ExprRef so collisions are impossible
+        // Side-table key is the body's ExprRef — unique per closure
         // even when the trait `visit_closure` doesn't have access to
         // the closure's own ExprRef.
         self.context.closure_captures.insert(*body, captures);
-
-        let param_tys: Vec<_> = params.iter().map(|(_, t)| t.clone()).collect();
-        Ok(TypeDecl::Function(param_tys, Box::new(ret_ty)))
+        Ok(())
     }
 
     /// Returns true when `ty` mentions any `TypeDecl::Generic(_)`

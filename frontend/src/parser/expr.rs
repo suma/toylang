@@ -453,82 +453,15 @@ pub(super) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
             return Ok(crate::ast::Pattern::Wildcard);
         }
     }
-    // Tuple pattern: `(p, q, ...)`. Two or more sub-patterns are
-    // required so `(x)` continues to mean "parenthesized name binding"
-    // (which we forbid here for now — bare names without parentheses
-    // are the canonical form).
+    // Tuple pattern: `(p, q, ...)`.
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
-        parser.next(); // consume '('
-        let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
-        loop {
-            parser.skip_newlines();
-            if matches!(parser.peek(), Some(Kind::ParenClose)) {
-                break;
-            }
-            let sub = parse_match_pattern(parser)?;
-            sub_patterns.push(sub);
-            parser.skip_newlines();
-            if matches!(parser.peek(), Some(Kind::Comma)) {
-                parser.next();
-            } else {
-                break;
-            }
-        }
-        parser.expect_err(&Kind::ParenClose)?;
-        if sub_patterns.len() < 2 {
-            let location = parser.current_source_location();
-            return Err(ParserError::generic_error(
-                location,
-                "tuple pattern requires at least two sub-patterns".to_string(),
-            ));
-        }
-        return Ok(crate::ast::Pattern::Tuple(sub_patterns));
+        return parse_pattern_tuple(parser);
     }
-    // Integer and bool literal patterns. We build them as regular literal
-    // expressions so the type checker can reuse its existing rules for
-    // determining the literal's type.
-    match parser.peek() {
-        Some(&Kind::UInt64(n)) => {
-            let location = parser.current_source_location();
-            parser.next();
-            let expr_ref = parser.ast_builder.uint64_expr(n, Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        Some(&Kind::Int64(n)) => {
-            let location = parser.current_source_location();
-            parser.next();
-            let expr_ref = parser.ast_builder.int64_expr(n, Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        Some(Kind::Integer(s)) => {
-            let s_copy = s.to_string();
-            let location = parser.current_source_location();
-            parser.next();
-            let sym = parser.string_interner.get_or_intern(s_copy);
-            let expr_ref = parser.ast_builder.number_expr(sym, Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        Some(&Kind::True) => {
-            let location = parser.current_source_location();
-            parser.next();
-            let expr_ref = parser.ast_builder.bool_true_expr(Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        Some(&Kind::False) => {
-            let location = parser.current_source_location();
-            parser.next();
-            let expr_ref = parser.ast_builder.bool_false_expr(Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        Some(Kind::String(s)) => {
-            let s_copy = s.to_string();
-            let location = parser.current_source_location();
-            parser.next();
-            let sym = parser.string_interner.get_or_intern(s_copy);
-            let expr_ref = parser.ast_builder.string_expr(sym, Some(location));
-            return Ok(crate::ast::Pattern::Literal(expr_ref));
-        }
-        _ => {}
+    // Integer / bool / string literal patterns share the underlying
+    // literal-expression construction so the type checker can reuse
+    // its existing rules.
+    if let Some(pat) = parse_pattern_literal(parser)? {
+        return Ok(pat);
     }
     // Identifier: either a Name binding (plain `x`) or the start of an
     // enum variant path (`Name::Variant` / `Name::Variant(...)`).
@@ -548,12 +481,104 @@ pub(super) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
             ));
         }
     };
-    // A bare identifier (no `::`) binds the scrutinee to that name.
+    // Bare identifier (no `::`) → name-binding pattern.
     if parser.peek() != Some(&Kind::DoubleColon) {
         return Ok(crate::ast::Pattern::Name(first));
     }
+    parse_pattern_enum_variant_tail(parser, first)
+}
+
+/// Parse a `(p, q, ...)` tuple pattern. The leading `(` must already
+/// be visible at `parser.peek()`. Two or more sub-patterns are required
+/// so `(x)` keeps meaning "parenthesised name binding" (which we
+/// forbid here for now — bare names without parentheses are the
+/// canonical form).
+fn parse_pattern_tuple(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
+    parser.next(); // consume '('
+    let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
+    loop {
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::ParenClose)) {
+            break;
+        }
+        let sub = parse_match_pattern(parser)?;
+        sub_patterns.push(sub);
+        parser.skip_newlines();
+        if matches!(parser.peek(), Some(Kind::Comma)) {
+            parser.next();
+        } else {
+            break;
+        }
+    }
+    parser.expect_err(&Kind::ParenClose)?;
+    if sub_patterns.len() < 2 {
+        let location = parser.current_source_location();
+        return Err(ParserError::generic_error(
+            location,
+            "tuple pattern requires at least two sub-patterns".to_string(),
+        ));
+    }
+    Ok(crate::ast::Pattern::Tuple(sub_patterns))
+}
+
+/// Try to parse a literal pattern at the current token position.
+/// Returns `Some(pat)` if the current token is a numeric / bool /
+/// string literal (consumed), `None` if it isn't (no consume).
+/// Each literal lifts through the same builder method as the
+/// equivalent expression so the type checker's literal-typing rule
+/// applies uniformly.
+fn parse_pattern_literal(parser: &mut Parser) -> ParserResult<Option<crate::ast::Pattern>> {
+    let expr_ref = match parser.peek() {
+        Some(&Kind::UInt64(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.uint64_expr(n, Some(location))
+        }
+        Some(&Kind::Int64(n)) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.int64_expr(n, Some(location))
+        }
+        Some(Kind::Integer(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            parser.next();
+            let sym = parser.string_interner.get_or_intern(s_copy);
+            parser.ast_builder.number_expr(sym, Some(location))
+        }
+        Some(&Kind::True) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.bool_true_expr(Some(location))
+        }
+        Some(&Kind::False) => {
+            let location = parser.current_source_location();
+            parser.next();
+            parser.ast_builder.bool_false_expr(Some(location))
+        }
+        Some(Kind::String(s)) => {
+            let s_copy = s.to_string();
+            let location = parser.current_source_location();
+            parser.next();
+            let sym = parser.string_interner.get_or_intern(s_copy);
+            parser.ast_builder.string_expr(sym, Some(location))
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(crate::ast::Pattern::Literal(expr_ref)))
+}
+
+/// Parse the tail of an enum-variant pattern after the leading
+/// `Enum` identifier and before the `::`. Consumes the `::`, the
+/// variant name, and any optional `(p, q, ...)` sub-patterns
+/// (which themselves may be any pattern, enabling nested matches
+/// like `Some(Some(x))` or `Box(Color::Red)`).
+fn parse_pattern_enum_variant_tail(
+    parser: &mut Parser,
+    enum_name: DefaultSymbol,
+) -> ParserResult<crate::ast::Pattern> {
     parser.expect_err(&Kind::DoubleColon)?;
-    let second = match parser.peek() {
+    let variant = match parser.peek() {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
             let sym = parser.string_interner.get_or_intern(s);
@@ -569,9 +594,6 @@ pub(super) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
             ));
         }
     };
-    // Optional tuple-variant sub-patterns: `(p, q, r)`. Each slot is itself
-    // any pattern, enabling nested matches such as `Some(Some(x))` or
-    // `Box(Color::Red)`.
     let mut sub_patterns: Vec<crate::ast::Pattern> = Vec::new();
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         parser.next(); // consume '('
@@ -591,7 +613,7 @@ pub(super) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::as
         }
         parser.expect_err(&Kind::ParenClose)?;
     }
-    Ok(crate::ast::Pattern::EnumVariant(first, second, sub_patterns))
+    Ok(crate::ast::Pattern::EnumVariant(enum_name, variant, sub_patterns))
 }
 
 /// Parse a closure / lambda literal: `fn(params) -> Ret { body }`. The

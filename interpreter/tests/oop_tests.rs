@@ -412,7 +412,7 @@ struct Resource {
 }
 
 impl Resource {
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # Custom destructor logic would go here
         # For testing, we just rely on the logging system
     }
@@ -428,7 +428,7 @@ fn main() -> u64 {
         let result = test_program(source_code);
         assert!(result.is_ok(), "Program should execute successfully: {:?}", result);
 
-        // The test just verifies that __drop__ method can be defined and parsed successfully
+        // The test just verifies that `drop` method can be defined and parsed successfully
         // Explicit destructor calling would be tested in integration tests
     }
 
@@ -442,7 +442,7 @@ struct TestStruct {
 }
 
 impl TestStruct {
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # This method exists and should be callable
     }
 }
@@ -455,9 +455,9 @@ fn main() -> u64 {
 
         // Parse and execute the program
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Program with __drop__ method should execute: {:?}", result);
+        assert!(result.is_ok(), "Program with `drop` method should execute: {:?}", result);
 
-        // For now, we just test that programs with __drop__ methods can be parsed and executed
+        // For now, we just test that programs with `drop` methods can be parsed and executed
         // The explicit calling mechanism would be used in scenarios where objects need to be
         // cleaned up before going out of scope naturally
     }
@@ -484,7 +484,7 @@ fn main() -> u64 {
 "#;
 
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Program without __drop__ method should work normally: {:?}", result);
+        assert!(result.is_ok(), "Program without `drop` method should work normally: {:?}", result);
 
         if let Ok(actual_rc) = result {
             let actual = actual_rc.borrow();
@@ -509,13 +509,13 @@ struct ResourceB {
 }
 
 impl ResourceA {
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # ResourceA destructor
     }
 }
 
 impl ResourceB {
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # ResourceB destructor
     }
 }
@@ -528,20 +528,20 @@ fn main() -> u64 {
 "#;
 
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Multiple structs with __drop__ should work: {:?}", result);
+        assert!(result.is_ok(), "Multiple structs with `drop` should work: {:?}", result);
     }
 
     #[test]
     fn test_drop_method_signature() {
-        // Test that __drop__ method must have the correct signature (self: Self)
+        // Test that `drop` method must have the correct signature (&mut self)
         let source_code = r#"
 struct TestStruct {
     data: u64
 }
 
 impl TestStruct {
-    fn __drop__(self: Self) {
-        # Correct signature - takes self by value
+    fn drop(&mut self) {
+        # Correct signature - takes &mut self
     }
 }
 
@@ -552,7 +552,7 @@ fn main() -> u64 {
 "#;
 
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Correct __drop__ signature should work: {:?}", result);
+        assert!(result.is_ok(), "Correct `drop` signature should work: {:?}", result);
     }
 
     #[test]
@@ -566,7 +566,7 @@ struct ComplexResource {
 }
 
 impl ComplexResource {
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # In a real implementation, this could:
         # - Close file handles
         # - Release network connections
@@ -589,7 +589,7 @@ fn main() -> u64 {
 "#;
 
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Complex struct with __drop__ should work: {:?}", result);
+        assert!(result.is_ok(), "Complex struct with `drop` should work: {:?}", result);
 
         // Verify the computation works correctly
         if let Ok(actual_rc) = result {

@@ -984,9 +984,9 @@ impl Object {
     }
 }
 
-/// Explicit destructor support for objects with __drop__ methods
+/// Explicit destructor support for objects with `drop` methods
 pub trait ExplicitDestructor {
-    /// Call the __drop__ method if it exists for this object
+    /// Call the `drop` method if it exists for this object
     fn call_drop_method(&self, evaluator: &mut crate::evaluation::EvaluationContext) -> Result<(), crate::error::InterpreterError>;
 }
 
@@ -1000,7 +1000,7 @@ impl Drop for Object {
             #[allow(unused_variables)]
             Object::Struct { type_name, fields: _, type_args: _ } => {
                 destruction_log!(format!("Destructing struct_{:?}", type_name));
-                // Custom `__drop__` (if any) should be invoked before
+                // Custom `drop` (if any) should be invoked before
                 // destruction via the ExplicitDestructor trait. Field
                 // RcObjects are released via HashMap's Drop.
             }
@@ -1047,24 +1047,24 @@ impl ExplicitDestructor for RcObject {
                     (*type_name, struct_name_str)
                 }
                 _ => {
-                    // Non-struct objects don't have __drop__ methods.
+                    // Non-struct objects don't have `drop` methods.
                     return Ok(());
                 }
             }
         };
-        
-        // Check if __drop__ method exists
-        let drop_method = evaluator.string_interner.get_or_intern("__drop__");
-        
-        // Try to call __drop__ method
+
+        // Check if `drop` method exists
+        let drop_method = evaluator.string_interner.get_or_intern("drop");
+
+        // Try to call `drop` method
         match evaluator.call_struct_method(self.clone(), drop_method, &[], &struct_name_str) {
             Ok(_) => {
-                // Log successful __drop__ call
-                destruction_log!(format!("Called __drop__ method for struct_{:?}", type_name));
+                // Log successful `drop` call
+                destruction_log!(format!("Called drop method for struct_{:?}", type_name));
                 Ok(())
             }
             Err(crate::error::InterpreterError::FunctionNotFound(_)) => {
-                // __drop__ method doesn't exist, which is fine
+                // `drop` method doesn't exist, which is fine
                 Ok(())
             }
             Err(e) => Err(e)

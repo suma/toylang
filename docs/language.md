@@ -1429,11 +1429,12 @@ bag["x"]            # calls __getitem__
 bag["x"] = 1i64     # calls __setitem__
 ```
 
-### `__drop__`
+### `drop`
 
-A struct can declare a `__drop__(self: Self)` method that runs at
+A struct can declare a `drop(&mut self)` method that runs at
 end-of-scope. The destructor mechanism is the same one the allocator
-system uses for arena cleanup.
+system uses for arena cleanup, and the signature matches the stdlib
+`Drop` trait in `core/std/drop.t`.
 
 ---
 

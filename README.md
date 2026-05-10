@@ -38,7 +38,7 @@ This project implements a statically-typed programming language with comprehensi
 - **Allocator system**: `with allocator = arena { … }` lexically scoped allocator binding, `<A: Allocator>` bound, arena / fixed-buffer / global allocator builtins
 - **Built-in Methods**: String operations like `"hello".len()` returning `u64`
 - **Unary Operators**: `-x` (signed int / `f64`), `!` (logical not), `~` (bitwise not)
-- **Resource Management**: Automatic destruction system with custom `__drop__` methods
+- **Resource Management**: Automatic destruction system with custom `drop` methods
 - **Comments**: `# line` and `/* block */`
 - **No Semicolons**: Statements are separated by newlines, not semicolons
 - **Module System**: Go-style modules with `package`/`import` declarations
@@ -266,7 +266,7 @@ impl FileResource {
     }
     
     # Custom destructor for cleanup
-    fn __drop__(self: Self) {
+    fn drop(&mut self) {
         # Close file handle, release resources
         # Log cleanup actions, etc.
     }
@@ -275,7 +275,7 @@ impl FileResource {
 fn main() -> u64 {
     val file = FileResource::open("data.txt")
     val content = file.read_data()
-    # FileResource.__drop__() automatically called when 'file' goes out of scope
+    # FileResource.drop() automatically called when 'file' goes out of scope
     0u64
 }
 ```
@@ -441,7 +441,7 @@ fn main() -> u64 {
 - **Three-Phase Testing**: Tests run in phases (lib.rs, main.rs, doc-tests) with clear progress indication
 - **Property-based Testing**: Automated testing of language invariants
 - **Performance Benchmarks**: Detailed performance analysis with Criterion
-- **Resource Management Tests**: Validation of automatic destruction and custom `__drop__` methods
+- **Resource Management Tests**: Validation of automatic destruction and custom `drop` methods
 
 ### Performance Optimizations
 - **Type Inference Caching**: Efficient memoization of type resolution
@@ -470,7 +470,7 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md))
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`JIT.md`](JIT.md))
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
-- **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `__drop__` methods
+- **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
 - **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate
 - **Debug-mode Logging**: Conditional compilation for zero-overhead production builds
 

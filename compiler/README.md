@@ -61,7 +61,7 @@ MVP として始まったが、Phase A〜Z の段階的拡張で interpreter と
 - dict はインタープリタ専用 (`core/std/dict.t::Dict<K, V>` は AOT で動かないため 3-way テストから除外)
 - 配列要素に enum、range slicing で variable bound — リテラル `[a, b, c]`、const/runtime index、struct/tuple 要素、const-bound range slicing は **Phase S/Y/Y2/Y3 以降対応**
 - (廃止) trait — **Phase R 以降**: inherent method, `impl <Trait> for <Type>` 経由のメソッド呼び出し、`<T: Greet>` bound 経由の generic method 呼び出しすべて対応 (monomorphisation 経由)。`dyn Trait` の動的 dispatch は対象外
-- (廃止) allocator — **Phase 5 + #121 Phase B-rest 以降**: `with allocator = ...` の lexical scope、`__builtin_arena_allocator()` / `__builtin_fixed_buffer_allocator(cap)` の inline form は scope-bound auto-drop、`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write/mem_copy` builtins、`Arena::new()` / `FixedBuffer::new(cap)` wrapper struct (stdlib `core/std/allocator.t`) すべて 3-way 動作。生 `__builtin_*` form と wrapper form 両方が auto-drop 対象
+- (廃止) allocator — `with allocator = ...` の lexical scope、`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write/mem_copy` builtins、stdlib `Arena::new()` / `FixedBuffer::new(cap)` wrapper struct (`core/std/allocator.t`) すべて 3-way 動作。Arena / FixedBuffer の policy (no-op free / quota / bulk-free on reset) は toylang stdlib 側で実装され、底に default allocator が居る。runtime arena/fixed_buffer 専用 builtin (`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator(cap)` / `__builtin_arena_drop` / `__builtin_fixed_buffer_drop`) と registry は撤去済み — wrapper struct を介した named-binding / inline-temporary 両方が user-Drop 経由で auto-cleanup
 - (廃止) generics（→ struct / enum / 関数とも対応済）
 - (廃止) 関数戻り値 / メソッド戻り値の compound 値を直接 `print` / `println` する — **Phase U 以降**: `println(make_point())` / `println(p.doubled())` のように直接呼べる
 - struct / tuple binding 全体の再代入

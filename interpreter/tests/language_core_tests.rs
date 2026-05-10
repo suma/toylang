@@ -1490,7 +1490,7 @@ mod heap_operations {
             }
 
             fn main() -> u64 {
-                val arena = __builtin_arena_allocator()
+                val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<u64, Allocator> = List {
                         data: __builtin_heap_alloc(0u64),
@@ -1543,7 +1543,7 @@ mod heap_operations {
             }
 
             fn main() -> i64 {
-                val arena = __builtin_arena_allocator()
+                val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<i64, Allocator> = List {
                         data: __builtin_heap_alloc(0u64),
@@ -1594,7 +1594,7 @@ mod heap_operations {
             }
 
             fn main() -> u64 {
-                val arena = __builtin_arena_allocator()
+                val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val empty: List<bool, Allocator> = List {
                         data: __builtin_heap_alloc(0u64),
@@ -1690,7 +1690,7 @@ mod heap_operations {
         // Realistic usage: allocate space for one element using sizeof.
         let source = r#"
             fn main() -> u64 {
-                val arena = __builtin_arena_allocator()
+                val arena = __builtin_default_allocator()
                 with allocator = arena {
                     val p = __builtin_heap_alloc(__builtin_sizeof(0u64))
                     __builtin_ptr_write(p, 0u64, 42u64)

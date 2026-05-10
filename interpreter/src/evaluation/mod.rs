@@ -458,7 +458,7 @@ impl<'a> EvaluationContext<'a> {
     /// `&mut`, but the interpreter's value model is Rc-shared so
     /// mutations against the cell are visible without any
     /// out-parameter writeback dance.
-    fn invoke_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
+    pub(super) fn invoke_drop(&mut self, entry: &DropEntry) -> Result<(), InterpreterError> {
         let drop_sym = self.string_interner.get_or_intern("drop");
         let method = match self.get_method(entry.struct_sym, drop_sym, &[]) {
             Some(m) => m,

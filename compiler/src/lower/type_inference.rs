@@ -186,9 +186,7 @@ impl<'a> FunctionLower<'a> {
                 // #121 Phase B-min: allocator handles are u64
                 // sentinel values.
                 frontend::ast::BuiltinFunction::DefaultAllocator
-                | frontend::ast::BuiltinFunction::CurrentAllocator
-                | frontend::ast::BuiltinFunction::ArenaAllocator
-                | frontend::ast::BuiltinFunction::FixedBufferAllocator => Some(Type::U64),
+                | frontend::ast::BuiltinFunction::CurrentAllocator => Some(Type::U64),
                 frontend::ast::BuiltinFunction::PtrIsNull => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::PtrEq => Some(Type::Bool),
                 frontend::ast::BuiltinFunction::NullPtr => Some(Type::U64),

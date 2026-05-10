@@ -101,24 +101,16 @@ pub(super) struct DropTarget {
     pub(super) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
 }
 
-/// Phase 5 (Design A): per-`with` scope auto-cleanup classification.
-/// Recorded by `Expr::With` lowering when entering a scope, consumed
-/// by `emit_with_scope_cleanup` on every exit path so the matching
-/// drop instruction (`AllocArenaDrop` / `AllocFixedBufferDrop`) fires
-/// after each `AllocPop`. `None` covers all non-temporary forms
-/// (named binding, wrapper-struct field-extract, raw builtin handle,
-/// `Global::new()` — global default needs no drop).
+/// Per-`with` scope marker. The runtime arena / fixed_buffer
+/// auto-drop variants used to live here; auto-cleanup of the
+/// stdlib `Arena` / `FixedBuffer` wrapper now goes through the
+/// generic `Drop` trait machinery (`drop_scopes`), so this enum
+/// is just a placeholder — every `with` scope records `None`.
+/// Kept as a one-variant enum for now in case future allocator
+/// kinds want to stash side-data alongside the with-scope.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum WithScopeCleanup {
     None,
-    /// `with allocator = Arena::new() { ... }` — handle came from
-    /// `__builtin_arena_allocator()` and is released via
-    /// `__builtin_arena_drop` at scope exit.
-    ArenaDrop(ValueId),
-    /// `with allocator = FixedBuffer::new(cap) { ... }` — handle came
-    /// from `__builtin_fixed_buffer_allocator(cap)` and is released
-    /// via `__builtin_fixed_buffer_drop` at scope exit.
-    FixedBufferDrop(ValueId),
 }
 
 // ---------------------------------------------------------------------------
@@ -999,22 +991,12 @@ impl<'a> FunctionLower<'a> {
         let mut depth = self.with_scope_depth;
         while depth > target_depth {
             self.emit(crate::ir::InstKind::AllocPop, None);
-            // Phase 5: if the leaving scope owns an inline
-            // allocator handle (Arena or FixedBuffer), drop it
-            // after the pop so the registry slot is released
-            // even on early-exit paths (`return` / `break` /
-            // `continue`). Index is `depth - 1` because the
-            // stack mirrors `with_scope_depth`: scope #1 lives
-            // at index 0.
-            match self.with_scope_arena_drops.get(depth - 1).copied() {
-                Some(WithScopeCleanup::ArenaDrop(handle)) => {
-                    self.emit(crate::ir::InstKind::AllocArenaDrop { handle }, None);
-                }
-                Some(WithScopeCleanup::FixedBufferDrop(handle)) => {
-                    self.emit(crate::ir::InstKind::AllocFixedBufferDrop { handle }, None);
-                }
-                _ => {}
-            }
+            // The wrapper struct's `Drop` (toylang `Arena::drop` /
+            // `FixedBuffer::drop`) is fired by the generic
+            // user-Drop machinery via `drop_scopes`, not by the
+            // with-scope itself. The current with-scope only
+            // needs the matching `AllocPop` for the runtime
+            // allocator stack; nothing else to emit here.
             depth -= 1;
         }
     }

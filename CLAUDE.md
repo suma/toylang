@@ -267,8 +267,6 @@ fn main() -> u64 {
 | `ambient` | 現在の allocator（式として使える糖衣） |
 | `__builtin_current_allocator()` | 現在の allocator（スタック top） |
 | `__builtin_default_allocator()` | プロセス全体の global allocator |
-| `__builtin_arena_allocator()` | 新規 arena（drop で一括解放） |
-| `__builtin_fixed_buffer_allocator(capacity: u64)` | バイト数 quota 付き（超過で null） |
 | `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ enum（1-byte タグ + payload）/ tuple / array をサポート。generic `T` の実体サイズ取得に使う |
 | `__builtin_ptr_eq(a: ptr, b: ptr) -> bool` | 2 ポインタの addr 等値比較。stdlib `Arena` / `FixedBuffer` の追跡表検索に使用 |
 | `__builtin_null_ptr() -> ptr` | null pointer (addr 0)。`__builtin_heap_alloc(0u64)` は AOT で libc malloc に委譲するため非 null を返しうる; 移植性のあるコードは本 builtin を使う |
@@ -284,7 +282,7 @@ fn main() -> u64 {
 - `fb.capacity() -> u64` / `fb.used() -> u64` / `fb.remaining() -> u64` / `fb.is_empty() -> bool`
 - `fb.reset()` — quota を 0 に戻す
 
-これらは toylang 側の `(addr, size)` parallel array を見るので、`arena.alloc(...)` 経由で確保した分のみカウントされる。`with allocator = arena { __builtin_heap_alloc(...) }` 形式で raw heap_alloc を呼ぶと wrapper の追跡を通らないため (runtime arena の bookkeeping のみ更新)、introspection は反映されない。
+これらは toylang 側の `(addr, size)` parallel array を見るので、`arena.alloc(...)` 経由で確保した分のみカウントされる。`with allocator = arena { __builtin_heap_alloc(...) }` 形式で raw heap_alloc を呼ぶと wrapper の追跡を通らないため、introspection は反映されない (`_h: Allocator` は default allocator を指しているので、heap_alloc は default 経由になる)。
 
 ### 典型的な使い方
 
@@ -298,13 +296,13 @@ fn main() -> u64 {
 - `with` は lexical scope。ネストは push/pop、body の exit path（値・return・break・error）すべてで必ず pop される
 - `Allocator` 値は `Rc::ptr_eq` で同値性を判定。`==` / `!=` のみサポート（順序比較は不可）
 - 関数の引数として `Allocator` を渡す形は推奨しない (関数は `with allocator = ...` の active stack を経由して暗黙的に allocator を使う)
-- arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す
-- `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin が自動で現在の allocator を通るため、`with allocator = arena { ... }` で囲むだけで arena 経由になる
+- arena は個別 `free` を no-op とし、`Drop` で一括解放。fixed_buffer は quota 超過で `0`（null ポインタ）を返す。両者の policy はすべて toylang stdlib (`core/std/allocator.t`) に実装され、底に default allocator が居る
+- `List<T>` のようなコレクションは言語組み込みではなく、`struct` + `impl` + `__builtin_heap_alloc/realloc/ptr_read/ptr_write` で書く。これらの builtin は現在の active allocator を経由する
 - `__builtin_ptr_write(p, off, value)` は任意型の値を受け取り、`__builtin_ptr_read(p, off)` は呼び出し側の型ヒント（`val v: T = ...` など）に沿って値を返す。内部的には typed-slot map に値を保存しているため、`List<i64>` / `List<bool>` / `List<MyStruct>` もそのまま動作する
 
 ### 進捗
 
-- 構文・ランタイム・`GlobalAllocator`・`ArenaAllocator`・`FixedBufferAllocator` 完了
+- 構文・ランタイム・`GlobalAllocator` 完了 (旧 runtime `ArenaAllocator` / `FixedBufferAllocator` は撤去、stdlib 実装に置換)
 - `ambient` 糖衣、`with allocator = ...` 経由の active stack dispatch 完了
 - stdlib (`core/std/allocator.t`) に `trait Alloc` + Wrapper 構造体 (`Global` / `Arena` / `FixedBuffer`) 完了
 - AOT native codegen 完了 (#121 Phase A / B-min / B-rest Items 1+3 + Item 2 cleanup + arena_drop)

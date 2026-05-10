@@ -830,45 +830,14 @@ pub enum InstKind {
     /// of the stack as a u64 (returns 0 when the stack is empty,
     /// matching `__builtin_default_allocator()`).
     AllocCurrent,
-    /// #121 Phase B-rest Item 1: `__builtin_arena_allocator()` —
-    /// allocate a fresh arena slot in the runtime registry and
-    /// return its handle (a non-zero u64). Codegen lowers this
-    /// to a call to `toy_arena_new()`. Arena `free` is a no-op
-    /// at the runtime level; allocations live until the arena
-    /// itself is dropped (out of scope for this phase).
-    AllocArena,
-    /// #121 Phase B-rest Item 1: `__builtin_fixed_buffer_allocator(capacity)` —
-    /// allocate a fresh fixed-buffer slot with `capacity` bytes
-    /// of quota. Codegen lowers to `toy_fixed_buffer_new(capacity)`.
-    /// Subsequent `heap_alloc` calls under this allocator return
-    /// 0 (null) when the cumulative `used + size` would exceed
-    /// `capacity`.
-    AllocFixedBuffer { capacity: ValueId },
     /// `__builtin_ptr_is_null(p) -> bool`. Codegen lowers to
-    /// `icmp_imm eq, ptr, 0`. Needed alongside the dispatched
-    /// alloc family so callers can detect quota-exceeded
-    /// allocations without comparing `ptr` to a `u64` literal
-    /// (which the type checker rejects).
+    /// `icmp_imm eq, ptr, 0`.
     PtrIsNull { ptr: ValueId },
     /// `__builtin_ptr_eq(a, b) -> bool`. Codegen lowers to
     /// `icmp eq, a, b`. Used by the toylang stdlib `Arena` /
     /// `FixedBuffer` to find tracked addresses in their
     /// (addr, size) parallel-array bookkeeping.
     PtrEq { a: ValueId, b: ValueId },
-    /// `__builtin_arena_drop(handle) -> ()`. Releases every
-    /// allocation tracked by the arena slot. No-op for
-    /// fixed_buffer slots and the default sentinel — only the
-    /// arena lifecycle benefits from explicit bulk release.
-    AllocArenaDrop { handle: ValueId },
-    /// Phase 5 (FixedBuffer auto-cleanup): symmetric to
-    /// `AllocArenaDrop` but specific to fixed_buffer slots.
-    /// Releases every tracked allocation, frees the bookkeeping
-    /// arrays, and resets the quota. No-op for non-fixed_buffer
-    /// slots (defensive — keeps the existing arena drop
-    /// semantics intact). Emitted at scope exit for the
-    /// `with allocator = FixedBuffer::new(cap) { ... }` temporary
-    /// form.
-    AllocFixedBufferDrop { handle: ValueId },
     /// REF-Stage-2 (b): produce a pointer-sized value that
     /// addresses the canonical storage of an IR local. The local
     /// must be in `Function.address_taken_locals`; codegen emits
@@ -1387,13 +1356,8 @@ impl fmt::Display for DisplayInst<'_> {
             InstKind::AllocPush { handle } => write!(f, "alloc_push {handle}"),
             InstKind::AllocPop => write!(f, "alloc_pop"),
             InstKind::AllocCurrent => write!(f, "{prefix}alloc_current"),
-            InstKind::AllocArena => write!(f, "{prefix}alloc_arena"),
-            InstKind::AllocFixedBuffer { capacity } => {
-                write!(f, "{prefix}alloc_fixed_buffer {capacity}")
-            }
             InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
             InstKind::PtrEq { a, b } => write!(f, "{prefix}ptr_eq {a}, {b}"),
-            InstKind::AllocArenaDrop { handle } => write!(f, "alloc_arena_drop {handle}"),
             InstKind::AddressOf { local } => write!(f, "{prefix}address_of {local}"),
             InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),
             InstKind::StoreRef { ptr, value, ty } => {
@@ -1401,9 +1365,6 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::ArrayElemAddr { slot, index, elem_ty } => {
                 write!(f, "{prefix}array_elem_addr slot{}[{index}] : {elem_ty}", slot.0)
-            }
-            InstKind::AllocFixedBufferDrop { handle } => {
-                write!(f, "alloc_fixed_buffer_drop {handle}")
             }
             InstKind::FuncAddr { target } => write!(f, "{prefix}func_addr {target}"),
             InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {

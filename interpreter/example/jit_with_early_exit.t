@@ -4,7 +4,7 @@
 # runtime allocator stack is balanced.
 #
 # Expected: 9 + 5 + 25 = 39 → exit 39.
-fn early_return_in_with(arena: Allocator) -> u64 {
+fn early_return_in_with(arena: Arena) -> u64 {
     with allocator = arena {
         # Tear down the with frame on the early return path.
         return 9u64
@@ -12,7 +12,7 @@ fn early_return_in_with(arena: Allocator) -> u64 {
     0u64
 }
 
-fn break_in_with_loop(arena: Allocator) -> u64 {
+fn break_in_with_loop(arena: Arena) -> u64 {
     var i = 0u64
     var hits = 0u64
     while i < 100u64 {
@@ -29,7 +29,7 @@ fn break_in_with_loop(arena: Allocator) -> u64 {
     hits  # 5 iterations completed (i=0..4)
 }
 
-fn continue_in_with_loop(arena: Allocator) -> u64 {
+fn continue_in_with_loop(arena: Arena) -> u64 {
     var i = 0u64
     var sum = 0u64
     while i < 10u64 {
@@ -47,6 +47,8 @@ fn continue_in_with_loop(arena: Allocator) -> u64 {
 }
 
 fn main() -> u64 {
-    val arena = __builtin_arena_allocator()
-    early_return_in_with(arena) + break_in_with_loop(arena) + continue_in_with_loop(arena)
+    val arena = Arena::new()
+    val r: u64 = early_return_in_with(arena) + break_in_with_loop(arena) + continue_in_with_loop(arena)
+    arena.drop()
+    r
 }

@@ -286,10 +286,6 @@ pub enum BuiltinFunction {
     // Allocator context
     CurrentAllocator,      // __builtin_current_allocator() -> Allocator on top of stack (default handle when unset)
     DefaultAllocator,      // __builtin_default_allocator() -> Allocator referring to the global/default allocator
-    ArenaAllocator,        // __builtin_arena_allocator() -> Allocator backed by an arena (bulk-free on drop)
-    FixedBufferAllocator,  // __builtin_fixed_buffer_allocator(capacity: u64) -> Allocator that fails when quota is exceeded
-    ArenaDrop,             // __builtin_arena_drop(handle: Allocator) -> () — release every allocation tracked by the arena (no-op for default / fixed_buffer)
-    FixedBufferDrop,       // __builtin_fixed_buffer_drop(handle: Allocator) -> () — release every allocation tracked by the fixed_buffer slot + reset quota (no-op for default / arena)
 
     // Output (exposed without the `__builtin_` prefix since they are
     // everyday user-facing operations, not low-level intrinsics).
@@ -371,10 +367,6 @@ pub struct BuiltinFunctionSymbols {
     // Allocator context
     pub current_allocator: DefaultSymbol,
     pub default_allocator: DefaultSymbol,
-    pub arena_allocator: DefaultSymbol,
-    pub arena_drop: DefaultSymbol,
-    pub fixed_buffer_allocator: DefaultSymbol,
-    pub fixed_buffer_drop: DefaultSymbol,
 
     // Output
     pub print: DefaultSymbol,
@@ -421,10 +413,6 @@ impl BuiltinFunctionSymbols {
             mem_set: interner.get_or_intern("__builtin_mem_set"),
             current_allocator: interner.get_or_intern("__builtin_current_allocator"),
             default_allocator: interner.get_or_intern("__builtin_default_allocator"),
-            arena_allocator: interner.get_or_intern("__builtin_arena_allocator"),
-            arena_drop: interner.get_or_intern("__builtin_arena_drop"),
-            fixed_buffer_allocator: interner.get_or_intern("__builtin_fixed_buffer_allocator"),
-            fixed_buffer_drop: interner.get_or_intern("__builtin_fixed_buffer_drop"),
             // I/O builtins are user-facing, so they keep the plain names
             // `print` and `println` instead of the `__builtin_` prefix used
             // for low-level memory primitives.
@@ -463,10 +451,6 @@ impl BuiltinFunctionSymbols {
         else if symbol == self.mem_set { Some(BuiltinFunction::MemSet) }
         else if symbol == self.current_allocator { Some(BuiltinFunction::CurrentAllocator) }
         else if symbol == self.default_allocator { Some(BuiltinFunction::DefaultAllocator) }
-        else if symbol == self.arena_allocator { Some(BuiltinFunction::ArenaAllocator) }
-        else if symbol == self.arena_drop { Some(BuiltinFunction::ArenaDrop) }
-        else if symbol == self.fixed_buffer_allocator { Some(BuiltinFunction::FixedBufferAllocator) }
-        else if symbol == self.fixed_buffer_drop { Some(BuiltinFunction::FixedBufferDrop) }
         else if symbol == self.print { Some(BuiltinFunction::Print) }
         else if symbol == self.println { Some(BuiltinFunction::Println) }
         else if symbol == self.panic { Some(BuiltinFunction::Panic) }

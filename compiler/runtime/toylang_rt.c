@@ -132,244 +132,28 @@ uint64_t toy_alloc_current(void) {
 }
 
 /*
- * #121 Phase B-rest Item 1: arena / fixed_buffer allocator backends.
- *
- * Both backends piggy-back on libc malloc/realloc/free for the
- * actual byte storage; the difference is in tracking and free
- * semantics:
- *   - Arena: free() is a no-op. The arena slot keeps a list of
- *     allocations so a future `arena_drop` could release them all,
- *     but explicit `heap_free` calls under an arena allocator are
- *     intentionally ignored.
- *   - FixedBuffer: alloc() rejects (returns NULL) when the
- *     cumulative `used + size` would exceed `capacity`. free()
- *     finds the entry, decrements `used`, and forwards to
- *     libc free.
- *
- * Allocator handles are 1-based indices into a fixed registry;
- * handle 0 is reserved for the default global allocator (libc
- * direct path, unchanged from Phase A).
- */
-#define TOY_ALLOC_REGISTRY_CAP 64
-typedef enum { TOY_ALLOC_KIND_ARENA = 1, TOY_ALLOC_KIND_FIXED_BUFFER = 2 } toy_alloc_kind_t;
-typedef struct {
-    toy_alloc_kind_t kind;
-    void **addrs;       /* tracked allocation pointers */
-    uint64_t *sizes;    /* parallel size array */
-    size_t count;
-    size_t cap_array;
-    uint64_t capacity;  /* FixedBuffer only */
-    uint64_t used;      /* FixedBuffer only */
-} toy_alloc_slot_t;
-
-static toy_alloc_slot_t toy_alloc_registry[TOY_ALLOC_REGISTRY_CAP];
-static int toy_alloc_registry_len = 0;
-
-static toy_alloc_slot_t *toy_alloc_slot_lookup(uint64_t handle) {
-    if (handle == 0) return NULL;
-    int idx = (int)(handle - 1);
-    if (idx < 0 || idx >= toy_alloc_registry_len) {
-        fputs("toylang runtime: invalid allocator handle\n", stderr);
-        exit(1);
-    }
-    return &toy_alloc_registry[idx];
-}
-
-static void toy_alloc_slot_track(toy_alloc_slot_t *slot, void *p, uint64_t size) {
-    if (slot->count == slot->cap_array) {
-        size_t new_cap = slot->cap_array == 0 ? 4 : slot->cap_array * 2;
-        slot->addrs = (void **)realloc(slot->addrs, new_cap * sizeof(void *));
-        slot->sizes = (uint64_t *)realloc(slot->sizes, new_cap * sizeof(uint64_t));
-        slot->cap_array = new_cap;
-    }
-    slot->addrs[slot->count] = p;
-    slot->sizes[slot->count] = size;
-    slot->count++;
-}
-
-uint64_t toy_arena_new(void) {
-    if (toy_alloc_registry_len >= TOY_ALLOC_REGISTRY_CAP) {
-        fputs("toylang runtime: allocator registry overflow\n", stderr);
-        exit(1);
-    }
-    int idx = toy_alloc_registry_len++;
-    toy_alloc_registry[idx].kind = TOY_ALLOC_KIND_ARENA;
-    toy_alloc_registry[idx].addrs = NULL;
-    toy_alloc_registry[idx].sizes = NULL;
-    toy_alloc_registry[idx].count = 0;
-    toy_alloc_registry[idx].cap_array = 0;
-    toy_alloc_registry[idx].capacity = 0;
-    toy_alloc_registry[idx].used = 0;
-    return (uint64_t)(idx + 1);
-}
-
-uint64_t toy_fixed_buffer_new(uint64_t capacity) {
-    if (toy_alloc_registry_len >= TOY_ALLOC_REGISTRY_CAP) {
-        fputs("toylang runtime: allocator registry overflow\n", stderr);
-        exit(1);
-    }
-    int idx = toy_alloc_registry_len++;
-    toy_alloc_registry[idx].kind = TOY_ALLOC_KIND_FIXED_BUFFER;
-    toy_alloc_registry[idx].addrs = NULL;
-    toy_alloc_registry[idx].sizes = NULL;
-    toy_alloc_registry[idx].count = 0;
-    toy_alloc_registry[idx].cap_array = 0;
-    toy_alloc_registry[idx].capacity = capacity;
-    toy_alloc_registry[idx].used = 0;
-    return (uint64_t)(idx + 1);
-}
-
-/*
- * Dispatched alloc/realloc/free: routed from the AOT-emitted
+ * Dispatched alloc / realloc / free: routed from the AOT-emitted
  * `__builtin_heap_alloc` / `_realloc` / `_free` after they read
- * `toy_alloc_current()`. When handle == 0 we hit the default
- * libc path; otherwise arena/fixed_buffer semantics apply.
+ * `toy_alloc_current()`. The runtime arena / fixed_buffer registry
+ * has been retired — the toylang stdlib `Arena` / `FixedBuffer`
+ * (`core/std/allocator.t`) reimplements both policies on top of
+ * the default allocator. Today every dispatched call routes
+ * straight through libc; the `handle` argument is preserved in the
+ * IR for forward compatibility but currently ignored.
  */
 void *toy_dispatched_alloc(uint64_t handle, uint64_t size) {
-    if (handle == 0) {
-        return malloc((size_t)size);
-    }
-    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
-    if (slot->kind == TOY_ALLOC_KIND_FIXED_BUFFER) {
-        if (slot->used + size > slot->capacity) {
-            return NULL;
-        }
-    }
-    void *p = malloc((size_t)size);
-    if (!p) return NULL;
-    toy_alloc_slot_track(slot, p, size);
-    if (slot->kind == TOY_ALLOC_KIND_FIXED_BUFFER) {
-        slot->used += size;
-    }
-    return p;
+    (void)handle;
+    return malloc((size_t)size);
 }
 
 void toy_dispatched_free(uint64_t handle, void *p) {
-    if (handle == 0) {
-        free(p);
-        return;
-    }
-    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
-    if (slot->kind == TOY_ALLOC_KIND_ARENA) {
-        /* Arena `free` is a no-op; storage lives until arena drop
-         * (out of scope for this phase). */
-        return;
-    }
-    /* FixedBuffer: find and remove the tracked entry, return its
-     * size to the quota. */
-    for (size_t i = 0; i < slot->count; i++) {
-        if (slot->addrs[i] == p) {
-            slot->used -= slot->sizes[i];
-            slot->addrs[i] = slot->addrs[slot->count - 1];
-            slot->sizes[i] = slot->sizes[slot->count - 1];
-            slot->count--;
-            free(p);
-            return;
-        }
-    }
-    /* Untracked pointer — defensively forward to libc free. */
+    (void)handle;
     free(p);
 }
 
-/*
- * #121 Phase B-rest Item 2 follow-up: explicit arena drop.
- * Releases every allocation tracked by the arena slot and clears
- * the tracking arrays. The slot itself stays in the registry
- * (handles are stable u64 indices), but `used` is reset to 0
- * conceptually — the tracked vectors are emptied. Calling
- * `toy_arena_drop` on a fixed_buffer slot or the default
- * sentinel is a no-op (defensive — releasing fixed-buffer
- * allocations would silently invalidate ptrs the user might
- * still hold).
- */
-void toy_arena_drop(uint64_t handle) {
-    if (handle == 0) return;
-    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
-    if (slot->kind != TOY_ALLOC_KIND_ARENA) return;
-    for (size_t i = 0; i < slot->count; i++) {
-        free(slot->addrs[i]);
-    }
-    free(slot->addrs);
-    free(slot->sizes);
-    slot->addrs = NULL;
-    slot->sizes = NULL;
-    slot->count = 0;
-    slot->cap_array = 0;
-}
-
-/*
- * Phase 5 (FixedBuffer auto-cleanup): symmetric to toy_arena_drop
- * but specific to fixed_buffer slots. Releases every tracked
- * allocation, frees the bookkeeping arrays, and resets the quota.
- * No-op for non-fixed_buffer slots (default sentinel / arena) so
- * callers don't accidentally invalidate arena pointers via the
- * wrong builtin. Used by the temporary-form `with allocator =
- * FixedBuffer::new(cap) { ... }` auto-cleanup wiring (the lower
- * layer emits `AllocFixedBufferDrop` at scope exit).
- */
-void toy_fixed_buffer_drop(uint64_t handle) {
-    if (handle == 0) return;
-    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
-    if (slot->kind != TOY_ALLOC_KIND_FIXED_BUFFER) return;
-    for (size_t i = 0; i < slot->count; i++) {
-        free(slot->addrs[i]);
-    }
-    free(slot->addrs);
-    free(slot->sizes);
-    slot->addrs = NULL;
-    slot->sizes = NULL;
-    slot->count = 0;
-    slot->cap_array = 0;
-    slot->used = 0;
-}
-
 void *toy_dispatched_realloc(uint64_t handle, void *p, uint64_t new_size) {
-    if (handle == 0) {
-        return realloc(p, (size_t)new_size);
-    }
-    toy_alloc_slot_t *slot = toy_alloc_slot_lookup(handle);
-    if (slot->kind == TOY_ALLOC_KIND_FIXED_BUFFER) {
-        uint64_t old_size = 0;
-        size_t found = (size_t)-1;
-        for (size_t i = 0; i < slot->count; i++) {
-            if (slot->addrs[i] == p) {
-                old_size = slot->sizes[i];
-                found = i;
-                break;
-            }
-        }
-        /* Quota check: net delta is new_size - old_size. */
-        if (slot->used + new_size < slot->used + old_size) {
-            /* shouldn't underflow but be defensive */
-        }
-        uint64_t projected = slot->used - old_size + new_size;
-        if (projected > slot->capacity) {
-            return NULL;
-        }
-        void *np = realloc(p, (size_t)new_size);
-        if (!np) return NULL;
-        if (found != (size_t)-1) {
-            slot->addrs[found] = np;
-            slot->sizes[found] = new_size;
-            slot->used = projected;
-        } else {
-            toy_alloc_slot_track(slot, np, new_size);
-            slot->used += new_size;
-        }
-        return np;
-    }
-    /* Arena: realloc through libc, update tracking. */
-    void *np = realloc(p, (size_t)new_size);
-    if (!np) return NULL;
-    for (size_t i = 0; i < slot->count; i++) {
-        if (slot->addrs[i] == p) {
-            slot->addrs[i] = np;
-            slot->sizes[i] = new_size;
-            return np;
-        }
-    }
-    toy_alloc_slot_track(slot, np, new_size);
-    return np;
+    (void)handle;
+    return realloc(p, (size_t)new_size);
 }
 
 void toy_print_bool(uint8_t v) {

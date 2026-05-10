@@ -872,27 +872,6 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, result);
                 }
             }
-            // #121 Phase B-rest Item 1: arena / fixed_buffer
-            // constructors. Both return a non-zero u64 handle
-            // that goes onto the allocator stack via `with`.
-            InstKind::AllocArena => {
-                let call = self.builder.ins().call(self.runtime.arena_new, &[]);
-                let result = self.builder.inst_results(call)[0];
-                if let Some((vid, _)) = inst.result {
-                    self.values.insert(vid.0, result);
-                }
-            }
-            InstKind::AllocFixedBuffer { capacity } => {
-                let cap_v = self.value(*capacity);
-                let call = self
-                    .builder
-                    .ins()
-                    .call(self.runtime.fixed_buffer_new, &[cap_v]);
-                let result = self.builder.inst_results(call)[0];
-                if let Some((vid, _)) = inst.result {
-                    self.values.insert(vid.0, result);
-                }
-            }
             InstKind::PtrIsNull { ptr } => {
                 let p = self.value(*ptr);
                 let cmp = self
@@ -913,14 +892,6 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 if let Some((vid, _)) = inst.result {
                     self.values.insert(vid.0, cmp);
                 }
-            }
-            InstKind::AllocArenaDrop { handle } => {
-                let h = self.value(*handle);
-                self.builder.ins().call(self.runtime.arena_drop, &[h]);
-            }
-            InstKind::AllocFixedBufferDrop { handle } => {
-                let h = self.value(*handle);
-                self.builder.ins().call(self.runtime.fixed_buffer_drop, &[h]);
             }
             // Stage 1 of `&` references: call to a `&mut self`
             // method. The cranelift call returns

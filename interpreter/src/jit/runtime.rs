@@ -15,7 +15,7 @@ use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use frontend::ast::{Function, Program};
 use string_interner::DefaultStringInterner;
 
-use crate::heap::{Allocator, ArenaAllocator, FixedBufferAllocator, GlobalAllocator, HeapManager};
+use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 use crate::object::{Object, RcObject};
 
 use super::codegen;
@@ -271,20 +271,6 @@ extern "C" fn jit_default_allocator() -> u64 {
     0
 }
 
-extern "C" fn jit_arena_allocator() -> u64 {
-    JIT_RT
-        .with(|slot| {
-            let mut borrowed = slot.borrow_mut();
-            let rt = borrowed.as_mut()?;
-            let arena = ArenaAllocator::new(rt.heap.clone());
-            let handle: Rc<dyn Allocator> = Rc::new(arena);
-            let idx = rt.registry.len();
-            rt.registry.push(handle);
-            Some(idx as u64)
-        })
-        .unwrap_or(0)
-}
-
 extern "C" fn jit_pow_f64(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
@@ -310,20 +296,6 @@ extern "C" fn jit_log2_f64(x: f64) -> f64 {
 }
 extern "C" fn jit_exp_f64(x: f64) -> f64 {
     x.exp()
-}
-
-extern "C" fn jit_fixed_buffer_allocator(capacity: u64) -> u64 {
-    JIT_RT
-        .with(|slot| {
-            let mut borrowed = slot.borrow_mut();
-            let rt = borrowed.as_mut()?;
-            let fb = FixedBufferAllocator::new(rt.heap.clone(), capacity as usize);
-            let handle: Rc<dyn Allocator> = Rc::new(fb);
-            let idx = rt.registry.len();
-            rt.registry.push(handle);
-            Some(idx as u64)
-        })
-        .unwrap_or(0)
 }
 
 extern "C" fn jit_current_allocator() -> u64 {
@@ -605,8 +577,6 @@ pub(crate) enum HelperKind {
     PtrReadBool,
     PtrReadPtr,
     DefaultAllocator,
-    ArenaAllocator,
-    FixedBufferAllocator,
     CurrentAllocator,
     WithAllocatorPush,
     WithAllocatorPop,
@@ -693,8 +663,6 @@ impl HelperKind {
             HelperKind::PtrReadBool => "jit_ptr_read_bool",
             HelperKind::PtrReadPtr => "jit_ptr_read_ptr",
             HelperKind::DefaultAllocator => "jit_default_allocator",
-            HelperKind::ArenaAllocator => "jit_arena_allocator",
-            HelperKind::FixedBufferAllocator => "jit_fixed_buffer_allocator",
             HelperKind::CurrentAllocator => "jit_current_allocator",
             HelperKind::WithAllocatorPush => "jit_with_allocator_push",
             HelperKind::WithAllocatorPop => "jit_with_allocator_pop",
@@ -761,8 +729,6 @@ impl HelperKind {
             HelperKind::PtrReadBool => jit_ptr_read_bool as *const u8,
             HelperKind::PtrReadPtr => jit_ptr_read_ptr as *const u8,
             HelperKind::DefaultAllocator => jit_default_allocator as *const u8,
-            HelperKind::ArenaAllocator => jit_arena_allocator as *const u8,
-            HelperKind::FixedBufferAllocator => jit_fixed_buffer_allocator as *const u8,
             HelperKind::CurrentAllocator => jit_current_allocator as *const u8,
             HelperKind::WithAllocatorPush => jit_with_allocator_push as *const u8,
             HelperKind::WithAllocatorPop => jit_with_allocator_pop as *const u8,
@@ -820,10 +786,9 @@ impl HelperKind {
                 (vec![types::I64, types::I64], Some(types::I64))
             }
             HelperKind::PtrReadBool => (vec![types::I64, types::I64], Some(types::I8)),
-            HelperKind::DefaultAllocator
-            | HelperKind::ArenaAllocator
-            | HelperKind::CurrentAllocator => (Vec::new(), Some(types::I64)),
-            HelperKind::FixedBufferAllocator => (vec![types::I64], Some(types::I64)),
+            HelperKind::DefaultAllocator | HelperKind::CurrentAllocator => {
+                (Vec::new(), Some(types::I64))
+            }
             HelperKind::WithAllocatorPush => (vec![types::I64], None),
             HelperKind::WithAllocatorPop => (Vec::new(), None),
             HelperKind::Pow => (vec![types::F64, types::F64], Some(types::F64)),
@@ -856,7 +821,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 63] = [
+    pub(crate) const ALL: [HelperKind; 61] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -893,8 +858,6 @@ impl HelperKind {
         HelperKind::PtrReadBool,
         HelperKind::PtrReadPtr,
         HelperKind::DefaultAllocator,
-        HelperKind::ArenaAllocator,
-        HelperKind::FixedBufferAllocator,
         HelperKind::CurrentAllocator,
         HelperKind::WithAllocatorPush,
         HelperKind::WithAllocatorPop,

@@ -45,12 +45,14 @@ impl List {
 }
 
 fn main() -> u64 {
-    val arena = __builtin_arena_allocator()
-    with allocator = arena {
+    val arena = Arena::new()
+    val r: u64 = with allocator = arena {
         var list = List::new()
         list.push(10u64)
         list.push(20u64)
         list.push(30u64)
         list.get(0u64) + list.get(1u64) + list.get(2u64)
     }
+    arena.drop()
+    r
 }

@@ -2574,9 +2574,7 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Unit)
                 }
-                BuiltinFunction::DefaultAllocator
-                | BuiltinFunction::ArenaAllocator
-                | BuiltinFunction::CurrentAllocator => {
+                BuiltinFunction::DefaultAllocator | BuiltinFunction::CurrentAllocator => {
                     if !args.is_empty() {
                         note(reject_reason, || {
                             format!(
@@ -2588,55 +2586,6 @@ pub(crate) fn check_expr(
                         return None;
                     }
                     Some(ScalarTy::Allocator)
-                }
-                BuiltinFunction::FixedBufferAllocator => {
-                    if args.len() != 1 {
-                        note(reject_reason, || {
-                            format!(
-                                "fixed_buffer_allocator expects 1 argument, got {}",
-                                args.len()
-                            )
-                        });
-                        return None;
-                    }
-                    let cap_ty = check_expr(
-                        program,
-                        &args[0],
-                        locals,
-                        compound_locals,
-                        substitutions,
-                        struct_layouts,
-                        callees,
-                        ptr_read_hints,
-                        reject_reason,
-                    )?;
-                    if cap_ty != ScalarTy::U64 {
-                        note(reject_reason, || {
-                            "fixed_buffer_allocator capacity must be u64".to_string()
-                        });
-                        return None;
-                    }
-                    Some(ScalarTy::Allocator)
-                }
-                BuiltinFunction::ArenaDrop => {
-                    // #121 Phase B-rest Item 2 follow-up: explicit
-                    // arena drop. JIT path falls back to interpreter
-                    // since the JIT lowering for the user-callable
-                    // form isn't wired (the AOT path is). Reject
-                    // here so callers fall back cleanly.
-                    note(reject_reason, || {
-                        "JIT does not yet model __builtin_arena_drop".to_string()
-                    });
-                    None
-                }
-                BuiltinFunction::FixedBufferDrop => {
-                    // Phase 5: explicit fixed_buffer drop, same JIT
-                    // story as ArenaDrop — silent fallback to
-                    // interpreter (the AOT path is wired).
-                    note(reject_reason, || {
-                        "JIT does not yet model __builtin_fixed_buffer_drop".to_string()
-                    });
-                    None
                 }
                 BuiltinFunction::Abs => {
                     if args.len() != 1 {

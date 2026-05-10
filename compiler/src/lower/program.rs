@@ -282,16 +282,12 @@ pub fn lower_program(
     // auto-drop. Stored on the IR `Module` so all `FunctionLower`
     // instances see it through `module.drop_trait_structs`.
     //
-    // Stdlib `Arena` / `FixedBuffer` impl `Drop` for trait
-    // dispatch (`arena.drop()` named-binding form) but their
-    // auto-cleanup uses the syntactic-sniff path on the
-    // temporary form (`with allocator = Arena::new() { ... }`).
-    // Excluding them here keeps both stories coherent and
-    // avoids double-drop for code that calls `arena.drop()`
-    // explicitly.
+    // The toylang stdlib `Arena` / `FixedBuffer` reimplementation
+    // makes their `drop()` idempotent, so they participate in the
+    // generic auto-drop story together with user-defined `impl Drop`
+    // structs. Explicit `arena.drop()` calls are still safe — the
+    // second invocation at scope exit is a no-op.
     if let Some(drop_sym) = interner.get("Drop") {
-        let arena_sym = interner.get("Arena");
-        let fixed_buffer_sym = interner.get("FixedBuffer");
         for i in 0..program.statement.len() {
             let stmt_ref = frontend::ast::StmtRef(i as u32);
             if let Some(frontend::ast::Stmt::ImplBlock {
@@ -300,10 +296,7 @@ pub fn lower_program(
                 ..
             }) = program.statement.get(&stmt_ref)
             {
-                if trait_sym == drop_sym
-                    && Some(target_type) != arena_sym
-                    && Some(target_type) != fixed_buffer_sym
-                {
+                if trait_sym == drop_sym {
                     module.drop_trait_structs.insert(target_type);
                 }
             }

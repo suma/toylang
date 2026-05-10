@@ -190,10 +190,6 @@ impl<M: Module> CodegenSession<M> {
             alloc_push: self.module.declare_func_in_func(self.rt_alloc_push, func),
             alloc_pop: self.module.declare_func_in_func(self.rt_alloc_pop, func),
             alloc_current: self.module.declare_func_in_func(self.rt_alloc_current, func),
-            arena_new: self.module.declare_func_in_func(self.rt_arena_new, func),
-            fixed_buffer_new: self
-                .module
-                .declare_func_in_func(self.rt_fixed_buffer_new, func),
             dispatched_alloc: self
                 .module
                 .declare_func_in_func(self.rt_dispatched_alloc, func),
@@ -203,8 +199,6 @@ impl<M: Module> CodegenSession<M> {
             dispatched_free: self
                 .module
                 .declare_func_in_func(self.rt_dispatched_free, func),
-            arena_drop: self.module.declare_func_in_func(self.rt_arena_drop, func),
-            fixed_buffer_drop: self.module.declare_func_in_func(self.rt_fixed_buffer_drop, func),
             pow: self.module.declare_func_in_func(self.libm_pow, func),
             sin: self.module.declare_func_in_func(self.libm_sin, func),
             cos: self.module.declare_func_in_func(self.libm_cos, func),

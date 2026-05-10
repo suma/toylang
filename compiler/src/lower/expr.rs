@@ -1055,71 +1055,128 @@ impl<'a> FunctionLower<'a> {
                     None
                 }
             }
-            // #121 Phase B-rest leftover (1): the **raw builtin**
-            // forms `__builtin_arena_allocator()` and
-            // `__builtin_fixed_buffer_allocator(cap)` are
-            // shorthand for `Arena::new()` / `FixedBuffer::new()`
-            // — let them auto-drop too so users don't have to
-            // call `__builtin_arena_drop` manually.
-            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args))
-                if args.is_empty() =>
-            {
-                Some(InlineAlloc::Arena)
-            }
-            Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args))
-                if args.len() == 1 =>
-            {
-                Some(InlineAlloc::FixedBuffer(args[0]))
-            }
             _ => None,
         };
         if let Some(kind) = inline_kind {
-            // Construct the handle inline so we don't have
-            // to lower the associated-function call as a
-            // struct-returning temporary binding.
-            let (handle, cleanup) = match kind {
-                InlineAlloc::Arena => {
-                    let h = self
-                        .emit(InstKind::AllocArena, Some(crate::ir::Type::U64))
-                        .expect("AllocArena returns a value");
-                    (h, super::WithScopeCleanup::ArenaDrop(h))
-                }
-                InlineAlloc::FixedBuffer(cap_ref) => {
-                    let cap_v = self
-                        .lower_expr(&cap_ref)?
-                        .ok_or_else(|| "FixedBuffer::new(cap): capacity produced no value".to_string())?;
-                    let h = self
-                        .emit(
-                            InstKind::AllocFixedBuffer { capacity: cap_v },
-                            Some(crate::ir::Type::U64),
-                        )
-                        .expect("AllocFixedBuffer returns a value");
-                    (h, super::WithScopeCleanup::FixedBufferDrop(h))
+            // Materialize the temporary as a struct (no synthetic
+            // binding name needed — we work directly with the
+            // allocated field locals) and register it for auto-drop
+            // in a fresh drop scope local to this `with` block.
+            // After body exit, popping the drop scope fires the
+            // user-defined `drop()` method on the wrapper.
+            let (struct_name_str, args_for_call): (&str, Vec<ExprRef>) = match kind {
+                InlineAlloc::Arena => ("Arena", vec![]),
+                InlineAlloc::FixedBuffer(cap_ref) => ("FixedBuffer", vec![cap_ref]),
+            };
+            let new_str = "new";
+            let struct_sym = self.interner.get(struct_name_str).ok_or_else(|| {
+                format!("with: stdlib `{}` symbol not interned", struct_name_str)
+            })?;
+            let new_sym = self
+                .interner
+                .get(new_str)
+                .ok_or_else(|| "with: `new` symbol not interned".to_string())?;
+            let struct_id = self.resolve_struct_instance(struct_sym, None)?;
+            let recv_type_args = self.module.struct_def(struct_id).type_args.clone();
+            let func_id = super::method_registry::lookup_method_func(
+                self.method_func_ids,
+                struct_sym,
+                new_sym,
+                &recv_type_args,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "with: missing FuncId for {}::new",
+                    self.interner.resolve(struct_sym).unwrap_or("?")
+                )
+            })?;
+            let target_ret = self.module.function(func_id).return_type;
+            let ret_struct_id = match target_ret {
+                crate::ir::Type::Struct(id) => id,
+                _ => {
+                    return Err(format!(
+                        "with: `{}::new` does not return a struct",
+                        self.interner.resolve(struct_sym).unwrap_or("?")
+                    ))
                 }
             };
+            // Open a drop scope so the wrapper's `drop()` fires
+            // right after the with body exits, not at the
+            // enclosing block.
+            self.enter_drop_scope();
+            // Allocate field locals for the constructed struct,
+            // register them for drop, emit CallStruct.
+            let field_bindings = self.allocate_struct_fields(ret_struct_id);
+            let dests: Vec<crate::ir::LocalId> =
+                super::bindings::flatten_struct_locals(&field_bindings)
+                    .into_iter()
+                    .map(|(l, _)| l)
+                    .collect();
+            self.register_drop_for_struct_binding(ret_struct_id, &field_bindings);
+            let mut arg_values: Vec<ValueId> = Vec::with_capacity(args_for_call.len());
+            for a in &args_for_call {
+                let v = self
+                    .lower_expr(a)?
+                    .ok_or_else(|| "with: temporary ctor arg produced no value".to_string())?;
+                arg_values.push(v);
+            }
+            self.emit(
+                InstKind::CallStruct {
+                    target: func_id,
+                    args: arg_values,
+                    dests,
+                },
+                None,
+            );
+            // Find the unique `Allocator`-typed field on the
+            // wrapper template and load its local as the with
+            // handle.
+            let template = self.struct_defs.get(&struct_sym).ok_or_else(|| {
+                format!(
+                    "with: missing frontend template for `{}`",
+                    self.interner.resolve(struct_sym).unwrap_or("?")
+                )
+            })?;
+            let mut alloc_field_name: Option<String> = None;
+            for (fname, fty) in &template.fields {
+                if matches!(fty, frontend::type_decl::TypeDecl::Allocator) {
+                    alloc_field_name = Some(fname.clone());
+                }
+            }
+            let alloc_fname = alloc_field_name.ok_or_else(|| {
+                format!(
+                    "with: `{}` has no Allocator field",
+                    self.interner.resolve(struct_sym).unwrap_or("?")
+                )
+            })?;
+            let fb = field_bindings
+                .iter()
+                .find(|f| f.name == alloc_fname)
+                .ok_or_else(|| "with: Allocator field not found in field bindings".to_string())?;
+            let local = match &fb.shape {
+                super::bindings::FieldShape::Scalar { local, .. } => *local,
+                other => {
+                    return Err(format!(
+                        "with: Allocator field has unexpected shape {:?}",
+                        other
+                    ))
+                }
+            };
+            let handle = self
+                .emit(InstKind::LoadLocal(local), Some(crate::ir::Type::U64))
+                .expect("LoadLocal returns a value");
             self.emit(InstKind::AllocPush { handle }, None);
             self.with_scope_depth += 1;
-            self.with_scope_arena_drops.push(cleanup);
+            self.with_scope_arena_drops
+                .push(super::WithScopeCleanup::None);
             let body_value = self.lower_expr(body_expr)?;
             if !self.is_unreachable() {
-                // Linear exit: matching pop + drop here.
-                // Early exits (`return` / `break` /
-                // `continue`) already issued both via
-                // `emit_with_scope_cleanup` so we don't
-                // duplicate.
                 self.emit(InstKind::AllocPop, None);
-                match cleanup {
-                    super::WithScopeCleanup::ArenaDrop(h) => {
-                        self.emit(InstKind::AllocArenaDrop { handle: h }, None);
-                    }
-                    super::WithScopeCleanup::FixedBufferDrop(h) => {
-                        self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
-                    }
-                    super::WithScopeCleanup::None => {}
-                }
             }
             self.with_scope_depth -= 1;
             self.with_scope_arena_drops.pop();
+            // Fire the user-defined `drop()` on the temporary.
+            self.pop_and_emit_drops()?;
             return Ok(body_value);
         }
 
@@ -1703,69 +1760,6 @@ impl<'a> FunctionLower<'a> {
                     ));
                 }
                 Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
-            }
-            BuiltinFunction::ArenaAllocator => {
-                // #121 Phase B-rest Item 1: allocate an arena slot
-                // in the runtime registry and return its handle.
-                // The handle is a non-zero u64 so heap_alloc /
-                // realloc / free can dispatch on it.
-                if !args.is_empty() {
-                    return Err(format!(
-                        "__builtin_arena_allocator takes no args, got {}",
-                        args.len()
-                    ));
-                }
-                Ok(self.emit(InstKind::AllocArena, Some(Type::U64)))
-            }
-            BuiltinFunction::ArenaDrop => {
-                // #121 Phase B-rest Item 2 follow-up: explicit
-                // arena bulk-free. Caller hands in the handle
-                // returned by `__builtin_arena_allocator()`.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_arena_drop takes 1 arg (handle), got {}",
-                        args.len()
-                    ));
-                }
-                let h = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "arena_drop handle arg produced no value".to_string())?;
-                self.emit(InstKind::AllocArenaDrop { handle: h }, None);
-                Ok(None)
-            }
-            BuiltinFunction::FixedBufferDrop => {
-                // Phase 5: explicit fixed_buffer bulk-free.
-                // Caller hands in the handle returned by
-                // `__builtin_fixed_buffer_allocator(cap)`.
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_fixed_buffer_drop takes 1 arg (handle), got {}",
-                        args.len()
-                    ));
-                }
-                let h = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "fixed_buffer_drop handle arg produced no value".to_string())?;
-                self.emit(InstKind::AllocFixedBufferDrop { handle: h }, None);
-                Ok(None)
-            }
-            BuiltinFunction::FixedBufferAllocator => {
-                // #121 Phase B-rest Item 1: capacity-limited allocator.
-                // Subsequent allocations through this handle that
-                // would exceed `capacity` return 0 (null).
-                if args.len() != 1 {
-                    return Err(format!(
-                        "__builtin_fixed_buffer_allocator takes 1 arg (capacity), got {}",
-                        args.len()
-                    ));
-                }
-                let cap = self
-                    .lower_expr(&args[0])?
-                    .ok_or_else(|| "fixed_buffer capacity arg produced no value".to_string())?;
-                Ok(self.emit(
-                    InstKind::AllocFixedBuffer { capacity: cap },
-                    Some(Type::U64),
-                ))
             }
             other => Err(format!(
                 "compiler MVP cannot lower builtin yet: {:?}",

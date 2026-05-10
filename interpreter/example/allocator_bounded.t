@@ -9,8 +9,11 @@
 #                                  allocator because the omitted trailing
 #                                  parameter is bounded by Allocator.
 #
-# Both calls happen inside a `with allocator = arena { ... }` block, so the
-# "current allocator" they see is the arena, not the global default.
+# Both calls happen inside a `with allocator = arena { ... }` block. The
+# `with` form auto-extracts the wrapper's `Allocator` field, so heap_alloc
+# inside the body routes through that handle (the stdlib `Arena` backs it
+# with the default allocator; the arena's own tracking is not updated by
+# raw heap_alloc — call `arena.alloc(...)` for that).
 #
 # Run: cargo run example/allocator_bounded.t
 # Expected result: UInt64(300)
@@ -24,10 +27,12 @@ fn store<A: Allocator>(x: u64, a: A) -> u64 {
 }
 
 fn main() -> u64 {
-    val arena = __builtin_arena_allocator()
-    with allocator = arena {
+    val arena = Arena::new()
+    val r: u64 = with allocator = arena {
         val a = store(100u64, ambient)
         val b = store(200u64)
         a + b
     }
+    arena.drop()
+    r
 }

@@ -1160,27 +1160,6 @@ impl<'a, 'b> State<'a, 'b> {
                     BuiltinFunction::DefaultAllocator => {
                         Ok(Some(self.call_helper(HelperKind::DefaultAllocator, &[])?))
                     }
-                    BuiltinFunction::ArenaAllocator => {
-                        Ok(Some(self.call_helper(HelperKind::ArenaAllocator, &[])?))
-                    }
-                    BuiltinFunction::FixedBufferAllocator => {
-                        let cap = self
-                            .gen_expr(&args[0])?
-                            .ok_or_else(|| "fixed_buffer_allocator capacity".to_string())?;
-                        Ok(Some(self.call_helper(HelperKind::FixedBufferAllocator, &[cap])?))
-                    }
-                    BuiltinFunction::ArenaDrop => {
-                        // Eligibility already rejected this; the codegen
-                        // path is unreachable, but the exhaustive match
-                        // requires an arm. Emit an internal-error string
-                        // so a future enable-without-eligibility-update
-                        // bug surfaces immediately.
-                        Err("internal error: __builtin_arena_drop reached JIT codegen (eligibility should have rejected)".to_string())
-                    }
-                    BuiltinFunction::FixedBufferDrop => {
-                        // Eligibility rejects, codegen unreachable.
-                        Err("internal error: __builtin_fixed_buffer_drop reached JIT codegen (eligibility should have rejected)".to_string())
-                    }
                     BuiltinFunction::CurrentAllocator => {
                         Ok(Some(self.call_helper(HelperKind::CurrentAllocator, &[])?))
                     }

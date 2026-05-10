@@ -1601,41 +1601,12 @@ fn arena_temporary_auto_cleanup_round_trip() {
     assert_consistent(src, "arena_temporary_auto_cleanup_round_trip");
 }
 
-#[test]
-fn raw_builtin_arena_auto_cleanup_round_trip() {
-    // #121 Phase B-rest leftover (1): the **raw builtin** form
-    // `__builtin_arena_allocator()` is recognised as an inline
-    // temporary too, so its tracked allocations get released at
-    // scope exit without an explicit `__builtin_arena_drop` call.
-    // Symmetric with the wrapper-struct form covered above.
-    //
-    // Verifies that:
-    //   - the body completes (heap_alloc through the inline arena
-    //     handle works on every backend)
-    //   - the active allocator returns to default after the `with`
-    //     ends (i.e. the AllocPop fired)
-    //   - the same shape works for `__builtin_fixed_buffer_allocator(cap)`
-    let src = r#"
-        fn main() -> u64 {
-            with allocator = __builtin_arena_allocator() {
-                val p1: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p1) { return 1u64 }
-                val p2: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p2) { return 2u64 }
-            }
-            val mid: Allocator = __builtin_current_allocator()
-            if mid != __builtin_default_allocator() { return 3u64 }
-            with allocator = __builtin_fixed_buffer_allocator(64u64) {
-                val p3: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p3) { return 4u64 }
-            }
-            val end: Allocator = __builtin_current_allocator()
-            if end != __builtin_default_allocator() { return 5u64 }
-            42u64
-        }
-    "#;
-    assert_consistent(src, "raw_builtin_arena_auto_cleanup_round_trip");
-}
+// `raw_builtin_arena_auto_cleanup_round_trip` was removed when the
+// runtime arena / fixed_buffer infrastructure was retired. The same
+// auto-cleanup contract is exercised by
+// `arena_temporary_auto_cleanup_round_trip` and
+// `fixed_buffer_temporary_auto_cleanup_round_trip` via the stdlib
+// wrapper forms.
 
 #[test]
 fn arena_temporary_auto_cleanup_early_return_round_trip() {
@@ -1732,15 +1703,13 @@ fn fixed_buffer_temporary_auto_cleanup_early_return_round_trip() {
 
 #[test]
 fn drop_trait_named_binding_round_trip() {
-    // Phase 5 (Drop trait): both `Arena` and `FixedBuffer` impl
-    // the stdlib `Drop` trait now (`core/std/drop.t`). Calling
-    // `arena.drop()` / `fb.drop()` on a named binding dispatches
-    // through the trait method table; the body still emits the
-    // matching `__builtin_arena_drop` / `__builtin_fixed_buffer_drop`
-    // builtin so the runtime semantics are unchanged. The
-    // `with allocator = Arena::new() { ... }` temporary auto-
-    // cleanup sits on a separate syntactic-sniff path and is
-    // not affected by this change.
+    // Both `Arena` and `FixedBuffer` impl the stdlib `Drop` trait
+    // (`core/std/drop.t`). Calling `arena.drop()` / `fb.drop()` on
+    // a named binding dispatches through the trait method table;
+    // the toylang body releases the wrapper's tracking arrays. The
+    // `with allocator = Arena::new() { ... }` temporary form
+    // additionally fires `drop()` at scope exit via the inline-
+    // temporary auto-drop hook.
     let src = r#"
         fn main() -> u64 {
             val arena = Arena::new()
@@ -2973,69 +2942,27 @@ fn stdlib_alloc_trait_methods() {
     assert_consistent(src, "stdlib_alloc_trait_methods");
 }
 
-#[test]
-fn aot_arena_drop_releases_and_reuses() {
-    // #121 Phase B-rest Item 2 follow-up:
-    // `__builtin_arena_drop(handle)` releases every allocation
-    // tracked by the arena slot. After drop the same arena
-    // handle remains valid — subsequent `with allocator = a`
-    // blocks can keep allocating.
-    //
-    // Coverage:
-    //   - arena alloc + scope exit (no auto-drop)
-    //   - explicit drop frees the in-flight allocations
-    //   - reuse the SAME handle for a fresh allocation
-    //   - second drop is also valid (idempotent on an
-    //     already-emptied arena)
-    //   - no-op behaviour for default / fixed_buffer is
-    //     covered by the trait default; this test focuses on
-    //     the arena-specific lifecycle
-    let src = r#"
-        fn main() -> u64 {
-            val a = __builtin_arena_allocator()
-            with allocator = a {
-                val p1: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p1) { return 1u64 }
-                val p2: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p2) { return 2u64 }
-            }
-            __builtin_arena_drop(a)
-            with allocator = a {
-                val p3: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p3) { return 3u64 }
-            }
-            __builtin_arena_drop(a)
-            42u64
-        }
-    "#;
-    assert_consistent(src, "aot_arena_drop_releases_and_reuses");
-}
+// `aot_arena_drop_releases_and_reuses` and
+// `aot_arena_and_fixed_buffer_allocators_round_trip` were removed
+// when the runtime arena / fixed_buffer infrastructure was retired.
+// The reset / reuse / quota-enforcement contracts are now exercised
+// by `aot_arena_bytes_used_and_reset` and
+// `aot_fixed_buffer_introspection` against the toylang stdlib.
 
 #[test]
 fn aot_with_allocator_early_return_pops_stack() {
-    // #121 Phase B-rest Item 2: an early `return` from inside a
-    // `with allocator = ...` body must still emit `AllocPop` for
-    // every active scope. Without this cleanup the runtime
-    // allocator stack leaks the pushed handle and the caller
-    // observes the wrong `__builtin_current_allocator()` after
-    // the helper function returns.
-    //
-    // The test pins the contract: after `helper()` returns,
-    // `current_allocator()` must equal `default_allocator()`
-    // (sentinel 0), regardless of the arena handle pushed
-    // inside `helper`'s `with` body.
-    //
-    // Compares against `__builtin_default_allocator()` rather
-    // than the literal `0u64` so the interpreter's
-    // type-checker accepts the comparison (Allocator vs UInt64
-    // is rejected; Allocator vs Allocator is fine).
+    // An early `return` from inside a `with allocator = ...` body
+    // must still emit the matching pop for every active scope.
+    // Without this cleanup the active-allocator stack leaks the
+    // pushed handle and the caller sees the wrong allocator
+    // after the helper function returns.
     let src = r#"
         fn helper() -> u64 {
-            val a = __builtin_arena_allocator()
-            with allocator = a {
+            val a = Arena::new()
+            val r: u64 = with allocator = a {
                 return 7u64
             }
-            0u64
+            r
         }
 
         fn main() -> u64 {
@@ -3048,55 +2975,6 @@ fn aot_with_allocator_early_return_pops_stack() {
         }
     "#;
     assert_consistent(src, "aot_with_allocator_early_return_pops_stack");
-}
-
-#[test]
-fn aot_arena_and_fixed_buffer_allocators_round_trip() {
-    // #121 Phase B-rest Items 1+3: arena and fixed_buffer
-    // allocator constructors return non-zero handles, and
-    // `__builtin_heap_alloc / _realloc / _free` route through
-    // the active allocator on the runtime stack rather than
-    // always hitting libc directly.
-    //
-    // Coverage:
-    //   - Arena: two allocations under `with allocator = arena`
-    //     both succeed (no quota); free is a no-op (no double-free
-    //     panic because the arena slot ignores it).
-    //   - FixedBuffer (capacity 16): two 8-byte allocations
-    //     succeed, a third 1-byte allocation must return null
-    //     (quota exceeded). `__builtin_ptr_is_null` is the
-    //     null-detection primitive — added in this same commit
-    //     so the AOT path can compare a `ptr` without coercing
-    //     to `u64`.
-    //
-    // The previous `aot_allocator_context_builtin_still_emits_precise_diagnostic`
-    // test that pinned the rejection message is replaced by this
-    // positive round-trip — Phase B-rest delivers what the older
-    // test was guarding against.
-    let src = r#"
-        fn main() -> u64 {
-            val a = __builtin_arena_allocator()
-            val fb = __builtin_fixed_buffer_allocator(16u64)
-
-            with allocator = a {
-                val p1: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p1) { return 1u64 }
-                val p2: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p2) { return 2u64 }
-            }
-
-            with allocator = fb {
-                val p1: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p1) { return 3u64 }
-                val p2: ptr = __builtin_heap_alloc(8u64)
-                if __builtin_ptr_is_null(p2) { return 4u64 }
-                val p3: ptr = __builtin_heap_alloc(1u64)
-                if !__builtin_ptr_is_null(p3) { return 5u64 }
-            }
-            42u64
-        }
-    "#;
-    assert_consistent(src, "aot_arena_and_fixed_buffer_allocators_round_trip");
 }
 
 #[test]

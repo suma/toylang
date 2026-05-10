@@ -608,13 +608,10 @@ struct CollectedMethod {
 /// this set at val / var binding time to decide whether to
 /// register the binding for auto-drop at scope exit.
 ///
-/// **Stdlib exclusion**: `Arena` / `FixedBuffer` impl `Drop` so
-/// the trait method `arena.drop()` dispatches correctly, but
-/// auto-drop on a named binding would change behaviour for
-/// existing user code (the explicit `arena.drop()` would fire
-/// twice). The temporary form (`with allocator = Arena::new() {}`)
-/// has its own syntactic-sniff auto-cleanup path, so excluding
-/// these two from the user-Drop set keeps both stories coherent.
+/// `Arena` / `FixedBuffer` are part of this set: the new toylang
+/// stdlib reimplementation makes their `drop()` idempotent, so
+/// users can still call `arena.drop()` explicitly and the
+/// auto-drop at scope exit becomes a no-op the second time.
 fn collect_drop_trait_structs(
     program: &Program,
     string_interner: &DefaultStringInterner,
@@ -623,17 +620,12 @@ fn collect_drop_trait_structs(
         Some(s) => s,
         None => return std::collections::HashSet::new(),
     };
-    let arena_sym = string_interner.get("Arena");
-    let fixed_buffer_sym = string_interner.get("FixedBuffer");
     let mut out = std::collections::HashSet::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::ImplBlock { target_type, trait_name: Some(trait_sym), .. } = &stmt {
-                if *trait_sym == drop_sym
-                    && Some(*target_type) != arena_sym
-                    && Some(*target_type) != fixed_buffer_sym
-                {
+                if *trait_sym == drop_sym {
                     out.insert(*target_type);
                 }
             }

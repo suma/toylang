@@ -142,17 +142,6 @@ impl EvaluationContext<'_> {
                             && args.len() == 1;
                         is_arena || is_fb
                     }
-                    // #121 Phase B-rest leftover (1): the raw builtin
-                    // forms also count as inline-temporary so
-                    // `with allocator = __builtin_arena_allocator() { … }`
-                    // auto-drops on scope exit, parallel to the
-                    // wrapper-struct shorthand above.
-                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::ArenaAllocator, args)) => {
-                        args.is_empty()
-                    }
-                    Some(Expr::BuiltinCall(frontend::ast::BuiltinFunction::FixedBufferAllocator, args)) => {
-                        args.len() == 1
-                    }
                     _ => false,
                 };
                 let allocator_val = self.evaluate(&allocator);
@@ -200,16 +189,32 @@ impl EvaluationContext<'_> {
                 };
                 self.allocator_stack.pop();
                 if inline_temporary {
-                    // Phase 5 auto-cleanup: release every
-                    // allocation the inline allocator tracked.
-                    // `Allocator::reset`'s default is a no-op;
-                    // `ArenaAllocator::reset` and
-                    // `FixedBufferAllocator::reset` each free
-                    // tracked addrs (matches the corresponding
-                    // `__builtin_*_drop` runtime helpers). Runs
-                    // even when the body returned an error so
-                    // the slot doesn't leak on early-exit paths.
-                    allocator_rc.reset();
+                    // Inline-temporary auto-cleanup: dispatch the
+                    // user-defined `drop()` method on the wrapper
+                    // struct so the (addr, size) tracking +
+                    // metadata arrays are released. Runs even
+                    // when the body returned an error so the
+                    // wrapper doesn't leak on early-exit paths.
+                    let drop_target = {
+                        let borrow = allocator_val.borrow();
+                        if let Object::Struct { type_name, .. } = &*borrow {
+                            if self.drop_trait_structs.contains(type_name) {
+                                Some(*type_name)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(struct_sym) = drop_target {
+                        let entry = super::DropEntry {
+                            name: struct_sym,
+                            struct_sym,
+                            value: allocator_val.clone(),
+                        };
+                        self.invoke_drop(&entry)?;
+                    }
                 }
                 result
             }

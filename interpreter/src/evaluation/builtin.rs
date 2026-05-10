@@ -662,80 +662,11 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value(Object::Allocator(self.global_allocator.clone()).into()))
             }
 
-            BuiltinFunction::ArenaAllocator => {
-                if !args.is_empty() {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "arena_allocator() takes no arguments".to_string(),
-                        expected: 0,
-                        found: args.len(),
-                    });
-                }
-                // Fresh arena sharing the same underlying HeapManager. Bulk free
-                // happens when the last Rc to this arena is dropped.
-                let arena: Rc<dyn crate::heap::Allocator> = Rc::new(
-                    crate::heap::ArenaAllocator::new(self.heap_manager.clone()),
-                );
-                Ok(EvaluationResult::Value(Object::Allocator(arena).into()))
-            }
-
-            BuiltinFunction::ArenaDrop => {
-                // #121 Phase B-rest Item 2 follow-up: explicit
-                // arena bulk-free. Calls `Allocator::reset()` on
-                // the supplied handle. Default no-op for the
-                // global / fixed_buffer allocators (per the
-                // trait's default impl).
-                if args.len() != 1 {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "__builtin_arena_drop takes 1 argument (handle)".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    });
-                }
-                let handle = self.evaluate(&args[0])?;
-                let handle = try_value!(Ok(handle));
-                let borrow = handle.borrow();
-                match &*borrow {
-                    Object::Allocator(rc) => {
-                        rc.reset();
-                    }
-                    other => {
-                        return Err(InterpreterError::InternalError(format!(
-                            "__builtin_arena_drop: expected Allocator handle, got {other:?}"
-                        )));
-                    }
-                }
-                Ok(EvaluationResult::Value(Object::Unit.into()))
-            }
-
-            BuiltinFunction::FixedBufferDrop => {
-                // Phase 5: explicit fixed_buffer bulk-free. Same
-                // dispatch as `ArenaDrop` — `Allocator::reset()`
-                // — relying on `FixedBufferAllocator::reset` to
-                // free tracked addrs + zero the quota. Default
-                // no-op for non-fixed_buffer handles via the
-                // trait's default impl.
-                if args.len() != 1 {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "__builtin_fixed_buffer_drop takes 1 argument (handle)".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    });
-                }
-                let handle = self.evaluate(&args[0])?;
-                let handle = try_value!(Ok(handle));
-                let borrow = handle.borrow();
-                match &*borrow {
-                    Object::Allocator(rc) => {
-                        rc.reset();
-                    }
-                    other => {
-                        return Err(InterpreterError::InternalError(format!(
-                            "__builtin_fixed_buffer_drop: expected Allocator handle, got {other:?}"
-                        )));
-                    }
-                }
-                Ok(EvaluationResult::Value(Object::Unit.into()))
-            }
+            // `BuiltinFunction::ArenaAllocator` / `FixedBufferAllocator` /
+            // `ArenaDrop` / `FixedBufferDrop` removed when the runtime
+            // arena/fixed_buffer infrastructure was retired. The toylang
+            // stdlib `Arena` / `FixedBuffer` (`core/std/allocator.t`) now
+            // implements both policies on top of the default allocator.
 
             BuiltinFunction::SizeOf => {
                 if args.len() != 1 {
@@ -840,26 +771,6 @@ impl EvaluationContext<'_> {
                     crate::output::print_text(&rendered);
                 }
                 Ok(EvaluationResult::Value((Object::Unit).into()))
-            }
-
-            BuiltinFunction::FixedBufferAllocator => {
-                if args.len() != 1 {
-                    return Err(InterpreterError::FunctionParameterMismatch {
-                        message: "fixed_buffer_allocator(capacity) takes 1 argument".to_string(),
-                        expected: 1,
-                        found: args.len(),
-                    });
-                }
-                let capacity_result = self.evaluate(&args[0])?;
-                let capacity_obj = try_value!(Ok(capacity_result));
-                let capacity = capacity_obj.borrow().try_unwrap_uint64()
-                    .map_err(|_| InterpreterError::InternalError(
-                        "fixed_buffer_allocator expects u64 capacity".to_string()
-                    ))?;
-                let allocator: Rc<dyn crate::heap::Allocator> = Rc::new(
-                    crate::heap::FixedBufferAllocator::new(self.heap_manager.clone(), capacity as usize),
-                );
-                Ok(EvaluationResult::Value(Object::Allocator(allocator).into()))
             }
 
             BuiltinFunction::Abs => {

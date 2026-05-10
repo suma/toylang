@@ -1,23 +1,22 @@
 # Stdlib `trait Alloc` + wrapper structs.
 #
 # `trait Alloc` provides the user-facing malloc / realloc /
-# free interface. Implementations delegate to an underlying
-# runtime allocator handle via `with allocator = self._h { ... }`,
-# routing each call through the active-allocator stack so
-# `__builtin_heap_alloc` dispatches to the right backend.
+# free interface. `Arena` and `FixedBuffer` carry a toylang-
+# side `(addr, size)` tracking table so they can answer
+# Odin/Zig-style introspection queries (`bytes_used` / `used`
+# / `remaining` / `is_empty`) and bulk-free their tracked
+# entries on `reset()` / `drop()` without relying on a
+# specialized runtime allocator. Both wrap the global default
+# allocator (`__builtin_default_allocator()`) and re-implement
+# the policy in toylang:
 #
-# In addition to the trait surface, `Arena` and `FixedBuffer`
-# carry a toylang-side `(addr, size)` tracking table so they
-# can answer Odin/Zig-style introspection queries
-# (`bytes_used` / `used` / `remaining` / `is_empty`) and a
-# `reset()` method that releases every tracked allocation
-# without throwing the wrapper away. The runtime arena /
-# fixed_buffer registries also do their own tracking — this
-# is intentional duplication so that the inline-temporary form
-# `with allocator = Arena::new() { __builtin_heap_alloc(...) }`
-# (which bypasses the wrapper and routes raw heap_alloc through
-# the runtime handle) keeps working with arena semantics. Users
-# who want the new methods should bind the wrapper:
+#   - Arena: individual `free` is a no-op; allocations live
+#     until `reset()` or `drop()` walks the tracking table.
+#   - FixedBuffer: enforces a byte-count quota in toylang;
+#     `free` releases per-pointer; `reset()` returns the
+#     quota to zero.
+#
+# Usage (named binding triggers Drop at block exit):
 #
 #     val arena = Arena::new()
 #     val p = arena.alloc(64u64)
@@ -25,8 +24,9 @@
 #     arena.reset()
 #     # arena.drop() fires at scope exit via the Drop trait
 #
-# Name split: `Allocator` (primitive runtime handle) vs `Alloc`
-# (this trait). The two never collide.
+# Name split: `Allocator` (opaque runtime handle, used for
+# the `_h` field consumed by the language's `with` auto-
+# extract) vs `Alloc` (this trait). The two never collide.
 
 pub trait Alloc {
     fn alloc(&mut self, size: u64) -> ptr
@@ -84,7 +84,7 @@ pub struct Arena {
 impl Arena {
     fn new() -> Self {
         Arena {
-            _h: __builtin_arena_allocator(),
+            _h: __builtin_default_allocator(),
             addrs: __builtin_null_ptr(),
             sizes: __builtin_null_ptr(),
             count: 0u64,
@@ -99,11 +99,14 @@ impl Arena {
     # for further use after `reset()` — call sites can keep
     # alloc'ing through it.
     fn reset(&mut self) {
-        # Release runtime-arena tracking (no-op for the runtime
-        # arena's individual frees, but bulk-free here).
-        __builtin_arena_drop(self._h)
-        # Clear toylang-side tracking. Underlying memory is gone
-        # courtesy of the line above; we just zero our bookkeeping.
+        var i = 0u64
+        while i < self.count {
+            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            with allocator = __builtin_default_allocator() {
+                __builtin_heap_free(a)
+            }
+            i = i + 1u64
+        }
         self.count = 0u64
         self.bytes_used = 0u64
     }
@@ -137,19 +140,10 @@ impl Arena {
 }
 
 impl Drop for Arena {
-    # Auto-cleanup runs in two contexts:
-    #   1. Named binding `val a = Arena::new()` going out of
-    #      scope — the regular Drop machinery fires `a.drop()`.
-    #   2. Inline temporary `with allocator = Arena::new() { ... }`
-    #      — the interpreter / AOT auto-cleanup hook calls the
-    #      runtime arena's `reset()` directly, bypassing this
-    #      method (the runtime registry is the source of truth
-    #      for raw `__builtin_heap_alloc` calls in that scope).
-    #      Toylang metadata in the wrapper struct is leaked in
-    #      that case, but the wrapper itself is unreachable
-    #      after the with-scope so the leak ends with the
-    #      process. Future work can route the inline-temporary
-    #      cleanup through this method instead.
+    # Fires at scope exit for named bindings (`val a = Arena::new()`
+    # then a goes out of scope) and for inline temporaries
+    # (`with allocator = Arena::new() { ... }` once the auto-drop
+    # hook routes through the user Drop method).
     fn drop(&mut self) {
         # Bulk-free runtime tracking + zero our counters.
         self.reset()
@@ -179,9 +173,8 @@ impl Alloc for Arena {
         val p = with allocator = self._h {
             __builtin_heap_alloc(size)
         }
-        # Runtime arena allocator never returns null for non-zero
-        # sizes (it draws from the shared HeapManager), so we can
-        # record the entry unconditionally.
+        # Default allocator returns non-null for non-zero sizes; record
+        # the entry unconditionally.
         self._ensure_slot()
         __builtin_ptr_write(self.addrs, self.count * 8u64, p)
         __builtin_ptr_write(self.sizes, self.count * 8u64, size)
@@ -191,29 +184,19 @@ impl Alloc for Arena {
     }
 
     fn free(&mut self, p: ptr) {
-        # Arena policy: per-pointer free is a no-op. Forwarded
-        # to `_h` for symmetry; the runtime arena ignores it too.
-        with allocator = self._h {
-            __builtin_heap_free(p)
-        }
+        # Arena policy: per-pointer free is a no-op; everything is
+        # released in bulk via `reset()` or `drop()`.
     }
 
     fn realloc(&mut self, p: ptr, new_size: u64) -> ptr {
-        # Mirror Arena::alloc: avoid binding null results to a
-        # `val` by handling the "result is guaranteed null" cases
-        # up front (new_size == 0 → free + null).
         if new_size == 0u64 {
-            with allocator = self._h {
-                __builtin_heap_free(p)
-            }
+            # Arena policy keeps the existing allocation tracked until reset.
             return __builtin_null_ptr()
         }
         val idx = self._find(p)
         val q = with allocator = self._h {
             __builtin_heap_realloc(p, new_size)
         }
-        # Runtime arena's realloc returns non-null for non-zero
-        # new_size (allocates a fresh slot if needed).
         if idx < self.count {
             val old: u64 = __builtin_ptr_read(self.sizes, idx * 8u64)
             self.bytes_used = self.bytes_used - old + new_size
@@ -245,7 +228,7 @@ pub struct FixedBuffer {
 impl FixedBuffer {
     fn new(capacity: u64) -> Self {
         FixedBuffer {
-            _h: __builtin_fixed_buffer_allocator(capacity),
+            _h: __builtin_default_allocator(),
             cap: capacity,
             addrs: __builtin_null_ptr(),
             sizes: __builtin_null_ptr(),
@@ -267,7 +250,14 @@ impl FixedBuffer {
     fn is_empty(&self) -> bool { self.used_bytes == 0u64 }
 
     fn reset(&mut self) {
-        __builtin_fixed_buffer_drop(self._h)
+        var i = 0u64
+        while i < self.count {
+            val a: ptr = __builtin_ptr_read(self.addrs, i * 8u64)
+            with allocator = __builtin_default_allocator() {
+                __builtin_heap_free(a)
+            }
+            i = i + 1u64
+        }
         self.count = 0u64
         self.used_bytes = 0u64
     }

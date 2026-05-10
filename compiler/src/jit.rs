@@ -354,15 +354,12 @@ fn register_runtime_symbols(jit_builder: &mut JITBuilder) {
     jit_builder.symbol("toy_alloc_push", toy_alloc_push as *const u8);
     jit_builder.symbol("toy_alloc_pop", toy_alloc_pop as *const u8);
     jit_builder.symbol("toy_alloc_current", toy_alloc_current as *const u8);
-    // #121 Phase B-rest Items 1+3: arena / fixed_buffer
-    // constructors + dispatched alloc/realloc/free.
-    jit_builder.symbol("toy_arena_new", toy_arena_new as *const u8);
-    jit_builder.symbol("toy_fixed_buffer_new", toy_fixed_buffer_new as *const u8);
+    // Dispatched alloc / realloc / free (libc passthrough — runtime
+    // arena/fixed_buffer infrastructure has been retired in favour
+    // of the toylang stdlib `Arena` / `FixedBuffer`).
     jit_builder.symbol("toy_dispatched_alloc", toy_dispatched_alloc as *const u8);
     jit_builder.symbol("toy_dispatched_realloc", toy_dispatched_realloc as *const u8);
     jit_builder.symbol("toy_dispatched_free", toy_dispatched_free as *const u8);
-    jit_builder.symbol("toy_arena_drop", toy_arena_drop as *const u8);
-    jit_builder.symbol("toy_fixed_buffer_drop", toy_fixed_buffer_drop as *const u8);
     // STR-INTERP-AOT: str runtime helpers. The JIT-side
     // implementations (below) mirror the C runtime so JIT and
     // AOT produce byte-identical interpolation output.
@@ -614,223 +611,28 @@ unsafe extern "C" fn toy_alloc_current() -> u64 {
     stack.last().copied().unwrap_or(0)
 }
 
-// #121 Phase B-rest Items 1+3: JIT mirror of arena / fixed_buffer
-// allocator backends. Mirrors `runtime/toylang_rt.c`'s slot
-// registry, semantically identical (arena: free is no-op,
-// fixed_buffer: quota tracking).
-#[derive(Clone, Copy, PartialEq)]
-enum JitAllocKind {
-    Arena,
-    FixedBuffer,
-}
-
-struct JitAllocSlot {
-    kind: JitAllocKind,
-    addrs: Vec<*mut u8>,
-    sizes: Vec<u64>,
-    capacity: u64,
-    used: u64,
-}
-
-// SAFETY: the JIT runs single-threaded behind the Mutex; the raw
-// pointers here are owned/freed exclusively by libc malloc/free
-// called through these helpers, so cross-thread aliasing isn't a
-// concern. The Send marker is required because `*mut u8` isn't
-// Send by default.
-unsafe impl Send for JitAllocSlot {}
-
-static JIT_ALLOC_REGISTRY: Mutex<Vec<JitAllocSlot>> = Mutex::new(Vec::new());
-
-unsafe extern "C" fn toy_arena_new() -> u64 {
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    reg.push(JitAllocSlot {
-        kind: JitAllocKind::Arena,
-        addrs: Vec::new(),
-        sizes: Vec::new(),
-        capacity: 0,
-        used: 0,
-    });
-    reg.len() as u64 // 1-based handle; 0 reserved for default
-}
-
-unsafe extern "C" fn toy_fixed_buffer_new(capacity: u64) -> u64 {
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    reg.push(JitAllocSlot {
-        kind: JitAllocKind::FixedBuffer,
-        addrs: Vec::new(),
-        sizes: Vec::new(),
-        capacity,
-        used: 0,
-    });
-    reg.len() as u64
-}
-
+// JIT mirror of the dispatched alloc / realloc / free helpers. The
+// runtime arena / fixed_buffer registry has been retired; both
+// policies live in the toylang stdlib (`core/std/allocator.t`) on
+// top of the default allocator. The `handle` argument is preserved
+// in the IR for forward compatibility but currently routes every
+// call straight to libc.
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut u8;
     fn realloc(p: *mut u8, size: usize) -> *mut u8;
     fn free(p: *mut u8);
 }
 
-unsafe extern "C" fn toy_dispatched_alloc(handle: u64, size: u64) -> *mut u8 {
-    if handle == 0 {
-        return unsafe { malloc(size as usize) };
-    }
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    let idx = (handle - 1) as usize;
-    if idx >= reg.len() {
-        eprintln!("toylang JIT runtime: invalid allocator handle");
-        std::process::exit(1);
-    }
-    let slot = &mut reg[idx];
-    if slot.kind == JitAllocKind::FixedBuffer && slot.used + size > slot.capacity {
-        return std::ptr::null_mut();
-    }
-    let p = unsafe { malloc(size as usize) };
-    if p.is_null() {
-        return p;
-    }
-    slot.addrs.push(p);
-    slot.sizes.push(size);
-    if slot.kind == JitAllocKind::FixedBuffer {
-        slot.used += size;
-    }
-    p
+unsafe extern "C" fn toy_dispatched_alloc(_handle: u64, size: u64) -> *mut u8 {
+    unsafe { malloc(size as usize) }
 }
 
-unsafe extern "C" fn toy_dispatched_free(handle: u64, p: *mut u8) {
-    if handle == 0 {
-        unsafe { free(p) };
-        return;
-    }
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    let idx = (handle - 1) as usize;
-    if idx >= reg.len() {
-        eprintln!("toylang JIT runtime: invalid allocator handle");
-        std::process::exit(1);
-    }
-    let slot = &mut reg[idx];
-    if slot.kind == JitAllocKind::Arena {
-        return; // no-op
-    }
-    if let Some(pos) = slot.addrs.iter().position(|&a| a == p) {
-        slot.used -= slot.sizes[pos];
-        slot.addrs.swap_remove(pos);
-        slot.sizes.swap_remove(pos);
-        unsafe { free(p) };
-    } else {
-        unsafe { free(p) };
-    }
+unsafe extern "C" fn toy_dispatched_free(_handle: u64, p: *mut u8) {
+    unsafe { free(p) };
 }
 
-unsafe extern "C" fn toy_arena_drop(handle: u64) {
-    if handle == 0 {
-        return;
-    }
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    let idx = (handle - 1) as usize;
-    if idx >= reg.len() {
-        eprintln!("toylang JIT runtime: invalid allocator handle");
-        std::process::exit(1);
-    }
-    let slot = &mut reg[idx];
-    if slot.kind != JitAllocKind::Arena {
-        return; // No-op for fixed_buffer.
-    }
-    for &p in &slot.addrs {
-        unsafe { free(p) };
-    }
-    slot.addrs.clear();
-    slot.sizes.clear();
-}
-
-unsafe extern "C" fn toy_fixed_buffer_drop(handle: u64) {
-    if handle == 0 {
-        return;
-    }
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    let idx = (handle - 1) as usize;
-    if idx >= reg.len() {
-        eprintln!("toylang JIT runtime: invalid allocator handle");
-        std::process::exit(1);
-    }
-    let slot = &mut reg[idx];
-    if slot.kind != JitAllocKind::FixedBuffer {
-        return; // No-op for arena / default.
-    }
-    for &p in &slot.addrs {
-        unsafe { free(p) };
-    }
-    slot.addrs.clear();
-    slot.sizes.clear();
-    slot.used = 0;
-}
-
-unsafe extern "C" fn toy_dispatched_realloc(handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
-    if handle == 0 {
-        return unsafe { realloc(p, new_size as usize) };
-    }
-    let mut reg = JIT_ALLOC_REGISTRY
-        .lock()
-        .expect("alloc registry mutex poisoned");
-    let idx = (handle - 1) as usize;
-    if idx >= reg.len() {
-        eprintln!("toylang JIT runtime: invalid allocator handle");
-        std::process::exit(1);
-    }
-    let slot = &mut reg[idx];
-    if slot.kind == JitAllocKind::FixedBuffer {
-        let (old_size, found) = slot
-            .addrs
-            .iter()
-            .position(|&a| a == p)
-            .map(|i| (slot.sizes[i], Some(i)))
-            .unwrap_or((0, None));
-        let projected = slot.used - old_size + new_size;
-        if projected > slot.capacity {
-            return std::ptr::null_mut();
-        }
-        let np = unsafe { realloc(p, new_size as usize) };
-        if np.is_null() {
-            return np;
-        }
-        match found {
-            Some(i) => {
-                slot.addrs[i] = np;
-                slot.sizes[i] = new_size;
-                slot.used = projected;
-            }
-            None => {
-                slot.addrs.push(np);
-                slot.sizes.push(new_size);
-                slot.used += new_size;
-            }
-        }
-        return np;
-    }
-    let np = unsafe { realloc(p, new_size as usize) };
-    if np.is_null() {
-        return np;
-    }
-    if let Some(i) = slot.addrs.iter().position(|&a| a == p) {
-        slot.addrs[i] = np;
-        slot.sizes[i] = new_size;
-    } else {
-        slot.addrs.push(np);
-        slot.sizes.push(new_size);
-    }
-    np
+unsafe extern "C" fn toy_dispatched_realloc(_handle: u64, p: *mut u8, new_size: u64) -> *mut u8 {
+    unsafe { realloc(p, new_size as usize) }
 }
 
 unsafe extern "C" fn toy_print_bool(v: u8) {

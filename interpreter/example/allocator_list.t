@@ -53,6 +53,5 @@ fn main() -> u64 {
         list.push(30u64)
         list.get(0u64) + list.get(1u64) + list.get(2u64)
     }
-    arena.drop()
     r
 }

@@ -50,9 +50,6 @@ fn main() -> u64 {
     fb.reset()
     val h: u64 = if fb.is_empty() { 1u64 } else { 0u64 }
 
-    arena.drop()
-    fb.drop()
-
     # All 16 checks must pass; collapse to 1 / 0.
     a + b + c + c2 + d + d2 + d3 + e + e2 + e3 + f + g + g2 + h
 }

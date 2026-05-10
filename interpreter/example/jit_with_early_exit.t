@@ -49,6 +49,5 @@ fn continue_in_with_loop(arena: Arena) -> u64 {
 fn main() -> u64 {
     val arena = Arena::new()
     val r: u64 = early_return_in_with(arena) + break_in_with_loop(arena) + continue_in_with_loop(arena)
-    arena.drop()
     r
 }

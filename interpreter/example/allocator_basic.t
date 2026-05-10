@@ -12,6 +12,5 @@ fn main() -> u64 {
     val p: ptr = arena.alloc(16u64)
     __builtin_ptr_write(p, 0u64, 42u64)
     val v: u64 = __builtin_ptr_read(p, 0u64)
-    arena.drop()
     v
 }

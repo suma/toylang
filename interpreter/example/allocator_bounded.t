@@ -33,6 +33,5 @@ fn main() -> u64 {
         val b = store(200u64)
         a + b
     }
-    arena.drop()
     r
 }

@@ -1704,12 +1704,12 @@ fn fixed_buffer_temporary_auto_cleanup_early_return_round_trip() {
 #[test]
 fn drop_trait_named_binding_round_trip() {
     // Both `Arena` and `FixedBuffer` impl the stdlib `Drop` trait
-    // (`core/std/drop.t`). Calling `arena.drop()` / `fb.drop()` on
-    // a named binding dispatches through the trait method table;
-    // the toylang body releases the wrapper's tracking arrays. The
-    // `with allocator = Arena::new() { ... }` temporary form
-    // additionally fires `drop()` at scope exit via the inline-
-    // temporary auto-drop hook.
+    // (`core/std/drop.t`). Named bindings get `drop()` auto-called
+    // at scope exit through the Phase 5 RAII path, so the toylang
+    // body's tracking-array release fires without an explicit call.
+    // The `with allocator = Arena::new() { ... }` temporary form
+    // also fires `drop()` at scope exit via the inline-temporary
+    // auto-drop hook.
     let src = r#"
         fn main() -> u64 {
             val arena = Arena::new()
@@ -1717,14 +1717,12 @@ fn drop_trait_named_binding_round_trip() {
                 val p: ptr = __builtin_heap_alloc(8u64)
                 if __builtin_ptr_is_null(p) { return 1u64 }
             }
-            arena.drop()
 
             val fb = FixedBuffer::new(8u64)
             with allocator = fb {
                 val q: ptr = __builtin_heap_alloc(4u64)
                 if __builtin_ptr_is_null(q) { return 2u64 }
             }
-            fb.drop()
             42u64
         }
     "#;
@@ -2882,7 +2880,7 @@ fn stdlib_alloc_with_struct() {
     // (or call any `handle()` method).
     //
     // Coverage:
-    //   - Arena: two-allocation `with` body, then `arena.drop()`
+    //   - Arena: two-allocation `with` body, drop fires at scope exit
     //   - FixedBuffer(16): two 8-byte allocations succeed,
     //     third 1-byte allocation hits the quota → null
     //   - both wrapper kinds exercise the auto-extract path
@@ -2893,7 +2891,6 @@ fn stdlib_alloc_with_struct() {
                 val p1: ptr = __builtin_heap_alloc(8u64)
                 if __builtin_ptr_is_null(p1) { return 1u64 }
             }
-            arena.drop()
 
             val fb = FixedBuffer::new(16u64)
             with allocator = fb {
@@ -2929,7 +2926,6 @@ fn stdlib_alloc_trait_methods() {
             if __builtin_ptr_is_null(p1) { return 1u64 }
             val p2: ptr = arena.alloc(8u64)
             if __builtin_ptr_is_null(p2) { return 2u64 }
-            arena.drop()
 
             val fb = FixedBuffer::new(8u64)
             val q1: ptr = fb.alloc(8u64)
@@ -4229,7 +4225,6 @@ fn aot_arena_bytes_used_and_reset() {
             if arena.bytes_used() != 0u64 { return 2u64 }
             val p3: ptr = arena.alloc(8u64)
             if arena.bytes_used() != 8u64 { return 3u64 }
-            arena.drop()
             42u64
         }
     "#;
@@ -4266,7 +4261,6 @@ fn aot_fixed_buffer_introspection() {
             fb.reset()
             if !fb.is_empty() { return 11u64 }
 
-            fb.drop()
             42u64
         }
     "#;

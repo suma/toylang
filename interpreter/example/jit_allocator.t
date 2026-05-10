@@ -13,6 +13,5 @@ fn main() -> u64 {
         val x: u64 = __builtin_ptr_read(p, 0u64)
         x
     }
-    arena.drop()
     total
 }

@@ -27,6 +27,5 @@ fn run_with(fb: FixedBuffer) -> u64 {
 fn main() -> u64 {
     val fb = FixedBuffer::new(64u64)
     val r: u64 = run_with(fb)
-    fb.drop()
     r
 }

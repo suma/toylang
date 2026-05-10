@@ -6,7 +6,7 @@
 //! pass. That worked while the supported feature surface was tiny, but it
 //! conflated three concerns: shaping the program for codegen, dealing with
 //! Cranelift's specific API, and managing per-function bookkeeping. As the
-//! roadmap (`todo.md` #183) calls for `AllocatorBinding`, constant
+//! roadmap (`design-docs/todo.md` #183) calls for `AllocatorBinding`, constant
 //! propagation passes, and eventually devirtualization, lumping all of that
 //! into a single AST-walker would not scale.
 //!
@@ -566,7 +566,7 @@ impl Type {
 /// type-checker.
 ///
 /// The four variants line up 1:1 with the design in
-/// `ALLOCATOR_PLAN.md` ("IR レベルでの表現"):
+/// `design-docs/ALLOCATOR_PLAN.md` ("IR レベルでの表現"):
 ///
 /// - `Static(allocator_id)` — the allocator is a compile-time
 ///   constant (typically created by `__builtin_default_allocator()`

@@ -24,7 +24,7 @@
 //!
 //! These limitations exist because the Cranelift codegen here does not yet
 //! have a runtime to back any of them. They will land in subsequent phases
-//! (see `todo.md` #183).
+//! (see `design-docs/todo.md` #183).
 
 pub mod codegen;
 pub mod driver;

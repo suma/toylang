@@ -8,7 +8,7 @@
 # `{{` / `}}` lex to literal `{` / `}` (Rust convention).
 #
 # Currently interpreter-only — JIT silently falls back, AOT rejects
-# `__builtin_to_string` with a precise message (see todo.md
+# `__builtin_to_string` with a precise message (see design-docs/todo.md
 # `STR-INTERP-AOT`).
 
 fn double(x: i64) -> i64 { x * 2i64 }

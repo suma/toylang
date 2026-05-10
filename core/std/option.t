@@ -58,7 +58,7 @@ impl<T> Option<T> {
     # for the variant the type checker doesn't see literally
     # (one arm is reached as `Struct(?, ...)`, the other as
     # `Enum(?, ...)`), so the unifier rejects the body during
-    # stdlib auto-load. Tracked in `todo.md` 96残-後半 — once
+    # stdlib auto-load. Tracked in `design-docs/todo.md` 96残-後半 — once
     # the generic-enum match unification handles the
     # impl-block context cleanly, these HOFs can land. Until
     # then, use a direct `match` in user code.

@@ -157,7 +157,7 @@ fn closure_value_round_trips_through_value_binding() {
 // type checker as `Struct(?, ...)`, the other as
 // `Enum(?, ...)`), so the unifier rejects the body even
 // though the runtime semantics are sound. Tracked in
-// `todo.md` 96残-後半. Until that's fixed, user code can
+// `design-docs/todo.md` 96残-後半. Until that's fixed, user code can
 // still write `match` directly or define HOFs as free
 // functions over a concrete `Option<i64>` type.
 

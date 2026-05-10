@@ -56,6 +56,6 @@ impl<T, E> Result<T, E> {
     # Result::Err(e) => Result::Err(f(e)) }` because the two
     # arms infer different `Generic(?)` substitutions for the
     # variant the type checker doesn't see literally. The
-    # follow-up is tracked in `todo.md` (96残-後半). Use a
+    # follow-up is tracked in `design-docs/todo.md` (96残-後半). Use a
     # direct `match` until then.
 }

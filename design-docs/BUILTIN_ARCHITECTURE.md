@@ -2,7 +2,7 @@
 
 > **位置づけ**: 実装側ドキュメント。ユーザ向け builtin 一覧
 > (`print` / `println` / `panic` / `assert` / `__builtin_*` 系) は
-> [`docs/language.md` → Built-in functions and methods](docs/language.md)
+> [`docs/language.md` → Built-in functions and methods](../docs/language.md)
 > を、allocator 関連は [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md) を、
 > JIT 側のサポート範囲は [`JIT.md`](JIT.md) を参照してください。
 
@@ -166,7 +166,7 @@ value type と runtime model が大きく異なる (interpreter は
 
 `core/std/` 配下の `.t` ファイルが auto-load 経由で全プログラムに
 integrate される (詳細は [`docs/language.md` → Modules → Core modules
-(auto-load)](docs/language.md))。
+(auto-load)](../docs/language.md))。
 
 | File | 提供内容 |
 |---|---|

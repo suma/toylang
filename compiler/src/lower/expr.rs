@@ -1680,6 +1680,30 @@ impl<'a> FunctionLower<'a> {
                     .ok_or_else(|| "ptr_is_null arg produced no value".to_string())?;
                 Ok(self.emit(InstKind::PtrIsNull { ptr: p }, Some(Type::Bool)))
             }
+            BuiltinFunction::PtrEq => {
+                if args.len() != 2 {
+                    return Err(format!(
+                        "__builtin_ptr_eq takes 2 args (ptr, ptr), got {}",
+                        args.len()
+                    ));
+                }
+                let a = self
+                    .lower_expr(&args[0])?
+                    .ok_or_else(|| "ptr_eq arg 0 produced no value".to_string())?;
+                let b = self
+                    .lower_expr(&args[1])?
+                    .ok_or_else(|| "ptr_eq arg 1 produced no value".to_string())?;
+                Ok(self.emit(InstKind::PtrEq { a, b }, Some(Type::Bool)))
+            }
+            BuiltinFunction::NullPtr => {
+                if !args.is_empty() {
+                    return Err(format!(
+                        "__builtin_null_ptr takes no args, got {}",
+                        args.len()
+                    ));
+                }
+                Ok(self.emit(InstKind::Const(crate::ir::Const::U64(0)), Some(Type::U64)))
+            }
             BuiltinFunction::ArenaAllocator => {
                 // #121 Phase B-rest Item 1: allocate an arena slot
                 // in the runtime registry and return its handle.

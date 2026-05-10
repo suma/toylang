@@ -2402,6 +2402,21 @@ pub(crate) fn check_expr(
                     }
                     Some(ScalarTy::Bool)
                 }
+                BuiltinFunction::PtrEq => {
+                    if !check_args(&[ScalarTy::Ptr, ScalarTy::Ptr], &args, locals, compound_locals, callees, ptr_read_hints, reject_reason) {
+                        return None;
+                    }
+                    Some(ScalarTy::Bool)
+                }
+                BuiltinFunction::NullPtr => {
+                    if !args.is_empty() {
+                        *reject_reason = Some(
+                            "__builtin_null_ptr takes no args".to_string(),
+                        );
+                        return None;
+                    }
+                    Some(ScalarTy::Ptr)
+                }
                 BuiltinFunction::StrToPtr => {
                     // `__builtin_str_to_ptr(s: str) -> ptr` is not yet
                     // hot-path JIT-eligible: the JIT has no `ScalarTy::Str`

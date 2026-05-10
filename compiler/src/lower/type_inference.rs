@@ -190,6 +190,8 @@ impl<'a> FunctionLower<'a> {
                 | frontend::ast::BuiltinFunction::ArenaAllocator
                 | frontend::ast::BuiltinFunction::FixedBufferAllocator => Some(Type::U64),
                 frontend::ast::BuiltinFunction::PtrIsNull => Some(Type::Bool),
+                frontend::ast::BuiltinFunction::PtrEq => Some(Type::Bool),
+                frontend::ast::BuiltinFunction::NullPtr => Some(Type::U64),
                 // `__builtin_str_to_ptr(s) -> ptr` returns a u64-sized
                 // pointer value.
                 frontend::ast::BuiltinFunction::StrToPtr => Some(Type::U64),

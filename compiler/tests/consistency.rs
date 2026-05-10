@@ -4334,3 +4334,64 @@ fn labelled_continue_round_trip() {
     assert_consistent(src, "labelled_continue");
 }
 
+#[test]
+fn aot_arena_bytes_used_and_reset() {
+    // stdlib introspection: `Arena::bytes_used()` reflects the
+    // cumulative size of allocations made through the wrapper;
+    // `arena.reset()` clears the counter and the runtime
+    // tracking, returning the wrapper to its zero state for
+    // re-use. Pin the contract across all 3 backends.
+    let src = r#"
+        fn main() -> u64 {
+            val arena = Arena::new()
+            val p1: ptr = arena.alloc(64u64)
+            val p2: ptr = arena.alloc(32u64)
+            if arena.bytes_used() != 96u64 { return 1u64 }
+            arena.reset()
+            if arena.bytes_used() != 0u64 { return 2u64 }
+            val p3: ptr = arena.alloc(8u64)
+            if arena.bytes_used() != 8u64 { return 3u64 }
+            arena.drop()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "aot_arena_bytes_used_and_reset");
+}
+
+#[test]
+fn aot_fixed_buffer_introspection() {
+    // stdlib introspection: `FixedBuffer` exposes `capacity()`
+    // (constant), `used()` / `remaining()` (current quota),
+    // `is_empty()` (used == 0), and `reset()` (return quota
+    // to 0). Pin the invariants used + remaining == capacity.
+    let src = r#"
+        fn main() -> u64 {
+            val fb = FixedBuffer::new(128u64)
+            if !fb.is_empty() { return 1u64 }
+            if fb.capacity() != 128u64 { return 2u64 }
+            if fb.remaining() != 128u64 { return 3u64 }
+
+            val q1: ptr = fb.alloc(40u64)
+            if fb.used() != 40u64 { return 4u64 }
+            if fb.remaining() != 88u64 { return 5u64 }
+            if fb.is_empty() { return 6u64 }
+            if fb.used() + fb.remaining() != fb.capacity() { return 7u64 }
+
+            # Quota exhaustion returns null without disturbing accounting.
+            val q_oob: ptr = fb.alloc(200u64)
+            if !__builtin_ptr_is_null(q_oob) { return 8u64 }
+            if fb.used() != 40u64 { return 9u64 }
+
+            fb.free(q1)
+            if !fb.is_empty() { return 10u64 }
+
+            fb.reset()
+            if !fb.is_empty() { return 11u64 }
+
+            fb.drop()
+            42u64
+        }
+    "#;
+    assert_consistent(src, "aot_fixed_buffer_introspection");
+}
+

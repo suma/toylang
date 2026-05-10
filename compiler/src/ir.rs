@@ -850,6 +850,11 @@ pub enum InstKind {
     /// allocations without comparing `ptr` to a `u64` literal
     /// (which the type checker rejects).
     PtrIsNull { ptr: ValueId },
+    /// `__builtin_ptr_eq(a, b) -> bool`. Codegen lowers to
+    /// `icmp eq, a, b`. Used by the toylang stdlib `Arena` /
+    /// `FixedBuffer` to find tracked addresses in their
+    /// (addr, size) parallel-array bookkeeping.
+    PtrEq { a: ValueId, b: ValueId },
     /// `__builtin_arena_drop(handle) -> ()`. Releases every
     /// allocation tracked by the arena slot. No-op for
     /// fixed_buffer slots and the default sentinel — only the
@@ -1387,6 +1392,7 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(f, "{prefix}alloc_fixed_buffer {capacity}")
             }
             InstKind::PtrIsNull { ptr } => write!(f, "{prefix}ptr_is_null {ptr}"),
+            InstKind::PtrEq { a, b } => write!(f, "{prefix}ptr_eq {a}, {b}"),
             InstKind::AllocArenaDrop { handle } => write!(f, "alloc_arena_drop {handle}"),
             InstKind::AddressOf { local } => write!(f, "{prefix}address_of {local}"),
             InstKind::LoadRef { ptr, ty } => write!(f, "{prefix}load_ref {ptr} : {ty}"),

@@ -509,6 +509,37 @@ impl EvaluationContext<'_> {
                 Ok(EvaluationResult::Value((Object::Bool(addr == 0)).into()))
             }
 
+            BuiltinFunction::PtrEq => {
+                if args.len() != 2 {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "ptr_eq takes 2 arguments".to_string(),
+                        expected: 2,
+                        found: args.len(),
+                    });
+                }
+
+                let a_result = self.evaluate(&args[0])?;
+                let a_obj = try_value!(Ok(a_result));
+                let a_addr = a_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("ptr_eq expects pointer (arg 0)".to_string()))?;
+                let b_result = self.evaluate(&args[1])?;
+                let b_obj = try_value!(Ok(b_result));
+                let b_addr = b_obj.borrow().try_unwrap_pointer()
+                    .map_err(|_| InterpreterError::InternalError("ptr_eq expects pointer (arg 1)".to_string()))?;
+                Ok(EvaluationResult::Value((Object::Bool(a_addr == b_addr)).into()))
+            }
+
+            BuiltinFunction::NullPtr => {
+                if !args.is_empty() {
+                    return Err(InterpreterError::FunctionParameterMismatch {
+                        message: "null_ptr takes 0 arguments".to_string(),
+                        expected: 0,
+                        found: args.len(),
+                    });
+                }
+                Ok(EvaluationResult::Value((Object::Pointer(0)).into()))
+            }
+
             // Memory operations
             BuiltinFunction::MemCopy => {
                 if args.len() != 3 {

@@ -270,13 +270,28 @@ fn main() -> u64 {
 | `__builtin_arena_allocator()` | 新規 arena（drop で一括解放） |
 | `__builtin_fixed_buffer_allocator(capacity: u64)` | バイト数 quota 付き（超過で null） |
 | `__builtin_sizeof(value)` | 値のバイトサイズ（u64）。primitive に加え struct（フィールド合計）/ enum（1-byte タグ + payload）/ tuple / array をサポート。generic `T` の実体サイズ取得に使う |
+| `__builtin_ptr_eq(a: ptr, b: ptr) -> bool` | 2 ポインタの addr 等値比較。stdlib `Arena` / `FixedBuffer` の追跡表検索に使用 |
+| `__builtin_null_ptr() -> ptr` | null pointer (addr 0)。`__builtin_heap_alloc(0u64)` は AOT で libc malloc に委譲するため非 null を返しうる; 移植性のあるコードは本 builtin を使う |
 | `with allocator = a { ... }` | scope 内で allocator を有効化、内部の `__builtin_heap_alloc` 等が経由する |
+
+### stdlib `Arena` / `FixedBuffer` の introspection (Odin/Zig 風)
+
+`core/std/allocator.t` の wrapper struct に名前束縛 (`val arena = Arena::new()`) でアクセスすると、以下の inherent method が使える:
+
+- `arena.alloc(size: u64) -> ptr` / `arena.free(p: ptr)` / `arena.realloc(p: ptr, n: u64) -> ptr` (`trait Alloc`)
+- `arena.bytes_used() -> u64` — 累積追跡バイト数
+- `arena.reset()` — 一括 free + 再利用可能化 (Odin の `mem.free_all` 相当)
+- `fb.capacity() -> u64` / `fb.used() -> u64` / `fb.remaining() -> u64` / `fb.is_empty() -> bool`
+- `fb.reset()` — quota を 0 に戻す
+
+これらは toylang 側の `(addr, size)` parallel array を見るので、`arena.alloc(...)` 経由で確保した分のみカウントされる。`with allocator = arena { __builtin_heap_alloc(...) }` 形式で raw heap_alloc を呼ぶと wrapper の追跡を通らないため (runtime arena の bookkeeping のみ更新)、introspection は反映されない。
 
 ### 典型的な使い方
 
 - 基本: `interpreter/example/allocator_basic.t`
 - bound 付き汎用関数 + `ambient` + 自動挿入: `interpreter/example/allocator_bounded.t`
 - ユーザ空間の動的リスト（struct + impl + heap builtin）: `interpreter/example/allocator_list.t`
+- 新 introspection API (`bytes_used` / `reset` / `used` / `remaining` / `is_empty`): `interpreter/example/allocator_reuse.t`
 
 ### 意味論のポイント
 

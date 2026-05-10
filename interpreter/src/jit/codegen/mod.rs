@@ -1113,6 +1113,18 @@ impl<'a, 'b> State<'a, 'b> {
                             .ok_or_else(|| "ptr_is_null arg".to_string())?;
                         Ok(Some(self.builder.ins().icmp_imm(IntCC::Equal, v, 0)))
                     }
+                    BuiltinFunction::PtrEq => {
+                        let a = self
+                            .gen_expr(&args[0])?
+                            .ok_or_else(|| "ptr_eq arg 0".to_string())?;
+                        let b = self
+                            .gen_expr(&args[1])?
+                            .ok_or_else(|| "ptr_eq arg 1".to_string())?;
+                        Ok(Some(self.builder.ins().icmp(IntCC::Equal, a, b)))
+                    }
+                    BuiltinFunction::NullPtr => {
+                        Ok(Some(self.builder.ins().iconst(cranelift_codegen::ir::types::I64, 0)))
+                    }
                     BuiltinFunction::StrToPtr => {
                         // Eligibility (`jit/eligibility.rs::StrToPtr`)
                         // already rejects this for the JIT hot path —

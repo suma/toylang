@@ -903,6 +903,17 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, cmp);
                 }
             }
+            InstKind::PtrEq { a, b } => {
+                let av = self.value(*a);
+                let bv = self.value(*b);
+                let cmp = self
+                    .builder
+                    .ins()
+                    .icmp(cranelift_codegen::ir::condcodes::IntCC::Equal, av, bv);
+                if let Some((vid, _)) = inst.result {
+                    self.values.insert(vid.0, cmp);
+                }
+            }
             InstKind::AllocArenaDrop { handle } => {
                 let h = self.value(*handle);
                 self.builder.ins().call(self.runtime.arena_drop, &[h]);

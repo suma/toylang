@@ -47,6 +47,7 @@ fn test_program_with_core(
     core: Option<std::path::PathBuf>,
 ) -> Result<Rc<RefCell<Object>>, String> {
     let mut parser = frontend::ParserWithInterner::new(source_code);
+    parser.set_source_file("test.t");
     let mut program = parser.parse_program()
         .map_err(|e| format!("Parse error: {e:?}"))?;
 

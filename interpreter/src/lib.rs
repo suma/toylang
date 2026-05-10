@@ -850,7 +850,7 @@ pub fn run_source(
 ) -> Result<RunOutcome, String> {
     let formatter = ErrorFormatter::new(source, filename);
     let mut session = compiler_core::CompilerSession::new();
-    let mut program = match session.parse_program(source) {
+    let mut program = match session.parse_program_with_source(source, filename) {
         Ok(p) => p,
         Err(err) => {
             // Print the same diagnostic the binary used to emit, then

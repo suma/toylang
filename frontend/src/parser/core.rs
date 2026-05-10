@@ -64,6 +64,13 @@ impl ParserWithInterner {
         self.call_parser_with_error_copy(|parser| parser.parse_program())
     }
 
+    /// Forward to the inner parser's `set_source_file`. Powers the
+    /// parser-level `__builtin_source_file()` substitution.
+    pub fn set_source_file(&mut self, path: impl Into<String>) {
+        let path = path.into();
+        self.get_parser().set_source_file(path);
+    }
+
     pub fn get_string_interner(&mut self) -> &mut DefaultStringInterner {
         &mut self.string_interner
     }
@@ -179,6 +186,12 @@ pub struct Parser<'a> {
     /// target keeps `Generic(T)` placeholders that get substituted at
     /// the use site via `substitute_generics`.
     pub type_aliases: HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>,
+    /// Source file path for `__builtin_source_file()` substitution.
+    /// `None` defaults to `"<source>"`. Set via `set_source_file` when
+    /// the entry point knows the on-disk path (e.g. `interpreter` CLI,
+    /// module loader); test / bench / inline-string parser sites
+    /// typically leave it unset.
+    pub source_file: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -202,7 +215,23 @@ impl<'a> Parser<'a> {
             pending_prelude_stmts: Vec::new(),
             synthetic_counter: 0,
             type_aliases: HashMap::new(),
+            source_file: None,
         }
+    }
+
+    /// Set the source file path used by `__builtin_source_file()`
+    /// substitution. Call this immediately after `Parser::new` from
+    /// any entry point that knows the on-disk path (e.g. the
+    /// interpreter binary's main loop, or the module loader).
+    pub fn set_source_file(&mut self, path: impl Into<String>) {
+        self.source_file = Some(path.into());
+    }
+
+    /// Borrow a substring of the original source. Used by
+    /// `__builtin_dbg(expr)` to recover the textual form of `expr`
+    /// from the byte range of its tokens.
+    pub fn source_substring(&self, range: std::ops::Range<usize>) -> &str {
+        &self.input[range]
     }
 
     /// Create a new parser with owned string interner (for backward compatibility/testing)

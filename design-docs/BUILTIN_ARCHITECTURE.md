@@ -107,6 +107,37 @@ value type と runtime model が大きく異なる (interpreter は
 両者とも同じ `BuiltinFunction` enum を共有し、parser がどちらの形式
 でも受理する。
 
+### Parser-level macros (no enum variant)
+
+一部の名前は `BuiltinFunction` enum に**載らず**、parser が見たそばから
+ordinary AST に書き換える。enum を経由しないので type checker / 3
+backend のどれもこれらの名前を直接知らない — 出口は普通の literal /
+block / call である。
+
+| Macro | Desugar shape | 担当ヘルパ (`frontend/src/parser/expr.rs`) |
+|---|---|---|
+| `__builtin_source_file()` | `Expr::String(<path>)` | `try_intercept_parser_macro` |
+| `__builtin_source_line()` | `Expr::Number(<line as u64>)` | 同上 |
+| `__builtin_source_column()` | `Expr::Number(<col as u64>)` | 同上 |
+| `__builtin_dbg(EXPR)` | `{ val __dbg_n = EXPR; println("[file:line] text = ".concat(to_string(__dbg_n))); __dbg_n }` | `parse_dbg_macro` |
+| `assert_eq(a, b)` | `{ val l=a; val r=b; assert(l==r, "<msg>".concat(...)) }` | `parse_assert_cmp_macro(equal=true)` |
+| `assert_ne(a, b)` | 同上、比較を `!=` に反転 | `parse_assert_cmp_macro(equal=false)` |
+
+source location 系は parser コンストラクタから渡された `source_file:
+Option<String>` (default `"<source>"`) を `string_interner` に焼き、
+`__builtin_dbg` は `Parser::source_substring(byte_range)` で原文を
+そのまま切り出す (AST 再レンダリングではなく入力バッファ参照)。
+`assert_eq` / `assert_ne` の panic message も parse 時にヘッダを焼き、
+`a` / `b` 部分のみ runtime concat に残す。
+
+backend 一貫性: 出力 AST が普通の expression / block / `assert` /
+`println` / `__builtin_to_string` だけなので、interpreter / AOT は
+実装変更不要で動く。JIT は `assert(cond, "literal")` で literal-message
+を要求するため、`assert_eq` の dynamic-message を含む関数は eligibility
+で fallback する (interpreter にミラー実行させる)。`__builtin_dbg` は
+`println` + concat + `__builtin_to_string` の組み合わせなので、内部値が
+JIT scalar の範囲内なら JIT-eligible のまま。
+
 ## Layer 2: per-backend dispatch
 
 ### 2a. Tree-walking interpreter

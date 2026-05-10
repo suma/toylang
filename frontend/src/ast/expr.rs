@@ -386,6 +386,25 @@ pub struct BuiltinFunctionSymbols {
     pub abs: DefaultSymbol,
     pub min: DefaultSymbol,
     pub max: DefaultSymbol,
+
+    // Source-location introspection. Each of these is recognised at
+    // parser time and substituted in-place with the corresponding
+    // literal (line / column as `u64`, file as `str`); they never
+    // reach `symbol_to_builtin` or any backend. Powers `__builtin_dbg`
+    // and `assert_eq` / `assert_ne`.
+    pub source_file: DefaultSymbol,
+    pub source_line: DefaultSymbol,
+    pub source_column: DefaultSymbol,
+
+    // `__builtin_dbg(expr)` — parser-level macro that captures the
+    // source text of `expr` and lowers to a print + return-value
+    // block. Recognised by symbol equality in the parser.
+    pub dbg: DefaultSymbol,
+
+    // `assert_eq(a, b)` / `assert_ne(a, b)` — parser-level desugar
+    // emitting an inequality check + formatted `panic` on failure.
+    pub assert_eq: DefaultSymbol,
+    pub assert_ne: DefaultSymbol,
     // NOTE: f64 math symbol fields (`pow` / `sqrt` / `sin` / `cos` /
     // `tan` / `log` / `log2` / `exp` / `floor` / `ceil`) lived here
     // before Phase 4. They were the parser-side recogniser for the
@@ -432,6 +451,12 @@ impl BuiltinFunctionSymbols {
             abs: interner.get_or_intern("__builtin_abs"),
             min: interner.get_or_intern("__builtin_min"),
             max: interner.get_or_intern("__builtin_max"),
+            source_file: interner.get_or_intern("__builtin_source_file"),
+            source_line: interner.get_or_intern("__builtin_source_line"),
+            source_column: interner.get_or_intern("__builtin_source_column"),
+            dbg: interner.get_or_intern("__builtin_dbg"),
+            assert_eq: interner.get_or_intern("assert_eq"),
+            assert_ne: interner.get_or_intern("assert_ne"),
         }
     }
 

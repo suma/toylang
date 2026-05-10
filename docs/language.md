@@ -1897,6 +1897,60 @@ fn divmod(a: i64, b: i64) -> (i64, i64) {
 }
 ```
 
+#### `assert_eq` / `assert_ne`
+
+`assert_eq(a, b)` and `assert_ne(a, b)` are parser-level macros that
+desugar to a value comparison plus `assert(cond, msg)`. The synthesized
+panic message includes the source line and pretty-printed left/right
+operands, so a failing equality check reads as
+
+```text
+panic: assertion `left == right` failed at line 42
+  left:  3
+  right: 4
+```
+
+Both operands may be of any type that supports `==` / `!=` (primitives
++ struct types with a user-provided `eq` overload). Each call binds the
+operands to fresh synthetic locals before the check, so side-effecting
+expressions (`assert_eq(counter.next(), 1u64)`) evaluate exactly once.
+
+JIT eligibility falls back when the panic message ends up as a runtime
+concat chain; interpreter and AOT both run the desugared form
+unchanged.
+
+### Source location and `__builtin_dbg`
+
+```rust
+__builtin_source_file()    -> str   # path of the current source file
+__builtin_source_line()    -> u64   # call-site line, 1-indexed
+__builtin_source_column()  -> u64   # call-site column, 1-indexed
+__builtin_dbg(value: T)    -> T     # print "[file:line] expr = value", return value
+```
+
+The four entries are all parser-level macros — none of them reach
+the type checker or the backends. The three `__builtin_source_*`
+calls are substituted in-place with a literal of the matching type
+at parse time. `__builtin_dbg(EXPR)` captures `EXPR`'s source text
+verbatim from the input buffer and rewrites the call to:
+
+```text
+{
+    val __dbg_<n> = EXPR
+    println("[<file>:<line>] <captured_text> = ".concat(__builtin_to_string(__dbg_<n>)))
+    __dbg_<n>
+}
+```
+
+so the call returns `EXPR`'s value while emitting a trace line — useful
+inside expression chains where introducing a temporary would be
+disruptive (`val r = f(__builtin_dbg(g(x)))`). The captured text comes
+from a byte-range slice of the source, not from re-rendering the AST,
+so user formatting is preserved exactly.
+
+When `set_source_file` is not wired (e.g. inline test strings without
+a path), `__builtin_source_file()` returns `"<source>"`.
+
 ### Type introspection
 
 ```rust

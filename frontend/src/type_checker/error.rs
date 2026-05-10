@@ -1,6 +1,6 @@
 use crate::type_decl::TypeDecl;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SourceLocation {
     pub line: u32,
     pub column: u32,

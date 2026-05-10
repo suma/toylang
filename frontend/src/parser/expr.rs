@@ -1264,6 +1264,16 @@ fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> P
     match parser.peek() {
         Some(Kind::ParenOpen) => {
             let location = parser.current_source_location();
+            // Intercept parser-level macros BEFORE consuming `(`. Each
+            // of these is rewritten in-place into ordinary AST shapes;
+            // they never reach `symbol_to_builtin` or any backend.
+            //
+            // Source-location builtins → literal substitution.
+            // `__builtin_dbg(expr)` and `assert_eq` / `assert_ne` →
+            // see `parse_dbg_macro` / `parse_assert_eq_macro`.
+            if let Some(rewritten) = try_intercept_parser_macro(parser, name, location)? {
+                return Ok(rewritten);
+            }
             parser.next();
             let args = parse_expr_list(parser, vec![])?;
             parser.expect_err(&Kind::ParenClose)?;
@@ -1295,6 +1305,235 @@ fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> P
             Ok(parser.ast_builder.identifier_expr(name, Some(location)))
         }
     }
+}
+
+/// Recognise and rewrite parser-level macros. Returns
+/// `Ok(Some(rewritten))` when `name` is one of the recognised macro
+/// names and the parser successfully consumed `(` … `)`. Returns
+/// `Ok(None)` when `name` is unrelated, leaving the cursor untouched
+/// (the caller continues with normal call / builtin dispatch). Errors
+/// propagate.
+///
+/// Each macro is rewritten **in place** into ordinary AST shapes so
+/// the type checker / interpreter / JIT / AOT never see a macro node.
+fn try_intercept_parser_macro(
+    parser: &mut Parser,
+    name: DefaultSymbol,
+    location: crate::type_checker::SourceLocation,
+) -> ParserResult<Option<ExprRef>> {
+    let symbols = parser.builtin_symbols.clone();
+    if name == symbols.source_line {
+        parser.next(); // consume `(`
+        parser.expect_err(&Kind::ParenClose)?;
+        return Ok(Some(parser.ast_builder.uint64_expr(location.line as u64, Some(location))));
+    }
+    if name == symbols.source_column {
+        parser.next();
+        parser.expect_err(&Kind::ParenClose)?;
+        return Ok(Some(parser.ast_builder.uint64_expr(location.column as u64, Some(location))));
+    }
+    if name == symbols.source_file {
+        parser.next();
+        parser.expect_err(&Kind::ParenClose)?;
+        let path = parser.source_file.clone().unwrap_or_else(|| "<source>".to_string());
+        let sym = parser.string_interner.get_or_intern(path);
+        return Ok(Some(parser.ast_builder.string_expr(sym, Some(location))));
+    }
+    if name == symbols.dbg {
+        return Ok(Some(parse_dbg_macro(parser, location)?));
+    }
+    if name == symbols.assert_eq {
+        return Ok(Some(parse_assert_cmp_macro(parser, location, /*equal=*/ true)?));
+    }
+    if name == symbols.assert_ne {
+        return Ok(Some(parse_assert_cmp_macro(parser, location, /*equal=*/ false)?));
+    }
+    Ok(None)
+}
+
+/// Desugar `__builtin_dbg(EXPR)` to:
+/// ```text
+/// {
+///   val __dbg_<n> = EXPR
+///   println("[<file>:<line>] <expr_text> = ".concat(__builtin_to_string(__dbg_<n>)))
+///   __dbg_<n>
+/// }
+/// ```
+/// where `<expr_text>` is recovered verbatim from the original source
+/// by the parser's `source_substring(byte_range)` accessor.
+fn parse_dbg_macro(
+    parser: &mut Parser,
+    call_location: crate::type_checker::SourceLocation,
+) -> ParserResult<ExprRef> {
+    parser.next(); // consume `(`
+    // Capture the byte position immediately before EXPR; this is the
+    // start of the next token (the first token inside the parens).
+    let expr_start = parser
+        .current_position()
+        .map(|r| r.start)
+        .unwrap_or(call_location.offset as usize);
+    let inner = parser.parse_expr_impl()?;
+    // After parsing EXPR, the current token should be `)`. Its start
+    // position is the byte immediately after EXPR (modulo whitespace,
+    // which we accept as part of the captured text).
+    let expr_end = parser
+        .current_position()
+        .map(|r| r.start)
+        .unwrap_or(expr_start);
+    parser.expect_err(&Kind::ParenClose)?;
+
+    let captured_text = parser.source_substring(expr_start..expr_end).trim().to_string();
+    let file_path = parser.source_file.clone().unwrap_or_else(|| "<source>".to_string());
+
+    // Build the prefix string: "[<file>:<line>] <text> = ".
+    let prefix = format!("[{}:{}] {} = ", file_path, call_location.line, captured_text);
+    let prefix_sym = parser.string_interner.get_or_intern(prefix);
+    let prefix_expr = parser.ast_builder.string_expr(prefix_sym, Some(call_location));
+
+    // Synthesize a fresh local binding for the value. Emitting a
+    // unique counter-suffixed name keeps nested `__builtin_dbg` calls
+    // from shadowing each other.
+    let n = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let tmp_name = format!("__dbg_{}", n);
+    let tmp_sym = parser.string_interner.get_or_intern(tmp_name);
+
+    // val __dbg_<n> = EXPR
+    let val_stmt = parser.ast_builder.val_stmt(tmp_sym, None, inner, Some(call_location));
+
+    // __builtin_to_string(__dbg_<n>)
+    let tmp_ident_for_tostr = parser.ast_builder.identifier_expr(tmp_sym, Some(call_location));
+    let to_string_call = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::ToString,
+        vec![tmp_ident_for_tostr],
+        Some(call_location),
+    );
+
+    // prefix.concat(__builtin_to_string(__dbg_<n>))
+    let concat = parser.ast_builder.builtin_method_call_expr(
+        prefix_expr,
+        BuiltinMethod::StrConcat,
+        vec![to_string_call],
+        Some(call_location),
+    );
+
+    // println(<concat>)
+    let println_call = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::Println,
+        vec![concat],
+        Some(call_location),
+    );
+    let println_stmt = parser.ast_builder.expression_stmt(println_call, Some(call_location));
+
+    // Trailing identifier expression (the block's value).
+    let tmp_ident_value = parser.ast_builder.identifier_expr(tmp_sym, Some(call_location));
+    let value_stmt = parser.ast_builder.expression_stmt(tmp_ident_value, Some(call_location));
+
+    Ok(parser.ast_builder.block_expr(vec![val_stmt, println_stmt, value_stmt], Some(call_location)))
+}
+
+/// Desugar `assert_eq(A, B)` (when `equal == true`) to:
+/// ```text
+/// {
+///   val __ae_l_<n> = A
+///   val __ae_r_<n> = B
+///   assert(__ae_l_<n> == __ae_r_<n>,
+///          "assertion `left == right` failed at line LINE\n  left:  "
+///          .concat(__builtin_to_string(__ae_l_<n>))
+///          .concat("\n  right: ")
+///          .concat(__builtin_to_string(__ae_r_<n>)))
+/// }
+/// ```
+/// `assert_ne(A, B)` flips the comparison operator and the message
+/// header (`left != right`).
+fn parse_assert_cmp_macro(
+    parser: &mut Parser,
+    call_location: crate::type_checker::SourceLocation,
+    equal: bool,
+) -> ParserResult<ExprRef> {
+    parser.next(); // consume `(`
+    let lhs = parser.parse_expr_impl()?;
+    parser.expect_err(&Kind::Comma)?;
+    let rhs = parser.parse_expr_impl()?;
+    parser.expect_err(&Kind::ParenClose)?;
+
+    let n = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let l_name = format!("__ae_l_{}", n);
+    let r_name = format!("__ae_r_{}", n);
+    let l_sym = parser.string_interner.get_or_intern(l_name);
+    let r_sym = parser.string_interner.get_or_intern(r_name);
+
+    // val __ae_l_<n> = A  /  val __ae_r_<n> = B
+    let l_val_stmt = parser.ast_builder.val_stmt(l_sym, None, lhs, Some(call_location));
+    let r_val_stmt = parser.ast_builder.val_stmt(r_sym, None, rhs, Some(call_location));
+
+    // Build the comparison: left == right (assert_eq) or left != right (assert_ne).
+    let l_for_cmp = parser.ast_builder.identifier_expr(l_sym, Some(call_location));
+    let r_for_cmp = parser.ast_builder.identifier_expr(r_sym, Some(call_location));
+    let cmp_op = if equal { Operator::EQ } else { Operator::NE };
+    let cmp = parser.ast_builder.binary_expr(cmp_op, l_for_cmp, r_for_cmp, Some(call_location));
+
+    // Build the message:
+    //   "assertion `left {op} right` failed at line LINE\n  left:  "
+    //   .concat(__builtin_to_string(__ae_l_<n>))
+    //   .concat("\n  right: ")
+    //   .concat(__builtin_to_string(__ae_r_<n>))
+    let header_op = if equal { "==" } else { "!=" };
+    let header = format!(
+        "assertion `left {} right` failed at line {}\n  left:  ",
+        header_op, call_location.line
+    );
+    let header_sym = parser.string_interner.get_or_intern(header);
+    let header_expr = parser.ast_builder.string_expr(header_sym, Some(call_location));
+
+    let l_for_str = parser.ast_builder.identifier_expr(l_sym, Some(call_location));
+    let l_to_str = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::ToString,
+        vec![l_for_str],
+        Some(call_location),
+    );
+    let after_l = parser.ast_builder.builtin_method_call_expr(
+        header_expr,
+        BuiltinMethod::StrConcat,
+        vec![l_to_str],
+        Some(call_location),
+    );
+
+    let mid_sym = parser.string_interner.get_or_intern("\n  right: ");
+    let mid_expr = parser.ast_builder.string_expr(mid_sym, Some(call_location));
+    let after_mid = parser.ast_builder.builtin_method_call_expr(
+        after_l,
+        BuiltinMethod::StrConcat,
+        vec![mid_expr],
+        Some(call_location),
+    );
+
+    let r_for_str = parser.ast_builder.identifier_expr(r_sym, Some(call_location));
+    let r_to_str = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::ToString,
+        vec![r_for_str],
+        Some(call_location),
+    );
+    let final_msg = parser.ast_builder.builtin_method_call_expr(
+        after_mid,
+        BuiltinMethod::StrConcat,
+        vec![r_to_str],
+        Some(call_location),
+    );
+
+    // assert(cmp, msg)
+    let assert_call = parser.ast_builder.builtin_call_expr(
+        BuiltinFunction::Assert,
+        vec![cmp, final_msg],
+        Some(call_location),
+    );
+    let assert_stmt = parser.ast_builder.expression_stmt(assert_call, Some(call_location));
+
+    Ok(parser.ast_builder.block_expr(
+        vec![l_val_stmt, r_val_stmt, assert_stmt],
+        Some(call_location),
+    ))
 }
 
 /// Parse the non-identifier head of a primary expression: an atomic

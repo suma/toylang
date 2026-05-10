@@ -45,14 +45,28 @@ impl CompilerSession {
     }
     
     /// Parse a program string within the compiler session context
-    /// 
+    ///
     /// Uses the session's shared resources (string interner, module resolver, etc.)
     /// to parse the input and produce an AST.
     pub fn parse_program(&mut self, input: &str) -> ParserResult<Program> {
         let mut parser = Parser::new(input, &mut self.string_interner);
         let program = parser.parse_program()?;
-        
+
         Ok(program)
+    }
+
+    /// Parse a program string with an explicit source path. The path
+    /// powers the parser-level `__builtin_source_file()` substitution
+    /// (and `__builtin_dbg` / `assert_eq` headers). Other than that
+    /// it is identical to `parse_program`.
+    pub fn parse_program_with_source(
+        &mut self,
+        input: &str,
+        filename: &str,
+    ) -> ParserResult<Program> {
+        let mut parser = Parser::new(input, &mut self.string_interner);
+        parser.set_source_file(filename);
+        parser.parse_program()
     }
     
     /// Merge symbols from another string interner into the session's interner

@@ -1,5 +1,5 @@
 mod common;
-use common::{test_program, test_program_with_core_modules};
+use common::{test_program, test_program_no_core, test_program_with_core_modules};
 
 // ============================================================================
 // Module system tests
@@ -226,7 +226,7 @@ fn test_arithmetic_properties_extended() {
         }}
         ", a, op, b);
 
-        let res = test_program(&program);
+        let res = test_program_no_core(&program);
         assert!(res.is_ok(), "Failed for {} {} {}", a, op, b);
         assert_eq!(res.unwrap().borrow().unwrap_int64(), expected);
     }
@@ -251,7 +251,7 @@ fn test_comparison_properties_extended() {
         }}
         ", a, op, b);
 
-        let res = test_program(&program);
+        let res = test_program_no_core(&program);
         assert!(res.is_ok(), "Failed for {} {} {}", a, op, b);
         assert_eq!(res.unwrap().borrow().unwrap_bool(), expected);
     }
@@ -277,7 +277,9 @@ fn test_logical_operations() {
         }}
         ", a, op, b);
 
-        let res = test_program(&program);
+        // No stdlib symbols here — skip the ~600 ms core-modules load
+        // that `test_program` would otherwise do for every iteration.
+        let res = test_program_no_core(&program);
         assert!(res.is_ok(), "Failed for {} {} {}", a, op, b);
         assert_eq!(res.unwrap().borrow().unwrap_bool(), expected);
     }

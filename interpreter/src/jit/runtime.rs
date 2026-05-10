@@ -893,6 +893,12 @@ thread_local! {
     /// the JIT and tree-walker paths within a single test binary
     /// without racing on a process-global env var.
     static JIT_ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    /// Per-thread override for the JIT verbose flag. Mirrors
+    /// `JIT_ENABLED_OVERRIDE`: `Some(true)` enables `JIT compiled:`
+    /// / `JIT: skipped (...)` log lines on the stderr sink, `Some(false)`
+    /// suppresses them, `None` falls back to the `-v` argv probe used
+    /// by the binary entry point.
+    static JIT_VERBOSE_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// Run `f` with the JIT enable flag forced to `enabled`, restoring the
@@ -911,6 +917,23 @@ pub fn with_jit_override<R>(enabled: bool, f: impl FnOnce() -> R) -> R {
     f()
 }
 
+/// Run `f` with the JIT verbose flag forced to `verbose`. Mirrors
+/// [`with_jit_override`] for verbose-log assertions in in-process
+/// integration tests (the binary's `-v` argv probe is unreachable
+/// from a library caller).
+pub fn with_jit_verbose_override<R>(verbose: bool, f: impl FnOnce() -> R) -> R {
+    let prev = JIT_VERBOSE_OVERRIDE.with(|c| c.replace(Some(verbose)));
+    struct Guard(Option<bool>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let prev = self.0;
+            JIT_VERBOSE_OVERRIDE.with(|c| c.set(prev));
+        }
+    }
+    let _guard = Guard(prev);
+    f()
+}
+
 fn jit_enabled_via_env() -> bool {
     if let Some(forced) = JIT_ENABLED_OVERRIDE.with(|c| c.get()) {
         return forced;
@@ -919,6 +942,9 @@ fn jit_enabled_via_env() -> bool {
 }
 
 fn verbose_via_argv() -> bool {
+    if let Some(forced) = JIT_VERBOSE_OVERRIDE.with(|c| c.get()) {
+        return forced;
+    }
     std::env::args().any(|a| a == "-v")
 }
 
@@ -959,6 +985,10 @@ fn cache_lookup(program_id: usize) -> Option<(*const u8, ScalarTy)> {
     })
 }
 
+fn cache_clear() {
+    JIT_CACHE.with(|c| c.borrow_mut().take());
+}
+
 fn cache_store(cached: CachedJit) {
     // Replacing the cache drops any previous JITModule, freeing the old
     // executable code. The cached `main_ptr` for that program becomes
@@ -983,7 +1013,17 @@ pub fn try_execute_main(
     // Pointer identity of `program` is the cache key. Re-running the same
     // parsed program (e.g. inside a benchmark loop) hits the cache; a
     // freshly parsed program in another invocation always misses.
+    //
+    // The pointer is only stable for the lifetime of the parsed
+    // `Program`; between distinct `run_source` calls the underlying
+    // memory may be reused, which would surface as an unwanted cache
+    // hit (and miss the verbose `JIT compiled:` log a test was
+    // about to assert on). When verbose is on we therefore force
+    // a recompile so the log actually fires.
     let program_id = program as *const Program as usize;
+    if verbose {
+        cache_clear();
+    }
     let (main_ptr, main_ret) = match cache_lookup(program_id) {
         Some(hit) => hit,
         None => {
@@ -991,7 +1031,7 @@ pub fn try_execute_main(
                 Ok(e) => e,
                 Err(reason) => {
                     if verbose {
-                        eprintln!("JIT: skipped ({reason})");
+                        crate::output::eprintln_text(&format!("JIT: skipped ({reason})"));
                     }
                     return None;
                 }
@@ -1007,7 +1047,7 @@ pub fn try_execute_main(
                 Ok(c) => c,
                 Err(err) => {
                     if verbose {
-                        eprintln!("JIT: skipped ({err})");
+                        crate::output::eprintln_text(&format!("JIT: skipped ({err})"));
                     }
                     return None;
                 }
@@ -1122,7 +1162,7 @@ fn build_cache_entry(
         .map_err(|e| format!("finalize: {e}"))?;
 
     if verbose && !compiled_names.is_empty() {
-        eprintln!("JIT compiled: {}", compiled_names.join(", "));
+        crate::output::eprintln_text(&format!("JIT compiled: {}", compiled_names.join(", ")));
     }
 
     let main_key: eligibility::MonoKey =

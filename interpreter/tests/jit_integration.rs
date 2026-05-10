@@ -1,31 +1,80 @@
 //! Integration tests for the cranelift-based JIT.
 //!
-//! Each test spawns the interpreter binary so we exercise the same code
-//! path users do — including `process::exit` for numeric main results and
-//! the `INTERPRETER_JIT` env-var gate. We compare results between the
-//! tree-walking interpreter and the JIT to catch divergence as the
-//! supported subset grows.
+//! Tests run in-process via `interpreter::run_source` (no spawn of
+//! the interpreter binary). The previous spawn-based design paid
+//! ~300-500 ms per call on macOS for dyld + cold start + a fresh
+//! `core/std` parse, multiplied by ~100 calls — which was the
+//! dominant cost of the suite. The thread-local JIT enable /
+//! verbose / capture knobs (`with_jit_override`,
+//! `with_jit_verbose_override`, `output::with_stdout_stderr_capture`)
+//! make per-test toggling safe under libtest's threaded execution.
 //!
-//! These rely on the binary being compiled with the `jit` cargo feature
-//! (the default). When `--no-default-features` is used, the JIT-specific
-//! assertions are skipped via `#[cfg(feature = "jit")]`.
+//! These rely on the `jit` cargo feature (default). When
+//! `--no-default-features` is used the JIT-specific assertions are
+//! skipped via `#[cfg(feature = "jit")]`.
 
-use std::process::{Command, Output};
+use std::path::PathBuf;
 
-const BIN: &str = env!("CARGO_BIN_EXE_interpreter");
+#[allow(dead_code)]
+fn core_modules_dir() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
+}
 
 struct Run {
     code: i32,
     stdout: String,
-    /// Captured stderr — only inspected by jit-feature-gated tests, but
-    /// always populated to keep the helper symmetric.
-    #[allow(dead_code)]
+    /// Captured stderr — populated for every run so JIT-feature-gated
+    /// assertions on `JIT compiled: ...` / `JIT: skipped (...)` can
+    /// inspect it without re-running.
     stderr: String,
 }
 
-fn run(source: &str, jit: bool, verbose: bool) -> Run {
-    let mut cmd = Command::new(BIN);
-    cmd.arg(source);
+fn read_source(path: &str) -> String {
+    let full = if std::path::Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"))).join(path)
+    };
+    std::fs::read_to_string(&full)
+        .unwrap_or_else(|e| panic!("read_source({}): {}", full.display(), e))
+}
+
+fn run(source_path: &str, jit: bool, verbose: bool) -> Run {
+    let source = read_source(source_path);
+    let core = core_modules_dir();
+    let opts = interpreter::RunOptions {
+        jit,
+        core_modules_dir: Some(core.as_path()),
+    };
+    let (result, stdout, stderr) = interpreter::output::with_stdout_stderr_capture(|| {
+        interpreter::jit::with_jit_verbose_override(verbose, || {
+            interpreter::run_source(&source, source_path, &opts)
+        })
+    });
+    let raw_code = match result {
+        Ok(outcome) => outcome.exit_code.unwrap_or(0),
+        // Match the binary entry point: panic / type-check failure
+        // exits with code 1 on the spawn path, so report the same
+        // here for in-process callers that assert on `r.code`.
+        Err(_) => 1,
+    };
+    // Mirror the OS's `& 0xff` truncation that happens when the binary
+    // entry point hands `exit_code` to `process::exit`. Tests historically
+    // observed the truncated value because they read `Output::status.code()`,
+    // and several assertions still expect that (e.g. 12345 → 57).
+    let code = (raw_code as u32 & 0xff) as i32;
+    Run { code, stdout, stderr }
+}
+
+/// Spawn-based fallback for tests that exercise `panic` / `assert`
+/// failure in JIT-compiled code. The JIT panic helper calls
+/// `std::process::exit(1)` so the test binary itself would die under
+/// the in-process driver — we keep these few sub-tests on the spawn
+/// path until the helper is refactored to unwind cleanly.
+#[cfg(feature = "jit")]
+fn run_spawn(source_path: &str, jit: bool, verbose: bool) -> Run {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_interpreter"));
+    cmd.arg(source_path);
     if verbose {
         cmd.arg("-v");
     }
@@ -34,7 +83,9 @@ fn run(source: &str, jit: bool, verbose: bool) -> Run {
     } else {
         cmd.env_remove("INTERPRETER_JIT");
     }
-    let out: Output = cmd.output().expect("failed to spawn interpreter binary");
+    let out = cmd
+        .output()
+        .expect("failed to spawn interpreter binary");
     Run {
         code: out.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -551,7 +602,10 @@ fn assert_failure_routes_through_jit_panic_helper() {
 "#,
     )
     .unwrap();
-    let r = run(path, true, true);
+    // The JIT panic helper terminates via `process::exit(1)`, which
+    // would tear down the test runner under the in-process driver —
+    // run this one through the spawned binary path.
+    let r = run_spawn(path, true, true);
     assert_eq!(r.code, 1);
     assert!(
         r.stderr.contains("panic: intentional jit failure"),
@@ -573,7 +627,9 @@ fn panic_example_compiles_and_aborts_via_helper() {
     // interner pointer, prints the standard runtime-error block, and
     // exits 1. Verify both the JIT compilation log and the matching
     // tree-walker output.
-    let jit = run("example/jit_panic.t", true, true);
+    // panic helpers use `process::exit(1)`, so this one needs the
+    // spawned-binary path.
+    let jit = run_spawn("example/jit_panic.t", true, true);
     assert_eq!(jit.code, 1, "expected exit 1, stderr: {}", jit.stderr);
     assert!(
         jit.stderr.contains("JIT compiled:") && jit.stderr.contains("divide"),
@@ -589,7 +645,7 @@ fn panic_example_compiles_and_aborts_via_helper() {
     // The tree-walking interpreter must produce the same exit code and
     // stderr text — the helper's format string mirrors the interpreter's
     // error formatter exactly.
-    let plain = run("example/jit_panic.t", false, false);
+    let plain = run_spawn("example/jit_panic.t", false, false);
     assert_eq!(plain.code, jit.code);
     assert!(
         plain.stderr.contains("panic: division by zero"),
@@ -615,7 +671,9 @@ fn main() -> i64 { panic(ERR) }
 "#,
     )
     .unwrap();
-    let r = run(path, true, true);
+    // Interpreter-fallback panic still exits via the runtime panic
+    // path which tears down the test runner; spawn for this case.
+    let r = run_spawn(path, true, true);
     assert_eq!(r.code, 1);
     assert!(
         r.stderr.contains("panic: from const"),
@@ -639,7 +697,11 @@ fn panic_in_expression_position_compiles_via_never_unify() {
     // branch's I64 lets the if-expression carry I64 to a `val q: i64`.
     // Codegen marks the then-branch as terminated (via trap) so only
     // the else branch jumps to cont, keeping the verifier happy.
-    let ok = run("example/jit_panic_expr.t", true, true);
+    // Use spawn for both legs: the failure leg invokes the panic
+    // helper which terminates via `process::exit(1)`. Keeping both
+    // legs on the same path keeps the JIT-compile-log assertions
+    // comparable.
+    let ok = run_spawn("example/jit_panic_expr.t", true, true);
     assert_eq!(ok.code, 5, "expected divide(10,2)==5, stderr: {}", ok.stderr);
     assert!(
         ok.stderr.contains("JIT compiled:") && ok.stderr.contains("divide"),
@@ -647,7 +709,7 @@ fn panic_in_expression_position_compiles_via_never_unify() {
         ok.stderr
     );
 
-    let fail = run("example/jit_panic_expr_fail.t", true, true);
+    let fail = run_spawn("example/jit_panic_expr_fail.t", true, true);
     assert_eq!(fail.code, 1);
     assert!(
         fail.stderr.contains("panic: division by zero"),

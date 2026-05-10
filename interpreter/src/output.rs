@@ -17,6 +17,12 @@ use std::io::Write;
 
 thread_local! {
     static OUTPUT_SINK: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// Per-thread stderr sink. Symmetric to `OUTPUT_SINK` but for the
+    /// `eprintln!`-style helpers (JIT compile log, type-check
+    /// diagnostics, panic messages from JIT-emitted code). Used by
+    /// in-process integration tests that want to assert on stderr
+    /// content without spawning the interpreter binary.
+    static ERROR_SINK: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
 }
 
 /// Run `f` with stdout captured into a string. Restores the previous
@@ -63,4 +69,61 @@ pub fn print_text(s: &str) {
 pub fn println_text(s: &str) {
     print_text(s);
     print_text("\n");
+}
+
+/// Run `f` with stderr captured into a string. Companion to
+/// [`with_capture`] — separate sink so callers can assert on stdout
+/// and stderr independently.
+pub fn with_stderr_capture<R>(f: impl FnOnce() -> R) -> (R, String) {
+    let prev = ERROR_SINK.with(|cell| cell.replace(Some(Vec::new())));
+    struct Guard(Option<Vec<u8>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            let prev = self.0.take();
+            ERROR_SINK.with(|cell| {
+                *cell.borrow_mut() = prev;
+            });
+        }
+    }
+    let _guard = Guard(prev);
+    let result = f();
+    let captured = ERROR_SINK
+        .with(|cell| cell.borrow().clone())
+        .unwrap_or_default();
+    let captured_str = String::from_utf8_lossy(&captured).into_owned();
+    (result, captured_str)
+}
+
+/// Run `f` with both stdout and stderr captured into separate
+/// strings. Convenience wrapper for callers that want both at once.
+pub fn with_stdout_stderr_capture<R>(f: impl FnOnce() -> R) -> (R, String, String) {
+    let (result, captured_stdout) = with_capture(|| {
+        let (r, captured_stderr) = with_stderr_capture(f);
+        (r, captured_stderr)
+    });
+    let (r, captured_stderr) = result;
+    (r, captured_stdout, captured_stderr)
+}
+
+/// Append `s` to the active stderr capture sink, or write it to the
+/// process stderr when no capture is active. Mirrors `eprint!`
+/// semantics.
+pub fn eprint_text(s: &str) {
+    ERROR_SINK.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if let Some(buf) = slot.as_mut() {
+            buf.extend_from_slice(s.as_bytes());
+        } else {
+            drop(slot);
+            let stderr = std::io::stderr();
+            let mut handle = stderr.lock();
+            let _ = handle.write_all(s.as_bytes());
+        }
+    });
+}
+
+/// Append `s` and a trailing newline to the active stderr sink.
+pub fn eprintln_text(s: &str) {
+    eprint_text(s);
+    eprint_text("\n");
 }

@@ -11,3 +11,4 @@ mod runtime;
 
 pub use runtime::try_execute_main;
 pub use runtime::with_jit_override;
+pub use runtime::with_jit_verbose_override;

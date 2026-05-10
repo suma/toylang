@@ -320,46 +320,86 @@ fn extract_simple_e2e_tests() -> Vec<SubTest> {
 }
 
 
-#[test]
-fn batched_e2e_extracted_from_file() {
+/// Run the slice `[start, end)` of the extracted e2e fixture
+/// through the JIT in-process pipeline. Splitting the original
+/// monolithic loop into 4 shards lets nextest run them on 4
+/// separate threads, cutting the test's wall-clock contribution
+/// from ~15 s to ~4 s without changing per-sub-test coverage.
+fn run_extracted_shard(start: usize, end: usize, label: &str) {
     if skip_e2e() {
         return;
     }
     let tests = extract_simple_e2e_tests();
-    eprintln!("auto-extracted {} sub-tests from e2e.rs", tests.len());
     if tests.is_empty() {
         panic!("extract_simple_e2e_tests returned 0 sub-tests — extractor pattern likely stale");
     }
-
-    // Each sub-test is independently JIT-compiled. Iteration
-    // order is preserved so the failure-index matches the source
-    // order in `EXIT_SUBTESTS` for easy diagnosis. We collect all
-    // failures rather than stopping at the first one — running
-    // through the rest costs ~3 ms each at this point and gives a
-    // complete picture when many tests break together (e.g. after
-    // a codegen refactor).
+    let end = end.min(tests.len());
+    let slice = &tests[start..end];
     let opts = jit_options_with_core();
-    let mut total_compile = std::time::Duration::ZERO;
-    let mut total_run = std::time::Duration::ZERO;
     let mut failures: Vec<String> = Vec::new();
-    for (i, t) in tests.iter().enumerate() {
-        let t_compile = Instant::now();
+    for (offset, t) in slice.iter().enumerate() {
+        let global_idx = start + offset;
         let prog = match compile_to_jit_lazy_core(&t.source, &opts) {
             Ok(p) => p,
             Err(err) => {
                 failures.push(format!(
                     "#{} ({}): JIT compile failed: {err}",
-                    i + 1,
+                    global_idx + 1,
                     t.name
                 ));
                 continue;
             }
         };
-        total_compile += t_compile.elapsed();
-
-        let t_run = Instant::now();
         let got = prog.run();
-        total_run += t_run.elapsed();
+        if got != t.expected {
+            failures.push(format!(
+                "#{} ({}): expected {}, got {}",
+                global_idx + 1,
+                t.name,
+                t.expected,
+                got
+            ));
+        }
+    }
+    if !failures.is_empty() {
+        panic!(
+            "batched e2e (shard {label}): {} sub-test(s) failed:\n  {}",
+            failures.len(),
+            failures.join("\n  ")
+        );
+    }
+}
+
+// Striped sharding: each shard takes every 8th sub-test (offset
+// 0..7). This balances per-shard cost across the suite better than
+// contiguous slicing because the slow sub-tests are clustered near
+// the end of `extract_simple_e2e_tests()` (the dump_extracted run
+// preserves source order, and the heavier scenarios sit later in
+// the file). Striping spreads them across all 8 shards so the
+// critical path is the longest *single* sub-test rather than a
+// dense tail.
+fn run_striped_shard(stride_offset: usize, label: &str) {
+    if skip_e2e() {
+        return;
+    }
+    let tests = extract_simple_e2e_tests();
+    if tests.is_empty() {
+        panic!("extract_simple_e2e_tests returned 0 sub-tests — extractor pattern likely stale");
+    }
+    let opts = jit_options_with_core();
+    let mut failures: Vec<String> = Vec::new();
+    for (i, t) in tests.iter().enumerate() {
+        if i % 8 != stride_offset {
+            continue;
+        }
+        let prog = match compile_to_jit_lazy_core(&t.source, &opts) {
+            Ok(p) => p,
+            Err(err) => {
+                failures.push(format!("#{} ({}): JIT compile failed: {err}", i + 1, t.name));
+                continue;
+            }
+        };
+        let got = prog.run();
         if got != t.expected {
             failures.push(format!(
                 "#{} ({}): expected {}, got {}",
@@ -370,21 +410,31 @@ fn batched_e2e_extracted_from_file() {
             ));
         }
     }
-
-    eprintln!(
-        "batched e2e (extracted): {} sub-tests via JIT, compile {:?}, run {:?}",
-        tests.len(),
-        total_compile,
-        total_run
-    );
     if !failures.is_empty() {
         panic!(
-            "batched e2e (extracted): {} sub-test(s) failed:\n  {}",
+            "batched e2e (shard {label}): {} sub-test(s) failed:\n  {}",
             failures.len(),
             failures.join("\n  ")
         );
     }
 }
+
+#[test]
+fn batched_e2e_extracted_shard1_of_8() { run_striped_shard(0, "1/8"); }
+#[test]
+fn batched_e2e_extracted_shard2_of_8() { run_striped_shard(1, "2/8"); }
+#[test]
+fn batched_e2e_extracted_shard3_of_8() { run_striped_shard(2, "3/8"); }
+#[test]
+fn batched_e2e_extracted_shard4_of_8() { run_striped_shard(3, "4/8"); }
+#[test]
+fn batched_e2e_extracted_shard5_of_8() { run_striped_shard(4, "5/8"); }
+#[test]
+fn batched_e2e_extracted_shard6_of_8() { run_striped_shard(5, "6/8"); }
+#[test]
+fn batched_e2e_extracted_shard7_of_8() { run_striped_shard(6, "7/8"); }
+#[test]
+fn batched_e2e_extracted_shard8_of_8() { run_striped_shard(7, "8/8"); }
 
 // ============================================================
 // Stdout-asserting sub-tests (Phase 2 of the batched runner).

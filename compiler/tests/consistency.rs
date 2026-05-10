@@ -2959,10 +2959,10 @@ fn aot_with_allocator_early_return_pops_stack() {
     let src = r#"
         fn helper() -> u64 {
             val a = Arena::new()
-            val r: u64 = with allocator = a {
+            with allocator = a {
                 return 7u64
             }
-            r
+            0u64
         }
 
         fn main() -> u64 {

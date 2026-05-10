@@ -4,10 +4,10 @@ A consolidated reference for the toy language implemented in this repo.
 Authoritative for syntax and semantics of `.t` source files. For
 implementation-side details, see the companion documents:
 
-- [`JIT.md`](../JIT.md) — cranelift JIT supported subset, diagnostics, performance
-- [`ALLOCATOR_PLAN.md`](../ALLOCATOR_PLAN.md) — allocator-system design and roadmap
-- [`BUILTIN_ARCHITECTURE.md`](../BUILTIN_ARCHITECTURE.md) — three-layer builtin design
-- [`TEST_PLAN.md`](../TEST_PLAN.md) — testing strategy
+- [`JIT.md`](../design-docs/JIT.md) — cranelift JIT supported subset, diagnostics, performance
+- [`ALLOCATOR_PLAN.md`](../design-docs/ALLOCATOR_PLAN.md) — allocator-system design and roadmap
+- [`BUILTIN_ARCHITECTURE.md`](../design-docs/BUILTIN_ARCHITECTURE.md) — three-layer builtin design
+- [`TEST_PLAN.md`](../design-docs/TEST_PLAN.md) — testing strategy
 - [`interpreter/README.md`](../interpreter/README.md) — interpreter CLI and env vars
 
 ## Table of Contents
@@ -937,7 +937,7 @@ fn area(r: f64) -> f64 { PI * r * r }
 - Visibility (`pub const ...`) follows the same rules as `pub fn`.
 
 Today the JIT silently falls back to the tree-walking interpreter for
-any function that references a `const` — see [`JIT.md`](../JIT.md).
+any function that references a `const` — see [`JIT.md`](../design-docs/JIT.md).
 
 ### Top-level `type` declarations
 
@@ -2214,7 +2214,7 @@ Unrecognised values print a warning and fall back to `all`.
 The default backend is a tree-walking interpreter. An optional cranelift
 JIT (cargo feature `jit`, default on) handles a numeric subset when
 `INTERPRETER_JIT=1`; everything else falls back to the tree walker.
-See [`JIT.md`](../JIT.md) for the supported subset and limitations.
+See [`JIT.md`](../design-docs/JIT.md) for the supported subset and limitations.
 
 ### Process exit code
 
@@ -2268,7 +2268,7 @@ overflow on cyclic structures.
 
 ## Known limitations
 
-These are real today; some appear in `todo.md` as planned work.
+These are real today; some appear in `design-docs/todo.md` as planned work.
 
 - **Closures: partial support** — closures use `fn(params) -> R { body }`
   and the function type `fn (T1, T2) -> R` (or bare
@@ -2304,7 +2304,7 @@ These are real today; some appear in `todo.md` as planned work.
   all work in every backend, but `"{Option::Some(v)}"` is still
   carried forward (variant-tag dispatch needs a cranelift block
   chain, different shape from the linear concat the others use).
-  Tracked as `STR-INTERP-COMPOUND-EXTEND-ENUM` in `todo.md`.
+  Tracked as `STR-INTERP-COMPOUND-EXTEND-ENUM` in `design-docs/todo.md`.
 - **No raw strings or multi-line strings** — only the regular
   `"..."` literal with backslash escapes today.
 - **Operator overload — chained / literal operands** — same-shape
@@ -2320,12 +2320,12 @@ These are real today; some appear in `todo.md` as planned work.
   enum-returning **function call** (`while val Some(x) =
   func(i)`) is rejected at lower time. Pre-bind to a struct
   method or a local first if you need 3-backend portability.
-  Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `todo.md`.
+  Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `design-docs/todo.md`.
 - **Trait limitations** — no default method bodies; no
   multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
   Trait`; no associated types. Generic trait declarations
   (`trait Foo<T>`) are supported (see ITER-PROTOCOL-TRAIT in
-  `todo.md` 完了済み 2026-05-07). See *Traits → Out of scope*.
+  `design-docs/todo.md` 完了済み 2026-05-07). See *Traits → Out of scope*.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by
@@ -2367,8 +2367,8 @@ These are real today; some appear in `todo.md` as planned work.
 - [`README.md`](../README.md) — project overview and quickstart
 - [`interpreter/README.md`](../interpreter/README.md) — interpreter CLI
   and environment variables
-- [`JIT.md`](../JIT.md) — cranelift JIT details
-- [`ALLOCATOR_PLAN.md`](../ALLOCATOR_PLAN.md) — allocator design
-- [`BUILTIN_ARCHITECTURE.md`](../BUILTIN_ARCHITECTURE.md) — builtin
+- [`JIT.md`](../design-docs/JIT.md) — cranelift JIT details
+- [`ALLOCATOR_PLAN.md`](../design-docs/ALLOCATOR_PLAN.md) — allocator design
+- [`BUILTIN_ARCHITECTURE.md`](../design-docs/BUILTIN_ARCHITECTURE.md) — builtin
   function machinery
-- [`todo.md`](../todo.md) — planned work and feature backlog
+- [`todo.md`](../design-docs/todo.md) — planned work and feature backlog

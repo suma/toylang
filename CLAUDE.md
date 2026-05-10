@@ -227,25 +227,25 @@ fn main() -> u64 {
 
 ## Task Management
 
-プロジェクトの改善タスクは `todo.md` で管理されています。Claude Codeは以下のワークフローに従ってください：
+プロジェクトの改善タスクは `design-docs/todo.md` で管理されています。Claude Codeは以下のワークフローに従ってください：
 
 ### タスク管理プロセス
 1. **TodoRead/TodoWrite ツールの使用**: セッション中の一時的なタスク追跡に使用
-2. **todo.mdファイルの更新**: 永続的な記録として、完了したタスクや新しい課題をファイルに反映
-3. **定期的な同期**: Todoツールとtodo.mdの内容を定期的に同期
+2. **design-docs/todo.md ファイルの更新**: 永続的な記録として、完了したタスクや新しい課題をファイルに反映
+3. **定期的な同期**: Todoツールと `design-docs/todo.md` の内容を定期的に同期
 
 ### ファイル構造
-- `todo.md`: マスタータスクリスト
+- `design-docs/todo.md`: マスタータスクリスト
   - 完了済み、進行中、未実装のセクションに分類
   - 優先度と詳細な説明を含む
   - 推奨順序とメモを記載
 
 ## ビルトイン関数
-- ビルトイン関数の実装方針は `BUILTIN_ARCHITECTURE.md` に記述されています
+- ビルトイン関数の実装方針は `design-docs/BUILTIN_ARCHITECTURE.md` に記述されています
 
 ## Cranelift JIT
 
-`interpreter` には数値 / bool 関数を cranelift で native code 化するオプトインの JIT が入っている。`INTERPRETER_JIT=1` で有効化、cargo feature `jit` (default on) でビルド時にも切替可。サポート範囲・性能・skip 理由・拡張ロードマップは `JIT.md` を参照。
+`interpreter` には数値 / bool 関数を cranelift で native code 化するオプトインの JIT が入っている。`INTERPRETER_JIT=1` で有効化、cargo feature `jit` (default on) でビルド時にも切替可。サポート範囲・性能・skip 理由・拡張ロードマップは `design-docs/JIT.md` を参照。
 
 ## 入出力ビルトイン
 
@@ -257,7 +257,7 @@ fn main() -> u64 {
 
 ## Allocator システム
 
-`with allocator = ...` による lexical scope で allocator を切り替えられる。heap 系 builtin は常に現在の allocator を経由する。詳細な設計と進捗は `ALLOCATOR_PLAN.md` を参照。
+`with allocator = ...` による lexical scope で allocator を切り替えられる。heap 系 builtin は常に現在の allocator を経由する。詳細な設計と進捗は `design-docs/ALLOCATOR_PLAN.md` を参照。
 
 ### 主要な構文・ビルトイン
 
@@ -309,7 +309,7 @@ fn main() -> u64 {
 
 ## テスト計画
 
-toylang コンパイラ開発の包括的なテスト戦略と計画は `TEST_PLAN.md` に記述されています。このドキュメントでは以下の内容を扱っています：
+toylang コンパイラ開発の包括的なテスト戦略と計画は `design-docs/TEST_PLAN.md` に記述されています。このドキュメントでは以下の内容を扱っています：
 
 ### テスト層の設計
 - **ユニットテスト**: パーサー、型チェッカー、字句解析器のコンポーネント
@@ -337,10 +337,10 @@ cd interpreter && cargo test proptest
 - 動的配列と高度な型システムのテスト
 - パフォーマンス最適化の検証
 
-詳細なテスト要件、戦略、実装チェックリストについては `TEST_PLAN.md` を参照してください。
+詳細なテスト要件、戦略、実装チェックリストについては `design-docs/TEST_PLAN.md` を参照してください。
 
 ### Frontend テスト整理計画
-frontend コンポーネント内のテストコード整理計画は `FRONTEND_TEST_PLAN.md` に記述されています。この計画には以下の内容が含まれます：
+frontend コンポーネント内のテストコード整理計画は `design-docs/FRONTEND_TEST_PLAN.md` に記述されています。この計画には以下の内容が含まれます：
 
 - **現在の構成分析**: ユニットテストと統合テストの配置状況
 - **テスト統合戦略**: 統合テストファイルの論理的な再構成
@@ -348,10 +348,10 @@ frontend コンポーネント内のテストコード整理計画は `FRONTEND_
 - **実装ロードマップ**: 段階的な改善計画
 - **品質指標**: テストカバレッジ、ドキュメンテーション基準
 
-詳細な実装方法とロードマップについては `FRONTEND_TEST_PLAN.md` を参照してください。
+詳細な実装方法とロードマップについては `design-docs/FRONTEND_TEST_PLAN.md` を参照してください。
 
 ### Interpreter テスト整理計画
-interpreter コンポーネント内のテストコード整理計画は `INTERPRETER_TEST_PLAN.md` に記述されています。この計画には以下の内容が含まれます：
+interpreter コンポーネント内のテストコード整理計画は `design-docs/INTERPRETER_TEST_PLAN.md` に記述されています。この計画には以下の内容が含まれます：
 
 - **現在の構成分析**: 296個のテストが35ファイルに分散している状況の分析
 - **カテゴリ別分類**: コア言語、ジェネリック、コレクション、OOP、メモリ管理など9カテゴリ
@@ -359,9 +359,9 @@ interpreter コンポーネント内のテストコード整理計画は `INTERP
 - **フェーズ別実装計画**: 4-5週間の段階的な改善プロセス
 - **品質目標**: テストカバレッジ、ドキュメンテーション、保守性の向上
 
-詳細な実装方法と段階別ロードマップについては `INTERPRETER_TEST_PLAN.md` を参照してください。
+詳細な実装方法と段階別ロードマップについては `design-docs/INTERPRETER_TEST_PLAN.md` を参照してください。
 
 ### 重要な原則
-- 新しい課題を発見した場合は、TodoWriteツールとtodo.mdの両方に追加
-- タスク完了時は、todo.mdの該当項目を「完了済み」セクションに移動
-- 大きな改善や機能追加後は、todo.mdファイルをgitにコミット
+- 新しい課題を発見した場合は、TodoWriteツールと `design-docs/todo.md` の両方に追加
+- タスク完了時は、`design-docs/todo.md` の該当項目を「完了済み」セクションに移動
+- 大きな改善や機能追加後は、`design-docs/todo.md` ファイルをgitにコミット

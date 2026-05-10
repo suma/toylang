@@ -5,9 +5,9 @@ A complete programming language implementation featuring a frontend library and 
 > **For language syntax and semantics, see [`docs/language.md`](docs/language.md)** —
 > the consolidated reference. This README covers the project as a whole
 > (overview, build, test, examples). Per-component details live in
-> [`interpreter/README.md`](interpreter/README.md), [`JIT.md`](JIT.md),
-> [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md), and
-> [`BUILTIN_ARCHITECTURE.md`](BUILTIN_ARCHITECTURE.md).
+> [`interpreter/README.md`](interpreter/README.md), [`design-docs/JIT.md`](design-docs/JIT.md),
+> [`design-docs/ALLOCATOR_PLAN.md`](design-docs/ALLOCATOR_PLAN.md), and
+> [`design-docs/BUILTIN_ARCHITECTURE.md`](design-docs/BUILTIN_ARCHITECTURE.md).
 
 ## Overview
 
@@ -467,8 +467,8 @@ The implementation includes comprehensive documentation, extensive testing, and 
 
 - **Zero-cost Type Checking**: Type validation occurs before execution
 - **Generic Type System**: Generic functions / structures / impls with constraint-based inference and `<A: Allocator>` bounds
-- **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`ALLOCATOR_PLAN.md`](ALLOCATOR_PLAN.md))
-- **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`JIT.md`](JIT.md))
+- **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`design-docs/ALLOCATOR_PLAN.md`](design-docs/ALLOCATOR_PLAN.md))
+- **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
 - **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate

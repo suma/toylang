@@ -327,7 +327,7 @@ content / `cc` / `ld` / `dlopen` / 事前 `codesign --sign -` いずれの
   巨大プログラムにまとめてケース ID で dispatch」する形に再構成し、
   spawn 回数を減らす。テスト分離度が落ちるトレードオフがある。
 
-## 次のフェーズ（todo.md #183 参照）
+## 次のフェーズ（design-docs/todo.md #183 参照）
 
 - Phase A: `toy_ir` の新設、`AllocatorBinding` 配線、AST → IR lowering
 - Phase B: 拡張（文字列、struct、tuple、enum、trait のサポート）

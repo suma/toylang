@@ -387,8 +387,9 @@ toylang/
 │   └── Cargo.toml
 ├── compiler_core/     # Shared core library
 ├── Cargo.toml         # Workspace configuration
-├── TEST_PLAN.md       # This test plan design document
-└── todo.md            # Task management
+└── design-docs/
+    ├── TEST_PLAN.md   # This test plan design document
+    └── todo.md        # Task management
 ```
 
 ### 7.2 Primary Technology Stack

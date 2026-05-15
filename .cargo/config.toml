@@ -19,3 +19,7 @@
 # don't get this env var, so their behaviour is unchanged.
 [env]
 TOY_LINK_CACHE_DIR = { value = "target/toy_link_cache", relative = true }
+# Default proptest case count so every `cargo test` invocation
+# (including IDE runs) stays fast. The full 256-case default
+# would make the property-based suites 8x slower.
+PROPTEST_CASES = "32"

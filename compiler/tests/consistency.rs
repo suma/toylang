@@ -21,12 +21,23 @@
 //! These tests are slow because they invoke `cc`. Set `COMPILER_E2E=skip`
 //! to opt out (mirrors `e2e.rs`).
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{LazyLock, Mutex};
 
 use compiler::{compile_file, compile_to_jit_main_with_options, CompilerOptions, EmitKind};
 use interpreter::object::Object;
 use interpreter::{RunOptions, RunOutcome};
+
+// Caches for expensive in-process interpreter results. Each test
+// binary is single-process but multi-threaded under libtest; a
+// `Mutex` is sufficient because the critical section is tiny
+// (HashMap lookup / insert) and the work itself is CPU-bound.
+static INTERP_CACHE: LazyLock<Mutex<HashMap<(String, bool), Option<u64>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+static JIT_CACHE: LazyLock<Mutex<HashMap<(String, bool), i32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Wrapper around `compile_to_jit_main_with_options` that mirrors
 /// the lite-path pattern: try without core auto-load first, fall
@@ -105,6 +116,13 @@ fn interpreter_value_with_core(
     source: &str,
     core_dir: Option<PathBuf>,
 ) -> Option<u64> {
+    let key = (source.to_string(), core_dir.is_some());
+    {
+        let cache = INTERP_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(&key) {
+            return *cached;
+        }
+    }
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().ok()?;
     let interner = parser.get_string_interner();
@@ -124,6 +142,8 @@ fn interpreter_value_with_core(
         Object::Bool(b) => *b as u64,
         other => panic!("unexpected interpreter result: {other:?}"),
     };
+    let mut cache = INTERP_CACHE.lock().unwrap();
+    cache.insert(key, Some(v));
     Some(v)
 }
 
@@ -139,16 +159,26 @@ fn interpreter_value_with_core(
 /// the per-call JIT toggle (no env-var race under threaded test
 /// execution).
 fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
+    let key = (source.to_string(), with_core);
+    {
+        let cache = JIT_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(&key) {
+            return *cached;
+        }
+    }
     let core_dir = if with_core { Some(core_modules_dir()) } else { None };
     let options = RunOptions {
         jit: true,
         core_modules_dir: core_dir.as_deref(),
     };
-    match interpreter::run_source(source, "test.t", &options) {
+    let result = match interpreter::run_source(source, "test.t", &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => (code as i32) & 0xff,
         Ok(RunOutcome { exit_code: None }) => 0,
         Err(diag) => panic!("interpreter run_source (jit) failed: {diag}"),
-    }
+    };
+    let mut cache = JIT_CACHE.lock().unwrap();
+    cache.insert(key, result);
+    result
 }
 
 /// Compile `source` into a fresh executable, run it, and return the

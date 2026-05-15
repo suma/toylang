@@ -13,13 +13,17 @@
 //! `--no-default-features` is used the JIT-specific assertions are
 //! skipped via `#[cfg(feature = "jit")]`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
 
 #[allow(dead_code)]
 fn core_modules_dir() -> PathBuf {
     PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../core"))
 }
 
+#[derive(Clone)]
 struct Run {
     code: i32,
     stdout: String,
@@ -28,6 +32,9 @@ struct Run {
     /// inspect it without re-running.
     stderr: String,
 }
+
+static RUN_CACHE: LazyLock<Mutex<HashMap<(String, bool, bool), Run>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn read_source(path: &str) -> String {
     let full = if std::path::Path::new(path).is_absolute() {
@@ -40,6 +47,13 @@ fn read_source(path: &str) -> String {
 }
 
 fn run(source_path: &str, jit: bool, verbose: bool) -> Run {
+    let key = (source_path.to_string(), jit, verbose);
+    {
+        let cache = RUN_CACHE.lock().unwrap();
+        if let Some(cached) = cache.get(&key) {
+            return cached.clone();
+        }
+    }
     let source = read_source(source_path);
     let core = core_modules_dir();
     let opts = interpreter::RunOptions {
@@ -63,7 +77,10 @@ fn run(source_path: &str, jit: bool, verbose: bool) -> Run {
     // observed the truncated value because they read `Output::status.code()`,
     // and several assertions still expect that (e.g. 12345 → 57).
     let code = (raw_code as u32 & 0xff) as i32;
-    Run { code, stdout, stderr }
+    let result = Run { code, stdout, stderr };
+    let mut cache = RUN_CACHE.lock().unwrap();
+    cache.insert(key, result.clone());
+    result
 }
 
 /// Spawn-based fallback for tests that exercise `panic` / `assert`

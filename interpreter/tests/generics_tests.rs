@@ -2497,4 +2497,60 @@ mod integration {
         let value = result.unwrap();
         assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 6i64, "Result::map_err should transform error");
     }
+
+    #[test]
+    fn test_option_unwrap_some() {
+        let source = r#"
+            fn main() -> i64 {
+                val opt: Option<i64> = Option::Some(42i64)
+                opt.unwrap()
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Option::unwrap on Some should execute: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 42i64, "Option::unwrap should return contained value");
+    }
+
+    #[test]
+    fn test_option_unwrap_none_panics() {
+        let source = r#"
+            fn main() -> i64 {
+                val opt: Option<i64> = Option::None
+                opt.unwrap()
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_err(), "Option::unwrap on None should panic");
+    }
+
+    #[test]
+    fn test_result_unwrap_ok() {
+        let source = r#"
+            fn main() -> i64 {
+                val r: Result<i64, str> = Result::Ok(99i64)
+                r.unwrap()
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Result::unwrap on Ok should execute: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 99i64, "Result::unwrap should return contained value");
+    }
+
+    #[test]
+    fn test_result_unwrap_err_panics() {
+        let source = r#"
+            fn main() -> i64 {
+                val r: Result<i64, str> = Result::Err("fail")
+                r.unwrap()
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_err(), "Result::unwrap on Err should panic");
+    }
 }

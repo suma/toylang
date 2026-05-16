@@ -51,6 +51,13 @@ impl<T> Option<T> {
         }
     }
 
+    fn unwrap(self: Self) -> T {
+        match self {
+            Option::Some(v) => v,
+            Option::None => panic("Option::unwrap on None"),
+        }
+    }
+
     fn map<U>(self: Self, f: fn (T) -> U) -> Option<U> {
         match self {
             Option::Some(v) => Option::Some(f(v)),

@@ -50,6 +50,13 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    fn unwrap(self: Self) -> T {
+        match self {
+            Result::Ok(v) => v,
+            Result::Err(_) => panic("Result::unwrap on Err"),
+        }
+    }
+
     fn map<U>(self: Self, f: fn (T) -> U) -> Result<U, E> {
         match self {
             Result::Ok(v) => Result::Ok(f(v)),

@@ -313,16 +313,107 @@ pub fn parse_equality(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
-    let group = OperatorGroup {
-        tokens: vec![
-            (Kind::LT, Operator::LT),
-            (Kind::LE, Operator::LE),
-            (Kind::GT, Operator::GT),
-            (Kind::GE, Operator::GE),
-        ],
-        next_precedence: parse_shift
+    let lhs = parse_shift(parser)?;
+    let op1 = match parser.peek() {
+        Some(Kind::LT) => Operator::LT,
+        Some(Kind::LE) => Operator::LE,
+        Some(Kind::GT) => Operator::GT,
+        Some(Kind::GE) => Operator::GE,
+        _ => return Ok(lhs),
     };
-    parse_binary(parser, &group)
+
+    let location = parser.current_source_location();
+    parser.next();
+    let rhs1 = parse_shift(parser)?;
+
+    // Single comparison: no chain → plain binary expr.
+    if !matches!(parser.peek(), Some(Kind::LT) | Some(Kind::LE) | Some(Kind::GT) | Some(Kind::GE)) {
+        return Ok(parser.ast_builder.binary_expr(op1, lhs, rhs1, Some(location)));
+    }
+
+    // Comparison chain `a < b < c < d` desugars to:
+    //   {
+    //     val __cmp_0 = b
+    //     val __cmp_1 = c
+    //     a < __cmp_0 && __cmp_0 < __cmp_1 && __cmp_1 < d
+    //   }
+    // Each intermediate operand is stored in a synthetic temporary so it is
+    // evaluated exactly once and side-effects run in left-to-right order.
+    let mut stmts: Vec<StmtRef> = Vec::new();
+    let mut comparisons: Vec<(ExprRef, Operator, ExprRef)> = Vec::new();
+
+    let counter = parser.synthetic_counter;
+    parser.synthetic_counter += 1;
+    let tmp_name = format!("__cmp_{counter}");
+    let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
+    let val_stmt = parser
+        .ast_builder
+        .val_stmt(tmp_sym, None, rhs1, Some(location.clone()));
+    stmts.push(val_stmt);
+
+    let tmp_ident = parser
+        .ast_builder
+        .identifier_expr(tmp_sym, Some(location.clone()));
+    comparisons.push((lhs, op1, tmp_ident));
+    let mut last_tmp = tmp_ident;
+
+    while matches!(parser.peek(), Some(Kind::LT) | Some(Kind::LE) | Some(Kind::GT) | Some(Kind::GE)) {
+        let op = match parser.peek() {
+            Some(Kind::LT) => Operator::LT,
+            Some(Kind::LE) => Operator::LE,
+            Some(Kind::GT) => Operator::GT,
+            Some(Kind::GE) => Operator::GE,
+            _ => break,
+        };
+        parser.next();
+        let rhs = parse_shift(parser)?;
+
+        let counter = parser.synthetic_counter;
+        parser.synthetic_counter += 1;
+        let tmp_name = format!("__cmp_{counter}");
+        let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
+        let val_stmt = parser
+            .ast_builder
+            .val_stmt(tmp_sym, None, rhs, Some(location.clone()));
+        stmts.push(val_stmt);
+
+        let new_tmp = parser
+            .ast_builder
+            .identifier_expr(tmp_sym, Some(location.clone()));
+        comparisons.push((last_tmp, op, new_tmp));
+        last_tmp = new_tmp;
+    }
+
+    let (lhs0, op0, rhs0) = &comparisons[0];
+    let mut result = parser.ast_builder.binary_expr(
+        op0.clone(),
+        *lhs0,
+        *rhs0,
+        Some(location.clone()),
+    );
+    for i in 1..comparisons.len() {
+        let (lhs_i, op_i, rhs_i) = &comparisons[i];
+        let cmp = parser.ast_builder.binary_expr(
+            op_i.clone(),
+            *lhs_i,
+            *rhs_i,
+            Some(location.clone()),
+        );
+        result = parser.ast_builder.binary_expr(
+            Operator::LogicalAnd,
+            result,
+            cmp,
+            Some(location.clone()),
+        );
+    }
+
+    let result_stmt = parser.ast_builder.add_stmt_with_location(
+        crate::ast::Stmt::Expression(result),
+        Some(location.clone()),
+    );
+    stmts.push(result_stmt);
+
+    Ok(parser.ast_builder.block_expr(stmts, Some(location)))
 }
 
 pub fn parse_shift(parser: &mut Parser) -> ParserResult<ExprRef> {

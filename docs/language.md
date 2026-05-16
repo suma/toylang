@@ -803,6 +803,21 @@ Compound assignment desugars at parse time: `x += 1` is rewritten to
 `x = x + 1`. Supported forms: `+=`, `-=`, `*=`, `/=`, `%=`. The lhs may
 be an identifier or a field/index access.
 
+### Comparison chain
+
+Relational operators may be chained. `a < b < c` is equivalent to
+`a < b && b < c`, but the intermediate expression `b` is evaluated
+exactly once (it is stored in a synthetic temporary at parse time).
+Any sequence of `<`, `<=`, `>`, `>=` may be chained:
+
+```rust
+if 0u64 < x <= 10u64 < 100u64 { ... }   # all three must hold
+```
+
+Equality operators (`==`, `!=`) may not be chained — they already
+bind looser than `&&` and mixing them with ordering comparisons
+would be ambiguous.
+
 ### Operator overload (struct receivers)
 
 Same-shape struct values can overload most binary and unary
@@ -972,6 +987,7 @@ if cond { ... } elif cond { ... } else { ... }
 for i in start..end { ... }
 for x in iter { ... }        # iterator protocol (see below)
 while cond { ... }
+loop { ... }                 # infinite loop (desugars to while true)
 break
 continue
 return                       # returns Unit
@@ -1052,8 +1068,8 @@ By default, `break` / `continue` apply to the innermost enclosing
 loop. **Labelled loops** (LABEL feature) let you target an outer
 loop directly:
 
-- `@label: while cond { ... }` / `@label: for i in 0..N { ... }` /
-  `@label: for x in iter { ... }` — declare a name for the loop.
+- `@label: while cond { ... }` / `@label: loop { ... }` /
+  `@label: for i in 0..N { ... }` / `@label: for x in iter { ... }` — declare a name for the loop.
   The label uses the `@` prefix (toylang reserves `@` only for
   this) followed by an identifier and a `:`.
 - `break @label` — exit the named loop, possibly skipping over

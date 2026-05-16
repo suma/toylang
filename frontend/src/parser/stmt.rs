@@ -78,6 +78,7 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
         }
         Some(Kind::For) => parse_for_with_label(parser, None),
         Some(Kind::While) => parse_while_with_label(parser, None),
+        Some(Kind::Loop) => parse_loop_with_label(parser, None),
         _ => parser.parse_expr(),
     }
 }
@@ -104,13 +105,14 @@ fn parse_labelled_loop(parser: &mut Parser) -> ParserResult<StmtRef> {
     parser.expect_err(&Kind::Colon)?;
     match parser.peek() {
         Some(Kind::While) => parse_while_with_label(parser, Some(label_sym)),
+        Some(Kind::Loop) => parse_loop_with_label(parser, Some(label_sym)),
         Some(Kind::For) => parse_for_with_label(parser, Some(label_sym)),
         other => {
             let other_clone = other.cloned();
             let location = parser.current_source_location();
             Err(ParserError::generic_error(
                 location,
-                format!("`@label:` must be followed by `while` or `for`, got {:?}", other_clone),
+                format!("`@label:` must be followed by `while`, `loop`, or `for`, got {:?}", other_clone),
             ))
         }
     }
@@ -155,6 +157,15 @@ fn parse_while_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> 
     let block = super::expr::parse_block(parser)?;
     let location = parser.current_source_location();
     Ok(parser.ast_builder.while_stmt_with_label(label, cond, block, Some(location)))
+}
+
+/// `loop { BODY }` desugars to `while true { BODY }` at parse time.
+fn parse_loop_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> ParserResult<StmtRef> {
+    parser.expect_err(&Kind::Loop)?;
+    let block = super::expr::parse_block(parser)?;
+    let location = parser.current_source_location();
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+    Ok(parser.ast_builder.while_stmt_with_label(label, true_expr, block, Some(location)))
 }
 
 /// IF-VAL: parse `while val PAT = EXPR { BODY }` (the leading `while`

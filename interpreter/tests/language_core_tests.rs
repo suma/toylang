@@ -1255,6 +1255,126 @@ mod control_flow {
         let result = execute_test_program(source);
         assert!(result.is_err(), "expected type error for mixed-signed range");
     }
+
+    #[test]
+    fn test_loop_basic() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            loop {
+                if i >= 5u64 {
+                    break
+                }
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+        ", 10);
+    }
+
+    #[test]
+    fn test_loop_with_label() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            @outer: loop {
+                if i >= 3u64 {
+                    break @outer
+                }
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+        ", 3);
+    }
+
+    #[test]
+    fn test_comparison_chain_lt_lt() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if 0u64 < x < 10u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 1);
+    }
+
+    #[test]
+    fn test_comparison_chain_false_first() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if 10u64 < x < 100u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 0);
+    }
+
+    #[test]
+    fn test_comparison_chain_false_second() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if 0u64 < x < 3u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 0);
+    }
+
+    #[test]
+    fn test_comparison_chain_three_ops() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if 0u64 < x <= 5u64 < 10u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 1);
+    }
+
+    #[test]
+    fn test_comparison_chain_mixed_ops() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 7u64
+            if 5u64 < x <= 7u64 < 10u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 1);
+    }
+
+    #[test]
+    fn test_comparison_chain_le_gt() {
+        common::assert_program_result_u64(r"
+        fn main() -> u64 {
+            val x = 5u64
+            if 0u64 <= x > 3u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+        ", 1);
+    }
 }
 
 mod function_calls {

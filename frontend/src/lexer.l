@@ -62,6 +62,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "in"        return Ok(token!(self, Kind::In));
 "to"        return Ok(token!(self, Kind::To));
 "while"     return Ok(token!(self, Kind::While));
+"loop"      return Ok(token!(self, Kind::Loop));
 "break"     return Ok(token!(self, Kind::Break));
 "continue"  return Ok(token!(self, Kind::Continue));
 "return"    return Ok(token!(self, Kind::Return));

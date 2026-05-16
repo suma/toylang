@@ -4297,3 +4297,71 @@ fn aot_fixed_buffer_introspection() {
     assert_consistent(src, "aot_fixed_buffer_introspection");
 }
 
+
+#[test]
+fn loop_basic_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            loop {
+                if i >= 5u64 {
+                    break
+                }
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+    "#;
+    assert_consistent(src, "loop_basic");
+}
+
+#[test]
+fn loop_labelled_break_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            var i = 0u64
+            var sum = 0u64
+            @outer: loop {
+                if i >= 3u64 {
+                    break @outer
+                }
+                sum = sum + i
+                i = i + 1u64
+            }
+            sum
+        }
+    "#;
+    assert_consistent(src, "loop_labelled_break");
+}
+
+#[test]
+fn comparison_chain_lt_lt_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val x = 5u64
+            if 0u64 < x < 10u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_consistent(src, "comparison_chain_lt_lt");
+}
+
+#[test]
+fn comparison_chain_three_ops_round_trip() {
+    let src = r#"
+        fn main() -> u64 {
+            val x = 7u64
+            if 5u64 < x <= 7u64 < 10u64 {
+                1u64
+            } else {
+                0u64
+            }
+        }
+    "#;
+    assert_consistent(src, "comparison_chain_three_ops");
+}

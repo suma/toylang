@@ -23,6 +23,7 @@ pub enum Kind {
     In,
     To,
     While,
+    Loop,
     Break,
     Continue,
     Class,
@@ -168,7 +169,7 @@ impl Kind {
     pub fn is_keyword(&self) -> bool {
         matches!(self, 
             Kind::If | Kind::Elif | Kind::Else | Kind::For | Kind::In | Kind::To | 
-            Kind::While | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
+            Kind::While | Kind::Loop | Kind::Break | Kind::Continue | Kind::Class | Kind::Struct |
             Kind::Trait | Kind::Impl | Kind::Function | Kind::Return | Kind::Extern | Kind::Public |
             Kind::Val | Kind::Var | Kind::Mut | Kind::Const | Kind::With | Kind::Ambient | Kind::Enum | Kind::Match | Kind::Requires | Kind::Ensures | Kind::Type | Kind::Bool | Kind::U64 | Kind::I64 | Kind::F64 | Kind::USize |
             Kind::U8 | Kind::U16 | Kind::U32 | Kind::I8 | Kind::I16 | Kind::I32 |

@@ -50,12 +50,17 @@ impl<T, E> Result<T, E> {
         }
     }
 
-    # Closures Phase 7 — HOF methods are deferred for `Result<T, E>`.
-    # The 2-generic-param enum match unification rejects bodies
-    # like `match self { Result::Ok(v) => Result::Ok(v),
-    # Result::Err(e) => Result::Err(f(e)) }` because the two
-    # arms infer different `Generic(?)` substitutions for the
-    # variant the type checker doesn't see literally. The
-    # follow-up is tracked in `design-docs/todo.md` (96残-後半). Use a
-    # direct `match` until then.
+    fn map<U>(self: Self, f: fn (T) -> U) -> Result<U, E> {
+        match self {
+            Result::Ok(v) => Result::Ok(f(v)),
+            Result::Err(e) => Result::Err(e),
+        }
+    }
+
+    fn map_err<F>(self: Self, f: fn (E) -> F) -> Result<T, F> {
+        match self {
+            Result::Ok(v) => Result::Ok(v),
+            Result::Err(e) => Result::Err(f(e)),
+        }
+    }
 }

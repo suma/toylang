@@ -239,6 +239,13 @@ impl TypeDecl {
                     .collect();
                 TypeDecl::Struct(*name, new_params)
             },
+            TypeDecl::Enum(name, type_params) => {
+                // Recursively substitute in enum type parameters
+                let new_params = type_params.iter()
+                    .map(|t| t.substitute_generics(substitutions))
+                    .collect();
+                TypeDecl::Enum(*name, new_params)
+            },
             TypeDecl::Ref { is_mut, inner } => {
                 TypeDecl::Ref {
                     is_mut: *is_mut,

@@ -2421,4 +2421,80 @@ mod integration {
         let result = test_program(source);
         assert!(result.is_ok(), "Option pattern should parse: {:?}", result.err());
     }
+
+    #[test]
+    fn test_option_map_hof() {
+        let source = r#"
+            fn main() -> i64 {
+                val opt: Option<i64> = Option::Some(5i64)
+                val mapped: Option<i64> = opt.map(fn(x: i64) -> i64 { x + 1i64 })
+                match mapped {
+                    Option::Some(v) => v,
+                    Option::None => 0i64,
+                }
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Option::map should type check and execute: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 6i64, "Option::map should increment value");
+    }
+
+    #[test]
+    fn test_option_map_none() {
+        let source = r#"
+            fn main() -> i64 {
+                val opt: Option<i64> = Option::None
+                val mapped: Option<i64> = opt.map(fn(x: i64) -> i64 { x + 1i64 })
+                match mapped {
+                    Option::Some(v) => v,
+                    Option::None => 0i64,
+                }
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Option::map on None should type check: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 0i64, "Option::map on None should return None");
+    }
+
+    #[test]
+    fn test_result_map_hof() {
+        let source = r#"
+            fn main() -> i64 {
+                val r: Result<i64, str> = Result::Ok(5i64)
+                val mapped: Result<i64, str> = r.map(fn(x: i64) -> i64 { x + 1i64 })
+                match mapped {
+                    Result::Ok(v) => v,
+                    Result::Err(_) => 0i64,
+                }
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Result::map should type check and execute: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 6i64, "Result::map should increment value");
+    }
+
+    #[test]
+    fn test_result_map_err_hof() {
+        let source = r#"
+            fn main() -> i64 {
+                val r: Result<i64, i64> = Result::Err(5i64)
+                val mapped: Result<i64, i64> = r.map_err(fn(e: i64) -> i64 { e + 1i64 })
+                match mapped {
+                    Result::Ok(v) => v,
+                    Result::Err(e) => e,
+                }
+            }
+        "#;
+
+        let result = test_program(source);
+        assert!(result.is_ok(), "Result::map_err should type check and execute: {:?}", result.err());
+        let value = result.unwrap();
+        assert_eq!(value.borrow().try_unwrap_int64().unwrap(), 6i64, "Result::map_err should transform error");
+    }
 }

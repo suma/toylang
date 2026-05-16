@@ -365,6 +365,13 @@ impl<'a> AstIntegrationContext<'a> {
                 is_mut: *is_mut,
                 inner: Box::new(self.remap_type_decl(inner)?),
             },
+            TypeDecl::Function(params, ret) => {
+                let mut new_params = Vec::with_capacity(params.len());
+                for p in params {
+                    new_params.push(self.remap_type_decl(p)?);
+                }
+                TypeDecl::Function(new_params, Box::new(self.remap_type_decl(ret)?))
+            }
             // Symbol-free leaf cases pass through.
             other => other.clone(),
         })

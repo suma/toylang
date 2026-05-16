@@ -6,7 +6,7 @@
 //! `TypeCheckerVisitor`; `visitor_impl.rs` still routes the trait method
 //! calls into them via thin wrappers.
 
-use string_interner::DefaultSymbol;
+use string_interner::{DefaultSymbol, Symbol};
 use std::collections::HashMap;
 use crate::ast::*;
 use crate::type_decl::*;
@@ -14,49 +14,67 @@ use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 use crate::type_checker::generics::GenericTypeChecking;
 use crate::type_checker::method::MethodProcessing;
 
-/// Walk a declared `TypeDecl` against the actual `arg_ty`, populating
-/// `out` with `Generic(P) -> ConcreteType` mappings whenever a generic
-/// param `P` (one of `params`) appears in `declared`. Recurses through
-/// `Struct(_, args)` / `Enum(_, args)` / `Tuple(_)` so nested generic
-/// positions resolve too. Skips conflicting bindings — the caller is
-/// trusted to only feed compatible (declared, arg) pairs.
-fn collect_substitution(
-    declared: &TypeDecl,
-    arg_ty: &TypeDecl,
-    params: &[DefaultSymbol],
-    out: &mut HashMap<DefaultSymbol, TypeDecl>,
-) {
-    match declared {
-        TypeDecl::Generic(p) if params.contains(p) => {
-            out.entry(*p).or_insert_with(|| arg_ty.clone());
-        }
-        TypeDecl::Identifier(p) if params.contains(p) => {
-            // Method-only params can sometimes still appear as
-            // Identifier (defensive — the parser flow normally lifts
-            // them to Generic via the generic_context).
-            out.entry(*p).or_insert_with(|| arg_ty.clone());
-        }
-        TypeDecl::Struct(_, decl_args) | TypeDecl::Enum(_, decl_args) => {
-            let arg_args = match arg_ty {
-                TypeDecl::Struct(_, a) | TypeDecl::Enum(_, a) => a.clone(),
-                _ => return,
-            };
-            for (d, a) in decl_args.iter().zip(arg_args.iter()) {
-                collect_substitution(d, a, params, out);
-            }
-        }
-        TypeDecl::Tuple(decl_elems) => {
-            if let TypeDecl::Tuple(arg_elems) = arg_ty {
-                for (d, a) in decl_elems.iter().zip(arg_elems.iter()) {
-                    collect_substitution(d, a, params, out);
+impl<'a> TypeCheckerVisitor<'a> {
+    /// Walk a declared `TypeDecl` against the actual `arg_ty`, populating
+    /// `out` with `Generic(P) -> ConcreteType` mappings whenever a generic
+    /// param `P` (one of `params`) appears in `declared`. Recurses through
+    /// `Struct(_, args)` / `Enum(_, args)` / `Tuple(_)` so nested generic
+    /// positions resolve too. Skips conflicting bindings — the caller is
+    /// trusted to only feed compatible (declared, arg) pairs.
+    ///
+    /// Walk a declared `TypeDecl` against the actual `arg_ty`, populating
+    /// `out` with `Generic(P) -> ConcreteType` mappings whenever a generic
+    /// param `P` (one of `params`) appears in `declared`. Recurses through
+    /// `Struct(_, args)` / `Enum(_, args)` / `Tuple(_)` so nested generic
+    /// positions resolve too. Skips conflicting bindings — the caller is
+    /// trusted to only feed compatible (declared, arg) pairs.
+    ///
+    /// Uses raw symbol *values* (`u32`) for matching so that parser-level
+    /// `string_interner` inconsistencies (where `resolve()` returns the
+    /// wrong string for a symbol) are harmless. The `params` set holds the
+    /// numeric `to_usize()` values of the generic-param symbols taken from
+    /// `method_func.generic_params`.
+    fn collect_substitution(
+        &self,
+        declared: &TypeDecl,
+        arg_ty: &TypeDecl,
+        param_values: &std::collections::HashSet<u32>,
+        out: &mut HashMap<DefaultSymbol, TypeDecl>,
+    ) {
+        match declared {
+            TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
+                if param_values.contains(&(p.to_usize() as u32)) {
+                    out.entry(*p).or_insert_with(|| arg_ty.clone());
                 }
             }
+            TypeDecl::Struct(_, decl_args) | TypeDecl::Enum(_, decl_args) => {
+                let arg_args = match arg_ty {
+                    TypeDecl::Struct(_, a) | TypeDecl::Enum(_, a) => a.clone(),
+                    _ => return,
+                };
+                for (d, a) in decl_args.iter().zip(arg_args.iter()) {
+                    self.collect_substitution(d, a, param_values, out);
+                }
+            }
+            TypeDecl::Tuple(decl_elems) => {
+                if let TypeDecl::Tuple(arg_elems) = arg_ty {
+                    for (d, a) in decl_elems.iter().zip(arg_elems.iter()) {
+                        self.collect_substitution(d, a, param_values, out);
+                    }
+                }
+            }
+            TypeDecl::Function(decl_params, decl_ret) => {
+                if let TypeDecl::Function(arg_params, arg_ret) = arg_ty {
+                    for (d, a) in decl_params.iter().zip(arg_params.iter()) {
+                        self.collect_substitution(d, a, param_values, out);
+                    }
+                    self.collect_substitution(decl_ret, arg_ret, param_values, out);
+                }
+            }
+            _ => {}
         }
-        _ => {}
     }
-}
 
-impl<'a> TypeCheckerVisitor<'a> {
     /// Type check method calls - implementation used by type_checker.rs
     pub fn visit_method_call_impl(&mut self, obj: &ExprRef, method: &DefaultSymbol, args: &Vec<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let method_name = self.resolve_symbol_name(*method);
@@ -208,6 +226,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // works here. T is bound from the enum's type_params and
         // substituted into the return type.
         if let TypeDecl::Enum(enum_name, type_params) = obj_type {
+            let method_str = self.core.string_interner.resolve(*method).unwrap_or("?").to_string();
             if let Some(method_func) =
                 self.context.get_struct_method(*enum_name, *method).cloned()
             {
@@ -226,17 +245,22 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 // Method-only generic params: bind from arg types
                 // (skip self at index 0).
+
                 if !method_func.generic_params.is_empty() {
+                    let param_values: std::collections::HashSet<u32> =
+                        method_func.generic_params.iter()
+                            .map(|p| p.to_usize() as u32)
+                            .collect();
                     for (i, arg_ref) in args.iter().enumerate() {
                         let param_idx = i + 1;
                         if let Some((_, declared_ty)) =
                             method_func.parameter.get(param_idx)
                         {
                             let arg_ty = self.visit_expr(arg_ref)?;
-                            collect_substitution(
+                            self.collect_substitution(
                                 declared_ty,
                                 &arg_ty,
-                                &method_func.generic_params,
+                                &param_values,
                                 &mut substitutions,
                             );
                         }
@@ -254,7 +278,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         .get(&p)
                         .cloned()
                         .unwrap_or(TypeDecl::Generic(p)),
-                    other => other.substitute_generics(&substitutions),
+                    ref other => other.substitute_generics(&substitutions),
                 };
                 return Ok(resolved);
             }
@@ -321,6 +345,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let mut substitutions: HashMap<DefaultSymbol, TypeDecl> =
                         HashMap::new();
                     if !method_func.generic_params.is_empty() {
+                        let param_values: std::collections::HashSet<u32> =
+                            method_func.generic_params.iter()
+                                .map(|p| p.to_usize() as u32)
+                                .collect();
                         // Visit each call argument and bind any
                         // matching `Generic(P)` slot in the method's
                         // declared params to the runtime arg type.
@@ -331,10 +359,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                                 method_func.parameter.get(param_idx)
                             {
                                 let arg_ty = self.visit_expr(arg_ref)?;
-                                collect_substitution(
+                                self.collect_substitution(
                                     declared_ty,
                                     &arg_ty,
-                                    &method_func.generic_params,
+                                    &param_values,
                                     &mut substitutions,
                                 );
                             }

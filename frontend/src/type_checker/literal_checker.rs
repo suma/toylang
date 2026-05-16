@@ -43,7 +43,7 @@ impl<'a> LiteralTypeChecker for TypeCheckerVisitor<'a> {
         
         // Parse the number and determine appropriate type
         if let Ok(val) = num_str.parse::<i64>() {
-            if val >= 0 && val <= (i64::MAX) {
+            if val >= 0 {
                 // Positive number that fits in both i64 and u64 - use Number for inference
                 Ok(TypeDecl::Number)
             } else {

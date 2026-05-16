@@ -32,6 +32,12 @@ pub struct TokenNormalizationContext {
     _normalized_indent_level: usize,
 }
 
+impl Default for TokenNormalizationContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TokenNormalizationContext {
     pub fn new() -> Self {
         Self {
@@ -189,8 +195,7 @@ impl<T: TokenSource> TokenProvider<T> {
     /// Used in contexts where a compound token needs to be split into multiple tokens
     pub fn insert_token(&mut self, kind: Kind) {
         // Use the position of the current token, or default to 0..0 if none available
-        let position = self.buffer.peek_position_at(0)
-            .map(|r| r.clone())
+        let position = self.buffer.peek_position_at(0).cloned()
             .unwrap_or(0..0);
 
         let token = Token { kind, position };

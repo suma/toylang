@@ -34,11 +34,10 @@ mod helpers {
                     let should_visit = type_checker.core.stmt_pool.get(&stmt_ref)
                         .map(|stmt| matches!(stmt, Stmt::StructDecl { .. } | Stmt::ImplBlock { .. }))
                         .unwrap_or(false);
-                    if should_visit {
-                        if let Err(e) = type_checker.visit_stmt(&stmt_ref) {
+                    if should_visit
+                        && let Err(e) = type_checker.visit_stmt(&stmt_ref) {
                             return Err(format!("{:?}", e));
                         }
-                    }
                 }
 
                 let mut errors = Vec::new();

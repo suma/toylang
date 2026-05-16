@@ -121,7 +121,7 @@ pub(super) fn callable_signature(
         // `TypeDecl::Identifier` as before.
         let resolved_td = match (td, self_struct) {
             (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
-                .unwrap_or_else(|| TypeDecl::Identifier(s)),
+                .unwrap_or(TypeDecl::Identifier(s)),
             (other, _) => other.clone(),
         };
         let pt = match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {
@@ -151,7 +151,7 @@ pub(super) fn callable_signature(
             // so the return is a `ParamTy::Scalar`.
             let resolved_td = match (td, self_struct) {
                 (TypeDecl::Self_, Some(s)) => primitive_type_decl_for_target_sym(s)
-                    .unwrap_or_else(|| TypeDecl::Identifier(s)),
+                    .unwrap_or(TypeDecl::Identifier(s)),
                 (other, _) => other.clone(),
             };
             match resolve_param_ty(&resolved_td, substitutions, struct_layouts) {

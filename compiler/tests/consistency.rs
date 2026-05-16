@@ -172,7 +172,7 @@ fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
         core_modules_dir: core_dir.as_deref(),
     };
     let result = match interpreter::run_source(source, "test.t", &options) {
-        Ok(RunOutcome { exit_code: Some(code) }) => (code as i32) & 0xff,
+        Ok(RunOutcome { exit_code: Some(code) }) => code & 0xff,
         Ok(RunOutcome { exit_code: None }) => 0,
         Err(diag) => panic!("interpreter run_source (jit) failed: {diag}"),
     };
@@ -241,9 +241,9 @@ fn assert_consistent(source: &str, stem: &str) {
     // interpreter binary startup). The compiler-side JIT shares
     // codegen with AOT, so the in-process JIT check still
     // exercises the cranelift pipeline end-to-end.
-    if let Some(interp) = interpreter_value_with_core(source, None) {
-        if let Some(compiled) = try_compiler_exit_code(source, stem, false) {
-            if let Ok(jit_prog) = compile_jit_lazy_core(source) {
+    if let Some(interp) = interpreter_value_with_core(source, None)
+        && let Some(compiled) = try_compiler_exit_code(source, stem, false)
+            && let Ok(jit_prog) = compile_jit_lazy_core(source) {
                 let jit = jit_prog.run();
                 let compiled = compiled as u64;
                 if interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff {
@@ -254,8 +254,6 @@ fn assert_consistent(source: &str, stem: &str) {
             // canonical full path below, so the diagnostic the
             // user sees is the one from the configuration that
             // matches the production binaries.
-        }
-    }
     let interp = interpreter_value(source);
     let compiled = compiler_exit_code(source, stem, true) as u64;
     let jit = jit_exit_code(source, stem, true) as u64;
@@ -368,8 +366,8 @@ fn assert_stdout_consistent(source: &str, stem: &str) {
     // in-process stdout-capturing API for it yet (and the
     // interpreter spawn is comparatively cheap once stdlib
     // auto-load is skipped).
-    if let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false) {
-        if let Ok(jit_prog) = compile_jit_lazy_core(source) {
+    if let Some(compiled) = try_compiler_stdout(source, &format!("{stem}_aot_lite"), false)
+        && let Ok(jit_prog) = compile_jit_lazy_core(source) {
             let interp = interpreter_stdout(source, &format!("{stem}_interp_lite"), false);
             let (_exit, jit) = jit_prog.run_capturing_stdout();
             if interp == compiled && interp == jit {
@@ -378,7 +376,6 @@ fn assert_stdout_consistent(source: &str, stem: &str) {
             // Mismatch on lite path falls through; the canonical path
             // produces the diagnostic the user sees.
         }
-    }
     let interp = interpreter_stdout(source, &format!("{stem}_interp"), true);
     let compiled = compiler_stdout(source, &format!("{stem}_aot"));
     let jit = jit_stdout(source, &format!("{stem}_jit"), true);

@@ -145,8 +145,8 @@ impl<'a> FunctionLower<'a> {
                     return;
                 }
                 // Non-scalar: try identifier → struct/enum binding.
-                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg) {
-                    if let Some(binding) = self.bindings.get(&sym) {
+                if let Some(Expr::Identifier(sym)) = self.program.expression.get(arg)
+                    && let Some(binding) = self.bindings.get(&sym) {
                         match binding {
                             Binding::Struct { struct_id, .. } => {
                                 inferred.entry(*g).or_insert(Type::Struct(*struct_id));
@@ -157,7 +157,6 @@ impl<'a> FunctionLower<'a> {
                             _ => {}
                         }
                     }
-                }
             }
             _ => {}
         }

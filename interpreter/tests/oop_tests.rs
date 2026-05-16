@@ -365,7 +365,7 @@ fn main() -> bool {
 }
 "#;
         let result = test_program(source).expect("Program should execute successfully");
-        assert_eq!(result.borrow().unwrap_bool(), true);
+        assert!(result.borrow().unwrap_bool());
     }
 
     #[test]
@@ -666,7 +666,7 @@ mod destruction {
         // Only check log content if logging is enabled
         if is_destruction_logging_enabled() {
             let struct_destructions = log.iter().filter(|entry| entry.contains("Destructing struct_")).collect::<Vec<_>>();
-            assert!(log.len() >= 1, "Expected at least 1 log entry, found {}. Log: {:?}", log.len(), log);
+            assert!(!log.is_empty(), "Expected at least 1 log entry, found {}. Log: {:?}", log.len(), log);
             assert!(
                 log.iter().any(|entry| entry.contains("Destructing struct_")),
                 "Expected 'Destructing struct_' in log. Found: {:?}. Full log: {:?}",

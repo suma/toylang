@@ -712,7 +712,7 @@ fn main() -> bool {
 }
 "#;
         let result = test_program(source).expect("Program should execute successfully");
-        assert_eq!(result.borrow().unwrap_bool(), true);
+        assert!(result.borrow().unwrap_bool());
     }
 }
 

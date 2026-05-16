@@ -227,11 +227,10 @@ impl<'a> FunctionLower<'a> {
                 TypeDecl::Identifier(g) if template.generic_params.contains(g) => Some(*g),
                 _ => None,
             };
-            if let Some(g) = generic {
-                if let Some(ty) = self.value_scalar(arg) {
+            if let Some(g) = generic
+                && let Some(ty) = self.value_scalar(arg) {
                     inferred.entry(g).or_insert(ty);
                 }
-            }
         }
         let type_args: Option<Vec<Type>> = template
             .generic_params

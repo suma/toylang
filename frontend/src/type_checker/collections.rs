@@ -150,7 +150,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         match object_type {
             TypeDecl::Array(ref element_types, _size) => {
-                return self.handle_array_slice_assign(element_types, start, end, &value_type);
+                self.handle_array_slice_assign(element_types, start, end, &value_type)
             }
             TypeDecl::Dict(ref key_type, ref dict_value_type) => {
                 // Dictionary assignment: dict[key] = value (only single element assignment)
@@ -429,11 +429,10 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let mut element_types = Vec::new();
         for (index, elem_ref) in elements.iter().enumerate() {
-            if let Some(ref expected) = expected_types {
-                if index < expected.len() {
+            if let Some(ref expected) = expected_types
+                && index < expected.len() {
                     self.type_inference.type_hint = Some(expected[index].clone());
                 }
-            }
 
             let elem_type = self.visit_expr(elem_ref)?;
 
@@ -528,8 +527,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // If we have array type hint, handle type inference for all elements
-        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint {
-            if !expected_element_types.is_empty() {
+        if let Some(TypeDecl::Array(ref expected_element_types, _)) = original_hint
+            && !expected_element_types.is_empty() {
                 let expected_element_type = &expected_element_types[0];
 
                 // Nesting level mismatch detection: if the hint expects array elements
@@ -550,15 +549,14 @@ impl<'a> TypeCheckerVisitor<'a> {
                             self.transform_numeric_expr(element, expected_element_type)?;
                             element_types[i] = expected_element_type.clone();
                         },
-                        TypeDecl::Bool => {
+                        TypeDecl::Bool
                             // Bool literals - check type compatibility
-                            if expected_element_type != &TypeDecl::Bool {
+                            if expected_element_type != &TypeDecl::Bool => {
                                 return Err(TypeCheckError::array_error(&format!(
                                     "Array element {} has type Bool but expected {:?}",
                                     i, expected_element_type
                                 )));
-                            }
-                        },
+                            },
                         TypeDecl::Identifier(actual_struct) => {
                             // Struct literals - check type compatibility
                             if let TypeDecl::Identifier(expected_struct) = expected_element_type {
@@ -576,11 +574,10 @@ impl<'a> TypeCheckerVisitor<'a> {
                             }
                         },
                         actual_type if actual_type == expected_element_type => {
-                            if let Some(expr) = self.core.expr_pool.get(&element) {
-                                if matches!(expr, Expr::Number(_)) {
+                            if let Some(expr) = self.core.expr_pool.get(element)
+                                && matches!(expr, Expr::Number(_)) {
                                     self.transform_numeric_expr(element, expected_element_type)?;
                                 }
-                            }
                         },
                         TypeDecl::Unknown => {
                             element_types[i] = expected_element_type.clone();
@@ -634,7 +631,6 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                 } // end of nesting level guard
             }
-        }
 
         // Handle Number types when no type hint was provided
         if original_hint.is_none() {

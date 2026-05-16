@@ -68,7 +68,7 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                     let type_params = generic_params.iter().map(|param| {
                         // Try to resolve from current generic scope, otherwise use Generic type
                         self.type_inference.lookup_generic_type(*param)
-                            .unwrap_or_else(|| TypeDecl::Generic(*param))
+                            .unwrap_or(TypeDecl::Generic(*param))
                     }).collect();
                     TypeDecl::Struct(*name, type_params)
                 } else {

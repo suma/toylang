@@ -281,7 +281,7 @@ impl<'a> FunctionLower<'a> {
         // Same shape as the non-generic decl-time pre-populate in
         // `lower_program`.
         super::program::populate_method_writeback_types(
-            &mut self.module,
+            self.module,
             func_id,
             template,
         );
@@ -881,16 +881,15 @@ impl<'a> FunctionLower<'a> {
             // Compound borrows fall through to identifier expansion
             // below so the leaf-flatten erasure continues at the
             // boundary.
-            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a) {
-                if matches!(
+            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a)
+                && matches!(
                     op,
                     frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut
                 ) {
                     if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
                         if let Some(Binding::Scalar { local, ty }) =
                             self.bindings.get(&sym).cloned()
-                        {
-                            if matches!(
+                            && matches!(
                                 ty,
                                 Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -906,7 +905,6 @@ impl<'a> FunctionLower<'a> {
                                 values.push(v);
                                 continue;
                             }
-                        }
                         if let Some(Binding::RefScalar { local, .. }) =
                             self.bindings.get(&sym).cloned()
                         {
@@ -922,11 +920,10 @@ impl<'a> FunctionLower<'a> {
                     if matches!(
                         self.program.expression.get(&inner),
                         Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
-                    ) {
-                        if let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
+                    )
+                        && let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
                             self.resolve_field_chain(&inner)
-                        {
-                            if matches!(
+                            && matches!(
                                 ty,
                                 Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -942,26 +939,21 @@ impl<'a> FunctionLower<'a> {
                                 values.push(v);
                                 continue;
                             }
-                        }
-                    }
                     // `&mut <name>[i]` — array element address.
                     if let Some(Expr::SliceAccess(arr_expr, info)) =
                         self.program.expression.get(&inner)
-                    {
-                        if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
-                            if let Some(Expr::Identifier(arr_sym)) =
+                        && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+                            && let Some(Expr::Identifier(arr_sym)) =
                                 self.program.expression.get(&arr_expr)
-                            {
-                                if let Some(Binding::Array { element_ty, slot, .. }) =
+                                && let Some(Binding::Array { element_ty, slot, .. }) =
                                     self.bindings.get(&arr_sym).cloned()
-                                {
-                                    if matches!(
+                                    && matches!(
                                         element_ty,
                                         Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                             | Type::I8 | Type::U8 | Type::I16 | Type::U16
                                             | Type::I32 | Type::U32
-                                    ) {
-                                        if let Some(idx_ref) = info.start {
+                                    )
+                                        && let Some(idx_ref) = info.start {
                                             let idx_v = self
                                                 .lower_expr(&idx_ref)?
                                                 .ok_or_else(|| {
@@ -980,13 +972,7 @@ impl<'a> FunctionLower<'a> {
                                             values.push(v);
                                             continue;
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
-            }
             // Peel any explicit borrow so compound borrows
             // (`&p` / `&mut p` of a struct/tuple/enum binding) flow
             // through the identifier-expansion path below.

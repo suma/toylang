@@ -584,8 +584,8 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         // surface the hint as the result so nested expressions pick up
         // the right element type. Fall back to u64 for backward compat.
         if matches!(func, BuiltinFunction::PtrRead) {
-            if let Some(hint) = &self.type_inference.type_hint {
-                if matches!(hint,
+            if let Some(hint) = &self.type_inference.type_hint
+                && matches!(hint,
                     TypeDecl::Int64 | TypeDecl::UInt64 | TypeDecl::Bool
                     | TypeDecl::Float64
                     // NUM-W: narrow int hints so `val b: u8 =
@@ -600,7 +600,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
                 ) {
                     return Ok(hint.clone());
                 }
-            }
             return Ok(TypeDecl::UInt64);
         }
 

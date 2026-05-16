@@ -69,9 +69,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Impl block type checking - validate methods
         for method in methods {
             // Use method.rs module for validation
-            if let Err(err) = self.process_impl_method_validation(struct_symbol, method, has_generics) {
-                return Err(err);
-            }
+            self.process_impl_method_validation(struct_symbol, method, has_generics)?;
 
             // Type check method body using method.rs module
             self.setup_method_parameter_context(method);
@@ -151,9 +149,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.restore_method_parameter_context();
 
             // Validate method return type compatibility using method.rs module
-            if let Err(err) = self.validate_method_return_type(method, body_result, has_generics) {
-                return Err(err);
-            }
+            self.validate_method_return_type(method, body_result, has_generics)?;
 
             // Register method in context
             self.context.register_struct_method(struct_symbol, method.name, method.clone());

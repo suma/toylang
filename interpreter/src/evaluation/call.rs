@@ -600,7 +600,7 @@ impl EvaluationContext<'_> {
             .lookup_function_qualified(None, *name)
             .or_else(|| self.function.get::<DefaultSymbol>(name).cloned());
         if let Some(func) = resolved {
-            let args = self.expr_pool.get(&args)
+            let args = self.expr_pool.get(args)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid arguments reference".to_string()))?;
             match args {
                 Expr::ExprList(args) => {
@@ -685,7 +685,7 @@ impl EvaluationContext<'_> {
                         }
                     }
 
-                    Ok(EvaluationResult::Value(ret_val.into()))
+                    Ok(EvaluationResult::Value(ret_val))
                 }
                 _ => Err(InterpreterError::InternalError("evaluate_function: expected ExprList".to_string())),
             }
@@ -772,7 +772,7 @@ impl EvaluationContext<'_> {
             self.environment
                 .set_val(*name, crate::value::Value::from_rc(val));
         }
-        for ((param_sym, _), arg_val) in params.iter().zip(evaluated.into_iter()) {
+        for ((param_sym, _), arg_val) in params.iter().zip(evaluated) {
             self.environment.set_val(*param_sym, arg_val);
         }
         let body_expr = self.expr_pool.get(&body).ok_or_else(|| {
@@ -862,7 +862,7 @@ impl EvaluationContext<'_> {
             self.environment
                 .set_val(*name, crate::value::Value::from_rc(val));
         }
-        for ((param_sym, _), arg_val) in params.iter().zip(evaluated.into_iter()) {
+        for ((param_sym, _), arg_val) in params.iter().zip(evaluated) {
             self.environment.set_val(*param_sym, arg_val);
         }
         // Evaluate the body. Body is a block ExprRef per the parser
@@ -892,7 +892,7 @@ impl EvaluationContext<'_> {
     /// Evaluates field access expressions
     pub(super) fn evaluate_field_access(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<EvaluationResult, InterpreterError> {
         // First check if this is a module qualified name (e.g., math.add)
-        if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(&obj) {
+        if let Some(Expr::Identifier(module_name)) = self.expr_pool.get(obj) {
             if let Some(module_value) = self.resolve_module_qualified_name(module_name, *field) {
                 return Ok(EvaluationResult::Value(module_value.into()));
             }
@@ -983,7 +983,7 @@ impl EvaluationContext<'_> {
                         }
 
                         // Get the actual string value regardless of internal representation
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
                         let len = string_value.len() as u64;
 
                         Ok(EvaluationResult::Value((Object::UInt64(len)).into()))
@@ -996,12 +996,12 @@ impl EvaluationContext<'_> {
                             )));
                         }
 
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
 
                         let arg_value = self.evaluate(&args[0])?;
                         let arg_obj = try_value!(Ok(arg_value));
                         let arg_borrowed = arg_obj.borrow();
-                        let arg_string = arg_borrowed.to_string_value(&self.string_interner);
+                        let arg_string = arg_borrowed.to_string_value(self.string_interner);
 
                         let contains = string_value.contains(&arg_string);
                         Ok(EvaluationResult::Value((Object::Bool(contains)).into()))
@@ -1014,12 +1014,12 @@ impl EvaluationContext<'_> {
                             )));
                         }
 
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
 
                         let arg_value = self.evaluate(&args[0])?;
                         let arg_obj = try_value!(Ok(arg_value));
                         let arg_borrowed = arg_obj.borrow();
-                        let arg_string = arg_borrowed.to_string_value(&self.string_interner);
+                        let arg_string = arg_borrowed.to_string_value(self.string_interner);
 
                         let concatenated = format!("{}{}", string_value, arg_string);
                         // Return as dynamic String, not interned - this is the key improvement
@@ -1033,7 +1033,7 @@ impl EvaluationContext<'_> {
                             )));
                         }
 
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
                         let trimmed = string_value.trim().to_string();
                         // Return as dynamic String, not interned
                         Ok(EvaluationResult::Value((Object::String(trimmed)).into()))
@@ -1046,7 +1046,7 @@ impl EvaluationContext<'_> {
                             )));
                         }
 
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
                         let upper = string_value.to_uppercase();
                         // Return as dynamic String, not interned
                         Ok(EvaluationResult::Value((Object::String(upper)).into()))
@@ -1059,7 +1059,7 @@ impl EvaluationContext<'_> {
                             )));
                         }
 
-                        let string_value = obj_borrowed.to_string_value(&self.string_interner);
+                        let string_value = obj_borrowed.to_string_value(self.string_interner);
                         let lower = string_value.to_lowercase();
                         // Return as dynamic String, not interned
                         Ok(EvaluationResult::Value((Object::String(lower)).into()))
@@ -1199,7 +1199,7 @@ impl EvaluationContext<'_> {
 
         for (field_name, field_expr) in fields {
             // Handle null expressions specially in struct literals
-            let expr = self.expr_pool.get(&field_expr)
+            let expr = self.expr_pool.get(field_expr)
                 .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", field_expr)))?;
 
             let field_value = match expr {
@@ -1495,7 +1495,7 @@ impl EvaluationContext<'_> {
             let mut method_args: Vec<crate::value::Value> = vec![object.into()];
             method_args.extend(args.iter().cloned().map(Into::into));
             let result = self.evaluate_function_with_values(method_func, &method_args)?;
-            return Ok(EvaluationResult::Value(result.into()));
+            return Ok(EvaluationResult::Value(result));
         }
 
         // Look for struct method. CONCRETE-IMPL Phase 2:
@@ -1548,7 +1548,7 @@ impl EvaluationContext<'_> {
             // Bridge `RcObject` args to `Value` at the boundary.
             let value_args: Vec<crate::value::Value> = args.iter().cloned().map(Into::into).collect();
             let result = self.evaluate_function_with_values(func, &value_args)?;
-            return Ok(EvaluationResult::Value(result.into()));
+            return Ok(EvaluationResult::Value(result));
         }
 
         // Look for associated function in struct methods (but call

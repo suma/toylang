@@ -113,7 +113,7 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
             let location = parser.current_source_location();
             let combined = parser
                 .ast_builder
-                .binary_expr(op, lhs, rhs, Some(location.clone()));
+                .binary_expr(op, lhs, rhs, Some(location));
             if let Some(Expr::SliceAccess(object, slice_info)) =
                 parser.ast_builder.expr_pool.get(&lhs)
             {
@@ -348,12 +348,12 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
     let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
     let val_stmt = parser
         .ast_builder
-        .val_stmt(tmp_sym, None, rhs1, Some(location.clone()));
+        .val_stmt(tmp_sym, None, rhs1, Some(location));
     stmts.push(val_stmt);
 
     let tmp_ident = parser
         .ast_builder
-        .identifier_expr(tmp_sym, Some(location.clone()));
+        .identifier_expr(tmp_sym, Some(location));
     comparisons.push((lhs, op1, tmp_ident));
     let mut last_tmp = tmp_ident;
 
@@ -374,12 +374,12 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
         let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
         let val_stmt = parser
             .ast_builder
-            .val_stmt(tmp_sym, None, rhs, Some(location.clone()));
+            .val_stmt(tmp_sym, None, rhs, Some(location));
         stmts.push(val_stmt);
 
         let new_tmp = parser
             .ast_builder
-            .identifier_expr(tmp_sym, Some(location.clone()));
+            .identifier_expr(tmp_sym, Some(location));
         comparisons.push((last_tmp, op, new_tmp));
         last_tmp = new_tmp;
     }
@@ -389,7 +389,7 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
         op0.clone(),
         *lhs0,
         *rhs0,
-        Some(location.clone()),
+        Some(location),
     );
     for i in 1..comparisons.len() {
         let (lhs_i, op_i, rhs_i) = &comparisons[i];
@@ -397,19 +397,19 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
             op_i.clone(),
             *lhs_i,
             *rhs_i,
-            Some(location.clone()),
+            Some(location),
         );
         result = parser.ast_builder.binary_expr(
             Operator::LogicalAnd,
             result,
             cmp,
-            Some(location.clone()),
+            Some(location),
         );
     }
 
     let result_stmt = parser.ast_builder.add_stmt_with_location(
         crate::ast::Stmt::Expression(result),
-        Some(location.clone()),
+        Some(location),
     );
     stmts.push(result_stmt);
 

@@ -42,11 +42,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         out: &mut HashMap<DefaultSymbol, TypeDecl>,
     ) {
         match declared {
-            TypeDecl::Generic(p) | TypeDecl::Identifier(p) => {
-                if param_values.contains(&(p.to_usize() as u32)) {
+            TypeDecl::Generic(p) | TypeDecl::Identifier(p)
+                if param_values.contains(&(p.to_usize() as u32)) => {
                     out.entry(*p).or_insert_with(|| arg_ty.clone());
                 }
-            }
             TypeDecl::Struct(_, decl_args) | TypeDecl::Enum(_, decl_args) => {
                 let arg_args = match arg_ty {
                     TypeDecl::Struct(_, a) | TypeDecl::Enum(_, a) => a.clone(),
@@ -86,7 +85,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Check if obj is a variable and get its name for type mapping lookup
         let _var_name = if let Some(obj_expr) = self.core.expr_pool.get(obj) {
             match obj_expr {
-                Expr::Identifier(name) => Some(name.clone()),
+                Expr::Identifier(name) => Some(name),
                 _ => None
             }
         } else {
@@ -178,8 +177,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // before falling back to the legacy hardcoded `BuiltinMethod`
         // arms below. `Self` in the return type resolves back to the
         // receiver's primitive `TypeDecl`.
-        if let Some(target_sym) = self.primitive_target_symbol_from_type(obj_type) {
-            if let Some(method_func) =
+        if let Some(target_sym) = self.primitive_target_symbol_from_type(obj_type)
+            && let Some(method_func) =
                 self.context.get_struct_method(target_sym, *method).cloned()
             {
                 // Visit the args so each one is type-checked even
@@ -198,16 +197,15 @@ impl<'a> TypeCheckerVisitor<'a> {
                 };
                 return Ok(resolved);
             }
-        }
 
         // Method call on a trait-bounded generic parameter, e.g. inside
         // `fn f<T: MyTrait>(x: T) { x.foo() }`. Resolve `foo` through the
         // trait's method signature table; `Self` in the return type is
         // mapped back to the generic parameter so the caller sees the
         // appropriate concrete type after monomorphization.
-        if let TypeDecl::Generic(t_sym) = obj_type {
-            if let Some(TypeDecl::Identifier(trait_sym)) = self.context.current_fn_generic_bounds.get(t_sym).cloned() {
-                if let Some(sig) = self.context.get_trait_method(trait_sym, *method).cloned() {
+        if let TypeDecl::Generic(t_sym) = obj_type
+            && let Some(TypeDecl::Identifier(trait_sym)) = self.context.current_fn_generic_bounds.get(t_sym).cloned()
+                && let Some(sig) = self.context.get_trait_method(trait_sym, *method).cloned() {
                     let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
                     let resolved = match ret {
                         TypeDecl::Self_ => TypeDecl::Generic(*t_sym),
@@ -215,8 +213,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     };
                     return Ok(resolved);
                 }
-            }
-        }
 
         // Method call on a generic enum receiver
         // (`val o: Option<i64> = ...; o.unwrap_or(default)`).
@@ -226,7 +222,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // works here. T is bound from the enum's type_params and
         // substituted into the return type.
         if let TypeDecl::Enum(enum_name, type_params) = obj_type {
-            let method_str = self.core.string_interner.resolve(*method).unwrap_or("?").to_string();
+            let _method_str = self.core.string_interner.resolve(*method).unwrap_or("?").to_string();
             if let Some(method_func) =
                 self.context.get_struct_method(*enum_name, *method).cloned()
             {
@@ -315,8 +311,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let resolved_return_type = match method_return_type {
                         TypeDecl::Self_ => TypeDecl::Struct(*struct_name, type_params.clone()),
                         TypeDecl::Generic(param) => {
-                            let result = substitutions.get(param).cloned().unwrap_or_else(|| TypeDecl::Generic(*param));
-                            result
+                            
+                            substitutions.get(param).cloned().unwrap_or(TypeDecl::Generic(*param))
                         },
                         other => other.substitute_generics(&substitutions)
                     };
@@ -386,12 +382,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Check array methods
-        if let TypeDecl::Array(_, _) = obj_type {
-            if method_name == "len" {
+        if let TypeDecl::Array(_, _) = obj_type
+            && method_name == "len" {
                 // Array len() returns u64
                 return Ok(TypeDecl::UInt64);
             }
-        }
 
         // Check builtin methods
         if let Some(builtin_method) = self.builtin_methods.get(&(obj_type.clone(), method_name.to_string())).cloned() {
@@ -410,11 +405,11 @@ impl<'a> TypeCheckerVisitor<'a> {
         // (interpreter / AOT) reads the field as a closure
         // value and dispatches indirectly — same path it uses
         // when a function-typed local is called.
-        if let TypeDecl::Struct(struct_name, _) = obj_type {
-            if let Some(fields) = self.context.get_struct_fields(*struct_name).cloned() {
+        if let TypeDecl::Struct(struct_name, _) = obj_type
+            && let Some(fields) = self.context.get_struct_fields(*struct_name).cloned() {
                 let field = fields.iter().find(|f| f.name == method_name);
-                if let Some(field) = field {
-                    if let TypeDecl::Function(param_tys, ret_ty) = &field.type_decl {
+                if let Some(field) = field
+                    && let TypeDecl::Function(param_tys, ret_ty) = &field.type_decl {
                         // Argument count + per-position
                         // compatibility — same shape as
                         // `visit_indirect_call`'s checks.
@@ -448,9 +443,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         self.type_inference.type_hint = original_hint;
                         return Ok((**ret_ty).clone());
                     }
-                }
             }
-        }
 
         Err(TypeCheckError::method_error(&method_name, obj_type.clone(), "method not found"))
     }
@@ -537,8 +530,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // matches `Struct::assoc(args)`. Intercept when the left side is a
         // registered enum and the right side names one of its variants. For
         // generic enums, infer the type parameters from argument types.
-        if let Some(variants) = self.context.enum_definitions.get(&struct_name).cloned() {
-            if let Some(variant_def) = variants.iter().find(|v| v.name == function_name) {
+        if let Some(variants) = self.context.enum_definitions.get(&struct_name).cloned()
+            && let Some(variant_def) = variants.iter().find(|v| v.name == function_name) {
                 if args.len() != variant_def.payload_types.len() {
                     let enum_str = self.resolve_symbol_name(struct_name);
                     let v_str = self.resolve_symbol_name(function_name);
@@ -574,8 +567,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     let actual_ty = self.visit_expr(arg_expr)?;
                     // When the declared payload references a generic parameter,
                     // record the argument's concrete type as that parameter.
-                    if let TypeDecl::Generic(p) = expected_ty {
-                        if generic_params.contains(p) {
+                    if let TypeDecl::Generic(p) = expected_ty
+                        && generic_params.contains(p) {
                             if let Some(prev) = substitutions.get(p) {
                                 if !prev.is_equivalent(&actual_ty) {
                                     let enum_str = self.resolve_symbol_name(struct_name);
@@ -590,7 +583,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                             }
                             continue;
                         }
-                    }
                     let expected_resolved = expected_ty.substitute_generics(&substitutions);
                     if !actual_ty.is_equivalent(&expected_resolved) && !matches!(actual_ty, TypeDecl::Unknown) {
                         let enum_str = self.resolve_symbol_name(struct_name);
@@ -607,7 +599,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     .collect();
                 return Ok(TypeDecl::Enum(struct_name, type_args));
             }
-        }
 
         // Module-qualified call: `module::func(args)` where `module`
         // is an imported module alias. With per-module function
@@ -673,7 +664,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let params: Vec<_> = if method.has_self_param {
             method.parameter.iter().skip(1).cloned().collect()
         } else {
-            method.parameter.iter().cloned().collect()
+            method.parameter.to_vec()
         };
 
         if args.len() != params.len() {

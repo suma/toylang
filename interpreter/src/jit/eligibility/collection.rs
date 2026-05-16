@@ -128,7 +128,7 @@ pub(super) fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, 
             // `resolve_uniform_payload`. Mixed-width payloads at
             // a given monomorph fail to resolve and skip JIT.
             let collected_generic_params: Vec<DefaultSymbol> =
-                generic_params.iter().copied().collect();
+                generic_params.to_vec();
             // Phase JE-2a: every tuple variant has exactly one
             // payload (multi-payload variants are still out of
             // scope). Unit variants are allowed alongside tuple

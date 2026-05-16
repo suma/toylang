@@ -98,15 +98,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         let stmt_len = visitor.core.stmt_pool.len();
         for i in 0..stmt_len {
             let stmt_ref = StmtRef(i as u32);
-            if let Some(stmt) = visitor.core.stmt_pool.get(&stmt_ref) {
-                if let Stmt::StructDecl { name, generic_params: _, generic_bounds: _, fields, visibility } = stmt {
+            if let Some(stmt) = visitor.core.stmt_pool.get(&stmt_ref)
+                && let Stmt::StructDecl { name, generic_params: _, generic_bounds: _, fields, visibility } = stmt {
                     visitor.context.register_struct(
                         name,
                         fields.clone(),
                         visibility,
                     );
                 }
-            }
         }
 
         visitor
@@ -364,8 +363,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // inferred type from the rhs gets checked after evaluation
         // below. This prevents references from outliving their
         // referents via name binding.
-        if let Some(decl) = type_decl.as_ref() {
-            if decl.contains_ref() {
+        if let Some(decl) = type_decl.as_ref()
+            && decl.contains_ref() {
                 let var_name = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
                 return Err(TypeCheckError::generic_error(&format!(
                     "binding `{}` annotates a reference type; references cannot be \
@@ -373,7 +372,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     var_name
                 )));
             }
-        }
 
         let expr_ty = match expr {
             Some(e) => {
@@ -443,7 +441,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let mut last = TypeDecl::Unit;
-        let s = func.code.clone();
+        let s = func.code;
 
         // Is already checked
         match self.function_checking.is_checked_fn.get(&func.name) {
@@ -457,8 +455,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // method-receiver writeback (`&mut self`). They cannot
         // escape via the return type. Without lifetimes this is
         // the simplest defence against dangling references.
-        if let Some(ret) = func.return_type.as_ref() {
-            if ret.contains_ref() {
+        if let Some(ret) = func.return_type.as_ref()
+            && ret.contains_ref() {
                 let fn_name = self.core.string_interner.resolve(func.name).unwrap_or("?").to_string();
                 return Err(TypeCheckError::generic_error(&format!(
                     "function `{}` declares a reference type in its return position; \
@@ -466,7 +464,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     fn_name
                 )));
             }
-        }
 
         // `extern fn` declarations have no body to walk — the
         // implementation is provided by the runtime / linker. The

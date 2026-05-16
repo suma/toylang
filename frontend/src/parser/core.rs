@@ -434,7 +434,7 @@ impl<'a> Parser<'a> {
     }
 
     pub fn get_string_interner(&mut self) -> &mut DefaultStringInterner {
-        &mut self.string_interner
+        self.string_interner
     }
 
     pub fn skip_newlines(&mut self) {

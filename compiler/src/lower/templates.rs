@@ -504,8 +504,8 @@ pub(super) fn lower_param_or_return_type(
     // is out of scope until the codegen layer learns to flatten
     // ref-of-struct.
     if let TypeDecl::Ref { inner, .. } = ty {
-        if let Some(scalar) = lower_scalar(inner) {
-            if matches!(
+        if let Some(scalar) = lower_scalar(inner)
+            && matches!(
                 scalar,
                 Type::I64 | Type::U64 | Type::F64 | Type::Bool
                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -513,7 +513,6 @@ pub(super) fn lower_param_or_return_type(
             ) {
                 return Some(Type::U64);
             }
-        }
         return lower_param_or_return_type(inner, struct_defs, enum_defs, module, interner);
     }
     if let Some(t) = lower_scalar(ty) {

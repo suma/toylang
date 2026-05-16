@@ -106,14 +106,14 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
                 dummy_sym,
                 Some(TypeDecl::Unknown),
                 then_block,
-                Some(start_location.clone()),
+                Some(start_location),
             );
             let then_wrapped = parser
                 .ast_builder
-                .block_expr(vec![then_val_stmt], Some(start_location.clone()));
+                .block_expr(vec![then_val_stmt], Some(start_location));
             let else_empty = parser
                 .ast_builder
-                .block_expr(vec![], Some(start_location.clone()));
+                .block_expr(vec![], Some(start_location));
             (then_wrapped, else_empty)
         }
     };

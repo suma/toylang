@@ -41,7 +41,7 @@ impl<'a> Parser<'a> {
                 self.expect_err(&Kind::ParenClose)?;
                 self.expect_err(&Kind::Arrow)?;
                 let ret = self.parse_type_declaration_with_generic_context(generic_params)?;
-                return Ok(TypeDecl::Function(params, Box::new(ret)));
+                Ok(TypeDecl::Function(params, Box::new(ret)))
             }
             // REF-Stage-2: `&T` and `&mut T` reference types at any
             // type-annotation position (parameter type, val annotation,

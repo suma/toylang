@@ -61,13 +61,11 @@ impl<'a> FunctionLower<'a> {
             Operator::GE => Some("ge"),
             _ => None,
         };
-        if let Some(method_name) = cmp_method {
-            if let Type::Struct(struct_id) = lhs_ty {
-                if let Some(value) = self.try_lower_struct_cmp(struct_id, lhs, rhs, op, method_name)? {
+        if let Some(method_name) = cmp_method
+            && let Type::Struct(struct_id) = lhs_ty
+                && let Some(value) = self.try_lower_struct_cmp(struct_id, lhs, rhs, op, method_name)? {
                     return Ok(Some(value));
                 }
-            }
-        }
         let l = self
             .lower_expr(lhs)?
             .ok_or_else(|| "binary lhs produced no value".to_string())?;

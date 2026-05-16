@@ -419,11 +419,10 @@ impl<'a> FunctionLower<'a> {
                         .statement
                         .get(stmt_ref)
                         .ok_or_else(|| "missing block stmt".to_string())?;
-                    if is_last {
-                        if let Stmt::Expression(e) = stmt {
+                    if is_last
+                        && let Stmt::Expression(e) = stmt {
                             return self.lower_into_enum_storage(&e, target);
                         }
-                    }
                     let _ = self.lower_stmt(stmt_ref)?;
                 }
                 Err("block has no enum-producing tail expression".to_string())

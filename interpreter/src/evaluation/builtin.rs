@@ -92,7 +92,7 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
                 let length = string_value.len() as u64;
                 Ok(EvaluationResult::Value((Object::UInt64(length)).into()))
             }
@@ -106,11 +106,11 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
 
                 let arg_value = self.evaluate(&args[0])?;
                 let arg_obj = try_value!(Ok(arg_value));
-                let arg_string = arg_obj.borrow().to_string_value(&self.string_interner);
+                let arg_string = arg_obj.borrow().to_string_value(self.string_interner);
 
                 let concatenated = format!("{}{}", string_value, arg_string);
                 // Return as dynamic String, not interned - this is the key improvement
@@ -182,7 +182,7 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
                 let trimmed = string_value.trim().to_string();
                 // Return as dynamic String, not interned
                 Ok(EvaluationResult::Value((Object::String(trimmed)).into()))
@@ -197,7 +197,7 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
                 let upper = string_value.to_uppercase();
                 // Return as dynamic String, not interned
                 Ok(EvaluationResult::Value((Object::String(upper)).into()))
@@ -212,7 +212,7 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
                 let lower = string_value.to_lowercase();
                 // Return as dynamic String, not interned
                 Ok(EvaluationResult::Value((Object::String(lower)).into()))
@@ -227,11 +227,11 @@ impl EvaluationContext<'_> {
                     });
                 }
 
-                let string_value = receiver.borrow().to_string_value(&self.string_interner);
+                let string_value = receiver.borrow().to_string_value(self.string_interner);
 
                 let separator_value = self.evaluate(&args[0])?;
                 let separator_obj = try_value!(Ok(separator_value));
-                let separator = separator_obj.borrow().to_string_value(&self.string_interner);
+                let separator = separator_obj.borrow().to_string_value(self.string_interner);
 
                 let parts: Vec<_> = string_value.split(&separator)
                     .map(|part| {
@@ -421,11 +421,11 @@ impl EvaluationContext<'_> {
                 let s_result = self.evaluate(&args[0])?;
                 let s_obj = try_value!(Ok(s_result));
                 let len: u64 = match &*s_obj.borrow() {
-                    Object::String(s) => s.as_bytes().len() as u64,
+                    Object::String(s) => s.len() as u64,
                     Object::ConstString(sym) => self
                         .string_interner
                         .resolve(*sym)
-                        .map(|s| s.as_bytes().len() as u64)
+                        .map(|s| s.len() as u64)
                         .unwrap_or(0),
                     other => {
                         return Err(InterpreterError::InternalError(format!(
@@ -703,7 +703,7 @@ impl EvaluationContext<'_> {
                 // __builtin_to_string(x))`).
                 let value = self.evaluate(&args[0])?;
                 let value = try_value!(Ok(value));
-                let rendered = value.borrow().to_display_string(&self.string_interner);
+                let rendered = value.borrow().to_display_string(self.string_interner);
                 Ok(EvaluationResult::Value(Object::String(rendered).into()))
             }
 
@@ -721,7 +721,7 @@ impl EvaluationContext<'_> {
                 // human-readable (defensive fallback).
                 let value = self.evaluate(&args[0])?;
                 let value = try_value!(Ok(value));
-                let message = value.borrow().to_display_string(&self.string_interner);
+                let message = value.borrow().to_display_string(self.string_interner);
                 Err(InterpreterError::Panic { message })
             }
 
@@ -747,7 +747,7 @@ impl EvaluationContext<'_> {
                 }
                 let msg_val = self.evaluate(&args[1])?;
                 let msg_val = try_value!(Ok(msg_val));
-                let message = msg_val.borrow().to_display_string(&self.string_interner);
+                let message = msg_val.borrow().to_display_string(self.string_interner);
                 Err(InterpreterError::Panic { message })
             }
 
@@ -764,7 +764,7 @@ impl EvaluationContext<'_> {
                 }
                 let value = self.evaluate(&args[0])?;
                 let value = try_value!(Ok(value));
-                let rendered = value.borrow().to_display_string(&self.string_interner);
+                let rendered = value.borrow().to_display_string(self.string_interner);
                 if matches!(func, BuiltinFunction::Println) {
                     crate::output::println_text(&rendered);
                 } else {

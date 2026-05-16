@@ -11,7 +11,7 @@ use crate::type_checker::{
 impl<'a> TypeCheckerVisitor<'a> {
     /// Main entry point for statement type checking
     pub fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        let mut stmt_val = self.core.stmt_pool.get(&stmt).unwrap_or(Stmt::Break(None)).clone();
+        let mut stmt_val = self.core.stmt_pool.get(stmt).unwrap_or(Stmt::Break(None)).clone();
         
         let result = stmt_val.accept(self);
         
@@ -27,7 +27,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check expression statements
     pub fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let expr_obj = self.core.expr_pool.get(&expr)
+        let expr_obj = self.core.expr_pool.get(expr)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
         expr_obj.clone().accept(self)
     }
@@ -35,7 +35,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check variable declarations (var) - internal implementation
     pub fn visit_var_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
         let type_decl = type_decl.clone();
-        let expr = expr.clone();
+        let expr = *expr;
         // REF-Stage-2 (f): `var` bindings are mutable, so subsequent
         // `&mut <name>` borrow expressions are accepted by the type
         // checker.
@@ -45,14 +45,14 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check value declarations (val) - internal implementation
     pub fn visit_val_impl(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let expr_ref = expr.clone();
+        let expr_ref = *expr;
         let type_decl = type_decl.clone();
 
         // REF-Stage-2 (e): syntactic escape rule — a `val` binding
         // cannot annotate a reference type. The inferred-type form
         // is also rejected after evaluation below.
-        if let Some(decl) = type_decl.as_ref() {
-            if decl.contains_ref() {
+        if let Some(decl) = type_decl.as_ref()
+            && decl.contains_ref() {
                 let var_name = self.resolve_symbol_name(name);
                 return Err(TypeCheckError::generic_error(&format!(
                     "binding `{}` annotates a reference type; references cannot be \
@@ -60,7 +60,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     var_name
                 )));
             }
-        }
 
         // Set type hint and evaluate expression
         let old_hint = self.setup_type_hint_for_val(&type_decl);
@@ -108,8 +107,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         let _var_name_str = self.resolve_symbol_name(name);
 
         // Extract type parameter mappings for generic struct instances
-        if let TypeDecl::Struct(struct_name, type_params) = &final_type {
-            if !type_params.is_empty() {
+        if let TypeDecl::Struct(struct_name, type_params) = &final_type
+            && !type_params.is_empty() {
                 // Get the generic parameter names for this struct
                 if let Some(generic_param_names) = self.context.get_struct_generic_params(*struct_name) {
                     let mut type_mappings = HashMap::new();
@@ -123,7 +122,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     self.context.set_var_type_mapping(name, type_mappings);
                 }
             }
-        }
         
         self.context.set_var(name, final_type.clone());
 
@@ -140,7 +138,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             let e = expr.as_ref()
                 .ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
-            let expr_obj = self.core.expr_pool.get(&e)
+            let expr_obj = self.core.expr_pool.get(e)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
             let return_type = expr_obj.clone().accept(self)?;
             Ok(return_type)
@@ -152,14 +150,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.push_context();
         self.context.loop_label_stack.push(label);
 
-        let range_obj = self.core.expr_pool.get(&range)
+        let range_obj = self.core.expr_pool.get(range)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
         let range_ty = range_obj.clone().accept(self)?;
         let ty = Some(range_ty);
 
         self.process_val_type(init, &ty, &Some(*range))?;
 
-        let body_obj = self.core.expr_pool.get(&body)
+        let body_obj = self.core.expr_pool.get(body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
         let res = body_obj.clone().accept(self);
 
@@ -171,7 +169,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check while loops - internal implementation
     pub fn visit_while_impl(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first
-        let cond_obj = self.core.expr_pool.get(&cond)
+        let cond_obj = self.core.expr_pool.get(cond)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
         let cond_type = cond_obj.clone().accept(self)?;
 
@@ -183,7 +181,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Create new scope for while body
         self.push_context();
         self.context.loop_label_stack.push(label);
-        let body_obj = self.core.expr_pool.get(&body)
+        let body_obj = self.core.expr_pool.get(body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
         let res = body_obj.clone().accept(self);
         self.context.loop_label_stack.pop();

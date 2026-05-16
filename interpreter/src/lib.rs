@@ -38,7 +38,7 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::StructDecl { name, generic_params, generic_bounds: _, fields, visibility } = &stmt {
-                struct_definitions.push((name.clone(), fields.clone(), visibility.clone()));
+                struct_definitions.push((*name, fields.clone(), visibility.clone()));
                 
                 // Store generic parameters for later registration
                 if !generic_params.is_empty() {
@@ -650,9 +650,9 @@ fn build_method_registry(
                     let method_name_symbol = method.name;
                     let specs = method_registry
                         .entry(struct_name_symbol)
-                        .or_insert_with(HashMap::new)
+                        .or_default()
                         .entry(method_name_symbol)
-                        .or_insert_with(Vec::new);
+                        .or_default();
                     // Reject *exact-duplicate* (same target_type_args)
                     // re-registration loudly — the front-end TC also
                     // catches this for inherent impls but the safety

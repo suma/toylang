@@ -98,7 +98,7 @@ impl ModuleResolver {
         if let Some(current_module) = self.resolving_stack.last() {
             self.dependency_graph
                 .entry(current_module.clone())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(module_path.clone());
         }
         

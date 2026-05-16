@@ -73,7 +73,7 @@ impl EvaluationContext<'_> {
                 self.string_interner,
             )?;
 
-            let res_block = self.evaluate_block(&statements);
+            let res_block = self.evaluate_block(statements);
             self.environment.exit_block();
 
             match res_block {
@@ -131,7 +131,7 @@ impl EvaluationContext<'_> {
 
     fn evaluate_block_body(&mut self, statements: &[StmtRef]) -> Result<EvaluationResult, InterpreterError> {
         let to_stmt = |s: &StmtRef| -> Result<Stmt, InterpreterError> {
-            self.stmt_pool.get(&s)
+            self.stmt_pool.get(s)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid statement reference".to_string()))
         };
         let statements = statements.iter()
@@ -317,7 +317,7 @@ impl EvaluationContext<'_> {
                 break;
             }
 
-            let body_expr = self.expr_pool.get(&body)
+            let body_expr = self.expr_pool.get(body)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid body expression reference".to_string()))?;
             if let Expr::Block(statements) = body_expr {
                 self.environment.enter_block();
@@ -369,7 +369,7 @@ impl EvaluationContext<'_> {
             });
         }
 
-        let block = self.expr_pool.get(&block)
+        let block = self.expr_pool.get(block)
             .ok_or_else(|| InterpreterError::InternalError("Invalid block expression reference".to_string()))?;
         if let Expr::Block(statements) = block {
             match start_ty {
@@ -398,7 +398,7 @@ impl EvaluationContext<'_> {
 
     /// Handles expression statements
     fn handle_expression_statement(&mut self, expr: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        let e = self.expr_pool.get(&expr)
+        let e = self.expr_pool.get(expr)
             .ok_or_else(|| InterpreterError::InternalError("Invalid expression reference".to_string()))?;
         match e {
             Expr::Assign(lhs, rhs) => {
@@ -424,7 +424,7 @@ impl EvaluationContext<'_> {
 
     /// Handles assignment expressions (variable, field, and array element assignment)
     fn handle_assignment(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
-        if let Some(lhs_expr) = self.expr_pool.get(&lhs) {
+        if let Some(lhs_expr) = self.expr_pool.get(lhs) {
             match lhs_expr {
                 Expr::Identifier(name) => self.handle_variable_assignment(name, rhs),
                 Expr::FieldAccess(obj, field) => self.handle_field_assignment(&obj, field, rhs),
@@ -447,7 +447,7 @@ impl EvaluationContext<'_> {
 
         // Evaluate the right-hand side, mirroring handle_variable_assignment's
         // Null-shortcut so `obj.field = null` keeps working.
-        let rhs_expr = self.expr_pool.get(&rhs)
+        let rhs_expr = self.expr_pool.get(rhs)
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
         let new_value = match rhs_expr {
             Expr::Null => self.null_object.clone(),
@@ -488,7 +488,7 @@ impl EvaluationContext<'_> {
     fn handle_variable_assignment(&mut self, name: DefaultSymbol, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
         use crate::try_value_v;
         // Handle null expressions specially in variable assignments
-        let expr = self.expr_pool.get(&rhs)
+        let expr = self.expr_pool.get(rhs)
             .ok_or_else(|| InterpreterError::InternalError(format!("Unbound error: {:?}", rhs)))?;
 
         let rhs_v: crate::value::Value = match expr {

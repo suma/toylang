@@ -171,11 +171,10 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
     
     /// Add source location information to errors when available
     fn add_source_location(&self, mut error: TypeCheckError, expr_ref: Option<&ExprRef>) -> TypeCheckError {
-        if let Some(expr) = expr_ref {
-            if let Some(location) = self.get_expr_location(expr) {
+        if let Some(expr) = expr_ref
+            && let Some(location) = self.get_expr_location(expr) {
                 error = error.with_location(location);
             }
-        }
         error
     }
     

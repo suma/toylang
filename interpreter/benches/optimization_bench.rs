@@ -54,8 +54,8 @@ fn main() -> u64 {
         b.iter(|| {
             let mut string_interner = DefaultStringInterner::default();
             let mut parser = Parser::new(black_box(complex_program), &mut string_interner);
-            let program = parser.parse_program().unwrap();
-            program
+            
+            parser.parse_program().unwrap()
         })
     });
 }
@@ -105,8 +105,8 @@ fn main() -> i64 {
             let mut parser = Parser::new(black_box(type_heavy_program), &mut string_interner);
             let mut program = parser.parse_program().unwrap();
             
-            let result = check_typing(&mut program, &mut string_interner, Some("benchmark.t"), Some(type_heavy_program));
-            result
+            
+            check_typing(&mut program, &mut string_interner, Some("benchmark.t"), Some(type_heavy_program))
         })
     });
 }

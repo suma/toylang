@@ -190,24 +190,22 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
                 }
             }
             Expr::AssociatedFunctionCall(struct_sym, fn_sym, args) => {
-                if let Some((params, target)) = aliases.get(&struct_sym) {
-                    if params.is_empty() {
-                        let resolved = resolve_in_type(aliases, &target);
+                if let Some((params, target)) = aliases.get(&struct_sym)
+                    && params.is_empty() {
+                        let resolved = resolve_in_type(aliases, target);
                         let base_name = match resolved {
                             TypeDecl::Struct(name, _) => Some(name),
                             TypeDecl::Identifier(name) => Some(name),
                             _ => None,
                         };
-                        if let Some(new_sym) = base_name {
-                            if new_sym != struct_sym {
+                        if let Some(new_sym) = base_name
+                            && new_sym != struct_sym {
                                 program.expression.update(
                                     &expr_ref,
                                     Expr::AssociatedFunctionCall(new_sym, fn_sym, args.clone()),
                                 );
                             }
-                        }
                     }
-                }
             }
             _ => {}
         }
@@ -227,21 +225,20 @@ fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
 pub fn resolve_in_type(aliases: &AliasMap, ty: &TypeDecl) -> TypeDecl {
     match ty {
         TypeDecl::Identifier(name) => {
-            if let Some((params, target)) = aliases.get(name) {
-                if params.is_empty() {
+            if let Some((params, target)) = aliases.get(name)
+                && params.is_empty() {
                     // Non-generic alias. Recurse to handle alias chains.
                     return resolve_in_type(aliases, target);
                 }
                 // Generic alias used bare — leave as Identifier; the
                 // type checker reports the missing-arity error with
                 // proper source-location context.
-            }
             ty.clone()
         }
         TypeDecl::Struct(name, args) => {
             let new_args: Vec<TypeDecl> = args.iter().map(|a| resolve_in_type(aliases, a)).collect();
-            if let Some((params, target)) = aliases.get(name) {
-                if !params.is_empty() && params.len() == new_args.len() {
+            if let Some((params, target)) = aliases.get(name)
+                && !params.is_empty() && params.len() == new_args.len() {
                     let mut subst: HashMap<DefaultSymbol, TypeDecl> = HashMap::new();
                     for (p, a) in params.iter().zip(new_args.iter()) {
                         subst.insert(*p, a.clone());
@@ -251,7 +248,6 @@ pub fn resolve_in_type(aliases: &AliasMap, ty: &TypeDecl) -> TypeDecl {
                 }
                 // Non-generic alias mentioned with type args is an
                 // arity mismatch — leave intact for the type checker.
-            }
             TypeDecl::Struct(*name, new_args)
         }
         TypeDecl::Enum(name, args) => {

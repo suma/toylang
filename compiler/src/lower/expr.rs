@@ -448,13 +448,12 @@ impl<'a> FunctionLower<'a> {
             // Compound borrows (struct / tuple / enum) still go through
             // the leaf-flatten erasure path — those are out of scope
             // for the scalar-only true-pointer phase.
-            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a) {
-                if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
+            if let Some(Expr::Unary(op, inner)) = self.program.expression.get(a)
+                && matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) {
                     if let Some(Expr::Identifier(sym)) = self.program.expression.get(&inner) {
                         if let Some(Binding::Scalar { local, ty }) =
                             self.bindings.get(&sym).cloned()
-                        {
-                            if matches!(
+                            && matches!(
                                 ty,
                                 Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -470,7 +469,6 @@ impl<'a> FunctionLower<'a> {
                                 values.push(v);
                                 continue;
                             }
-                        }
                         // RefScalar binding: just forward the
                         // pointer (the binding's local already
                         // holds the U64 ptr).
@@ -497,11 +495,10 @@ impl<'a> FunctionLower<'a> {
                     if matches!(
                         self.program.expression.get(&inner),
                         Some(Expr::FieldAccess(_, _)) | Some(Expr::TupleAccess(_, _))
-                    ) {
-                        if let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
+                    )
+                        && let Ok(super::bindings::FieldChainResult::Scalar { local, ty }) =
                             self.resolve_field_chain(&inner)
-                        {
-                            if matches!(
+                            && matches!(
                                 ty,
                                 Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                     | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -517,8 +514,6 @@ impl<'a> FunctionLower<'a> {
                                 values.push(v);
                                 continue;
                             }
-                        }
-                    }
                     // REF-Stage-2 (iii-index): `&mut <name>[i]` —
                     // resolve the array binding's slot and emit
                     // `ArrayElemAddr`, which is the canonical
@@ -528,21 +523,18 @@ impl<'a> FunctionLower<'a> {
                     // visible.
                     if let Some(Expr::SliceAccess(arr_expr, info)) =
                         self.program.expression.get(&inner)
-                    {
-                        if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
-                            if let Some(Expr::Identifier(arr_sym)) =
+                        && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+                            && let Some(Expr::Identifier(arr_sym)) =
                                 self.program.expression.get(&arr_expr)
-                            {
-                                if let Some(Binding::Array { element_ty, slot, .. }) =
+                                && let Some(Binding::Array { element_ty, slot, .. }) =
                                     self.bindings.get(&arr_sym).cloned()
-                                {
-                                    if matches!(
+                                    && matches!(
                                         element_ty,
                                         Type::I64 | Type::U64 | Type::F64 | Type::Bool
                                             | Type::I8 | Type::U8 | Type::I16 | Type::U16
                                             | Type::I32 | Type::U32
-                                    ) {
-                                        if let Some(idx_ref) = info.start {
+                                    )
+                                        && let Some(idx_ref) = info.start {
                                             let idx_v = self
                                                 .lower_expr(&idx_ref)?
                                                 .ok_or_else(|| {
@@ -561,13 +553,7 @@ impl<'a> FunctionLower<'a> {
                                             values.push(v);
                                             continue;
                                         }
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
-            }
             // REF-Stage-2: fall back — peel an explicit borrow so the
             // same identifier-expansion path below runs (compound
             // borrows / non-identifier operands).
@@ -622,15 +608,13 @@ impl<'a> FunctionLower<'a> {
                 // a pointer, segfaulting at the next `LoadRef`.
                 if let Some(Binding::RefScalar { local, .. }) =
                     self.bindings.get(&sym).cloned()
-                {
-                    if param_is_ref.get(arg_idx).copied().unwrap_or(false) {
+                    && param_is_ref.get(arg_idx).copied().unwrap_or(false) {
                         let v = self
                             .emit(InstKind::LoadLocal(local), Some(Type::U64))
                             .expect("LoadLocal returns a value");
                         values.push(v);
                         continue;
                     }
-                }
                 // REF-Stage-2 (iv): T -> &T auto-borrow at the AOT
                 // boundary. The frontend type checker already
                 // approved the conversion (passing a `T` value to a
@@ -640,8 +624,7 @@ impl<'a> FunctionLower<'a> {
                 // `AddressOf`.
                 if let Some(Binding::Scalar { local, ty }) =
                     self.bindings.get(&sym).cloned()
-                {
-                    if param_is_ref.get(arg_idx).copied().unwrap_or(false)
+                    && param_is_ref.get(arg_idx).copied().unwrap_or(false)
                         && matches!(
                             ty,
                             Type::I64 | Type::U64 | Type::F64 | Type::Bool
@@ -659,7 +642,6 @@ impl<'a> FunctionLower<'a> {
                         values.push(v);
                         continue;
                     }
-                }
             }
             // Note: pass the borrow-peeled ref so explicit `&v` /
             // `&mut v` lowers via the inner expr's normal path.
@@ -812,7 +794,7 @@ impl<'a> FunctionLower<'a> {
         let bytes_len = self
             .interner
             .resolve(sym)
-            .map(|s| s.as_bytes().len() as u64)
+            .map(|s| s.len() as u64)
             .unwrap_or(0);
         Ok(self.emit(
             InstKind::ConstStr { message: sym, bytes_len },
@@ -1568,11 +1550,9 @@ impl<'a> FunctionLower<'a> {
                 // `tuple_id`), so peek the binding directly.
                 if let Some(Expr::Identifier(sym)) =
                     self.program.expression.get(&args[0])
-                {
-                    if matches!(self.bindings.get(&sym), Some(Binding::Tuple { .. })) {
+                    && matches!(self.bindings.get(&sym), Some(Binding::Tuple { .. })) {
                         return self.lower_tuple_to_string(&args[0]);
                     }
-                }
                 let arg_value = self
                     .lower_expr(&args[0])?
                     .ok_or_else(|| "__builtin_to_string arg produced no value".to_string())?;

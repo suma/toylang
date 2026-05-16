@@ -17,13 +17,11 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// patches the form so downstream comparisons see the right
     /// variant.
     pub fn normalize_generic_identifier(&self, ty: &TypeDecl) -> TypeDecl {
-        if let TypeDecl::Identifier(sym) = ty {
-            if let Some(params) = &self.context.current_impl_generic_params {
-                if params.contains(sym) {
+        if let TypeDecl::Identifier(sym) = ty
+            && let Some(params) = &self.context.current_impl_generic_params
+                && params.contains(sym) {
                     return TypeDecl::Generic(*sym);
                 }
-            }
-        }
         ty.clone()
     }
 
@@ -40,12 +38,11 @@ impl<'a> TypeCheckerVisitor<'a> {
             let normalized = self.normalize_generic_identifier(decl_in);
             let decl = &normalized;
             match decl {
-                TypeDecl::Array(element_types, _) => {
+                TypeDecl::Array(element_types, _)
                     // For array types (including struct arrays), set the array type as hint for array literal processing
-                    if !element_types.is_empty() {
+                    if !element_types.is_empty() => {
                         self.type_inference.type_hint = Some(decl.clone());
-                    }
-                },
+                    },
                 TypeDecl::Struct(_, _) => {
                     // For struct types, set the struct type as hint for struct literal processing
                     self.type_inference.type_hint = Some(decl.clone());
@@ -87,7 +84,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Updates variable-expression mapping for type inference (internal implementation)
     pub fn update_variable_expr_mapping_internal(&mut self, name: DefaultSymbol, expr_ref: &ExprRef, expr_ty: &TypeDecl) {
         if *expr_ty == TypeDecl::Number || (*expr_ty != TypeDecl::Number && self.has_number_in_expr(expr_ref)) {
-            self.type_inference.variable_expr_mapping.insert(name, expr_ref.clone());
+            self.type_inference.variable_expr_mapping.insert(name, *expr_ref);
         } else {
             // Remove old mapping for non-Number types to prevent stale references
             self.type_inference.variable_expr_mapping.remove(&name);
@@ -121,29 +118,25 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn apply_type_transformations_for_expr(&mut self, type_decl: &Option<TypeDecl>, expr_ty: &TypeDecl, expr_ref: &ExprRef) -> Result<(), TypeCheckError> {
         if type_decl.is_none() && *expr_ty == TypeDecl::Number {
             // No explicit type, but we have a Number - use type hint if available
-            if let Some(hint) = self.type_inference.type_hint.clone() {
-                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+            if let Some(hint) = self.type_inference.type_hint.clone()
+                && matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
                     // Transform Number to hinted type
                     self.transform_numeric_expr(expr_ref, &hint)?;
                 }
-            }
-        } else if type_decl.as_ref().map_or(false, |decl| *decl == TypeDecl::Unknown) && *expr_ty == TypeDecl::Int64 {
+        } else if type_decl.as_ref().is_some_and(|decl| *decl == TypeDecl::Unknown) && *expr_ty == TypeDecl::Int64 {
             // Unknown type declaration with Int64 inference - also transform
-            if let Some(hint) = self.type_inference.type_hint.clone() {
-                if matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
+            if let Some(hint) = self.type_inference.type_hint.clone()
+                && matches!(hint, TypeDecl::Int64 | TypeDecl::UInt64) {
                     self.transform_numeric_expr(expr_ref, &hint)?;
                 }
-            }
-        } else if let Some(decl) = type_decl {
-            if decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && *expr_ty == *decl {
+        } else if let Some(decl) = type_decl
+            && decl != &TypeDecl::Unknown && decl != &TypeDecl::Number && *expr_ty == *decl {
                 // Expression returned the hinted type, transform Number literals to concrete type
-                if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
-                    if let Expr::Number(_) = expr {
+                if let Some(expr) = self.core.expr_pool.get(expr_ref)
+                    && let Expr::Number(_) = expr {
                         self.transform_numeric_expr(expr_ref, decl)?;
                     }
-                }
             }
-        }
         
         Ok(())
     }
@@ -178,8 +171,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Transform Expr::Number nodes to concrete types based on resolved types
     pub fn transform_numeric_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
         // Get the expression from the pool
-        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
-            if let Expr::Number(value) = expr {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref)
+            && let Expr::Number(value) = expr {
                 let num_str_owned = self.core.string_interner.resolve(value)
                     .ok_or_else(|| TypeCheckError::generic_error("Failed to resolve number literal"))?
                     .to_string();
@@ -227,7 +220,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // we need to track this transformation separately
                 self.transformed_exprs.insert(*expr_ref, new_expr);
             }
-        }
         Ok(())
     }
 
@@ -241,52 +233,48 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Update variable type in context if identifier was type-converted
     pub fn update_identifier_types(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
-        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
-                if let Expr::Identifier(name) = expr {
+        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number
+            && let Some(expr) = self.core.expr_pool.get(expr_ref)
+                && let Expr::Identifier(name) = expr {
                     // Update the variable's type
                     self.context.update_var_type(name, resolved_ty.clone());
                 }
-            }
-        }
         Ok(())
     }
 
     /// Record Number usage context for both identifiers and direct Number literals
     pub fn record_number_usage_context(&mut self, expr_ref: &ExprRef, original_ty: &TypeDecl, resolved_ty: &TypeDecl) -> Result<(), TypeCheckError> {
-        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number {
-            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
+        if original_ty == &TypeDecl::Number && resolved_ty != &TypeDecl::Number
+            && let Some(expr) = self.core.expr_pool.get(expr_ref) {
                 match expr {
                     Expr::Identifier(name) => {
                         // Find all Number expressions that might belong to this variable
                         // and record the context type
                         for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
-                                if let Expr::Number(_) = candidate_expr {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32))
+                                && let Expr::Number(_) = candidate_expr {
                                     let candidate_ref = ExprRef(i as u32);
                                     // Check if this Number might be associated with this variable
                                     if self.is_number_for_variable(name, &candidate_ref) {
                                         self.type_inference.number_usage_context.push((candidate_ref, resolved_ty.clone()));
                                     }
                                 }
-                            }
                         }
                     }
                     Expr::Number(_) => {
                         // Direct Number literal - record its resolved type
-                        self.type_inference.number_usage_context.push((expr_ref.clone(), resolved_ty.clone()));
+                        self.type_inference.number_usage_context.push((*expr_ref, resolved_ty.clone()));
                     }
                     _ => {}
                 }
             }
-        }
         
         Ok(())
     }
 
     /// Check if an expression contains Number literals
     pub fn has_number_in_expr(&self, expr_ref: &ExprRef) -> bool {
-        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
             match expr {
                 Expr::Number(_) => true,
                 _ => false, // For now, only check direct Number literals
@@ -309,25 +297,24 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn is_old_number_for_variable(&self, _var_name: DefaultSymbol, number_expr_ref: &ExprRef) -> bool {
         // Check if this Number expression was previously mapped to this variable
         // This is used for cleanup when variables are redefined
-        if let Some(expr) = self.core.expr_pool.get(&number_expr_ref) {
-            if let Expr::Number(_) = expr {
+        if let Some(expr) = self.core.expr_pool.get(number_expr_ref)
+            && let Expr::Number(_) = expr {
                 // For now, we'll be conservative and remove all Number contexts when variables are redefined
                 return true;
             }
-        }
         false
     }
 
     /// Propagate concrete type to Number variable immediately
     pub fn propagate_to_number_variable(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
-            if let Expr::Identifier(name) = expr {
-                if let Some(var_type) = self.context.get_var(name) {
-                    if var_type == TypeDecl::Number {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref)
+            && let Expr::Identifier(name) = expr
+                && let Some(var_type) = self.context.get_var(name)
+                    && var_type == TypeDecl::Number {
                         // Find and record the Number expression for this variable
                         for i in 0..self.core.expr_pool.len() {
-                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
-                                if let Expr::Number(_) = candidate_expr {
+                            if let Some(candidate_expr) = self.core.expr_pool.get(&ExprRef(i as u32))
+                                && let Expr::Number(_) = candidate_expr {
                                     let candidate_ref = ExprRef(i as u32);
                                     if self.is_number_for_variable(name, &candidate_ref) {
                                         self.type_inference.number_usage_context.push((candidate_ref, target_type.clone()));
@@ -335,12 +322,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                                         self.context.update_var_type(name, target_type.clone());
                                     }
                                 }
-                            }
                         }
                     }
-                }
-            }
-        }
         Ok(())
     }
 
@@ -349,9 +332,9 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Use recorded context information to transform Number expressions
         let context_info = self.type_inference.number_usage_context.clone();
         for (expr_ref, target_type) in &context_info {
-            if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
-                if let Expr::Number(_) = expr {
-                    self.transform_numeric_expr(&expr_ref, &target_type)?;
+            if let Some(expr) = self.core.expr_pool.get(expr_ref)
+                && let Expr::Number(_) = expr {
+                    self.transform_numeric_expr(expr_ref, target_type)?;
                     
                     // Update variable types in context if this expression is mapped to a variable
                     for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping.clone() {
@@ -360,14 +343,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 }
-            }
         }
         
         // Second pass: handle any remaining Number types by using variable context
         let expr_len = self.core.expr_pool.len();
         for i in 0..expr_len {
-            if let Some(expr) = self.core.expr_pool.get(&ExprRef(i as u32)) {
-                if let Expr::Number(_) = expr {
+            if let Some(expr) = self.core.expr_pool.get(&ExprRef(i as u32))
+                && let Expr::Number(_) = expr {
                     let expr_ref = ExprRef(i as u32);
                     
                     // Skip if already processed in first pass
@@ -398,12 +380,11 @@ impl<'a> TypeCheckerVisitor<'a> {
                     for (var_name, mapped_expr_ref) in &self.type_inference.variable_expr_mapping {
                         if mapped_expr_ref == &expr_ref {
                             // Check the current type of this variable in context
-                            if let Some(var_type) = self.context.get_var(*var_name) {
-                                if var_type != TypeDecl::Number {
+                            if let Some(var_type) = self.context.get_var(*var_name)
+                                && var_type != TypeDecl::Number {
                                     target_type = var_type;
                                     break;
                                 }
-                            }
                         }
                     }
                     
@@ -416,7 +397,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                         }
                     }
                 }
-            }
         }
         Ok(())
     }
@@ -508,23 +488,22 @@ impl<'a> TypeCheckerVisitor<'a> {
     
     /// Propagate type to Number expression and associated variables
     pub fn propagate_type_to_number_expr(&mut self, expr_ref: &ExprRef, target_type: &TypeDecl) -> Result<(), TypeCheckError> {
-        if let Some(expr) = self.core.expr_pool.get(&expr_ref) {
+        if let Some(expr) = self.core.expr_pool.get(expr_ref) {
             match expr {
                 Expr::Identifier(name) => {
                     // If this is an identifier with Number type, update it
-                    if let Some(var_type) = self.context.get_var(name) {
-                        if var_type == TypeDecl::Number {
+                    if let Some(var_type) = self.context.get_var(name)
+                        && var_type == TypeDecl::Number {
                             self.context.update_var_type(name, target_type.clone());
                             // Also record for Number expression transformation
                             if let Some(mapped_expr) = self.type_inference.variable_expr_mapping.get(&name) {
-                                self.type_inference.number_usage_context.push((mapped_expr.clone(), target_type.clone()));
+                                self.type_inference.number_usage_context.push((*mapped_expr, target_type.clone()));
                             }
                         }
-                    }
                 },
                 Expr::Number(_) => {
                     // Direct Number literal
-                    self.type_inference.number_usage_context.push((expr_ref.clone(), target_type.clone()));
+                    self.type_inference.number_usage_context.push((*expr_ref, target_type.clone()));
                 },
                 _ => {
                     // For other expression types, we might need to recurse

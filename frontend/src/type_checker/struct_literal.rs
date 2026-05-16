@@ -86,14 +86,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // Validate array element types
                     for element_type in element_types {
                         match element_type {
-                            TypeDecl::Identifier(struct_name) => {
-                                if !self.context.struct_definitions.contains_key(struct_name) {
+                            TypeDecl::Identifier(struct_name)
+                                if !self.context.struct_definitions.contains_key(struct_name) => {
                                     if !generic_params.is_empty() {
                                         self.type_inference.pop_generic_scope();
                                     }
                                     return Err(TypeCheckError::not_found("Struct", &format!("{:?}", struct_name)));
-                                }
-                            },
+                                },
                             TypeDecl::Generic(_) => {
                                 // Generic array elements are valid
                             },
@@ -170,11 +169,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             false
         };
-        if !obj_is_local_var {
-            if let Some(module_function_type) = self.try_resolve_module_qualified_name(obj, field)? {
+        if !obj_is_local_var
+            && let Some(module_function_type) = self.try_resolve_module_qualified_name(obj, field)? {
                 return Ok(module_function_type);
             }
-        }
 
         self.type_inference.recursion_depth += 1;
         let obj_type_result = self.visit_expr(obj);
@@ -319,15 +317,14 @@ impl<'a> TypeCheckerVisitor<'a> {
             let field_type = self.visit_expr(field_expr)?;
             self.type_inference.type_hint = original_hint;
 
-            if let Some(expected_type) = expected_field_type {
-                if &field_type != expected_type {
+            if let Some(expected_type) = expected_field_type
+                && &field_type != expected_type {
                     if field_type == TypeDecl::Number && (expected_type == &TypeDecl::Int64 || expected_type == &TypeDecl::UInt64) {
                         self.transform_numeric_expr(field_expr, expected_type)?;
                     } else if !self.are_types_compatible(expected_type, &field_type) {
                         return Err(TypeCheckError::type_mismatch(expected_type.clone(), field_type));
                     }
                 }
-            }
 
             field_types.insert(*field_name, field_type);
         }

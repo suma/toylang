@@ -672,91 +672,91 @@ mod statement_parsing {
     fn test_val_declaration() {
         let input = "val x = 1u64";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_val_declaration_with_type() {
         let input = "val x: u64 = 1u64";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_var_declaration() {
         let input = "var x = 1u64";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_var_declaration_with_type() {
         let input = "var x: u64 = 1u64";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_if_statement() {
         let input = "if true { 1u64 }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_if_else_statement() {
         let input = "if true { 1u64 } else { 2u64 }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_for_loop() {
         let input = "for i in 0u64 to 10u64 { i }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_for_loop_with_break() {
         let input = "for i in 0u64 to 10u64 { break }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_for_loop_with_continue() {
         let input = "for i in 0u64 to 10u64 { continue }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_while_loop() {
         let input = "while true { break }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_return_statement() {
         let input = "return 1u64";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_return_without_value() {
         let input = "return";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 
     #[test]
     fn test_block_expression() {
         let input = "{ if true { 1u64 } else { 2u64 } }";
         let parser = helpers::parse_stmt_success(input);
-        assert!(parser.get_stmt_pool().len() >= 1);
+        assert!(!parser.get_stmt_pool().is_empty());
     }
 }
 

@@ -274,50 +274,44 @@ impl<'a> TypeCheckerVisitor<'a> {
                     // exhaustiveness checks. A guarded arm does not fully
                     // cover its literal (the guard might be false at run
                     // time), so we skip the bookkeeping when `is_guarded`.
-                    if !is_guarded {
-                        if let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
+                    if !is_guarded
+                        && let Some(lit_expr) = self.core.expr_pool.get(literal_expr) {
                             match lit_expr {
-                                Expr::Int64(v) => {
-                                    if !covered_int64.insert(v) {
+                                Expr::Int64(v)
+                                    if !covered_int64.insert(v) => {
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {} already handled by an earlier arm", v
                                         )));
                                     }
-                                }
-                                Expr::UInt64(v) => {
-                                    if !covered_uint64.insert(v) {
+                                Expr::UInt64(v)
+                                    if !covered_uint64.insert(v) => {
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {} already handled by an earlier arm", v
                                         )));
                                     }
-                                }
-                                Expr::True => {
-                                    if !covered_bool.insert(true) {
+                                Expr::True
+                                    if !covered_bool.insert(true) => {
                                         return Err(TypeCheckError::new(
                                             "unreachable match arm: literal `true` already handled by an earlier arm".to_string()
                                         ));
                                     }
-                                }
-                                Expr::False => {
-                                    if !covered_bool.insert(false) {
+                                Expr::False
+                                    if !covered_bool.insert(false) => {
                                         return Err(TypeCheckError::new(
                                             "unreachable match arm: literal `false` already handled by an earlier arm".to_string()
                                         ));
                                     }
-                                }
-                                Expr::String(sym) => {
-                                    if !covered_strings.insert(sym) {
+                                Expr::String(sym)
+                                    if !covered_strings.insert(sym) => {
                                         let s = self.core.string_interner.resolve(sym).unwrap_or("?").to_string();
                                         return Err(TypeCheckError::new(format!(
                                             "unreachable match arm: literal {:?} already handled by an earlier arm",
                                             s
                                         )));
                                     }
-                                }
                                 _ => {}
                             }
                         }
-                    }
                 }
                 Pattern::Tuple(sub_patterns) => {
                     // Tuple matches are independent of enum dispatch;
@@ -437,7 +431,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         // contribute to compile-time coverage.
                         variant_payload_arms
                             .entry(*pat_variant)
-                            .or_insert_with(Vec::new)
+                            .or_default()
                             .push(bindings.clone());
                     }
                 }
@@ -538,8 +532,8 @@ impl<'a> TypeCheckerVisitor<'a> {
         // (has_wildcard catches the rest). Wildcard / Name arm
         // earlier already shortcuts every check, so this only
         // runs when the user spelled out the variant arms.
-        if !has_wildcard {
-            if let ScrutineeKind::Enum { name: enum_name, type_args, variants } = &kind {
+        if !has_wildcard
+            && let ScrutineeKind::Enum { name: enum_name, type_args, variants } = &kind {
                 for variant in variants.iter() {
                     if fully_covered_variants.contains(&variant.name) {
                         continue;
@@ -571,7 +565,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                 }
             }
-        }
 
         // All arms must share a common type.
         let first = arm_types[0].clone();
@@ -669,7 +662,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 } else {
                     variant_arms
                         .entry(*p_variant)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(bindings.clone());
                 }
             }

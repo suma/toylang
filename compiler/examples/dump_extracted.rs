@@ -31,7 +31,7 @@ fn main() {
     println!("// AUTO-GENERATED via `cargo run --release -p compiler --example dump_extracted`.");
     println!("// Source data for the batched e2e fixtures. Each entry mirrors the");
     println!("// `#[test]` definitions that previously lived in `compiler/tests/e2e.rs`.");
-    println!("");
+    println!();
     // `pub static` (not `pub(super)`) because this file is
     // pulled in via `include!()` at the crate root rather than
     // as a real submodule — `super` would over-resolve.
@@ -45,7 +45,7 @@ fn main() {
         );
     }
     println!("];");
-    println!("");
+    println!();
     println!("pub static STDOUT_SUBTESTS: &[(&str, &str, &str)] = &[");
     for (name, src, expected) in &stdout {
         println!(

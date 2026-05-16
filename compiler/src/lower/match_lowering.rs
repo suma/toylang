@@ -427,19 +427,17 @@ impl<'a> FunctionLower<'a> {
         scrut: &MatchScrutinee,
         pattern: &Pattern,
     ) {
-        if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern {
-            if let MatchScrutinee::Enum(storage) = scrut {
+        if let Pattern::EnumVariant(_, variant_sym, sub_patterns) = pattern
+            && let MatchScrutinee::Enum(storage) = scrut {
                 let enum_def = self.module.enum_def(storage.enum_id).clone();
                 if let Some(variant_idx) =
                     enum_def.variants.iter().position(|v| v.name == *variant_sym)
-                {
-                    if variant_idx < storage.payloads.len() {
+                    && variant_idx < storage.payloads.len() {
                         for (i, sp) in sub_patterns.iter().enumerate() {
-                            if let Pattern::Name(sym) = sp {
-                                if let Some(slot) =
+                            if let Pattern::Name(sym) = sp
+                                && let Some(slot) =
                                     storage.payloads[variant_idx].get(i)
-                                {
-                                    if let PayloadSlot::Scalar { local, ty } = slot {
+                                    && let PayloadSlot::Scalar { local, ty } = slot {
                                         self.bindings.insert(
                                             *sym,
                                             Binding::Scalar { local: *local, ty: *ty },
@@ -450,13 +448,9 @@ impl<'a> FunctionLower<'a> {
                                     // EnumStorage for inference, which
                                     // value_scalar can't see anyway —
                                     // skip.
-                                }
-                            }
                         }
                     }
-                }
             }
-        }
     }
 
     /// Resolve the `match` scrutinee into a uniform shape: either an
@@ -478,8 +472,8 @@ impl<'a> FunctionLower<'a> {
         // tag/payload locals; scalar bindings produce a single
         // LoadLocal. Non-identifier expressions go through the
         // generic scalar path below.
-        if let Expr::Identifier(sym) = scrut_expr {
-            if let Some(binding) = self.bindings.get(&sym).cloned() {
+        if let Expr::Identifier(sym) = scrut_expr
+            && let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
                     Binding::Enum(storage) => {
                         return Ok(MatchScrutinee::Enum(storage));
@@ -515,7 +509,6 @@ impl<'a> FunctionLower<'a> {
                 }
             }
             // Falls through to the scalar path (could be a const).
-        }
         // ITER-PROTOCOL-AOT: `match obj.method(...)` where the
         // method returns an enum. Required by the iterator-protocol
         // desugaring (`for x in iter { ... }` lowers to
@@ -525,8 +518,8 @@ impl<'a> FunctionLower<'a> {
         // returns it as the scrutinee. Identifier-bound enums
         // already short-circuited above; this arm covers
         // expression scrutinees.
-        if let Expr::MethodCall(recv, method_sym, method_args) = scrut_expr.clone() {
-            if let Some((target_id, recv_binding)) =
+        if let Expr::MethodCall(recv, method_sym, method_args) = scrut_expr.clone()
+            && let Some((target_id, recv_binding)) =
                 self.resolve_method_target(&recv, method_sym, &method_args)?
             {
                 let target_ret = self.module.function(target_id).return_type;
@@ -596,7 +589,6 @@ impl<'a> FunctionLower<'a> {
                     return Ok(MatchScrutinee::Enum(storage));
                 }
             }
-        }
         // Generic scalar scrutinee: lower the expression once.
         let ty = self.value_scalar(scrutinee).ok_or_else(|| {
             "compiler MVP requires `match` scrutinee to be either an enum binding \

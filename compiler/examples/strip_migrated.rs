@@ -31,11 +31,10 @@ fn main() {
         if !trimmed.starts_with("(\"") {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("(\"") {
-            if let Some(end) = rest.find('"') {
+        if let Some(rest) = trimmed.strip_prefix("(\"")
+            && let Some(end) = rest.find('"') {
                 migrated.insert(rest[..end].to_string());
             }
-        }
     }
     eprintln!("# {} test names to strip from e2e.rs", migrated.len());
 
@@ -60,18 +59,14 @@ fn main() {
             let name = if j < lines.len() {
                 let l = lines[j].trim();
                 if let Some(rest) = l.strip_prefix("fn ") {
-                    if let Some(end) = rest.find('(') {
-                        Some(rest[..end].to_string())
-                    } else {
-                        None
-                    }
+                    rest.find('(').map(|end| rest[..end].to_string())
                 } else {
                     None
                 }
             } else {
                 None
             };
-            let drop = name.as_ref().map_or(false, |n| migrated.contains(n));
+            let drop = name.as_ref().is_some_and(|n| migrated.contains(n));
             if drop {
                 // Consume until the closing `}` at column 0.
                 // Track brace depth from the function's own `{`.
@@ -105,7 +100,7 @@ fn main() {
                 // Also drop the blank line that *preceded* the
                 // `#[test]` if `keep` ends with one. Otherwise
                 // we'd accumulate runs of blanks.
-                if keep.last().map_or(false, |l| l.trim().is_empty()) {
+                if keep.last().is_some_and(|l| l.trim().is_empty()) {
                     keep.pop();
                 }
                 dropped_count += 1;

@@ -248,7 +248,7 @@ mod error_handling_tests {
 
                     let mut has_error = false;
                     for func in functions.iter() {
-                        if let Err(_) = type_checker.type_check(func.clone()) {
+                        if type_checker.type_check(func.clone()).is_err() {
                             has_error = true;
                         }
                     }
@@ -277,7 +277,7 @@ mod error_handling_tests {
 
                     let mut has_error = false;
                     for func in functions.iter() {
-                        if let Err(_) = type_checker.type_check(func.clone()) {
+                        if type_checker.type_check(func.clone()).is_err() {
                             has_error = true;
                         }
                     }
@@ -303,22 +303,19 @@ mod error_handling_tests {
             "#;
 
             let mut parser = ParserWithInterner::new(source);
-            match parser.parse_program() {
-                Ok(mut program) => {
-                    let functions = program.function.clone();
-                    let string_interner = parser.get_string_interner();
-                    let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            if let Ok(mut program) = parser.parse_program() {
+                let functions = program.function.clone();
+                let string_interner = parser.get_string_interner();
+                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
 
-                    let mut has_error = false;
-                    for func in functions.iter() {
-                        if let Err(_) = type_checker.type_check(func.clone()) {
-                            has_error = true;
-                        }
+                let mut has_error = false;
+                for func in functions.iter() {
+                    if type_checker.type_check(func.clone()).is_err() {
+                        has_error = true;
                     }
-
-                    assert!(has_error, "Should detect string to number type error");
                 }
-                Err(_) => {}
+
+                assert!(has_error, "Should detect string to number type error");
             }
         }
 
@@ -333,22 +330,19 @@ mod error_handling_tests {
             "#;
 
             let mut parser = ParserWithInterner::new(source);
-            match parser.parse_program() {
-                Ok(mut program) => {
-                    let functions = program.function.clone();
-                    let string_interner = parser.get_string_interner();
-                    let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
+            if let Ok(mut program) = parser.parse_program() {
+                let functions = program.function.clone();
+                let string_interner = parser.get_string_interner();
+                let mut type_checker = TypeCheckerVisitor::with_program(&mut program, string_interner);
 
-                    let mut has_error = false;
-                    for func in functions.iter() {
-                        if let Err(_) = type_checker.type_check(func.clone()) {
-                            has_error = true;
-                        }
+                let mut has_error = false;
+                for func in functions.iter() {
+                    if type_checker.type_check(func.clone()).is_err() {
+                        has_error = true;
                     }
-
-                    assert!(has_error, "Should detect bool to number conversion error");
                 }
-                Err(_) => {}
+
+                assert!(has_error, "Should detect bool to number conversion error");
             }
         }
     }
@@ -522,7 +516,7 @@ fn another_function() -> bool {
             }
 
             assert!(result.has_errors(), "Should have type errors");
-            assert!(result.errors.len() >= 1, "Should have at least 1 type error");
+            assert!(!result.errors.is_empty(), "Should have at least 1 type error");
         }
 
         #[test]
@@ -627,7 +621,7 @@ struct MissingBrace {
 
             // Verify that multiple types of errors are collected
             assert!(result.has_errors(), "Should collect multiple types of errors");
-            assert!(result.errors.len() >= 1, "Should have at least 1 error");
+            assert!(!result.errors.is_empty(), "Should have at least 1 error");
 
             println!("Integrated error collection test found {} errors:", result.errors.len());
             for (i, error) in result.errors.iter().enumerate() {

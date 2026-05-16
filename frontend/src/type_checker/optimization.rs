@@ -7,6 +7,12 @@ pub struct PerformanceOptimization {
     pub type_cache: HashMap<ExprRef, TypeDecl>,
 }
 
+impl Default for PerformanceOptimization {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PerformanceOptimization {
     pub fn new() -> Self {
         Self {

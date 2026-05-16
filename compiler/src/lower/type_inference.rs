@@ -90,13 +90,13 @@ impl<'a> FunctionLower<'a> {
                 elements
                     .iter()
                     .find(|e| e.index == index)
-                    .and_then(|e| match &e.shape {
-                        TupleElementShape::Scalar { ty, .. } => Some(*ty),
+                    .map(|e| match &e.shape {
+                        TupleElementShape::Scalar { ty, .. } => *ty,
                         TupleElementShape::Struct { struct_id, .. } => {
-                            Some(Type::Struct(*struct_id))
+                            Type::Struct(*struct_id)
                         }
                         TupleElementShape::Tuple { tuple_id, .. } => {
-                            Some(Type::Tuple(*tuple_id))
+                            Type::Tuple(*tuple_id)
                         }
                     })
             }
@@ -130,11 +130,10 @@ impl<'a> FunctionLower<'a> {
                 _ => self.value_scalar(&operand),
             },
             Expr::Block(stmts) => {
-                if let Some(last) = stmts.last() {
-                    if let Some(Stmt::Expression(e)) = self.program.statement.get(last) {
+                if let Some(last) = stmts.last()
+                    && let Some(Stmt::Expression(e)) = self.program.statement.get(last) {
                         return self.value_scalar(&e);
                     }
-                }
                 None
             }
             Expr::IfElifElse(_, then_body, _, _) => self.value_scalar(&then_body),
@@ -235,9 +234,9 @@ impl<'a> FunctionLower<'a> {
                 // Peek through them so cast / let inference works on
                 // call sites like `x.abs() as u64` without needing an
                 // intermediate `val: i64` annotation.
-                if args.is_empty() {
-                    if let Some(name) = self.interner.resolve(method) {
-                        if let Some(recv_ty) = self.value_scalar(&obj) {
+                if args.is_empty()
+                    && let Some(name) = self.interner.resolve(method)
+                        && let Some(recv_ty) = self.value_scalar(&obj) {
                             match (name, recv_ty) {
                                 ("abs", Type::I64) => return Some(Type::I64),
                                 ("abs", Type::F64) => return Some(Type::F64),
@@ -245,8 +244,6 @@ impl<'a> FunctionLower<'a> {
                                 _ => {}
                             }
                         }
-                    }
-                }
                 // STR-INTERP-AOT: `s.concat(t)` returns str even
                 // when the receiver is a string literal or another
                 // `.concat()` chain — peek through any number of
@@ -256,15 +253,12 @@ impl<'a> FunctionLower<'a> {
                 // typically `Expr::String` (the leading literal),
                 // not an `Identifier`, which the binding-based
                 // path below doesn't handle.
-                if let Some(name) = self.interner.resolve(method) {
-                    if name == "concat" && args.len() == 1 {
-                        if let Some(recv_ty) = self.value_scalar(&obj) {
-                            if matches!(recv_ty, Type::Str) {
+                if let Some(name) = self.interner.resolve(method)
+                    && name == "concat" && args.len() == 1
+                        && let Some(recv_ty) = self.value_scalar(&obj)
+                            && matches!(recv_ty, Type::Str) {
                                 return Some(Type::Str);
                             }
-                        }
-                    }
-                }
                 let obj_expr = self.program.expression.get(&obj)?;
                 let recv_sym = match obj_expr {
                     Expr::Identifier(s) => s,
@@ -337,8 +331,7 @@ impl<'a> FunctionLower<'a> {
                 );
                 if let (Some(template), Some((self_ty, recv_type_args))) =
                     (template_opt, recv_self)
-                {
-                    if template.generic_params.len() >= recv_type_args.len() {
+                    && template.generic_params.len() >= recv_type_args.len() {
                         let mut subst: HashMap<DefaultSymbol, Type> = HashMap::new();
                         for (i, p) in template.generic_params.iter().enumerate() {
                             if let Some(t) = recv_type_args.get(i).copied() {
@@ -354,17 +347,13 @@ impl<'a> FunctionLower<'a> {
                         if !method_only_params.is_empty() {
                             for (i, arg_ref) in args.iter().enumerate() {
                                 let param_idx = i + 1;
-                                if let Some((_, decl)) = template.parameter.get(param_idx) {
-                                    if let Some(arg_ty) = self.value_scalar(arg_ref) {
-                                        if let TypeDecl::Generic(p) | TypeDecl::Identifier(p) =
+                                if let Some((_, decl)) = template.parameter.get(param_idx)
+                                    && let Some(arg_ty) = self.value_scalar(arg_ref)
+                                        && let TypeDecl::Generic(p) | TypeDecl::Identifier(p) =
                                             decl
-                                        {
-                                            if method_only_params.contains(p) {
+                                            && method_only_params.contains(p) {
                                                 subst.entry(*p).or_insert(arg_ty);
                                             }
-                                        }
-                                    }
-                                }
                             }
                         }
                         if let Some(ret) = &template.return_type {
@@ -374,7 +363,6 @@ impl<'a> FunctionLower<'a> {
                         }
                         return Some(Type::Unit);
                     }
-                }
                 None
             }
             _ => None,

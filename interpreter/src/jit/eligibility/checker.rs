@@ -1861,7 +1861,7 @@ pub(crate) fn check_expr(
             // value-position uses transparently. Codegen distinguishes
             // them via `enum_locals`; eligibility downstream just sees
             // a U64.
-            if let Some(_) = locals.get(&sym).copied() {
+            if locals.get(&sym).copied().is_some() {
                 return locals.get(&sym).copied();
             }
             if compound_locals.enums.contains_key(&sym) {
@@ -2234,10 +2234,10 @@ pub(crate) fn check_expr(
                 });
                 return None;
             }
-            return check_plain_call(
+            check_plain_call(
                 program, expr_ref, function_name, &args, locals, compound_locals, substitutions, struct_layouts, callees,
                 ptr_read_hints, reject_reason,
-            );
+            )
         }
         Expr::Call(name, args_ref) => {
             let args_expr = program.expression.get(&args_ref)?;
@@ -3007,7 +3007,7 @@ pub(crate) fn check_expr(
                 });
                 // Return type with Self_ -> enum, generics
                 // substituted.
-                let ret = match &method.return_type {
+                match &method.return_type {
                     Some(td) => {
                         let resolved = match td {
                             TypeDecl::Self_ => TypeDecl::Identifier(enum_info.base_name),
@@ -3032,7 +3032,7 @@ pub(crate) fn check_expr(
                     }
                     None => return Some(ScalarTy::Unit),
                 };
-                let _ = ret;
+                ();
             }
             let struct_name = match compound_locals.structs.get(&recv_name).copied() {
                 Some(s) => s,
@@ -3565,12 +3565,9 @@ fn check_plain_call(
         callee_param_tys.push(ParamTy::Scalar(t));
     }
 
-    let callee_subs = match infer_substitutions(
+    let callee_subs = infer_substitutions(
         &callee, &scalar_arg_tys, substitutions, reject_reason,
-    ) {
-        Some(s) => s,
-        None => return None,
-    };
+    )?;
 
     let mono_args: Vec<ScalarTy> = callee
         .generic_params

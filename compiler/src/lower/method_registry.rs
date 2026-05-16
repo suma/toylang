@@ -154,7 +154,7 @@ pub(super) fn collect_method_decls(program: &Program) -> Result<MethodRegistry, 
         if let Stmt::ImplBlock { target_type, target_type_args, methods, .. } = stmt {
             for m in &methods {
                 let key = (target_type, m.name);
-                let specs = registry.entry(key).or_insert_with(Vec::new);
+                let specs = registry.entry(key).or_default();
                 // Same target_type_args = exact duplicate (front-end
                 // type-checker also catches this for inherent impls);
                 // defensive guard against silently masking one impl.
@@ -166,7 +166,7 @@ pub(super) fn collect_method_decls(program: &Program) -> Result<MethodRegistry, 
                 }
                 specs.push(MethodTemplateSpec {
                     target_type_args: target_type_args.clone(),
-                    method: Rc::clone(&m),
+                    method: Rc::clone(m),
                 });
             }
         }

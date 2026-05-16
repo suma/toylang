@@ -177,7 +177,7 @@ fn link_executable_uncached(
     // codegen (cranelift already generated the object), only the
     // linker's deployment-target metadata. No-op on Linux / Windows
     // where cranelift emits ELF / COFF and the warning doesn't apply.
-    let mut cmd = Command::new(&cc);
+    let mut cmd = Command::new(cc);
     cmd.arg(&tmp_obj).arg(&tmp_rt_obj);
     #[cfg(target_os = "macos")]
     {

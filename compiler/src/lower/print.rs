@@ -51,8 +51,8 @@ impl<'a> FunctionLower<'a> {
         // carry struct / tuple values in its SSA graph, so there is
         // no way to print an arbitrary compound expression without
         // first storing it into a binding.
-        if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0]) {
-            if let Some(binding) = self.bindings.get(&sym).cloned() {
+        if let Some(Expr::Identifier(sym)) = self.program.expression.get(&args[0])
+            && let Some(binding) = self.bindings.get(&sym).cloned() {
                 match binding {
                     Binding::Struct { struct_id, fields } => {
                         self.emit_print_struct(struct_id, &fields, newline);
@@ -90,7 +90,6 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
             }
-        }
         // Compound-literal shortcuts: `print(Point { ... })`,
         // `print((1, 2))`, `print(Color::Red)`,
         // `print(Shape::Circle(5))`. We allocate scratch locals for
@@ -246,8 +245,8 @@ impl<'a> FunctionLower<'a> {
                         Expr::Identifier(s) => Some(s),
                         _ => None,
                     };
-                    if let Some(rs) = recv_sym {
-                        if let Some(binding) = self.bindings.get(&rs).cloned() {
+                    if let Some(rs) = recv_sym
+                        && let Some(binding) = self.bindings.get(&rs).cloned() {
                             let target_sym_opt = match &binding {
                                 Binding::Struct { struct_id, .. } => Some(
                                     self.module.struct_def(*struct_id).base_name,
@@ -374,7 +373,6 @@ impl<'a> FunctionLower<'a> {
                                 }
                             }
                         }
-                    }
                     let _ = method_args;
                 }
                 Expr::AssociatedFunctionCall(enum_name, variant_name, ctor_args)

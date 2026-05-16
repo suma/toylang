@@ -182,7 +182,7 @@ mod basic {
             Ok(val) => {
                 let borrowed = val.borrow();
                 match &*borrowed {
-                    interpreter::object::Object::Bool(b) => assert_eq!(*b, true),
+                    interpreter::object::Object::Bool(b) => assert!(*b),
                     _ => panic!("Expected Bool result"),
                 }
             }
@@ -392,7 +392,7 @@ mod basic {
             Ok(val) => {
                 let borrowed = val.borrow();
                 match &*borrowed {
-                    interpreter::object::Object::Bool(b) => assert_eq!(*b, true),
+                    interpreter::object::Object::Bool(b) => assert!(*b),
                     _ => panic!("Expected Bool result"),
                 }
             }
@@ -868,7 +868,7 @@ mod comprehensive {
             Ok(val) => {
                 let borrowed = val.borrow();
                 match &*borrowed {
-                    interpreter::object::Object::Bool(b) => assert_eq!(*b, true),
+                    interpreter::object::Object::Bool(b) => assert!(*b),
                     _ => panic!("Expected Bool result"),
                 }
             }

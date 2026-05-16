@@ -221,7 +221,7 @@ fn main() -> bool {
     "#;
 
     let result = test_program(program).unwrap();
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn main() -> bool {
     "#;
 
     let result = test_program(program).unwrap();
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 // ============================================================================

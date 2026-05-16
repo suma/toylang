@@ -420,7 +420,7 @@ fn main() -> bool {
         match result {
             Ok(value) => {
                 let borrowed = value.borrow();
-                assert_eq!(borrowed.unwrap_bool(), true);
+                assert!(borrowed.unwrap_bool());
             }
             Err(_e) => {
                 // Feature not implemented

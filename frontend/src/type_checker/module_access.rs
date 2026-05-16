@@ -75,8 +75,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Returns Some(TypeDecl) if it's a valid module qualified name, None if it's a regular field access
     pub fn try_resolve_module_qualified_name(&mut self, obj: &ExprRef, field: &DefaultSymbol) -> Result<Option<TypeDecl>, TypeCheckError> {
         // Check if obj is an identifier that matches an imported module
-        if let Some(obj_expr) = self.core.expr_pool.get(obj) {
-            if let Expr::Identifier(module_symbol) = obj_expr {
+        if let Some(obj_expr) = self.core.expr_pool.get(obj)
+            && let Expr::Identifier(module_symbol) = obj_expr {
                 let module_alias = vec![module_symbol];
 
                 // Check if this identifier matches an imported module
@@ -85,7 +85,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                     return self.resolve_module_member_type(&module_path_clone, field);
                 }
             }
-        }
 
         Ok(None)
     }

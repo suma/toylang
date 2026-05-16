@@ -301,13 +301,13 @@ impl PartialEq for Object {
                 name_a == name_b && 
                 fields_a.len() == fields_b.len() &&
                 fields_a.iter().all(|(k, v)| {
-                    fields_b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
+                    fields_b.get(k).is_some_and(|v2| v.borrow().eq(&*v2.borrow()))
                 })
             }
             (Object::Dict(a), Object::Dict(b)) => {
                 a.len() == b.len() &&
                 a.iter().all(|(k, v)| {
-                    b.get(k).map_or(false, |v2| v.borrow().eq(&*v2.borrow()))
+                    b.get(k).is_some_and(|v2| v.borrow().eq(&*v2.borrow()))
                 })
             }
             (Object::Tuple(a), Object::Tuple(b)) => {
@@ -412,7 +412,7 @@ impl Hash for Object {
                 v.len().hash(state);
                 // Sort keys for consistent hashing
                 let mut sorted_items: Vec<_> = v.iter().collect();
-                sorted_items.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+                sorted_items.sort_by_key(|(k1, _)| *k1);
                 for (k, v) in sorted_items {
                     k.hash(state);
                     v.borrow().hash(state);
@@ -740,11 +740,11 @@ impl Object {
                 format!("{} {{ {} }}", header, parts.join(", "))
             }
             Object::Range { start, end } => {
-                return format!(
+                format!(
                     "{}..{}",
                     start.borrow().to_display_string(string_interner),
                     end.borrow().to_display_string(string_interner),
-                );
+                )
             }
             Object::EnumVariant { enum_name, variant_name, values, type_args } => {
                 let enum_str = string_interner.resolve(*enum_name).unwrap_or("<enum>");

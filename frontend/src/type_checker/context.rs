@@ -96,6 +96,12 @@ pub struct TypeCheckContext {
     pub loop_label_stack: Vec<Option<DefaultSymbol>>,
 }
 
+impl Default for TypeCheckContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeCheckContext {
     pub fn new() -> Self {
         Self {
@@ -350,7 +356,7 @@ impl TypeCheckContext {
 
     // Method management methods
     pub fn register_struct_method(&mut self, struct_name: DefaultSymbol, method_name: DefaultSymbol, method: Rc<MethodFunction>) {
-        self.struct_methods.entry(struct_name).or_insert_with(HashMap::new).insert(method_name, method);
+        self.struct_methods.entry(struct_name).or_default().insert(method_name, method);
     }
 
     pub fn get_struct_method(&self, struct_name: DefaultSymbol, method_name: DefaultSymbol) -> Option<&Rc<MethodFunction>> {
@@ -361,7 +367,7 @@ impl TypeCheckContext {
         // Find struct symbol by name
         let struct_symbol = self.struct_definitions.iter()
             .find(|(symbol, _)| {
-                string_interner.resolve(**symbol).map_or(false, |name| name == struct_name)
+                string_interner.resolve(**symbol) == Some(struct_name)
             })
             .map(|(symbol, _)| *symbol)?;
         

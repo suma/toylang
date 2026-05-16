@@ -224,7 +224,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.context
             .struct_trait_impls
             .entry(struct_symbol)
-            .or_insert_with(std::collections::HashSet::new)
+            .or_default()
             .insert(trait_symbol);
         Ok(())
     }

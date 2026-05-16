@@ -661,11 +661,10 @@ mod struct_access_control {
 
         // Test that access control infrastructure is in place
         let test_fn_symbol = type_checker.core.string_interner.get("test_function");
-        if let Some(symbol) = test_fn_symbol {
-            if let Some(function) = type_checker.context.get_fn(symbol) {
+        if let Some(symbol) = test_fn_symbol
+            && let Some(function) = type_checker.context.get_fn(symbol) {
                 assert_eq!(function.visibility, Visibility::Public, "Function should be public");
             }
-        }
     }
 }
 

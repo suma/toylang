@@ -398,7 +398,7 @@ fn test_current_allocator_matches_default() {
         }
     "#;
     let result = test_program(source).expect("current_allocator should match pushed default");
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 #[test]
@@ -420,7 +420,7 @@ fn test_with_allocator_nested_scopes_restore_outer() {
         }
     "#;
     let result = test_program(source).expect("nested with should restore outer binding");
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 #[test]
@@ -433,7 +433,7 @@ fn test_current_allocator_defaults_to_global() {
         }
     "#;
     let result = test_program(source).expect("current should equal default at top level");
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 // Runtime arena / fixed_buffer-specific tests (handle distinctness,
@@ -687,7 +687,7 @@ fn test_auto_ambient_default_follows_with_scope() {
         }
     "#;
     let result = test_program(source).expect("defaulted arg should be the arena, not the global");
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 #[test]
@@ -716,7 +716,7 @@ fn test_ambient_keyword_evaluates_to_current_allocator() {
         }
     "#;
     let result = test_program(source).expect("ambient should evaluate to current allocator");
-    assert_eq!(result.borrow().unwrap_bool(), true);
+    assert!(result.borrow().unwrap_bool());
 }
 
 // `test_ambient_keyword_inside_with_block_sees_pushed_allocator`

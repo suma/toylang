@@ -163,12 +163,11 @@ pub(super) fn populate_method_writeback_types(
         } else {
             // Explicit `(self: ...)` — IR `params[0]` IS the self
             // entry, and `method.parameter[0]` is the same.
-            if let Some((_, ty)) = method.parameter.first() {
-                if matches!(ty, TypeDecl::Ref { is_mut: true, .. }) {
+            if let Some((_, ty)) = method.parameter.first()
+                && matches!(ty, TypeDecl::Ref { is_mut: true, .. }) {
                     let self_ty = module.function(func_id).params[0];
                     flatten_compound_leaf_types(module, self_ty, &mut wb_types);
                 }
-            }
             0
         }
     } else {
@@ -181,11 +180,10 @@ pub(super) fn populate_method_writeback_types(
         if !matches!(decl_ty, TypeDecl::Ref { is_mut: true, .. }) {
             continue;
         }
-        if let TypeDecl::Ref { inner, .. } = decl_ty {
-            if super::types::lower_scalar(inner).is_some() {
+        if let TypeDecl::Ref { inner, .. } = decl_ty
+            && super::types::lower_scalar(inner).is_some() {
                 continue;
             }
-        }
         let ir_param_idx = if receiver_idx == 0 {
             param_pos
         } else {
@@ -295,11 +293,9 @@ pub fn lower_program(
                 trait_name: Some(trait_sym),
                 ..
             }) = program.statement.get(&stmt_ref)
-            {
-                if trait_sym == drop_sym {
+                && trait_sym == drop_sym {
                     module.drop_trait_structs.insert(target_type);
                 }
-            }
         }
     }
 
@@ -486,11 +482,10 @@ pub fn lower_program(
                 continue;
             }
             // Skip scalar — scalar Ref already handled by AddressOf.
-            if let TypeDecl::Ref { inner, .. } = decl_ty {
-                if super::types::lower_scalar(inner).is_some() {
+            if let TypeDecl::Ref { inner, .. } = decl_ty
+                && super::types::lower_scalar(inner).is_some() {
                     continue;
                 }
-            }
             let param_ty = module.function(func_id).params[pi];
             flatten_compound_leaf_types(&module, param_ty, &mut writeback_types);
         }
@@ -525,7 +520,7 @@ pub fn lower_program(
             if !method.generic_params.is_empty() {
                 generic_methods
                     .entry((*target_sym, *method_sym))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push(MethodTemplateSpec {
                         target_type_args: target_type_args_decl.clone(),
                         method: Rc::clone(method),
@@ -676,7 +671,7 @@ pub fn lower_program(
         populate_method_writeback_types(&mut module, func_id, method);
         method_func_ids
             .entry((*target_sym, *method_sym))
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(MethodFuncSpec {
                 target_type_args: target_type_args_lowered,
                 func_id,
@@ -1103,11 +1098,9 @@ impl<'a> FunctionLower<'a> {
             && parameter.first().map(|(n, _)| {
                 self.interner.resolve(*n) != Some("self")
             }).unwrap_or(true)
-        {
-            if let Some(self_sym) = self.interner.get("self") {
+            && let Some(self_sym) = self.interner.get("self") {
                 parameter.insert(0, (self_sym, self_decl.clone()));
             }
-        }
         // Build a synthetic Function-shaped value and delegate. We
         // keep `name` / `generic_*` / `visibility` empty since
         // lower_body only reads parameter / requires / ensures / code.
@@ -1153,9 +1146,9 @@ impl<'a> FunctionLower<'a> {
             // emit LoadRef / StoreRef against the pointer the
             // caller passed via `AddressOf`. The IR-level param
             // type stays U64 (pointer-sized handle).
-            if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty {
-                if let Some(pointee_ty) = super::types::lower_scalar(inner) {
-                    if matches!(
+            if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty
+                && let Some(pointee_ty) = super::types::lower_scalar(inner)
+                    && matches!(
                         pointee_ty,
                         Type::I64 | Type::U64 | Type::F64 | Type::Bool
                             | Type::I8 | Type::U8 | Type::I16 | Type::U16
@@ -1170,13 +1163,11 @@ impl<'a> FunctionLower<'a> {
                         );
                         continue;
                     }
-                }
                 // Compound &T / &mut T parameter — leave it to fall
                 // through to the existing struct/tuple/enum paths
                 // below (handled via leaf-flatten erasure for now;
                 // the struct &mut T true-pointer path is future
                 // work).
-            }
             // Closures Phase 5b: function-typed parameter
             // (`f: (T1, T2) -> R`) binds as `Binding::FunctionPtr`
             // so a body-level `f(args)` call can dispatch through
@@ -1269,14 +1260,13 @@ impl<'a> FunctionLower<'a> {
         // codegen layer extends the cranelift signature's return
         // shape from `self_writeback_types`.
         let mut writeback_leaves: Vec<(LocalId, Type)> = Vec::new();
-        if let Some(self_sym) = self.pending_self_writeback_param.take() {
-            if let Some(super::bindings::Binding::Struct { fields, .. }) =
+        if let Some(self_sym) = self.pending_self_writeback_param.take()
+            && let Some(super::bindings::Binding::Struct { fields, .. }) =
                 self.bindings.get(&self_sym).cloned()
             {
                 let leaves = super::bindings::flatten_struct_locals(&fields);
                 writeback_leaves.extend(leaves);
             }
-        }
         // REF-Stage-2 (ii): every `&mut <compound>` parameter
         // contributes its leaf locals to the function's writeback
         // shape. The function returns those leaves alongside the
@@ -1295,11 +1285,10 @@ impl<'a> FunctionLower<'a> {
             }
             // Skip the receiver — already handled above so we don't
             // double-append its leaves.
-            if let Some(self_sym) = self.interner.get("self") {
-                if *name == self_sym {
+            if let Some(self_sym) = self.interner.get("self")
+                && *name == self_sym {
                     continue;
                 }
-            }
             match self.bindings.get(name).cloned() {
                 Some(super::bindings::Binding::Struct { fields, .. }) => {
                     writeback_leaves.extend(super::bindings::flatten_struct_locals(&fields));

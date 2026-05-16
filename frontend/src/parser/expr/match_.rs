@@ -48,12 +48,11 @@ pub fn parse_match(parser: &mut Parser) -> ParserResult<ExprRef> {
 }
 
 pub(crate) fn parse_match_pattern(parser: &mut Parser) -> ParserResult<crate::ast::Pattern> {
-    if let Some(Kind::Identifier(s)) = parser.peek() {
-        if s == "_" {
+    if let Some(Kind::Identifier(s)) = parser.peek()
+        && s == "_" {
             parser.next();
             return Ok(crate::ast::Pattern::Wildcard);
         }
-    }
     if matches!(parser.peek(), Some(Kind::ParenOpen)) {
         return parse_pattern_tuple(parser);
     }

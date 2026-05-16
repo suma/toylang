@@ -267,7 +267,7 @@ mod tests {
             }
         }
         
-        let element_refs: Vec<ExprRef> = (0..100).map(|i| ExprRef(i)).collect();
+        let element_refs: Vec<ExprRef> = (0..100).map(ExprRef).collect();
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
@@ -308,7 +308,7 @@ mod tests {
             elements.push(builder.bool_true_expr(None));
         }
         
-        let element_refs: Vec<ExprRef> = (0..1000).map(|i| ExprRef(i)).collect();
+        let element_refs: Vec<ExprRef> = (0..1000).map(ExprRef).collect();
         
         let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;

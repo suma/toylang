@@ -41,7 +41,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
         use crate::ast::Expr;
         
         // Extract argument expressions from the reference
-        let args_data = if let Some(args_expr) = self.core.expr_pool.get(&args_ref) {
+        let args_data = if let Some(args_expr) = self.core.expr_pool.get(args_ref) {
             if let Expr::ExprList(args) = args_expr {
                 Some(args.clone())
             } else {
@@ -375,7 +375,7 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     let type_params: Vec<TypeDecl> = generic_params.iter().map(|param| {
                         substitutions.get(param).cloned()
                             .or_else(|| self.type_inference.lookup_generic_type(*param))
-                            .unwrap_or_else(|| TypeDecl::Generic(*param))
+                            .unwrap_or(TypeDecl::Generic(*param))
                     }).collect();
                     TypeDecl::Struct(struct_name, type_params)
                 } else {

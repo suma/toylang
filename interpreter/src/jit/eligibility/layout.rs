@@ -124,13 +124,11 @@ impl EnumLayout {
         subst: &HashMap<DefaultSymbol, ScalarTy>,
     ) -> Option<ScalarTy> {
         let mut found: Option<ScalarTy> = None;
-        for vp in &self.variant_payloads {
-            if let Some(repr) = vp {
-                let t = repr.resolve(subst)?;
-                match found {
-                    Some(existing) if existing != t => return None,
-                    _ => found = Some(t),
-                }
+        for repr in self.variant_payloads.iter().flatten() {
+            let t = repr.resolve(subst)?;
+            match found {
+                Some(existing) if existing != t => return None,
+                _ => found = Some(t),
             }
         }
         found

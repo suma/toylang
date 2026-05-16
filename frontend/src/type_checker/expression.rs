@@ -60,7 +60,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
-        let expr_obj = self.core.expr_pool.get(&expr)
+        let expr_obj = self.core.expr_pool.get(expr)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
         
         let result = expr_obj.clone().accept(self);
@@ -76,15 +76,14 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Cache result and record type if successful
         if let Ok(ref result_type) = result {
-            self.cache_type(&expr, result_type.clone());
+            self.cache_type(expr, result_type.clone());
             self.type_inference.set_expr_type(*expr, result_type.clone());
             
             // Context propagation for numeric types
-            if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64) {
-                if self.type_inference.type_hint.is_none() {
+            if original_hint.is_none() && (result_type == &TypeDecl::Int64 || result_type == &TypeDecl::UInt64)
+                && self.type_inference.type_hint.is_none() {
                     self.type_inference.type_hint = Some(result_type.clone());
                 }
-            }
         }
         
         result
@@ -93,7 +92,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check unary operators
     pub fn visit_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let op = op.clone();
-        let operand = operand.clone();
+        let operand = *operand;
         let operand_ty = {
             let operand_obj = self.core.expr_pool.get(&operand)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
@@ -133,11 +132,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // primitive-only checks below so the standard "type
         // mismatch in unary X" diagnostic doesn't preempt the
         // overload.
-        if let Some(method_name) = Self::struct_unary_method_name(&op) {
-            if self.struct_method_compatible(&resolved_ty, &resolved_ty, method_name) {
+        if let Some(method_name) = Self::struct_unary_method_name(&op)
+            && self.struct_method_compatible(&resolved_ty, &resolved_ty, method_name) {
                 return Ok(resolved_ty);
             }
-        }
 
         self.check_unary_primitive(&op, &operand, &resolved_ty)
     }
@@ -263,8 +261,8 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check binary operators
     pub fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let op = op.clone();
-        let lhs = lhs.clone();
-        let rhs = rhs.clone();
+        let lhs = *lhs;
+        let rhs = *rhs;
 
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
@@ -287,11 +285,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // the struct as result type so `a + b + c` chains keep
         // checking. (Comparison overloads are reached later via the
         // compare arm below.)
-        if let Some(method_name) = Self::struct_arith_method_name(&op) {
-            if self.struct_method_compatible(&lhs_ty, &rhs_ty, method_name) {
+        if let Some(method_name) = Self::struct_arith_method_name(&op)
+            && self.struct_method_compatible(&lhs_ty, &rhs_ty, method_name) {
                 return Ok(lhs_ty);
             }
-        }
 
         // Special handling for shift operations where right operand must be UInt64
         let (resolved_lhs_ty, resolved_rhs_ty) = if matches!(op, Operator::LeftShift | Operator::RightShift) {
@@ -566,11 +563,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         l: &TypeDecl,
         r: &TypeDecl,
     ) -> Result<TypeDecl, TypeCheckError> {
-        if let Some(method_name) = Self::struct_self_returning_method_name(op) {
-            if self.struct_method_compatible(l, r, method_name) {
+        if let Some(method_name) = Self::struct_self_returning_method_name(op)
+            && self.struct_method_compatible(l, r, method_name) {
                 return Ok(l.clone());
             }
-        }
         if *r != TypeDecl::UInt64 {
             return Err(self.error_with_location(
                 TypeCheckError::type_mismatch_operation("shift", TypeDecl::UInt64, r.clone()),
@@ -602,24 +598,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Only override the inherited hint when it's unset, so an outer hint
         // (e.g. the method's declared return type) isn't clobbered by a
         // numeric-scan result from a transient `val x: u64 = ...` in the body.
-        if original_hint.is_none() {
-            if let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
+        if original_hint.is_none()
+            && let Some(numeric_type) = self.scan_numeric_type_hint(statements) {
                 self.type_inference.type_hint = Some(numeric_type);
             }
-        }
 
         // Process each statement
         // This code assumes Block(expression) don't make nested function
         // so `return` expression always return for this context.
         for s in statements.iter() {
-            let stmt = self.core.stmt_pool.get(&s)
+            let stmt = self.core.stmt_pool.get(s)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference in block"))?;
             
             let stmt_type = match stmt {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
-                        let e = e.clone();
+                        let e = e;
                         let expr_obj = self.core.expr_pool.get(&e)
                             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
                         let ty = expr_obj.clone().accept(self)?;
@@ -640,7 +635,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                     }
                 }
                 _ => {
-                    let stmt_obj = self.core.stmt_pool.get(&s)
+                    let stmt_obj = self.core.stmt_pool.get(s)
                         .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
                     stmt_obj.clone().accept(self)
                 }
@@ -667,7 +662,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let mut block_types = Vec::new();
 
         // Check if-block
-        let if_block = then_block.clone();
+        let if_block = *then_block;
         let is_if_empty = match self.core.expr_pool.get(&if_block)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
@@ -682,7 +677,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         // Check elif-blocks
         for (_, elif_block) in elif_pairs {
-            let elif_block = elif_block.clone();
+            let elif_block = *elif_block;
             let is_elif_empty = match self.core.expr_pool.get(&elif_block)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))? {
                 Expr::Block(expressions) => expressions.is_empty(),
@@ -697,7 +692,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
 
         // Check else-block
-        let else_block = else_block.clone();
+        let else_block = *else_block;
         let is_else_empty = match self.core.expr_pool.get(&else_block)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))? {
             Expr::Block(expressions) => expressions.is_empty(),
@@ -734,8 +729,8 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check assignment expressions
     pub fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let lhs = lhs.clone();
-        let rhs = rhs.clone();
+        let lhs = *lhs;
+        let rhs = *rhs;
         
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
@@ -803,7 +798,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 generic_params.iter().map(|param| {
                     // Try to resolve from current generic scope, otherwise use Generic type
                     self.type_inference.lookup_generic_type(*param)
-                        .unwrap_or_else(|| TypeDecl::Generic(*param))
+                        .unwrap_or(TypeDecl::Generic(*param))
                 }).collect()
             } else {
                 vec![]
@@ -812,7 +807,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             let name_str = self.resolve_symbol_name(name);
             // Note: Location information will be added by visit_expr
-            return Err(TypeCheckError::not_found("Identifier", &name_str));
+            Err(TypeCheckError::not_found("Identifier", &name_str))
         }
     }
 
@@ -1043,11 +1038,10 @@ impl<'a> TypeCheckerVisitor<'a> {
             // emits `Expr::Call(name, args)`; this branch handles
             // the value case.
             self.pop_context();
-            if let Some(callee_ty) = self.context.get_var(fn_name) {
-                if let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
+            if let Some(callee_ty) = self.context.get_var(fn_name)
+                && let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
                     return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
                 }
-            }
             let fn_name_str = self.resolve_symbol_name(fn_name);
             Err(TypeCheckError::not_found("Function", &fn_name_str))
         }
@@ -1078,11 +1072,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         // so the per-arg compatibility check below sees the canonical
         // shape regardless of how the user spelled the parameter type.
         let param_types: Vec<_> = fun.parameter.iter().map(|(_, ty)| {
-            if let TypeDecl::Identifier(name) = ty {
-                if self.context.struct_definitions.contains_key(name) {
+            if let TypeDecl::Identifier(name) = ty
+                && self.context.struct_definitions.contains_key(name) {
                     return TypeDecl::Struct(*name, vec![]);
                 }
-            }
             ty.clone()
         }).collect();
 
@@ -1128,11 +1121,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// matches on `Struct`) works on values produced by
     /// `fn make_list() -> List { ... }`.
     fn normalize_call_return_type(&self, ret: TypeDecl) -> TypeDecl {
-        if let TypeDecl::Identifier(name) = &ret {
-            if self.context.struct_definitions.contains_key(name) {
+        if let TypeDecl::Identifier(name) = &ret
+            && self.context.struct_definitions.contains_key(name) {
                 return TypeDecl::Struct(*name, vec![]);
             }
-        }
         ret
     }
 
@@ -1259,13 +1251,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                 ));
             }
         }
-        if let Some(ret) = return_type {
-            if Self::type_mentions_any_generic(ret) {
+        if let Some(ret) = return_type
+            && Self::type_mentions_any_generic(ret) {
                 return Err(TypeCheckError::generic_error(
                     "generic-parameterised closures are not yet supported",
                 ));
             }
-        }
         Ok(())
     }
 

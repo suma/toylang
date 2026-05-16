@@ -8,6 +8,12 @@ pub struct FunctionCheckingState {
     pub is_checked_fn: HashMap<DefaultSymbol, Option<TypeDecl>>,
 }
 
+impl Default for FunctionCheckingState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FunctionCheckingState {
     pub fn new() -> Self {
         Self {

@@ -615,16 +615,14 @@ impl<'a> Parser<'a> {
         for error in &self.errors {
             // Check both direct GenericError and nested errors in UnexpectedToken
             match &error.kind {
-                ParserErrorKind::GenericError { message } => {
-                    if message.contains("reserved keyword") {
+                ParserErrorKind::GenericError { message }
+                    if message.contains("reserved keyword") => {
                         return Err(error.clone());
                     }
-                }
-                ParserErrorKind::UnexpectedToken { expected } => {
-                    if expected.contains("reserved keyword") {
+                ParserErrorKind::UnexpectedToken { expected }
+                    if expected.contains("reserved keyword") => {
                         return Err(error.clone());
                     }
-                }
                 _ => {}
             }
         }

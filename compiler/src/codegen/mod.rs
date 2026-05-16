@@ -770,7 +770,7 @@ impl<M: Module> CodegenSession<M> {
         // The trailing NUL is preserved so legacy C interop that
         // wants a cstring (e.g. `puts` callers) still works against
         // the byte_ptr we hand back from `as_ptr()`.
-        let bytes_len = msg.as_bytes().len();
+        let bytes_len = msg.len();
         let mut bytes = Vec::with_capacity(bytes_len + 1 + 8);
         bytes.extend_from_slice(msg.as_bytes());
         bytes.push(0);
@@ -932,7 +932,7 @@ impl<M: Module> CodegenSession<M> {
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-        let result = (|| -> Result<(), String> {
+        let result = {
             let mut ctxt = LowerCtx::new(
                 &mut builder,
                 ir_module,
@@ -945,7 +945,7 @@ impl<M: Module> CodegenSession<M> {
                 &runtime_refs,
             );
             ctxt.lower()
-        })();
+        };
         builder.finalize();
         result?;
         self.module
@@ -980,7 +980,7 @@ impl<M: Module> CodegenSession<M> {
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
-        let result = (|| -> Result<(), String> {
+        let result = {
             let mut ctxt = LowerCtx::new(
                 &mut builder,
                 ir_module,
@@ -993,7 +993,7 @@ impl<M: Module> CodegenSession<M> {
                 &runtime_refs,
             );
             ctxt.lower()
-        })();
+        };
         builder.finalize();
         result?;
         Ok(format!("{}", ctx.func.display()))
@@ -1465,11 +1465,10 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         let func = self.ir_module.function(self.func_id);
         for blk in &func.blocks {
             for inst in &blk.instructions {
-                if let Some((vid, ty)) = inst.result {
-                    if vid == v {
+                if let Some((vid, ty)) = inst.result
+                    && vid == v {
                         return Some(ty);
                     }
-                }
             }
         }
         None

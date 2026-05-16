@@ -46,7 +46,7 @@ impl EvaluationContext<'_> {
             Expr::Identifier(s) => {
                 let val = self.environment.get_val(s)
                     .ok_or_else(|| InterpreterError::UndefinedVariable(format!("Variable not found: {s:?}")))?;
-                Ok(EvaluationResult::Value(val.into()))
+                Ok(EvaluationResult::Value(val))
             }
             Expr::IfElifElse(cond, then, elif_pairs, _else) => {
                 self.evaluate_if_elif_else(&cond, &then, &elif_pairs, &_else)
@@ -286,7 +286,7 @@ impl EvaluationContext<'_> {
             Some(e) => e,
             None => return,
         };
-        let mut record = |s: DefaultSymbol,
+        let record = |s: DefaultSymbol,
                           out: &mut Vec<(DefaultSymbol, RcObject)>,
                           seen: &mut std::collections::HashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
@@ -502,7 +502,7 @@ impl EvaluationContext<'_> {
 
         // Check if condition
         if cond_bool {
-            let then_expr = self.expr_pool.get(&then)
+            let then_expr = self.expr_pool.get(then)
                 .ok_or_else(|| InterpreterError::InternalError("Invalid then block reference".to_string()))?;
             if !then_expr.is_block() {
                 return Err(InterpreterError::InternalError("if-then is not block".to_string()));
@@ -523,7 +523,7 @@ impl EvaluationContext<'_> {
                 };
 
                 if elif_bool {
-                    let elif_expr = self.expr_pool.get(&elif_block)
+                    let elif_expr = self.expr_pool.get(elif_block)
                         .ok_or_else(|| InterpreterError::InternalError("Invalid elif block reference".to_string()))?;
                     if !elif_expr.is_block() {
                         return Err(InterpreterError::InternalError("elif block is not block".to_string()));
@@ -535,7 +535,7 @@ impl EvaluationContext<'_> {
 
             // If no elif condition matched, use else block
             if selected_block.is_none() {
-                let else_expr = self.expr_pool.get(&_else)
+                let else_expr = self.expr_pool.get(_else)
                     .ok_or_else(|| InterpreterError::InternalError("Invalid else block reference".to_string()))?;
                 if !else_expr.is_block() {
                     return Err(InterpreterError::InternalError("else block is not block".to_string()));
@@ -548,7 +548,7 @@ impl EvaluationContext<'_> {
         if let Some(block_expr) = selected_block {
             self.environment.enter_block();
             let res = {
-                if let Some(Expr::Block(statements)) = self.expr_pool.get(&block_expr) {
+                if let Some(Expr::Block(statements)) = self.expr_pool.get(block_expr) {
                     self.evaluate_block(&statements)
                 } else {
                     return Err(InterpreterError::InternalError("evaluate: selected block is not block".to_string()))
@@ -717,11 +717,7 @@ impl EvaluationContext<'_> {
         let module_path = vec![module_name];
 
         // Look up variable in the specified module
-        if let Some(variable_value) = self.environment.resolve_qualified_name(&module_path, variable_name) {
-            Some(variable_value.value.clone().into_rc())
-        } else {
-            None
-        }
+        self.environment.resolve_qualified_name(&module_path, variable_name).map(|variable_value| variable_value.value.clone().into_rc())
     }
 
     /// Evaluate qualified identifier (e.g., math::add)
@@ -757,7 +753,7 @@ impl EvaluationContext<'_> {
         if let Some(last_symbol) = path.last() {
             // Try to look up the qualified name in the environment
             if let Some(val) = self.environment.get_val(*last_symbol) {
-                Ok(EvaluationResult::Value(val.into()))
+                Ok(EvaluationResult::Value(val))
             } else {
                 Err(InterpreterError::UndefinedVariable(format!("Qualified identifier not found: {:?}", path)))
             }

@@ -111,7 +111,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_keyword() {
         let s = " if else while break continue return for class fn val var bool";
-        let mut l = lexer::Lexer::new(&s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::If);
         assert_eq!(l.yylex().unwrap().kind, Kind::Else);
         assert_eq!(l.yylex().unwrap().kind, Kind::While);
@@ -129,7 +129,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_integer() {
         let s = " -1i64 1i64 2u64  true false null 1234";
-        let mut l = lexer::Lexer::new(&s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(-1));
         assert_eq!(l.yylex().unwrap().kind, Kind::Int64(1));
         assert_eq!(l.yylex().unwrap().kind, Kind::UInt64(2u64));
@@ -147,7 +147,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_symbol1() {
         let s = " ( ) { } [ ] , . :: : = !";
-        assert_tokens(&s, vec![
+        assert_tokens(s, vec![
             Kind::ParenOpen,
             Kind::ParenClose,
             Kind::BraceOpen,
@@ -166,7 +166,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_number() {
         let s = " 100u64 123i64 ";
-        assert_tokens(&s, vec![
+        assert_tokens(s, vec![
             Kind::UInt64(100),
             Kind::Int64(123),
         ]);
@@ -175,7 +175,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_symbol2() {
         let s = "== != <= < >= >";
-        assert_tokens(&s, vec![
+        assert_tokens(s, vec![
             Kind::DoubleEqual,
             Kind::NotEqual,
             Kind::LE,
@@ -188,7 +188,7 @@ mod lexer_tests{
     #[test]
     fn lexer_arithmetic_operator_symbol() {
         let s = " + - * /";
-        assert_tokens(&s, vec![
+        assert_tokens(s, vec![
             Kind::IAdd,
             Kind::ISub,
             Kind::IMul,
@@ -199,7 +199,7 @@ mod lexer_tests{
     #[test]
     fn lexer_simple_identifier() {
         let s = " A _name Identifier ";
-        assert_tokens(&s, vec![
+        assert_tokens(s, vec![
             Kind::Identifier("A".to_string()),
             Kind::Identifier("_name".to_string()),
             Kind::Identifier("Identifier".to_string()),
@@ -209,7 +209,7 @@ mod lexer_tests{
     #[test]
     fn lexer_multiple_lines() {
         let s = " A \n B ";
-        let mut l = lexer::Lexer::new(&s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("A".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Identifier("B".to_string()));
@@ -219,7 +219,7 @@ mod lexer_tests{
     #[test]
     fn lexer_comment_test() {
         let s = "# this is a comment\n val x = 1u64";
-        let mut l = lexer::Lexer::new(&s, 1u64);
+        let mut l = lexer::Lexer::new(s, 1u64);
         assert_eq!(l.yylex().unwrap().kind, Kind::Comment(" this is a comment".to_string()));
         assert_eq!(l.yylex().unwrap().kind, Kind::NewLine);
         assert_eq!(l.yylex().unwrap().kind, Kind::Val);
@@ -355,7 +355,7 @@ mod parser_tests {
     fn parser_simple_ident_expr() {
         let mut p = parse_stmt_success("abc + 1u64");
         assert_expr_pool_size(&p, 3);
-        let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
+        let expected_symbol = p.get_string_interner().get_or_intern("abc");
         assert_expr_at(&p, 0, Expr::Identifier(expected_symbol));
         assert_expr_at(&p, 1, Expr::UInt64(1));
         assert_expr_at(&p, 2, Expr::Binary(Operator::IAdd, ExprRef(0), ExprRef(1)));
@@ -365,7 +365,7 @@ mod parser_tests {
     fn parser_simple_apply_empty() {
         let mut p = parse_stmt_success("abc()");
         assert_expr_pool_size(&p, 2);
-        let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
+        let expected_symbol = p.get_string_interner().get_or_intern("abc");
         assert_expr_at(&p, 0, Expr::ExprList(vec![]));
         assert_expr_at(&p, 1, Expr::Call(expected_symbol, ExprRef(0)));
     }
@@ -374,7 +374,7 @@ mod parser_tests {
     fn parser_simple_assign_expr() {
         let mut p = parse_stmt_success("a = 1u64");
         assert_expr_pool_size(&p, 3);
-        let expected_symbol = p.get_string_interner().get_or_intern("a".to_string());
+        let expected_symbol = p.get_string_interner().get_or_intern("a");
         assert_expr_at(&p, 0, Expr::Identifier(expected_symbol));
         assert_expr_at(&p, 1, Expr::UInt64(1u64));
         assert_expr_at(&p, 2, Expr::Assign(ExprRef(0), ExprRef(1)));
@@ -418,7 +418,7 @@ mod parser_tests {
     #[case("(1u64+2u64")]
     fn parser_errors_parse_expr(#[case] input: &str) {
         let mut parser = ParserWithInterner::new(input);
-        assert!(parser.parse_expr_impl().is_err() || parser.errors.len() > 0, "input: {}", input);
+        assert!(parser.parse_expr_impl().is_err() || !parser.errors.is_empty(), "input: {}", input);
     }
 
     #[test]
@@ -428,7 +428,7 @@ mod parser_tests {
         assert_expr_at(&p, 0, Expr::UInt64(1));
         assert_expr_at(&p, 1, Expr::UInt64(2));
         assert_expr_at(&p, 2, Expr::ExprList(vec![ExprRef(0), ExprRef(1)]));
-        let expected_symbol = p.get_string_interner().get_or_intern("abc".to_string());
+        let expected_symbol = p.get_string_interner().get_or_intern("abc");
         assert_expr_at(&p, 3, Expr::Call(expected_symbol, ExprRef(2)));
     }
 
@@ -438,7 +438,7 @@ mod parser_tests {
         let param = p.parse_param_def();
         assert!(param.is_ok());
         let param = param.unwrap();
-        let test_id = p.get_string_interner().get_or_intern("test".to_string());
+        let test_id = p.get_string_interner().get_or_intern("test");
         assert_eq!((test_id, TypeDecl::UInt64), param);
     }
 
@@ -455,12 +455,12 @@ mod parser_tests {
         let mut p = ParserWithInterner::new("test: u64, test2: i64, test3: some_type");
         let param = p.parse_param_def_list(vec![]);
         assert!(param.is_ok());
-        let some_type = p.get_string_interner().get_or_intern("some_type".to_string());
+        let some_type = p.get_string_interner().get_or_intern("some_type");
         assert_eq!(
             vec![
-                (p.get_string_interner().get_or_intern("test".to_string()), TypeDecl::UInt64),
-                (p.get_string_interner().get_or_intern("test2".to_string()), TypeDecl::Int64),
-                (p.get_string_interner().get_or_intern("test3".to_string()), TypeDecl::Identifier(some_type)),
+                (p.get_string_interner().get_or_intern("test"), TypeDecl::UInt64),
+                (p.get_string_interner().get_or_intern("test2"), TypeDecl::Int64),
+                (p.get_string_interner().get_or_intern("test3"), TypeDecl::Identifier(some_type)),
             ],
             param.unwrap()
         );
@@ -478,8 +478,8 @@ mod parser_tests {
         let string_interner = p.get_string_interner();
 
         // Collect functions before creating type checker
-        let functions_to_register: Vec<_> = program.function.iter().cloned().collect();
-        let functions_to_check: Vec<_> = program.function.iter().cloned().collect();
+        let functions_to_register: Vec<_> = program.function.to_vec();
+        let functions_to_check: Vec<_> = program.function.to_vec();
 
         let mut tc = TypeCheckerVisitor::with_program(&mut program, string_interner);
         functions_to_register.iter().for_each(|f| { tc.add_function(f.clone()) });
@@ -502,7 +502,7 @@ mod parser_tests {
         let string_interner = p.get_string_interner();
 
         // Collect functions before creating type checker
-        let functions_to_check: Vec<_> = program.function.iter().cloned().collect();
+        let functions_to_check: Vec<_> = program.function.to_vec();
 
         let mut tc = TypeCheckerVisitor::with_program(&mut program, string_interner);
         let mut res = true;
@@ -622,7 +622,7 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         let program = result.unwrap();
-        assert!(program.statement.len() >= 1, "should have at least one struct declaration");
+        assert!(!program.statement.is_empty(), "should have at least one struct declaration");
         assert_eq!(1, program.function.len(), "should have one function");
         
         match program.statement.get(&StmtRef(0)).unwrap() {
@@ -646,7 +646,7 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         let program = result.unwrap();
-        assert!(program.statement.len() >= 1, "should have at least one impl block");
+        assert!(!program.statement.is_empty(), "should have at least one impl block");
         
         let impl_stmt = (0..program.statement.len())
             .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
@@ -676,7 +676,7 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         let program = result.unwrap();
-        assert!(program.statement.len() >= 1, "should have at least one impl block");
+        assert!(!program.statement.is_empty(), "should have at least one impl block");
         
         let impl_stmt = (0..program.statement.len())
             .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
@@ -706,7 +706,7 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         let program = result.unwrap();
-        assert!(program.statement.len() >= 1, "should have at least one impl block");
+        assert!(!program.statement.is_empty(), "should have at least one impl block");
         
         let impl_stmt = (0..program.statement.len())
             .map(|i| program.statement.get(&StmtRef(i as u32)).unwrap())
@@ -779,8 +779,8 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         // Get symbols before accessing expr_pool
-        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
-        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
+        let expected_obj = parser.get_string_interner().get_or_intern("obj");
+        let expected_field = parser.get_string_interner().get_or_intern("field");
         
         let expr_pool = parser.get_expr_pool();
         assert_eq!(2, expr_pool.len(), "should have 2 expressions for obj.field");
@@ -802,9 +802,9 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         // Get symbols before accessing expr_pool
-        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
-        let expected_inner = parser.get_string_interner().get_or_intern("inner".to_string());
-        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
+        let expected_obj = parser.get_string_interner().get_or_intern("obj");
+        let expected_inner = parser.get_string_interner().get_or_intern("inner");
+        let expected_field = parser.get_string_interner().get_or_intern("field");
         
         let expr_pool = parser.get_expr_pool();
         assert_eq!(3, expr_pool.len(), "should have 3 expressions for obj.inner.field");
@@ -830,12 +830,12 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         // Get symbols before accessing expr_pool
-        let expected_a = parser.get_string_interner().get_or_intern("a".to_string());
-        let expected_b = parser.get_string_interner().get_or_intern("b".to_string());
-        let expected_c = parser.get_string_interner().get_or_intern("c".to_string());
-        let expected_d = parser.get_string_interner().get_or_intern("d".to_string());
-        let expected_e = parser.get_string_interner().get_or_intern("e".to_string());
-        let expected_f = parser.get_string_interner().get_or_intern("f".to_string());
+        let expected_a = parser.get_string_interner().get_or_intern("a");
+        let expected_b = parser.get_string_interner().get_or_intern("b");
+        let expected_c = parser.get_string_interner().get_or_intern("c");
+        let expected_d = parser.get_string_interner().get_or_intern("d");
+        let expected_e = parser.get_string_interner().get_or_intern("e");
+        let expected_f = parser.get_string_interner().get_or_intern("f");
         
         let expr_pool = parser.get_expr_pool();
         assert_eq!(6, expr_pool.len(), "should have 6 expressions for deeply nested access");
@@ -857,9 +857,9 @@ mod parser_tests {
         assert!(result.is_ok(), "parse err {:?}", result.err());
         
         // Get symbols before accessing expr_pool
-        let expected_obj = parser.get_string_interner().get_or_intern("obj".to_string());
-        let expected_field = parser.get_string_interner().get_or_intern("field".to_string());
-        let expected_method = parser.get_string_interner().get_or_intern("method".to_string());
+        let expected_obj = parser.get_string_interner().get_or_intern("obj");
+        let expected_field = parser.get_string_interner().get_or_intern("field");
+        let expected_method = parser.get_string_interner().get_or_intern("method");
         
         let expr_pool = parser.get_expr_pool();
         assert_eq!(3, expr_pool.len(), "should have 3 expressions for field access with method call");

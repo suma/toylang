@@ -186,7 +186,7 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::ParenOpen) => parse_tuple_or_grouped_expr(parser),
         Some(ref kind) if kind.is_keyword() && !matches!(kind, Kind::True | Kind::False | Kind::Null | Kind::If | Kind::Dict | Kind::Self_ | Kind::With | Kind::Ambient | Kind::Match) => {
             let location = parser.current_source_location();
-            Err(ParserError::generic_error(location, format!("parse_primary_impl: reserved keyword cannot be used as identifier")))
+            Err(ParserError::generic_error(location, "parse_primary_impl: reserved keyword cannot be used as identifier".to_string()))
         }
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
@@ -410,12 +410,9 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
             parser.exit_nested_structure(false);
             return Ok(elements);
         }
-        match parser.peek() {
-            Some(Kind::BracketClose) => {
-                parser.exit_nested_structure(false);
-                return Ok(elements);
-            }
-            _ => (),
+        if let Some(Kind::BracketClose) = parser.peek() {
+            parser.exit_nested_structure(false);
+            return Ok(elements);
         }
         let expr = parser.parse_expr_impl();
         if expr.is_err() {
@@ -461,8 +458,8 @@ pub fn parse_array_elements(parser: &mut Parser, mut elements: Vec<ExprRef>) -> 
 
 /// Parse struct literal fields.
 pub(crate) fn parse_struct_literal_fields(parser: &mut Parser, fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {
-    let result = parse_struct_literal_fields_impl(parser, fields);
-    result
+    
+    parse_struct_literal_fields_impl(parser, fields)
 }
 
 fn parse_struct_literal_fields_impl(parser: &mut Parser, mut fields: Vec<(DefaultSymbol, ExprRef)>) -> ParserResult<Vec<(DefaultSymbol, ExprRef)>> {

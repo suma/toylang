@@ -750,8 +750,8 @@ impl<'a> AstIntegrationContext<'a> {
         }
 
         // Remap function body statement reference
-        let new_code = self.stmt_mapping.get(&function.code.0)
-            .ok_or("Cannot find function code statement mapping")?.clone();
+        let new_code = *self.stmt_mapping.get(&function.code.0)
+            .ok_or("Cannot find function code statement mapping")?;
 
         // Remap contract clauses through the same expression mapping the
         // body uses. Each ExprRef in `requires`/`ensures` was added to the
@@ -833,8 +833,8 @@ impl<'a> AstIntegrationContext<'a> {
             None => None,
         };
 
-        let new_code = self.stmt_mapping.get(&method.code.0)
-            .ok_or("Cannot find method code statement mapping")?.clone();
+        let new_code = *self.stmt_mapping.get(&method.code.0)
+            .ok_or("Cannot find method code statement mapping")?;
 
         let new_requires = method.requires.iter()
             .map(|e| self.expr_mapping.get(&e.0).cloned()
@@ -938,13 +938,12 @@ impl<'a> AstIntegrationContext<'a> {
                     format!("Module ExprRef({}) is missing during integration", index)
                 })?;
             let remapped_expr = self.remap_expression(&expr)?;
-            let main_expr_ref = self
+            let main_expr_ref = *self
                 .expr_mapping
                 .get(&(index as u32))
                 .ok_or_else(|| {
                     format!("Missing ExprRef({}) placeholder mapping", index)
-                })?
-                .clone();
+                })?;
             self.main_program.expression.update(&main_expr_ref, remapped_expr);
         }
 
@@ -958,13 +957,12 @@ impl<'a> AstIntegrationContext<'a> {
                     format!("Module StmtRef({}) is missing during integration", index)
                 })?;
             let remapped_stmt = self.remap_statement(&stmt)?;
-            let main_stmt_ref = self
+            let main_stmt_ref = *self
                 .stmt_mapping
                 .get(&(index as u32))
                 .ok_or_else(|| {
                     format!("Missing StmtRef({}) placeholder mapping", index)
-                })?
-                .clone();
+                })?;
             self.main_program.statement.update(&main_stmt_ref, remapped_stmt);
         }
 

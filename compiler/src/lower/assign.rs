@@ -122,8 +122,7 @@ impl<'a> FunctionLower<'a> {
                 // locals are reused instead of freshly allocated.
                 if let Some(Binding::Struct { struct_id, fields }) =
                     self.bindings.get(&sym).cloned()
-                {
-                    if let Some(Expr::Binary(op, b_lhs, b_rhs)) =
+                    && let Some(Expr::Binary(op, b_lhs, b_rhs)) =
                         self.program.expression.get(rhs)
                     {
                         let op_method: Option<&'static str> = match op {
@@ -143,8 +142,8 @@ impl<'a> FunctionLower<'a> {
                             let struct_def = self.module.struct_def(struct_id);
                             let target_sym = struct_def.base_name;
                             let type_args = struct_def.type_args.clone();
-                            if let Some(method_sym) = self.interner.get(method_name) {
-                                if let Some(func_id) =
+                            if let Some(method_sym) = self.interner.get(method_name)
+                                && let Some(func_id) =
                                     super::method_registry::lookup_method_func(
                                         self.method_func_ids,
                                         target_sym,
@@ -235,10 +234,8 @@ impl<'a> FunctionLower<'a> {
                                     );
                                     return Ok(None);
                                 }
-                            }
                         }
                     }
-                }
                 if let Some(Binding::RefScalar { local, pointee_ty, is_mut }) =
                     self.bindings.get(&sym).cloned()
                 {

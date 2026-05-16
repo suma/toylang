@@ -494,7 +494,7 @@ impl<'a> FunctionLower<'a> {
             Some(e) => e,
             None => return,
         };
-        let mut record = |s: DefaultSymbol,
+        let record = |s: DefaultSymbol,
                           out: &mut Vec<(DefaultSymbol, Type)>,
                           seen: &mut std::collections::HashSet<DefaultSymbol>| {
             if bound.contains(&s) || seen.contains(&s) {
@@ -917,11 +917,10 @@ impl<'a> FunctionLower<'a> {
         let func = self.module.function(self.func_id);
         for blk in &func.blocks {
             for inst in &blk.instructions {
-                if let Some((vid, ty)) = inst.result {
-                    if vid == v {
+                if let Some((vid, ty)) = inst.result
+                    && vid == v {
                         return Some(ty);
                     }
-                }
             }
         }
         None

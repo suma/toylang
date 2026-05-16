@@ -83,26 +83,23 @@ impl<'a> FunctionLower<'a> {
         // fixed-length array binding whose stack slot mirrors the
         // source slot's leaf layout. Each leaf scalar is copied with
         // an `ArrayLoad` + `ArrayStore` pair.
-        if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
-            if matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
+        if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
+            && matches!(info.slice_type, frontend::ast::SliceType::RangeSlice) {
                 return self.lower_let_range_slice(name, arr_obj, info);
             }
-        }
         // Compound-element array read: `val p: Point = arr[i]`.
         // Allocate the right binding shape and load each leaf
         // directly into its locals via the same per-leaf
         // ArrayLoad sequence `lower_slice_access` would emit, so
         // chain access (`p.x`) and field-by-field reads work
         // through the existing struct-binding path.
-        if let Expr::SliceAccess(arr_obj, info) = rhs.clone() {
-            if matches!(info.slice_type, frontend::ast::SliceType::SingleElement) {
-                if let Some(result) =
+        if let Expr::SliceAccess(arr_obj, info) = rhs.clone()
+            && matches!(info.slice_type, frontend::ast::SliceType::SingleElement)
+                && let Some(result) =
                     self.lower_let_slice_single_element(name, arr_obj, info)?
                 {
                     return Ok(result);
                 }
-            }
-        }
         if let Expr::ArrayLiteral(elems) = rhs.clone() {
             return self.lower_let_array_literal(name, elems);
         }
@@ -112,13 +109,12 @@ impl<'a> FunctionLower<'a> {
         // Either way the lowering allocates an `Enum` binding (tag local
         // + per-variant payload locals) and stores the chosen tag plus
         // the supplied arguments in this variant's payload slots.
-        if let Expr::QualifiedIdentifier(path) = rhs.clone() {
-            if path.len() == 2 && self.enum_defs.contains_key(&path[0]) {
+        if let Expr::QualifiedIdentifier(path) = rhs.clone()
+            && path.len() == 2 && self.enum_defs.contains_key(&path[0]) {
                 return self.lower_let_enum_unit_variant(name, annotation, &path);
             }
-        }
-        if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone() {
-            if self.enum_defs.contains_key(&enum_name) {
+        if let Expr::AssociatedFunctionCall(enum_name, variant_name, args) = rhs.clone()
+            && self.enum_defs.contains_key(&enum_name) {
                 return self.lower_let_enum_tuple_variant(
                     name,
                     annotation,
@@ -127,7 +123,6 @@ impl<'a> FunctionLower<'a> {
                     args,
                 );
             }
-        }
         // Composite enum-producing RHS: `if`-chain / `match` / block
         // whose every branch ends in an enum construction or an enum
         // binding identifier of the same enum. Pre-allocate the
@@ -155,9 +150,9 @@ impl<'a> FunctionLower<'a> {
         // associated functions (e.g. `new() -> Self`); scalar
         // and other compound returns route through the regular
         // `Expr::AssociatedFunctionCall` handling below.
-        if let Expr::AssociatedFunctionCall(struct_name, fn_name, ref args_vec) = rhs.clone() {
-            if self.struct_defs.contains_key(&struct_name) {
-                if let Some(result) = self.lower_let_struct_associated_call(
+        if let Expr::AssociatedFunctionCall(struct_name, fn_name, ref args_vec) = rhs.clone()
+            && self.struct_defs.contains_key(&struct_name)
+                && let Some(result) = self.lower_let_struct_associated_call(
                     name,
                     annotation,
                     struct_name,
@@ -166,21 +161,18 @@ impl<'a> FunctionLower<'a> {
                 )? {
                     return Ok(result);
                 }
-            }
-        }
         // OP-OVERLOAD-EXTEND Phase 4: unary operator overload at
         // let-rhs context (`val r: Vec3 = -a`). Compound `Self`
         // return needs `CallStruct` into a fresh binding, same
         // as the binary arith overload below — handle here so
         // `lower_unary`'s `Result<Option<ValueId>, _>` shape
         // doesn't have to deal with multi-leaf returns.
-        if let Expr::Unary(unary_op, operand_ref) = rhs.clone() {
-            if let Some(result) =
+        if let Expr::Unary(unary_op, operand_ref) = rhs.clone()
+            && let Some(result) =
                 self.lower_let_unary_overload(name, unary_op, operand_ref)?
             {
                 return Ok(result);
             }
-        }
         // Operator overload (Phase B continuation): arithmetic
         // overloads (`a + b` / `a - b` / `a * b` / `a / b` /
         // `a % b`) for matching struct values dispatch to the
@@ -195,13 +187,12 @@ impl<'a> FunctionLower<'a> {
         // expression-position uses (`a + b + c`) are a future
         // extension that needs the call result to flow back as
         // an `Expr::Binary` ValueId.
-        if let Expr::Binary(op, lhs_ref, rhs_ref) = rhs.clone() {
-            if let Some(result) =
+        if let Expr::Binary(op, lhs_ref, rhs_ref) = rhs.clone()
+            && let Some(result) =
                 self.lower_let_binary_overload(name, op, lhs_ref, rhs_ref)?
             {
                 return Ok(result);
             }
-        }
         // Primitive-receiver compound-returning method RHS:
         // `val s: String = lit.to_string()`. Mirrors the
         // struct/enum-receiver path below — but routes through
@@ -212,8 +203,8 @@ impl<'a> FunctionLower<'a> {
         // primitive methods (e.g. `str::to_string -> Vec<u8>`)
         // would otherwise fall through to `lower_method_call`'s
         // Step D path and bail at the compound-return guard.
-        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
-            if let Some(result) = self.lower_let_primitive_method_compound(
+        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone()
+            && let Some(result) = self.lower_let_primitive_method_compound(
                 name,
                 recv,
                 method_sym,
@@ -221,15 +212,14 @@ impl<'a> FunctionLower<'a> {
             )? {
                 return Ok(result);
             }
-        }
         // Compound-returning method call RHS: `val q = p.swap()`.
         // Resolves the receiver / method target the same way
         // `lower_method_call` does, then routes the multi-result
         // through `CallStruct` / `CallTuple` / `CallEnum` into a
         // freshly-allocated binding. Mirrors the per-target
         // branches below for plain function calls.
-        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone() {
-            if let Some(result) = self.lower_let_struct_enum_method_compound(
+        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone()
+            && let Some(result) = self.lower_let_struct_enum_method_compound(
                 name,
                 recv,
                 method_sym,
@@ -237,30 +227,27 @@ impl<'a> FunctionLower<'a> {
             )? {
                 return Ok(result);
             }
-        }
         // Tuple-returning call RHS: `val pair = make_pair()`. Same
         // shape as struct-returning calls, just routed through
         // CallTuple. Detect early so the parser-desugared
         // `val (a, b) = make_pair()` (which becomes
         // `val tmp = make_pair(); val a = tmp.0; val b = tmp.1`) is
         // also handled here without special-casing destructuring.
-        if let Expr::Call(fn_name, args_ref) = rhs.clone() {
-            if let Some(result) =
+        if let Expr::Call(fn_name, args_ref) = rhs.clone()
+            && let Some(result) =
                 self.lower_let_call_tuple_or_enum(name, fn_name, &args_ref)?
             {
                 return Ok(result);
             }
-        }
         // Struct-returning call RHS: `val p = make_point()`. Allocate
         // a struct binding and use `CallStruct` so codegen can route
         // the multi-return values into the per-field locals.
-        if let Expr::Call(fn_name, args_ref) = rhs {
-            if let Some(result) =
+        if let Expr::Call(fn_name, args_ref) = rhs
+            && let Some(result) =
                 self.lower_let_call_struct(name, fn_name, &args_ref)?
             {
                 return Ok(result);
             }
-        }
         // #121 Phase A: `val name: T = __builtin_ptr_read(p, off)` —
         // the read width is taken from the annotation. Without this
         // intercept, lower_builtin_call's PtrRead arm rejects the
@@ -274,15 +261,13 @@ impl<'a> FunctionLower<'a> {
         // `Binding::Tuple` local. Mirrors the per-leaf write loop
         // in `expr.rs::PtrWrite`. Pre-existing scalar callers
         // continue through the original single-PtrRead path.
-        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone() {
-            if args.len() == 2 {
-                if let Some(result) =
+        if let Expr::BuiltinCall(frontend::ast::BuiltinFunction::PtrRead, args) = rhs.clone()
+            && args.len() == 2
+                && let Some(result) =
                     self.lower_let_builtin_ptr_read(name, annotation, &args)?
                 {
                     return Ok(result);
                 }
-            }
-        }
         // Phase 6b/6c: a Call RHS whose callee returns a function
         // type (`TypeDecl::Function`) lands as a fn-pointer value
         // (Type::U64 in IR). Bind under `Binding::FunctionPtr` so
@@ -291,13 +276,12 @@ impl<'a> FunctionLower<'a> {
         // binding would be a plain `Binding::Scalar { ty: U64 }`
         // and `lower_call` would then fail to find `name` in the
         // function table.
-        if let Expr::Call(callee_name, _) = rhs.clone() {
-            if let Some(result) =
+        if let Expr::Call(callee_name, _) = rhs.clone()
+            && let Some(result) =
                 self.lower_let_call_function_pointer(name, rhs_ref, callee_name)?
             {
                 return Ok(result);
             }
-        }
         // Scalar fallback (existing behaviour).
         self.lower_let_scalar_fallback(name, rhs_ref)
     }
@@ -466,14 +450,13 @@ impl<'a> FunctionLower<'a> {
         rhs_ref: &ExprRef,
         callee_name: DefaultSymbol,
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(callee_id) = self.module.lookup_function(None, callee_name) {
-            if let Some(callee_fn) = self
+        if let Some(callee_id) = self.module.lookup_function(None, callee_name)
+            && let Some(callee_fn) = self
                 .program
                 .function
                 .iter()
                 .find(|f| f.name == callee_name)
-            {
-                if let Some(frontend::type_decl::TypeDecl::Function(p_tys, r_ty)) =
+                && let Some(frontend::type_decl::TypeDecl::Function(p_tys, r_ty)) =
                     callee_fn.return_type.as_ref()
                 {
                     let mut ir_param_tys: Vec<Type> = Vec::with_capacity(p_tys.len());
@@ -508,8 +491,6 @@ impl<'a> FunctionLower<'a> {
                         return Ok(Some(None));
                     }
                 }
-            }
-        }
         Ok(None)
     }
 
@@ -879,11 +860,10 @@ impl<'a> FunctionLower<'a> {
         method_sym: DefaultSymbol,
         method_args: &[ExprRef],
     ) -> Result<Option<Option<ValueId>>, String> {
-        if let Some(recv_ty) = self.value_scalar(&recv) {
-            if let Some(target_sym) =
+        if let Some(recv_ty) = self.value_scalar(&recv)
+            && let Some(target_sym) =
                 super::method_call::primitive_target_sym_for_ir_type(recv_ty, self.interner)
-            {
-                if let Some(func_id) = super::method_registry::lookup_method_func(
+                && let Some(func_id) = super::method_registry::lookup_method_func(
                     self.method_func_ids, target_sym, method_sym, &[],
                 ) {
                     let target_ret = self.module.function(func_id).return_type;
@@ -1010,8 +990,6 @@ impl<'a> FunctionLower<'a> {
                         return Ok(Some(None));
                     }
                 }
-            }
-        }
         Ok(None)
     }
 
@@ -1042,13 +1020,13 @@ impl<'a> FunctionLower<'a> {
             frontend::ast::Operator::RightShift => Some("shr"),
             _ => None,
         };
-        if let Some(method_name) = op_method {
-            if let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
+        if let Some(method_name) = op_method
+            && let Some(Type::Struct(struct_id)) = self.value_scalar(&lhs_ref) {
                 let struct_def = self.module.struct_def(struct_id);
                 let target_sym = struct_def.base_name;
                 let type_args = struct_def.type_args.clone();
-                if let Some(method_sym) = self.interner.get(method_name) {
-                    if let Some(func_id) = super::method_registry::lookup_method_func(
+                if let Some(method_sym) = self.interner.get(method_name)
+                    && let Some(func_id) = super::method_registry::lookup_method_func(
                         self.method_func_ids, target_sym, method_sym, &type_args,
                     ) {
                         // Flatten both struct receivers' leaf
@@ -1120,9 +1098,7 @@ impl<'a> FunctionLower<'a> {
                         );
                         return Ok(Some(None));
                     }
-                }
             }
-        }
         Ok(None)
     }
 
@@ -1144,13 +1120,13 @@ impl<'a> FunctionLower<'a> {
             frontend::ast::UnaryOp::LogicalNot => Some("not"),
             _ => None,
         };
-        if let Some(method_name) = unary_method {
-            if let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
+        if let Some(method_name) = unary_method
+            && let Some(Type::Struct(struct_id)) = self.value_scalar(&operand_ref) {
                 let struct_def = self.module.struct_def(struct_id);
                 let target_sym = struct_def.base_name;
                 let type_args = struct_def.type_args.clone();
-                if let Some(method_sym) = self.interner.get(method_name) {
-                    if let Some(func_id) = super::method_registry::lookup_method_func(
+                if let Some(method_sym) = self.interner.get(method_name)
+                    && let Some(func_id) = super::method_registry::lookup_method_func(
                         self.method_func_ids, target_sym, method_sym, &type_args,
                     ) {
                         let operand_leaves = match self.program.expression.get(&operand_ref) {
@@ -1203,9 +1179,7 @@ impl<'a> FunctionLower<'a> {
                         );
                         return Ok(Some(None));
                     }
-                }
             }
-        }
         Ok(None)
     }
 
@@ -1734,8 +1708,8 @@ impl<'a> FunctionLower<'a> {
             .expression
             .get(&arr_obj)
             .ok_or_else(|| "array-access object missing".to_string())?;
-        if let Expr::Identifier(arr_sym) = arr_expr {
-            if let Some(Binding::Array { element_ty, .. }) =
+        if let Expr::Identifier(arr_sym) = arr_expr
+            && let Some(Binding::Array { element_ty, .. }) =
                 self.bindings.get(&arr_sym).cloned()
             {
                 match element_ty {
@@ -1772,7 +1746,6 @@ impl<'a> FunctionLower<'a> {
                     _ => {}
                 }
             }
-        }
         Ok(None)
     }
 

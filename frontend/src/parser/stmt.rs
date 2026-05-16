@@ -164,7 +164,7 @@ fn parse_loop_with_label(parser: &mut Parser, label: Option<DefaultSymbol>) -> P
     parser.expect_err(&Kind::Loop)?;
     let block = super::expr::parse_block(parser)?;
     let location = parser.current_source_location();
-    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location));
     Ok(parser.ast_builder.while_stmt_with_label(label, true_expr, block, Some(location)))
 }
 
@@ -201,18 +201,18 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
     // diverge to Unit) — same trick used by `desugar_for_in_iterator`.
     let body_stmt = parser
         .ast_builder
-        .add_stmt_with_location(Stmt::Expression(user_body), Some(location.clone()));
-    let continue_stmt = parser.ast_builder.continue_stmt(Some(location.clone()));
+        .add_stmt_with_location(Stmt::Expression(user_body), Some(location));
+    let continue_stmt = parser.ast_builder.continue_stmt(Some(location));
     let some_arm_body = parser.ast_builder.block_expr(
         vec![body_stmt, continue_stmt],
-        Some(location.clone()),
+        Some(location),
     );
     let some_arm = MatchArm { pattern, guard: None, body: some_arm_body };
 
-    let break_stmt = parser.ast_builder.break_stmt(Some(location.clone()));
+    let break_stmt = parser.ast_builder.break_stmt(Some(location));
     let break_block = parser
         .ast_builder
-        .block_expr(vec![break_stmt], Some(location.clone()));
+        .block_expr(vec![break_stmt], Some(location));
     let none_arm = MatchArm {
         pattern: Pattern::Wildcard,
         guard: None,
@@ -221,15 +221,15 @@ fn parse_while_val(parser: &mut Parser, outer_label: Option<DefaultSymbol>) -> P
 
     let match_expr = parser.ast_builder.add_expr_with_location(
         Expr::Match(scrutinee, vec![some_arm, none_arm]),
-        Some(location.clone()),
+        Some(location),
     );
     let match_stmt = parser
         .ast_builder
-        .add_stmt_with_location(Stmt::Expression(match_expr), Some(location.clone()));
+        .add_stmt_with_location(Stmt::Expression(match_expr), Some(location));
     let while_body = parser
         .ast_builder
-        .block_expr(vec![match_stmt], Some(location.clone()));
-    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+        .block_expr(vec![match_stmt], Some(location));
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location));
     Ok(parser
         .ast_builder
         .while_stmt_with_label(outer_label, true_expr, while_body, Some(location)))
@@ -342,11 +342,11 @@ fn desugar_for_in_iterator(
             iter_sym,
             None,
             Some(iter_expr),
-            Some(location.clone()),
+            Some(location),
         );
         let iter_ident = parser
             .ast_builder
-            .identifier_expr(iter_sym, Some(location.clone()));
+            .identifier_expr(iter_sym, Some(location));
         (vec![iter_decl], iter_ident)
     };
 
@@ -355,7 +355,7 @@ fn desugar_for_in_iterator(
         receiver_expr,
         next_sym,
         vec![],
-        Some(location.clone()),
+        Some(location),
     );
 
     // Some(x) arm — body is the user's block, wrapped in
@@ -368,11 +368,11 @@ fn desugar_for_in_iterator(
     // type-check because Assign returns its rhs type.
     let user_body_stmt = parser
         .ast_builder
-        .add_stmt_with_location(Stmt::Expression(body), Some(location.clone()));
-    let continue_stmt = parser.ast_builder.continue_stmt(Some(location.clone()));
+        .add_stmt_with_location(Stmt::Expression(body), Some(location));
+    let continue_stmt = parser.ast_builder.continue_stmt(Some(location));
     let some_arm_body = parser.ast_builder.block_expr(
         vec![user_body_stmt, continue_stmt],
-        Some(location.clone()),
+        Some(location),
     );
     let some_arm = MatchArm {
         pattern: Pattern::EnumVariant(option_sym, some_sym, vec![Pattern::Name(loop_var)]),
@@ -381,10 +381,10 @@ fn desugar_for_in_iterator(
     };
 
     // None => { break }
-    let break_stmt = parser.ast_builder.break_stmt(Some(location.clone()));
+    let break_stmt = parser.ast_builder.break_stmt(Some(location));
     let break_block = parser
         .ast_builder
-        .block_expr(vec![break_stmt], Some(location.clone()));
+        .block_expr(vec![break_stmt], Some(location));
     let none_arm = MatchArm {
         pattern: Pattern::EnumVariant(option_sym, none_sym, vec![]),
         guard: None,
@@ -394,31 +394,31 @@ fn desugar_for_in_iterator(
     // match __iter.next() { Some(x) => body, None => { break } }
     let match_expr = parser.ast_builder.add_expr_with_location(
         Expr::Match(next_call, vec![some_arm, none_arm]),
-        Some(location.clone()),
+        Some(location),
     );
 
     // while true { <match-stmt> }
-    let true_expr = parser.ast_builder.bool_true_expr(Some(location.clone()));
+    let true_expr = parser.ast_builder.bool_true_expr(Some(location));
     let match_stmt = parser.ast_builder.add_stmt_with_location(
         Stmt::Expression(match_expr),
-        Some(location.clone()),
+        Some(location),
     );
     let while_body = parser
         .ast_builder
-        .block_expr(vec![match_stmt], Some(location.clone()));
+        .block_expr(vec![match_stmt], Some(location));
     // LABEL: propagate `@outer:` from `@outer: for x in iter { ... }` to
     // the synthetic `while true { match ... }` so user-written
     // `break @outer` inside the body resolves to this loop.
     let while_stmt = parser
         .ast_builder
-        .while_stmt_with_label(outer_label, true_expr, while_body, Some(location.clone()));
+        .while_stmt_with_label(outer_label, true_expr, while_body, Some(location));
 
     // Outer block: { [optional var __iter = ...;] while ... { ... } }
     let mut outer_stmts = prelude_stmts;
     outer_stmts.push(while_stmt);
     let outer_block = parser
         .ast_builder
-        .block_expr(outer_stmts, Some(location.clone()));
+        .block_expr(outer_stmts, Some(location));
     parser
         .ast_builder
         .add_stmt_with_location(Stmt::Expression(outer_block), Some(location))
@@ -577,9 +577,9 @@ fn emit_destructure(
     match pat {
         DestructPat::Name(sym) => {
             let stmt = if is_val {
-                parser.ast_builder.val_stmt(*sym, Some(TypeDecl::Unknown), rhs_expr, Some(location.clone()))
+                parser.ast_builder.val_stmt(*sym, Some(TypeDecl::Unknown), rhs_expr, Some(*location))
             } else {
-                parser.ast_builder.var_stmt(*sym, Some(TypeDecl::Unknown), Some(rhs_expr), Some(location.clone()))
+                parser.ast_builder.var_stmt(*sym, Some(TypeDecl::Unknown), Some(rhs_expr), Some(*location))
             };
             out.push(stmt);
         }
@@ -590,13 +590,13 @@ fn emit_destructure(
             let tmp_sym = parser.string_interner.get_or_intern(tmp_name.as_str());
             let tmp_stmt = parser
                 .ast_builder
-                .val_stmt(tmp_sym, Some(TypeDecl::Unknown), rhs_expr, Some(location.clone()));
+                .val_stmt(tmp_sym, Some(TypeDecl::Unknown), rhs_expr, Some(*location));
             out.push(tmp_stmt);
             for (i, sub) in subs.iter().enumerate() {
-                let tmp_id = parser.ast_builder.identifier_expr(tmp_sym, Some(location.clone()));
+                let tmp_id = parser.ast_builder.identifier_expr(tmp_sym, Some(*location));
                 let access = parser
                     .ast_builder
-                    .tuple_access_expr(tmp_id, i, Some(location.clone()));
+                    .tuple_access_expr(tmp_id, i, Some(*location));
                 emit_destructure(parser, sub, access, is_val, location, out);
             }
         }
@@ -883,19 +883,16 @@ pub fn parse_impl_methods_with_generic_context(
                         parser.expect_err(&Kind::ParenClose)?;
 
                         let mut ret_ty: Option<TypeDecl> = None;
-                        match parser.peek() {
-                            Some(Kind::Arrow) => {
-                                parser.expect_err(&Kind::Arrow)?;
-                                let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
-                                    combined_generic_params.iter().cloned().collect();
-                                ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
-                            }
-                            _ => (),
+                        if let Some(Kind::Arrow) = parser.peek() {
+                            parser.expect_err(&Kind::Arrow)?;
+                            let generic_context: std::collections::HashSet<string_interner::DefaultSymbol> =
+                                combined_generic_params.iter().cloned().collect();
+                            ret_ty = Some(parser.parse_type_declaration_with_generic_context(&generic_context)?);
                         }
 
                         let (requires, ensures) = parser.parse_contract_clauses()?;
                         let block = super::expr::parse_block(parser)?;
-                        let fn_end_pos = parser.peek_position_n(0).unwrap_or_else(|| &std::ops::Range {start: 0, end: 0}).end;
+                        let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range {start: 0, end: 0}).end;
 
                         // Method-level bounds layer on top of the impl-level
                         // bounds; method bounds win on conflict.
@@ -952,10 +949,7 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
     let mut has_self = false;
     let mut self_is_mut = false;
 
-    match parser.peek() {
-        Some(Kind::ParenClose) => return Ok((args, has_self, self_is_mut)),
-        _ => (),
-    }
+    if let Some(Kind::ParenClose) = parser.peek() { return Ok((args, has_self, self_is_mut)) }
 
     if let Some(Kind::And) = parser.peek() {
         // `& [mut] self [, ...]`: peek for an optional `mut` between
@@ -968,8 +962,8 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
         } else {
             (None, 1usize)
         };
-        if let Some(Kind::Identifier(name)) = parser.peek_n(self_offset) {
-            if name == "self" {
+        if let Some(Kind::Identifier(name)) = parser.peek_n(self_offset)
+            && name == "self" {
                 parser.next(); // consume `&`
                 if mut_offset.is_some() {
                     parser.next(); // consume `mut`
@@ -992,7 +986,6 @@ pub fn parse_method_param_list_with_generic_context(parser: &mut Parser, args: V
                     },
                 }
             }
-        }
     }
 
     let (params, _) = parse_param_def_list_impl_with_generic_context(parser, args, generic_params)?;

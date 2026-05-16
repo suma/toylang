@@ -75,6 +75,12 @@ pub struct TypeInferenceState {
     pub partial_solutions: HashMap<DefaultSymbol, TypeDecl>,
 }
 
+impl Default for TypeInferenceState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TypeInferenceState {
     pub fn new() -> Self {
         Self {

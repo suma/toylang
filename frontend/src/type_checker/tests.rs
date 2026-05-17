@@ -10,8 +10,8 @@ mod tests {
     }
 
     fn create_test_type_checker<'a>(
-        stmt_pool: &'a StmtPool, 
-        expr_pool: &'a mut ExprPool, 
+        stmt_pool: &'a mut StmtPool,
+        expr_pool: &'a mut ExprPool,
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool
     ) -> TypeCheckerVisitor<'a> {
@@ -45,9 +45,9 @@ mod tests {
         let array_elements = vec![true_expr, false_expr, true_expr2];
         let _array_expr = builder.array_literal_expr(array_elements, None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test type inference
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1), ExprRef(2)]);
@@ -79,9 +79,9 @@ mod tests {
         let array_elements = vec![true_expr, false_expr];
         let _array_expr = builder.array_literal_expr(array_elements, None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set type hint for bool array
         type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::Bool], 2));
@@ -116,9 +116,9 @@ mod tests {
         let array_elements = vec![true_expr, number_expr];
         let _array_expr = builder.array_literal_expr(array_elements, None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test type inference - should fail
         let result = type_checker.visit_array_literal(&vec![ExprRef(0), ExprRef(1)]);
@@ -143,9 +143,9 @@ mod tests {
         let builder = create_test_ast_builder();
         let string_interner = DefaultStringInterner::new();
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test empty array - should fail
         let result = type_checker.visit_array_literal(&vec![]);
@@ -174,9 +174,9 @@ mod tests {
         let array_elements = vec![true_expr, false_expr];
         let _array_expr = builder.array_literal_expr(array_elements, None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set wrong type hint (expecting UInt64 array)
         type_checker.type_inference.type_hint = Some(TypeDecl::Array(vec![TypeDecl::UInt64], 2));
@@ -206,9 +206,9 @@ mod tests {
         let _true_expr = builder.bool_true_expr(None);
         let _false_expr = builder.bool_false_expr(None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test individual bool literals
         let true_result = type_checker.visit_boolean_literal(&Expr::True);
@@ -232,9 +232,9 @@ mod tests {
         let array_elements = vec![true_expr];
         let _array_expr = builder.array_literal_expr(array_elements, None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test single element array
         let result = type_checker.visit_array_literal(&vec![ExprRef(0)]);
@@ -269,9 +269,9 @@ mod tests {
         
         let element_refs: Vec<ExprRef> = (0..100).map(ExprRef).collect();
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Measure performance
         let start = std::time::Instant::now();
@@ -310,9 +310,9 @@ mod tests {
         
         let element_refs: Vec<ExprRef> = (0..1000).map(ExprRef).collect();
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         let result = type_checker.visit_array_literal(&element_refs);
         
@@ -336,9 +336,9 @@ mod tests {
         let point_symbol = string_interner.get_or_intern("Point");
         
         let builder = create_test_ast_builder();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Register Point struct manually
         let struct_fields: Vec<StructField> = vec![
@@ -368,9 +368,9 @@ mod tests {
         let point_symbol = string_interner.get_or_intern("Point");
         
         let builder = create_test_ast_builder();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Register Point struct
         let struct_fields: Vec<StructField> = vec![
@@ -398,9 +398,9 @@ mod tests {
         let _y_symbol = string_interner.get_or_intern("y");
         
         let builder = create_test_ast_builder();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Register Point struct
         let struct_fields: Vec<StructField> = vec![
@@ -433,9 +433,9 @@ mod tests {
         let circle_symbol = string_interner.get_or_intern("Circle");
         
         let builder = create_test_ast_builder();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Register Point and Circle structs
         let point_fields: Vec<StructField> = vec![
@@ -470,9 +470,9 @@ mod tests {
         let point_symbol = string_interner.get_or_intern("Point");
         
         let builder = create_test_ast_builder();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Register Point struct
         let struct_fields: Vec<StructField> = vec![
@@ -502,9 +502,9 @@ mod tests {
         let source_code = "fn main() -> u64 {\n    val x = 42\n    x\n}";
         let builder = create_test_ast_builder();
         let string_interner = DefaultStringInterner::new();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
+        let type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
             .with_source_code(source_code);
         
         // Test various offsets
@@ -530,9 +530,9 @@ mod tests {
         let source_code = "fn test() -> bool {\n    true\n}";
         let builder = create_test_ast_builder();
         let string_interner = DefaultStringInterner::new();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
+        let type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool)
             .with_source_code(source_code);
         
         // Create a node at the start of the function (offset 0)
@@ -555,9 +555,9 @@ mod tests {
         // Test fallback behavior when source code is not provided
         let builder = create_test_ast_builder();
         let string_interner = DefaultStringInterner::new();
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Without source code, should return (1, 1) as fallback
         let (line, col) = type_checker.calculate_line_col_from_offset(100);

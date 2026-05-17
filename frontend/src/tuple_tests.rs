@@ -12,9 +12,9 @@ mod tuple_tests {
     }
     
     fn create_test_type_checker<'a>(
-        stmt_pool: &'a StmtPool, 
-        expr_pool: &'a mut ExprPool, 
-        string_interner: &'a DefaultStringInterner, 
+        stmt_pool: &'a mut StmtPool,
+        expr_pool: &'a mut ExprPool,
+        string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool
     ) -> TypeCheckerVisitor<'a> {
         TypeCheckerVisitor::new(stmt_pool, expr_pool, string_interner, location_pool)
@@ -35,9 +35,9 @@ mod tuple_tests {
         let elements = vec![number_expr, bool_expr, string_expr];
         let _tuple_expr = builder.tuple_literal_expr(elements.clone(), None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test type inference
         let result = type_checker.visit_tuple_literal(&elements);
@@ -61,9 +61,9 @@ mod tuple_tests {
         let builder = create_test_ast_builder();
         let string_interner = DefaultStringInterner::new();
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Test empty tuple
         let result = type_checker.visit_tuple_literal(&vec![]);
@@ -93,9 +93,9 @@ mod tuple_tests {
         let elements = vec![number_expr, string_expr];
         let tuple_expr = builder.tuple_literal_expr(elements.clone(), None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // First, check the tuple itself
         let tuple_result = type_checker.visit_tuple_literal(&elements);
@@ -124,9 +124,9 @@ mod tuple_tests {
         let elements = vec![number_expr];
         let tuple_expr = builder.tuple_literal_expr(elements.clone(), None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // First, check the tuple itself
         let tuple_result = type_checker.visit_tuple_literal(&elements);
@@ -158,9 +158,9 @@ mod tuple_tests {
         let elements = vec![num1_expr, num2_expr];
         let _tuple_expr = builder.tuple_literal_expr(elements.clone(), None);
         
-        let (expr_pool, stmt_pool, location_pool) = builder.extract_pools();
+        let (expr_pool, mut stmt_pool, location_pool) = builder.extract_pools();
         let mut expr_pool_mut = expr_pool;
-        let mut type_checker = create_test_type_checker(&stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
+        let mut type_checker = create_test_type_checker(&mut stmt_pool, &mut expr_pool_mut, &string_interner, &location_pool);
         
         // Set type hint for (i64, u64)
         type_checker.type_inference.type_hint = Some(TypeDecl::Tuple(vec![TypeDecl::Int64, TypeDecl::UInt64]));

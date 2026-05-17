@@ -292,6 +292,26 @@ impl AstBuilder {
         expr_ref
     }
 
+    pub fn try_expr(
+        &mut self,
+        inner: ExprRef,
+        scrutinee_binding: DefaultSymbol,
+        success_binding: DefaultSymbol,
+        error_binding: DefaultSymbol,
+        panic_msg: DefaultSymbol,
+        location: Option<SourceLocation>,
+    ) -> ExprRef {
+        let expr_ref = self.expr_pool.add(Expr::Try {
+            inner,
+            scrutinee_binding,
+            success_binding,
+            error_binding,
+            panic_msg,
+        });
+        self.location_pool.add_expr_location(location);
+        expr_ref
+    }
+
     pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
         self.location_pool.add_expr_location(location);

@@ -83,6 +83,14 @@ pub trait AstVisitor {
     ) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unknown)
     }
+    /// `expr?` — postfix early-return operator. The type checker
+    /// rewrites this into a `match` (over `Result` or `Option`) before
+    /// any backend sees the AST, so no backend visitor needs to
+    /// implement this. The default impl returns Unknown for any
+    /// visitor that does not override (only the type checker does).
+    fn visit_try(&mut self, _inner: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        Ok(TypeDecl::Unknown)
+    }
 
     // Stmt variants
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;

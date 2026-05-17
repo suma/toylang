@@ -75,6 +75,10 @@ pub enum ExprType {
     UInt32 = 38,
     /// `fn(params) -> Ret { body }` — closure / lambda literal. Phase 1.
     Closure = 39,
+    /// `expr?` — postfix early-return operator. The parser emits this
+    /// node; the type checker rewrites it in-place to a `Match` so
+    /// backends never observe it.
+    Try = 40,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -444,6 +448,16 @@ impl ExprPool {
                 self.target_type[index] = return_type;
                 self.closure_params[index] = Some(params);
             }
+            Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg } => {
+                // `lhs` holds the inner expression; the four synthetic
+                // symbols are packed into `symbol_list` in a fixed
+                // order (scrutinee, success, error, panic_msg) so
+                // `get` can reconstruct the struct variant without
+                // needing a dedicated column.
+                self.expr_types[index] = ExprType::Try;
+                self.lhs[index] = Some(inner);
+                self.symbol_list[index] = Some(vec![scrutinee_binding, success_binding, error_binding, panic_msg]);
+            }
         }
     }
 
@@ -659,6 +673,20 @@ impl ExprPool {
                     return_type: self.target_type[index].clone(),
                     body: self.lhs[index]?,
                 })
+            }
+            ExprType::Try => {
+                let symbols = self.symbol_list[index].clone()?;
+                if symbols.len() == 4 {
+                    Some(Expr::Try {
+                        inner: self.lhs[index]?,
+                        scrutinee_binding: symbols[0],
+                        success_binding: symbols[1],
+                        error_binding: symbols[2],
+                        panic_msg: symbols[3],
+                    })
+                } else {
+                    None
+                }
             }
         }
     }

@@ -94,6 +94,7 @@ pub enum Kind {
     FatArrow,    // =>
     Exclamation, // !
     At,          // @ — labelled-loop prefix (`@outer: while ...`, `break @outer`)
+    Question,    // ? — postfix early-return operator (`expr?` for Result / Option)
 
     Equal,
 

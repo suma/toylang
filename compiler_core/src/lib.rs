@@ -117,13 +117,17 @@ impl CompilerSession {
     /// Type check a program and store the results in the session
     pub fn type_check_program(&mut self, program: &Program) -> Result<(), Vec<TypeCheckError>> {
         use frontend::visitor::ProgramVisitor;
-        
-        // Create a mutable copy of expression pool for type checking
+
+        // Create mutable copies of expr/stmt pools for type checking.
+        // The type checker needs `&mut StmtPool` so the `?` operator
+        // desugar can allocate fresh `Stmt::Return` / `Stmt::Expression`
+        // nodes when rewriting `Expr::Try` into a `Match`.
         let mut expr_pool = program.expression.clone();
+        let mut stmt_pool = program.statement.clone();
         let mut type_checker = TypeCheckerVisitor::new(
-            &program.statement, 
+            &mut stmt_pool,
             &mut expr_pool,
-            &self.string_interner, 
+            &self.string_interner,
             &program.location_pool
         );
         

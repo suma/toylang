@@ -498,8 +498,9 @@ fn another_function() -> bool {
 
             // Collect multiple errors during type checking
             let mut expr_pool = program.expression.clone();
+            let mut stmt_pool = program.statement.clone();
             let mut type_checker = TypeCheckerVisitor::new(
-                &program.statement,
+                &mut stmt_pool,
                 &mut expr_pool,
                 string_interner,
                 &program.location_pool
@@ -542,8 +543,9 @@ fn simple_function() -> u64 {
 
             // Verify no type checking errors either
             let mut expr_pool = program.expression.clone();
+            let mut stmt_pool = program.statement.clone();
             let mut type_checker = TypeCheckerVisitor::new(
-                &program.statement,
+                &mut stmt_pool,
                 &mut expr_pool,
                 string_interner,
                 &program.location_pool
@@ -582,8 +584,9 @@ fn parser_error_function(missing_type) -> u64 {
             if let Some(program) = parse_result.result {
                 let string_interner = parser.get_string_interner();
                 let mut expr_pool = program.expression.clone();
+                let mut stmt_pool = program.statement.clone();
                 let mut type_checker = TypeCheckerVisitor::new(
-                    &program.statement,
+                    &mut stmt_pool,
                     &mut expr_pool,
                     string_interner,
                     &program.location_pool

@@ -227,6 +227,39 @@ pub enum Expr {
         return_type: Option<TypeDecl>,
         body: ExprRef,
     },
+    /// `expr?` — postfix early-return operator. The parser emits this
+    /// node; the type checker rewrites it to a `match` over the
+    /// inner expression's type (`Result<T, E>` or `Option<T>`) using
+    /// `expr_pool.update`. Backends therefore never see `Try` —
+    /// they only see the rewritten `Match` at the same `ExprRef`.
+    ///
+    /// The three synthetic symbols are pre-interned by the parser
+    /// so the type checker (which holds an immutable
+    /// `&DefaultStringInterner`) can build the desugared AST
+    /// without needing mutable access:
+    ///   - `success_binding`: the success-arm pattern binding
+    ///     (`__try_v_<n>`) bound to the unwrapped value.
+    ///   - `error_binding`: the error-arm pattern binding
+    ///     (`__try_e_<n>`) bound to the error value; unused for
+    ///     `Option::None` (no payload).
+    ///   - `panic_msg`: pre-interned `"?-unreachable"` symbol that
+    ///     drives the dead `panic` after the early `return` —
+    ///     pinning the arm's static type to `Unknown` so the two
+    ///     arms unify into `T`.
+    Try {
+        inner: ExprRef,
+        /// Outer-scope binding for the evaluated inner value
+        /// (the `Result` / `Option`). The desugar emits
+        /// `val <scrutinee_binding> = <inner>` and matches on it.
+        /// Used as the return value in the error arm so the AOT
+        /// compiler's MVP `return <ident>` constraint is satisfied
+        /// without manually re-constructing `Result::Err` /
+        /// `Option::None`.
+        scrutinee_binding: DefaultSymbol,
+        success_binding: DefaultSymbol,
+        error_binding: DefaultSymbol,
+        panic_msg: DefaultSymbol,
+    },
 }
 
 impl Expr {

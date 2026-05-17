@@ -57,12 +57,23 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(cached_type) = self.get_cached_type(expr) {
             return Ok(cached_type.clone());
         }
-        
+
         // Set up context hint for nested expressions
         let original_hint = self.type_inference.type_hint.clone();
         let expr_obj = self.core.expr_pool.get(expr)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
-        
+
+        // `expr?` — postfix early-return operator. The parser emits
+        // `Expr::Try { inner, .. }`; we intercept here (rather than
+        // going through `visit_try`) because the desugar needs the
+        // Try's own ExprRef so it can rewrite the pool entry in
+        // place. After rewriting, the same ExprRef holds a `Match`,
+        // so every later visitor (backends, etc.) sees only the
+        // desugared form.
+        if let Expr::Try { inner, .. } = &expr_obj {
+            return self.desugar_try_expr(*expr, *inner);
+        }
+
         let result = expr_obj.clone().accept(self);
         
         // Add location information to errors if not already present
@@ -1472,6 +1483,13 @@ impl<'a> TypeCheckerVisitor<'a> {
                 }
                 self.collect_closure_free_vars(body, &nested_bound, out, seen);
             }
+            // `?` operator — descends into the inner expression. The
+            // type checker normally rewrites this to a Match before
+            // closure-capture analysis runs, but the arm exists for
+            // defence-in-depth in case the order ever changes.
+            Expr::Try { inner, .. } => {
+                self.collect_closure_free_vars(inner, bound, out, seen);
+            }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)
@@ -1604,8 +1622,220 @@ impl<'a> TypeCheckerVisitor<'a> {
         
         // Always decrement recursion depth before returning
         self.type_inference.recursion_depth -= 1;
-        
+
         result
     }
 
+    /// `?` operator desugar. The parser emits `Expr::Try(inner)`; we
+    /// rewrite the pool entry in place so backends only ever see the
+    /// resulting `Match`. The desugar depends on the inner type:
+    ///
+    /// ```text
+    /// expr?   where expr : Result<T, E>
+    /// // becomes:
+    /// match expr {
+    ///     Result::Ok(__try_v_N)  => __try_v_N,
+    ///     Result::Err(__try_e_N) => {
+    ///         return Result::Err(__try_e_N)
+    ///         panic("?-unreachable")
+    ///     },
+    /// }
+    /// ```
+    ///
+    /// (and analogously for `Option<T>` with `Some` / `None`). The
+    /// trailing `panic` is unreachable at runtime — `return` always
+    /// fires first — but it pins the arm body's block type to
+    /// `Unknown` so the two arms unify into `T`. Without it the
+    /// arm would type as `Result<T, E>` / `Option<T>` and clash
+    /// with the `T` arm.
+    pub fn desugar_try_expr(
+        &mut self,
+        try_ref: ExprRef,
+        inner: ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // Pull pre-interned synthetic symbols out of the Try node
+        // before we visit `inner` (visiting may mutate `expr_pool`
+        // and invalidate clones taken later).
+        let (t_sym, v_sym, e_sym, panic_msg_sym) = match self.core.expr_pool.get(&try_ref) {
+            Some(Expr::Try {
+                scrutinee_binding,
+                success_binding,
+                error_binding,
+                panic_msg,
+                ..
+            }) => (scrutinee_binding, success_binding, error_binding, panic_msg),
+            _ => {
+                return Err(TypeCheckError::generic_error(
+                    "desugar_try_expr: pool entry no longer a Try node",
+                ));
+            }
+        };
+
+        // Determine inner type first.
+        let inner_ty = self.visit_expr(&inner)?;
+
+        // Resolve the enum name. The parser emits `Identifier` for
+        // user-named types until the type checker has seen all decls;
+        // accept all three shapes the rest of the type-checker uses.
+        let enum_name = match &inner_ty {
+            TypeDecl::Enum(name, _) => *name,
+            TypeDecl::Identifier(name) if self.context.enum_definitions.contains_key(name) => *name,
+            TypeDecl::Struct(name, _) if self.context.enum_definitions.contains_key(name) => *name,
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`?` requires Result<T, E> or Option<T>, got {:?}",
+                    inner_ty
+                )));
+            }
+        };
+        let enum_name_str = self
+            .core
+            .string_interner
+            .resolve(enum_name)
+            .unwrap_or("?")
+            .to_string();
+        let (success_variant, error_variant, error_is_unit) = match enum_name_str.as_str() {
+            "Result" => ("Ok", "Err", false),
+            "Option" => ("Some", "None", true),
+            _ => {
+                return Err(TypeCheckError::generic_error(&format!(
+                    "`?` requires Result or Option, got enum `{}`",
+                    enum_name_str
+                )));
+            }
+        };
+
+        // Success-arm body wraps `Identifier(v_sym)` in a `Cast` to
+        // the inferred success type. Without the cast, the AOT
+        // compiler's static type-inference (`value_scalar`) walks
+        // into the success arm and sees a bare identifier with no
+        // binding yet (pattern bindings are scope-local), so it
+        // cannot tell the outer `val rhs = expr?` binding what
+        // scalar type to allocate. Naming the type via `Cast`
+        // makes the inference deterministic.
+        let success_type = match &inner_ty {
+            TypeDecl::Enum(_, args) | TypeDecl::Struct(_, args) if !args.is_empty() => {
+                args[0].clone()
+            }
+            _ => TypeDecl::Unknown,
+        };
+
+        // Look up the variant symbols. The stdlib auto-load already
+        // interned `"Ok"` / `"Err"` (`core/std/result.t`) and
+        // `"Some"` / `"None"` (`core/std/option.t`), so `.get()`
+        // (which only needs `&self`) is sufficient.
+        let success_sym = self.core.string_interner.get(success_variant).ok_or_else(|| {
+            TypeCheckError::generic_error(&format!(
+                "`?` desugar: `{}` variant symbol not interned — is stdlib loaded?",
+                success_variant
+            ))
+        })?;
+        let error_sym = self.core.string_interner.get(error_variant).ok_or_else(|| {
+            TypeCheckError::generic_error(&format!(
+                "`?` desugar: `{}` variant symbol not interned — is stdlib loaded?",
+                error_variant
+            ))
+        })?;
+
+        // --- Success arm: `Result::Ok(__try_v_N) => __try_v_N as T`
+        // (analogously for `Option::Some`). The trailing `as T`
+        // pins the arm body's static type for the AOT's
+        // `value_scalar` inference (otherwise a bare pattern
+        // binding has no resolvable type at lowering time).
+        let success_pattern = Pattern::EnumVariant(
+            enum_name,
+            success_sym,
+            vec![Pattern::Name(v_sym)],
+        );
+        let v_ident = self.core.expr_pool.add(Expr::Identifier(v_sym));
+        let success_body = self
+            .core
+            .expr_pool
+            .add(Expr::Cast(v_ident, success_type));
+        let success_arm = MatchArm {
+            pattern: success_pattern,
+            guard: None,
+            body: success_body,
+        };
+
+        // --- Error arm body: `{ return <scrutinee>; panic("?-unreachable") }`
+        //
+        // For both `Result::Err(e)` and `Option::None`, the error-arm
+        // simply re-returns the already-bound scrutinee value (which
+        // is known to *be* the error variant). This sidesteps the
+        // AOT compiler's MVP constraint that `return` accept only a
+        // bare identifier — manually re-constructing
+        // `Result::Err(e)` / `Option::None` would be an
+        // `AssociatedFunctionCall` / `QualifiedIdentifier` and fail
+        // that check.
+        let error_pattern = if error_is_unit {
+            Pattern::EnumVariant(enum_name, error_sym, vec![])
+        } else {
+            Pattern::EnumVariant(enum_name, error_sym, vec![Pattern::Name(e_sym)])
+        };
+        let return_value = self.core.expr_pool.add(Expr::Identifier(t_sym));
+        let return_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Return(Some(return_value)));
+
+        // `panic("?-unreachable")` after `return` is dead code at
+        // runtime, but it makes the block's static type `Unknown`,
+        // which is what unifies the two match arms into `T`.
+        let panic_msg_expr = self.core.expr_pool.add(Expr::String(panic_msg_sym));
+        let panic_call = self.core.expr_pool.add(Expr::BuiltinCall(
+            BuiltinFunction::Panic,
+            vec![panic_msg_expr],
+        ));
+        let panic_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Expression(panic_call));
+
+        let error_block = self
+            .core
+            .expr_pool
+            .add(Expr::Block(vec![return_stmt, panic_stmt]));
+        let error_arm = MatchArm {
+            pattern: error_pattern,
+            guard: None,
+            body: error_block,
+        };
+
+        // Bind the inner expression to a synthetic temp before
+        // matching on it. The AOT compiler's match-lowering MVP
+        // (`compiler/src/lower/match_lowering.rs::classify_match_scrutinee`)
+        // only accepts enum scrutinees that are bare identifiers,
+        // method calls, or scalar primitives — bare function-call
+        // scrutinees fall outside that set. A dedicated `t_sym`
+        // (separate from the success-arm pattern's `v_sym`) makes
+        // the error-arm's `return <t_sym>` self-contained without
+        // relying on shadowing.
+        let scrutinee_ident = self.core.expr_pool.add(Expr::Identifier(t_sym));
+        let bind_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Val(t_sym, None, inner));
+        let match_expr = self.core.expr_pool.add(Expr::Match(
+            scrutinee_ident,
+            vec![success_arm, error_arm],
+        ));
+        let match_stmt = self
+            .core
+            .stmt_pool
+            .add(Stmt::Expression(match_expr));
+
+        // Rewrite the original Try slot in place to the outer block.
+        // Backends observe a fully-formed `Block` containing the val
+        // binding plus the match, at the same `ExprRef`.
+        self.core.expr_pool.update(
+            &try_ref,
+            Expr::Block(vec![bind_stmt, match_stmt]),
+        );
+
+        // Re-visit the rewritten node. `visit_expr` cache lookup will
+        // miss (no prior cache entry for try_ref), so it fetches the
+        // updated Expr (now `Block`) and processes it normally.
+        self.visit_expr(&try_ref)
+    }
 }

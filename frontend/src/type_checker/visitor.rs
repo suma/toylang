@@ -112,7 +112,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     // Keep the old API for backward compatibility
-    pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
+    pub fn new(stmt_pool: &'a mut StmtPool, expr_pool: &'a mut ExprPool, string_interner: &'a DefaultStringInterner, location_pool: &'a LocationPool) -> Self {
         Self {
             core: CoreReferences::new(stmt_pool, expr_pool, string_interner, location_pool),
             context: TypeCheckContext::new(),
@@ -323,7 +323,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Create a TypeCheckerVisitor with module resolver for import handling
     pub fn with_module_resolver(
-        stmt_pool: &'a StmtPool,
+        stmt_pool: &'a mut StmtPool,
         expr_pool: &'a mut ExprPool,
         string_interner: &'a DefaultStringInterner,
         location_pool: &'a LocationPool,

@@ -796,6 +796,7 @@ Listed lowest precedence first:
 | Unary `~` | Bitwise not (`u64`, `i64`) |
 | Unary `&` / `&mut` | Borrow expression — produces `&T` / `&mut T`. `&mut` requires the operand to be a bare `var`-declared identifier; see [Reference types](#reference-types) |
 | `as` | Type cast (i64 ↔ u64, i64/u64 ↔ f64) |
+| Postfix `?` | Early-return on `Result::Err` / `Option::None`; see [`?` operator](#-operator-early-return) |
 | `.field` `.0` `.method(...)` | Field / tuple-index / method access |
 | `[...]` | Indexing / slicing (arrays, dicts, structs with `__getitem__`) |
 
@@ -817,6 +818,91 @@ if 0u64 < x <= 10u64 < 100u64 { ... }   # all three must hold
 Equality operators (`==`, `!=`) may not be chained — they already
 bind looser than `&&` and mixing them with ordering comparisons
 would be ambiguous.
+
+### `?` operator (early return)
+
+`expr?` is a postfix operator that unwraps a `Result<T, E>` or
+`Option<T>` into `T` on success and short-circuits the enclosing
+function with the propagating value on failure. The two forms
+desugar at type-check time into:
+
+```rust
+# expr : Result<T, E>
+val x = compute()?
+# behaves like:
+val x = {
+    val __try_t = compute()
+    match __try_t {
+        Result::Ok(__try_v) => __try_v as T,
+        Result::Err(__try_e) => {
+            return __try_t
+        },
+    }
+}
+
+# expr : Option<T>
+val x = lookup()?
+# behaves like:
+val x = {
+    val __try_t = lookup()
+    match __try_t {
+        Option::Some(__try_v) => __try_v as T,
+        Option::None => {
+            return __try_t
+        },
+    }
+}
+```
+
+The desugar runs inside the type checker (not the parser) because
+the variant names (`Ok`/`Err` vs `Some`/`None`) depend on the
+inner expression's type. The synthetic `__try_t_<n>` /
+`__try_v_<n>` / `__try_e_<n>` binding names are pre-interned by
+the parser (each `?` instance gets a fresh `<n>` from the
+parser's synthetic counter, so nested `?` calls don't collide).
+
+Once the rewrite lands, backends only see the resulting `Block`
++ `Match` — no `Try` node survives type-checking.
+
+```rust
+fn divide(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0i64 {
+        Result::Err("division by zero")
+    } else {
+        Result::Ok(a / b)
+    }
+}
+
+fn pipeline(a: i64, b: i64, c: i64) -> Result<i64, str> {
+    val x = divide(a, b)?     # propagates Err out of `pipeline`
+    val y = divide(x, c)?     # second `?` only runs if the first succeeded
+    Result::Ok(y + 1i64)
+}
+```
+
+**Constraints and gotchas:**
+
+- The inner expression must be `Result<T, E>` or `Option<T>`. Any
+  other type is a type-check error.
+- The enclosing function's declared return type must match what
+  the `?` propagates (`Result<_, E>` for a Result `?`, `Option<_>`
+  for an Option `?`). Toylang's type checker validates this
+  through the standard final-expression unification rather than
+  inspecting each early `return`, so the error surface matches
+  any other "function body type mismatch" error.
+- **AOT-specific**: when the enclosing match scrutinee is a
+  bare function call (`match compute() { ... }`), the AOT
+  compiler's MVP rejects the call-form scrutinee. The workaround
+  is to bind first: `val r = compute(); match r { ... }`. This
+  is a property of the surrounding `match`, not of `?` itself —
+  `?` always introduces its own binding internally, so the
+  scrutinee inside the desugar is always an identifier.
+- **Out of scope** (initial implementation): user-defined `Try`
+  trait, conversion between Err types via a `From` impl
+  (Rust-style `?` for cross-error-type propagation).
+
+Backends: all three (interpreter / cranelift JIT / AOT) execute
+the rewritten `match` directly.
 
 ### Operator overload (struct receivers)
 
@@ -2129,6 +2215,11 @@ stdlib because closure-as-argument dispatch requires AOT Phase 5b
 (see *Closures → AOT support*). `expect(msg)` accepts a string
 literal and lowers to the same `panic("...")` machinery the
 runtime already provides.
+
+For error-propagation rather than panicking unwrap, see the
+postfix [`?` operator](#-operator-early-return): `divide(a, b)?`
+unwraps `Ok` / `Some` and short-circuits the enclosing function
+with the `Err` / `None` value on failure.
 
 User code can shadow either type by declaring a same-name local
 `enum` or `struct` — module integration silently skips the stdlib

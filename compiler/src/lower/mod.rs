@@ -617,6 +617,11 @@ impl<'a> FunctionLower<'a> {
                 }
                 self.walk_closure_for_captures(&body, &mut nested_bound, out, seen);
             }
+            // `?` operator — type checker rewrites to Match before
+            // lowering, but descend for defence-in-depth.
+            Expr::Try { inner, .. } => {
+                self.walk_closure_for_captures(&inner, bound, out, seen);
+            }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)

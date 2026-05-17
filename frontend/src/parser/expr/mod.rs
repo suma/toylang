@@ -605,6 +605,35 @@ fn parse_postfix_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
                 let target_type = parser.parse_type_declaration()?;
                 expr = parser.ast_builder.cast_expr(expr, target_type, Some(location));
             }
+            // `expr?` — postfix early-return operator. The parser
+            // pre-interns three synthetic symbols (success/error
+            // bindings + panic message) because the type checker
+            // holds an immutable `&DefaultStringInterner` and can't
+            // intern new strings itself. The type checker then
+            // rewrites the Try node in-place to a `match` over the
+            // inner type (`Result<T, E>` or `Option<T>`), so
+            // backends never observe the Try node.
+            Some(Kind::Question) => {
+                let location = parser.current_source_location();
+                parser.next();
+                let counter = parser.synthetic_counter;
+                parser.synthetic_counter += 1;
+                let t_name = format!("__try_t_{}", counter);
+                let v_name = format!("__try_v_{}", counter);
+                let e_name = format!("__try_e_{}", counter);
+                let scrutinee_binding = parser.string_interner.get_or_intern(t_name.as_str());
+                let success_binding = parser.string_interner.get_or_intern(v_name.as_str());
+                let error_binding = parser.string_interner.get_or_intern(e_name.as_str());
+                let panic_msg = parser.string_interner.get_or_intern("?-unreachable");
+                expr = parser.ast_builder.try_expr(
+                    expr,
+                    scrutinee_binding,
+                    success_binding,
+                    error_binding,
+                    panic_msg,
+                    Some(location),
+                );
+            }
             _ => break,
         }
     }

@@ -141,6 +141,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "^"         return Ok(token!(self, Kind::Xor));
 "~"         return Ok(token!(self, Kind::Tilde));
 "@"         return Ok(token!(self, Kind::At));
+"?"         return Ok(token!(self, Kind::Question));
 "+="        return Ok(token!(self, Kind::PlusEqual));
 "-="        return Ok(token!(self, Kind::MinusEqual));
 "*="        return Ok(token!(self, Kind::StarEqual));

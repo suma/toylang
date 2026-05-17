@@ -59,6 +59,7 @@ impl Acceptable for Expr {
             Expr::Closure { params, return_type, body } => {
                 visitor.visit_closure(params, return_type, body)
             }
+            Expr::Try { inner, .. } => visitor.visit_try(inner),
         }
     }
 }

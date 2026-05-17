@@ -405,6 +405,12 @@ impl EvaluationContext<'_> {
                 }
                 self.collect_closure_captures(body, &nested_bound, out, seen);
             }
+            // `?` operator — the type checker rewrites this to a Match
+            // before evaluation, but for defence-in-depth descend into
+            // the inner expression here.
+            Expr::Try { inner, .. } => {
+                self.collect_closure_captures(inner, bound, out, seen);
+            }
             Expr::QualifiedIdentifier(_)
             | Expr::Int64(_) | Expr::UInt64(_) | Expr::Float64(_)
             | Expr::Int8(_) | Expr::Int16(_) | Expr::Int32(_)

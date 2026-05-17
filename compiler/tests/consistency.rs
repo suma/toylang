@@ -4362,3 +4362,127 @@ fn comparison_chain_three_ops_round_trip() {
     "#;
     assert_consistent(src, "comparison_chain_three_ops");
 }
+
+// ---------------------------------------------------------------------
+// `?` operator (Try-op early-return) round-trip
+//
+// The parser emits `Expr::Try { inner, .. }`; the type checker
+// rewrites it to a `match` over `Result<T, E>` or `Option<T>` whose
+// error arm `return`s the propagating value. Backends see only the
+// desugared form. These tests pin interpreter / JIT / AOT agreement
+// for the four canonical cases.
+// ---------------------------------------------------------------------
+
+#[test]
+fn try_op_result_ok_path_round_trip() {
+    let src = r#"
+        fn divide(a: u64, b: u64) -> Result<u64, u64> {
+            if b == 0u64 {
+                Result::Err(99u64)
+            } else {
+                Result::Ok(a / b)
+            }
+        }
+
+        fn compute() -> Result<u64, u64> {
+            val x = divide(100u64, 5u64)?
+            val y = divide(20u64, 2u64)?
+            Result::Ok(x + y)
+        }
+
+        fn main() -> u64 {
+            val r = compute()
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(_) => 255u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_result_ok_path");
+}
+
+#[test]
+fn try_op_result_err_propagates_round_trip() {
+    let src = r#"
+        fn divide(a: u64, b: u64) -> Result<u64, u64> {
+            if b == 0u64 {
+                Result::Err(7u64)
+            } else {
+                Result::Ok(a / b)
+            }
+        }
+
+        fn compute(d: u64) -> Result<u64, u64> {
+            val x = divide(100u64, d)?
+            Result::Ok(x + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = compute(0u64)
+            match r {
+                Result::Ok(v) => v,
+                Result::Err(e) => e,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_result_err_propagates");
+}
+
+#[test]
+fn try_op_option_some_path_round_trip() {
+    let src = r#"
+        fn first_positive(a: u64, b: u64) -> Option<u64> {
+            if a > 0u64 {
+                Option::Some(a)
+            } elif b > 0u64 {
+                Option::Some(b)
+            } else {
+                Option::None
+            }
+        }
+
+        fn chain() -> Option<u64> {
+            val x = first_positive(3u64, 0u64)?
+            val y = first_positive(x, 7u64)?
+            Option::Some(y + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = chain()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 99u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_option_some_path");
+}
+
+#[test]
+fn try_op_option_none_propagates_round_trip() {
+    let src = r#"
+        fn first_positive(a: u64, b: u64) -> Option<u64> {
+            if a > 0u64 {
+                Option::Some(a)
+            } elif b > 0u64 {
+                Option::Some(b)
+            } else {
+                Option::None
+            }
+        }
+
+        fn chain() -> Option<u64> {
+            val x = first_positive(0u64, 0u64)?
+            Option::Some(x + 1u64)
+        }
+
+        fn main() -> u64 {
+            val r = chain()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 42u64,
+            }
+        }
+    "#;
+    assert_consistent(src, "try_op_option_none_propagates");
+}

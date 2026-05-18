@@ -124,10 +124,10 @@ NEW-TYPE-SYSTEM. **型システム拡張候補** (2026-05-09 棚卸し、2026-05
      - ✅ **A2: 多重 bound (`<T: A + B>`)** — 2026-05-18 landed (上記参照)。`TraitIntersection` variant + parser `+` 連結 + AND/OR dispatch
      - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求
      - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大
-     - **A5: `dyn Trait`** — 大。動的ディスパッチ、vtable layout。Phase 分割で進行中:
+     - **A5: `dyn Trait`** — 大。動的ディスパッチ、vtable layout。Phase 分割で進行中。**詳細設計**: [`design-docs/DYN_TRAIT_AOT.md`](DYN_TRAIT_AOT.md)
        - ✅ **A5-P1: interpreter** — 2026-05-18 landed (上記参照)
-       - **A5-P2: AOT compiler** — fat pointer ABI (`data_ptr, vtable_ptr`)、`impl Trait for Type` ごとの vtable codegen、indirect call lowering。大規模、複数セッション想定
-       - **A5-P3: cranelift JIT** — P2 と同様、JIT 経路で
+       - **A5-P2: AOT compiler** — fat pointer ABI (`(data_ptr, vtable_ptr)` を `Type::Tuple([U64, U64])` で表現)、`impl Trait for Type` ごとの vtable data symbol (`toy_vtable_<trait>_<struct>`)、indirect call lowering。3 段階の MVP に分割: P2-MVP-A (empty struct のみ、thunk 不要)、P2-MVP-B (scalar field + thunk、stack-slot 経由)、P2-MVP-C (compound / nested field)。各 MVP は前のものを前提
+       - **A5-P3: cranelift JIT** — P2 と同様、`compiler/src/jit.rs` 経路で
        - **A5-P4: `Box<dyn Trait>`** — owned trait object、heap allocation + `Vec<Box<dyn Trait>>` heterogeneous collection
    - **Trait-bounded generic API** — `fn first<I: Iterator<i64>>(iter: I)` の bound check (現状 `<T: Trait>` は struct で動くが Iterator 等 generic trait の bound は未強制)。優先度 ★★
    - **`Display` trait** — user-defined `to_string` で STR-INTERP の default 動作を拡張可能に。A1 完了で前提が揃った。優先度 ★★

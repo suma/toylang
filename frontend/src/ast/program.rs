@@ -143,6 +143,13 @@ pub struct TraitMethodSignature {
     /// conformance to require matching kinds and by the AOT
     /// codegen to emit a Self-out-parameter writeback.
     pub self_is_mut: bool,
+    /// Optional default body. When `Some(stmt_ref)`, an
+    /// `impl <Trait> for <T>` that omits this method gets the
+    /// default body installed as an inherent method on `T`. When
+    /// `None`, every impl must provide the method explicitly.
+    /// Inside the body, `Self` and `self` resolve to the impl's
+    /// target type at type-check time.
+    pub body: Option<StmtRef>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

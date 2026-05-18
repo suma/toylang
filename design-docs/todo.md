@@ -4,6 +4,9 @@
 
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
+### 2026-05-18
+- **Trait デフォルトメソッド本体 (A1)** — `trait Foo { fn m(self) -> T { ... } }` 形式の default body を 3 backend で landing。**AST mutation pre-pass** 方式: `TraitMethodSignature` に `body: Option<StmtRef>` 追加、parser が contract clause 後の `{...}` を optional に取り込む。新規 free function `frontend::type_checker::expand_trait_defaults_in_pool(&mut StmtPool)` が型検査前に全 `Stmt::TraitDecl` を走査して default body を持つ method を index 化、各 `Stmt::ImplBlock { trait_name: Some(_), methods }` に対し omit された method の synthesized `MethodFunction` (trait body の `StmtRef` を直接 reuse) を `methods` Vec へ append、`stmt_pool.update` で書き戻す。**冪等**: 二度目の呼び出しは既に展開済みの impl をスキップするので interpreter (`check_typing_with_core_modules` で impl_blocks snapshot の前) と compiler_core (`visit_program` 冒頭) の両経路から safely 呼べる。**設計の要点**: backend (interpreter `build_method_registry` / AOT `collect_method_decls` / cranelift JIT) は AST の `ImplBlock.methods` を直接走査するため、AST mutation で「synthesized が user-written 同等に見える」状態にすれば backend は一切変更不要。`Self`/`self` 解決は impl の `current_impl_target` scope で行われるので default body 内の `self.other()` も自然に dispatch される。default 同士の相互呼び出し、impl 側 override、bounded-generic 経由の dispatch すべて動作。`module_integration.rs` の `Stmt::TraitDecl` remap path にも `body: Option<StmtRef>` の `stmt_mapping` 経由 remap を追加。**制約**: generic trait の default body 内で trait 型パラメータ `T` を参照するケースは未対応 (T → 具体型 substitution は A2 以降)。interpreter unit 6 件 (`trait_tests::default_body`) + 3-way consistency 3 件 (`compiler/tests/consistency.rs::trait_default_body_*`) 追加。1485 → **1494 tests pass** (+9)。
+
 ### 2026-05-17
 - **`?` (Try) early-return operator** — `expr?` postfix を 3 backend で landing。parser が新 token `?` を消費して `Expr::Try { inner, scrutinee_binding, success_binding, error_binding, panic_msg }` を emit (synthetic symbols は parser-side で pre-intern、`get_or_intern` は parser のみ mut access を持つため)。`CoreReferences::stmt_pool` を `&mut` 化 (interpreter / compiler 両 path 更新)、type checker `desugar_try_expr` で in-place rewrite: `Block { val __try_t_N = inner; match __try_t_N { Result::Ok(__try_v_N) => __try_v_N as T, Result::Err(__try_e_N) => { return __try_t_N; panic("?-unreachable") } } }` (Option も Some/None で同形)。**設計上の細工 3 点**: (1) error arm の `return __try_t_N` は scrutinee binding 値をそのまま戻すので AOT MVP の `return <ident>` 制約を満たす (`Result::Err(e)` の AssociatedFunctionCall を作らない)、(2) success arm body の `as T` Cast は AOT の `value_scalar` 静的型推論にヒントを与える (bare pattern binding は scope 外からは型解決不能)、(3) error arm に dead `panic` を残すことで block 末尾の static type が Unknown となり、match arm の `T` と Unknown が unify して全体が `T` になる (return が Unknown 化されないバグの workaround)。3-way consistency 4 件 + interpreter unit 7 件追加。1474 → **1485 tests pass** (+11)。残: `__try_v_N`/`__try_e_N`/`__try_t_N` の synthetic names が AOT `cargo test --release` で衝突する場合 (counter ベースだが同一 source 内で 1 counter 使用)、Option `?` chain で nested compound 型、enclosing 関数の戻り型が Result/Option でない時の precise error。
 - **`loop {}` + comparison chain** — 小規模 syntactic-sugar 2 件を parser-level desugar で実装。**`loop { BODY }`** → `while true { BODY }` に desugar。`@label: loop { ... }` / `break @label` / `break` も `while true` 経由でそのまま動作。**comparison chain** (`a < b < c`) → `{ val __cmp_0 = b; a < __cmp_0 && __cmp_0 < c }` に desugar。各中間オペランドを synthetic temporary に入れて side-effect を 1 回に抑制。`<` / `<=` / `>` / `>=` の任意連鎖をサポート (例: `0u64 < x <= 10u64 < 100u64`)。`==` / `!=` は含めない (precedence 曖昧)。interpreter unit 8 件 + compiler consistency 4 件追加。1454 → **1466 tests pass** (+12)。
@@ -113,13 +116,19 @@ NEW-FEATURES. **新規 syntactic-sugar 候補** (2026-05-09 棚卸し、未着�
     - **`??` (null-coalesce)** — `opt ?? default` で `unwrap_or` の糖衣。優先度 ★
     - **raw / multi-line string literal** — `r"\path"` / `"""..."""`。lexer 拡張のみ。優先度 ★
 
-NEW-TYPE-SYSTEM. **型システム拡張候補** (2026-05-09 棚卸し、未着手):
-   - **Trait 拡張** — default method body / 多重 bound (`<T: A + B>`) / trait inheritance / `dyn Trait` / associated types。stdlib HOF (`Option::map`) の前提。優先度 ★★★、大規模
+NEW-TYPE-SYSTEM. **型システム拡張候補** (2026-05-09 棚卸し、2026-05-18 更新):
+   - **Trait 拡張** — 全体ロードマップ ★★★、大規模:
+     - ✅ **A1: default method body** — 2026-05-18 landed (上記参照)。残: generic trait default body 内の `T` 参照 (T → 具体型 substitution が必要、A2 で扱う)
+     - **A2: 多重 bound (`<T: A + B>`)** — 小〜中。`<T: SomeTrait>` の bound list 化、conformance check の loop 化。未着手
+     - **A3: trait inheritance (`trait B: A`)** — 中。super trait 経由で `A` の method を `B` impl からも要求
+     - **A4: associated types (`trait Iterator { type Item }`)** — 中〜大
+     - **A5: `dyn Trait`** — 大。動的ディスパッチ、vtable layout
    - **Trait-bounded generic API** — `fn first<I: Iterator<i64>>(iter: I)` の bound check (現状 `<T: Trait>` は struct で動くが Iterator 等 generic trait の bound は未強制)。優先度 ★★
-   - **`Display` trait** — user-defined `to_string` で STR-INTERP の default 動作を拡張可能に。優先度 ★★
-   - **`From` / `Into` 自動変換** — `let s: String = "hi".into()` の自然変換。優先度 ★★
+   - **`Display` trait** — user-defined `to_string` で STR-INTERP の default 動作を拡張可能に。A1 完了で前提が揃った。優先度 ★★
+   - **`From` / `Into` 自動変換** — `let s: String = "hi".into()` の自然変換。`?` operator の cross-error 変換にも必要。優先度 ★★
    - **slice 型 `&[T]`** — 配列 borrow を first-class に。優先度 ★、中〜大
    - **const generics** — `struct Array<T, const N: usize>`。優先度 ★、大規模
+   - **`must_use` / unused-Result 警告** — `?` operator の補完。`Result` の戻り値を discard すると warning。優先度 ★★
 26. **ドキュメント整備** — 言語仕様 / API ドキュメント (`docs/language.md` は最新化済み、`compiler/README.md` / `interpreter/README.md` も追従済み。残: API リファレンス、advanced topics)
 
 TEST-PERF. **テスト実行時間改善** (2026-05-16 プロファイル):

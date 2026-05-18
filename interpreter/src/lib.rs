@@ -391,6 +391,14 @@ pub fn check_typing_with_core_modules(
     let functions: Vec<std::rc::Rc<frontend::ast::Function>> =
         program.function.iter().take(user_func_count).cloned().collect();
 
+    // A1: expand trait default-method bodies into every
+    // `impl <Trait> for <T>` block in the AST. Done in-place so the
+    // impl_blocks snapshot below (and `build_method_registry` at
+    // run time) sees the synthesized methods as if the user had
+    // written them. Must run after `integrate_modules` so trait
+    // declarations from imported / prelude modules are visible.
+    frontend::type_checker::expand_trait_defaults_in_pool(&mut program.statement);
+
     // The impl_blocks walk runs over all statements (user +
     // integrated module + prelude) so impl blocks from every source
     // contribute methods to `context.struct_methods`.

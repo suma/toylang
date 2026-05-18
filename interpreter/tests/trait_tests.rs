@@ -452,6 +452,153 @@ mod multi_method {
 }
 
 // =====================================================================
+// A1: trait default method bodies. A trait method may carry a `{ ... }`
+// body; impls that omit the method inherit the default. The default
+// body is expanded into the impl AST by `expand_trait_defaults_in_pool`
+// so backends see it as an ordinary inherent method.
+// =====================================================================
+mod default_body {
+    use crate::common::test_program;
+
+    #[test]
+    fn default_body_inherited_when_impl_omits_method() {
+        // Trait declares `value` and `doubled`; the default body for
+        // `doubled` forwards through another trait method. Impl supplies
+        // only `value`. Calling `doubled()` should dispatch through the
+        // default and return `value * 2`.
+        let source = r#"
+            trait Num {
+                fn value(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.value() + self.value() }
+            }
+            struct Cell { v: i64 }
+            impl Num for Cell {
+                fn value(self: Self) -> i64 { self.v }
+            }
+            fn main() -> i64 {
+                val c = Cell { v: 7i64 }
+                c.doubled()
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 14);
+    }
+
+    #[test]
+    fn default_body_can_be_overridden_by_impl() {
+        // Impl provides its own `doubled` body; the trait default must
+        // be ignored. Default would return 14; override returns 100.
+        let source = r#"
+            trait Num {
+                fn value(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.value() + self.value() }
+            }
+            struct Cell { v: i64 }
+            impl Num for Cell {
+                fn value(self: Self) -> i64 { self.v }
+                fn doubled(self: Self) -> i64 { 100i64 }
+            }
+            fn main() -> i64 {
+                val c = Cell { v: 7i64 }
+                c.doubled()
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 100);
+    }
+
+    #[test]
+    fn default_body_works_for_required_method_too() {
+        // Even when the trait has only one method and provides a
+        // default for it, omitting from the impl should still
+        // produce a working dispatch.
+        let source = r#"
+            trait Tag {
+                fn tag(self: Self) -> i64 { 42i64 }
+            }
+            struct Empty {}
+            impl Tag for Empty {
+            }
+            fn main() -> i64 {
+                val e = Empty {}
+                e.tag()
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+
+    #[test]
+    fn default_body_calls_another_default() {
+        // Two defaults in the same trait, one of which calls the
+        // other. After expansion both are inherent methods on the
+        // impl, so the inter-default call resolves normally.
+        let source = r#"
+            trait Math {
+                fn base(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.base() + self.base() }
+                fn quadrupled(self: Self) -> i64 { self.doubled() + self.doubled() }
+            }
+            struct N { v: i64 }
+            impl Math for N {
+                fn base(self: Self) -> i64 { self.v }
+            }
+            fn main() -> i64 {
+                val n = N { v: 3i64 }
+                n.quadrupled()
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 12);
+    }
+
+    #[test]
+    fn default_body_dispatch_via_bounded_generic() {
+        // The default body must also be reachable when the call site
+        // goes through a `<T: Trait>` bound rather than a direct
+        // method call on the concrete type.
+        let source = r#"
+            trait Num {
+                fn value(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.value() + self.value() }
+            }
+            struct Cell { v: i64 }
+            impl Num for Cell {
+                fn value(self: Self) -> i64 { self.v }
+            }
+            fn twice_doubled<T: Num>(x: T) -> i64 { x.doubled() }
+            fn main() -> i64 {
+                val c = Cell { v: 7i64 }
+                twice_doubled(c)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 14);
+    }
+
+    #[test]
+    fn missing_method_without_default_still_rejected() {
+        // Sanity: removing a default-less method from an impl must
+        // still produce the missing-method error.
+        let source = r#"
+            trait Num {
+                fn value(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.value() + self.value() }
+            }
+            struct Cell { v: i64 }
+            impl Num for Cell {
+            }
+            fn main() -> u64 { 0u64 }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("missing method 'value'"),
+            "expected missing-method error for `value`, got: {}", err
+        );
+    }
+}
+
+// =====================================================================
 // ITER-PROTOCOL-TRAIT: generic trait declarations + impl-with-trait-args.
 // =====================================================================
 mod generic_traits {

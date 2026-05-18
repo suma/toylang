@@ -37,6 +37,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         // `context.pending_trait_type_args`; consume them here so the
         // conformance check substitutes the trait's generic params
         // before comparing signatures.
+        // For `impl <Trait> for <Struct>`, validate that every required
+        // method has a matching signature in the impl. Trait default
+        // bodies (A1) are pre-expanded into `methods` by the
+        // `expand_trait_defaults` pre-pass in `visit_program`, so by the
+        // time we get here the impl already contains every method we
+        // need to type-check.
         if let Some(trait_symbol) = trait_name {
             let trait_type_args =
                 std::mem::take(&mut self.context.pending_trait_type_args);

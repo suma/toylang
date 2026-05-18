@@ -1543,14 +1543,18 @@ system uses for arena cleanup, and the signature matches the stdlib
 ## Traits
 
 A `trait` declares a set of method signatures that conforming structs
-must provide. Trait declarations have no method bodies; they record
-contracts only.
+must provide. Trait method declarations are signature-only by default;
+they record contracts only.
 
 ```rust
 trait Greet {
     fn greet(self: Self) -> str
 }
 ```
+
+A trait method can optionally carry a `{ ... }` **default body**;
+impls that omit the method inherit that body as an ordinary inherent
+method. See *Default method bodies* below.
 
 ### Implementing a trait
 
@@ -1569,6 +1573,68 @@ impl Greet for Dog {
 `Self` in a trait signature resolves to the implementing struct, so a
 trait method declared as `fn m(self: Self) -> Self` is satisfied by an
 impl method written the same way.
+
+### Default method bodies
+
+A trait method can carry a `{ ... }` body. The body becomes the
+**default implementation**: any `impl <Trait> for <T>` that omits
+this method inherits the default automatically, and any impl that
+*does* provide a body for it overrides the default.
+
+```rust
+trait Num {
+    fn value(self: Self) -> i64
+    fn doubled(self: Self) -> i64 { self.value() + self.value() }
+}
+
+struct Cell { v: i64 }
+
+impl Num for Cell {
+    fn value(self: Self) -> i64 { self.v }
+    # doubled は trait default をそのまま継承
+}
+
+fn main() -> i64 {
+    val c = Cell { v: 7i64 }
+    c.doubled()    # => 14
+}
+```
+
+Notes:
+
+- The default body sees `Self` as the impl's target struct, so it
+  may call other trait methods on `self` (`self.value()` above).
+  Defaults that call other defaults work too — after expansion they
+  are all inherent methods on the same struct.
+- Providing the method in the impl shadows the default with no
+  diagnostic — there's no `override` keyword and no warning.
+- Defaults compose with the bounded-generic dispatch path: a
+  generic `fn f<T: Num>(x: T) -> i64 { x.doubled() }` resolves
+  through the inherited default the same way it would through a
+  user-written body.
+
+How it works internally: a pre-pass
+(`frontend::type_checker::expand_trait_defaults_in_pool`) walks the
+parsed AST once before type-checking and **rewrites each
+`Stmt::ImplBlock { trait_name: Some(_), methods }`** so that every
+trait method the impl omitted is appended to `methods` as a
+synthesized `MethodFunction` whose `code` reuses the trait's
+default-body `StmtRef`. Downstream type-checking and every backend
+(interpreter / cranelift JIT / AOT compiler) therefore see the
+synthesized methods exactly like user-written ones — no backend
+needs a separate dispatch path for defaults. The 3-way
+`assert_consistent` tests in `compiler/tests/consistency.rs`
+(`trait_default_body_*`) pin this contract.
+
+Current limitations:
+
+- A default body on a generic trait (`trait Iterator<T> { fn count(self) -> u64 { ... } }`)
+  that references the trait's type parameter `T` is **not yet
+  supported**: substituting `T → <concrete>` at expansion time is
+  pending A2+. Defaults that do not reference `T` work even on
+  generic traits.
+- No `super` / `Trait::default_method` syntax for invoking the
+  default from within an override.
 
 ### Extension traits over primitives
 
@@ -1651,8 +1717,11 @@ satisfies `<T: Greet>` without further conversion.
 
 ### Out of scope (initial implementation)
 
-- Generics on traits themselves (`trait Foo<T> { ... }`)
-- Default method bodies in traits
+- ~~Generics on traits themselves (`trait Foo<T> { ... }`)~~ —
+  完了済み (ITER-PROTOCOL-TRAIT, 2026-05-07)
+- ~~Default method bodies in traits~~ — 完了済み (A1,
+  2026-05-18). See *Default method bodies* above. Remaining gap:
+  default bodies on generic traits that reference `T`.
 - Multiple bounds (`<T: A + B>`)
 - Trait inheritance (`trait B: A`)
 - Dynamic dispatch via `dyn Trait` objects
@@ -2482,11 +2551,15 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   func(i)`) is rejected at lower time. Pre-bind to a struct
   method or a local first if you need 3-backend portability.
   Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `design-docs/todo.md`.
-- **Trait limitations** — no default method bodies; no
-  multiple bounds (`<T: A + B>`); no trait inheritance; no `dyn
-  Trait`; no associated types. Generic trait declarations
-  (`trait Foo<T>`) are supported (see ITER-PROTOCOL-TRAIT in
-  `design-docs/todo.md` 完了済み 2026-05-07). See *Traits → Out of scope*.
+- **Trait limitations** — no multiple bounds (`<T: A + B>`); no
+  trait inheritance; no `dyn Trait`; no associated types. Generic
+  trait declarations (`trait Foo<T>`) are supported (see
+  ITER-PROTOCOL-TRAIT in `design-docs/todo.md` 完了済み 2026-05-07).
+  **Default method bodies** are supported as of A1 (2026-05-18) —
+  see *Traits → Default method bodies*. Generic-trait default
+  bodies that reference the trait's type parameter `T` are not
+  yet wired (T → concrete substitution is pending A2+).
+  See *Traits → Out of scope* for the remaining list.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by

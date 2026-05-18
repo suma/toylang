@@ -4486,3 +4486,70 @@ fn try_op_option_none_propagates_round_trip() {
     "#;
     assert_consistent(src, "try_op_option_none_propagates");
 }
+
+#[test]
+fn trait_default_body_inherited_round_trip() {
+    // A1: trait method `doubled` carries a default body that calls
+    // `value`; impl provides only `value`. All three backends must
+    // dispatch the inherited default and agree on the result.
+    let src = r#"
+        trait Num {
+            fn value(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.value() + self.value() }
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn value(self: Self) -> u64 { self.v }
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 7u64 }
+            c.doubled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_inherited");
+}
+
+#[test]
+fn trait_default_body_override_round_trip() {
+    // A1: impl overrides the default; backends must respect the
+    // override (return 100, not the default's 14).
+    let src = r#"
+        trait Num {
+            fn value(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.value() + self.value() }
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn value(self: Self) -> u64 { self.v }
+            fn doubled(self: Self) -> u64 { 100u64 }
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 7u64 }
+            c.doubled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_override");
+}
+
+#[test]
+fn trait_default_body_calls_default_round_trip() {
+    // A1: two defaults where one calls the other. After expansion both
+    // are inherent methods on the impl; backends must agree on the
+    // chained dispatch.
+    let src = r#"
+        trait Math {
+            fn base(self: Self) -> u64
+            fn doubled(self: Self) -> u64 { self.base() + self.base() }
+            fn quadrupled(self: Self) -> u64 { self.doubled() + self.doubled() }
+        }
+        struct N { v: u64 }
+        impl Math for N {
+            fn base(self: Self) -> u64 { self.v }
+        }
+        fn main() -> u64 {
+            val n = N { v: 3u64 }
+            n.quadrupled()
+        }
+    "#;
+    assert_consistent(src, "trait_default_chained");
+}

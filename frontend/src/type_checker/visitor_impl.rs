@@ -98,6 +98,13 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
             self.visit_import(import_decl)?;
         }
 
+        // A1: expand trait default-method bodies into each
+        // `impl <Trait> for <T>` block. Done as an AST mutation
+        // pre-pass so downstream type-checking and every backend
+        // (interpreter / AOT / JIT) sees the synthesized methods
+        // as if the user had written them in the impl block.
+        self.expand_trait_defaults()?;
+
         // Process all statements in the program (this includes StructDecl and ImplBlock)
         for index in 0..program.statement.len() {
             let stmt_ref = StmtRef(index as u32);

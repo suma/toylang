@@ -13,8 +13,9 @@
 //! - Generics on the trait, default methods, multiple bounds, and trait
 //!   inheritance are out of scope.
 
+use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::ast::TraitMethodSignature;
+use crate::ast::{MethodFunction, Stmt, StmtPool, StmtRef, TraitMethodSignature, Visibility};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 
@@ -72,6 +73,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Verify that an `impl <Trait> for <Struct>` block provides every
     /// method declared by the trait, with matching signatures. Extra
     /// methods are allowed. Records the conformance in the context.
+    /// Trait default bodies (A1) are pre-expanded into the impl's
+    /// `methods` slice by the `expand_trait_defaults` pre-pass before
+    /// this check runs, so any method declared in the trait must
+    /// appear here.
     /// ITER-PROTOCOL-TRAIT-compat shim: forwards with empty
     /// `trait_type_args` so non-generic-trait callers stay unchanged.
     pub fn check_trait_conformance(
@@ -228,6 +233,125 @@ impl<'a> TypeCheckerVisitor<'a> {
             .insert(trait_symbol);
         Ok(())
     }
+
+    /// A1: shim that forwards to the free `expand_trait_defaults_in_pool`
+    /// helper. Kept on the visitor for the `visit_program` call site so
+    /// the public entry point lives in one place; the interpreter's
+    /// `check_typing` calls the free function directly to avoid creating
+    /// a `TypeCheckerVisitor` just for the AST mutation.
+    pub fn expand_trait_defaults(&mut self) -> Result<(), TypeCheckError> {
+        expand_trait_defaults_in_pool(self.core.stmt_pool);
+        Ok(())
+    }
+}
+
+/// A1: walk every `Stmt::TraitDecl` to collect the trait method
+/// signatures with default bodies, then walk every
+/// `Stmt::ImplBlock { trait_name: Some(_), .. }` and append a
+/// synthetic `MethodFunction` for each trait method the impl
+/// omitted that has a default body. The mutated impl block is
+/// written back through `stmt_pool.update` so the rest of the
+/// type checker — and every backend that walks the AST after —
+/// sees the synthesized methods as ordinary inherent methods.
+/// Idempotent: a second call sees the synthesized methods already
+/// in the impl and skips them, so it's safe to invoke from both
+/// the interpreter's `check_typing` (before impl-block snapshot)
+/// and `visit_program` (compiler_core entry).
+/// Generic-trait defaults whose bodies depend on the trait generic
+/// params are out of scope for this phase; users should still
+/// write those impls explicitly.
+pub fn expand_trait_defaults_in_pool(stmt_pool: &mut StmtPool) {
+    // Pass 1: index trait default bodies by trait name.
+    let mut defaults: std::collections::HashMap<
+        DefaultSymbol,
+        Vec<TraitMethodSignature>,
+    > = std::collections::HashMap::new();
+    for index in 0..stmt_pool.len() {
+        let stmt_ref = StmtRef(index as u32);
+        if let Some(Stmt::TraitDecl { name, methods, .. }) = stmt_pool.get(&stmt_ref) {
+            let with_body: Vec<TraitMethodSignature> = methods
+                .iter()
+                .filter(|sig| sig.body.is_some())
+                .cloned()
+                .collect();
+            if !with_body.is_empty() {
+                defaults.insert(name, with_body);
+            }
+        }
+    }
+    if defaults.is_empty() {
+        return;
+    }
+
+    // Pass 2: for each trait impl, append missing-default methods.
+    for index in 0..stmt_pool.len() {
+        let stmt_ref = StmtRef(index as u32);
+        let stmt = match stmt_pool.get(&stmt_ref) {
+            Some(s) => s,
+            None => continue,
+        };
+        let (target_type, target_type_args, methods, trait_name, trait_type_args) = match stmt {
+            Stmt::ImplBlock {
+                target_type,
+                target_type_args,
+                methods,
+                trait_name: Some(t),
+                trait_type_args,
+            } => (target_type, target_type_args, methods, t, trait_type_args),
+            _ => continue,
+        };
+        let trait_defaults = match defaults.get(&trait_name) {
+            Some(v) => v,
+            None => continue,
+        };
+        // Append a synthesized MethodFunction for each default the
+        // impl omitted. User methods stay first so registration
+        // order is preserved (defaults that call user methods via
+        // `self.foo()` see them already in scope at backend lookup).
+        let mut new_methods = methods.clone();
+        for sig in trait_defaults {
+            if new_methods.iter().any(|m| m.name == sig.name) {
+                continue;
+            }
+            let body = sig.body.expect("filtered by Pass 1");
+            new_methods.push(synthesize_default_method(sig, body));
+        }
+        if new_methods.len() == methods.len() {
+            continue;
+        }
+        stmt_pool.update(
+            &stmt_ref,
+            Stmt::ImplBlock {
+                target_type,
+                target_type_args,
+                methods: new_methods,
+                trait_name: Some(trait_name),
+                trait_type_args,
+            },
+        );
+    }
+}
+
+/// A1: build a synthetic `MethodFunction` for a trait method whose
+/// default body the impl inherited. The body and signature are
+/// borrowed verbatim from the trait declaration; `Self` and `self`
+/// resolution happens later when the body is type-checked inside the
+/// impl block's `current_impl_target` scope.
+fn synthesize_default_method(sig: &TraitMethodSignature, body: StmtRef) -> Rc<MethodFunction> {
+    Rc::new(MethodFunction {
+        node: sig.node.clone(),
+        name: sig.name,
+        generic_params: sig.generic_params.clone(),
+        generic_bounds: sig.generic_bounds.clone(),
+        parameter: sig.parameter.clone(),
+        return_type: sig.return_type.clone(),
+        requires: sig.requires.clone(),
+        ensures: sig.ensures.clone(),
+        code: body,
+        has_self_param: sig.has_self_param,
+        self_is_mut: sig.self_is_mut,
+        visibility: Visibility::Public,
+    })
 }
 
 fn resolve_self(t: &TypeDecl, struct_symbol: DefaultSymbol) -> TypeDecl {

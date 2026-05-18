@@ -633,6 +633,14 @@ impl<'a> AstIntegrationContext<'a> {
                         Some(t) => Some(self.remap_type_decl(t)?),
                         None => None,
                     };
+                    // A1 default-body remap: trait default bodies live in
+                    // the module's stmt pool, so translate the StmtRef
+                    // through `stmt_mapping` just like MethodFunction.code.
+                    let remapped_body = match &sig.body {
+                        Some(body_ref) => Some(*self.stmt_mapping.get(&body_ref.0)
+                            .ok_or("Cannot find trait default body stmt mapping")?),
+                        None => None,
+                    };
                     new_methods.push(TraitMethodSignature {
                         node: sig.node.clone(),
                         name: remapped_method_name,
@@ -644,6 +652,7 @@ impl<'a> AstIntegrationContext<'a> {
                         ensures: sig.ensures.clone(),
                         has_self_param: sig.has_self_param,
                         self_is_mut: sig.self_is_mut,
+                        body: remapped_body,
                     });
                 }
                 // ITER-PROTOCOL-TRAIT: trait generic params are

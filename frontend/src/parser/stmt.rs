@@ -792,6 +792,21 @@ pub fn parse_trait_method_signatures_with_generics(
                 }
 
                 let (requires, ensures) = parser.parse_contract_clauses()?;
+
+                // A1: optional default body — `fn name(...) -> T { ... }`
+                // declares a default implementation that impl blocks inherit
+                // when they omit the method. Distinguish from signature-only
+                // by peeking for `{` after the contracts. Newlines between
+                // the signature and the body are tolerated.
+                parser.skip_newlines();
+                let body = if parser.peek() == Some(&Kind::BraceOpen) {
+                    let body_location = parser.current_source_location();
+                    let block = super::expr::parse_block(parser)?;
+                    Some(parser.ast_builder.expression_stmt(block, Some(body_location)))
+                } else {
+                    None
+                };
+
                 let fn_end_pos = parser.peek_position_n(0).unwrap_or(&std::ops::Range { start: 0, end: 0 }).end;
 
                 methods.push(TraitMethodSignature {
@@ -805,6 +820,7 @@ pub fn parse_trait_method_signatures_with_generics(
                     ensures,
                     has_self_param: has_self,
                     self_is_mut,
+                    body,
                 });
                 parser.skip_newlines();
             }

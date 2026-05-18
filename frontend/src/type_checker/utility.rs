@@ -7,6 +7,81 @@ use crate::type_checker::{TypeCheckerVisitor, TypeCheckError, SourceLocation};
 
 /// Utility methods for TypeCheckerVisitor
 impl<'a> TypeCheckerVisitor<'a> {
+    /// A5 dyn-trait coercion + REF-Stage-2 auto-borrow compatibility,
+    /// gated on the visitor's context (so `struct_implements_trait`
+    /// is reachable). Wraps the context-free `TypeDecl::is_arg_compatible`
+    /// — if that already accepts the pair, return true. Otherwise
+    /// check whether the expected type is a `dyn Trait` (optionally
+    /// wrapped in `&` / `&mut`) and the actual type names a struct
+    /// that implements the trait.
+    pub fn is_arg_compatible_dyn_aware(
+        &self,
+        actual: &TypeDecl,
+        expected: &TypeDecl,
+    ) -> bool {
+        if TypeDecl::is_arg_compatible(actual, expected) {
+            return true;
+        }
+        match (actual, expected) {
+            // `&T` -> `&dyn Trait` (or `&mut dyn Trait` if both sides mut).
+            // Mutability downgrade `&mut T` -> `&dyn Trait` is allowed,
+            // mirroring `is_arg_compatible`'s existing policy.
+            (
+                TypeDecl::Ref { is_mut: a_mut, inner: a_inner },
+                TypeDecl::Ref { is_mut: e_mut, inner: e_inner },
+            ) => {
+                let mut_ok = a_mut == e_mut || (!*e_mut && *a_mut);
+                if !mut_ok {
+                    return false;
+                }
+                if let TypeDecl::Dyn(trait_sym) = e_inner.as_ref() {
+                    return self.actual_implements_trait(a_inner, *trait_sym);
+                }
+                false
+            }
+            // `T` -> `&dyn Trait` (auto-borrow + dyn coercion combined).
+            (
+                _,
+                TypeDecl::Ref { is_mut: false, inner: e_inner },
+            ) => {
+                if let TypeDecl::Dyn(trait_sym) = e_inner.as_ref() {
+                    return self.actual_implements_trait(actual, *trait_sym);
+                }
+                false
+            }
+            // Bare `T` value position with `dyn Trait` expected.
+            // P1 still allows this at the type-checker level so
+            // single-line examples work; AOT / JIT eligibility will
+            // reject programs that thread bare `dyn Trait` values
+            // anywhere outside an immediate reference borrow.
+            (_, TypeDecl::Dyn(trait_sym)) => {
+                self.actual_implements_trait(actual, *trait_sym)
+            }
+            _ => false,
+        }
+    }
+
+    /// Look up whether the concrete carrier of an argument type
+    /// (`Struct` / `Identifier` / `Dyn`) implements `trait_sym`.
+    /// Helper for `is_arg_compatible_dyn_aware`.
+    fn actual_implements_trait(
+        &self,
+        actual: &TypeDecl,
+        trait_sym: DefaultSymbol,
+    ) -> bool {
+        match actual {
+            TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) => {
+                self.context.struct_implements_trait(*s, trait_sym)
+            }
+            // `&dyn Trait` <- `&dyn Trait` of the same trait is the
+            // identity case; equality already passed `is_arg_compatible`
+            // so we only land here for a different trait — which is
+            // unsound to widen.
+            TypeDecl::Dyn(t) => *t == trait_sym,
+            _ => false,
+        }
+    }
+
     /// Calculate line and column from offset position in source code
     pub fn calculate_line_col_from_offset(&self, offset: usize) -> (u32, u32) {
         if let Some(source) = self.source_code {

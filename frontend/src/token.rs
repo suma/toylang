@@ -30,6 +30,7 @@ pub enum Kind {
     Struct,
     Trait,
     Impl,
+    Dyn,
     Function,
     Return,
     Extern,

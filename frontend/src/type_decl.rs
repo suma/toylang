@@ -55,6 +55,18 @@ pub enum TypeDecl {
     /// parser always promotes to this variant when it sees a `+`
     /// between bounds.
     TraitIntersection(Vec<DefaultSymbol>),
+    /// A5 dynamic trait object: `dyn TraitName`. Carries the trait
+    /// symbol so the type-checker can resolve method calls through
+    /// the trait's signature table at runtime (vs. the bounded-
+    /// generic path which monomorphises at call sites). Only
+    /// reachable through a reference (`&dyn Trait` / `&mut dyn
+    /// Trait`) in A5 Phase 1 — bare `dyn Trait` value positions
+    /// require Box / sized-erasure machinery that lands in later
+    /// phases. Interpreter dispatches through the regular
+    /// method registry (every Object is already a typed
+    /// `Rc<RefCell<...>>`); AOT and JIT reject programs that
+    /// reach a `Dyn` type via their eligibility passes (P2 / P3).
+    Dyn(DefaultSymbol),
 }
 
 impl TypeDecl {

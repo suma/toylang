@@ -1769,11 +1769,75 @@ and type checker. The 3-way consistency tests
 `multi_bound_dispatch_round_trip` and `multi_bound_three_traits_round_trip`
 in `compiler/tests/consistency.rs` pin this.
 
+### Dynamic dispatch with `dyn Trait`
+
+`dyn TraitName` is a **trait object** — a static type that abstracts
+over every concrete type implementing the trait. Where bounded
+generics (`<T: Trait>`) monomorphise per concrete type at call
+sites, `dyn Trait` carries the trait's vtable at runtime and
+dispatches the method through it.
+
+```rust
+trait Animal {
+    fn sound(self: Self) -> i64
+}
+struct Dog {}
+struct Cat {}
+impl Animal for Dog { fn sound(self: Self) -> i64 { 1i64 } }
+impl Animal for Cat { fn sound(self: Self) -> i64 { 2i64 } }
+
+fn describe(a: &dyn Animal) -> i64 {
+    a.sound()
+}
+
+fn main() -> i64 {
+    val d = Dog {}
+    val c = Cat {}
+    describe(d) + describe(c)    # auto-borrow + dyn coercion -> 3
+}
+```
+
+Notes:
+
+- Use `&dyn Trait` (or `&mut dyn Trait`) in parameter / return /
+  field positions. Bare `dyn Trait` is rejected for now; owned
+  trait objects need a sized-erasure mechanism (`Box<dyn Trait>`)
+  which lands in A5 Phase 4.
+- At a call site, `T` and `&T` automatically coerce to `&dyn Trait`
+  when `T` implements the trait. Explicit borrow `&value` works
+  the same way.
+- Default method bodies (A1) work with `dyn Trait` dispatch — the
+  expansion pre-pass installs the default as an inherent method on
+  every impl, so `(&dyn Trait).default_method()` resolves through
+  the regular method registry.
+- The static type-check at the call site is the load-bearing
+  guarantee. The interpreter's runtime arg check skips the
+  structural comparison when the expected type is `Dyn` because
+  the actual value is just the underlying `Object` and a
+  structural compare would always reject.
+
+Phase status (A5):
+
+- **P1 (this release, 2026-05-18)** — interpreter dispatch.
+  Parser, type-checker, and tree-walker support `&dyn Trait`
+  parameters / returns and the auto-coercion described above.
+- **P2 (planned)** — AOT compiler support: fat pointer ABI
+  (`data_ptr, vtable_ptr` 2-word slot), vtable codegen per
+  `impl Trait for Type`, indirect call lowering.
+- **P3 (planned)** — cranelift JIT support, mirroring P2.
+- **P4 (planned)** — owned trait objects via `Box<dyn Trait>` and
+  heterogeneous `Vec<Box<dyn Trait>>` collections.
+
+Until P2/P3 land, AOT and JIT reject any program that contains a
+`Dyn` type at lowering time (silent fallback to the interpreter
+in JIT eligibility; clean error in AOT).
+
 ### Errors caught at type-check time
 
 - An `impl Trait for Type` block missing a method: `missing method 'm' required by trait`
 - A signature mismatch (parameter count, type, or return type): `parameter type mismatch` / `return type mismatch`
 - Calling a trait-bounded generic with a non-conforming struct: `bound violation: ... (struct 'X' does not implement trait 'T')`
+- Passing a non-conforming struct where `&dyn Trait` is expected: `Type error: expected Ref { ..., inner: Dyn(...) }, found Struct(...). Function '...' argument N type mismatch`
 - Duplicate trait declaration or duplicate method name within a trait
 
 ### Out of scope (initial implementation)
@@ -1786,7 +1850,10 @@ in `compiler/tests/consistency.rs` pin this.
 - ~~Multiple bounds (`<T: A + B>`)~~ — 完了済み (A2, 2026-05-18).
   See *Trait bounds on generics → Multiple bounds* above.
 - Trait inheritance (`trait B: A`)
-- Dynamic dispatch via `dyn Trait` objects
+- ~~Dynamic dispatch via `dyn Trait` objects~~ — 完了済み in
+  interpreter as of A5 Phase 1 (2026-05-18). See *Dynamic
+  dispatch with `dyn Trait`* above. Remaining: AOT (P2), JIT
+  (P3), `Box<dyn Trait>` for owned trait objects (P4).
 - Associated types
 
 ---
@@ -2613,16 +2680,20 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   func(i)`) is rejected at lower time. Pre-bind to a struct
   method or a local first if you need 3-backend portability.
   Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `design-docs/todo.md`.
-- **Trait limitations** — no trait inheritance; no `dyn Trait`;
-  no associated types. Generic trait declarations (`trait Foo<T>`)
-  are supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`
+- **Trait limitations** — no trait inheritance; no associated
+  types. Generic trait declarations (`trait Foo<T>`) are
+  supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`
   完了済み 2026-05-07). **Default method bodies** are supported
   as of A1 (2026-05-18) — see *Traits → Default method bodies*.
   **Multiple bounds (`<T: A + B>`)** are supported as of A2
   (2026-05-18) — see *Traits → Trait bounds on generics*.
-  Generic-trait default bodies that reference the trait's type
-  parameter `T` are not yet wired (T → concrete substitution is
-  pending follow-up). See *Traits → Out of scope* for the
+  **`dyn Trait`** (dynamic dispatch via trait objects) is
+  supported in the interpreter as of A5 Phase 1 (2026-05-18) —
+  see *Traits → Dynamic dispatch with `dyn Trait`*. AOT and JIT
+  reject programs that thread `Dyn` types (silent fallback to
+  the interpreter); P2/P3 will add backend support. Generic-trait
+  default bodies that reference the trait's type parameter `T`
+  are not yet wired. See *Traits → Out of scope* for the
   remaining list.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the

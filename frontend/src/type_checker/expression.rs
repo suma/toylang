@@ -1110,10 +1110,12 @@ impl<'a> TypeCheckerVisitor<'a> {
                     return Err(e);
                 }
             };
-            // `is_arg_compatible` handles the Identifier↔Struct /
-            // Identifier↔Enum cases plus REF-Stage-2 auto-borrow
-            // (`T` → `&T` at call sites).
-            if !TypeDecl::is_arg_compatible(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
+            // `is_arg_compatible_dyn_aware` extends the context-free
+            // helper with A5 `&Struct → &dyn Trait` coercion (struct
+            // must implement the trait); the underlying helper
+            // covers Identifier↔Struct / Identifier↔Enum plus the
+            // REF-Stage-2 auto-borrow (`T` → `&T`).
+            if !self.is_arg_compatible_dyn_aware(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let fn_name_str = self.resolve_symbol_name(fn_name);
                 return Err(TypeCheckError::generic_error(&format!(
@@ -1169,7 +1171,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         for (idx, (arg, expected)) in args_data.iter().zip(param_tys.iter()).enumerate() {
             self.type_inference.type_hint = Some(expected.clone());
             let arg_ty = self.visit_expr(arg)?;
-            if !TypeDecl::is_arg_compatible(&arg_ty, expected) && arg_ty != TypeDecl::Unknown {
+            if !self.is_arg_compatible_dyn_aware(&arg_ty, expected) && arg_ty != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let name_str = self.resolve_symbol_name(callee_name);
                 return Err(TypeCheckError::generic_error(&format!(

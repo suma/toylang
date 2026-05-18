@@ -652,8 +652,15 @@ impl EvaluationContext<'_> {
                         // (REF-Stage-2 (f) requires explicit `&mut <var>` for `&mut T`
                         // parameters), so this runtime check is purely defence-in-depth
                         // against the inner value type.
+                        // A5: `dyn Trait` is a static-only abstraction — the type
+                        // checker has already verified that the concrete argument
+                        // type implements the trait. At runtime the value is just
+                        // the underlying Object so a structural `is_equivalent`
+                        // against `Dyn(...)` always returns false. Skip the check
+                        // when the (deref'd) expected type is a trait object.
                         let expected_runtime = expected_type.deref_ref();
-                        if !is_generic_function && !actual_type.is_equivalent(expected_runtime) {
+                        let expected_is_dyn = matches!(expected_runtime, frontend::type_decl::TypeDecl::Dyn(_));
+                        if !is_generic_function && !expected_is_dyn && !actual_type.is_equivalent(expected_runtime) {
                             let func_name = self.string_interner.resolve(*name).unwrap_or("<unknown>");
                             return Err(InterpreterError::TypeError {
                                 expected: expected_type.clone(),

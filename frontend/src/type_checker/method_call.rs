@@ -198,6 +198,25 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return Ok(resolved);
             }
 
+        // A5 trait-object dispatch: a `dyn Trait` receiver (typically
+        // reached after the auto-deref of `&dyn Trait`) resolves the
+        // method through the trait's signature table. `Self` in the
+        // return type collapses back to the trait-object type so
+        // chained calls keep the dynamic shape. Interpreter does the
+        // actual dispatch through the regular `method_registry`
+        // (every Object is a typed `Rc<RefCell<...>>`); the trait
+        // signature lookup here is only the static type contract.
+        if let TypeDecl::Dyn(trait_sym) = obj_type
+            && let Some(sig) = self.context.get_trait_method(*trait_sym, *method).cloned()
+        {
+            let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
+            let resolved = match ret {
+                TypeDecl::Self_ => obj_type.clone(),
+                other => other,
+            };
+            return Ok(resolved);
+        }
+
         // Method call on a trait-bounded generic parameter, e.g. inside
         // `fn f<T: MyTrait>(x: T) { x.foo() }`. Resolve `foo` through the
         // trait's method signature table; `Self` in the return type is
@@ -437,7 +456,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         for (idx, (arg_ref, expected)) in args.iter().zip(param_tys.iter()).enumerate() {
                             self.type_inference.type_hint = Some(expected.clone());
                             let arg_ty = self.visit_expr(arg_ref)?;
-                            if !TypeDecl::is_arg_compatible(&arg_ty, expected)
+                            if !self.is_arg_compatible_dyn_aware(&arg_ty, expected)
                                 && arg_ty != TypeDecl::Unknown
                             {
                                 self.type_inference.type_hint = original_hint;
@@ -520,7 +539,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
         for (arg_expr, expected_ty) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
-            if !TypeDecl::is_arg_compatible(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+            if !self.is_arg_compatible_dyn_aware(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),
                     actual_ty,
@@ -690,7 +709,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         for (arg_expr, (_, expected_ty)) in args.iter().zip(params.iter()) {
             let actual_ty = self.visit_expr(arg_expr)?;
-            if !TypeDecl::is_arg_compatible(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
+            if !self.is_arg_compatible_dyn_aware(&actual_ty, expected_ty) && !matches!(actual_ty, TypeDecl::Unknown) {
                 return Err(TypeCheckError::type_mismatch(
                     expected_ty.clone(),
                     actual_ty,

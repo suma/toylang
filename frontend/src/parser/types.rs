@@ -60,6 +60,29 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_type_declaration_with_generic_context(generic_params)?;
                 Ok(TypeDecl::Ref { is_mut, inner: Box::new(inner) })
             }
+            // A5 dynamic trait object: `dyn TraitName`. Only the
+            // referenced form (`&dyn Trait` / `&mut dyn Trait`) is
+            // usable in P1 — bare `dyn Trait` value positions still
+            // parse and the type-checker / backend will reject them
+            // until P4 (Box / sized erasure) lands.
+            Some(Kind::Dyn) => {
+                self.next(); // consume `dyn`
+                match self.peek() {
+                    Some(Kind::Identifier(s)) => {
+                        let s = s.to_string();
+                        self.next();
+                        let trait_sym = self.string_interner.get_or_intern(s);
+                        Ok(TypeDecl::Dyn(trait_sym))
+                    }
+                    _ => {
+                        let location = self.current_source_location();
+                        Err(ParserError::generic_error(
+                            location,
+                            "expected trait name after `dyn`".to_string(),
+                        ))
+                    }
+                }
+            }
             Some(Kind::BracketOpen) => {
                 self.next();
                 let element_type = self.parse_type_declaration_with_generic_context(generic_params)?;

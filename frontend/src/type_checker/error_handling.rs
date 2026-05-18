@@ -263,6 +263,9 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                     .collect();
                 name_strs.join(" + ")
             }
+            TypeDecl::Dyn(trait_sym) => {
+                format!("dyn {}", self.resolve_symbol_name(*trait_sym))
+            }
         }
     }
     

@@ -383,6 +383,9 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 TypeDecl::TraitIntersection(new_syms)
             }
+            // A5 trait object: trait name lives in the module's
+            // interner; remap the same way as Identifier / Trait.
+            TypeDecl::Dyn(trait_sym) => TypeDecl::Dyn(self.remap_type_symbol(*trait_sym)?),
             // Symbol-free leaf cases pass through.
             other => other.clone(),
         })

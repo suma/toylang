@@ -71,6 +71,7 @@ fn parse_unicode_escape_body(bytes: &[u8], start: usize) -> Option<(u32, usize)>
 "struct"    return Ok(token!(self, Kind::Struct));
 "trait"     return Ok(token!(self, Kind::Trait));
 "impl"      return Ok(token!(self, Kind::Impl));
+"dyn"       return Ok(token!(self, Kind::Dyn));
 "fn"        return Ok(token!(self, Kind::Function));
 "extern"    return Ok(token!(self, Kind::Extern));
 "pub"       return Ok(token!(self, Kind::Public));

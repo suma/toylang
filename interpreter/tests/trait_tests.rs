@@ -910,3 +910,111 @@ mod multi_bound {
         assert_eq!(result.borrow().unwrap_int64(), 42);
     }
 }
+
+// =====================================================================
+// A5-P1: `dyn Trait` trait objects (interpreter only). The type-checker
+// allows `&Struct` to be passed where `&dyn Trait` is expected when the
+// struct implements the trait, and dispatches `obj.method()` on a
+// `&dyn Trait` receiver through the trait's signature table. Backends
+// other than the tree-walker reject dyn at lower-time (P2/P3 will add
+// AOT / JIT support).
+// =====================================================================
+mod dyn_trait {
+    use crate::common::test_program;
+
+    #[test]
+    fn dyn_trait_dispatch_routes_through_concrete_impl() {
+        // Two structs implementing the same trait; the function takes a
+        // `&dyn Trait` and the dispatch returns each struct's own
+        // contribution. Sum is 1 (Dog) + 2 (Cat) = 3.
+        let source = r#"
+            trait Animal {
+                fn vol(self: Self) -> i64
+            }
+            struct Dog {}
+            struct Cat {}
+            impl Animal for Dog { fn vol(self: Self) -> i64 { 1i64 } }
+            impl Animal for Cat { fn vol(self: Self) -> i64 { 2i64 } }
+            fn pick(a: &dyn Animal) -> i64 { a.vol() }
+            fn main() -> i64 {
+                val d = Dog {}
+                val c = Cat {}
+                pick(d) + pick(c)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 3);
+    }
+
+    #[test]
+    fn dyn_trait_rejects_non_implementing_struct() {
+        // Stone does not implement Animal; passing it through a
+        // `&dyn Animal` parameter must be rejected by the type-checker.
+        let source = r#"
+            trait Animal {
+                fn vol(self: Self) -> i64
+            }
+            struct Dog {}
+            struct Stone { v: i64 }
+            impl Animal for Dog { fn vol(self: Self) -> i64 { 1i64 } }
+            fn pick(a: &dyn Animal) -> i64 { a.vol() }
+            fn main() -> i64 {
+                val s = Stone { v: 0i64 }
+                pick(s)
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("type mismatch") || err.contains("Type error"),
+            "expected dyn-trait conformance rejection, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn dyn_trait_with_default_body() {
+        // A trait default body is reachable via dyn dispatch. The impl
+        // provides `value`; `doubled` is inherited from the trait
+        // default. A5 reuses A1's expansion path, so backends see the
+        // synthesized default as an ordinary inherent method, which
+        // means dyn dispatch finds it through the regular registry.
+        let source = r#"
+            trait Num {
+                fn value(self: Self) -> i64
+                fn doubled(self: Self) -> i64 { self.value() + self.value() }
+            }
+            struct Cell { v: i64 }
+            impl Num for Cell {
+                fn value(self: Self) -> i64 { self.v }
+            }
+            fn use_dyn(n: &dyn Num) -> i64 { n.doubled() }
+            fn main() -> i64 {
+                val c = Cell { v: 21i64 }
+                use_dyn(c)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+
+    #[test]
+    fn dyn_trait_explicit_borrow_form() {
+        // The explicit `&value` borrow form at the call site is also
+        // accepted; the auto-borrow path and the explicit form must
+        // produce the same dispatch.
+        let source = r#"
+            trait Animal {
+                fn vol(self: Self) -> i64
+            }
+            struct Dog {}
+            impl Animal for Dog { fn vol(self: Self) -> i64 { 7i64 } }
+            fn pick(a: &dyn Animal) -> i64 { a.vol() }
+            fn main() -> i64 {
+                val d = Dog {}
+                pick(&d)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 7);
+    }
+}

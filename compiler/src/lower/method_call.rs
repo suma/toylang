@@ -26,7 +26,7 @@ use super::method_registry::PendingMethodInstance;
 use super::templates::lower_param_or_return_type;
 use super::types::lower_scalar;
 use super::FunctionLower;
-use crate::ir::{FuncId, InstKind, Linkage, StructId, Type, ValueId};
+use crate::ir::{Const, FuncId, InstKind, Linkage, LocalId, StructId, Type, ValueId};
 
 /// Map an IR `Type` for a primitive scalar receiver back to the
 /// canonical-name symbol that `Stmt::ImplBlock` uses as its target
@@ -543,6 +543,23 @@ impl<'a> FunctionLower<'a> {
 
         let binding = self.resolve_method_receiver_binding(obj)?;
 
+        // A5-P2: dyn-trait dispatch. When the receiver is bound as
+        // `Binding::DynTraitObj`, look the method up by its index
+        // in the trait's declaration order, load the fn pointer
+        // from `vtable_ptr + idx*8`, and emit `CallIndirect`. The
+        // call signature mirrors the trait method's declared
+        // params/return, with the implicit `self` slot replaced by
+        // `data_ptr` (passed but ignored for MVP-A empty structs).
+        if let Binding::DynTraitObj { trait_sym, data_ptr_local, vtable_ptr_local } = &binding {
+            return self.lower_dyn_method_call(
+                *trait_sym,
+                *data_ptr_local,
+                *vtable_ptr_local,
+                method,
+                args,
+            );
+        }
+
         // CONCRETE-IMPL Phase 2b: extract receiver's IR type args
         // for spec-aware dispatch.
         let (target_sym, recv_type_args): (DefaultSymbol, Vec<crate::ir::Type>) = match &binding {
@@ -1018,5 +1035,173 @@ impl<'a> FunctionLower<'a> {
             values.push(v);
         }
         Ok(values)
+    }
+
+    /// A5-P2-MVP-A: vtable-dispatched method call on a `&dyn Trait`
+    /// receiver. Loads the function pointer at slot `method_idx * 8`
+    /// of the vtable held in `vtable_ptr_local`, then emits a
+    /// `CallIndirect` against the trait method's declared signature.
+    /// MVP-A restricts impls to empty structs, so the underlying
+    /// method has zero `self` leaves — the indirect call does NOT
+    /// pass `data_ptr` as an extra argument (the vtable entries
+    /// point directly at the impl methods, not at thunks). MVP-B
+    /// will add thunk generation and pass `data_ptr` so non-empty
+    /// receivers' field state survives the dispatch.
+    pub(super) fn lower_dyn_method_call(
+        &mut self,
+        trait_sym: DefaultSymbol,
+        _data_ptr_local: LocalId,
+        vtable_ptr_local: LocalId,
+        method: DefaultSymbol,
+        args: &Vec<ExprRef>,
+    ) -> Result<Option<ValueId>, String> {
+        // Resolve the method's index in trait declaration order.
+        let method_idx = self
+            .module
+            .trait_method_order
+            .get(&trait_sym)
+            .and_then(|order| order.iter().position(|m| *m == method))
+            .ok_or_else(|| {
+                format!(
+                    "A5-P2: trait {:?} has no method {:?} registered in order map",
+                    trait_sym, method
+                )
+            })?;
+
+        // Walk the AST to recover the trait method's declared
+        // signature (params skip the implicit `self`, return is
+        // mapped through `lower_param_or_return_type`). Cached
+        // per-call because the trait-decl scan is cheap and the
+        // dispatch sites are rare. MVP-A trusts that every impl
+        // of this trait targets an empty struct, so `self`
+        // contributes no leaves — we pass only the user-written
+        // args to `CallIndirect`.
+        let mut method_param_decls: Option<Vec<frontend::type_decl::TypeDecl>> = None;
+        let mut method_ret_decl: Option<frontend::type_decl::TypeDecl> = None;
+        for i in 0..self.program.statement.len() {
+            let stmt_ref = frontend::ast::StmtRef(i as u32);
+            if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
+                self.program.statement.get(&stmt_ref)
+            {
+                if name == trait_sym {
+                    for sig in &methods {
+                        if sig.name == method {
+                            method_param_decls = Some(
+                                sig.parameter
+                                    .iter()
+                                    .map(|(_, t)| t.clone())
+                                    .collect(),
+                            );
+                            method_ret_decl = Some(
+                                sig.return_type
+                                    .clone()
+                                    .unwrap_or(frontend::type_decl::TypeDecl::Unit),
+                            );
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        let method_param_decls = method_param_decls.ok_or_else(|| {
+            format!(
+                "A5-P2: TraitDecl for {:?} does not contain method {:?}",
+                trait_sym, method
+            )
+        })?;
+        let method_ret_decl =
+            method_ret_decl.unwrap_or(frontend::type_decl::TypeDecl::Unit);
+
+        // Lower trait method param/return types to IR Types.
+        // Skip the `self` slot — for MVP-A it carries no leaves.
+        // Build the param-ty list parallel to `args` (user-written
+        // arguments only).
+        let mut ir_param_tys: Vec<crate::ir::Type> = Vec::with_capacity(args.len());
+        for (i, pty) in method_param_decls.iter().enumerate() {
+            // Skip a leading `self`-typed entry: the trait signature
+            // always lists `self: Self` as its first parameter, and
+            // the type-checker has already verified the call uses
+            // the trait's own receiver. MVP-A treats it as no-op.
+            if i == 0 && matches!(pty, frontend::type_decl::TypeDecl::Self_) {
+                continue;
+            }
+            let lowered = super::templates::lower_param_or_return_type(
+                pty,
+                &Default::default(),
+                &Default::default(),
+                self.module,
+                self.interner,
+            )
+            .ok_or_else(|| {
+                format!(
+                    "A5-P2: cannot lower trait method param type {:?}",
+                    pty
+                )
+            })?;
+            ir_param_tys.push(lowered);
+        }
+        let ir_ret_ty = super::templates::lower_param_or_return_type(
+            &method_ret_decl,
+            &Default::default(),
+            &Default::default(),
+            self.module,
+            self.interner,
+        )
+        .ok_or_else(|| {
+            format!(
+                "A5-P2: cannot lower trait method return type {:?}",
+                method_ret_decl
+            )
+        })?;
+
+        // Load vtable_ptr from the binding's local.
+        let vtable_ptr_val = self
+            .emit(InstKind::LoadLocal(vtable_ptr_local), Some(crate::ir::Type::U64))
+            .expect("LoadLocal returns a value");
+        // Compute offset = method_idx * 8 bytes.
+        let offset_val = self
+            .emit(
+                InstKind::Const(Const::U64((method_idx * 8) as u64)),
+                Some(crate::ir::Type::U64),
+            )
+            .expect("Const returns a value");
+        // Load fn_ptr = *(vtable_ptr + offset) as U64.
+        let fn_ptr_val = self
+            .emit(
+                InstKind::PtrRead {
+                    ptr: vtable_ptr_val,
+                    offset: offset_val,
+                    elem_ty: crate::ir::Type::U64,
+                },
+                Some(crate::ir::Type::U64),
+            )
+            .expect("PtrRead returns a value");
+
+        // Lower the user-written args. MVP-A doesn't support
+        // compound argument types through dyn dispatch yet; scalar
+        // args go through the regular value path.
+        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+        for a in args {
+            let v = self
+                .lower_expr(a)?
+                .ok_or_else(|| "dyn method arg produced no value".to_string())?;
+            arg_values.push(v);
+        }
+
+        let result_ty = if matches!(ir_ret_ty, crate::ir::Type::Unit) {
+            None
+        } else {
+            Some(ir_ret_ty)
+        };
+        Ok(self.emit(
+            InstKind::CallIndirectFn {
+                callee: fn_ptr_val,
+                args: arg_values,
+                param_tys: ir_param_tys,
+                ret_ty: ir_ret_ty,
+            },
+            result_ty,
+        ))
     }
 }

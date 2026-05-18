@@ -499,10 +499,11 @@ impl<'a> FunctionLower<'a> {
                     Binding::Struct { .. }
                     | Binding::Tuple { .. }
                     | Binding::Array { .. }
-                    | Binding::FunctionPtr { .. } => {
+                    | Binding::FunctionPtr { .. }
+                    | Binding::DynTraitObj { .. } => {
                         return Err(format!(
                             "compiler MVP does not support `match` on struct / tuple / array / \
-                             function-value binding `{}`",
+                             function-value / dyn-trait binding `{}`",
                             self.interner.resolve(sym).unwrap_or("?")
                         ));
                     }

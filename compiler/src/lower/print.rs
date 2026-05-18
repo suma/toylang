@@ -88,6 +88,15 @@ impl<'a> FunctionLower<'a> {
                                 .to_string(),
                         );
                     }
+                    Binding::DynTraitObj { .. } => {
+                        // A5-P2: printing an opaque trait object is
+                        // not meaningful (no canonical user-visible
+                        // form; the value is a pair of raw pointers).
+                        return Err(
+                            "compiler MVP: print of a `&dyn Trait` value is not supported"
+                                .to_string(),
+                        );
+                    }
                 }
             }
         // Compound-literal shortcuts: `print(Point { ... })`,

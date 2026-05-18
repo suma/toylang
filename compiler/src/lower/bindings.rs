@@ -13,6 +13,8 @@
 //! order — used at function-boundary sites and array-slot lowering
 //! to round-trip compound values through scalar IR slots.
 
+use string_interner::DefaultSymbol;
+
 use crate::ir::{ArraySlotId, EnumId, LocalId, StructId, TupleId, Type, ValueId};
 
 /// Top-level binding shape attached to each user-visible name.
@@ -72,6 +74,20 @@ pub(super) enum Binding {
         local: LocalId,
         param_tys: Vec<Type>,
         ret_ty: Type,
+    },
+    /// A5-P2: `&dyn TraitName` parameter binding. The fat pointer
+    /// arrives as two flat U64 locals (the cranelift ABI flattens
+    /// `Type::Tuple([U64, U64])` parameters into a pair of scalar
+    /// slots). `data_ptr_local` holds the underlying struct's data
+    /// pointer (null for empty structs in MVP-A) and
+    /// `vtable_ptr_local` holds the vtable address. Method dispatch
+    /// on this binding loads `vtable_ptr`, indexes by the method's
+    /// trait-order slot, and emits `CallIndirect` against the
+    /// trait's declared signature.
+    DynTraitObj {
+        trait_sym: DefaultSymbol,
+        data_ptr_local: LocalId,
+        vtable_ptr_local: LocalId,
     },
 }
 

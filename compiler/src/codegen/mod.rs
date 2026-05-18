@@ -248,6 +248,11 @@ pub(crate) struct CodegenSession<M: Module> {
     /// format-prefix bytes (`", "`, `" }"`, etc.) collapse to a
     /// single `.rodata` entry across every struct-format site.
     const_str_bytes: HashMap<Vec<u8>, DataId>,
+    /// A5-P2: `(trait_sym, struct_sym)` → `DataId` for the vtable
+    /// blob holding the trait methods' function addresses, in
+    /// `module.trait_method_order[trait]` order, each slot 8 bytes.
+    /// Populated by `define_vtables` once per CodegenSession.
+    vtable_data_ids: HashMap<(DefaultSymbol, DefaultSymbol), DataId>,
 }
 
 /// Resolve cranelift's `opt_level` flag from the environment, defaulting
@@ -609,6 +614,7 @@ impl<M: Module> CodegenSession<M> {
             print_strings: HashMap::new(),
             raw_print_strings: HashMap::new(),
             const_str_bytes: HashMap::new(),
+            vtable_data_ids: HashMap::new(),
         })
     }
 
@@ -710,6 +716,97 @@ impl<M: Module> CodegenSession<M> {
         }
         for bytes in const_bytes_needed {
             self.declare_const_str_bytes(&bytes)?;
+        }
+        // A5-P2: emit one vtable global data symbol per
+        // `(trait, struct)` impl pair. The data is a zero-init blob
+        // sized 8 * method_count bytes; each slot gets a
+        // function-address relocation pointing at the impl's
+        // method. Codegen reads `self.vtable_data_ids` at the
+        // dispatch site (`InstKind::DynCall` lowering, P2-MVP-A)
+        // to resolve the symbol address.
+        self.define_vtables(ir_module, interner)?;
+        Ok(())
+    }
+
+    /// A5-P2: emit `toy_vtable_<trait>_<struct>` as a relocated
+    /// global. Each slot is an 8-byte function-address relocation
+    /// resolved by the linker to the impl's lowered method. Naming
+    /// embeds both symbols so multiple impls don't collide; linkage
+    /// is `Local` because the vtable is private to this compilation.
+    /// **Lazy emit**: only impl pairs actually referenced by a
+    /// `VtableAddr` instruction get a vtable. The naive approach of
+    /// emitting one vtable per `(trait, struct)` in `ir_module.vtables`
+    /// blows up basic non-dyn programs by writing an unused vtable
+    /// for every `impl Trait for X` in the auto-loaded stdlib —
+    /// which Apple's `ld` segfaults on (33 unused function-address
+    /// relocs in `__bss` triggers a known linker bug).
+    /// Idempotent: the `vtable_data_ids` cache skips re-emit.
+    fn define_vtables(
+        &mut self,
+        ir_module: &IrModule,
+        interner: &DefaultStringInterner,
+    ) -> Result<(), String> {
+        // Collect referenced (trait, struct) pairs from every
+        // VtableAddr instruction across all functions. Skip pairs
+        // that don't have a layout entry (defensive — every
+        // VtableAddr emitted by lowering should have a matching
+        // `ir_module.vtables` entry, but a missing one falls
+        // through to a clean codegen error at the dispatch site
+        // rather than a malformed object).
+        let mut referenced: std::collections::HashSet<(DefaultSymbol, DefaultSymbol)> =
+            std::collections::HashSet::new();
+        for func in &ir_module.functions {
+            for blk in &func.blocks {
+                for inst in &blk.instructions {
+                    if let InstKind::VtableAddr { trait_sym, struct_sym } = &inst.kind {
+                        referenced.insert((*trait_sym, *struct_sym));
+                    }
+                }
+            }
+        }
+        for (trait_sym, struct_sym) in &referenced {
+            if self.vtable_data_ids.contains_key(&(*trait_sym, *struct_sym)) {
+                continue;
+            }
+            let func_ids = match ir_module.vtables.get(&(*trait_sym, *struct_sym)) {
+                Some(ids) => ids,
+                None => continue,
+            };
+            let trait_name = interner.resolve(*trait_sym).unwrap_or("trait");
+            let struct_name = interner.resolve(*struct_sym).unwrap_or("struct");
+            let name = format!("toy_vtable_{}_{}", trait_name, struct_name);
+            let data_id = self
+                .module
+                .declare_data(&name, CLinkage::Local, false /* writable */, false /* tls */)
+                .map_err(|e| format!("declare vtable {name}: {e}"))?;
+            let mut desc = DataDescription::new();
+            // 8 bytes per slot on every supported host (cranelift's
+            // pointer width is 64-bit for x86_64 / aarch64). Use
+            // `define` with explicit zero bytes (not `define_zeroinit`)
+            // so cranelift-object places the symbol in `__DATA,__data`
+            // — Apple's `ld` segfaults on relocations in `__DATA,__bss`
+            // (function-address relocs in a zero-init section is
+            // unusual and trips a linker bug observed on the
+            // arm64-apple-darwin25.5 toolchain). The runtime layout is
+            // identical because the relocations overwrite the zero
+            // bytes at link time.
+            let payload = vec![0u8; func_ids.len() * 8];
+            desc.define(payload.into_boxed_slice());
+            for (slot_idx, ir_func_id) in func_ids.iter().enumerate() {
+                let cl_id = self.fn_ids.get(ir_func_id).copied().ok_or_else(|| {
+                    format!(
+                        "vtable {}: IR FuncId {:?} not registered with cranelift",
+                        name, ir_func_id
+                    )
+                })?;
+                let func_ref = self.module.declare_func_in_data(cl_id, &mut desc);
+                desc.write_function_addr((slot_idx * 8) as u32, func_ref);
+            }
+            self.module
+                .define_data(data_id, &desc)
+                .map_err(|e| format!("define vtable {name}: {e}"))?;
+            self.vtable_data_ids
+                .insert((*trait_sym, *struct_sym), data_id);
         }
         Ok(())
     }
@@ -929,6 +1026,8 @@ impl<M: Module> CodegenSession<M> {
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
         let const_str_bytes_imports =
             self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
+        let vtable_imports =
+            self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -942,6 +1041,7 @@ impl<M: Module> CodegenSession<M> {
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
+                &vtable_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -977,6 +1077,8 @@ impl<M: Module> CodegenSession<M> {
             self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
         let const_str_bytes_imports =
             self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
+        let vtable_imports =
+            self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
         let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
         let mut builder_ctx = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
@@ -990,6 +1092,7 @@ impl<M: Module> CodegenSession<M> {
                 &print_imports,
                 &raw_print_imports,
                 &const_str_bytes_imports,
+                &vtable_imports,
                 &runtime_refs,
             );
             ctxt.lower()
@@ -1186,6 +1289,11 @@ struct LowerCtx<'a, 'b> {
     /// struct-format bytes). Keyed by content; the `.rodata` layout
     /// is the str-handle shape (`[bytes][NUL][u64 len LE]`).
     const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
+    /// A5-P2: `(trait, struct)` -> `GlobalValue` for vtable data.
+    /// Filled by `declare_vtable_imports`; the `VtableAddr` codegen
+    /// arm reads this map to materialise the runtime address via
+    /// `symbol_value`.
+    vtable_imports: &'a HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue>,
     runtime: &'a RuntimeRefs,
     block_map: HashMap<u32, Block>,
     locals: HashMap<u32, Variable>,
@@ -1246,6 +1354,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
         print_imports: &'a HashMap<DefaultSymbol, cranelift_codegen::ir::GlobalValue>,
         raw_print_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
         const_str_bytes_imports: &'a HashMap<Vec<u8>, cranelift_codegen::ir::GlobalValue>,
+        vtable_imports: &'a HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue>,
         runtime: &'a RuntimeRefs,
     ) -> Self {
         Self {
@@ -1257,6 +1366,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             print_imports,
             raw_print_imports,
             const_str_bytes_imports,
+            vtable_imports,
             runtime,
             block_map: HashMap::new(),
             locals: HashMap::new(),

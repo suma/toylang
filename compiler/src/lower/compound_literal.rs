@@ -253,6 +253,12 @@ impl<'a> FunctionLower<'a> {
                 Some(Binding::Enum(_)) => None,
                 Some(Binding::Array { .. }) => None,
                 Some(Binding::FunctionPtr { .. }) => Some(Type::U64),
+                // A5-P2: dyn-trait identifiers don't have a single
+                // scalar IR type — they're a 2-tuple of U64 leaves.
+                // value_scalar() only fires for scalar carriers, so
+                // returning None makes the caller fall through to a
+                // path that reports the unsupported usage cleanly.
+                Some(Binding::DynTraitObj { .. }) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },
             _ => self.value_scalar(expr_ref),

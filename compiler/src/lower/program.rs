@@ -466,6 +466,23 @@ pub fn lower_program(
             .map(|(_, t)| matches!(t, TypeDecl::Ref { .. }))
             .collect();
         module.function_mut(func_id).param_is_ref = param_is_ref;
+        // A5-P2: per-param dyn-trait identity. A param of
+        // `&dyn TraitName` records `Some(trait_sym)`; everything
+        // else records `None`. Call sites consult this to build the
+        // fat-pointer tuple from a concrete struct arg, and to
+        // route method dispatch through the vtable in the body.
+        let param_dyn_trait: Vec<Option<DefaultSymbol>> = func
+            .parameter
+            .iter()
+            .map(|(_, t)| match t {
+                TypeDecl::Ref { inner, .. } => match inner.as_ref() {
+                    TypeDecl::Dyn(trait_sym) => Some(*trait_sym),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        module.function_mut(func_id).param_dyn_trait = param_dyn_trait;
         // REF-Stage-2 (ii): pre-populate the writeback shape from
         // the parameter types so callers see the correct number
         // of trailing return values regardless of whether the
@@ -676,6 +693,67 @@ pub fn lower_program(
                 target_type_args: target_type_args_lowered,
                 func_id,
             });
+        }
+    }
+
+    // A5-P2: collect trait method ordering and per-impl vtable
+    // layout. Done after `method_func_ids` is fully populated by
+    // the declaration loop above so every entry references a
+    // declared `FuncId`. Codegen will consume `module.vtables`
+    // to emit one `toy_vtable_<trait>_<struct>` data symbol per
+    // entry. Generic-typed impl methods are skipped (MVP-A only
+    // covers monomorphic impls); a generic-trait dispatch would
+    // need a per-instantiation vtable, deferred to a later phase.
+    for i in 0..program.statement.len() {
+        let stmt_ref = frontend::ast::StmtRef(i as u32);
+        if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) = program.statement.get(&stmt_ref) {
+            let order: Vec<DefaultSymbol> = methods.iter().map(|m| m.name).collect();
+            module.trait_method_order.insert(name, order);
+        }
+    }
+    for i in 0..program.statement.len() {
+        let stmt_ref = frontend::ast::StmtRef(i as u32);
+        let stmt = match program.statement.get(&stmt_ref) {
+            Some(s) => s,
+            None => continue,
+        };
+        let (target_type, trait_sym) = match stmt {
+            frontend::ast::Stmt::ImplBlock {
+                target_type,
+                trait_name: Some(t),
+                ..
+            } => (target_type, t),
+            _ => continue,
+        };
+        // Trait must have been seen above; if not, skip (defensive).
+        let method_order = match module.trait_method_order.get(&trait_sym).cloned() {
+            Some(o) => o,
+            None => continue,
+        };
+        let mut vtable_funcs: Vec<FuncId> = Vec::with_capacity(method_order.len());
+        let mut all_resolved = true;
+        for method_sym in &method_order {
+            // Look up the first non-generic spec for this (target,
+            // method) — MVP-A treats every impl as monomorphic, so
+            // a single spec suffices. Future phases that allow
+            // generic-trait impls will fan out per concrete type.
+            let func_id = method_func_ids
+                .get(&(target_type, *method_sym))
+                .and_then(|specs| specs.first().map(|s| s.func_id));
+            match func_id {
+                Some(fid) => vtable_funcs.push(fid),
+                None => {
+                    // Method body wasn't lowered (generic, default
+                    // not yet expanded for this impl, etc.). Skip
+                    // building this vtable; the dyn dispatch site
+                    // will detect the absence and fail cleanly.
+                    all_resolved = false;
+                    break;
+                }
+            }
+        }
+        if all_resolved {
+            module.vtables.insert((trait_sym, target_type), vtable_funcs);
         }
     }
 
@@ -1146,6 +1224,40 @@ impl<'a> FunctionLower<'a> {
             // emit LoadRef / StoreRef against the pointer the
             // caller passed via `AddressOf`. The IR-level param
             // type stays U64 (pointer-sized handle).
+            // A5-P2: `&dyn TraitName` parameter binds as
+            // `Binding::DynTraitObj`. The IR param type is
+            // `Tuple([U64, U64])`, which cranelift flattens into
+            // two scalar slots at the function boundary — so we
+            // allocate two locals (data_ptr, vtable_ptr) and
+            // record both in the binding. Method dispatch on this
+            // binding pulls them back out for the vtable lookup
+            // and `CallIndirect`. Must precede the
+            // `RefScalar` arm because `lower_scalar(Dyn(_))`
+            // returns None and would fall through to compound
+            // flatten otherwise — both paths reach Tuple-typed
+            // params, but only the dyn-trait branch knows the
+            // trait identity needed for dispatch.
+            if let frontend::type_decl::TypeDecl::Ref { inner, .. } = decl_ty
+                && let frontend::type_decl::TypeDecl::Dyn(trait_sym) = inner.as_ref()
+            {
+                let data_ptr_local = self
+                    .module
+                    .function_mut(self.func_id)
+                    .add_local(Type::U64);
+                let vtable_ptr_local = self
+                    .module
+                    .function_mut(self.func_id)
+                    .add_local(Type::U64);
+                self.bindings.insert(
+                    *name,
+                    Binding::DynTraitObj {
+                        trait_sym: *trait_sym,
+                        data_ptr_local,
+                        vtable_ptr_local,
+                    },
+                );
+                continue;
+            }
             if let frontend::type_decl::TypeDecl::Ref { is_mut, inner } = decl_ty
                 && let Some(pointee_ty) = super::types::lower_scalar(inner)
                     && matches!(

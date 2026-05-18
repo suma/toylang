@@ -312,6 +312,69 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                 let addr = self.builder.ins().func_addr(types::I64, func_ref);
                 self.record_result(inst, addr);
             }
+            InstKind::CallIndirectFn {
+                callee,
+                args,
+                param_tys,
+                ret_ty,
+            } => {
+                // A5-P2: raw fn-pointer indirect call (no env-passing).
+                // Mirror the `CallIndirect` lowering but without the
+                // implicit env arg and without the env+0 fn_ptr load —
+                // `callee` is already the function pointer (e.g. read
+                // out of a vtable slot via `PtrRead`).
+                let fn_ptr = self.value(*callee);
+                let call_conv = self.builder.func.signature.call_conv;
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for pt in param_tys {
+                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
+                        format!("CallIndirectFn: cannot lower param type {pt:?}")
+                    })?;
+                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                if !matches!(ret_ty, IrType::Unit) {
+                    let cl = ir_to_cranelift_ty(*ret_ty).ok_or_else(|| {
+                        format!("CallIndirectFn: cannot lower return type {ret_ty:?}")
+                    })?;
+                    sig.returns
+                        .push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                let sig_ref = self.builder.import_signature(sig);
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if let Some((vid, _ty)) = inst.result {
+                    let v = results.first().copied().ok_or_else(|| {
+                        "CallIndirectFn declared a return type but produced no Cranelift result".to_string()
+                    })?;
+                    self.values.insert(vid.0, v);
+                }
+            }
+            InstKind::VtableAddr {
+                trait_sym,
+                struct_sym,
+            } => {
+                // A5-P2: materialise the vtable's runtime address.
+                // `declare_vtable_imports` already installed a
+                // `GlobalValue` for each `(trait, struct)` pair this
+                // function references; `symbol_value` produces the
+                // I64 pointer the linker resolves to the vtable's
+                // first slot.
+                let gv = *self
+                    .vtable_imports
+                    .get(&(*trait_sym, *struct_sym))
+                    .ok_or_else(|| {
+                        format!(
+                            "vtable_addr {:?}/{:?}: GlobalValue not declared (no `impl {} for {}` or missing vtable layout)",
+                            trait_sym, struct_sym, trait_sym.to_usize(), struct_sym.to_usize()
+                        )
+                    })?;
+                let addr = self.builder.ins().symbol_value(types::I64, gv);
+                self.record_result(inst, addr);
+            }
             InstKind::MakeClosure {
                 target,
                 captures,

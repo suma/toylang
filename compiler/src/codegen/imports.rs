@@ -57,6 +57,42 @@ impl<M: Module> CodegenSession<M> {
         imports
     }
 
+    /// A5-P2 per-function GV map for vtable globals. Mirrors
+    /// `declare_panic_imports`: walk this function's `VtableAddr`
+    /// instructions, look up each `(trait_sym, struct_sym)` pair in
+    /// the already-defined `vtable_data_ids`, and declare a
+    /// per-function `GlobalValue` so the lowered `VtableAddr`
+    /// can resolve via `symbol_value`. Unrecognised pairs are
+    /// skipped — the dispatch lowering surfaces the missing entry
+    /// as a clean error.
+    pub(super) fn declare_vtable_imports(
+        &mut self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue> {
+        let mut imports: HashMap<(DefaultSymbol, DefaultSymbol), cranelift_codegen::ir::GlobalValue> =
+            HashMap::new();
+        let ir_func = ir_module.function(func_id);
+        for blk in &ir_func.blocks {
+            for inst in &blk.instructions {
+                if let InstKind::VtableAddr { trait_sym, struct_sym } = &inst.kind {
+                    let key = (*trait_sym, *struct_sym);
+                    if imports.contains_key(&key) {
+                        continue;
+                    }
+                    let data_id = match self.vtable_data_ids.get(&key).copied() {
+                        Some(id) => id,
+                        None => continue,
+                    };
+                    let gv = self.module.declare_data_in_func(data_id, func);
+                    imports.insert(key, gv);
+                }
+            }
+        }
+        imports
+    }
+
     /// STR-INTERP-COMPOUND per-function GV map for `ConstStrBytes`
     /// payloads. Mirrors `declare_raw_print_imports` (content-keyed)
     /// but the underlying `.rodata` layout is the

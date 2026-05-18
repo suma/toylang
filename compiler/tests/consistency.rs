@@ -4597,3 +4597,57 @@ fn multi_bound_three_traits_round_trip() {
     "#;
     assert_consistent(src, "multi_bound_three_traits");
 }
+
+#[test]
+fn dyn_trait_empty_struct_round_trip() {
+    // A5-P2-MVP-A: `&dyn Trait` dispatch on an empty struct. All
+    // three backends must agree:
+    // - interpreter (A5-P1, type-erased method registry)
+    // - cranelift JIT (silent fallback to interpreter — Dyn type
+    //   is rejected by eligibility, so this leg actually runs the
+    //   interpreter too)
+    // - AOT (P2-MVP-A: fat pointer + vtable + CallIndirectFn)
+    let src = r#"
+        trait Animal {
+            fn sound(self: Self) -> i64
+        }
+        struct Dog {}
+        impl Animal for Dog {
+            fn sound(self: Self) -> i64 { 7i64 }
+        }
+        fn describe(a: &dyn Animal) -> i64 {
+            a.sound()
+        }
+        fn main() -> u64 {
+            val d = Dog {}
+            describe(d) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_empty_struct");
+}
+
+#[test]
+fn dyn_trait_heterogeneous_dispatch_round_trip() {
+    // A5-P2-MVP-A: same `&dyn Trait` parameter, two different
+    // concrete empty structs. Vtable per-impl is exercised: Dog
+    // dispatches to Dog::tone(), Cat dispatches to Cat::tone(),
+    // sum is 1 + 2 = 3.
+    let src = r#"
+        trait Animal {
+            fn tone(self: Self) -> i64
+        }
+        struct Dog {}
+        struct Cat {}
+        impl Animal for Dog { fn tone(self: Self) -> i64 { 1i64 } }
+        impl Animal for Cat { fn tone(self: Self) -> i64 { 2i64 } }
+        fn pick(a: &dyn Animal) -> i64 {
+            a.tone()
+        }
+        fn main() -> u64 {
+            val d = Dog {}
+            val c = Cat {}
+            (pick(d) + pick(c)) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_hetero_dispatch");
+}

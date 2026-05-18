@@ -3,6 +3,17 @@
 use crate::ir::{Module, Type, TupleId};
 use frontend::type_decl::TypeDecl;
 
+/// A5-P2: lower `&dyn Trait` to a 2-element tuple `(data_ptr: U64,
+/// vtable_ptr: U64)`. The fat-pointer layout reuses the existing
+/// tuple-passing ABI (cranelift flattens a `Type::Tuple` parameter
+/// into its scalar elements), so no new IR Type variant is needed
+/// for MVP-A. The trait identity is recovered by the lower pass via
+/// the original `TypeDecl` rather than the IR shape.
+pub(super) fn lower_dyn_fat_ptr(module: &mut Module) -> Type {
+    let id = intern_tuple(module, vec![Type::U64, Type::U64]);
+    Type::Tuple(id)
+}
+
 /// Lower a `TypeDecl` to one of the IR's scalar `Type`s. Returns
 /// `None` for compound shapes (struct / tuple / enum / array) — the
 /// caller routes those through dedicated paths because they don't

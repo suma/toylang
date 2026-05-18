@@ -513,6 +513,14 @@ pub(super) fn lower_param_or_return_type(
             ) {
                 return Some(Type::U64);
             }
+        // A5-P2: `&dyn Trait` is the trait-object form. Lower to a
+        // 2-tuple (data_ptr, vtable_ptr) so it slots into the
+        // existing tuple-passing ABI. The fat-pointer's trait
+        // identity is recovered later by the lower pass via the
+        // original `TypeDecl`, not from the IR Type alone.
+        if matches!(inner.as_ref(), TypeDecl::Dyn(_)) {
+            return Some(super::types::lower_dyn_fat_ptr(module));
+        }
         return lower_param_or_return_type(inner, struct_defs, enum_defs, module, interner);
     }
     if let Some(t) = lower_scalar(ty) {

@@ -10,9 +10,46 @@ AOT compiler, the cranelift JIT, and owned trait objects via
 | Phase | Backend / scope | Status |
 |---|---|---|
 | **P1** | interpreter dispatch | ✅ landed (`eb32c3a`) |
-| **P2** | AOT compiler | planning (this doc) |
+| **P2-MVP-A** | AOT empty struct only | ✅ landed (2026-05-19) |
+| **P2-MVP-B** | AOT scalar field + thunk | planning |
+| **P2-MVP-C** | AOT compound / nested field | planning |
 | **P3** | cranelift JIT (compiler-side + interpreter-side) | planning |
 | **P4** | `Box<dyn Trait>` (owned trait objects) | not started |
+
+### MVP-A landed notes (2026-05-19)
+
+The plan in this doc held up with two surprises:
+
+- **Apple `ld` segfault on `__DATA,__bss` relocs.** The naive plan
+  used `define_zeroinit` for the vtable payload. On the
+  `arm64-apple-darwin25.5` toolchain (clang 21 / ld), function-
+  address relocations placed in `__DATA,__bss` crash the linker.
+  Switching to `define(vec![0u8; n])` puts the symbol in
+  `__DATA,__data` and the linker is happy. Same layout at runtime
+  because the relocs overwrite the zero bytes at link time.
+- **Lazy vtable emit is mandatory, not nice-to-have.** Emitting a
+  vtable per `(trait, struct)` in `ir_module.vtables` blew up
+  every non-dyn program in the test suite — auto-loaded stdlib
+  has ~33 `impl Trait for X` pairs, and the resulting 33 unused
+  function-address relocations triggered the same ld bug. The
+  shipped code walks every function's `InstKind::VtableAddr` and
+  only emits vtables for actually-referenced `(trait, struct)`
+  pairs. Future phases must preserve this gate.
+
+Beyond the vtable + dispatch plumbing, MVP-A introduced:
+
+- `Function::param_dyn_trait: Vec<Option<DefaultSymbol>>` — per
+  parameter trait identity. The call-site coercion reads this to
+  spot a `&dyn Trait` slot and emit the `(null_ptr, vtable_ptr)`
+  tuple from a concrete struct arg.
+- `Binding::DynTraitObj { trait_sym, data_ptr_local, vtable_ptr_local }`
+  — the function-body side of the same plumbing. The two leaves of
+  the flattened tuple land in separate locals.
+- `InstKind::CallIndirectFn { callee, args, param_tys, ret_ty }` —
+  a non-closure-ABI indirect call. The pre-existing `CallIndirect`
+  always prepends the closure env arg and loads `fn_ptr` from
+  `env+0`, neither of which applies to a vtable-loaded function
+  pointer.
 
 ## Why this is large
 

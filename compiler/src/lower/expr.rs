@@ -427,6 +427,12 @@ impl<'a> FunctionLower<'a> {
         let param_is_ref: Vec<bool> = target
             .map(|t| self.module.function(t).param_is_ref.clone())
             .unwrap_or_default();
+        // A5-P2: per-param dyn-trait identity. `Some(trait_sym)` means
+        // the slot expects a fat pointer; the call site coerces a
+        // concrete struct arg into `(null_ptr, vtable_ptr)`.
+        let param_dyn_trait: Vec<Option<DefaultSymbol>> = target
+            .map(|t| self.module.function(t).param_dyn_trait.clone())
+            .unwrap_or_default();
         let args_expr = self
             .program
             .expression
@@ -438,6 +444,73 @@ impl<'a> FunctionLower<'a> {
         };
         let mut values: Vec<ValueId> = Vec::with_capacity(items.len());
         for (arg_idx, a) in items.iter().enumerate() {
+            // A5-P2: dyn-trait coercion at the call site. When the
+            // callee's param at this slot is `&dyn TraitName`, the
+            // caller must hand over a fat pointer (data_ptr,
+            // vtable_ptr). MVP-A handles empty-struct receivers
+            // only — data_ptr = null, vtable_ptr = address of the
+            // pre-emitted `toy_vtable_<trait>_<struct>` symbol.
+            // The actual arg expression must reduce to a struct
+            // identifier (`d`) or its explicit borrow (`&d`); we
+            // recover the struct's base name from the binding and
+            // look up the vtable through `module.vtables`.
+            if let Some(trait_sym) = param_dyn_trait.get(arg_idx).and_then(|t| t.clone()) {
+                // Unwrap an explicit `&<ident>` borrow if present —
+                // both the auto-borrow form (`describe(d)`) and the
+                // explicit form (`describe(&d)`) reach the same
+                // coercion path.
+                let inner_expr_ref = match self.program.expression.get(a) {
+                    Some(Expr::Unary(op, inner))
+                        if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) =>
+                    {
+                        inner
+                    }
+                    _ => *a,
+                };
+                let struct_sym = match self.program.expression.get(&inner_expr_ref) {
+                    Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
+                        Some(Binding::Struct { struct_id, .. }) => self
+                            .module
+                            .struct_defs
+                            .get(struct_id.0 as usize)
+                            .map(|sd| sd.base_name),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let struct_sym = struct_sym.ok_or_else(|| {
+                    "MVP-A: &dyn arg must be a struct-typed identifier (`describe(d)` / `describe(&d)`)"
+                        .to_string()
+                })?;
+                if !self
+                    .module
+                    .vtables
+                    .contains_key(&(trait_sym, struct_sym))
+                {
+                    return Err(format!(
+                        "A5-P2: no vtable for the &dyn arg's `impl <trait> for <struct>` pair"
+                    ));
+                }
+                // Emit the two leaves directly. Cranelift's tuple ABI
+                // flattens `Type::Tuple([U64, U64])` into two scalar
+                // params at the call boundary, so the call site
+                // pushes data_ptr then vtable_ptr in order.
+                let data_ptr = self
+                    .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
+                    .expect("Const returns a value");
+                let vtable_ptr = self
+                    .emit(
+                        InstKind::VtableAddr {
+                            trait_sym,
+                            struct_sym,
+                        },
+                        Some(Type::U64),
+                    )
+                    .expect("VtableAddr returns a value");
+                values.push(data_ptr);
+                values.push(vtable_ptr);
+                continue;
+            }
             // REF-Stage-2 (b)+(c)+(g): explicit `&<var>` / `&mut <var>`
             // borrow of a SCALAR local emits an `AddressOf` and marks
             // the local as address-taken so codegen allocates it in a
@@ -871,6 +944,18 @@ impl<'a> FunctionLower<'a> {
                 // `g` is itself a FunctionPtr param).
                 self.pending_struct_value = None;
                 Ok(self.emit(InstKind::LoadLocal(local), Some(Type::U64)))
+            }
+            Some(Binding::DynTraitObj { .. }) => {
+                // A5-P2: bare use of a `&dyn Trait` value as an
+                // expression isn't supported in MVP-A. The intended
+                // use is method-call dispatch (handled in
+                // `lower_method_call`); plumbing the fat pointer
+                // around as a value would require a compound IR
+                // shape that the value graph doesn't carry yet.
+                Err(format!(
+                    "compiler MVP cannot use `&dyn Trait` binding `{}` as a value (call a trait method on it instead)",
+                    self.interner.resolve(sym).unwrap_or("?"),
+                ))
             }
             None => {
                 // Closures Phase 5b: a `val f = fn(...)` binding

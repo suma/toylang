@@ -103,6 +103,20 @@ pub struct Module {
     /// Some("Drop"), .. }`. Empty for programs that don't reference
     /// the stdlib `Drop` trait.
     pub drop_trait_structs: std::collections::HashSet<DefaultSymbol>,
+    /// A5-P2: ordered list of method symbols for each `trait` decl,
+    /// keyed by the trait's symbol. Lookup of `(trait_sym, method_sym)`
+    /// yields the **vtable slot index** for that method on any
+    /// `impl Trait for X` block. Populated by `lower_program` from
+    /// the AST's `Stmt::TraitDecl` entries. Methods appear in their
+    /// declaration order so the index is stable across impls.
+    pub trait_method_order: HashMap<DefaultSymbol, Vec<DefaultSymbol>>,
+    /// A5-P2: `(trait_sym, struct_sym)` → ordered list of `FuncId`s
+    /// for the trait's methods on the given struct, in
+    /// `trait_method_order[trait]` order. Each entry becomes one
+    /// vtable global data symbol at codegen time (`toy_vtable_<trait>_<struct>`).
+    /// Populated after method declarations are minted, so every
+    /// `FuncId` referenced here exists in `module.functions`.
+    pub vtables: HashMap<(DefaultSymbol, DefaultSymbol), Vec<FuncId>>,
 }
 
 /// One struct's full shape — fields keep their declared order
@@ -177,6 +191,7 @@ impl Module {
             linkage,
             params,
             param_is_ref: Vec::new(),
+            param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
@@ -221,6 +236,7 @@ impl Module {
             linkage,
             params,
             param_is_ref: Vec::new(),
+            param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
             locals: Vec::new(),
@@ -367,6 +383,13 @@ pub struct Function {
     /// Empty `Vec` is treated as "all false" so older code paths
     /// stay sound.
     pub param_is_ref: Vec<bool>,
+    /// A5-P2: per-parameter trait identity for `&dyn Trait` params.
+    /// `Some(trait_sym)` means the slot's IR type is the fat-pointer
+    /// tuple `(data_ptr, vtable_ptr)` and the caller must construct
+    /// it from a concrete struct value at the call site. `None` for
+    /// every non-dyn param. Empty `Vec` is treated as "all None" so
+    /// pre-A5 functions stay sound.
+    pub param_dyn_trait: Vec<Option<DefaultSymbol>>,
     pub return_type: Type,
     /// Stage 1 of `&` references: for `&mut self` methods only,
     /// the leaf scalar types appended to the function's cranelift
@@ -903,6 +926,29 @@ pub enum InstKind {
         captures: Vec<ValueId>,
         capture_tys: Vec<Type>,
     },
+    /// A5-P2: yield the runtime address of the vtable global
+    /// `toy_vtable_<trait>_<struct>` as a `Type::U64` value. The
+    /// codegen layer looks the `(trait_sym, struct_sym)` pair up
+    /// in `vtable_data_ids` to recover the `DataId` it emitted
+    /// during `declare_all`, then materialises the address via
+    /// `declare_data_in_func` + `symbol_value` (mirroring how
+    /// `FuncAddr` materialises a function address).
+    VtableAddr {
+        trait_sym: DefaultSymbol,
+        struct_sym: DefaultSymbol,
+    },
+    /// A5-P2: indirect call through a raw function pointer (no
+    /// implicit env). Differs from `CallIndirect`, which prepends
+    /// the closure ABI's `env_ptr` argument and loads `fn_ptr`
+    /// from `env+0`. Here `callee` is *already* the fn pointer
+    /// (e.g. loaded from a vtable slot), the signature is exactly
+    /// `(param_tys) -> ret_ty`, and no extra args are inserted.
+    CallIndirectFn {
+        callee: ValueId,
+        args: Vec<ValueId>,
+        param_tys: Vec<Type>,
+        ret_ty: Type,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1367,6 +1413,19 @@ impl fmt::Display for DisplayInst<'_> {
                 write!(f, "{prefix}array_elem_addr slot{}[{index}] : {elem_ty}", slot.0)
             }
             InstKind::FuncAddr { target } => write!(f, "{prefix}func_addr {target}"),
+            InstKind::VtableAddr { trait_sym, struct_sym } => write!(
+                f,
+                "{prefix}vtable_addr trait={:?} struct={:?}",
+                trait_sym, struct_sym
+            ),
+            InstKind::CallIndirectFn { callee, args, .. } => {
+                write!(f, "{prefix}call_indirect_fn {callee}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ")")
+            }
             InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {
                 let astr: Vec<String> = args.iter().map(|a| a.to_string()).collect();
                 let pstr: Vec<String> = param_tys.iter().map(|t| t.to_string()).collect();

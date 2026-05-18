@@ -1050,7 +1050,7 @@ impl<'a> FunctionLower<'a> {
     pub(super) fn lower_dyn_method_call(
         &mut self,
         trait_sym: DefaultSymbol,
-        _data_ptr_local: LocalId,
+        data_ptr_local: LocalId,
         vtable_ptr_local: LocalId,
         method: DefaultSymbol,
         args: &Vec<ExprRef>,
@@ -1069,13 +1069,15 @@ impl<'a> FunctionLower<'a> {
             })?;
 
         // Walk the AST to recover the trait method's declared
-        // signature (params skip the implicit `self`, return is
-        // mapped through `lower_param_or_return_type`). Cached
-        // per-call because the trait-decl scan is cheap and the
-        // dispatch sites are rare. MVP-A trusts that every impl
-        // of this trait targets an empty struct, so `self`
-        // contributes no leaves — we pass only the user-written
-        // args to `CallIndirect`.
+        // signature. The dispatched thunk's IR signature is
+        // `(U64 data_ptr, ...user_arg_tys) -> ret_ty`; the user-arg
+        // list comes from the trait declaration (skipping the
+        // implicit `self`), return is mapped through
+        // `lower_param_or_return_type`. The dispatch site has to
+        // prepend `data_ptr` to both the param_tys and the args
+        // arrays so the cranelift signature lines up with the
+        // thunk's pre-declared one (see
+        // `compiler/src/lower/program.rs` thunk pre-declare loop).
         let mut method_param_decls: Option<Vec<frontend::type_decl::TypeDecl>> = None;
         let mut method_ret_decl: Option<frontend::type_decl::TypeDecl> = None;
         for i in 0..self.program.statement.len() {
@@ -1113,16 +1115,19 @@ impl<'a> FunctionLower<'a> {
         let method_ret_decl =
             method_ret_decl.unwrap_or(frontend::type_decl::TypeDecl::Unit);
 
-        // Lower trait method param/return types to IR Types.
-        // Skip the `self` slot — for MVP-A it carries no leaves.
-        // Build the param-ty list parallel to `args` (user-written
-        // arguments only).
-        let mut ir_param_tys: Vec<crate::ir::Type> = Vec::with_capacity(args.len());
+        // Lower trait method param/return types to IR Types. The
+        // first slot of the dispatched thunk signature is always
+        // `data_ptr: U64`; user args follow. Skip the trait
+        // declaration's `self: Self` entry — it's absorbed into
+        // the thunk's data_ptr + leaf-read path. (MVP-B uniform ABI.)
+        let mut ir_param_tys: Vec<crate::ir::Type> = Vec::with_capacity(args.len() + 1);
+        ir_param_tys.push(crate::ir::Type::U64); // data_ptr
         for (i, pty) in method_param_decls.iter().enumerate() {
             // Skip a leading `self`-typed entry: the trait signature
             // always lists `self: Self` as its first parameter, and
             // the type-checker has already verified the call uses
-            // the trait's own receiver. MVP-A treats it as no-op.
+            // the trait's own receiver. The thunk handles the
+            // leaf-read; dispatch just forwards `data_ptr`.
             if i == 0 && matches!(pty, frontend::type_decl::TypeDecl::Self_) {
                 continue;
             }
@@ -1178,10 +1183,15 @@ impl<'a> FunctionLower<'a> {
             )
             .expect("PtrRead returns a value");
 
-        // Lower the user-written args. MVP-A doesn't support
-        // compound argument types through dyn dispatch yet; scalar
-        // args go through the regular value path.
-        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len());
+        // Lower the user-written args + prepend `data_ptr` so the
+        // thunk receives `(data_ptr, ...user_args)`. MVP-B doesn't
+        // support compound argument types through dyn dispatch yet;
+        // scalar args go through the regular value path.
+        let mut arg_values: Vec<ValueId> = Vec::with_capacity(args.len() + 1);
+        let data_ptr_val = self
+            .emit(InstKind::LoadLocal(data_ptr_local), Some(crate::ir::Type::U64))
+            .expect("LoadLocal(data_ptr) returns a value");
+        arg_values.push(data_ptr_val);
         for a in args {
             let v = self
                 .lower_expr(a)?

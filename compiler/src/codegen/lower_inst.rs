@@ -353,6 +353,40 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            InstKind::DynCoerceSlotAddr { slot_idx } => {
+                // A5-P2-MVP-B: lazily materialise the cranelift
+                // `StackSlot` for this `Function::dyn_coerce_slots`
+                // entry, then return its address as I64. The slot
+                // lives in the caller's cranelift frame, so its
+                // lifetime is bounded by the enclosing function
+                // body — matching the toylang `&dyn Trait` borrow
+                // semantics (the trait object never escapes the
+                // call that constructed it).
+                use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
+                let slot = if let Some(s) = self.dyn_coerce_stack_slots.get(slot_idx).copied() {
+                    s
+                } else {
+                    let func = self.ir_module.function(self.func_id);
+                    let size = *func.dyn_coerce_slots.get(*slot_idx as usize).ok_or_else(
+                        || {
+                            format!(
+                                "DynCoerceSlotAddr {slot_idx}: out of range \
+                                 (function has {} dyn_coerce_slots)",
+                                func.dyn_coerce_slots.len()
+                            )
+                        },
+                    )?;
+                    let slot = self.builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        0,
+                    ));
+                    self.dyn_coerce_stack_slots.insert(*slot_idx, slot);
+                    slot
+                };
+                let addr = self.builder.ins().stack_addr(types::I64, slot, 0);
+                self.record_result(inst, addr);
+            }
             InstKind::VtableAddr {
                 trait_sym,
                 struct_sym,

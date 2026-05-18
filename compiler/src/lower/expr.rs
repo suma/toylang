@@ -467,19 +467,26 @@ impl<'a> FunctionLower<'a> {
                     }
                     _ => *a,
                 };
-                let struct_sym = match self.program.expression.get(&inner_expr_ref) {
+                let (struct_sym, struct_fields, struct_id) = match self
+                    .program
+                    .expression
+                    .get(&inner_expr_ref)
+                {
                     Some(Expr::Identifier(sym)) => match self.bindings.get(&sym).cloned() {
-                        Some(Binding::Struct { struct_id, .. }) => self
-                            .module
-                            .struct_defs
-                            .get(struct_id.0 as usize)
-                            .map(|sd| sd.base_name),
-                        _ => None,
+                        Some(Binding::Struct { struct_id, fields }) => {
+                            let base_name = self
+                                .module
+                                .struct_defs
+                                .get(struct_id.0 as usize)
+                                .map(|sd| sd.base_name);
+                            (base_name, Some(fields), Some(struct_id))
+                        }
+                        _ => (None, None, None),
                     },
-                    _ => None,
+                    _ => (None, None, None),
                 };
                 let struct_sym = struct_sym.ok_or_else(|| {
-                    "MVP-A: &dyn arg must be a struct-typed identifier (`describe(d)` / `describe(&d)`)"
+                    "A5-P2: &dyn arg must be a struct-typed identifier (`describe(d)` / `describe(&d)`)"
                         .to_string()
                 })?;
                 if !self
@@ -491,13 +498,84 @@ impl<'a> FunctionLower<'a> {
                         "A5-P2: no vtable for the &dyn arg's `impl <trait> for <struct>` pair"
                     ));
                 }
-                // Emit the two leaves directly. Cranelift's tuple ABI
-                // flattens `Type::Tuple([U64, U64])` into two scalar
-                // params at the call boundary, so the call site
-                // pushes data_ptr then vtable_ptr in order.
-                let data_ptr = self
-                    .emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
-                    .expect("Const returns a value");
+                // A5-P2-MVP-B: construct the data_ptr leaf. Two cases:
+                //   * struct has zero leaves → sentinel `data_ptr = 0`.
+                //     Cranelift rejects size-0 stack slots so we skip
+                //     allocation; the thunk reads zero leaves and
+                //     never dereferences the pointer.
+                //   * struct has scalar leaves → allocate a per-call
+                //     `dyn_coerce_slots` entry sized to the struct's
+                //     natural-sum byte count, store each leaf at its
+                //     offset, and use the slot's address as data_ptr.
+                let struct_leaves = struct_fields
+                    .as_ref()
+                    .map(|f| super::bindings::flatten_struct_locals(f))
+                    .unwrap_or_default();
+                let data_ptr = if struct_leaves.is_empty() {
+                    self.emit(InstKind::Const(Const::U64(0)), Some(Type::U64))
+                        .expect("Const returns a value")
+                } else {
+                    let struct_id = struct_id.expect("struct_leaves nonempty implies binding");
+                    let total_bytes = self
+                        .compute_byte_size(Type::Struct(struct_id))
+                        .ok_or_else(|| {
+                            "A5-P2-MVP-B: cannot compute byte size for &dyn coercion source struct"
+                                .to_string()
+                        })?;
+                    let slot_idx = {
+                        let func = self.module.function_mut(self.func_id);
+                        let idx = func.dyn_coerce_slots.len() as u32;
+                        func.dyn_coerce_slots.push(total_bytes as u32);
+                        idx
+                    };
+                    let slot_addr = self
+                        .emit(
+                            InstKind::DynCoerceSlotAddr { slot_idx },
+                            Some(Type::U64),
+                        )
+                        .expect("DynCoerceSlotAddr returns a value");
+                    // Write each leaf into the slot at its natural-sum
+                    // byte offset. The order MUST match the thunk's
+                    // PtrRead order — both sides derive from the
+                    // module-walking flatten in declaration order,
+                    // so a parallel iteration with running offset
+                    // stays consistent.
+                    let mut running_offset: u64 = 0;
+                    for (local, leaf_ty) in &struct_leaves {
+                        let leaf_size = match leaf_ty {
+                            Type::Bool | Type::I8 | Type::U8 => 1u64,
+                            Type::I16 | Type::U16 => 2,
+                            Type::I32 | Type::U32 => 4,
+                            Type::I64 | Type::U64 | Type::F64 | Type::Str => 8,
+                            other => {
+                                return Err(format!(
+                                    "A5-P2-MVP-B: unsupported leaf type {:?} in &dyn coercion",
+                                    other
+                                ));
+                            }
+                        };
+                        let leaf_val = self
+                            .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                            .expect("LoadLocal returns a value");
+                        let off_v = self
+                            .emit(
+                                InstKind::Const(Const::U64(running_offset)),
+                                Some(Type::U64),
+                            )
+                            .expect("Const returns a value");
+                        self.emit(
+                            InstKind::PtrWrite {
+                                ptr: slot_addr,
+                                offset: off_v,
+                                value: leaf_val,
+                                value_ty: *leaf_ty,
+                            },
+                            None,
+                        );
+                        running_offset = running_offset.saturating_add(leaf_size);
+                    }
+                    slot_addr
+                };
                 let vtable_ptr = self
                     .emit(
                         InstKind::VtableAddr {

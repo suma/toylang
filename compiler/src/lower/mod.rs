@@ -319,6 +319,32 @@ pub(super) struct PendingClosureBody {
     pub(super) captures: Vec<(DefaultSymbol, Type)>,
 }
 
+/// A5-P2-MVP-B: one queued dyn-trait dispatch thunk awaiting body
+/// lowering. The thunk's `FuncId` has already been declared on the
+/// module (`module.declare_function_anon`) with signature
+/// `(U64 data_ptr, ...user_arg_tys) -> ret_ty`; the drain step
+/// synthesises the body inline by emitting `PtrRead`s for each
+/// struct leaf followed by a direct `Call` to the impl method.
+/// `struct_leaves` carries the same `(byte_offset, leaf_ty)`
+/// layout that `__builtin_ptr_read/write` uses (see
+/// `FunctionLower::compute_leaf_layout`), so the thunk reads
+/// the bytes the coercion-site `PtrWrite`s wrote.
+#[derive(Debug, Clone)]
+pub(super) struct PendingThunkBody {
+    pub(super) thunk_func_id: FuncId,
+    pub(super) impl_func_id: FuncId,
+    /// Leaf layout for the receiver struct, in
+    /// `compute_leaf_layout` order. Empty for empty-struct impls
+    /// (the thunk still exists for ABI uniformity but reads
+    /// zero leaves and forwards an empty arg list).
+    pub(super) struct_leaves: Vec<(u64, Type)>,
+    /// Trait-method user-arg types (excluding `self`, excluding
+    /// the prepended `data_ptr`). The thunk's IR signature is
+    /// `(U64, ...user_param_tys) -> ret_ty`.
+    pub(super) user_param_tys: Vec<Type>,
+    pub(super) ret_ty: Type,
+}
+
 /// Closures Phase 5a/6: linkage info for a `val name = fn(...)`
 /// binding. `func_id` always points at the lifted body; `env_ptr`
 /// is `Some(v)` when the closure captures outer-scope values
@@ -810,6 +836,123 @@ impl<'a> FunctionLower<'a> {
     /// machinery (closures don't carry any of that). The Module
     /// already holds the FuncId with the right param / return
     /// types from `lift_closure_binding`.
+    /// A5-P2-MVP-B: synthesise a dyn-dispatch thunk's IR body.
+    /// The thunk's IR signature is already
+    /// `(U64 data_ptr, ...user_arg_tys) -> ret_ty` (see
+    /// `PendingThunkBody`); this routine:
+    ///   1. allocates one local per IR parameter (data_ptr + user args),
+    ///   2. emits one `PtrRead` per `(byte_offset, leaf_ty)` against
+    ///      `data_ptr` to recover the receiver struct's leaves in
+    ///      the order the impl method expects,
+    ///   3. emits a direct `Call` to the impl FuncId with
+    ///      `(leaves..., user_args)`,
+    ///   4. returns the call result.
+    ///
+    /// Empty-struct impls fall out naturally: `struct_leaves` is
+    /// empty, no PtrRead is emitted, and the call argument list
+    /// is just the user args (matching the impl's `() -> R` shape
+    /// after leaf flattening).
+    pub(super) fn lower_dyn_thunk_body(
+        &mut self,
+        impl_func_id: crate::ir::FuncId,
+        struct_leaves: &[(u64, Type)],
+        user_param_tys: &[Type],
+    ) -> Result<(), String> {
+        // Allocate locals matching the param order: data_ptr (U64)
+        // first, then user args. The cranelift block-param to
+        // local mapping in codegen relies on a flat index map
+        // (`locals[i] = block_params[i]`), so we add locals in
+        // declaration order.
+        let data_ptr_local = self
+            .module
+            .function_mut(self.func_id)
+            .add_local(Type::U64);
+        let mut user_arg_locals: Vec<crate::ir::LocalId> =
+            Vec::with_capacity(user_param_tys.len());
+        for ty in user_param_tys {
+            let local = self.module.function_mut(self.func_id).add_local(*ty);
+            user_arg_locals.push(local);
+        }
+        let entry = self.module.function_mut(self.func_id).add_block();
+        self.module.function_mut(self.func_id).entry = entry;
+        self.current_block = Some(entry);
+        // Read each leaf from `data_ptr` at its natural-sum byte offset.
+        // The order and offsets here MUST mirror what the coercion
+        // site (`lower_call_args_with_target`) writes, otherwise the
+        // impl method sees garbage for fields. Both sides use
+        // `dyn_struct_leaf_layout` to derive `struct_leaves`, so
+        // the order is shared.
+        let data_ptr_v = self
+            .emit(InstKind::LoadLocal(data_ptr_local), Some(Type::U64))
+            .ok_or_else(|| "dyn thunk: LoadLocal(data_ptr) returned no value".to_string())?;
+        let mut leaf_values: Vec<ValueId> = Vec::with_capacity(struct_leaves.len());
+        for (offset, leaf_ty) in struct_leaves {
+            let off_v = self
+                .emit(
+                    InstKind::Const(crate::ir::Const::U64(*offset)),
+                    Some(Type::U64),
+                )
+                .ok_or_else(|| "dyn thunk: Const(offset) returned no value".to_string())?;
+            let v = self
+                .emit(
+                    InstKind::PtrRead {
+                        ptr: data_ptr_v,
+                        offset: off_v,
+                        elem_ty: *leaf_ty,
+                    },
+                    Some(*leaf_ty),
+                )
+                .ok_or_else(|| "dyn thunk: PtrRead returned no value".to_string())?;
+            leaf_values.push(v);
+        }
+        // Forward user args.
+        let mut user_arg_vals: Vec<ValueId> = Vec::with_capacity(user_arg_locals.len());
+        for (local, ty) in user_arg_locals.iter().zip(user_param_tys.iter()) {
+            let v = self
+                .emit(InstKind::LoadLocal(*local), Some(*ty))
+                .ok_or_else(|| "dyn thunk: LoadLocal(user_arg) returned no value".to_string())?;
+            user_arg_vals.push(v);
+        }
+        // Call the impl with `(leaves..., user_args)`. The impl's
+        // signature was lowered in the method-decl loop as
+        // `(field_leaves..., user_args...) -> ret_ty`, so the
+        // concatenation here lines up exactly.
+        let mut call_args: Vec<ValueId> =
+            Vec::with_capacity(leaf_values.len() + user_arg_vals.len());
+        call_args.extend(leaf_values);
+        call_args.extend(user_arg_vals);
+        let ret_ty = self.module.function(self.func_id).return_type;
+        let call_result_ty = if matches!(ret_ty, Type::Unit) {
+            None
+        } else {
+            Some(ret_ty)
+        };
+        let call_result = self.emit(
+            InstKind::Call {
+                target: impl_func_id,
+                args: call_args,
+            },
+            call_result_ty,
+        );
+        // Terminate with the appropriate return form.
+        let fid = self.func_id;
+        let return_vals: Vec<ValueId> = if matches!(ret_ty, Type::Unit) {
+            Vec::new()
+        } else {
+            vec![call_result.ok_or_else(|| {
+                "dyn thunk: Call returned no value but ret_ty is non-Unit".to_string()
+            })?]
+        };
+        self.module
+            .function_mut(fid)
+            .blocks
+            .last_mut()
+            .expect("entry block must exist")
+            .terminator = Some(crate::ir::Terminator::Return(return_vals));
+        self.current_block = None;
+        Ok(())
+    }
+
     pub(super) fn lower_closure_body(
         &mut self,
         parameter: &frontend::ast::ParameterList,

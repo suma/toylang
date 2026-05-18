@@ -223,6 +223,40 @@ pub(super) fn populate_method_writeback_types(
 /// order. Mirrors `flatten_struct_to_cranelift_tys` but stays in
 /// IR `Type` space so we can pre-populate
 /// `Function::self_writeback_types` before any body is lowered.
+/// A5-P2-MVP-B: scalar leaf size in bytes, matching the natural-sum
+/// byte layout that `FunctionLower::compute_byte_size` and the
+/// `__builtin_ptr_read/write` family use. Reject compound types
+/// (struct / tuple / enum) — the caller is expected to pre-flatten
+/// via `flatten_compound_leaf_types`.
+fn scalar_byte_size(ty: Type) -> Option<u64> {
+    match ty {
+        Type::Bool | Type::I8 | Type::U8 => Some(1),
+        Type::I16 | Type::U16 => Some(2),
+        Type::I32 | Type::U32 => Some(4),
+        Type::I64 | Type::U64 | Type::F64 | Type::Str => Some(8),
+        _ => None,
+    }
+}
+
+/// A5-P2-MVP-B: compute the leaf layout (byte_offset, leaf_ty) for
+/// a struct type that's about to be passed through `&dyn Trait`.
+/// Mirrors `FunctionLower::compute_leaf_layout` but operates at
+/// the module-walking layer (no FunctionLower in scope yet during
+/// the method-decl loop). Returns `None` if any leaf is compound /
+/// enum / Unit — MVP-B only supports scalar fields.
+fn dyn_struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>> {
+    let mut leaves: Vec<Type> = Vec::new();
+    flatten_compound_leaf_types(module, ty, &mut leaves);
+    let mut out: Vec<(u64, Type)> = Vec::with_capacity(leaves.len());
+    let mut offset: u64 = 0;
+    for leaf in leaves {
+        let sz = scalar_byte_size(leaf)?;
+        out.push((offset, leaf));
+        offset = offset.saturating_add(sz);
+    }
+    Some(out)
+}
+
 fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type>) {
     match ty {
         Type::Struct(id) => {
@@ -521,6 +555,11 @@ pub fn lower_program(
     let mut generic_methods: GenericMethods = HashMap::new();
     let mut method_instances: MethodInstances = HashMap::new();
     let mut pending_method_work: Vec<PendingMethodInstance> = Vec::new();
+    // A5-P2-MVP-B: dyn-trait dispatch thunk queue. Each entry pre-declares
+    // a `(U64 data_ptr, ...user_args) -> R` thunk that, at drain time,
+    // reads the receiver struct's leaves via PtrRead and forwards to
+    // the impl method. See `PendingThunkBody`.
+    let mut pending_thunk_work: Vec<super::PendingThunkBody> = Vec::new();
     // CONCRETE-IMPL Phase 2b: each `(target, method)` may have
     // multiple template specs (one per impl block with distinct
     // concrete `target_type_args`). Iterate them and declare a
@@ -730,6 +769,87 @@ pub fn lower_program(
             Some(o) => o,
             None => continue,
         };
+        // A5-P2-MVP-B: snapshot the trait declaration's per-method
+        // user-arg types and return type. The thunk's IR signature
+        // is `(U64 data_ptr, ...user_arg_tys) -> ret_ty`, all
+        // derived from the trait declaration so it matches the
+        // dispatch-site `CallIndirectFn` signature exactly.
+        let trait_method_sigs: HashMap<DefaultSymbol, (Vec<Type>, Type)> = {
+            let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type)> = HashMap::new();
+            for j in 0..program.statement.len() {
+                let sref = frontend::ast::StmtRef(j as u32);
+                if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
+                    program.statement.get(&sref)
+                {
+                    if name == trait_sym {
+                        for sig in &methods {
+                            let mut user_param_tys: Vec<Type> = Vec::new();
+                            let mut user_resolved = true;
+                            for (i_par, (_, pty)) in sig.parameter.iter().enumerate() {
+                                // Skip the implicit `self: Self` slot.
+                                if i_par == 0
+                                    && matches!(pty, TypeDecl::Self_)
+                                {
+                                    continue;
+                                }
+                                match lower_param_or_return_type(
+                                    pty,
+                                    &struct_defs,
+                                    &enum_defs,
+                                    &mut module,
+                                    interner,
+                                ) {
+                                    Some(t) => user_param_tys.push(t),
+                                    None => {
+                                        user_resolved = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if !user_resolved {
+                                continue;
+                            }
+                            let ret_decl = sig
+                                .return_type
+                                .clone()
+                                .unwrap_or(TypeDecl::Unit);
+                            let ret_ty = match lower_param_or_return_type(
+                                &ret_decl,
+                                &struct_defs,
+                                &enum_defs,
+                                &mut module,
+                                interner,
+                            ) {
+                                Some(t) => t,
+                                None => continue,
+                            };
+                            sigs.insert(sig.name, (user_param_tys, ret_ty));
+                        }
+                        break;
+                    }
+                }
+            }
+            sigs
+        };
+        // A5-P2-MVP-B: compute the receiver's leaf layout once per
+        // impl block. Empty struct → empty Vec; field-bearing
+        // struct → `(offset, leaf_ty)` per leaf. Compound /
+        // unsupported fields (enums, nested) → `None`, which
+        // means we skip thunk generation and the dispatch site
+        // will surface a clean missing-vtable error.
+        let self_ir_ty = lower_param_or_return_type(
+            &TypeDecl::Identifier(target_type),
+            &struct_defs,
+            &enum_defs,
+            &mut module,
+            interner,
+        );
+        let struct_leaves: Option<Vec<(u64, Type)>> =
+            self_ir_ty.and_then(|t| dyn_struct_leaf_layout(&module, t));
+        let struct_leaves = match struct_leaves {
+            Some(v) => v,
+            None => continue, // unsupported field shape — skip this impl's vtable
+        };
         let mut vtable_funcs: Vec<FuncId> = Vec::with_capacity(method_order.len());
         let mut all_resolved = true;
         for method_sym in &method_order {
@@ -737,11 +857,11 @@ pub fn lower_program(
             // method) — MVP-A treats every impl as monomorphic, so
             // a single spec suffices. Future phases that allow
             // generic-trait impls will fan out per concrete type.
-            let func_id = method_func_ids
+            let impl_func_id = match method_func_ids
                 .get(&(target_type, *method_sym))
-                .and_then(|specs| specs.first().map(|s| s.func_id));
-            match func_id {
-                Some(fid) => vtable_funcs.push(fid),
+                .and_then(|specs| specs.first().map(|s| s.func_id))
+            {
+                Some(fid) => fid,
                 None => {
                     // Method body wasn't lowered (generic, default
                     // not yet expanded for this impl, etc.). Skip
@@ -750,7 +870,44 @@ pub fn lower_program(
                     all_resolved = false;
                     break;
                 }
-            }
+            };
+            let (user_param_tys, ret_ty) = match trait_method_sigs.get(method_sym).cloned()
+            {
+                Some(pair) => pair,
+                None => {
+                    all_resolved = false;
+                    break;
+                }
+            };
+            // Declare the thunk FuncId with signature
+            // `(U64 data_ptr, ...user_param_tys) -> ret_ty`.
+            let trait_str = interner.resolve(trait_sym).unwrap_or("trait");
+            let struct_str = interner.resolve(target_type).unwrap_or("struct");
+            let method_str = interner.resolve(*method_sym).unwrap_or("method");
+            let thunk_name = format!(
+                "toy_dyn_thunk_{}_{}_{}",
+                trait_str, struct_str, method_str
+            );
+            let mut thunk_params: Vec<Type> = Vec::with_capacity(user_param_tys.len() + 1);
+            thunk_params.push(Type::U64); // data_ptr
+            thunk_params.extend(user_param_tys.iter().copied());
+            let thunk_func_id = module.declare_function_anon(
+                thunk_name,
+                Linkage::Local,
+                thunk_params,
+                ret_ty,
+            );
+            pending_thunk_work.push(super::PendingThunkBody {
+                thunk_func_id,
+                impl_func_id,
+                struct_leaves: struct_leaves.clone(),
+                user_param_tys,
+                ret_ty,
+            });
+            // Vtable entry points at the thunk, not the impl, so
+            // every dyn dispatch site sees the uniform
+            // `(data_ptr, ...args) -> R` signature.
+            vtable_funcs.push(thunk_func_id);
         }
         if all_resolved {
             module.vtables.insert((trait_sym, target_type), vtable_funcs);
@@ -1001,6 +1158,40 @@ pub fn lower_program(
             &mut pending_closure_work,
         )?;
         builder.lower_closure_body(&work.parameter, &work.body, &work.captures)?;
+    }
+
+    // A5-P2-MVP-B: drain the dyn-dispatch thunk queue. Each entry
+    // synthesizes a small wrapper that reads receiver-struct leaves
+    // from `data_ptr` and forwards to the impl method. Closure-bodies
+    // must drain first so any impl method that depends on a closure
+    // helper sees a complete IR module when its thunk references it
+    // via `Call(impl_func_id)`.
+    while let Some(work) = pending_thunk_work.pop() {
+        let mut builder = FunctionLower::new(
+            &mut module,
+            work.thunk_func_id,
+            program,
+            interner,
+            &struct_defs,
+            &enum_defs,
+            &generic_funcs,
+            &mut generic_instances,
+            &mut pending_generic_work,
+            &const_values,
+            contract_msgs,
+            release,
+            &method_registry,
+            &method_func_ids,
+            &generic_methods,
+            &mut method_instances,
+            &mut pending_method_work,
+            &mut pending_closure_work,
+        )?;
+        builder.lower_dyn_thunk_body(
+            work.impl_func_id,
+            &work.struct_leaves,
+            &work.user_param_tys,
+        )?;
     }
     Ok(module)
 }

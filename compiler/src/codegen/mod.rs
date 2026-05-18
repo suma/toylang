@@ -1309,6 +1309,12 @@ struct LowerCtx<'a, 'b> {
     /// StoreLocal route through `stack_load` / `stack_store` for
     /// these so the storage AddressOf points at stays canonical.
     addr_taken_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
+    /// A5-P2-MVP-B: per-`Function::dyn_coerce_slots` entry cranelift
+    /// `StackSlot`. Materialised lazily on the first
+    /// `InstKind::DynCoerceSlotAddr { slot_idx }` reference so that
+    /// functions that don't emit any dyn-coercion don't pay the
+    /// stack-slot cost.
+    dyn_coerce_stack_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
 }
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
@@ -1373,6 +1379,7 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
             values: HashMap::new(),
             array_slots: HashMap::new(),
             addr_taken_slots: HashMap::new(),
+            dyn_coerce_stack_slots: HashMap::new(),
         }
     }
 

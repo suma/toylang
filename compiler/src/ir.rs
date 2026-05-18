@@ -191,6 +191,7 @@ impl Module {
             linkage,
             params,
             param_is_ref: Vec::new(),
+            dyn_coerce_slots: Vec::new(),
             param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
@@ -236,6 +237,7 @@ impl Module {
             linkage,
             params,
             param_is_ref: Vec::new(),
+            dyn_coerce_slots: Vec::new(),
             param_dyn_trait: Vec::new(),
             return_type,
             self_writeback_types: Vec::new(),
@@ -383,6 +385,15 @@ pub struct Function {
     /// Empty `Vec` is treated as "all false" so older code paths
     /// stay sound.
     pub param_is_ref: Vec<bool>,
+    /// A5-P2-MVP-B: per-function stack-slot sizes for `&dyn Trait`
+    /// coercion sites. When a caller passes a struct with fields
+    /// through a `&dyn Trait` parameter, we allocate one entry here
+    /// (size in bytes = `compute_byte_size(struct_ty)`) and
+    /// reference it from `InstKind::DynCoerceSlotAddr`. Slots
+    /// live in the caller's cranelift frame; `data_ptr` is the
+    /// slot's address. Empty structs don't allocate (sentinel
+    /// `data_ptr = 0` is used at the dispatch site).
+    pub dyn_coerce_slots: Vec<u32>,
     /// A5-P2: per-parameter trait identity for `&dyn Trait` params.
     /// `Some(trait_sym)` means the slot's IR type is the fat-pointer
     /// tuple `(data_ptr, vtable_ptr)` and the caller must construct
@@ -949,6 +960,15 @@ pub enum InstKind {
         param_tys: Vec<Type>,
         ret_ty: Type,
     },
+    /// A5-P2-MVP-B: yield the runtime address of a caller-frame
+    /// stack slot reserved for `&dyn Trait` coercion. `slot_idx`
+    /// indexes `Function::dyn_coerce_slots`. Codegen creates one
+    /// cranelift `StackSlot` per entry (sized in bytes) lazily
+    /// and returns `stack_addr(I64, slot, 0)`. Used as `data_ptr`
+    /// when passing a field-bearing struct through a `&dyn Trait`
+    /// parameter; the dispatched thunk reads field leaves out of
+    /// this slot via `PtrRead`.
+    DynCoerceSlotAddr { slot_idx: u32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1425,6 +1445,9 @@ impl fmt::Display for DisplayInst<'_> {
                     write!(f, "{a}")?;
                 }
                 write!(f, ")")
+            }
+            InstKind::DynCoerceSlotAddr { slot_idx } => {
+                write!(f, "{prefix}dyn_coerce_slot_addr {slot_idx}")
             }
             InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {
                 let astr: Vec<String> = args.iter().map(|a| a.to_string()).collect();

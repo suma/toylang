@@ -4651,3 +4651,77 @@ fn dyn_trait_heterogeneous_dispatch_round_trip() {
     "#;
     assert_consistent(src, "dyn_hetero_dispatch");
 }
+
+#[test]
+fn dyn_trait_scalar_field_round_trip() {
+    // A5-P2-MVP-B: `&dyn Trait` dispatch on a struct with one scalar
+    // field. The fat pointer's data_ptr now references a caller-frame
+    // stack slot holding the field value; the dispatched thunk reads
+    // it back via PtrRead before forwarding to the impl method.
+    let src = r#"
+        trait Num {
+            fn get(self: Self) -> u64
+        }
+        struct Cell { v: u64 }
+        impl Num for Cell {
+            fn get(self: Self) -> u64 { self.v }
+        }
+        fn use_dyn(n: &dyn Num) -> u64 {
+            n.get()
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 42u64 }
+            use_dyn(c)
+        }
+    "#;
+    assert_consistent(src, "dyn_scalar_field");
+}
+
+#[test]
+fn dyn_trait_two_scalar_fields_round_trip() {
+    // A5-P2-MVP-B: struct with two scalar fields of mixed types.
+    // Tests the natural-sum byte offset accounting (i64=8, u64=8
+    // → leaf2 at offset 8) for both coercion-site PtrWrite and
+    // thunk-side PtrRead. Result = x + y = 10 + 32 = 42.
+    let src = r#"
+        trait Pair {
+            fn sum(self: Self) -> u64
+        }
+        struct Pt { x: u64, y: u64 }
+        impl Pair for Pt {
+            fn sum(self: Self) -> u64 { self.x + self.y }
+        }
+        fn use_dyn(p: &dyn Pair) -> u64 {
+            p.sum()
+        }
+        fn main() -> u64 {
+            val p = Pt { x: 10u64, y: 32u64 }
+            use_dyn(p)
+        }
+    "#;
+    assert_consistent(src, "dyn_two_scalar_fields");
+}
+
+#[test]
+fn dyn_trait_heterogeneous_field_round_trip() {
+    // A5-P2-MVP-B: two concrete types with different scalar fields
+    // both routed through the same `&dyn Trait` param. Cell uses
+    // i64, Pad uses u64 — different per-impl thunks but the
+    // dispatch site sees a uniform call signature.
+    let src = r#"
+        trait Show {
+            fn payload(self: Self) -> u64
+        }
+        struct Cell { v: u64 }
+        struct Pad { w: u64 }
+        impl Show for Cell { fn payload(self: Self) -> u64 { self.v } }
+        impl Show for Pad  { fn payload(self: Self) -> u64 { self.w + 1u64 } }
+        fn pick(s: &dyn Show) -> u64 { s.payload() }
+        fn main() -> u64 {
+            val c = Cell { v: 5u64 }
+            val p = Pad { w: 7u64 }
+            pick(c) + pick(p)
+        }
+    "#;
+    assert_consistent(src, "dyn_hetero_field");
+}

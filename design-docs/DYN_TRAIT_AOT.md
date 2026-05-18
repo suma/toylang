@@ -11,7 +11,7 @@ AOT compiler, the cranelift JIT, and owned trait objects via
 |---|---|---|
 | **P1** | interpreter dispatch | ✅ landed (`eb32c3a`) |
 | **P2-MVP-A** | AOT empty struct only | ✅ landed (2026-05-19) |
-| **P2-MVP-B** | AOT scalar field + thunk | planning |
+| **P2-MVP-B** | AOT scalar field + thunk | ✅ landed (2026-05-19) |
 | **P2-MVP-C** | AOT compound / nested field | planning |
 | **P3** | cranelift JIT (compiler-side + interpreter-side) | planning |
 | **P4** | `Box<dyn Trait>` (owned trait objects) | not started |

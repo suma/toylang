@@ -257,6 +257,12 @@ impl<'a> ErrorHandling for TypeCheckerVisitor<'a> {
                     .collect();
                 format!("({}) -> {}", param_strs.join(", "), self.format_type_for_error(ret))
             }
+            TypeDecl::TraitIntersection(traits) => {
+                let name_strs: Vec<String> = traits.iter()
+                    .map(|t| self.resolve_symbol_name(*t).to_string())
+                    .collect();
+                name_strs.join(" + ")
+            }
         }
     }
     

@@ -372,6 +372,17 @@ impl<'a> AstIntegrationContext<'a> {
                 }
                 TypeDecl::Function(new_params, Box::new(self.remap_type_decl(ret)?))
             }
+            // A2 multi-bound: each symbol is a trait name living in the
+            // module's interner; route through `remap_type_symbol` so
+            // stdlib aliasing of trait names works (same convention as
+            // `Identifier` above).
+            TypeDecl::TraitIntersection(syms) => {
+                let mut new_syms = Vec::with_capacity(syms.len());
+                for s in syms {
+                    new_syms.push(self.remap_type_symbol(*s)?);
+                }
+                TypeDecl::TraitIntersection(new_syms)
+            }
             // Symbol-free leaf cases pass through.
             other => other.clone(),
         })

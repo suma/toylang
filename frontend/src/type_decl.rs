@@ -46,6 +46,15 @@ pub enum TypeDecl {
     /// landing — interpreter / JIT / AOT execution paths come in
     /// follow-up phases.
     Function(Vec<TypeDecl>, Box<TypeDecl>),
+    /// A2 multi-bound: intersection of two or more trait bounds for
+    /// a single generic parameter, e.g. `<T: Greet + Named>`. Each
+    /// `DefaultSymbol` names a trait. Used only in
+    /// `generic_bounds` maps; single bounds keep the bare
+    /// `Identifier(trait_sym)` form so existing single-bound
+    /// pattern arms in the type checker stay unchanged. The
+    /// parser always promotes to this variant when it sees a `+`
+    /// between bounds.
+    TraitIntersection(Vec<DefaultSymbol>),
 }
 
 impl TypeDecl {

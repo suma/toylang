@@ -1708,6 +1708,67 @@ fn main() -> u64 {
 The bound chain is transparent: a caller's own `<U: Greet>` parameter
 satisfies `<T: Greet>` without further conversion.
 
+#### Multiple bounds (`<T: A + B>`)
+
+A generic parameter can require **multiple** traits at once by joining
+them with `+`. The bounded value can call any method from any of the
+listed traits, and the call site must supply a concrete type that
+implements **all** of them.
+
+```rust
+trait Greet { fn greet(self: Self) -> i64 }
+trait Named { fn id(self: Self)    -> i64 }
+
+struct Dog { tag: i64 }
+impl Greet for Dog { fn greet(self: Self) -> i64 { 1i64 } }
+impl Named for Dog { fn id(self: Self)    -> i64 { self.tag } }
+
+fn describe<T: Greet + Named>(x: T) -> i64 {
+    x.greet() + x.id()    # uses one method from each trait
+}
+
+fn main() -> i64 {
+    val d = Dog { tag: 41i64 }
+    describe(d)    # => 42
+}
+```
+
+Semantics:
+
+- The bound list is order-independent — `<T: A + B>` and
+  `<T: B + A>` accept the same set of concrete types and dispatch
+  the same methods.
+- Three or more bounds work the same way: `<T: A + B + C>`.
+- Bound-chain pass-through extends to multi-bounds: a caller's
+  `<U: A + B>` satisfies a callee's `<T: A>`, `<T: B>`, or
+  `<T: A + B>` without conversion. (A `<U: A>`-only caller does
+  **not** satisfy `<T: A + B>` — Named is still missing.)
+- Method dispatch on the bounded `T` searches the bound list in
+  declaration order and takes the first trait whose signature
+  table contains the called method. Two bound traits providing a
+  method of the same name is allowed but the first-listed trait
+  wins; rename the trait method to avoid ambiguity if that
+  matters.
+
+Failure messages pinpoint the first missing trait so the user knows
+which `impl` is needed:
+
+```
+Function 'describe' generic parameter 'T' bound violation:
+  expected Greet + Named, got Cat
+  (struct `Cat` does not implement trait `Named`)
+```
+
+Internally, single bounds (`<T: A>`) keep the bare
+`TypeDecl::Identifier(trait_sym)` form in
+`Function::generic_bounds`; multi-bounds promote to the new
+`TypeDecl::TraitIntersection(Vec<DefaultSymbol>)` variant. Backends
+(interpreter / cranelift JIT / AOT) see only monomorphized concrete
+types, so they need no changes — the work is entirely in the parser
+and type checker. The 3-way consistency tests
+`multi_bound_dispatch_round_trip` and `multi_bound_three_traits_round_trip`
+in `compiler/tests/consistency.rs` pin this.
+
 ### Errors caught at type-check time
 
 - An `impl Trait for Type` block missing a method: `missing method 'm' required by trait`
@@ -1722,7 +1783,8 @@ satisfies `<T: Greet>` without further conversion.
 - ~~Default method bodies in traits~~ — 完了済み (A1,
   2026-05-18). See *Default method bodies* above. Remaining gap:
   default bodies on generic traits that reference `T`.
-- Multiple bounds (`<T: A + B>`)
+- ~~Multiple bounds (`<T: A + B>`)~~ — 完了済み (A2, 2026-05-18).
+  See *Trait bounds on generics → Multiple bounds* above.
 - Trait inheritance (`trait B: A`)
 - Dynamic dispatch via `dyn Trait` objects
 - Associated types
@@ -2551,15 +2613,17 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   func(i)`) is rejected at lower time. Pre-bind to a struct
   method or a local first if you need 3-backend portability.
   Tracked as `AOT-MATCH-SCRUTINEE-EXPAND` in `design-docs/todo.md`.
-- **Trait limitations** — no multiple bounds (`<T: A + B>`); no
-  trait inheritance; no `dyn Trait`; no associated types. Generic
-  trait declarations (`trait Foo<T>`) are supported (see
-  ITER-PROTOCOL-TRAIT in `design-docs/todo.md` 完了済み 2026-05-07).
-  **Default method bodies** are supported as of A1 (2026-05-18) —
-  see *Traits → Default method bodies*. Generic-trait default
-  bodies that reference the trait's type parameter `T` are not
-  yet wired (T → concrete substitution is pending A2+).
-  See *Traits → Out of scope* for the remaining list.
+- **Trait limitations** — no trait inheritance; no `dyn Trait`;
+  no associated types. Generic trait declarations (`trait Foo<T>`)
+  are supported (see ITER-PROTOCOL-TRAIT in `design-docs/todo.md`
+  完了済み 2026-05-07). **Default method bodies** are supported
+  as of A1 (2026-05-18) — see *Traits → Default method bodies*.
+  **Multiple bounds (`<T: A + B>`)** are supported as of A2
+  (2026-05-18) — see *Traits → Trait bounds on generics*.
+  Generic-trait default bodies that reference the trait's type
+  parameter `T` are not yet wired (T → concrete substitution is
+  pending follow-up). See *Traits → Out of scope* for the
+  remaining list.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by

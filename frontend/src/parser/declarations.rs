@@ -200,13 +200,54 @@ impl<'a> Parser<'a> {
                     params.push(param_symbol);
                     self.next();
 
-                    // Optional bound: `: <Type>`. Currently only the concrete type
-                    // after the colon is parsed; trait-like sum bounds (`A + B`)
-                    // are out of scope until we have real traits.
+                    // Optional bound: `: <Type>` or `: <Trait> + <Trait> + ...`
+                    // (A2 multi-bound). The first bound parses as a regular
+                    // type (so `<A: Allocator>` keeps working with the
+                    // builtin `Allocator` bound). If a `+` follows AND the
+                    // first bound is a trait name (`Identifier`), promote to
+                    // `TraitIntersection` and collect the rest. Mixing a
+                    // non-trait first bound with `+` is rejected.
                     if self.peek() == Some(&Kind::Colon) {
                         self.next(); // consume ':'
-                        let bound_ty = self.parse_type_declaration()?;
-                        bounds.insert(param_symbol, bound_ty);
+                        let first = self.parse_type_declaration()?;
+                        let bound_final = if self.peek() == Some(&Kind::IAdd) {
+                            let first_sym = match &first {
+                                TypeDecl::Identifier(sym) => *sym,
+                                other => {
+                                    let location = self.current_source_location();
+                                    return Err(ParserError::generic_error(
+                                        location,
+                                        format!(
+                                            "'+' bound list requires trait names; got {:?}",
+                                            other
+                                        ),
+                                    ));
+                                }
+                            };
+                            let mut traits = vec![first_sym];
+                            while self.peek() == Some(&Kind::IAdd) {
+                                self.next(); // consume '+'
+                                let trait_sym = match self.peek() {
+                                    Some(Kind::Identifier(s)) => {
+                                        let s = s.to_string();
+                                        self.next();
+                                        self.string_interner.get_or_intern(s)
+                                    }
+                                    _ => {
+                                        let location = self.current_source_location();
+                                        return Err(ParserError::generic_error(
+                                            location,
+                                            "expected trait name after '+' in bound list".to_string(),
+                                        ));
+                                    }
+                                };
+                                traits.push(trait_sym);
+                            }
+                            TypeDecl::TraitIntersection(traits)
+                        } else {
+                            first
+                        };
+                        bounds.insert(param_symbol, bound_final);
                     }
 
                     match self.peek() {

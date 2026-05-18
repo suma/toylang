@@ -758,3 +758,155 @@ mod generic_traits {
         assert_eq!(result.borrow().unwrap_int64(), 10);
     }
 }
+
+// =====================================================================
+// A2: multi-trait bounds (`<T: A + B>`). The parser promotes `+`-joined
+// bounds to `TypeDecl::TraitIntersection([A, B, ...])`; the type checker
+// requires the inferred concrete type to implement every trait in the
+// intersection, and method dispatch on the bounded T tries each trait.
+// =====================================================================
+mod multi_bound {
+    use crate::common::test_program;
+
+    #[test]
+    fn multi_bound_dispatch_through_both_traits() {
+        // Dog implements Greet AND Named; the generic body calls one
+        // method from each trait, exercising the OR-search in
+        // method-call resolution and the AND-check in bound enforcement.
+        let source = r#"
+            trait Greet {
+                fn greet(self: Self) -> i64
+            }
+            trait Named {
+                fn id(self: Self) -> i64
+            }
+            struct Dog { tag: i64 }
+            impl Greet for Dog {
+                fn greet(self: Self) -> i64 { 1i64 }
+            }
+            impl Named for Dog {
+                fn id(self: Self) -> i64 { self.tag }
+            }
+            fn describe<T: Greet + Named>(x: T) -> i64 {
+                x.greet() + x.id()
+            }
+            fn main() -> i64 {
+                val d = Dog { tag: 41i64 }
+                describe(d)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+
+    #[test]
+    fn multi_bound_rejects_missing_trait() {
+        // Cat implements only Greet; the bound demands `Greet + Named`.
+        // The error should pinpoint Named as the missing trait.
+        let source = r#"
+            trait Greet {
+                fn greet(self: Self) -> i64
+            }
+            trait Named {
+                fn id(self: Self) -> i64
+            }
+            struct Cat { v: i64 }
+            impl Greet for Cat {
+                fn greet(self: Self) -> i64 { 1i64 }
+            }
+            fn describe<T: Greet + Named>(x: T) -> i64 {
+                x.greet()
+            }
+            fn main() -> i64 {
+                val c = Cat { v: 0i64 }
+                describe(c)
+            }
+        "#;
+        let err = test_program(source).expect_err("expected error");
+        assert!(
+            err.contains("bound violation") && err.contains("Named"),
+            "expected Named to be flagged as the missing trait, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn multi_bound_order_independence() {
+        // Switching the bound order `<T: B + A>` vs `<T: A + B>` must
+        // produce the same dispatch behavior because intersection
+        // semantics are commutative.
+        let source = r#"
+            trait A {
+                fn a_val(self: Self) -> i64
+            }
+            trait B {
+                fn b_val(self: Self) -> i64
+            }
+            struct S { v: i64 }
+            impl A for S {
+                fn a_val(self: Self) -> i64 { self.v }
+            }
+            impl B for S {
+                fn b_val(self: Self) -> i64 { self.v + 1i64 }
+            }
+            fn ab<T: A + B>(x: T) -> i64 { x.a_val() + x.b_val() }
+            fn ba<T: B + A>(x: T) -> i64 { x.a_val() + x.b_val() }
+            fn main() -> i64 {
+                val s = S { v: 10i64 }
+                ab(s) + ba(s)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        // ab = 10 + 11 = 21; ba = same = 21; total = 42
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+
+    #[test]
+    fn multi_bound_three_traits() {
+        // A bound list longer than two: `<T: A + B + C>`. Each trait
+        // contributes one method that the body uses.
+        let source = r#"
+            trait A {
+                fn a(self: Self) -> i64
+            }
+            trait B {
+                fn b(self: Self) -> i64
+            }
+            trait C {
+                fn c(self: Self) -> i64
+            }
+            struct S { v: i64 }
+            impl A for S { fn a(self: Self) -> i64 { 10i64 } }
+            impl B for S { fn b(self: Self) -> i64 { 20i64 } }
+            impl C for S { fn c(self: Self) -> i64 { self.v } }
+            fn sum<T: A + B + C>(x: T) -> i64 { x.a() + x.b() + x.c() }
+            fn main() -> i64 {
+                val s = S { v: 12i64 }
+                sum(s)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+
+    #[test]
+    fn single_bound_still_works_after_intersection_landing() {
+        // Regression: `<T: A>` (no `+`) must keep the
+        // `Identifier(trait_sym)` form and continue to work, since the
+        // multi-bound code path is gated on TraitIntersection.
+        let source = r#"
+            trait A {
+                fn a(self: Self) -> i64
+            }
+            struct S { v: i64 }
+            impl A for S { fn a(self: Self) -> i64 { self.v } }
+            fn one<T: A>(x: T) -> i64 { x.a() }
+            fn main() -> i64 {
+                val s = S { v: 42i64 }
+                one(s)
+            }
+        "#;
+        let result = test_program(source).expect("expected ok");
+        assert_eq!(result.borrow().unwrap_int64(), 42);
+    }
+}

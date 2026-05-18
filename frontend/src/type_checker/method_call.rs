@@ -203,9 +203,18 @@ impl<'a> TypeCheckerVisitor<'a> {
         // trait's method signature table; `Self` in the return type is
         // mapped back to the generic parameter so the caller sees the
         // appropriate concrete type after monomorphization.
-        if let TypeDecl::Generic(t_sym) = obj_type
-            && let Some(TypeDecl::Identifier(trait_sym)) = self.context.current_fn_generic_bounds.get(t_sym).cloned()
-                && let Some(sig) = self.context.get_trait_method(trait_sym, *method).cloned() {
+        // A2 multi-bound: `<T: A + B>` stores `TraitIntersection([A, B])`.
+        // Try each trait in declaration order and take the first whose
+        // signature table contains `method` (overlap is allowed but rare;
+        // first-hit semantics keep the lookup deterministic).
+        if let TypeDecl::Generic(t_sym) = obj_type {
+            let trait_syms: Vec<DefaultSymbol> = match self.context.current_fn_generic_bounds.get(t_sym).cloned() {
+                Some(TypeDecl::Identifier(trait_sym)) => vec![trait_sym],
+                Some(TypeDecl::TraitIntersection(syms)) => syms,
+                _ => Vec::new(),
+            };
+            for trait_sym in &trait_syms {
+                if let Some(sig) = self.context.get_trait_method(*trait_sym, *method).cloned() {
                     let ret = sig.return_type.clone().unwrap_or(TypeDecl::Unit);
                     let resolved = match ret {
                         TypeDecl::Self_ => TypeDecl::Generic(*t_sym),
@@ -213,6 +222,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     };
                     return Ok(resolved);
                 }
+            }
+        }
 
         // Method call on a generic enum receiver
         // (`val o: Option<i64> = ...; o.unwrap_or(default)`).

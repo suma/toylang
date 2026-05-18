@@ -4553,3 +4553,47 @@ fn trait_default_body_calls_default_round_trip() {
     "#;
     assert_consistent(src, "trait_default_chained");
 }
+
+#[test]
+fn multi_bound_dispatch_round_trip() {
+    // A2: `<T: A + B>` exercising one method from each trait. All three
+    // backends must agree on the result of calling through the
+    // intersection bound.
+    let src = r#"
+        trait A {
+            fn a(self: Self) -> u64
+        }
+        trait B {
+            fn b(self: Self) -> u64
+        }
+        struct S { v: u64 }
+        impl A for S { fn a(self: Self) -> u64 { 10u64 } }
+        impl B for S { fn b(self: Self) -> u64 { self.v } }
+        fn both<T: A + B>(x: T) -> u64 { x.a() + x.b() }
+        fn main() -> u64 {
+            val s = S { v: 32u64 }
+            both(s)
+        }
+    "#;
+    assert_consistent(src, "multi_bound_dispatch");
+}
+
+#[test]
+fn multi_bound_three_traits_round_trip() {
+    // A2: `<T: A + B + C>` — longer bound list across 3 backends.
+    let src = r#"
+        trait A { fn a(self: Self) -> u64 }
+        trait B { fn b(self: Self) -> u64 }
+        trait C { fn c(self: Self) -> u64 }
+        struct S { v: u64 }
+        impl A for S { fn a(self: Self) -> u64 { 1u64 } }
+        impl B for S { fn b(self: Self) -> u64 { 2u64 } }
+        impl C for S { fn c(self: Self) -> u64 { self.v } }
+        fn sum<T: A + B + C>(x: T) -> u64 { x.a() + x.b() + x.c() }
+        fn main() -> u64 {
+            val s = S { v: 39u64 }
+            sum(s)
+        }
+    "#;
+    assert_consistent(src, "multi_bound_three_traits");
+}

@@ -124,31 +124,46 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     Some(ty) => ty,
                     None => continue,
                 };
-                // For user-defined traits, the bound parses as
-                // `TypeDecl::Identifier(trait_name)`. Conformance is checked
-                // by consulting `struct_trait_impls`. Built-in `Allocator`
-                // continues to use direct equality.
-                let bound_trait_sym = match bound {
-                    TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => Some(*sym),
-                    _ => None,
+                // Extract the trait symbol list for this bound. Single-trait
+                // bounds parse as `Identifier(trait)`; multi-trait bounds
+                // (A2 `<T: A + B>`) parse as `TraitIntersection([A, B, ...])`.
+                // Empty list means a non-trait bound (e.g. `Allocator`); we
+                // fall back to direct equality below.
+                let bound_trait_syms: Vec<DefaultSymbol> = match bound {
+                    TypeDecl::Identifier(sym) if self.context.is_trait(*sym) => vec![*sym],
+                    TypeDecl::TraitIntersection(syms) => syms.clone(),
+                    _ => Vec::new(),
                 };
-                let satisfies = match (bound_trait_sym, inferred) {
-                    (Some(trait_sym), TypeDecl::Struct(struct_sym, _))
-                    | (Some(trait_sym), TypeDecl::Identifier(struct_sym)) => {
-                        self.context.struct_implements_trait(*struct_sym, trait_sym)
-                    }
-                    (Some(trait_sym), TypeDecl::Generic(sym)) => matches!(
-                        self.context.current_fn_generic_bounds.get(sym),
-                        Some(TypeDecl::Identifier(b)) if *b == trait_sym
-                    ),
-                    _ => match inferred {
+                let satisfies = if !bound_trait_syms.is_empty() {
+                    // Trait bounds: AND over all traits — the inferred type
+                    // must implement every trait in the intersection.
+                    bound_trait_syms.iter().all(|trait_sym| {
+                        match inferred {
+                            TypeDecl::Struct(struct_sym, _)
+                            | TypeDecl::Identifier(struct_sym) => {
+                                self.context.struct_implements_trait(*struct_sym, *trait_sym)
+                            }
+                            TypeDecl::Generic(sym) => {
+                                // Pass-through bound: caller has its own
+                                // bounded T that lists this trait.
+                                match self.context.current_fn_generic_bounds.get(sym) {
+                                    Some(TypeDecl::Identifier(b)) => *b == *trait_sym,
+                                    Some(TypeDecl::TraitIntersection(caller_syms)) => caller_syms.contains(trait_sym),
+                                    _ => false,
+                                }
+                            }
+                            _ => false,
+                        }
+                    })
+                } else {
+                    match inferred {
                         ty if ty == bound => true,
                         TypeDecl::Generic(sym) => matches!(
                             self.context.current_fn_generic_bounds.get(sym),
                             Some(caller_bound) if caller_bound == bound
                         ),
                         _ => false,
-                    },
+                    }
                 };
                 if !satisfies {
                     self.pop_context();
@@ -156,14 +171,32 @@ impl GenericTypeChecking for TypeCheckerVisitor<'_> {
                     let fn_name_str = self.resolve_symbol_name(fn_name);
                     let bound_str = self.format_type_for_error(bound);
                     let inferred_str = self.format_type_for_error(inferred);
-                    let note = if let Some(trait_sym) = bound_trait_sym {
-                        let trait_name = self.resolve_symbol_name(trait_sym);
+                    let note = if !bound_trait_syms.is_empty() {
                         let inferred_struct = match inferred {
                             TypeDecl::Struct(s, _) | TypeDecl::Identifier(s) => Some(self.resolve_symbol_name(*s).to_string()),
                             _ => None,
                         };
                         match inferred_struct {
-                            Some(s) => format!(" (struct `{}` does not implement trait `{}`)", s, trait_name),
+                            Some(s) => {
+                                // Identify the first missing trait so the
+                                // user sees the precise offender of a
+                                // multi-bound intersection.
+                                let missing = bound_trait_syms.iter().find(|t| {
+                                    match inferred {
+                                        TypeDecl::Struct(ss, _) | TypeDecl::Identifier(ss) => {
+                                            !self.context.struct_implements_trait(*ss, **t)
+                                        }
+                                        _ => true,
+                                    }
+                                });
+                                match missing {
+                                    Some(t) => {
+                                        let trait_name = self.resolve_symbol_name(*t);
+                                        format!(" (struct `{}` does not implement trait `{}`)", s, trait_name)
+                                    }
+                                    None => String::new(),
+                                }
+                            }
                             None => String::new(),
                         }
                     } else {

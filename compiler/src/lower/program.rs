@@ -500,17 +500,20 @@ pub fn lower_program(
             .map(|(_, t)| matches!(t, TypeDecl::Ref { .. }))
             .collect();
         module.function_mut(func_id).param_is_ref = param_is_ref;
-        // A5-P2: per-param dyn-trait identity. A param of
-        // `&dyn TraitName` records `Some(trait_sym)`; everything
-        // else records `None`. Call sites consult this to build the
-        // fat-pointer tuple from a concrete struct arg, and to
-        // route method dispatch through the vtable in the body.
-        let param_dyn_trait: Vec<Option<DefaultSymbol>> = func
+        // A5-P2: per-param dyn-trait identity + mutability. A param of
+        // `&dyn TraitName` records `Some((trait_sym, false))`,
+        // `&mut dyn TraitName` records `Some((trait_sym, true))`,
+        // everything else records `None`. Call sites consult this to
+        // build the fat-pointer tuple from a concrete struct arg, to
+        // route method dispatch through the vtable in the body, and
+        // (MVP-C) to read mutated leaves back from the stack slot
+        // after `&mut dyn` calls.
+        let param_dyn_trait: Vec<Option<(DefaultSymbol, bool)>> = func
             .parameter
             .iter()
             .map(|(_, t)| match t {
-                TypeDecl::Ref { inner, .. } => match inner.as_ref() {
-                    TypeDecl::Dyn(trait_sym) => Some(*trait_sym),
+                TypeDecl::Ref { is_mut, inner } => match inner.as_ref() {
+                    TypeDecl::Dyn(trait_sym) => Some((*trait_sym, *is_mut)),
                     _ => None,
                 },
                 _ => None,
@@ -537,6 +540,21 @@ pub fn lower_program(
                 && super::types::lower_scalar(inner).is_some() {
                     continue;
                 }
+            // A5-P2-MVP-C: `&mut dyn Trait` params don't flow their
+            // writeback through return-value tuple appending. The
+            // mutation is propagated via the caller-frame stack slot
+            // that holds `data_ptr`'s leaf bytes: the dispatched
+            // thunk writes the post-mutation leaves back to the
+            // slot, and the coercion site reads them out into the
+            // caller's struct binding after the call. Skipping here
+            // keeps the function's cranelift signature aligned with
+            // its declared return type so non-dyn callers don't
+            // get spurious extra return slots.
+            if let TypeDecl::Ref { inner, .. } = decl_ty
+                && matches!(inner.as_ref(), TypeDecl::Dyn(_))
+            {
+                continue;
+            }
             let param_ty = module.function(func_id).params[pi];
             flatten_compound_leaf_types(&module, param_ty, &mut writeback_types);
         }
@@ -774,8 +792,11 @@ pub fn lower_program(
         // is `(U64 data_ptr, ...user_arg_tys) -> ret_ty`, all
         // derived from the trait declaration so it matches the
         // dispatch-site `CallIndirectFn` signature exactly.
-        let trait_method_sigs: HashMap<DefaultSymbol, (Vec<Type>, Type)> = {
-            let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type)> = HashMap::new();
+        // A5-P2-MVP-C: also snapshot `self_is_mut` per method so the
+        // thunk can route through `CallWithSelfWriteback` when the
+        // impl has trailing writeback returns.
+        let trait_method_sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = {
+            let mut sigs: HashMap<DefaultSymbol, (Vec<Type>, Type, bool)> = HashMap::new();
             for j in 0..program.statement.len() {
                 let sref = frontend::ast::StmtRef(j as u32);
                 if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
@@ -823,7 +844,7 @@ pub fn lower_program(
                                 Some(t) => t,
                                 None => continue,
                             };
-                            sigs.insert(sig.name, (user_param_tys, ret_ty));
+                            sigs.insert(sig.name, (user_param_tys, ret_ty, sig.self_is_mut));
                         }
                         break;
                     }
@@ -871,14 +892,14 @@ pub fn lower_program(
                     break;
                 }
             };
-            let (user_param_tys, ret_ty) = match trait_method_sigs.get(method_sym).cloned()
-            {
-                Some(pair) => pair,
-                None => {
-                    all_resolved = false;
-                    break;
-                }
-            };
+            let (user_param_tys, ret_ty, self_is_mut) =
+                match trait_method_sigs.get(method_sym).cloned() {
+                    Some(t) => t,
+                    None => {
+                        all_resolved = false;
+                        break;
+                    }
+                };
             // Declare the thunk FuncId with signature
             // `(U64 data_ptr, ...user_param_tys) -> ret_ty`.
             let trait_str = interner.resolve(trait_sym).unwrap_or("trait");
@@ -903,6 +924,7 @@ pub fn lower_program(
                 struct_leaves: struct_leaves.clone(),
                 user_param_tys,
                 ret_ty,
+                self_is_mut,
             });
             // Vtable entry points at the thunk, not the impl, so
             // every dyn dispatch site sees the uniform
@@ -1191,6 +1213,7 @@ pub fn lower_program(
             work.impl_func_id,
             &work.struct_leaves,
             &work.user_param_tys,
+            work.self_is_mut,
         )?;
     }
     Ok(module)
@@ -1254,6 +1277,7 @@ impl<'a> FunctionLower<'a> {
             pending_struct_value: None,
             pending_tuple_value: None,
             pending_enum_value: None,
+            pending_dyn_mut_writebacks: Vec::new(),
             generic_funcs,
             generic_instances,
             pending_generic_work,

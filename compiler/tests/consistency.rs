@@ -4725,3 +4725,65 @@ fn dyn_trait_heterogeneous_field_round_trip() {
     "#;
     assert_consistent(src, "dyn_hetero_field");
 }
+
+#[test]
+fn dyn_trait_nested_struct_round_trip() {
+    // A5-P2-MVP-C: `&dyn Trait` dispatch on a struct whose field
+    // is itself a struct. Recursive `flatten_struct_locals` and
+    // `flatten_compound_leaf_types` agree on the leaf order, so
+    // the same `(byte_offset, leaf_ty)` list drives the
+    // coercion-site PtrWrite and the thunk PtrRead. Result =
+    // inner.v + tag = 100 + 7 = 107.
+    let src = r#"
+        trait Show {
+            fn read(self: Self) -> i64
+        }
+        struct Inner { v: i64 }
+        struct Outer { inner: Inner, tag: u64 }
+        impl Show for Outer {
+            fn read(self: Self) -> i64 { self.inner.v + self.tag as i64 }
+        }
+        fn use_dyn(s: &dyn Show) -> i64 {
+            s.read()
+        }
+        fn main() -> u64 {
+            val o = Outer { inner: Inner { v: 100i64 }, tag: 7u64 }
+            use_dyn(o) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_nested_struct");
+}
+
+#[test]
+fn dyn_trait_mut_self_round_trip() {
+    // A5-P2-MVP-C: `&mut dyn Trait` writeback. The trait method
+    // `bump(&mut self)` mutates the struct; the per-impl thunk
+    // captures the writeback via `CallWithSelfWriteback` and
+    // writes it back to `data_ptr` (the caller's stack slot).
+    // After the outer call, the dispatch site reads the slot
+    // leaves back into the caller's struct binding, so the
+    // second `bump()` sees the first call's mutation
+    // (a = 11, b = 12, a + b = 23).
+    let src = r#"
+        trait Counter {
+            fn bump(&mut self) -> i64
+        }
+        struct Tick { n: i64 }
+        impl Counter for Tick {
+            fn bump(&mut self) -> i64 {
+                self.n = self.n + 1i64
+                self.n
+            }
+        }
+        fn pump(c: &mut dyn Counter) -> i64 {
+            c.bump()
+        }
+        fn main() -> u64 {
+            var t = Tick { n: 10i64 }
+            val a = pump(&mut t)
+            val b = pump(&mut t)
+            (a + b) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_mut_self");
+}

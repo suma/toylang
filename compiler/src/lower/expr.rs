@@ -430,7 +430,7 @@ impl<'a> FunctionLower<'a> {
         // A5-P2: per-param dyn-trait identity. `Some(trait_sym)` means
         // the slot expects a fat pointer; the call site coerces a
         // concrete struct arg into `(null_ptr, vtable_ptr)`.
-        let param_dyn_trait: Vec<Option<DefaultSymbol>> = target
+        let param_dyn_trait: Vec<Option<(DefaultSymbol, bool)>> = target
             .map(|t| self.module.function(t).param_dyn_trait.clone())
             .unwrap_or_default();
         let args_expr = self
@@ -454,7 +454,10 @@ impl<'a> FunctionLower<'a> {
             // identifier (`d`) or its explicit borrow (`&d`); we
             // recover the struct's base name from the binding and
             // look up the vtable through `module.vtables`.
-            if let Some(trait_sym) = param_dyn_trait.get(arg_idx).and_then(|t| t.clone()) {
+            if let Some((trait_sym, is_mut_dyn)) =
+                param_dyn_trait.get(arg_idx).and_then(|t| t.clone())
+            {
+                let _ = is_mut_dyn; // used below for the post-call writeback path
                 // Unwrap an explicit `&<ident>` borrow if present —
                 // both the auto-borrow form (`describe(d)`) and the
                 // explicit form (`describe(&d)`) reach the same
@@ -539,8 +542,14 @@ impl<'a> FunctionLower<'a> {
                     // PtrRead order — both sides derive from the
                     // module-walking flatten in declaration order,
                     // so a parallel iteration with running offset
-                    // stays consistent.
+                    // stays consistent. For `&mut dyn`, also record
+                    // `(offset, leaf_ty)` + dest local so we can read
+                    // the post-call leaves back after the outer call.
                     let mut running_offset: u64 = 0;
+                    let mut writeback_layout: Vec<(u64, Type)> =
+                        Vec::with_capacity(struct_leaves.len());
+                    let mut writeback_dests: Vec<crate::ir::LocalId> =
+                        Vec::with_capacity(struct_leaves.len());
                     for (local, leaf_ty) in &struct_leaves {
                         let leaf_size = match leaf_ty {
                             Type::Bool | Type::I8 | Type::U8 => 1u64,
@@ -572,7 +581,22 @@ impl<'a> FunctionLower<'a> {
                             },
                             None,
                         );
+                        writeback_layout.push((running_offset, *leaf_ty));
+                        writeback_dests.push(*local);
                         running_offset = running_offset.saturating_add(leaf_size);
+                    }
+                    // A5-P2-MVP-C: register a pending writeback for
+                    // `&mut dyn` args. The outer-call drain reads each
+                    // leaf back from `slot_addr + offset` and
+                    // `StoreLocal`s it into the original struct
+                    // binding's leaf local. `&dyn` (immutable) args
+                    // skip this step entirely.
+                    if is_mut_dyn {
+                        self.pending_dyn_mut_writebacks.push(super::DynMutWriteback {
+                            slot_addr,
+                            struct_leaves: writeback_layout,
+                            dest_locals: writeback_dests,
+                        });
                     }
                     slot_addr
                 };

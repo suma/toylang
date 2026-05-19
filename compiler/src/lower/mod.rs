@@ -244,6 +244,14 @@ struct FunctionLower<'a> {
     /// `emit_implicit_return` will read out into the multi-value
     /// `Return`.
     pending_enum_value: Option<EnumStorage>,
+    /// A5-P2-MVP-C: pending `&mut dyn Trait` writebacks for the
+    /// next outer call instruction. Each entry holds enough state
+    /// to read the post-call leaves back out of the caller-frame
+    /// stack slot and into the original struct binding's leaf
+    /// locals. `lower_call` (and any other site that emits a
+    /// direct `Call` after invoking `lower_call_args_with_target`)
+    /// must drain this list immediately after the call.
+    pending_dyn_mut_writebacks: Vec<DynMutWriteback>,
     /// Generic-function templates discovered during pass 1, keyed by
     /// base name. Call sites consult this when they fail to find a
     /// concrete `FuncId` in `module.function_index`.
@@ -319,6 +327,19 @@ pub(super) struct PendingClosureBody {
     pub(super) captures: Vec<(DefaultSymbol, Type)>,
 }
 
+/// A5-P2-MVP-C: per-call pending writeback for a `&mut dyn Trait`
+/// argument. After the outer call returns, the lower pass reads
+/// each leaf from `slot_addr + offset` (via `PtrRead`) and
+/// `StoreLocal`s it into the caller's struct binding's leaf
+/// local. `dest_locals` parallels `struct_leaves` in order so a
+/// single zip drives both sides.
+#[derive(Debug, Clone)]
+pub(super) struct DynMutWriteback {
+    pub(super) slot_addr: crate::ir::ValueId,
+    pub(super) struct_leaves: Vec<(u64, Type)>,
+    pub(super) dest_locals: Vec<crate::ir::LocalId>,
+}
+
 /// A5-P2-MVP-B: one queued dyn-trait dispatch thunk awaiting body
 /// lowering. The thunk's `FuncId` has already been declared on the
 /// module (`module.declare_function_anon`) with signature
@@ -343,6 +364,13 @@ pub(super) struct PendingThunkBody {
     /// `(U64, ...user_param_tys) -> ret_ty`.
     pub(super) user_param_tys: Vec<Type>,
     pub(super) ret_ty: Type,
+    /// A5-P2-MVP-C: when `true`, the trait method declared
+    /// `&mut self`, so the underlying impl's cranelift signature
+    /// has trailing writeback returns (one per struct leaf). The
+    /// thunk uses `CallWithSelfWriteback` to capture them and
+    /// writes each back to `data_ptr` at its natural-sum offset
+    /// so the caller's stack slot reflects the mutation.
+    pub(super) self_is_mut: bool,
 }
 
 /// Closures Phase 5a/6: linkage info for a `val name = fn(...)`
@@ -852,11 +880,55 @@ impl<'a> FunctionLower<'a> {
     /// empty, no PtrRead is emitted, and the call argument list
     /// is just the user args (matching the impl's `() -> R` shape
     /// after leaf flattening).
+    /// A5-P2-MVP-C: drain the pending `&mut dyn Trait` writebacks
+    /// accumulated by the most recent `lower_call_args_with_target`.
+    /// Each entry emits one `PtrRead` per leaf out of the
+    /// coercion slot followed by a `StoreLocal` into the caller's
+    /// struct-binding leaf local. Idempotent — safe to call when
+    /// no writebacks are pending. Must be called immediately
+    /// after the outer call instruction that consumed the args,
+    /// so the slot still holds the post-mutation bytes.
+    pub(super) fn drain_dyn_mut_writebacks(&mut self) -> Result<(), String> {
+        let pending: Vec<DynMutWriteback> =
+            std::mem::take(&mut self.pending_dyn_mut_writebacks);
+        for wb in pending {
+            for ((offset, leaf_ty), dest_local) in
+                wb.struct_leaves.iter().zip(wb.dest_locals.iter())
+            {
+                let off_v = self
+                    .emit(
+                        InstKind::Const(crate::ir::Const::U64(*offset)),
+                        Some(Type::U64),
+                    )
+                    .ok_or_else(|| "dyn-mut writeback: Const(offset) returned no value".to_string())?;
+                let leaf_v = self
+                    .emit(
+                        InstKind::PtrRead {
+                            ptr: wb.slot_addr,
+                            offset: off_v,
+                            elem_ty: *leaf_ty,
+                        },
+                        Some(*leaf_ty),
+                    )
+                    .ok_or_else(|| "dyn-mut writeback: PtrRead returned no value".to_string())?;
+                self.emit(
+                    InstKind::StoreLocal {
+                        dst: *dest_local,
+                        src: leaf_v,
+                    },
+                    None,
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn lower_dyn_thunk_body(
         &mut self,
         impl_func_id: crate::ir::FuncId,
         struct_leaves: &[(u64, Type)],
         user_param_tys: &[Type],
+        self_is_mut: bool,
     ) -> Result<(), String> {
         // Allocate locals matching the param order: data_ptr (U64)
         // first, then user args. The cranelift block-param to
@@ -915,40 +987,117 @@ impl<'a> FunctionLower<'a> {
         }
         // Call the impl with `(leaves..., user_args)`. The impl's
         // signature was lowered in the method-decl loop as
-        // `(field_leaves..., user_args...) -> ret_ty`, so the
-        // concatenation here lines up exactly.
+        // `(field_leaves..., user_args...) -> ret_ty[, ...writeback_leaves]`,
+        // so the concatenation here lines up exactly. When the trait
+        // method declared `&mut self`, the impl has trailing writeback
+        // returns and we use `CallWithSelfWriteback` to capture them.
         let mut call_args: Vec<ValueId> =
             Vec::with_capacity(leaf_values.len() + user_arg_vals.len());
         call_args.extend(leaf_values);
         call_args.extend(user_arg_vals);
         let ret_ty = self.module.function(self.func_id).return_type;
-        let call_result_ty = if matches!(ret_ty, Type::Unit) {
-            None
+
+        if self_is_mut {
+            // A5-P2-MVP-C: `&mut self` impl. Allocate one local per
+            // struct leaf to hold the impl's post-mutation values, plus
+            // an optional local for the user-visible return. Use
+            // `CallWithSelfWriteback` so codegen wires the trailing
+            // returns into the named locals directly (same machinery
+            // the regular `&mut self` method-call path uses).
+            let ret_dest_local: Option<crate::ir::LocalId> = if matches!(ret_ty, Type::Unit) {
+                None
+            } else {
+                Some(self.module.function_mut(self.func_id).add_local(ret_ty))
+            };
+            let mut self_dest_locals: Vec<crate::ir::LocalId> =
+                Vec::with_capacity(struct_leaves.len());
+            for (_off, leaf_ty) in struct_leaves {
+                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                self_dest_locals.push(local);
+            }
+            self.emit(
+                InstKind::CallWithSelfWriteback {
+                    target: impl_func_id,
+                    args: call_args,
+                    ret_dest: ret_dest_local,
+                    ret_ty: if matches!(ret_ty, Type::Unit) {
+                        None
+                    } else {
+                        Some(ret_ty)
+                    },
+                    self_dests: self_dest_locals.clone(),
+                },
+                None,
+            );
+            // Write each post-mutation leaf back to `data_ptr` at its
+            // natural-sum offset so the caller's stack slot reflects
+            // the change.
+            for ((offset, leaf_ty), local) in struct_leaves.iter().zip(self_dest_locals.iter()) {
+                let leaf_val = self
+                    .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                    .ok_or_else(|| "dyn thunk: LoadLocal(writeback) returned no value".to_string())?;
+                let off_v = self
+                    .emit(
+                        InstKind::Const(crate::ir::Const::U64(*offset)),
+                        Some(Type::U64),
+                    )
+                    .ok_or_else(|| "dyn thunk: Const(writeback offset) returned no value".to_string())?;
+                self.emit(
+                    InstKind::PtrWrite {
+                        ptr: data_ptr_v,
+                        offset: off_v,
+                        value: leaf_val,
+                        value_ty: *leaf_ty,
+                    },
+                    None,
+                );
+            }
+            // Terminate.
+            let fid = self.func_id;
+            let return_vals: Vec<ValueId> = match ret_dest_local {
+                Some(local) => {
+                    let v = self
+                        .emit(InstKind::LoadLocal(local), Some(ret_ty))
+                        .ok_or_else(|| "dyn thunk: LoadLocal(ret) returned no value".to_string())?;
+                    vec![v]
+                }
+                None => Vec::new(),
+            };
+            self.module
+                .function_mut(fid)
+                .blocks
+                .last_mut()
+                .expect("entry block must exist")
+                .terminator = Some(crate::ir::Terminator::Return(return_vals));
         } else {
-            Some(ret_ty)
-        };
-        let call_result = self.emit(
-            InstKind::Call {
-                target: impl_func_id,
-                args: call_args,
-            },
-            call_result_ty,
-        );
-        // Terminate with the appropriate return form.
-        let fid = self.func_id;
-        let return_vals: Vec<ValueId> = if matches!(ret_ty, Type::Unit) {
-            Vec::new()
-        } else {
-            vec![call_result.ok_or_else(|| {
-                "dyn thunk: Call returned no value but ret_ty is non-Unit".to_string()
-            })?]
-        };
-        self.module
-            .function_mut(fid)
-            .blocks
-            .last_mut()
-            .expect("entry block must exist")
-            .terminator = Some(crate::ir::Terminator::Return(return_vals));
+            // Plain `self: Self` (by value) impl. No writeback path.
+            let call_result_ty = if matches!(ret_ty, Type::Unit) {
+                None
+            } else {
+                Some(ret_ty)
+            };
+            let call_result = self.emit(
+                InstKind::Call {
+                    target: impl_func_id,
+                    args: call_args,
+                },
+                call_result_ty,
+            );
+            let fid = self.func_id;
+            let return_vals: Vec<ValueId> = if matches!(ret_ty, Type::Unit) {
+                Vec::new()
+            } else {
+                vec![call_result.ok_or_else(|| {
+                    "dyn thunk: Call returned no value but ret_ty is non-Unit".to_string()
+                })?]
+            };
+            self.module
+                .function_mut(fid)
+                .blocks
+                .last_mut()
+                .expect("entry block must exist")
+                .terminator = Some(crate::ir::Terminator::Return(return_vals));
+        }
         self.current_block = None;
         Ok(())
     }

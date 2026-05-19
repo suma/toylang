@@ -394,13 +394,16 @@ pub struct Function {
     /// slot's address. Empty structs don't allocate (sentinel
     /// `data_ptr = 0` is used at the dispatch site).
     pub dyn_coerce_slots: Vec<u32>,
-    /// A5-P2: per-parameter trait identity for `&dyn Trait` params.
-    /// `Some(trait_sym)` means the slot's IR type is the fat-pointer
-    /// tuple `(data_ptr, vtable_ptr)` and the caller must construct
-    /// it from a concrete struct value at the call site. `None` for
-    /// every non-dyn param. Empty `Vec` is treated as "all None" so
-    /// pre-A5 functions stay sound.
-    pub param_dyn_trait: Vec<Option<DefaultSymbol>>,
+    /// A5-P2: per-parameter dyn-trait info for `&dyn Trait` /
+    /// `&mut dyn Trait` params. `Some((trait_sym, is_mut))` means
+    /// the slot's IR type is the fat-pointer tuple
+    /// `(data_ptr, vtable_ptr)` and the caller must construct it
+    /// from a concrete struct value at the call site; `is_mut`
+    /// tracks whether the caller needs to read mutated leaves back
+    /// from the stack slot after the call (A5-P2-MVP-C). `None`
+    /// for every non-dyn param. Empty `Vec` is treated as "all
+    /// None" so pre-A5 functions stay sound.
+    pub param_dyn_trait: Vec<Option<(DefaultSymbol, bool)>>,
     pub return_type: Type,
     /// Stage 1 of `&` references: for `&mut self` methods only,
     /// the leaf scalar types appended to the function's cranelift

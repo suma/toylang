@@ -434,6 +434,12 @@ impl<'a> FunctionLower<'a> {
                 },
                 None,
             );
+            // A5-P2-MVP-C: drain `&mut dyn Trait` slot read-backs.
+            // The CallWithSelfWriteback path mixes regular `&mut T`
+            // compound writebacks (return-tuple) with dyn writebacks
+            // (stack-slot read-back); both are independent and only
+            // the dyn side uses the pending queue.
+            self.drain_dyn_mut_writebacks()?;
             // Surface the user-return value (loaded from the
             // ret_dest local) so the caller's expression-position
             // consumer sees a normal ValueId.
@@ -453,7 +459,13 @@ impl<'a> FunctionLower<'a> {
         } else {
             None
         };
-        Ok(self.emit(inst, result_ty))
+        let call_value = self.emit(inst, result_ty);
+        // A5-P2-MVP-C: drain `&mut dyn Trait` slot read-backs after
+        // the regular `Call`. See the
+        // `CallWithSelfWriteback` branch above for the parallel
+        // path that drains in the same way.
+        self.drain_dyn_mut_writebacks()?;
+        Ok(call_value)
     }
 
     /// REF-Stage-2 (ii): walk a call's argument list, collect the

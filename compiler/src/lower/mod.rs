@@ -936,6 +936,42 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// A5-P2-MVP-C/F shared helper: PtrWrite each post-mutation
+    /// receiver leaf back to `data_ptr` at its natural-sum byte
+    /// offset, so the caller's stack slot reflects the impl
+    /// method's mutation. `leaf_layout` is the receiver's
+    /// `(offset, leaf_ty)` list (matches `dyn_struct_leaf_layout`),
+    /// `self_dests` are the locals the impl wrote into via
+    /// `CallWithSelfWriteback*`.
+    fn emit_writeback_ptrwrites(
+        &mut self,
+        data_ptr_v: ValueId,
+        leaf_layout: &[(u64, Type)],
+        self_dests: &[crate::ir::LocalId],
+    ) -> Result<(), String> {
+        for ((offset, leaf_ty), local) in leaf_layout.iter().zip(self_dests.iter()) {
+            let leaf_val = self
+                .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                .ok_or_else(|| "dyn thunk: LoadLocal(writeback) returned no value".to_string())?;
+            let off_v = self
+                .emit(
+                    InstKind::Const(crate::ir::Const::U64(*offset)),
+                    Some(Type::U64),
+                )
+                .ok_or_else(|| "dyn thunk: Const(writeback offset) returned no value".to_string())?;
+            self.emit(
+                InstKind::PtrWrite {
+                    ptr: data_ptr_v,
+                    offset: off_v,
+                    value: leaf_val,
+                    value_ty: *leaf_ty,
+                },
+                None,
+            );
+        }
+        Ok(())
+    }
+
     /// A5-P2-MVP-D/E shared helper: emit the compound-return tail of a
     /// dyn dispatch thunk. The trait method's return type is one of
     /// `Struct` / `Tuple` / `Enum`; `kind` picks the matching
@@ -1068,13 +1104,18 @@ impl<'a> FunctionLower<'a> {
         call_args.extend(user_arg_vals);
         let ret_ty = self.module.function(self.func_id).return_type;
 
-        if self_is_mut {
-            // A5-P2-MVP-C: `&mut self` impl. Allocate one local per
-            // struct leaf to hold the impl's post-mutation values, plus
-            // an optional local for the user-visible return. Use
-            // `CallWithSelfWriteback` so codegen wires the trailing
-            // returns into the named locals directly (same machinery
-            // the regular `&mut self` method-call path uses).
+        let ret_is_compound = matches!(
+            ret_ty,
+            Type::Struct(_) | Type::Tuple(_) | Type::Enum(_)
+        );
+        if self_is_mut && !ret_is_compound {
+            // A5-P2-MVP-C: `&mut self` impl with scalar / Unit return.
+            // Allocate one local per struct leaf to hold the impl's
+            // post-mutation values, plus an optional local for the
+            // user-visible return. Use `CallWithSelfWriteback` so
+            // codegen wires the trailing returns into the named
+            // locals directly (same machinery the regular `&mut self`
+            // method-call path uses).
             let ret_dest_local: Option<crate::ir::LocalId> = if matches!(ret_ty, Type::Unit) {
                 None
             } else {
@@ -1103,26 +1144,7 @@ impl<'a> FunctionLower<'a> {
             // Write each post-mutation leaf back to `data_ptr` at its
             // natural-sum offset so the caller's stack slot reflects
             // the change.
-            for ((offset, leaf_ty), local) in struct_leaves.iter().zip(self_dest_locals.iter()) {
-                let leaf_val = self
-                    .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
-                    .ok_or_else(|| "dyn thunk: LoadLocal(writeback) returned no value".to_string())?;
-                let off_v = self
-                    .emit(
-                        InstKind::Const(crate::ir::Const::U64(*offset)),
-                        Some(Type::U64),
-                    )
-                    .ok_or_else(|| "dyn thunk: Const(writeback offset) returned no value".to_string())?;
-                self.emit(
-                    InstKind::PtrWrite {
-                        ptr: data_ptr_v,
-                        offset: off_v,
-                        value: leaf_val,
-                        value_ty: *leaf_ty,
-                    },
-                    None,
-                );
-            }
+            self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
             // Terminate.
             let fid = self.func_id;
             let return_vals: Vec<ValueId> = match ret_dest_local {
@@ -1134,6 +1156,55 @@ impl<'a> FunctionLower<'a> {
                 }
                 None => Vec::new(),
             };
+            self.module
+                .function_mut(fid)
+                .blocks
+                .last_mut()
+                .expect("entry block must exist")
+                .terminator = Some(crate::ir::Terminator::Return(return_vals));
+        } else if self_is_mut && ret_is_compound {
+            // A5-P2-MVP-F: `&mut self` impl with compound (struct /
+            // tuple / enum) return. The impl's cranelift signature
+            // has `[ret_leaves..., self_writeback_leaves...]`. We
+            // allocate locals for both halves, emit
+            // `CallWithSelfWritebackCompound` to fan them in, then
+            // PtrWrite each `self_dest` back to `data_ptr` and
+            // return the `ret_dest` leaves through the multi-value
+            // Return terminator.
+            let mut ret_leaf_types: Vec<Type> = Vec::new();
+            program::flatten_compound_leaf_types(self.module, ret_ty, &mut ret_leaf_types);
+            let mut ret_dest_locals: Vec<crate::ir::LocalId> =
+                Vec::with_capacity(ret_leaf_types.len());
+            for leaf_ty in &ret_leaf_types {
+                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                ret_dest_locals.push(local);
+            }
+            let mut self_dest_locals: Vec<crate::ir::LocalId> =
+                Vec::with_capacity(struct_leaves.len());
+            for (_off, leaf_ty) in struct_leaves {
+                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                self_dest_locals.push(local);
+            }
+            self.emit(
+                InstKind::CallWithSelfWritebackCompound {
+                    target: impl_func_id,
+                    args: call_args,
+                    ret_dests: ret_dest_locals.clone(),
+                    self_dests: self_dest_locals.clone(),
+                },
+                None,
+            );
+            self.emit_writeback_ptrwrites(data_ptr_v, struct_leaves, &self_dest_locals)?;
+            // Load each ret_dest leaf and pass through the multi-value
+            // Return (matches the thunk's flat-leaf return signature).
+            let mut return_vals: Vec<ValueId> = Vec::with_capacity(ret_dest_locals.len());
+            for (local, leaf_ty) in ret_dest_locals.iter().zip(ret_leaf_types.iter()) {
+                let v = self
+                    .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                    .ok_or_else(|| "dyn thunk: LoadLocal(compound-ret-leaf) returned no value".to_string())?;
+                return_vals.push(v);
+            }
+            let fid = self.func_id;
             self.module
                 .function_mut(fid)
                 .blocks

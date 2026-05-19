@@ -855,6 +855,29 @@ pub enum InstKind {
         /// (matches `flatten_struct_locals`).
         self_dests: Vec<LocalId>,
     },
+    /// A5-P2-MVP-F: writeback + compound (struct / tuple / enum)
+    /// user-visible return. The cranelift call's results come back
+    /// as `[ret_leaves..., self_writeback_leaves...]` because the
+    /// impl method's signature appended `self_writeback_types`
+    /// after the compound return shape during declaration. Codegen
+    /// splits the results vector at `ret_dests.len()` and `def_var`s
+    /// each half into the matching locals. Needed only by the
+    /// dyn-dispatch thunk for `&mut self` impls that return a
+    /// compound type — direct (non-dyn) callers already work
+    /// because `lower_let_call_struct` and friends handle their
+    /// own multi-result + writeback fan-out per type-aware arm.
+    CallWithSelfWritebackCompound {
+        target: FuncId,
+        args: Vec<ValueId>,
+        /// One LocalId per scalar leaf of the user-visible return.
+        /// Order matches `program::flatten_compound_leaf_types(ret_ty)`,
+        /// which mirrors `flatten_struct_to_cranelift_tys` (the
+        /// cranelift signature shape).
+        ret_dests: Vec<LocalId>,
+        /// One LocalId per receiver leaf — same order as the
+        /// existing `CallWithSelfWriteback::self_dests`.
+        self_dests: Vec<LocalId>,
+    },
     // #121 Phase B-min: active-allocator stack ops. The stack lives
     // in `runtime/toylang_rt.c` as a 64-deep fixed buffer of u64
     // handles; sentinel 0 means "default global allocator".
@@ -1463,6 +1486,12 @@ impl fmt::Display for DisplayInst<'_> {
                 };
                 let dest_str = self_dests.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
                 write!(f, "call_mut_self {target:?}({arg_str}) -> {ret_str}self_dests=[{dest_str}]")
+            }
+            InstKind::CallWithSelfWritebackCompound { target, args, ret_dests, self_dests } => {
+                let arg_str = args.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+                let ret_str = ret_dests.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+                let self_str = self_dests.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ");
+                write!(f, "call_mut_self_compound {target:?}({arg_str}) -> ret=[{ret_str}], self_dests=[{self_str}]")
             }
             InstKind::AllocPush { handle } => write!(f, "alloc_push {handle}"),
             InstKind::AllocPop => write!(f, "alloc_pop"),

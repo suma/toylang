@@ -1171,6 +1171,40 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     idx += 1;
                 }
             }
+            InstKind::CallWithSelfWritebackCompound { target, args, ret_dests, self_dests } => {
+                // A5-P2-MVP-F: cranelift call returns
+                // `[ret_leaves..., self_writeback_leaves...]`. The
+                // split is fixed at `ret_dests.len()` because the
+                // impl method's signature was built by appending
+                // `self_writeback_types` after the lowered user
+                // return type (see lower/program.rs writeback
+                // setup). Fan each half into its dest local via
+                // `def_var`.
+                let func_ref = *self
+                    .imports
+                    .get(target)
+                    .ok_or_else(|| format!("missing import for {target:?}"))?;
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self.builder.ins().call(func_ref, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                let expected = ret_dests.len() + self_dests.len();
+                if results.len() != expected {
+                    return Err(format!(
+                        "internal error: call_with_self_writeback_compound returned {} value(s), expected {}",
+                        results.len(),
+                        expected,
+                    ));
+                }
+                for (i, local) in ret_dests.iter().enumerate() {
+                    let var = self.local(*local);
+                    self.builder.def_var(var, results[i]);
+                }
+                let offset = ret_dests.len();
+                for (i, local) in self_dests.iter().enumerate() {
+                    let var = self.local(*local);
+                    self.builder.def_var(var, results[offset + i]);
+                }
+            }
         }
         Ok(())
     }

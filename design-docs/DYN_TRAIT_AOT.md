@@ -15,7 +15,7 @@ AOT compiler, the cranelift JIT, and owned trait objects via
 | **P2-MVP-C** | AOT nested struct + `&mut dyn` writeback | ✅ landed (2026-05-19) |
 | **P2-MVP-D** | AOT struct return | ✅ landed (2026-05-19) |
 | **P2-MVP-E** | AOT tuple / enum return | ✅ landed (2026-05-19) |
-| **P2-MVP-F** | AOT `&mut self` + compound return combined (rare) | planning |
+| **P2-MVP-F** | AOT `&mut self` + compound return combined | ✅ landed (2026-05-19) |
 | **P3** | cranelift JIT (compiler-side + interpreter-side) | planning |
 | **P4** | `Box<dyn Trait>` (owned trait objects) | not started |
 

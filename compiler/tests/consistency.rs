@@ -4887,3 +4887,44 @@ fn dyn_trait_enum_return_round_trip() {
     "#;
     assert_consistent(src, "dyn_enum_return");
 }
+
+#[test]
+fn dyn_trait_mut_self_struct_return_round_trip() {
+    // A5-P2-MVP-F: `&mut dyn Trait` dispatch where the trait
+    // method is `&mut self` AND returns a struct. The thunk
+    // routes through `CallWithSelfWritebackCompound` to capture
+    // both the user-visible return leaves and the writeback
+    // leaves in one call, then PtrWrites the writeback half
+    // back to `data_ptr` and returns the user half through the
+    // multi-value Return terminator. The caller's `&mut dyn`
+    // drain (MVP-C) reads the mutated leaves out of the slot
+    // after the outer call so the second `step()` sees the
+    // first call's increment.
+    // After two steps starting from n=10:
+    //   step1: n=11, Pair{x:11, y:22}
+    //   step2: n=12, Pair{x:12, y:24}
+    //   sum = 11 + 22 + 12 + 24 = 69
+    let src = r#"
+        trait Pump {
+            fn step(&mut self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { n: i64 }
+        impl Pump for Cell {
+            fn step(&mut self) -> Pair {
+                self.n = self.n + 1i64
+                Pair { x: self.n, y: self.n * 2i64 }
+            }
+        }
+        fn drive(c: &mut dyn Pump) -> i64 {
+            val p1 = c.step()
+            val p2 = c.step()
+            p1.x + p1.y + p2.x + p2.y
+        }
+        fn main() -> u64 {
+            var c = Cell { n: 10i64 }
+            drive(&mut c) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_mut_self_struct_return");
+}

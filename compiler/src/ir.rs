@@ -981,6 +981,30 @@ pub enum InstKind {
         ret_struct_id: StructId,
         dests: Vec<LocalId>,
     },
+    /// A5-P2-MVP-E: indirect call returning a tuple. Same shape as
+    /// `CallIndirectFnStruct` but the return is a tuple of leaf
+    /// scalars; `dests` order matches `flatten_tuple_element_locals`
+    /// (declaration order, leaf-by-leaf for nested tuples).
+    CallIndirectFnTuple {
+        callee: ValueId,
+        args: Vec<ValueId>,
+        param_tys: Vec<Type>,
+        ret_tuple_id: TupleId,
+        dests: Vec<LocalId>,
+    },
+    /// A5-P2-MVP-E: indirect call returning an enum. The cranelift
+    /// signature returns `[tag, variant0_payload0, ...,
+    /// variantN_payloadM]` in canonical declaration order
+    /// (matches `flatten_enum_dests`); `dests` follows the same
+    /// order — `dests[0]` is the tag local, the rest are the
+    /// per-variant payload leaves.
+    CallIndirectFnEnum {
+        callee: ValueId,
+        args: Vec<ValueId>,
+        param_tys: Vec<Type>,
+        ret_enum_id: EnumId,
+        dests: Vec<LocalId>,
+    },
     /// A5-P2-MVP-B: yield the runtime address of a caller-frame
     /// stack slot reserved for `&dyn Trait` coercion. `slot_idx`
     /// indexes `Function::dyn_coerce_slots`. Codegen creates one
@@ -1472,6 +1496,32 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::CallIndirectFnStruct { callee, args, dests, .. } => {
                 write!(f, "{prefix}call_indirect_fn_struct {callee}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ") -> [")?;
+                for (i, d) in dests.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{d}")?;
+                }
+                write!(f, "]")
+            }
+            InstKind::CallIndirectFnTuple { callee, args, dests, .. } => {
+                write!(f, "{prefix}call_indirect_fn_tuple {callee}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ") -> [")?;
+                for (i, d) in dests.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{d}")?;
+                }
+                write!(f, "]")
+            }
+            InstKind::CallIndirectFnEnum { callee, args, dests, .. } => {
+                write!(f, "{prefix}call_indirect_fn_enum {callee}(")?;
                 for (i, a) in args.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "{a}")?;

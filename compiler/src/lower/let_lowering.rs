@@ -227,15 +227,17 @@ impl<'a> FunctionLower<'a> {
             )? {
                 return Ok(result);
             }
-        // A5-P2-MVP-D: `val p = m.build()` where `m: &dyn Trait` and
-        // the trait method returns a struct. The dyn-trait dispatch
-        // path emits `CallIndirectFnStruct` and parks the field
-        // bindings in `pending_struct_value`; we adopt the binding
-        // under `name`, mirroring the regular struct-method-compound
-        // arm just above.
+        // A5-P2-MVP-D/E: `val name = m.method()` where `m: &dyn Trait`
+        // and the trait method returns a compound type (struct,
+        // tuple, or enum). The dyn-trait dispatch emits the
+        // matching `CallIndirectFn{Struct,Tuple,Enum}` and parks the
+        // result in one of `pending_struct_value` /
+        // `pending_tuple_value` / `pending_enum_value`; this helper
+        // dispatches on whichever channel got filled and installs
+        // the binding under `name`.
         if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone()
             && let Some(result) =
-                self.lower_let_dyn_method_struct_return(name, recv, method_sym, method_args)?
+                self.lower_let_dyn_method_compound_return(name, recv, method_sym, method_args)?
         {
             return Ok(result);
         }
@@ -646,18 +648,19 @@ impl<'a> FunctionLower<'a> {
     /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
     /// receiver / method doesn't match this shape and the
     /// caller should fall through.
-    /// A5-P2-MVP-D: `val name = m.method()` where `m: &dyn Trait`
-    /// and the trait method returns a struct. The dyn dispatch
-    /// path in `lower_method_call` -> `lower_dyn_method_call`
-    /// emits the `CallIndirectFnStruct` instruction and parks the
-    /// field bindings in `pending_struct_value`. We adopt those
-    /// bindings under `name`, matching how
-    /// `lower_let_struct_enum_method_compound` handles the
-    /// non-dyn struct-return case. Returns `Ok(Some(_))` when
-    /// it dispatched, `Ok(None)` when the receiver isn't a
-    /// `Binding::DynTraitObj` so the caller can keep looking
-    /// for the right arm.
-    fn lower_let_dyn_method_struct_return(
+    /// A5-P2-MVP-D/E: `val name = m.method()` where `m: &dyn Trait`
+    /// and the trait method returns a compound type. Calls into
+    /// `lower_method_call` once — the dyn-trait dispatch path
+    /// picks the matching `CallIndirectFn{Struct,Tuple,Enum}` based
+    /// on the trait method's return type and parks the result in
+    /// one of `pending_struct_value` / `pending_tuple_value` /
+    /// `pending_enum_value`. This helper then adopts whichever
+    /// channel got filled under `name`, so a single dispatch
+    /// covers all three compound-return shapes without re-emitting
+    /// IR. Returns `Ok(Some(_))` when it dispatched, `Ok(None)`
+    /// when the receiver isn't a `Binding::DynTraitObj` so the
+    /// caller can keep looking for the right arm.
+    fn lower_let_dyn_method_compound_return(
         &mut self,
         name: DefaultSymbol,
         recv: ExprRef,
@@ -679,38 +682,53 @@ impl<'a> FunctionLower<'a> {
         if !matches!(self.bindings.get(&recv_sym), Some(Binding::DynTraitObj { .. })) {
             return Ok(None);
         }
-        // Delegate to the regular method-call lowering. For
-        // DynTraitObj receivers it routes through
-        // `lower_dyn_method_call`, which (in the struct-return
-        // branch) sets `pending_struct_value` and returns
-        // `Ok(None)`.
+        // Snapshot pending-value channels so we can tell which one
+        // the dispatched method newly fills.
+        let had_struct = self.pending_struct_value.is_some();
+        let had_tuple = self.pending_tuple_value.is_some();
+        let had_enum = self.pending_enum_value.is_some();
+        // Delegate to the regular method-call lowering. For a
+        // `Binding::DynTraitObj` receiver it routes through
+        // `lower_dyn_method_call`, which sets the matching pending
+        // channel based on the trait method's return type.
         self.lower_method_call(&recv, method_sym, &method_args)?;
-        let fields = self
-            .pending_struct_value
-            .take()
-            .ok_or_else(|| {
-                "A5-P2-MVP-D: dyn method call did not park a pending struct value (expected struct return)"
-                    .to_string()
-            })?;
-        // Recover the outer struct id from the call instruction we
-        // just emitted. The most recent instruction in the current
-        // block is the `CallIndirectFnStruct`; we read its
-        // `ret_struct_id` to bind correctly.
-        let outer_struct_id = self.recover_last_dyn_struct_return_id().ok_or_else(|| {
-            "A5-P2-MVP-D: could not recover struct id for dyn method's struct return"
-                .to_string()
-        })?;
-        self.bindings.insert(
-            name,
-            Binding::Struct {
-                struct_id: outer_struct_id,
-                fields,
-            },
-        );
-        Ok(Some(None))
+        if !had_struct {
+            if let Some(fields) = self.pending_struct_value.take() {
+                let outer_struct_id =
+                    self.recover_last_dyn_struct_return_id().ok_or_else(|| {
+                        "A5-P2-MVP-D: could not recover struct id for dyn method's struct return"
+                            .to_string()
+                    })?;
+                self.bindings.insert(
+                    name,
+                    Binding::Struct {
+                        struct_id: outer_struct_id,
+                        fields,
+                    },
+                );
+                return Ok(Some(None));
+            }
+        }
+        if !had_tuple {
+            if let Some(elements) = self.pending_tuple_value.take() {
+                self.bindings
+                    .insert(name, Binding::Tuple { elements });
+                return Ok(Some(None));
+            }
+        }
+        if !had_enum {
+            if let Some(storage) = self.pending_enum_value.take() {
+                self.bindings.insert(name, Binding::Enum(storage));
+                return Ok(Some(None));
+            }
+        }
+        // The trait method returned a scalar / Unit; no compound
+        // pending channel was set by our call. Fall back to the
+        // regular scalar path by signalling "didn't handle".
+        Ok(None)
     }
 
-    /// Helper for `lower_let_dyn_method_struct_return`: walk back
+    /// Helper for `lower_let_dyn_method_compound_return`: walk back
     /// from the current block's tail to find the most recent
     /// `CallIndirectFnStruct` and return its `ret_struct_id`.
     fn recover_last_dyn_struct_return_id(

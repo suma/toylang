@@ -353,6 +353,102 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                     self.values.insert(vid.0, v);
                 }
             }
+            InstKind::CallIndirectFnTuple {
+                callee,
+                args,
+                param_tys,
+                ret_tuple_id,
+                dests,
+            } => {
+                // A5-P2-MVP-E: indirect call returning a tuple. Same
+                // construction as CallIndirectFnStruct except the
+                // return shape comes from `Type::Tuple(_)`. The
+                // existing recursive flatten covers nested tuples too.
+                let fn_ptr = self.value(*callee);
+                let call_conv = self.builder.func.signature.call_conv;
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for pt in param_tys {
+                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
+                        format!("CallIndirectFnTuple: cannot lower param type {pt:?}")
+                    })?;
+                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                let ret_cl_tys = flatten_struct_to_cranelift_tys(
+                    self.ir_module,
+                    IrType::Tuple(*ret_tuple_id),
+                );
+                for cl in &ret_cl_tys {
+                    sig.returns
+                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
+                }
+                let sig_ref = self.builder.import_signature(sig);
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: call_indirect_fn_tuple returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len(),
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
+                }
+            }
+            InstKind::CallIndirectFnEnum {
+                callee,
+                args,
+                param_tys,
+                ret_enum_id,
+                dests,
+            } => {
+                // A5-P2-MVP-E: indirect call returning an enum. The
+                // cranelift signature has one slot per enum-flatten
+                // leaf in canonical order (tag then variant payloads),
+                // matching `flatten_enum_dests` order on the caller
+                // side and `flatten_compound_leaf_types(Type::Enum)`
+                // on the impl side.
+                let fn_ptr = self.value(*callee);
+                let call_conv = self.builder.func.signature.call_conv;
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for pt in param_tys {
+                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
+                        format!("CallIndirectFnEnum: cannot lower param type {pt:?}")
+                    })?;
+                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                let ret_cl_tys = flatten_struct_to_cranelift_tys(
+                    self.ir_module,
+                    IrType::Enum(*ret_enum_id),
+                );
+                for cl in &ret_cl_tys {
+                    sig.returns
+                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
+                }
+                let sig_ref = self.builder.import_signature(sig);
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: call_indirect_fn_enum returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len(),
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
+                }
+            }
             InstKind::CallIndirectFnStruct {
                 callee,
                 args,

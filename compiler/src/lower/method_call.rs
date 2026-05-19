@@ -1226,6 +1226,50 @@ impl<'a> FunctionLower<'a> {
             self.pending_struct_value = Some(field_bindings);
             return Ok(None);
         }
+        // A5-P2-MVP-E: tuple return — `CallIndirectFnTuple` +
+        // `pending_tuple_value`. Mirrors the struct arm above; the
+        // tuple's element layout drives both dest allocation and
+        // the cranelift signature shape codegen emits.
+        if let crate::ir::Type::Tuple(tuple_id) = ir_ret_ty {
+            let element_bindings = self.allocate_tuple_elements(tuple_id)?;
+            let dests: Vec<crate::ir::LocalId> =
+                super::bindings::flatten_tuple_element_locals(&element_bindings)
+                    .into_iter()
+                    .map(|(local, _ty)| local)
+                    .collect();
+            self.emit(
+                InstKind::CallIndirectFnTuple {
+                    callee: fn_ptr_val,
+                    args: arg_values,
+                    param_tys: ir_param_tys,
+                    ret_tuple_id: tuple_id,
+                    dests,
+                },
+                None,
+            );
+            self.pending_tuple_value = Some(element_bindings);
+            return Ok(None);
+        }
+        // A5-P2-MVP-E: enum return — `CallIndirectFnEnum` +
+        // `pending_enum_value`. `flatten_enum_dests` already
+        // produces the canonical `[tag, variant payloads ...]`
+        // order the codegen multi-result walk expects.
+        if let crate::ir::Type::Enum(enum_id) = ir_ret_ty {
+            let storage = self.allocate_enum_storage(enum_id);
+            let dests = Self::flatten_enum_dests(&storage);
+            self.emit(
+                InstKind::CallIndirectFnEnum {
+                    callee: fn_ptr_val,
+                    args: arg_values,
+                    param_tys: ir_param_tys,
+                    ret_enum_id: enum_id,
+                    dests,
+                },
+                None,
+            );
+            self.pending_enum_value = Some(storage);
+            return Ok(None);
+        }
         let result_ty = if matches!(ir_ret_ty, crate::ir::Type::Unit) {
             None
         } else {

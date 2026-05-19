@@ -327,6 +327,19 @@ pub(super) struct PendingClosureBody {
     pub(super) captures: Vec<(DefaultSymbol, Type)>,
 }
 
+/// A5-P2-MVP-E: which multi-result IR variant a compound-returning
+/// dyn dispatch thunk should use to capture the impl method's
+/// trailing returns. The kind drives both the IR variant choice
+/// and the codegen of the call's signature (the leaf list itself
+/// always comes from `flatten_compound_leaf_types`, so kind
+/// selection is purely about which `InstKind` to emit).
+#[derive(Debug, Clone, Copy)]
+pub(super) enum CompoundReturnCallKind {
+    Struct,
+    Tuple,
+    Enum,
+}
+
 /// A5-P2-MVP-C: per-call pending writeback for a `&mut dyn Trait`
 /// argument. After the outer call returns, the lower pass reads
 /// each leaf from `slot_addr + offset` (via `PtrRead`) and
@@ -923,6 +936,64 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
+    /// A5-P2-MVP-D/E shared helper: emit the compound-return tail of a
+    /// dyn dispatch thunk. The trait method's return type is one of
+    /// `Struct` / `Tuple` / `Enum`; `kind` picks the matching
+    /// multi-result IR variant (`CallStruct` / `CallTuple` /
+    /// `CallEnum`). The leaf list comes from
+    /// `flatten_compound_leaf_types` which already encodes the
+    /// canonical declaration order each variant expects, so the
+    /// dest-local allocation here always matches the cranelift
+    /// signature of the impl method.
+    fn lower_dyn_thunk_compound_return(
+        &mut self,
+        impl_func_id: crate::ir::FuncId,
+        call_args: Vec<ValueId>,
+        ret_compound_ty: Type,
+        kind: CompoundReturnCallKind,
+    ) -> Result<(), String> {
+        let mut leaf_types: Vec<Type> = Vec::new();
+        program::flatten_compound_leaf_types(self.module, ret_compound_ty, &mut leaf_types);
+        let mut dest_locals: Vec<crate::ir::LocalId> = Vec::with_capacity(leaf_types.len());
+        for leaf_ty in &leaf_types {
+            let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+            dest_locals.push(local);
+        }
+        let inst = match kind {
+            CompoundReturnCallKind::Struct => InstKind::CallStruct {
+                target: impl_func_id,
+                args: call_args,
+                dests: dest_locals.clone(),
+            },
+            CompoundReturnCallKind::Tuple => InstKind::CallTuple {
+                target: impl_func_id,
+                args: call_args,
+                dests: dest_locals.clone(),
+            },
+            CompoundReturnCallKind::Enum => InstKind::CallEnum {
+                target: impl_func_id,
+                args: call_args,
+                dests: dest_locals.clone(),
+            },
+        };
+        self.emit(inst, None);
+        let mut return_vals: Vec<ValueId> = Vec::with_capacity(dest_locals.len());
+        for (local, leaf_ty) in dest_locals.iter().zip(leaf_types.iter()) {
+            let v = self
+                .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                .ok_or_else(|| "dyn thunk: LoadLocal(compound-leaf) returned no value".to_string())?;
+            return_vals.push(v);
+        }
+        let fid = self.func_id;
+        self.module
+            .function_mut(fid)
+            .blocks
+            .last_mut()
+            .expect("entry block must exist")
+            .terminator = Some(crate::ir::Terminator::Return(return_vals));
+        Ok(())
+    }
+
     pub(super) fn lower_dyn_thunk_body(
         &mut self,
         impl_func_id: crate::ir::FuncId,
@@ -1077,41 +1148,33 @@ impl<'a> FunctionLower<'a> {
             // thunk's multi-value `Return` terminator (matching the
             // thunk's own flat-leaf return signature, since it was
             // pre-declared with the same struct return type).
-            let mut leaf_types: Vec<Type> = Vec::new();
-            program::flatten_compound_leaf_types(
-                self.module,
+            self.lower_dyn_thunk_compound_return(
+                impl_func_id,
+                call_args,
                 Type::Struct(struct_id),
-                &mut leaf_types,
-            );
-            let mut dest_locals: Vec<crate::ir::LocalId> =
-                Vec::with_capacity(leaf_types.len());
-            for leaf_ty in &leaf_types {
-                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
-                dest_locals.push(local);
-            }
-            self.emit(
-                InstKind::CallStruct {
-                    target: impl_func_id,
-                    args: call_args,
-                    dests: dest_locals.clone(),
-                },
-                None,
-            );
-            // Load each dest local back as the multi-value Return body.
-            let mut return_vals: Vec<ValueId> = Vec::with_capacity(dest_locals.len());
-            for (local, leaf_ty) in dest_locals.iter().zip(leaf_types.iter()) {
-                let v = self
-                    .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
-                    .ok_or_else(|| "dyn thunk: LoadLocal(struct-leaf) returned no value".to_string())?;
-                return_vals.push(v);
-            }
-            let fid = self.func_id;
-            self.module
-                .function_mut(fid)
-                .blocks
-                .last_mut()
-                .expect("entry block must exist")
-                .terminator = Some(crate::ir::Terminator::Return(return_vals));
+                CompoundReturnCallKind::Struct,
+            )?;
+        } else if let Type::Tuple(tuple_id) = ret_ty {
+            // A5-P2-MVP-E: tuple return — same shape as struct but
+            // use `CallTuple` to capture leaves in tuple declaration
+            // order.
+            self.lower_dyn_thunk_compound_return(
+                impl_func_id,
+                call_args,
+                Type::Tuple(tuple_id),
+                CompoundReturnCallKind::Tuple,
+            )?;
+        } else if let Type::Enum(enum_id) = ret_ty {
+            // A5-P2-MVP-E: enum return — leaf list is
+            // `[tag, variant0_payloads..., variant1_payloads, ...]`
+            // matching `flatten_compound_leaf_types(Type::Enum)`.
+            // Use `CallEnum` to capture.
+            self.lower_dyn_thunk_compound_return(
+                impl_func_id,
+                call_args,
+                Type::Enum(enum_id),
+                CompoundReturnCallKind::Enum,
+            )?;
         } else {
             // Plain `self: Self` (by value) impl, scalar/Unit return.
             let call_result_ty = if matches!(ret_ty, Type::Unit) {

@@ -4819,3 +4819,71 @@ fn dyn_trait_struct_return_round_trip() {
     "#;
     assert_consistent(src, "dyn_struct_return");
 }
+
+#[test]
+fn dyn_trait_tuple_return_round_trip() {
+    // A5-P2-MVP-E: `&dyn Trait` dispatch where the trait method
+    // returns a tuple. The thunk's `Call(impl)` becomes
+    // `CallTuple` so cranelift's multi-result lands in
+    // pre-allocated leaf locals; the caller's
+    // `CallIndirectFnTuple` fans the results into the
+    // let-binding's per-element locals via the standard
+    // `pending_tuple_value` channel. Result = 10 + 42 = 52.
+    let src = r#"
+        trait Paired {
+            fn get_pair(self: Self) -> (i64, u64)
+        }
+        struct Maker { x: i64 }
+        impl Paired for Maker {
+            fn get_pair(self: Self) -> (i64, u64) {
+                (self.x, 42u64)
+            }
+        }
+        fn extract(b: &dyn Paired) -> u64 {
+            val (a, c) = b.get_pair()
+            (a as u64) + c
+        }
+        fn main() -> u64 {
+            val m = Maker { x: 10i64 }
+            extract(m)
+        }
+    "#;
+    assert_consistent(src, "dyn_tuple_return");
+}
+
+#[test]
+fn dyn_trait_enum_return_round_trip() {
+    // A5-P2-MVP-E: `&dyn Trait` dispatch where the trait method
+    // returns an enum (`Option<i64>`). The thunk uses `CallEnum`
+    // to capture `[tag, Some_payload, ...]`; the caller's
+    // `CallIndirectFnEnum` fans the results into a fresh
+    // `EnumStorage` via the `pending_enum_value` channel. Result
+    // = 42 (Some branch).
+    let src = r#"
+        trait Optional {
+            fn maybe(self: Self) -> Option<i64>
+        }
+        struct Wrapper { n: i64 }
+        impl Optional for Wrapper {
+            fn maybe(self: Self) -> Option<i64> {
+                if self.n > 0i64 {
+                    Option::Some(self.n)
+                } else {
+                    Option::None
+                }
+            }
+        }
+        fn check(w: &dyn Optional) -> i64 {
+            val r = w.maybe()
+            match r {
+                Option::Some(v) => v,
+                Option::None => 0i64,
+            }
+        }
+        fn main() -> u64 {
+            val w = Wrapper { n: 42i64 }
+            check(w) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_enum_return");
+}

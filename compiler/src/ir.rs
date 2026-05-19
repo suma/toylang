@@ -963,6 +963,24 @@ pub enum InstKind {
         param_tys: Vec<Type>,
         ret_ty: Type,
     },
+    /// A5-P2-MVP-D: indirect call through a raw function pointer that
+    /// returns a struct. Mirrors `CallIndirectFn` for the call-site
+    /// plumbing (no implicit env, `callee` is the resolved fn ptr,
+    /// `param_tys` describes the user-visible argument list including
+    /// the leading `data_ptr`) but adds `dests: Vec<LocalId>` —
+    /// one per scalar leaf of the return struct in declaration
+    /// order. Codegen flattens `ret_struct_id` into
+    /// cranelift returns via `flatten_struct_to_cranelift_tys`
+    /// and stores each result into the matching dest local.
+    /// Used by `lower_dyn_method_call` when the trait method's
+    /// declared return type is a struct.
+    CallIndirectFnStruct {
+        callee: ValueId,
+        args: Vec<ValueId>,
+        param_tys: Vec<Type>,
+        ret_struct_id: StructId,
+        dests: Vec<LocalId>,
+    },
     /// A5-P2-MVP-B: yield the runtime address of a caller-frame
     /// stack slot reserved for `&dyn Trait` coercion. `slot_idx`
     /// indexes `Function::dyn_coerce_slots`. Codegen creates one
@@ -1451,6 +1469,19 @@ impl fmt::Display for DisplayInst<'_> {
             }
             InstKind::DynCoerceSlotAddr { slot_idx } => {
                 write!(f, "{prefix}dyn_coerce_slot_addr {slot_idx}")
+            }
+            InstKind::CallIndirectFnStruct { callee, args, dests, .. } => {
+                write!(f, "{prefix}call_indirect_fn_struct {callee}(")?;
+                for (i, a) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{a}")?;
+                }
+                write!(f, ") -> [")?;
+                for (i, d) in dests.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{d}")?;
+                }
+                write!(f, "]")
             }
             InstKind::CallIndirect { callee, args, param_tys, ret_ty } => {
                 let astr: Vec<String> = args.iter().map(|a| a.to_string()).collect();

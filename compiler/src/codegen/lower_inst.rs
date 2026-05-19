@@ -12,7 +12,7 @@ use string_interner::Symbol;
 
 use crate::ir::{BinOp, Const, InstKind, Type as IrType, UnaryOp};
 
-use super::{ir_to_cranelift_ty, LowerCtx};
+use super::{flatten_struct_to_cranelift_tys, ir_to_cranelift_ty, LowerCtx};
 
 impl<'a, 'b> LowerCtx<'a, 'b> {
     pub(super) fn lower_instruction(
@@ -351,6 +351,56 @@ impl<'a, 'b> LowerCtx<'a, 'b> {
                         "CallIndirectFn declared a return type but produced no Cranelift result".to_string()
                     })?;
                     self.values.insert(vid.0, v);
+                }
+            }
+            InstKind::CallIndirectFnStruct {
+                callee,
+                args,
+                param_tys,
+                ret_struct_id,
+                dests,
+            } => {
+                // A5-P2-MVP-D: indirect call returning a struct. Build
+                // the signature with all user params + flattened struct
+                // returns (one cranelift slot per scalar leaf), then
+                // fan the multi-result back into `dests[i]`. Mirrors
+                // the `CallStruct` direct-call lowering at line ~524
+                // but the callee comes from a runtime ValueId (a
+                // vtable-loaded fn ptr) instead of a fixed FuncId.
+                let fn_ptr = self.value(*callee);
+                let call_conv = self.builder.func.signature.call_conv;
+                let mut sig = cranelift_codegen::ir::Signature::new(call_conv);
+                for pt in param_tys {
+                    let cl = ir_to_cranelift_ty(*pt).ok_or_else(|| {
+                        format!("CallIndirectFnStruct: cannot lower param type {pt:?}")
+                    })?;
+                    sig.params.push(cranelift_codegen::ir::AbiParam::new(cl));
+                }
+                let ret_cl_tys = flatten_struct_to_cranelift_tys(
+                    self.ir_module,
+                    IrType::Struct(*ret_struct_id),
+                );
+                for cl in &ret_cl_tys {
+                    sig.returns
+                        .push(cranelift_codegen::ir::AbiParam::new(*cl));
+                }
+                let sig_ref = self.builder.import_signature(sig);
+                let arg_values: Vec<Value> = args.iter().map(|a| self.value(*a)).collect();
+                let call_inst = self
+                    .builder
+                    .ins()
+                    .call_indirect(sig_ref, fn_ptr, &arg_values);
+                let results = self.builder.inst_results(call_inst).to_vec();
+                if results.len() != dests.len() {
+                    return Err(format!(
+                        "internal error: call_indirect_fn_struct returned {} value(s), expected {}",
+                        results.len(),
+                        dests.len(),
+                    ));
+                }
+                for (dest, val) in dests.iter().zip(results.iter()) {
+                    let var = self.local(*dest);
+                    self.builder.def_var(var, *val);
                 }
             }
             InstKind::DynCoerceSlotAddr { slot_idx } => {

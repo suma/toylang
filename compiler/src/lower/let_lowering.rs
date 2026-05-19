@@ -227,6 +227,18 @@ impl<'a> FunctionLower<'a> {
             )? {
                 return Ok(result);
             }
+        // A5-P2-MVP-D: `val p = m.build()` where `m: &dyn Trait` and
+        // the trait method returns a struct. The dyn-trait dispatch
+        // path emits `CallIndirectFnStruct` and parks the field
+        // bindings in `pending_struct_value`; we adopt the binding
+        // under `name`, mirroring the regular struct-method-compound
+        // arm just above.
+        if let Expr::MethodCall(recv, method_sym, method_args) = rhs.clone()
+            && let Some(result) =
+                self.lower_let_dyn_method_struct_return(name, recv, method_sym, method_args)?
+        {
+            return Ok(result);
+        }
         // Tuple-returning call RHS: `val pair = make_pair()`. Same
         // shape as struct-returning calls, just routed through
         // CallTuple. Detect early so the parser-desugared
@@ -634,6 +646,87 @@ impl<'a> FunctionLower<'a> {
     /// `Ok(Some(_))` if it dispatched, `Ok(None)` if the
     /// receiver / method doesn't match this shape and the
     /// caller should fall through.
+    /// A5-P2-MVP-D: `val name = m.method()` where `m: &dyn Trait`
+    /// and the trait method returns a struct. The dyn dispatch
+    /// path in `lower_method_call` -> `lower_dyn_method_call`
+    /// emits the `CallIndirectFnStruct` instruction and parks the
+    /// field bindings in `pending_struct_value`. We adopt those
+    /// bindings under `name`, matching how
+    /// `lower_let_struct_enum_method_compound` handles the
+    /// non-dyn struct-return case. Returns `Ok(Some(_))` when
+    /// it dispatched, `Ok(None)` when the receiver isn't a
+    /// `Binding::DynTraitObj` so the caller can keep looking
+    /// for the right arm.
+    fn lower_let_dyn_method_struct_return(
+        &mut self,
+        name: DefaultSymbol,
+        recv: ExprRef,
+        method_sym: DefaultSymbol,
+        method_args: Vec<ExprRef>,
+    ) -> Result<Option<Option<ValueId>>, String> {
+        // Cheap precondition check — only proceed if the receiver
+        // resolves to a `Binding::DynTraitObj`. Anything else
+        // belongs to a different lower path.
+        let recv_expr = self
+            .program
+            .expression
+            .get(&recv)
+            .ok_or_else(|| "dyn method-call receiver missing".to_string())?;
+        let recv_sym = match recv_expr {
+            Expr::Identifier(s) => s,
+            _ => return Ok(None),
+        };
+        if !matches!(self.bindings.get(&recv_sym), Some(Binding::DynTraitObj { .. })) {
+            return Ok(None);
+        }
+        // Delegate to the regular method-call lowering. For
+        // DynTraitObj receivers it routes through
+        // `lower_dyn_method_call`, which (in the struct-return
+        // branch) sets `pending_struct_value` and returns
+        // `Ok(None)`.
+        self.lower_method_call(&recv, method_sym, &method_args)?;
+        let fields = self
+            .pending_struct_value
+            .take()
+            .ok_or_else(|| {
+                "A5-P2-MVP-D: dyn method call did not park a pending struct value (expected struct return)"
+                    .to_string()
+            })?;
+        // Recover the outer struct id from the call instruction we
+        // just emitted. The most recent instruction in the current
+        // block is the `CallIndirectFnStruct`; we read its
+        // `ret_struct_id` to bind correctly.
+        let outer_struct_id = self.recover_last_dyn_struct_return_id().ok_or_else(|| {
+            "A5-P2-MVP-D: could not recover struct id for dyn method's struct return"
+                .to_string()
+        })?;
+        self.bindings.insert(
+            name,
+            Binding::Struct {
+                struct_id: outer_struct_id,
+                fields,
+            },
+        );
+        Ok(Some(None))
+    }
+
+    /// Helper for `lower_let_dyn_method_struct_return`: walk back
+    /// from the current block's tail to find the most recent
+    /// `CallIndirectFnStruct` and return its `ret_struct_id`.
+    fn recover_last_dyn_struct_return_id(
+        &self,
+    ) -> Option<crate::ir::StructId> {
+        let func = self.module.function(self.func_id);
+        let block_id = self.current_block?;
+        let blk = func.blocks.iter().find(|b| b.id == block_id)?;
+        for inst in blk.instructions.iter().rev() {
+            if let InstKind::CallIndirectFnStruct { ret_struct_id, .. } = &inst.kind {
+                return Some(*ret_struct_id);
+            }
+        }
+        None
+    }
+
     fn lower_let_struct_enum_method_compound(
         &mut self,
         name: DefaultSymbol,

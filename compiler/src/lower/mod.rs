@@ -1069,8 +1069,51 @@ impl<'a> FunctionLower<'a> {
                 .last_mut()
                 .expect("entry block must exist")
                 .terminator = Some(crate::ir::Terminator::Return(return_vals));
+        } else if let Type::Struct(struct_id) = ret_ty {
+            // A5-P2-MVP-D: `self: Self` impl that returns a struct.
+            // The impl's lowered cranelift signature has one return
+            // per scalar leaf; we capture them via `CallStruct` into
+            // pre-allocated locals, then thread them all through the
+            // thunk's multi-value `Return` terminator (matching the
+            // thunk's own flat-leaf return signature, since it was
+            // pre-declared with the same struct return type).
+            let mut leaf_types: Vec<Type> = Vec::new();
+            program::flatten_compound_leaf_types(
+                self.module,
+                Type::Struct(struct_id),
+                &mut leaf_types,
+            );
+            let mut dest_locals: Vec<crate::ir::LocalId> =
+                Vec::with_capacity(leaf_types.len());
+            for leaf_ty in &leaf_types {
+                let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
+                dest_locals.push(local);
+            }
+            self.emit(
+                InstKind::CallStruct {
+                    target: impl_func_id,
+                    args: call_args,
+                    dests: dest_locals.clone(),
+                },
+                None,
+            );
+            // Load each dest local back as the multi-value Return body.
+            let mut return_vals: Vec<ValueId> = Vec::with_capacity(dest_locals.len());
+            for (local, leaf_ty) in dest_locals.iter().zip(leaf_types.iter()) {
+                let v = self
+                    .emit(InstKind::LoadLocal(*local), Some(*leaf_ty))
+                    .ok_or_else(|| "dyn thunk: LoadLocal(struct-leaf) returned no value".to_string())?;
+                return_vals.push(v);
+            }
+            let fid = self.func_id;
+            self.module
+                .function_mut(fid)
+                .blocks
+                .last_mut()
+                .expect("entry block must exist")
+                .terminator = Some(crate::ir::Terminator::Return(return_vals));
         } else {
-            // Plain `self: Self` (by value) impl. No writeback path.
+            // Plain `self: Self` (by value) impl, scalar/Unit return.
             let call_result_ty = if matches!(ret_ty, Type::Unit) {
                 None
             } else {

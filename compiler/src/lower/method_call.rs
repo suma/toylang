@@ -1133,8 +1133,8 @@ impl<'a> FunctionLower<'a> {
             }
             let lowered = super::templates::lower_param_or_return_type(
                 pty,
-                &Default::default(),
-                &Default::default(),
+                self.struct_defs,
+                self.enum_defs,
                 self.module,
                 self.interner,
             )
@@ -1148,8 +1148,8 @@ impl<'a> FunctionLower<'a> {
         }
         let ir_ret_ty = super::templates::lower_param_or_return_type(
             &method_ret_decl,
-            &Default::default(),
-            &Default::default(),
+            self.struct_defs,
+            self.enum_defs,
             self.module,
             self.interner,
         )
@@ -1199,6 +1199,33 @@ impl<'a> FunctionLower<'a> {
             arg_values.push(v);
         }
 
+        // A5-P2-MVP-D: when the trait method returns a struct, fan
+        // the multi-result indirect call into pre-allocated field
+        // locals via `CallIndirectFnStruct`. The caller observes the
+        // result through `pending_struct_value` — the same channel
+        // the regular `CallStruct` path uses — so `val p = m.build()`
+        // and similar bindings just work via the existing
+        // `lower_let_call_struct` consumer.
+        if let crate::ir::Type::Struct(struct_id) = ir_ret_ty {
+            let field_bindings = self.allocate_struct_fields(struct_id);
+            let dests: Vec<crate::ir::LocalId> =
+                super::bindings::flatten_struct_locals(&field_bindings)
+                    .into_iter()
+                    .map(|(local, _ty)| local)
+                    .collect();
+            self.emit(
+                InstKind::CallIndirectFnStruct {
+                    callee: fn_ptr_val,
+                    args: arg_values,
+                    param_tys: ir_param_tys,
+                    ret_struct_id: struct_id,
+                    dests,
+                },
+                None,
+            );
+            self.pending_struct_value = Some(field_bindings);
+            return Ok(None);
+        }
         let result_ty = if matches!(ir_ret_ty, crate::ir::Type::Unit) {
             None
         } else {

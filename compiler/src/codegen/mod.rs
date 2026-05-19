@@ -1222,7 +1222,7 @@ fn ir_to_cranelift_ty(t: IrType) -> Option<types::Type> {
 /// Scalars yield one entry; struct / tuple types yield one entry
 /// per leaf scalar element, recursing through nested compound
 /// fields. Unit yields nothing (no cranelift slot).
-fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
+pub(super) fn flatten_struct_to_cranelift_tys(ir_module: &IrModule, t: IrType) -> Vec<types::Type> {
     match t {
         IrType::Struct(id) => {
             let mut out = Vec::new();

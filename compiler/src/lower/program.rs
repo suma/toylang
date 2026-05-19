@@ -257,7 +257,7 @@ fn dyn_struct_leaf_layout(module: &Module, ty: Type) -> Option<Vec<(u64, Type)>>
     Some(out)
 }
 
-fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type>) {
+pub(super) fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut Vec<Type>) {
     match ty {
         Type::Struct(id) => {
             let def = module.struct_def(id);

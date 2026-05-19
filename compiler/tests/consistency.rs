@@ -4787,3 +4787,35 @@ fn dyn_trait_mut_self_round_trip() {
     "#;
     assert_consistent(src, "dyn_mut_self");
 }
+
+#[test]
+fn dyn_trait_struct_return_round_trip() {
+    // A5-P2-MVP-D: `&dyn Trait` dispatch where the trait method
+    // returns a struct. The thunk's `Call(impl)` becomes
+    // `CallStruct` so cranelift's multi-result call lands in
+    // pre-allocated leaf locals, the thunk's `Return` emits them
+    // all, and the caller's `CallIndirectFnStruct` fans the
+    // results into the let-binding's per-field locals.
+    // p.x + p.y = self.v + (self.v + 1) = 2*v + 1 = 21 for v=10.
+    let src = r#"
+        trait Make {
+            fn build(self: Self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { v: i64 }
+        impl Make for Cell {
+            fn build(self: Self) -> Pair {
+                Pair { x: self.v, y: self.v + 1i64 }
+            }
+        }
+        fn use_dyn(m: &dyn Make) -> i64 {
+            val p = m.build()
+            p.x + p.y
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 10i64 }
+            use_dyn(c) as u64
+        }
+    "#;
+    assert_consistent(src, "dyn_struct_return");
+}

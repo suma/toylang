@@ -1799,38 +1799,79 @@ fn main() -> i64 {
 
 Notes:
 
-- Use `&dyn Trait` (or `&mut dyn Trait`) in parameter / return /
-  field positions. Bare `dyn Trait` is rejected for now; owned
+- Use `&dyn Trait` (parameter / receiver) for borrowed trait
+  objects. `&mut dyn Trait` carries the mutation back to the
+  caller's struct binding. Bare `dyn Trait` value positions
+  (struct field, `val` binding, return type) are rejected — owned
   trait objects need a sized-erasure mechanism (`Box<dyn Trait>`)
   which lands in A5 Phase 4.
 - At a call site, `T` and `&T` automatically coerce to `&dyn Trait`
   when `T` implements the trait. Explicit borrow `&value` works
-  the same way.
+  the same way. `&mut value` coerces to `&mut dyn Trait` when the
+  variable is `var`-bound.
 - Default method bodies (A1) work with `dyn Trait` dispatch — the
   expansion pre-pass installs the default as an inherent method on
   every impl, so `(&dyn Trait).default_method()` resolves through
   the regular method registry.
+- Trait methods may return any shape supported by the AOT compiler
+  — `i64`, `Self`, structs, tuples, and enums all flow through the
+  thunk + multi-result `call_indirect` machinery. `&mut self`
+  methods that return a compound value also work; the impl's
+  writeback leaves and the user-visible return leaves share the
+  same call.
 - The static type-check at the call site is the load-bearing
   guarantee. The interpreter's runtime arg check skips the
   structural comparison when the expected type is `Dyn` because
   the actual value is just the underlying `Object` and a
   structural compare would always reject.
 
+#### Backend implementation
+
+The AOT backend lowers `&dyn Trait` to a 2-word fat pointer:
+`(data_ptr: u64, vtable_ptr: u64)`. For each `impl Trait for Type`
+the compiler emits a vtable data symbol
+`toy_vtable_<trait>_<struct>` plus a per-method **thunk function**
+`toy_dyn_thunk_<trait>_<struct>_<method>`. The thunk has the
+uniform signature `(data_ptr: u64, ...user_args) -> ret_ty`, reads
+the receiver's leaves from `data_ptr` via `PtrRead`, and forwards
+to the impl method's flat-leaf cranelift call.
+
+At a coercion site (`describe(d)` where `d: Dog`), the caller
+allocates a per-call stack slot sized by the struct's natural-sum
+byte count, `PtrWrite`s each leaf into the slot, and pairs the
+slot address with the vtable address as the fat pointer. For
+`&mut dyn Trait` the dispatch site also schedules a post-call
+`PtrRead` walk over the slot to copy the mutated leaves back into
+the caller's struct binding.
+
 Phase status (A5):
 
-- **P1 (this release, 2026-05-18)** — interpreter dispatch.
-  Parser, type-checker, and tree-walker support `&dyn Trait`
-  parameters / returns and the auto-coercion described above.
-- **P2 (planned)** — AOT compiler support: fat pointer ABI
-  (`data_ptr, vtable_ptr` 2-word slot), vtable codegen per
-  `impl Trait for Type`, indirect call lowering.
-- **P3 (planned)** — cranelift JIT support, mirroring P2.
-- **P4 (planned)** — owned trait objects via `Box<dyn Trait>` and
-  heterogeneous `Vec<Box<dyn Trait>>` collections.
-
-Until P2/P3 land, AOT and JIT reject any program that contains a
-`Dyn` type at lowering time (silent fallback to the interpreter
-in JIT eligibility; clean error in AOT).
+- **A5-P1 (2026-05-18)** — interpreter dispatch. Parser,
+  type-checker, and tree-walker support `&dyn Trait` parameters
+  and the auto-coercion described above.
+- **A5-P2 (2026-05-19)** — AOT compiler support. Landed in six
+  sub-phases:
+  - **MVP-A** — empty struct receivers (no fields). Vtable points
+    at impl methods directly because `() -> R` lines up.
+  - **MVP-B** — scalar-field structs. Introduces the uniform
+    thunk ABI with `data_ptr` and stack-slot-backed leaf passing.
+  - **MVP-C** — nested struct fields and `&mut dyn Trait`
+    writeback (`pending_dyn_mut_writebacks` drain at the
+    caller).
+  - **MVP-D** — compound (struct) return through
+    `CallIndirectFnStruct`.
+  - **MVP-E** — tuple and enum returns through
+    `CallIndirectFnTuple` / `CallIndirectFnEnum`.
+  - **MVP-F** — `&mut self` methods that *also* return a
+    compound type (`CallWithSelfWritebackCompound` fans both
+    return leaves and writeback leaves out of the same call).
+- **A5-P3 (planned)** — cranelift JIT support. Programs that
+  thread `Dyn` types currently fall back to the interpreter via
+  the JIT eligibility's catch-all; they run correctly but skip
+  JIT optimisation.
+- **A5-P4 (planned)** — owned trait objects via `Box<dyn Trait>`
+  and heterogeneous `Vec<Box<dyn Trait>>` collections. Requires a
+  `Box<T>` type, which the language doesn't have yet.
 
 ### Errors caught at type-check time
 
@@ -1851,9 +1892,15 @@ in JIT eligibility; clean error in AOT).
   See *Trait bounds on generics → Multiple bounds* above.
 - Trait inheritance (`trait B: A`)
 - ~~Dynamic dispatch via `dyn Trait` objects~~ — 完了済み in
-  interpreter as of A5 Phase 1 (2026-05-18). See *Dynamic
-  dispatch with `dyn Trait`* above. Remaining: AOT (P2), JIT
-  (P3), `Box<dyn Trait>` for owned trait objects (P4).
+  the interpreter (A5 Phase 1, 2026-05-18) and AOT compiler
+  (A5 Phase 2 MVP-A〜F, 2026-05-19). See *Dynamic dispatch with
+  `dyn Trait`* above. Remaining: cranelift JIT support (P3 —
+  programs run via the interpreter today), `Box<dyn Trait>` for
+  owned trait objects (P4 — requires a `Box<T>` type that doesn't
+  exist yet), `dyn TraitA + TraitB` multi-trait objects,
+  `dyn Iterator<T>` generic-trait objects, and `&dyn Trait` /
+  `&mut dyn Trait` in return position / struct field (the
+  REF-Stage-2 escape rule rejects ref-typed return / fields).
 - Associated types
 
 ---
@@ -2688,13 +2735,16 @@ These are real today; some appear in `design-docs/todo.md` as planned work.
   **Multiple bounds (`<T: A + B>`)** are supported as of A2
   (2026-05-18) — see *Traits → Trait bounds on generics*.
   **`dyn Trait`** (dynamic dispatch via trait objects) is
-  supported in the interpreter as of A5 Phase 1 (2026-05-18) —
-  see *Traits → Dynamic dispatch with `dyn Trait`*. AOT and JIT
-  reject programs that thread `Dyn` types (silent fallback to
-  the interpreter); P2/P3 will add backend support. Generic-trait
-  default bodies that reference the trait's type parameter `T`
-  are not yet wired. See *Traits → Out of scope* for the
-  remaining list.
+  supported in the interpreter as of A5 Phase 1 (2026-05-18)
+  **and the AOT compiler as of A5 Phase 2 (MVP-A〜F, 2026-05-19)**
+  — see *Traits → Dynamic dispatch with `dyn Trait`*. The
+  cranelift JIT silently falls back to the interpreter for
+  programs that thread `Dyn` types (P3 work tracked but
+  programs run correctly today). `Box<dyn Trait>` for owned
+  trait objects is not yet available (P4 — needs a `Box<T>`
+  type). Generic-trait default bodies that reference the trait's
+  type parameter `T` are not yet wired. See *Traits → Out of
+  scope* for the remaining list.
 - **`extern fn` generic params: backend monomorph not yet wired** —
   the parser accepts `extern fn name<T>(x: T) -> T` and the
   interpreter dispatches via the type-erased `extern_registry` by

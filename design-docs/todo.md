@@ -147,7 +147,8 @@ NEW-TYPE-SYSTEM. **型システム拡張候補** (2026-05-09 棚卸し、2026-05
          - ✅ **A5-P2-MVP-D: trait method の struct return** — 2026-05-19 landed
          - ✅ **A5-P2-MVP-E: trait method の tuple / enum return** — 2026-05-19 landed
          - ✅ **A5-P2-MVP-F: `&mut self` + compound return combined** — 2026-05-19 landed
-       - **A5-P3: cranelift JIT** — `compiler/src/jit.rs` 経路で dyn dispatch を最適化。**現状**: eligibility scalar map の catch-all で `Dyn` を None で返すため silent fallback、interpreter 経由で**プログラムは動く** (correctness 問題なし、perf 問題のみ)。
+        - ✅ **A5-P3: compiler-side cranelift JIT** — `compiler/src/jit.rs` 経路で dyn dispatch を landing。CodegenSession (`M: Module`) が AOT (ObjectModule) と JIT (JITModule) を共有しているため、`define_vtables` (declare_data + define_data + write_function_addr) が JITModule でもそのまま動作。**MVP-A〜F すべて compiler-side JIT で動作確認済み** (`compiler/tests/jit_smoke.rs` に 6 件追加、全部 pass)。
+        - **A5-P3-interp: interpreter-side JIT** (`interpreter/src/jit/`) — `ScalarTy::from_type_decl` の catch-all で `TypeDecl::Dyn` が `None` を返すため eligibility reject → silent fallback → interpreter 経由で実行 (correctness 問題なし)。interpreter-side JIT は struct/tuple/enum/generic 等でも同様に fallback しており、dyn Trait も同一方針で追跡。**優先度: 低** (compiler-side JIT が実用的な高速化を担う)。
        - **A5-P4: `Box<dyn Trait>`** — owned trait object、heap allocation + `Vec<Box<dyn Trait>>` heterogeneous collection。**前提**: `Box<T>` 型自体が toylang に未実装、まずそこから。
        - **A5 残作業 (上記 P3/P4 以外)**: `&dyn Trait` の return / struct field 位置 (現状 REF-Stage-2 escape rule が ref を return / field に置けない)、`dyn TraitA + TraitB` 多重 trait object、`dyn Iterator<T>` generic-trait object、generic trait の default body 内 T 参照。
    - **Trait-bounded generic API** — `fn first<I: Iterator<i64>>(iter: I)` の bound check (現状 `<T: Trait>` は struct で動くが Iterator 等 generic trait の bound は未強制)。優先度 ★★

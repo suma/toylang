@@ -16,7 +16,8 @@ AOT compiler, the cranelift JIT, and owned trait objects via
 | **P2-MVP-D** | AOT struct return | ✅ landed (2026-05-19) |
 | **P2-MVP-E** | AOT tuple / enum return | ✅ landed (2026-05-19) |
 | **P2-MVP-F** | AOT `&mut self` + compound return combined | ✅ landed (2026-05-19) |
-| **P3** | cranelift JIT (compiler-side + interpreter-side) | planning |
+| **P3** | cranelift JIT (compiler-side) | ✅ landed (MVP-A〜F verified in `jit_smoke.rs`) |
+| **P3-interp** | interpreter-side JIT (`interpreter/src/jit/`) | silent fallback (same as struct/tuple/enum/generic) |
 | **P4** | `Box<dyn Trait>` (owned trait objects) | not started |
 
 ### MVP-A landed notes (2026-05-19)
@@ -205,16 +206,31 @@ Layout in `data_ptr`: contiguous leaves at struct-natural offsets,
 matching the same layout used by `__builtin_ptr_read` /
 `__builtin_ptr_write` for `Vec<Compound>`.
 
-## P3: cranelift JIT (compiler-side)
+## P3: cranelift JIT (compiler-side) — COMPLETE
 
 Mirrors P2 in `compiler/src/jit.rs`. The compiler JIT shares the
-codegen pipeline with AOT, so most pieces transfer directly:
-declare_data + define_data for vtables, indirect call lowering.
+generic `CodegenSession<M: Module>` with AOT, so every piece
+transferred directly:
+
+- `declare_data` + `define_data` with `write_function_addr` for
+  vtables works on `JITModule` identically to `ObjectModule`.
+- `CallIndirectFn` / `CallIndirectFnStruct` / `CallIndirectFnTuple`
+  / `CallIndirectFnEnum` / `CallWithSelfWriteback` /
+  `CallWithSelfWritebackCompound` lowering all reused the existing
+  `lower_inst.rs` arms without change.
+- `DynCoerceSlotAddr` stack-slot creation works because
+  `JITModule` supports `create_sized_stack_slot` via the same
+  `FunctionBuilder` API.
+
+**Status**: MVP-A through MVP-F are all verified in
+`compiler/tests/jit_smoke.rs` (6 tests, all passing).
 
 Open: the **interpreter-side JIT** (`interpreter/src/jit/`) is a
-separate codebase. P3 covers it too if budget permits, but it can
-fall back to "skip + interpreter" silently (this is already its
-behavior for many features).
+separate codebase with its own `ScalarTy`-based type system. It
+falls back to "skip + interpreter" silently for `dyn Trait`,
+matching its existing behavior for struct, tuple, enum, and
+generic types. The compiler-side JIT is the performant path; the
+interpreter-side JIT correctness fallback is acceptable.
 
 ## P4: `Box<dyn Trait>`
 

@@ -160,3 +160,158 @@ fn jit_reports_parse_error() {
         "got: {err}"
     );
 }
+
+#[test]
+fn jit_dyn_trait_empty_struct() {
+    let src = r#"
+        trait Animal {
+            fn sound(self: Self) -> i64
+        }
+        struct Dog {}
+        impl Animal for Dog {
+            fn sound(self: Self) -> i64 { 7i64 }
+        }
+        fn describe(a: &dyn Animal) -> i64 {
+            a.sound()
+        }
+        fn main() -> u64 {
+            val d = Dog {}
+            describe(d) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 7);
+}
+
+#[test]
+fn jit_dyn_trait_scalar_field() {
+    let src = r#"
+        trait Counter {
+            fn bump(self: Self) -> i64
+        }
+        struct Cell { v: i64 }
+        impl Counter for Cell {
+            fn bump(self: Self) -> i64 { self.v + 1i64 }
+        }
+        fn pump(c: &dyn Counter) -> i64 {
+            c.bump()
+        }
+        fn main() -> u64 {
+            val cell = Cell { v: 10i64 }
+            pump(cell) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 11);
+}
+
+#[test]
+fn jit_dyn_trait_mut_self() {
+    let src = r#"
+        trait Counter {
+            fn bump(&mut self) -> i64
+        }
+        struct Cell { v: i64 }
+        impl Counter for Cell {
+            fn bump(&mut self) -> i64 {
+                self.v = self.v + 1i64
+                self.v
+            }
+        }
+        fn pump(c: &mut dyn Counter) -> i64 {
+            c.bump()
+        }
+        fn main() -> u64 {
+            var cell = Cell { v: 10i64 }
+            val a = pump(&mut cell)
+            val b = pump(&mut cell)
+            (a + b) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 23);
+}
+
+#[test]
+fn jit_dyn_trait_struct_return() {
+    // Same shape as consistency.rs::dyn_trait_struct_return_round_trip.
+    // The helper returns i64 (not struct) so the compound-return
+    // dyn call happens inside a let-binding, not across a
+    // function boundary.
+    let src = r#"
+        trait Make {
+            fn build(self: Self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { v: i64 }
+        impl Make for Cell {
+            fn build(self: Self) -> Pair {
+                Pair { x: self.v, y: self.v + 1i64 }
+            }
+        }
+        fn use_dyn(m: &dyn Make) -> i64 {
+            val p = m.build()
+            p.x + p.y
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 10i64 }
+            use_dyn(c) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 21);
+}
+
+#[test]
+fn jit_dyn_trait_tuple_return() {
+    let src = r#"
+        trait Make {
+            fn get_pair(self: Self) -> (i64, u64)
+        }
+        struct Cell { v: i64 }
+        impl Make for Cell {
+            fn get_pair(self: Self) -> (i64, u64) {
+                (self.v, (self.v + 1i64) as u64)
+            }
+        }
+        fn use_dyn(m: &dyn Make) -> i64 {
+            val t = m.get_pair()
+            t.0 + t.1 as i64
+        }
+        fn main() -> u64 {
+            val c = Cell { v: 10i64 }
+            use_dyn(c) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 21);
+}
+
+#[test]
+fn jit_dyn_trait_mut_self_struct_return() {
+    // Same shape as consistency.rs::dyn_trait_mut_self_struct_return_round_trip.
+    let src = r#"
+        trait Pump {
+            fn step(&mut self) -> Pair
+        }
+        struct Pair { x: i64, y: i64 }
+        struct Cell { n: i64 }
+        impl Pump for Cell {
+            fn step(&mut self) -> Pair {
+                self.n = self.n + 1i64
+                Pair { x: self.n, y: self.n * 2i64 }
+            }
+        }
+        fn drive(c: &mut dyn Pump) -> i64 {
+            val p1 = c.step()
+            val p2 = c.step()
+            p1.x + p1.y + p2.x + p2.y
+        }
+        fn main() -> u64 {
+            var c = Cell { n: 10i64 }
+            drive(&mut c) as u64
+        }
+    "#;
+    let result = run(src);
+    assert_eq!(result, 69);
+}

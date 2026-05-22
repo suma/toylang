@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use frontend::ast::{Program, Stmt, StmtRef};
+use frontend::ast::{File, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -58,7 +58,7 @@ pub(super) struct EnumTemplateVariant {
 }
 
 pub(super) fn collect_struct_defs(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> Result<StructDefs, String> {
     let _ = interner;
@@ -88,7 +88,7 @@ pub(super) fn collect_struct_defs(
 }
 
 pub(super) fn collect_enum_defs(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> Result<EnumDefs, String> {
     let _ = interner;

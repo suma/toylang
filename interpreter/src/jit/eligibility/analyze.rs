@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use frontend::ast::{Expr, ExprRef, Function, Program};
+use frontend::ast::{Expr, ExprRef, Function, File};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use super::checker::check_callable_body;
@@ -63,7 +63,7 @@ pub(crate) struct MonoCall {
 }
 
 pub fn analyze(
-    program: &Program,
+    program: &File,
     main: &Rc<Function>,
     interner: &DefaultStringInterner,
 ) -> Result<EligibleSet, String> {

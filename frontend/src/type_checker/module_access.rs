@@ -10,7 +10,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     }
 
     /// Type check program with multiple error collection
-    pub fn check_program_multiple_errors(&mut self, program: &Program) -> error::MultipleTypeCheckResult<()> {
+    pub fn check_program_multiple_errors(&mut self, program: &File) -> error::MultipleTypeCheckResult<()> {
         self.errors.clear();
 
         // Collect errors during type checking instead of returning immediately

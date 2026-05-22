@@ -29,7 +29,7 @@ use std::cell::RefCell;
 use std::io::Write as _;
 
 use cranelift_jit::{JITBuilder, JITModule};
-use frontend::ast::Program;
+use frontend::ast::File;
 use string_interner::DefaultStringInterner;
 
 use crate::codegen::CodegenSession;
@@ -220,7 +220,7 @@ pub fn compile_to_jit_main_with_options(
 /// same generic `CodegenSession` the AOT path uses, but pointed
 /// at a `JITModule`.
 fn compile_program_to_jit(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,

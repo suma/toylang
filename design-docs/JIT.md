@@ -500,7 +500,7 @@ linkable to the todo entry (#159).
 | `sum_to(100k)` while-loop | 53.8 ms | 30.9 µs | ~1741× |
 | `fib_iter(50k)` | 40.8 ms | 31.0 µs | ~1316× |
 
-A thread-local cache keyed by `&Program` pointer-identity stores the
+A thread-local cache keyed by ``&Program`File` pointer-identity stores the
 finalized `JITModule` after the first compile, so repeated calls to
 `execute_program` (such as criterion's iter loop) skip eligibility,
 codegen and finalization entirely. The remaining ~31 µs reflect the

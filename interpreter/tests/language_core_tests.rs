@@ -77,13 +77,13 @@ mod basic_execution {
         }
         ");
         let program = parser.parse_program();
-        assert!(program.is_ok(), "Program should parse successfully");
+        assert!(program.is_ok(), "File should parse successfully");
 
         let program = program.unwrap();
         let string_interner = parser.get_string_interner();
 
         let res = interpreter::execute_program(&program, string_interner, Some("test"), Some("test.t"));
-        assert!(res.is_ok(), "Program should execute successfully");
+        assert!(res.is_ok(), "File should execute successfully");
         assert_eq!(res.unwrap().borrow().unwrap_uint64(), 3, "Expected 1+2=3");
     }
 
@@ -726,7 +726,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(1)"), "Expected UInt64(1), got: {}", result);
     }
 
@@ -739,7 +739,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(42)"), "Expected UInt64(42), got: {}", result);
     }
 
@@ -758,7 +758,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(30)"), "Expected UInt64(30), got: {}", result);
     }
 
@@ -780,7 +780,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(5)"), "Expected UInt64(5), got: {}", result);
     }
 
@@ -795,7 +795,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(30)"), "Expected UInt64(30), got: {}", result);
     }
 
@@ -809,7 +809,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("Int64(50)"), "Expected Int64(50), got: {}", result);
     }
 
@@ -823,7 +823,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(15)"), "Expected UInt64(15), got: {}", result);
     }
 
@@ -839,7 +839,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(9)"), "Expected UInt64(9), got: {}", result);
     }
 
@@ -858,7 +858,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(52)"), "Expected UInt64(52), got: {}", result);
     }
 
@@ -872,7 +872,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(10)"), "Expected UInt64(10) after shadowing, got: {}", result);
     }
 
@@ -887,7 +887,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(15)"), "Expected UInt64(15), got: {}", result);
     }
 
@@ -901,7 +901,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(34)"), "Expected UInt64(34), got: {}", result);
     }
 
@@ -919,7 +919,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(100)"), "Expected UInt64(100), got: {}", result);
     }
 
@@ -936,7 +936,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(60)"), "Expected UInt64(60), got: {}", result);
     }
 
@@ -954,7 +954,7 @@ mod variables {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(30)"), "Expected UInt64(30), got: {}", result);
     }
 
@@ -1183,7 +1183,7 @@ mod control_flow {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(2)"), "Expected UInt64(2), got: {}", result);
     }
 
@@ -1469,7 +1469,7 @@ mod heap_operations {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(100)"), "Expected UInt64(100), got: {}", result);
     }
 
@@ -1495,7 +1495,7 @@ mod heap_operations {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(579)"), "Expected UInt64(579), got: {}", result);
     }
 
@@ -1514,7 +1514,7 @@ mod heap_operations {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(200)"), "Expected UInt64(200), got: {}", result);
     }
 
@@ -1542,7 +1542,7 @@ mod heap_operations {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(1)"), "Expected UInt64(1), got: {}", result);
     }
 
@@ -1572,7 +1572,7 @@ mod heap_operations {
             }
         "#;
 
-        let result = execute_test_program(source).expect("Program should execute successfully");
+        let result = execute_test_program(source).expect("File should execute successfully");
         assert!(result.contains("UInt64(666)"), "Expected UInt64(666), got: {}", result);
     }
 

@@ -45,7 +45,7 @@ mod associated_functions {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 5);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -78,7 +78,7 @@ mod associated_functions {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 40); // 15 + 25
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -111,7 +111,7 @@ mod associated_functions {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 42);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -155,7 +155,7 @@ mod associated_functions {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 123); // int_result is -456 < 0, so returns uint_result (123)
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -193,7 +193,7 @@ mod associated_functions {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 60); // 10 + 20 + 30
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 }
@@ -223,7 +223,7 @@ fn main() -> u64 {
     person.get_age()
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 25);
     }
 
@@ -246,7 +246,7 @@ fn main() -> u64 {
     builder.create()
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 42);
     }
 
@@ -269,7 +269,7 @@ fn main() -> u64 {
     point.sum()
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 25);
     }
 
@@ -291,7 +291,7 @@ fn main() -> u64 {
     calc.multiply_by_base(6u64)
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 42);
     }
 
@@ -319,7 +319,7 @@ fn main() -> u64 {
     original + doubled  # 21 + 42 = 63
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 63);
     }
 
@@ -341,7 +341,7 @@ fn main() -> u64 {
     holder.get_sum()
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 30);
     }
 
@@ -364,7 +364,7 @@ fn main() -> bool {
     validator.is_valid(15u64)
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert!(result.borrow().unwrap_bool());
     }
 
@@ -386,7 +386,7 @@ fn main() -> str {
     processor.get_prefix()
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -426,7 +426,7 @@ fn main() -> u64 {
 
         // Parse and execute the program
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Program should execute successfully: {:?}", result);
+        assert!(result.is_ok(), "File should execute successfully: {:?}", result);
 
         // The test just verifies that `drop` method can be defined and parsed successfully
         // Explicit destructor calling would be tested in integration tests
@@ -455,7 +455,7 @@ fn main() -> u64 {
 
         // Parse and execute the program
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Program with `drop` method should execute: {:?}", result);
+        assert!(result.is_ok(), "File with `drop` method should execute: {:?}", result);
 
         // For now, we just test that programs with `drop` methods can be parsed and executed
         // The explicit calling mechanism would be used in scenarios where objects need to be
@@ -484,7 +484,7 @@ fn main() -> u64 {
 "#;
 
         let result = test_program(source_code);
-        assert!(result.is_ok(), "Program without `drop` method should work normally: {:?}", result);
+        assert!(result.is_ok(), "File without `drop` method should work normally: {:?}", result);
 
         if let Ok(actual_rc) = result {
             let actual = actual_rc.borrow();
@@ -600,7 +600,7 @@ fn main() -> u64 {
                 panic!("Expected UInt64(6), got {:?}", actual);
             }
         } else {
-            panic!("Program failed: {:?}", result);
+            panic!("File failed: {:?}", result);
         }
     }
 }

@@ -228,7 +228,7 @@ fn main() -> str {
     data["store_name"]
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -259,7 +259,7 @@ fn main() -> str {
     server.get_config()
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -294,7 +294,7 @@ fn main() -> u64 {
     matrix.get_determinant()  # 3*4 - 2*1 = 12 - 2 = 10
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     assert_eq!(result.borrow().unwrap_uint64(), 10);
 }
 
@@ -320,7 +320,7 @@ fn main() -> str {
     data[key]
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -357,7 +357,7 @@ fn main() -> u64 {
     outer[1u64]
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     assert_eq!(result.borrow().unwrap_uint64(), 200);
 }
 
@@ -391,7 +391,7 @@ fn main() -> str {
     process_settings(settings, config)
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -430,7 +430,7 @@ fn main() -> u64 {
     item.get_id()
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     assert_eq!(result.borrow().unwrap_uint64(), 20);
 }
 
@@ -456,6 +456,38 @@ fn main() -> u64 {
     demo.process(7u64)
 }
 "#;
-    let result = test_program(source).expect("Program should execute successfully");
+    let result = test_program(source).expect("File should execute successfully");
     assert_eq!(result.borrow().unwrap_uint64(), 42);
+}
+
+// ────────────────────────────────────────────
+// Bare-name imported function calls (Phase 1)
+// ────────────────────────────────────────────
+
+#[test]
+fn test_bare_name_imported_function_call() {
+    // User-authored `fn abs` shadows the imported `math::abs`, so
+    // the bare call resolves to the user version.
+    let source = r#"
+fn abs(x: i64) -> i64 { x + 1i64 }
+
+fn main() -> i64 {
+    abs(5i64)
+}
+"#;
+    let result = test_program(source).expect("File should execute successfully");
+    assert_eq!(result.borrow().unwrap_int64(), 6);
+}
+
+#[test]
+fn test_bare_name_imported_no_shadow() {
+    // No user-authored `abs`, so the bare call falls back to the
+    // imported `math::abs` (auto-loaded from core).
+    let source = r#"
+fn main() -> i64 {
+    abs(-7i64)
+}
+"#;
+    let result = test_program(source).expect("File should execute successfully");
+    assert_eq!(result.borrow().unwrap_int64(), 7);
 }

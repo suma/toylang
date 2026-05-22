@@ -15,7 +15,7 @@ use frontend::Parser;
 use interpreter::{check_typing, execute_program};
 use string_interner::DefaultStringInterner;
 
-fn prepare(source: &str) -> (frontend::ast::Program, DefaultStringInterner) {
+fn prepare(source: &str) -> (frontend::ast::File, DefaultStringInterner) {
     let mut interner = DefaultStringInterner::with_capacity(256);
     let mut parser = Parser::new(source, &mut interner);
     let mut program = parser.parse_program().expect("parse");

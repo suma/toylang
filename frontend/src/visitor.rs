@@ -1,12 +1,12 @@
 use string_interner::DefaultSymbol;
-use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, Program, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef, TraitMethodSignature, ParameterList};
+use crate::ast::{Expr, ExprRef, Operator, UnaryOp, StmtRef, StructField, MethodFunction, PackageDecl, ImportDecl, File, Visibility, BuiltinMethod, BuiltinFunction, SliceInfo, MatchArm, EnumVariantDef, TraitMethodSignature, ParameterList};
 use crate::type_checker::TypeCheckError;
 use crate::type_decl::TypeDecl;
 use std::rc::Rc;
 
-/// Visitor for Program-level constructs (package, imports)
+/// Visitor for File-level constructs (package, imports)
 pub trait ProgramVisitor {
-    fn visit_program(&mut self, program: &Program) -> Result<(), TypeCheckError>;
+    fn visit_program(&mut self, program: &File) -> Result<(), TypeCheckError>;
     fn visit_package(&mut self, package_decl: &PackageDecl) -> Result<(), TypeCheckError>;
     fn visit_import(&mut self, import_decl: &ImportDecl) -> Result<(), TypeCheckError>;
 }

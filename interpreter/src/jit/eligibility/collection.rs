@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use frontend::ast::{MethodFunction, Program, Stmt, StmtRef};
+use frontend::ast::{MethodFunction, File, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -10,7 +10,7 @@ use super::scalar::{PayloadRepr, ScalarTy};
 
 /// Look up a method on a struct by linear scanning ImplBlock decls.
 pub(super) fn find_method(
-    program: &Program,
+    program: &File,
     struct_name: DefaultSymbol,
     method_name: DefaultSymbol,
 ) -> Option<Rc<MethodFunction>> {
@@ -30,7 +30,7 @@ pub(super) fn find_method(
 /// Build a `(struct_name, method_name) -> MethodFunction` map from every
 /// top-level `Stmt::ImplBlock` in the program.
 pub(super) fn collect_method_map(
-    program: &Program,
+    program: &File,
 ) -> HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> {
     let mut out: HashMap<(DefaultSymbol, DefaultSymbol), Rc<MethodFunction>> =
         HashMap::new();
@@ -46,7 +46,7 @@ pub(super) fn collect_method_map(
 }
 
 pub(super) fn collect_struct_layouts(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> HashMap<DefaultSymbol, StructLayout> {
     let mut out: HashMap<DefaultSymbol, StructLayout> = HashMap::new();
@@ -108,7 +108,7 @@ pub(super) fn collect_struct_layouts(
 /// Anything with a tuple variant or generic param is silently
 /// omitted; eligibility checks downstream will reject references to
 /// it via the regular "JIT does not yet model enum values" path.
-pub(super) fn collect_enum_layouts(program: &Program) -> HashMap<DefaultSymbol, EnumLayout> {
+pub(super) fn collect_enum_layouts(program: &File) -> HashMap<DefaultSymbol, EnumLayout> {
     let mut out: HashMap<DefaultSymbol, EnumLayout> = HashMap::new();
     for i in 0..program.statement.len() {
         if let Some(Stmt::EnumDecl {

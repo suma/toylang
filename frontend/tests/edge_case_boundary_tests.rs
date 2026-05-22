@@ -22,7 +22,7 @@ mod edge_case_boundary_tests {
         assert!(result.is_ok() || result.is_err(), "Empty program handling tested");
     }
 
-    // Edge case: Program with only whitespace
+    // Edge case: File with only whitespace
     #[test]
     fn test_whitespace_only_program() {
         let input = "   \n\t\n   ";
@@ -31,7 +31,7 @@ mod edge_case_boundary_tests {
         assert!(result.is_ok() || result.is_err(), "Whitespace-only program handling tested");
     }
 
-    // Edge case: Program with only comments
+    // Edge case: File with only comments
     #[test]
     fn test_comment_only_program() {
         let input = "# This is a comment\n# Another comment";

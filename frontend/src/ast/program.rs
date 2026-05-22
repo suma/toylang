@@ -6,18 +6,11 @@ use crate::type_checker::SourceLocation;
 use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 
 #[derive(Debug, Clone)]
-pub struct Program {
+pub struct File {
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
     pub imports: Vec<ImportDecl>,
     pub function: Vec<Rc<Function>>,
-    /// Names of functions that came in through `import`. The
-    /// type-checker reads this set to enforce namespace separation:
-    /// imported functions can only be called via the qualified
-    /// `module::func(args)` form, not as bare `func(args)`. Empty
-    /// before integration; `module_integration::load_and_integrate_module`
-    /// inserts each integrated `pub fn` symbol.
-    pub imported_function_names: std::collections::HashSet<DefaultSymbol>,
     /// Module origin per function entry (parallel to `function`). For each
     /// `function[i]`, this holds:
     ///   - `None` if the function was authored in the user's source file.
@@ -51,7 +44,7 @@ pub struct ConstDecl {
     pub visibility: Visibility,
 }
 
-impl Program {
+impl File {
     pub fn get(&self, expr_ref: &ExprRef) -> Option<Expr> {
         self.expression.get(expr_ref)
     }

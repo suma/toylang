@@ -12,7 +12,7 @@ use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
-use frontend::ast::{Function, Program};
+use frontend::ast::{Function, File};
 use string_interner::DefaultStringInterner;
 
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
@@ -948,7 +948,7 @@ fn verbose_via_argv() -> bool {
     std::env::args().any(|a| a == "-v")
 }
 
-fn find_main(program: &Program, interner: &DefaultStringInterner) -> Option<Rc<Function>> {
+fn find_main(program: &File, interner: &DefaultStringInterner) -> Option<Rc<Function>> {
     let main_id = interner.get("main")?;
     program
         .function
@@ -1000,7 +1000,7 @@ fn cache_store(cached: CachedJit) {
 /// program was fully handled by the JIT, and `None` when the caller should
 /// fall back to the tree-walking interpreter.
 pub fn try_execute_main(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> Option<RcObject> {
     if !jit_enabled_via_env() {
@@ -1015,12 +1015,12 @@ pub fn try_execute_main(
     // freshly parsed program in another invocation always misses.
     //
     // The pointer is only stable for the lifetime of the parsed
-    // `Program`; between distinct `run_source` calls the underlying
+    // `File`; between distinct `run_source` calls the underlying
     // memory may be reused, which would surface as an unwanted cache
     // hit (and miss the verbose `JIT compiled:` log a test was
     // about to assert on). When verbose is on we therefore force
     // a recompile so the log actually fires.
-    let program_id = program as *const Program as usize;
+    let program_id = program as *const File as usize;
     if verbose {
         cache_clear();
     }
@@ -1063,7 +1063,7 @@ pub fn try_execute_main(
 }
 
 fn build_cache_entry(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     main_fn: &Rc<Function>,
     eligible: &EligibleSet,

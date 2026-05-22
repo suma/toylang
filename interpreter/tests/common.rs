@@ -69,14 +69,14 @@ fn test_program_with_core(
 /// Helper function to execute a program and assert the result is a u64 value
 pub fn assert_program_result_u64(source_code: &str, expected: u64) {
     let result = test_program(source_code)
-        .expect("Program execution failed");
+        .expect("File execution failed");
     assert_eq!(result.borrow().unwrap_uint64(), expected);
 }
 
 /// Helper function to execute a program and assert the result is an i64 value
 pub fn assert_program_result_i64(source_code: &str, expected: i64) {
     let result = test_program(source_code)
-        .expect("Program execution failed");
+        .expect("File execution failed");
     assert_eq!(result.borrow().unwrap_int64(), expected);
 }
 
@@ -85,7 +85,7 @@ pub fn assert_program_result_i64(source_code: &str, expected: i64) {
 /// expect specific NaN/zero patterns.
 pub fn assert_program_result_f64(source_code: &str, expected: f64) {
     let result = test_program(source_code)
-        .expect("Program execution failed");
+        .expect("File execution failed");
     let actual = result.borrow().unwrap_float64();
     assert_eq!(
         actual.to_bits(),
@@ -97,7 +97,7 @@ pub fn assert_program_result_f64(source_code: &str, expected: f64) {
 /// Helper function to execute a program and assert the result is a u64 array
 pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
     let result = test_program(source_code)
-        .expect("Program execution failed");
+        .expect("File execution failed");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::Array(elements) => {
@@ -117,7 +117,7 @@ pub fn assert_program_result_array_u64(source_code: &str, expected: Vec<u64>) {
 /// Helper function to execute a program and assert the result is an i64 array
 pub fn assert_program_result_array_i64(source_code: &str, expected: Vec<i64>) {
     let result = test_program(source_code)
-        .expect("Program execution failed");
+        .expect("File execution failed");
     let borrowed = result.borrow();
     match &*borrowed {
         Object::Array(elements) => {
@@ -142,7 +142,7 @@ pub fn assert_program_fails(source_code: &str) {
 
 /// Helper function to execute a program and get the result object
 pub fn get_program_result(source_code: &str) -> Rc<RefCell<Object>> {
-    test_program(source_code).expect("Program execution failed")
+    test_program(source_code).expect("File execution failed")
 }
 
 /// Helper function to check if a result matches the expected Object variant

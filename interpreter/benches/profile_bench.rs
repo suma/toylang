@@ -58,7 +58,7 @@ fn main() -> u64 {
 }
 
 fn struct_benchmark(c: &mut Criterion) {
-    // Program with struct operations - successful execution
+    // File with struct operations - successful execution
     let struct_program = r#"
 struct Point {
     x: u64,

@@ -1,6 +1,6 @@
 //! AST → IR lowering pass.
 //!
-//! Walks a type-checked toylang `Program` and produces a self-contained
+//! Walks a type-checked toylang `File` and produces a self-contained
 //! `ir::Module`. The module carries every same-program function, each
 //! with its parameter list, typed locals (for `val` / `var` bindings), a
 //! list of basic blocks, and instructions referencing locals and
@@ -121,7 +121,7 @@ pub(super) enum WithScopeCleanup {
 struct FunctionLower<'a> {
     module: &'a mut Module,
     func_id: FuncId,
-    program: &'a frontend::ast::Program,
+    program: &'a frontend::ast::File,
     interner: &'a DefaultStringInterner,
     /// Per-program struct definitions. Read-only here.
     struct_defs: &'a StructDefs,

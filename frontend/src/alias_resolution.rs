@@ -9,7 +9,7 @@
 //! position in module B.
 //!
 //! This pass closes that gap. After every module has been integrated
-//! into the main `Program`, we:
+//! into the main `File`, we:
 //!
 //!   1. Walk the program's statement pool, collect every
 //!      `Stmt::TypeAlias { name, generic_params, target, .. }`
@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use string_interner::DefaultSymbol;
 
-use crate::ast::{Expr, ExprRef, Program, Stmt, StmtRef};
+use crate::ast::{Expr, ExprRef, File, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
 
 type AliasMap = HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>;
@@ -46,7 +46,7 @@ type AliasMap = HashMap<DefaultSymbol, (Vec<DefaultSymbol>, TypeDecl)>;
 /// Apply cross-module alias substitution to `program` in place.
 /// Returns the number of aliases discovered (useful for testing /
 /// telemetry; callers can ignore the value).
-pub fn resolve_type_aliases(program: &mut Program) -> usize {
+pub fn resolve_type_aliases(program: &mut File) -> usize {
     let aliases = collect_aliases(program);
     if aliases.is_empty() {
         return 0;
@@ -55,7 +55,7 @@ pub fn resolve_type_aliases(program: &mut Program) -> usize {
     aliases.len()
 }
 
-fn collect_aliases(program: &Program) -> AliasMap {
+fn collect_aliases(program: &File) -> AliasMap {
     let mut out: AliasMap = HashMap::new();
     let n = program.statement.len();
     for i in 0..n {
@@ -69,7 +69,7 @@ fn collect_aliases(program: &Program) -> AliasMap {
     out
 }
 
-fn rewrite_program(program: &mut Program, aliases: &AliasMap) {
+fn rewrite_program(program: &mut File, aliases: &AliasMap) {
     // Functions (Vec<Rc<Function>>): clone-on-modify via Rc::make_mut.
     for f in program.function.iter_mut() {
         let func = Rc::make_mut(f);

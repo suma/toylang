@@ -3,7 +3,7 @@
 //! Two layers live here:
 //!
 //! 1. `pub fn lower_program`: walks an entire type-checked
-//!    `Program` and produces a self-contained `ir::Module`.
+//!    `File` and produces a self-contained `ir::Module`.
 //!    Collects struct / enum / const / generic-function /
 //!    method tables, declares every non-generic function up
 //!    front, and then drives each function body through
@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use frontend::ast::{ExprRef, Program, Stmt};
+use frontend::ast::{ExprRef, File, Stmt};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
@@ -300,7 +300,7 @@ pub(super) fn flatten_compound_leaf_types(module: &Module, ty: Type, out: &mut V
 }
 
 pub fn lower_program(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &crate::ContractMessages,
     release: bool,
@@ -1238,7 +1238,7 @@ impl<'a> FunctionLower<'a> {
     pub(super) fn new(
         module: &'a mut Module,
         func_id: FuncId,
-        program: &'a Program,
+        program: &'a File,
         interner: &'a DefaultStringInterner,
         struct_defs: &'a StructDefs,
         enum_defs: &'a EnumDefs,

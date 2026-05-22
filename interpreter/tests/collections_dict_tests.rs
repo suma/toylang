@@ -15,7 +15,7 @@ fn main() -> str {
     "success"
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -31,7 +31,7 @@ fn main() -> str {
     data["name"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -47,7 +47,7 @@ fn main() -> str {
     colors["blue"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -64,7 +64,7 @@ fn main() -> str {
     data["key"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -81,7 +81,7 @@ fn main() -> str {
     data["new_key"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -101,7 +101,7 @@ fn main() -> str {
     config["port"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -118,7 +118,7 @@ fn main() -> str {
     strings["a"]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -138,7 +138,7 @@ fn main() -> str {
     process_data(input)
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)

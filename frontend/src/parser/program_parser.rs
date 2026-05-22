@@ -36,7 +36,7 @@ fn primitive_type_canonical_name(kind: &Kind) -> Option<&'static str> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn parse_program(&mut self) -> ParserResult<Program> {
+    pub fn parse_program(&mut self) -> ParserResult<File> {
         let mut start_pos: Option<usize> = None;
         let mut end_pos: Option<usize> = None;
         let mut update_start_pos = |start: usize| {
@@ -631,12 +631,11 @@ impl<'a> Parser<'a> {
         std::mem::swap(&mut ast_builder, &mut self.ast_builder);
         let (expr, stmt, location_pool) = ast_builder.extract_pools();
         let function_module_paths = vec![None; def_func.len()];
-        Ok(Program {
+        Ok(File {
             node: Node::new(start_pos.unwrap_or(0usize), end_pos.unwrap_or(0usize)),
             package_decl,
             imports,
             function: def_func,
-            imported_function_names: std::collections::HashSet::new(),
             function_module_paths,
             consts,
             statement: stmt,
@@ -646,7 +645,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse program with multiple error collection
-    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
+    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<File> {
         self.errors.clear();
 
         match self.parse_program() {

@@ -30,7 +30,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use frontend::ast::Program;
+use frontend::ast::File;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
 use crate::ir::{
@@ -44,7 +44,7 @@ use crate::{CompilerOptions, ContractMessages};
 /// file. Returns the raw bytes; callers decide whether to write them out
 /// directly or hand them to the linker driver.
 pub fn emit_object(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
@@ -59,7 +59,7 @@ pub fn emit_object(
 
 /// Render the freshly-built IR as text. Used by `--emit=ir`.
 pub fn emit_ir_text(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,
@@ -71,7 +71,7 @@ pub fn emit_ir_text(
 /// Render the Cranelift IR text for every emitted function. Used by
 /// `--emit=clif` for backend debugging.
 pub fn emit_clif_text(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
     contract_msgs: &ContractMessages,
     options: &CompilerOptions,

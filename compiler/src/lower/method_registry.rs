@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use frontend::ast::{Program, Stmt, StmtRef};
+use frontend::ast::{File, Stmt, StmtRef};
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
 
@@ -143,7 +143,7 @@ pub(super) struct PendingMethodInstance {
 /// flat (target, method) map. Trait conformance is irrelevant at
 /// this layer — Phase R1 only cares that the method exists for a
 /// given target type.
-pub(super) fn collect_method_decls(program: &Program) -> Result<MethodRegistry, String> {
+pub(super) fn collect_method_decls(program: &File) -> Result<MethodRegistry, String> {
     let mut registry: MethodRegistry = HashMap::new();
     for i in 0..program.statement.len() {
         let stmt_ref = StmtRef(i as u32);

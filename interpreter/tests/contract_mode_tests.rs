@@ -39,12 +39,12 @@ fn run_with(env_value: Option<&str>, source_path: &str) -> Run {
     }
 }
 
-/// Program whose `requires b != 0i64` precondition is violated by main.
+/// File whose `requires b != 0i64` precondition is violated by main.
 /// With pre-checks on, the call aborts with a contract-violation message.
 /// With pre-checks off, the body actually divides by zero.
 const PRE_VIOLATION_SOURCE: &str = "tests/fixtures/contract_pre_violation.t";
 
-/// Program whose `ensures result >= 0i64` postcondition is violated by the
+/// File whose `ensures result >= 0i64` postcondition is violated by the
 /// implementation lying about absolute value. With post-checks on, ensures
 /// catches the bug; with post-checks off, the lie reaches main.
 const POST_VIOLATION_SOURCE: &str = "tests/fixtures/contract_post_violation.t";

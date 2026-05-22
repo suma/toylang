@@ -16,7 +16,7 @@ fn test_module_package_declaration() {
         ";
 
     let result = test_program(source);
-    assert!(result.is_ok(), "Program with package declaration should run");
+    assert!(result.is_ok(), "File with package declaration should run");
     assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
 }
 
@@ -201,7 +201,7 @@ fn test_module_package_and_no_import_needed() {
         ";
 
     let result = test_program_with_core_modules(source);
-    assert!(result.is_ok(), "Program with package + auto-load should run");
+    assert!(result.is_ok(), "File with package + auto-load should run");
     assert_eq!(result.unwrap().borrow().unwrap_uint64(), 42);
 }
 

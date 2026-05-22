@@ -87,7 +87,7 @@ impl Acceptable for Stmt {
 }
 
 impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
-    fn visit_program(&mut self, program: &Program) -> Result<(), TypeCheckError> {
+    fn visit_program(&mut self, program: &File) -> Result<(), TypeCheckError> {
         // Process package declaration if present
         if let Some(package_decl) = &program.package_decl {
             self.visit_package(package_decl)?;

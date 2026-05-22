@@ -133,7 +133,7 @@ mod basic {
         "#;
 
         let result = test_program(source);
-        assert!(result.is_ok(), "Program should succeed but failed: {:?}", result.err());
+        assert!(result.is_ok(), "File should succeed but failed: {:?}", result.err());
     }
 
     #[test]
@@ -159,7 +159,7 @@ mod basic {
                     _ => panic!("Expected UInt64 result"),
                 }
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -186,7 +186,7 @@ mod basic {
                     _ => panic!("Expected Bool result"),
                 }
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -209,7 +209,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 42);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -235,7 +235,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 1);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -267,7 +267,7 @@ mod basic {
                     _ => panic!("Expected UInt64 result"),
                 }
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -304,7 +304,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 30); // items[2] = 30
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -335,7 +335,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 42);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -364,7 +364,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 123);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -396,7 +396,7 @@ mod basic {
                     _ => panic!("Expected Bool result"),
                 }
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -434,7 +434,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 200);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -468,7 +468,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 2);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -504,7 +504,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 15);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -535,7 +535,7 @@ mod basic {
                 let num = val.borrow().unwrap_uint64();
                 assert_eq!(num, 99);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -568,7 +568,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 42);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -600,7 +600,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_int64(), -100);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -636,7 +636,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 60); // 10 + 20 + 30
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -671,7 +671,7 @@ mod basic {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 123);
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 }
@@ -1060,7 +1060,7 @@ mod advanced {
             Ok(val) => {
                 assert_eq!(val.borrow().unwrap_uint64(), 40); // 10 + 30
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1132,7 +1132,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 1004); // 5 + 999
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1205,7 +1205,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 101); // 100 + 1
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1282,7 +1282,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 32); // 10 + 20 + 2
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1341,7 +1341,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 25); // 5 + (10 + 3 + 7)
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1405,7 +1405,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 202); // 200 + 2 transitions
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 
@@ -1470,7 +1470,7 @@ mod advanced {
                 let num = borrowed.unwrap_uint64();
                 assert_eq!(num, 124); // 1 + 123
             }
-            Err(e) => panic!("Program failed: {}", e),
+            Err(e) => panic!("File failed: {}", e),
         }
     }
 }

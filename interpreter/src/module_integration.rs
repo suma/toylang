@@ -33,8 +33,8 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 /// `expr_mapping` / `stmt_mapping` tables that translate IDs across
 /// pools.
 pub(crate) struct AstIntegrationContext<'a> {
-    main_program: &'a mut Program,
-    module_program: &'a Program,
+    main_program: &'a mut File,
+    module_program: &'a File,
     main_string_interner: &'a mut DefaultStringInterner,
     module_string_interner: &'a DefaultStringInterner,
     expr_mapping: HashMap<u32, ExprRef>, // module ExprRef -> main ExprRef
@@ -63,8 +63,8 @@ pub(crate) struct AstIntegrationContext<'a> {
 
 impl<'a> AstIntegrationContext<'a> {
     fn new(
-        main_program: &'a mut Program,
-        module_program: &'a Program,
+        main_program: &'a mut File,
+        module_program: &'a File,
         main_string_interner: &'a mut DefaultStringInterner,
         module_string_interner: &'a DefaultStringInterner,
         shadowed_stdlib_types: std::collections::HashSet<String>,
@@ -1013,7 +1013,7 @@ impl<'a> AstIntegrationContext<'a> {
 /// Errors are returned as strings; the caller formats them into the
 /// project's standard diagnostic shape.
 pub(crate) fn load_and_integrate_module(
-    program: &mut Program,
+    program: &mut File,
     import: &ImportDecl,
     string_interner: &mut DefaultStringInterner,
     core_modules_dir: Option<&std::path::Path>,
@@ -1202,7 +1202,7 @@ fn candidate_module_paths(
 /// the integration directly when they don't want to hit the filesystem.
 pub fn integrate_module_into_program(
     source: &str,
-    main_program: &mut Program,
+    main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
 ) -> Result<(), String> {
     integrate_module_into_program_with_options(source, main_program, main_string_interner, true)
@@ -1213,7 +1213,7 @@ pub fn integrate_module_into_program(
 /// before any stdlib module is integrated, and by direct callers
 /// who want the same view of the program's already-declared types.
 pub fn collect_top_level_type_names(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> std::collections::HashSet<String> {
     let mut names = std::collections::HashSet::new();
@@ -1267,7 +1267,7 @@ pub fn extract_stdlib_type_names(source: &str) -> Result<Vec<String>, String> {
 /// call form.
 pub fn integrate_module_into_program_with_options(
     source: &str,
-    main_program: &mut Program,
+    main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
     enforce_namespace: bool,
 ) -> Result<(), String> {
@@ -1288,9 +1288,9 @@ pub fn integrate_module_into_program_with_options(
 /// different modules (#193).
 pub fn integrate_module_into_program_with_options_full(
     source: &str,
-    main_program: &mut Program,
+    main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
-    enforce_namespace: bool,
+    _enforce_namespace: bool,
     module_path: Option<Vec<DefaultSymbol>>,
     shadowed_stdlib_types: std::collections::HashSet<String>,
 ) -> Result<(), String> {
@@ -1311,27 +1311,15 @@ pub fn integrate_module_into_program_with_options_full(
 
     let integrated_functions = integration_context.integrate()?;
     for function in integrated_functions {
-        // Track imported names so the type-checker can enforce the
-        // namespace-only contract: imported `pub fn`s are only
-        // reachable via `module::func(args)` qualified calls, never
-        // as bare `func(args)` even though they live in the flat
-        // function table.
-        //
-        // `extern fn` declarations are runtime bindings (resolved
-        // through the interpreter / JIT / AOT extern dispatch
-        // tables, not through user-visible source paths), so they're
-        // globally bare-callable from any body — including the
-        // bodies of *other* imported modules' impl blocks (e.g.
-        // the prelude's `impl Abs for f64` calls `__extern_abs_f64`,
-        // which math.t also declares). Excluding extern fns from
-        // the enforcement set keeps both call sites valid.
-        //
-        // Prelude integration also opts out via
-        // `enforce_namespace = false` so its own `pub fn`s (none
-        // exist today, but future entries) stay bare-callable.
-        if enforce_namespace && !function.is_extern {
-            main_program.imported_function_names.insert(function.name);
-        }
+        // Phase 1 (2026-05-23): imported `pub fn`s are now
+        // reachable via bare-name calls as well as the qualified
+        // `module::func(args)` form.  `lookup_fn(None, name)`
+        // prefers user-authored functions and falls back to a
+        // unique imported entry, so namespace enforcement has
+        // been relaxed.  We no longer populate
+        // `imported_function_names` here; the field is kept on
+        // `File` for backward compatibility but is no longer
+        // consulted by the type-checker.
         main_program.function.push(function);
         main_program
             .function_module_paths

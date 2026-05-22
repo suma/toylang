@@ -60,7 +60,7 @@ impl ParserWithInterner {
         result
     }
 
-    pub fn parse_program(&mut self) -> ParserResult<Program> {
+    pub fn parse_program(&mut self) -> ParserResult<File> {
         self.call_parser_with_error_copy(|parser| parser.parse_program())
     }
 
@@ -83,7 +83,7 @@ impl ParserWithInterner {
         self.call_parser_with_error_copy(|parser| parser.parse_param_def_list(args))
     }
 
-    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<Program> {
+    pub fn parse_program_multiple_errors(&mut self) -> MultipleParserResult<File> {
         self.call_parser_with_error_copy(|parser| parser.parse_program_multiple_errors())
     }
 

@@ -32,7 +32,7 @@ impl<'a> CoreReferences<'a> {
         }
     }
 
-    pub fn from_program(program: &'a mut Program, string_interner: &'a DefaultStringInterner) -> Self {
+    pub fn from_program(program: &'a mut File, string_interner: &'a DefaultStringInterner) -> Self {
         Self {
             stmt_pool: &mut program.statement,
             expr_pool: &mut program.expression,

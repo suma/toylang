@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
-use crate::ast::{Program, ImportDecl};
+use crate::ast::{File, ImportDecl};
 use crate::type_checker::TypeCheckError;
 use crate::Parser;
 
@@ -11,7 +11,7 @@ use crate::Parser;
 pub struct ResolvedModule {
     pub package_name: Vec<DefaultSymbol>,
     pub file_path: PathBuf,
-    pub program: Program,
+    pub program: File,
 }
 
 /// Module resolver for handling import statements and file discovery

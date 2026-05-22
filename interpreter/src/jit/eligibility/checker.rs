@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use frontend::ast::{
-    BuiltinFunction, Expr, ExprRef, Operator, Pattern, Program, Stmt, StmtRef, UnaryOp,
+    BuiltinFunction, Expr, ExprRef, Operator, Pattern, File, Stmt, StmtRef, UnaryOp,
 };
 use frontend::type_decl::TypeDecl;
 use string_interner::DefaultSymbol;
@@ -33,7 +33,7 @@ pub(super) fn note(reason: &mut Option<String>, msg: impl FnOnce() -> String) {
 /// constructs and reports every callee found via `callees`. Returns
 /// false on the first unsupported construct.
 pub(super) fn check_callable_body(
-    program: &Program,
+    program: &File,
     source: &MonomorphSource,
     sig: &FuncSignature,
     substitutions: &HashMap<DefaultSymbol, ScalarTy>,
@@ -148,7 +148,7 @@ pub(super) fn check_callable_body(
 
 #[allow(clippy::too_many_arguments)]
 fn check_struct_returning_body(
-    program: &Program,
+    program: &File,
     body_stmt_ref: &StmtRef,
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
@@ -292,7 +292,7 @@ fn check_struct_returning_body(
 ///     for `enum_name` (recursive).
 #[allow(clippy::too_many_arguments)]
 fn check_enum_returning_body(
-    program: &Program,
+    program: &File,
     body_stmt_ref: &StmtRef,
     enum_name: DefaultSymbol,
     enum_payload_ty: Option<ScalarTy>,
@@ -370,7 +370,7 @@ fn check_enum_returning_body(
 /// against the same target.
 #[allow(clippy::too_many_arguments)]
 fn check_enum_producing_expr(
-    program: &Program,
+    program: &File,
     expr_ref: &ExprRef,
     enum_name: DefaultSymbol,
     enum_payload_ty: Option<ScalarTy>,
@@ -517,7 +517,7 @@ fn check_enum_producing_expr(
 }
 
 fn check_tuple_returning_body(
-    program: &Program,
+    program: &File,
     body_stmt_ref: &StmtRef,
     element_tys: &[ScalarTy],
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
@@ -635,7 +635,7 @@ fn check_tuple_returning_body(
 /// typing the individual element initializers.
 #[allow(clippy::too_many_arguments)]
 fn check_tuple_literal_fields(
-    program: &Program,
+    program: &File,
     elements: &[ExprRef],
     expected: &[ScalarTy],
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
@@ -688,7 +688,7 @@ fn check_tuple_literal_fields(
 /// elements are JIT scalars.
 #[allow(clippy::too_many_arguments)]
 fn tuple_literal_target(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -736,7 +736,7 @@ fn tuple_literal_target(
 /// local.
 #[allow(clippy::too_many_arguments)]
 fn check_tuple_returning_call(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -788,7 +788,7 @@ fn check_tuple_returning_call(
 /// name has a registered scalar layout, return that struct name. Used to
 /// special-case `val p = Point { … }` / `var p = Point { … }`.
 fn struct_literal_target(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     type_decl: Option<&TypeDecl>,
     struct_layouts: &HashMap<DefaultSymbol, StructLayout>,
@@ -851,7 +851,7 @@ fn struct_literal_target(
 /// struct's name. Caller registers the struct local.
 #[allow(clippy::too_many_arguments)]
 fn check_struct_returning_call(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -925,7 +925,7 @@ fn check_struct_returning_call(
 /// call's return is `ParamTy::Enum`.
 #[allow(clippy::too_many_arguments)]
 fn check_enum_returning_call(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -1019,7 +1019,7 @@ fn check_enum_returning_call(
 /// — the payload_ty has to come from somewhere.
 #[allow(clippy::too_many_arguments)]
 fn check_enum_constructor_rhs(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -1138,7 +1138,7 @@ fn check_enum_constructor_rhs(
 /// individual field initializers.
 #[allow(clippy::too_many_arguments)]
 fn check_struct_literal_fields(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     struct_name: DefaultSymbol,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
@@ -1230,7 +1230,7 @@ fn check_struct_literal_fields(
 }
 
 /// Quick syntactic walk to detect any PtrRead within a function body.
-fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
+fn body_has_ptr_read(program: &File, stmt_ref: &StmtRef) -> bool {
     let mut found = false;
     walk_stmt_for_ptr_read(program, stmt_ref, &mut found);
     found
@@ -1258,7 +1258,7 @@ fn body_has_ptr_read(program: &Program, stmt_ref: &StmtRef) -> bool {
 /// determines what type the pattern's Name binds to (important
 /// for generic enums where the layout's payload_repr is `Generic`).
 fn check_match_pattern(
-    program: &Program,
+    program: &File,
     pat: &Pattern,
     scrut_ty: ScalarTy,
     scrut_enum: Option<EnumLocalInfo>,
@@ -1376,7 +1376,7 @@ fn check_match_pattern(
 /// it can distinguish enum constructors (`Option::Some(...)`) from
 /// other unsupported associated calls and report a precise reason.
 fn enum_decl_lookup_by_name(
-    program: &Program,
+    program: &File,
     name: DefaultSymbol,
 ) -> Option<()> {
     for i in 0..program.statement.len() {
@@ -1389,7 +1389,7 @@ fn enum_decl_lookup_by_name(
     None
 }
 
-fn walk_stmt_for_ptr_read(program: &Program, stmt_ref: &StmtRef, found: &mut bool) {
+fn walk_stmt_for_ptr_read(program: &File, stmt_ref: &StmtRef, found: &mut bool) {
     if *found {
         return;
     }
@@ -1414,7 +1414,7 @@ fn walk_stmt_for_ptr_read(program: &Program, stmt_ref: &StmtRef, found: &mut boo
     }
 }
 
-fn walk_expr_for_ptr_read(program: &Program, expr_ref: &ExprRef, found: &mut bool) {
+fn walk_expr_for_ptr_read(program: &File, expr_ref: &ExprRef, found: &mut bool) {
     if *found {
         return;
     }
@@ -1460,7 +1460,7 @@ fn walk_expr_for_ptr_read(program: &Program, expr_ref: &ExprRef, found: &mut boo
 }
 
 fn check_stmt(
-    program: &Program,
+    program: &File,
     stmt_ref: &StmtRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -1809,7 +1809,7 @@ fn check_stmt(
 /// statically known (val/var with annotation, assignment to a typed
 /// identifier).
 fn register_ptr_read_hint(
-    program: &Program,
+    program: &File,
     value_ref: &ExprRef,
     expected: ScalarTy,
     ptr_read_hints: &mut HashMap<ExprRef, ScalarTy>,
@@ -1827,7 +1827,7 @@ fn register_ptr_read_hint(
 /// `ptr_read_hints` with PtrRead expected return types where statically
 /// derivable from context.
 pub(crate) fn check_expr(
-    program: &Program,
+    program: &File,
     expr_ref: &ExprRef,
     locals: &mut HashMap<DefaultSymbol, ScalarTy>,
     compound_locals: &mut CompoundLocals,
@@ -3331,7 +3331,7 @@ pub(crate) fn check_expr(
 /// callee return type.
 #[allow(clippy::too_many_arguments)]
 fn check_plain_call(
-    program: &Program,
+    program: &File,
     expr_ref: &ExprRef,
     name: DefaultSymbol,
     arg_list: &Vec<ExprRef>,

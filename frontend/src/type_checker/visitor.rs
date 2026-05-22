@@ -21,11 +21,6 @@ pub struct TypeCheckerVisitor<'a> {
     // Module system support
     pub current_package: Option<Vec<DefaultSymbol>>,
     pub imported_modules: HashMap<Vec<DefaultSymbol>, Vec<DefaultSymbol>>, // alias -> full_path
-    /// Names of functions that came in through `import`. Bare-name
-    /// calls into these are rejected; users must spell out the
-    /// `module::func(args)` form. Populated in `with_program` from
-    /// `Program::imported_function_names`.
-    pub imported_function_names: std::collections::HashSet<DefaultSymbol>,
     // Track transformed expressions for Number -> concrete type conversions
     pub transformed_exprs: HashMap<ExprRef, Expr>,
     // Builtin method registry: (TypeDecl, method_name) -> BuiltinMethod
@@ -36,7 +31,7 @@ pub struct TypeCheckerVisitor<'a> {
 
 impl<'a> TypeCheckerVisitor<'a> {
     /// Create a TypeCheckerVisitor with program - processes package and imports automatically
-    pub fn with_program(program: &'a mut Program, string_interner: &'a DefaultStringInterner) -> Self {
+    pub fn with_program(program: &'a mut File, string_interner: &'a DefaultStringInterner) -> Self {
         // Clone package and imports to avoid borrowing conflicts
         let package_decl = program.package_decl.clone();
         let imports = program.imports.clone();
@@ -49,12 +44,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         // the registration loop below can index it without
         // re-borrowing `program`.
         let function_module_paths = program.function_module_paths.clone();
-        // Snapshot the set of imported-function names so the
-        // type-checker can enforce the namespace-only rule (bare
-        // calls into imported `pub fn`s are rejected; users must
-        // spell out `module::func(args)`). Cloned upfront because
-        // CoreReferences takes a mutable borrow of `program`.
-        let imported_function_names = program.imported_function_names.clone();
 
         let mut visitor = Self {
             core: CoreReferences::from_program(program, string_interner),
@@ -66,7 +55,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
-            imported_function_names,
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             transformed_exprs: HashMap::new(),
@@ -123,7 +111,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
-            imported_function_names: std::collections::HashSet::new(),
             transformed_exprs: HashMap::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
@@ -339,7 +326,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             source_code: None,
             current_package: None,
             imported_modules: HashMap::new(),
-            imported_function_names: std::collections::HashSet::new(),
             builtin_methods: Self::create_builtin_method_registry(),
             builtin_function_signatures: TypeCheckerVisitor::create_builtin_function_signatures(),
             transformed_exprs: HashMap::new(),

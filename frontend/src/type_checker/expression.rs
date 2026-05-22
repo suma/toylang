@@ -946,7 +946,10 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Orchestrator: namespace enforcement → lookup → dispatch (generic /
     /// direct / indirect). Per-path details live in the helpers below.
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.enforce_import_namespace(fn_name)?;
+        // Note: imported functions are now callable via bare name.
+        // `lookup_fn(None, name)` already prefers user-authored functions
+        // and falls back to a unique imported entry, so namespace
+        // enforcement has been relaxed.
 
         self.push_context();
 
@@ -978,25 +981,6 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.pop_context();
             self.visit_call_indirect_fallback(fn_name, args_ref)
         }
-    }
-
-    /// Reject bare-name calls to imported functions. Imported symbols
-    /// must be called via the qualified `module::func(args)` form.
-    fn enforce_import_namespace(&self, fn_name: DefaultSymbol) -> Result<(), TypeCheckError> {
-        if !self.imported_function_names.contains(&fn_name) {
-            return Ok(());
-        }
-        let module_hint = self
-            .imported_modules
-            .keys()
-            .find_map(|alias| alias.first().copied())
-            .map(|sym| self.resolve_symbol_name(sym).to_string())
-            .unwrap_or_else(|| "<module>".to_string());
-        let name = self.resolve_symbol_name(fn_name);
-        Err(TypeCheckError::generic_error(&format!(
-            "imported function '{}' must be called with the qualified form `{}::{}(...)`; bare-name calls into imported modules are not allowed",
-            name, module_hint, name,
-        )))
     }
 
     /// Type-check a function that hasn't been visited yet (forward

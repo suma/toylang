@@ -17,7 +17,7 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::Context;
 use cranelift_module::{FuncId, Module};
-use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Pattern, Program, Stmt, StmtRef, UnaryOp};
+use frontend::ast::{BuiltinFunction, Expr, ExprRef, Operator, Pattern, File, Stmt, StmtRef, UnaryOp};
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultSymbol, Symbol};
 
@@ -35,7 +35,7 @@ use self::ty::ir_type;
 #[allow(clippy::too_many_arguments)]
 pub fn translate_function<M: Module>(
     module: &mut M,
-    program: &Program,
+    program: &File,
     source: &MonomorphSource,
     sig: &FuncSignature,
     func_signatures: &HashMap<MonoKey, FuncSignature>,
@@ -615,7 +615,7 @@ fn gather_struct_values(
 }
 
 struct State<'a, 'b> {
-    program: &'a Program,
+    program: &'a File,
     builder: FunctionBuilder<'b>,
     local_types: &'a mut HashMap<DefaultSymbol, ScalarTy>,
     local_vars: &'a mut HashMap<DefaultSymbol, Variable>,

@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use frontend::ast::{Expr, ExprRef, Program};
+use frontend::ast::{Expr, ExprRef, File};
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
 use crate::ir::Const;
@@ -19,7 +19,7 @@ use crate::ir::Const;
 pub(super) type ConstValues = HashMap<DefaultSymbol, Const>;
 
 pub(super) fn evaluate_consts(
-    program: &Program,
+    program: &File,
     interner: &DefaultStringInterner,
 ) -> Result<ConstValues, String> {
     let mut values: ConstValues = HashMap::new();
@@ -39,7 +39,7 @@ pub(super) fn evaluate_consts(
 
 fn eval_const_expr(
     expr_ref: &ExprRef,
-    program: &Program,
+    program: &File,
     values: &ConstValues,
     interner: &DefaultStringInterner,
 ) -> Option<Const> {

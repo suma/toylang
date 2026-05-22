@@ -1,6 +1,6 @@
 use string_interner::DefaultStringInterner;
 use frontend::{ModuleResolver, Parser};
-use frontend::ast::Program;
+use frontend::ast::File;
 use frontend::parser::error::ParserResult;
 use frontend::type_checker::{TypeCheckerVisitor, TypeCheckError};
 use std::path::Path;
@@ -48,7 +48,7 @@ impl CompilerSession {
     ///
     /// Uses the session's shared resources (string interner, module resolver, etc.)
     /// to parse the input and produce an AST.
-    pub fn parse_program(&mut self, input: &str) -> ParserResult<Program> {
+    pub fn parse_program(&mut self, input: &str) -> ParserResult<File> {
         let mut parser = Parser::new(input, &mut self.string_interner);
         let program = parser.parse_program()?;
 
@@ -63,7 +63,7 @@ impl CompilerSession {
         &mut self,
         input: &str,
         filename: &str,
-    ) -> ParserResult<Program> {
+    ) -> ParserResult<File> {
         let mut parser = Parser::new(input, &mut self.string_interner);
         parser.set_source_file(filename);
         parser.parse_program()
@@ -84,7 +84,7 @@ impl CompilerSession {
     }
     
     /// Parse a module file using the session's string interner
-    pub fn parse_module_file<P: AsRef<Path>>(&mut self, file_path: P) -> ParserResult<Program> {
+    pub fn parse_module_file<P: AsRef<Path>>(&mut self, file_path: P) -> ParserResult<File> {
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| frontend::parser::error::ParserError::io_error(
                 frontend::type_checker::SourceLocation { line: 0, column: 0, offset: 0 },
@@ -115,7 +115,7 @@ impl CompilerSession {
     }
     
     /// Type check a program and store the results in the session
-    pub fn type_check_program(&mut self, program: &Program) -> Result<(), Vec<TypeCheckError>> {
+    pub fn type_check_program(&mut self, program: &File) -> Result<(), Vec<TypeCheckError>> {
         use frontend::visitor::ProgramVisitor;
 
         // Create mutable copies of expr/stmt pools for type checking.
@@ -157,7 +157,7 @@ impl CompilerSession {
     }
     
     /// Parse and type check a program in one step
-    pub fn parse_and_type_check_program(&mut self, input: &str) -> Result<Program, Box<dyn std::error::Error>> {
+    pub fn parse_and_type_check_program(&mut self, input: &str) -> Result<File, Box<dyn std::error::Error>> {
         let program = self.parse_program(input)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             

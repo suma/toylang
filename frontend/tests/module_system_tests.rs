@@ -131,7 +131,7 @@ mod access_control {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -155,7 +155,7 @@ mod access_control {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -446,7 +446,7 @@ mod type_checker_integration {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -542,7 +542,7 @@ mod qualified_name_tests {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -568,7 +568,7 @@ mod qualified_name_tests {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -609,7 +609,7 @@ mod struct_access_control {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -634,7 +634,7 @@ mod struct_access_control {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();
@@ -653,7 +653,7 @@ mod struct_access_control {
 
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
-        assert!(result.is_ok(), "Program should parse successfully");
+        assert!(result.is_ok(), "File should parse successfully");
 
         let mut program = result.unwrap();
         let string_interner = parser.get_string_interner();

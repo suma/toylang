@@ -29,7 +29,7 @@ use crate::module_integration::load_and_integrate_module;
 pub use crate::module_integration::integrate_module_into_program;
 
 /// Common setup for TypeCheckerVisitor with struct and impl registration
-fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
+fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut DefaultStringInterner) -> TypeCheckerVisitor<'a> {
     // First, collect and register struct definitions (including generic params)
     let mut struct_definitions = Vec::new();
     let mut generic_struct_info = Vec::new();
@@ -106,7 +106,7 @@ fn setup_type_checker<'a>(program: &'a mut Program, string_interner: &'a mut Def
 const PRELUDE_SOURCE: &str = include_str!("prelude.t");
 
 /// Integrate every module the program needs into the in-memory
-/// `Program`. Called by `check_typing` *before* the impl-block scan so
+/// `File`. Called by `check_typing` *before* the impl-block scan so
 /// imported impl blocks (and the always-loaded prelude impls) are
 /// visible to the type-checker registration pass and to the runtime
 /// `build_method_registry` walk.
@@ -120,7 +120,7 @@ const PRELUDE_SOURCE: &str = include_str!("prelude.t");
 /// (and dedup against already-auto-loaded modules so importing
 /// something twice is a no-op).
 fn integrate_modules(
-    program: &mut Program,
+    program: &mut File,
     string_interner: &mut DefaultStringInterner,
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
@@ -326,7 +326,7 @@ fn process_impl_blocks_extracted(
 }
 
 pub fn check_typing(
-    program: &mut Program,
+    program: &mut File,
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
@@ -342,7 +342,7 @@ pub fn check_typing(
 /// `compiler::main`) compute the path from `--core-modules` /
 /// `TOYLANG_CORE_MODULES` and forward it here.
 pub fn check_typing_with_core_modules(
-    program: &mut Program,
+    program: &mut File,
     string_interner: &mut DefaultStringInterner,
     source_code: Option<&str>,
     filename: Option<&str>,
@@ -541,7 +541,7 @@ fn calculate_line_col_from_offset(source: &str, offset: usize) -> (u32, u32) {
     (line, column)
 }
 
-fn find_main_function(program: &Program, string_interner: &DefaultStringInterner) -> Result<Rc<Function>, InterpreterError> {
+fn find_main_function(program: &File, string_interner: &DefaultStringInterner) -> Result<Rc<Function>, InterpreterError> {
     let main_id = string_interner.get("main")
         .ok_or_else(|| InterpreterError::FunctionNotFound("main function symbol not found".to_string()))?;
     
@@ -554,7 +554,7 @@ fn find_main_function(program: &Program, string_interner: &DefaultStringInterner
     Err(InterpreterError::FunctionNotFound("main".to_string()))
 }
 
-fn build_function_map(program: &Program, _string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
+fn build_function_map(program: &File, _string_interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, Rc<Function>> {
     let mut func_map = HashMap::new();
     for f in &program.function {
         func_map.insert(f.name, f.clone());
@@ -570,7 +570,7 @@ fn build_function_map(program: &Program, _string_interner: &DefaultStringInterne
 /// `Expr::AssociatedFunctionCall("math", "add", ...)` to the stdlib
 /// version (#193b).
 fn build_function_qualified_map(
-    program: &Program,
+    program: &File,
 ) -> HashMap<(Option<DefaultSymbol>, DefaultSymbol), Rc<Function>> {
     let mut map = HashMap::new();
     for (i, f) in program.function.iter().enumerate() {
@@ -585,7 +585,7 @@ fn build_function_qualified_map(
 }
 
 /// Initialize module environment based on package and import declarations
-fn initialize_module_environment(eval: &mut EvaluationContext, program: &Program) {
+fn initialize_module_environment(eval: &mut EvaluationContext, program: &File) {
     // Set current module from package declaration
     if let Some(package_decl) = &program.package_decl {
         eval.environment.set_current_module(Some(package_decl.name.clone()));
@@ -621,7 +621,7 @@ struct CollectedMethod {
 /// users can still call `arena.drop()` explicitly and the
 /// auto-drop at scope exit becomes a no-op the second time.
 fn collect_drop_trait_structs(
-    program: &Program,
+    program: &File,
     string_interner: &DefaultStringInterner,
 ) -> std::collections::HashSet<DefaultSymbol> {
     let drop_sym = match string_interner.get("Drop") {
@@ -643,7 +643,7 @@ fn collect_drop_trait_structs(
 }
 
 fn build_method_registry(
-    program: &Program,
+    program: &File,
     string_interner: &DefaultStringInterner,
 ) -> Result<HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>>, String> {
     let mut method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<CollectedMethod>>> =
@@ -706,7 +706,7 @@ fn register_methods(
     }
 }
 
-pub fn execute_program(program: &Program, string_interner: &DefaultStringInterner, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
+pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, source_code: Option<&str>, filename: Option<&str>) -> Result<RcObject, String> {
     let main_function = match find_main_function(program, string_interner) {
         Ok(func) => func,
         Err(e) => return Err(format!("Runtime Error: {e}")),

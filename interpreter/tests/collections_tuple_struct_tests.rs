@@ -531,7 +531,7 @@ fn main() -> u64 {
     container[0u64]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 42);
     }
 
@@ -553,7 +553,7 @@ fn main() -> u64 {
     arr[1u64]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 20);
     }
 
@@ -581,7 +581,7 @@ fn main() -> u64 {
     counter[0u64]          # This calls __getitem__
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 5); // Original value since setitem doesn't modify
     }
 
@@ -609,7 +609,7 @@ fn main() -> u64 {
     result1 + result2  # 99 + 0 = 99
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 99);
     }
 
@@ -636,7 +636,7 @@ fn main() -> u64 {
     demo[0u64]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 123);
     }
 
@@ -659,7 +659,7 @@ fn main() -> u64 {
     w1[0u64] + w2[1u64]  # 1 + 4 = 5
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert_eq!(result.borrow().unwrap_uint64(), 5);
     }
 
@@ -681,7 +681,7 @@ fn main() -> str {
     container[0u64]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         let borrowed = result.borrow();
         match &*borrowed {
             Object::String(_) | Object::ConstString(_) => {}, // Success - we got a string (either type)
@@ -711,7 +711,7 @@ fn main() -> bool {
     container[0u64]
 }
 "#;
-        let result = test_program(source).expect("Program should execute successfully");
+        let result = test_program(source).expect("File should execute successfully");
         assert!(result.borrow().unwrap_bool());
     }
 }

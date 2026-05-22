@@ -941,63 +941,32 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Type check function calls
+    /// Type check function calls.
+    ///
+    /// Orchestrator: namespace enforcement → lookup → dispatch (generic /
+    /// direct / indirect). Per-path details live in the helpers below.
     pub fn visit_call(&mut self, fn_name: DefaultSymbol, args_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let _fn_name_str = self.resolve_symbol_name(fn_name);
-
-        // Namespace-only enforcement: functions that came in through
-        // `import` are only callable via the qualified
-        // `module::func(args)` form (handled by
-        // `visit_associated_function_call_impl`'s module-dispatch
-        // branch). Bare `func(args)` calls into them are rejected so
-        // every import site spells out where the function lives.
-        if self.imported_function_names.contains(&fn_name) {
-            let module_hint = self
-                .imported_modules
-                .keys()
-                .find_map(|alias| alias.first().copied())
-                .map(|sym| self.resolve_symbol_name(sym).to_string())
-                .unwrap_or_else(|| "<module>".to_string());
-            return Err(TypeCheckError::generic_error(&format!(
-                "imported function '{}' must be called with the qualified form `{}::{}(...)`; bare-name calls into imported modules are not allowed",
-                self.resolve_symbol_name(fn_name),
-                module_hint,
-                self.resolve_symbol_name(fn_name),
-            )));
-        }
+        self.enforce_import_namespace(fn_name)?;
 
         self.push_context();
 
         if let Some(fun) = self.context.get_fn(fn_name) {
-            // Check visibility access control
             if let Err(err) = self.check_function_access(&fun) {
                 self.pop_context();
                 return Err(err);
             }
 
             // Auto-inject `ambient` for omitted trailing Allocator-typed parameters.
-            // A parameter is defaultable when its type is `TypeDecl::Allocator` or a
-            // generic parameter bounded by `Allocator`. Injection happens before the
-            // generic-call dispatch so both paths see the extended argument list.
+            // Injection happens before the generic-call dispatch so both paths see
+            // the extended argument list.
             self.inject_ambient_defaults(args_ref, &fun);
 
-            // Handle generic function calls
             if !fun.generic_params.is_empty() {
                 return self.visit_generic_call(fn_name, args_ref, &fun);
             }
-            
-            // Check if function has been type checked
-            let status = self.function_checking.is_checked_fn.get(&fn_name);
-            if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
-                // not checked yet
-                let fun_copy = self.context.get_fn(fn_name)
-                    .ok_or_else(|| TypeCheckError::not_found("Function", "<INTERNAL_ERROR>"))?;
-                self.type_check(fun_copy.clone())?;
-            }
 
-            // Type-check the argument list against the resolved function
-            // parameters, restoring the type-hint state and popping the
-            // context-frame on every exit path.
+            self.type_check_forward_ref(fn_name)?;
+
             if let Err(err) = self.check_call_args_against_params(fn_name, args_ref, &fun) {
                 self.pop_context();
                 return Err(err);
@@ -1006,21 +975,56 @@ impl<'a> TypeCheckerVisitor<'a> {
             self.pop_context();
             Ok(self.normalize_call_return_type(fun.return_type.clone().unwrap_or(TypeDecl::Unknown)))
         } else {
-            // Function lookup miss — try the indirect-call path.
-            // Closures Phase 2: when a binding holds a value of type
-            // `TypeDecl::Function(params, ret)`, `f(args)` is an
-            // indirect call. The parser can't tell statically whether
-            // an `Identifier` is a fn decl or a value, so it always
-            // emits `Expr::Call(name, args)`; this branch handles
-            // the value case.
             self.pop_context();
-            if let Some(callee_ty) = self.context.get_var(fn_name)
-                && let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
-                    return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
-                }
-            let fn_name_str = self.resolve_symbol_name(fn_name);
-            Err(TypeCheckError::not_found("Function", &fn_name_str))
+            self.visit_call_indirect_fallback(fn_name, args_ref)
         }
+    }
+
+    /// Reject bare-name calls to imported functions. Imported symbols
+    /// must be called via the qualified `module::func(args)` form.
+    fn enforce_import_namespace(&self, fn_name: DefaultSymbol) -> Result<(), TypeCheckError> {
+        if !self.imported_function_names.contains(&fn_name) {
+            return Ok(());
+        }
+        let module_hint = self
+            .imported_modules
+            .keys()
+            .find_map(|alias| alias.first().copied())
+            .map(|sym| self.resolve_symbol_name(sym).to_string())
+            .unwrap_or_else(|| "<module>".to_string());
+        let name = self.resolve_symbol_name(fn_name);
+        Err(TypeCheckError::generic_error(&format!(
+            "imported function '{}' must be called with the qualified form `{}::{}(...)`; bare-name calls into imported modules are not allowed",
+            name, module_hint, name,
+        )))
+    }
+
+    /// Type-check a function that hasn't been visited yet (forward
+    /// reference). No-op when the function is already checked.
+    fn type_check_forward_ref(&mut self, fn_name: DefaultSymbol) -> Result<(), TypeCheckError> {
+        let status = self.function_checking.is_checked_fn.get(&fn_name);
+        if status.is_none() || status.as_ref().and_then(|s| s.as_ref()).is_none() {
+            let fun_copy = self.context.get_fn(fn_name)
+                .ok_or_else(|| TypeCheckError::not_found("Function", "<INTERNAL_ERROR>"))?;
+            self.type_check(fun_copy.clone())?;
+        }
+        Ok(())
+    }
+
+    /// When `visit_call` can't find a function declaration, try the
+    /// indirect-call (closure-value) path. Returns `not_found` when
+    /// the identifier is neither a function nor a function-typed value.
+    fn visit_call_indirect_fallback(
+        &mut self,
+        fn_name: DefaultSymbol,
+        args_ref: &ExprRef,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        if let Some(callee_ty) = self.context.get_var(fn_name)
+            && let TypeDecl::Function(param_tys, ret_ty) = callee_ty {
+                return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
+            }
+        let fn_name_str = self.resolve_symbol_name(fn_name);
+        Err(TypeCheckError::not_found("Function", &fn_name_str))
     }
 
     /// Type-check the argument list of a non-generic direct call

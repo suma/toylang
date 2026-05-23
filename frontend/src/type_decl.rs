@@ -1,6 +1,7 @@
 use string_interner::DefaultSymbol;
 
 #[derive(Debug, PartialEq, Clone, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TypeDecl {
     Unknown,
     Unit,

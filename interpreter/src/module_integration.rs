@@ -26,8 +26,23 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 use frontend::ast::*;
+use frontend::ast::module_interface::ModuleInterface;
 use frontend::type_decl::TypeDecl;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
+
+/// Try to load a cached `ModuleInterface` for the given source.
+///
+/// This is a Phase-3 incremental-compilation hook.  When full AST
+/// serialization lands (see `design-docs/INCREMENTAL_COMPILATION.md`),
+/// this function will be extended to return the complete parsed `File`
+/// so that integration can skip parsing altogether for unchanged core
+/// modules.
+pub fn try_load_cached_interface(
+    source: &str,
+    cache_dir: &std::path::Path,
+) -> Option<ModuleInterface> {
+    frontend::cache::load_interface(source, cache_dir)
+}
 
 /// Per-import scratch context. Owns the main / module borrows and the
 /// `expr_mapping` / `stmt_mapping` tables that translate IDs across

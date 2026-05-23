@@ -26,6 +26,7 @@
 //! have a runtime to back any of them. They will land in subsequent phases
 //! (see `design-docs/todo.md` #183).
 
+pub mod cache;
 pub mod codegen;
 pub mod driver;
 pub mod ir;

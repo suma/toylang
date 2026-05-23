@@ -7,7 +7,7 @@ license = "MIT"
 description = ""
 
 [dependencies]
-frontend = { path = "../frontend" }
+frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
 string-interner = "0.19.0"
 cranelift = { version = "0.131", optional = true }

@@ -134,6 +134,7 @@ pub enum Stmt {
 /// Phase 2 enum variant: a name plus an optional tuple-style payload. An empty
 /// `payload_types` vector is a unit variant.
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EnumVariantDef {
     pub name: DefaultSymbol,
     pub payload_types: Vec<TypeDecl>,

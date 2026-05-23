@@ -93,13 +93,15 @@ pub type Parameter = (DefaultSymbol, TypeDecl);
 pub type ParameterList = Vec<Parameter>;
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StructField {
     pub name: String,
     pub type_decl: TypeDecl,
     pub visibility: Visibility,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Visibility {
     Public,
     Private,
@@ -170,17 +172,20 @@ pub struct MethodFunction {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PackageDecl {
     pub name: Vec<DefaultSymbol>,  // package path components: [math_symbol, basic_symbol]
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImportDecl {
     pub module_path: Vec<DefaultSymbol>,  // module path: [math_symbol, basic_symbol]
     pub alias: Option<DefaultSymbol>,     // alias from "as" clause
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Node {
     pub start: usize,
     pub end: usize,

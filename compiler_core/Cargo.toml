@@ -7,5 +7,5 @@ authors.workspace = true
 description = "Core compiler session management and orchestration"
 
 [dependencies]
-frontend = { path = "../frontend" }
+frontend = { path = "../frontend", features = ["serde"] }
 string-interner.workspace = true

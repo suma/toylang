@@ -165,74 +165,85 @@ fn integrate_modules(
         module_integration::collect_top_level_type_names(program, string_interner);
     let mut shadowed_stdlib_types: std::collections::HashSet<String> =
         std::collections::HashSet::new();
-    let core_modules_for_shadow_scan =
-        if let Some(dir) = core_modules_dir {
-            module_integration::discover_core_modules(dir).ok()
+
+    let discovered_modules = if let Some(dir) = core_modules_dir {
+        match module_integration::discover_core_modules(dir) {
+            Ok(modules) => Some(modules),
+            Err(err) => {
+                errors.push(format!(
+                    "Failed to scan core modules directory `{}`: {}",
+                    dir.display(),
+                    err
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Phase 1: parallel pre-parse (cache load or cold parse + type-name
+    // extraction).  This is CPU-bound and safe to run in parallel
+    // because each module gets its own `ParserWithInterner` which is
+    // created, used, and dropped on the same rayon worker thread.
+    let mut preparsed_results: Vec<Result<module_integration::PreparsedCoreModule, String>> =
+        if let Some(ref modules) = discovered_modules {
+            module_integration::preparse_core_modules(modules)
         } else {
-            None
+            Vec::new()
         };
-    if let Some(modules) = &core_modules_for_shadow_scan {
-        for module in modules {
-            match module_integration::extract_stdlib_type_names(&module.source) {
-                Ok(names) => {
-                    for name in names {
-                        if user_type_names.contains(&name) {
-                            shadowed_stdlib_types.insert(name);
-                        }
+
+    // Build the shadow set from the union of all extracted type names.
+    for (idx, result) in preparsed_results.iter().enumerate() {
+        match result {
+            Ok(preparsed) => {
+                for name in &preparsed.type_names {
+                    if user_type_names.contains(name) {
+                        shadowed_stdlib_types.insert(name.clone());
                     }
                 }
-                Err(err) => {
+            }
+            Err(err) => {
+                if let Some(ref modules) = discovered_modules {
+                    let dotted = modules[idx].segments.join(".");
                     errors.push(format!(
-                        "Core module `{}` shadow-scan error: {}",
-                        module.segments.join("."),
-                        err
+                        "Core module `{}` pre-parse error: {}",
+                        dotted, err
                     ));
                 }
             }
         }
     }
 
-    // Auto-load every module under the configured core modules
-    // directory. This is the "every program gets `import math` for
-    // free" path the user opted into via `--core-modules <DIR>`.
-    // Each auto-loaded module gets a synthetic `ImportDecl` pushed
-    // into `program.imports` so the type-checker's
-    // `visit_import_decl` path registers the namespace alias —
-    // without that, `math::add(...)` from user code wouldn't
-    // resolve even though the module's functions are in the
-    // function table.
-    if let Some(modules) = core_modules_for_shadow_scan {
-        for module in modules {
+    // Phase 2: sequential integrate pass.  Mutates
+    // `main_string_interner`, so it must stay sequential.
+    if let Some(modules) = discovered_modules {
+        for (idx, module) in modules.iter().enumerate() {
             let dotted = module.segments.join(".");
             if !loaded_modules.insert(dotted.clone()) {
                 continue;
             }
-            // Auto-loaded modules opt out of namespace
-            // enforcement (`enforce_namespace = false`) so
-            // user code can still define functions with
-            // names that happen to collide with
-            // auto-loaded ones (e.g. a user `fn add(a:
-            // Point, b: Point) -> Point` shadows
-            // `math::add` for bare calls). The qualified
-            // form `<alias>::name(...)` keeps working
-            // because the synthetic `ImportDecl` below
-            // registers the module alias from the *last*
-            // segment.
             let path_syms: Vec<_> = module
                 .segments
                 .iter()
                 .map(|s| string_interner.get_or_intern(s))
                 .collect();
-            if let Err(err) =
-                module_integration::integrate_module_into_program_with_options_full(
-                    &module.source,
-                    program,
-                    string_interner,
-                    false,
-                    Some(path_syms.clone()),
-                    shadowed_stdlib_types.clone(),
-                )
-            {
+
+            let preparsed = match std::mem::replace(
+                &mut preparsed_results[idx],
+                Err(String::new()),
+            ) {
+                Ok(p) => p,
+                Err(_) => continue, // error already recorded above
+            };
+
+            if let Err(err) = module_integration::integrate_preparsed_core_module(
+                preparsed,
+                program,
+                string_interner,
+                Some(path_syms.clone()),
+                shadowed_stdlib_types.clone(),
+            ) {
                 errors.push(format!(
                     "Core module `{}` integration error: {}",
                     dotted, err
@@ -243,18 +254,6 @@ fn integrate_modules(
                 module_path: path_syms,
                 alias: None,
             });
-        }
-    } else if core_modules_dir.is_some() {
-        // discover_core_modules failed earlier; surface the same error
-        // shape as before by re-running it just to fetch the diagnostic.
-        if let Some(dir) = core_modules_dir {
-            if let Err(err) = module_integration::discover_core_modules(dir) {
-                errors.push(format!(
-                    "Failed to scan core modules directory `{}`: {}",
-                    dir.display(),
-                    err
-                ));
-            }
         }
     }
 

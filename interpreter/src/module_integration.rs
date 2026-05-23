@@ -1385,7 +1385,7 @@ pub fn integrate_module_into_program_with_options_full(
 /// Phase 4 fast path: integrate a `CachedModule` deserialized from
 /// disk into `main_program`. Mirrors the slow path's tail but skips
 /// parsing.
-fn integrate_cached_module(
+pub(crate) fn integrate_cached_module(
     cached: frontend::cache::CachedModule,
     main_program: &mut File,
     main_string_interner: &mut DefaultStringInterner,
@@ -1417,4 +1417,148 @@ fn is_cache_disabled() -> bool {
     std::env::var("TOY_CACHE_DISABLE")
         .map(|v| !v.is_empty())
         .unwrap_or(false)
+}
+
+// =============================================================================
+// Phase 1 parallel pre-parse
+// =============================================================================
+
+// `File` contains `Rc<...>` internally and is therefore !Send.
+// Each File is produced on a single worker thread and then moved
+// to the main thread for sequential integration; the Rc cells are
+// never accessed concurrently, so an unsafe Send wrapper is safe.
+pub(crate) struct SendFile(File);
+unsafe impl Send for SendFile {}
+
+pub(crate) struct SendCachedModule(frontend::cache::CachedModule);
+unsafe impl Send for SendCachedModule {}
+
+/// Outcome of parsing a single discovered core module.  Held in
+/// `PreparsedCoreModule` so the sequential integrate pass can consume
+/// it without re-parsing.
+pub(crate) enum PreparsedPayload {
+    /// Warm-cache hit — deserialized `File` + interner ready to
+    /// integrate.
+    Cached(SendCachedModule),
+    /// Cold path — freshly parsed AST + its local interner.
+    Parsed {
+        file: SendFile,
+        interner: DefaultStringInterner,
+    },
+}
+
+/// Bundle produced by `preparse_core_modules` for one module.
+pub(crate) struct PreparsedCoreModule {
+    pub source: String,
+    pub payload: PreparsedPayload,
+    pub type_names: std::collections::HashSet<String>,
+}
+
+/// Parse (or load from cache) every discovered core module in
+/// parallel, returning a `Vec` in the same order as the input.
+///
+/// `rayon` is used for the CPU-bound parse/cache-load phase.  The
+/// mutable `main_string_interner` is **not** touched here — that
+/// happens later in the sequential `integrate_preparsed_core_module`
+/// pass.
+pub(crate) fn preparse_core_modules(
+    modules: &[DiscoveredCoreModule],
+) -> Vec<Result<PreparsedCoreModule, String>> {
+    use rayon::prelude::*;
+
+    let cache_dir = frontend::cache::default_cache_dir();
+    let cache_disabled = is_cache_disabled();
+
+    modules
+        .par_iter()
+        .map(|module| {
+            // --- Try cache first ---
+            if !cache_disabled {
+                if let Some(cached) =
+                    frontend::cache::load_full_module(&module.source, &cache_dir)
+                {
+                    let type_names =
+                        collect_top_level_type_names(&cached.file, &cached.interner);
+                    return Ok(PreparsedCoreModule {
+                        source: module.source.clone(),
+                        payload: PreparsedPayload::Cached(SendCachedModule(cached)),
+                        type_names,
+                    });
+                }
+            }
+
+            // --- Cold parse ---
+            let mut parser = frontend::ParserWithInterner::new(&module.source);
+            let file = parser
+                .parse_program()
+                .map_err(|e| format!("Parse error in module: {}", e))?;
+            let interner = parser.get_string_interner().clone();
+            let type_names = collect_top_level_type_names(&file, &interner);
+
+            Ok(PreparsedCoreModule {
+                source: module.source.clone(),
+                payload: PreparsedPayload::Parsed {
+                    file: SendFile(file),
+                    interner,
+                },
+                type_names,
+            })
+        })
+        .collect()
+}
+
+/// Integrate a single `PreparsedCoreModule` into `main_program`.
+/// This is the sequential pass that mutates `main_string_interner`.
+pub(crate) fn integrate_preparsed_core_module(
+    preparsed: PreparsedCoreModule,
+    main_program: &mut File,
+    main_string_interner: &mut DefaultStringInterner,
+    module_path: Option<Vec<DefaultSymbol>>,
+    shadowed_stdlib_types: std::collections::HashSet<String>,
+) -> Result<(), String> {
+    match preparsed.payload {
+        PreparsedPayload::Cached(SendCachedModule(cached)) => integrate_cached_module(
+            cached,
+            main_program,
+            main_string_interner,
+            module_path,
+            shadowed_stdlib_types,
+        ),
+        PreparsedPayload::Parsed {
+            file: SendFile(file),
+            interner,
+        } => {
+            let mut integration_context = AstIntegrationContext::new(
+                main_program,
+                &file,
+                main_string_interner,
+                &interner,
+                shadowed_stdlib_types,
+            );
+            let integrated_functions = integration_context.integrate()?;
+            for function in integrated_functions {
+                main_program.function.push(function);
+                main_program
+                    .function_module_paths
+                    .push(module_path.clone());
+            }
+
+            // --- Save to cache ---
+            if !is_cache_disabled() {
+                let cache_dir = frontend::cache::default_cache_dir();
+                let cached = frontend::cache::CachedModule {
+                    schema_version: frontend::cache::FULL_AST_CACHE_SCHEMA_VERSION,
+                    interner,
+                    file,
+                };
+                if let Err(e) =
+                    frontend::cache::save_full_module(&preparsed.source, &cached, &cache_dir)
+                {
+                    eprintln!("toylang: warning: failed to save module cache: {}", e);
+                }
+            }
+
+            Ok(())
+        }
+    }
 }

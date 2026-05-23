@@ -28,7 +28,7 @@ use cranelift::prelude::Block;
 use cranelift_codegen::ir::Value;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
-use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module};
+use cranelift_module::{DataDescription, DataId, Linkage as CLinkage, Module, ModuleReloc};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use frontend::ast::File;
 use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
@@ -107,16 +107,13 @@ fn build_object_module(
     let module = make_object_module()?;
     let mut session = CodegenSession::new(module)?;
     session.declare_all(ir_module, interner)?;
-    for func_id in 0..ir_module.functions.len() {
-        let func_id = FuncId(func_id as u32);
-        // `Linkage::Import` functions are external — there's no body
-        // to define. The cranelift Import declaration emitted by
-        // `declare_all` is enough; the linker resolves the call at
-        // link time. Trying to define one would crash on the
-        // missing entry block.
-        if matches!(ir_module.function(func_id).linkage, Linkage::Import) {
-            continue;
-        }
+
+    let funcs_to_compile: Vec<FuncId> = (0..ir_module.functions.len())
+        .map(|i| FuncId(i as u32))
+        .filter(|&id| !matches!(ir_module.function(id).linkage, Linkage::Import))
+        .collect();
+
+    for &func_id in &funcs_to_compile {
         let func = ir_module.function(func_id);
         if func.blocks.is_empty() {
             return Err(format!(
@@ -124,11 +121,58 @@ fn build_object_module(
                 func.export_name, func.linkage
             ));
         }
-        session.define_function(ir_module, func_id)?;
+    }
+
+    let isa = session.module.isa();
+
+    // Phase 2 parallel codegen: lower + compile each function on a
+    // separate rayon worker.  Only `define_function_bytes` touches
+    // the `ObjectModule`, so that stays sequential.
+    let compiled: Vec<Result<(FuncId, Vec<u8>, u64, Vec<ModuleReloc>), String>> = {
+        use rayon::prelude::*;
+        funcs_to_compile
+            .par_iter()
+            .map(|&func_id| {
+                let mut ctx = session.prepare_function_context(ir_module, func_id)?;
+                let mut ctrl_plane = cranelift_control::ControlPlane::default();
+                ctx.compile(isa, &mut ctrl_plane).map_err(|e| {
+                    format!(
+                        "compile error for {}: {e:?}",
+                        ir_module.function(func_id).export_name
+                    )
+                })?;
+                let compiled = ctx.compiled_code().unwrap();
+                let bytes = compiled.buffer.data().to_vec();
+                let alignment = compiled.buffer.alignment as u64;
+                let cl_func_id = session
+                    .fn_id(func_id)
+                    .ok_or_else(|| format!("function {} not declared", ir_module.function(func_id).export_name))?;
+                let relocs: Vec<ModuleReloc> = compiled
+                    .buffer
+                    .relocs()
+                    .iter()
+                    .map(|reloc| {
+                        ModuleReloc::from_mach_reloc(reloc, &ctx.func, cl_func_id)
+                    })
+                    .collect();
+                Ok((func_id, bytes, alignment, relocs))
+            })
+            .collect()
+    };
+
+    for result in compiled {
+        let (func_id, bytes, alignment, relocs) = result?;
+        let cl_id = session.fn_id(func_id).unwrap();
+        let func = ir_module.function(func_id);
+        session
+            .module
+            .define_function_bytes(cl_id, alignment, &bytes, &relocs)
+            .map_err(|e| format!("define {}: {e}", func.export_name))?;
         if options.verbose {
-            eprintln!("emitted {}", ir_module.function(func_id).export_name);
+            eprintln!("emitted {}", func.export_name);
         }
     }
+
     Ok(session.module)
 }
 
@@ -253,6 +297,13 @@ pub(crate) struct CodegenSession<M: Module> {
     /// `module.trait_method_order[trait]` order, each slot 8 bytes.
     /// Populated by `define_vtables` once per CodegenSession.
     vtable_data_ids: HashMap<(DefaultSymbol, DefaultSymbol), DataId>,
+    /// Cached function declarations (signature + colocated flag) so
+    /// the read-only `declare_func_in_func_readonly` helper can
+    /// operate without `&mut Module`.
+    fn_decls: HashMap<cranelift_module::FuncId, (cranelift_codegen::ir::Signature, bool)>,
+    /// Cached data declarations (colocated flag) for
+    /// `declare_data_in_func_readonly`.
+    data_decls: HashMap<cranelift_module::DataId, bool>,
 }
 
 /// Resolve cranelift's `opt_level` flag from the environment, defaulting
@@ -615,6 +666,8 @@ impl<M: Module> CodegenSession<M> {
             raw_print_strings: HashMap::new(),
             const_str_bytes: HashMap::new(),
             vtable_data_ids: HashMap::new(),
+            fn_decls: HashMap::new(),
+            data_decls: HashMap::new(),
         })
     }
 
@@ -648,6 +701,19 @@ impl<M: Module> CodegenSession<M> {
                 .declare_function(&func.export_name, linkage, &sig)
                 .map_err(|e| format!("declare {}: {e}", func.export_name))?;
             self.fn_ids.insert(id, cl_id);
+        }
+
+        // Build read-only caches used by the parallel codegen path.
+        let func_decl_map: std::collections::HashMap<_, _> =
+            self.module.declarations().get_functions().collect();
+        for (cl_id, decl) in func_decl_map {
+            self.fn_decls
+                .insert(cl_id, (decl.signature.clone(), decl.linkage.is_final()));
+        }
+        let data_decl_map: std::collections::HashMap<_, _> =
+            self.module.declarations().get_data_objects().collect();
+        for (data_id, decl) in data_decl_map {
+            self.data_decls.insert(data_id, decl.linkage.is_final());
         }
 
         // Walk every block in every function and reserve a `.rodata`
@@ -725,6 +791,14 @@ impl<M: Module> CodegenSession<M> {
         // dispatch site (`InstKind::DynCall` lowering, P2-MVP-A)
         // to resolve the symbol address.
         self.define_vtables(ir_module, interner)?;
+        // Refresh the data-declaration cache after all `.rodata`
+        // entries and vtables have been declared.
+        let data_decl_map: std::collections::HashMap<_, _> =
+            self.module.declarations().get_data_objects().collect();
+        self.data_decls.clear();
+        for (data_id, decl) in data_decl_map {
+            self.data_decls.insert(data_id, decl.linkage.is_final());
+        }
         Ok(())
     }
 
@@ -999,6 +1073,51 @@ impl<M: Module> CodegenSession<M> {
         }
     }
 
+    /// Read-only variant of `Module::declare_func_in_func`.  The
+    /// upstream API unnecessarily takes `&mut self` even though the
+    /// operation only reads the module's declaration table.
+    fn declare_func_in_func_readonly(
+        &self,
+        func_id: cranelift_module::FuncId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> cranelift_codegen::ir::FuncRef {
+        let (sig, colocated) = self.fn_decls.get(&func_id).unwrap();
+        let signature = func.import_signature(sig.clone());
+        let user_name_ref = func.declare_imported_user_function(
+            cranelift_codegen::ir::UserExternalName {
+                namespace: 0,
+                index: func_id.as_u32(),
+            },
+        );
+        func.import_function(cranelift_codegen::ir::ExtFuncData {
+            name: cranelift_codegen::ir::ExternalName::user(user_name_ref),
+            signature,
+            colocated: *colocated,
+            patchable: false,
+        })
+    }
+
+    /// Read-only variant of `Module::declare_data_in_func`.
+    fn declare_data_in_func_readonly(
+        &self,
+        data_id: cranelift_module::DataId,
+        func: &mut cranelift_codegen::ir::Function,
+    ) -> cranelift_codegen::ir::GlobalValue {
+        let colocated = *self.data_decls.get(&data_id).unwrap();
+        let user_name_ref = func.declare_imported_user_function(
+            cranelift_codegen::ir::UserExternalName {
+                namespace: 1,
+                index: data_id.as_u32(),
+            },
+        );
+        func.create_global_value(cranelift_codegen::ir::GlobalValueData::Symbol {
+            name: cranelift_codegen::ir::ExternalName::user(user_name_ref),
+            offset: cranelift_codegen::ir::immediates::Imm64::new(0),
+            colocated,
+            tls: false,
+        })
+    }
+
     pub(crate) fn define_function(
         &mut self,
         ir_module: &IrModule,
@@ -1052,6 +1171,55 @@ impl<M: Module> CodegenSession<M> {
             .define_function(cl_id, &mut ctx)
             .map_err(|e| format!("define {}: {e}", func.export_name))?;
         Ok(())
+    }
+
+    /// Build a `Context` for the given function (signature, imports,
+    /// lowering, builder finalise) **without** touching the module.
+    /// This is the expensive CPU-bound part that can run in parallel
+    /// across functions.
+    pub(crate) fn prepare_function_context(
+        &self,
+        ir_module: &IrModule,
+        func_id: FuncId,
+    ) -> Result<Context, String> {
+        let func = ir_module.function(func_id);
+        let mut ctx = Context::new();
+        ctx.func.signature = self.cranelift_signature_with_writeback(
+            ir_module,
+            &func.params,
+            func.return_type,
+            &func.self_writeback_types,
+        );
+        let imports = self.declare_imports(&mut ctx.func);
+        let panic_imports = self.declare_panic_imports(ir_module, func_id, &mut ctx.func);
+        let print_imports = self.declare_print_imports(ir_module, func_id, &mut ctx.func);
+        let raw_print_imports =
+            self.declare_raw_print_imports(ir_module, func_id, &mut ctx.func);
+        let const_str_bytes_imports =
+            self.declare_const_str_bytes_imports(ir_module, func_id, &mut ctx.func);
+        let vtable_imports =
+            self.declare_vtable_imports(ir_module, func_id, &mut ctx.func);
+        let runtime_refs = self.declare_runtime_refs(&mut ctx.func);
+        let mut builder_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut builder_ctx);
+        let result = {
+            let mut ctxt = LowerCtx::new(
+                &mut builder,
+                ir_module,
+                func_id,
+                &imports,
+                &panic_imports,
+                &print_imports,
+                &raw_print_imports,
+                &const_str_bytes_imports,
+                &vtable_imports,
+                &runtime_refs,
+            );
+            ctxt.lower()
+        };
+        builder.finalize();
+        result?;
+        Ok(ctx)
     }
 
     /// Lower a single function and return the textual Cranelift IR. Used

@@ -4,6 +4,9 @@
 
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
+### 2026-05-23
+- **Incremental compilation — Full AST cache (attempted & reverted)** — `File` (StmtPool + ExprPool + LocationPool + functions) の完全な bincode キャッシュ (`load_file` / `save_file`) を実装。`ExprPool`, `StmtPool`, `LocationPool`, `File`, `Function`, `MethodFunction`, `TraitMethodSignature`, `ConstDecl`, `Expr`, `Stmt` および関連 enum に `serde` derive を追加。`CacheHeader { version: u16 }` を導入して将来のフォーマット互換性を確保。round-trip test を追加 (`frontend/src/cache.rs` の `file_tests` module)。`interpreter/src/module_integration.rs` に cache fast-path hook を設置。**しかし** `cross_module_type_alias_round_trip` で `SymbolU32 { value: 33 }` not found エラーが発生。原因: cached `File` の `DefaultSymbol` index が main interner と一致しない (interner 再構築時の `get_or_intern` 順序と cross-interner aliasing の問題)。**reset して 650d605 に戻す決定** — 複雑性に対する benefit が見合わないため、Phase 1-3 (`ModuleInterface` cache + design doc) の状態で一旦停止。`compiler/.gitignore` に `.toycache/` を追加して cache ファイルの誤コミットを防止。1532 tests pass (0 regression)。
+
 ### 2026-05-19
 - **docs(language): `dyn Trait` 節を A5-P2 完了状態に同期** (`aa2f704`) — `docs/language.md` の "Dynamic dispatch with `dyn Trait`" 節を MVP-A〜F の最終状態に更新。Notes に「any return shape」「`&mut self` + compound return」を追記、新節 `#### Backend implementation` で fat pointer 2-word layout / `toy_vtable_*` data symbol / per-method thunk / coercion site stack slot / `&mut dyn` writeback drain の AOT 実装詳細を記述。Phase status は A5-P1 (interp) + A5-P2 (AOT、MVP-A〜F のサブフェーズ列挙) + A5-P3 (JIT planned: 実行は interp 経由で動く) + A5-P4 (`Box<dyn Trait>` planned: 前提として `Box<T>` 型が未実装)。"Out of scope" と "Trait limitations" 節も同期 — 残候補リスト (JIT 最適化 / `Box` / 多重 trait object / generic trait object / return-field 位置の `&dyn`) を明示。コード変更なし、build clean。
 - **`dyn Trait` Phase 2-MVP-F — AOT `&mut self` + compound return combined (A5-P2-MVP-F)** — MVP-C の `&mut dyn` writeback と MVP-D/E の compound return を同時に扱う最後のエッジケース。`CallWithSelfWriteback` の単一 `ret_dest: Option<LocalId>` が compound 戻り値を受けられない問題を解消。**新 IR**: `InstKind::CallWithSelfWritebackCompound { target, args, ret_dests: Vec<LocalId>, self_dests: Vec<LocalId> }` — cranelift call results が `[ret_leaves..., self_writeback_leaves...]` 順なので `ret_dests.len()` で split して `def_var` で 2 つの dest 群に分配。**Thunk**: `lower_dyn_thunk_body` を 4-way switch に refactor (`self_is_mut && !ret_is_compound` = MVP-C / `self_is_mut && ret_is_compound` = MVP-F new / `ret_is_compound` = MVP-D/E / scalar)。新 arm は `flatten_compound_leaf_types(ret_ty)` で ret_dests 確保、impl writeback leaves で self_dests 確保、`CallWithSelfWritebackCompound` を emit、新 helper `emit_writeback_ptrwrites` (MVP-C/F 共有、PtrWrite × N で data_ptr に書き戻し) を呼ぶ、最後に `LoadLocal × ret_dests + Return(values)` で multi-value 返却。**Caller side 変更なし** — MVP-D/E の compound dispatch と MVP-C の `&mut dyn` drain が独立に機能、組み合わせ時も自動的に正しく動作。consistency test `dyn_trait_mut_self_struct_return_round_trip` 追加 (`Cell{n} -> Pair{x,y}` を 2 回 step、11+22+12+24 = 69)、MVP-A〜E の 10 件と合わせて 11 件 3-way 一致。1515 → **1516 tests pass** (+1)。**A5-P2 (AOT) は実用面で完了** (empty / scalar field / nested / `&mut dyn` / struct return / tuple return / enum return / `&mut self` + compound すべて round-trip 一致)。**残**: P3 (JIT)、P4 (`Box<dyn Trait>`)。
@@ -100,6 +103,7 @@
 
 ## 未実装 📋
 
+INCREMENTAL-COMPILATION. **インクリメンタルコンパイル** — `design-docs/INCREMENTAL_COMPILATION.md` に設計を記述済み。**Phase 1-3 完了** (`650d605`): `ModuleInterface` の抽出 (`extract_interface()`)、`bincode` cache (`load_interface` / `save_interface`)、設計文書。**Phase 4 (Full AST cache) は断念**: `DefaultSymbol` (SymbolU32) の interner index が cross-module 復元時に一致しない問題が解決困難。次の方向性を検討中: (a) `ModuleInterface`-only cache に留め、body の parse は毎回行う (interface cache で型チェックの大部分を skip 可能)、(b) AST cache を retry する場合は `DefaultSymbol` を文字列ベースに置き換える大規模 refactor が必要。優先度: 低 (現状の parse 時間は許容範囲内)。
 
 STR-INTERP-COMPOUND-EXTEND-ENUM. **enum 値の `{Option::Some(v)}` 補間 (AOT)** — `d36a063` で struct + tuple + nested compound は landed。残: enum (Option / Result / user-defined) の to_string。tag local を読んで variant 別の format を出すために cranelift block の if-elif chain (lower_short_circuit / lower_if_chain 系) を借用する必要、payload は variant ごとに分岐。format 例: `Option<i64>::Some(99)` / `Option<i64>::None` / `Result<i64, str>::Ok(42)`。interpreter は `Object::to_display_string` で既に動作。優先度: 中。
 
@@ -228,9 +232,9 @@ TEST-PERF. **テスト実行時間改善** (2026-05-16 プロファイル):
 - 統合インデックスシステム: 配列・辞書・構造体で統一`x[key]`構文
 
 ### テスト状況
-- 合計 1444 テスト, 31 skipped（100% 成功率、2026-05-09 時点 — STRING-API 全 Phase + AOT-SIZEOF-COMPOUND + AOT-COMPOUND-PTR-RW + TYPE-ALIAS-QUALIFIER + OP-OVERLOAD (Eq + Arith + Phase 1-4 含む全 binary/unary) + STRING-NOMINAL + STR-INTERP-COMPOUND (struct/tuple/nested) + LABEL (labelled break/continue) + IF-VAL (`if val` / `while val`) で計 118 件追加。compiler/e2e は 202、consistency は 65+）
-- 内訳: interpreter unit + integration、frontend unit、compiler e2e (191) + consistency (50+) — 後者は interpreter / JIT / AOT 3 経路一致を保証
-- パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)
+- 合計 **1532 テスト**, 31 skipped（100% 成功率、2026-05-23 時点）
+- 内訳: interpreter unit + integration、frontend unit、compiler e2e + consistency — 後者は interpreter / JIT / AOT 3 経路一致を保証
+- パフォーマンス: `compiler/build.rs` で `toylang_rt.c` を pre-build、AOT 1 テストあたりの compile 時間は ~50ms。並列 wall-clock の dominate factor は macOS の Mach-O コード署名検証 (~150-300ms/binary、`compiler/README.md` 参照)。`PROPTEST_CASES=32` は `.cargo/config.toml` の `[env]` にデフォルト化済み
 
 ### パーサーの既知制限事項
 - bare `self` 構文非対応（`self: Self` が必要）

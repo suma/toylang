@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    Acceptable,
+    AcceptableStmt, AcceptableExpr,
 };
 
 /// Statement type checking implementation
@@ -13,7 +13,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
         let mut stmt_val = self.core.stmt_pool.get(stmt).unwrap_or(Stmt::Break(None)).clone();
         
-        let result = stmt_val.accept(self);
+        let result = stmt_val.accept_stmt(self);
         
         // If an error occurred, try to add location information if not already present
         match result {
@@ -29,7 +29,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let expr_obj = self.core.expr_pool.get(expr)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
-        expr_obj.clone().accept(self)
+        expr_obj.clone().accept_expr(self)
     }
 
     /// Type check variable declarations (var) - internal implementation
@@ -140,7 +140,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 .ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
             let expr_obj = self.core.expr_pool.get(e)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
-            let return_type = expr_obj.clone().accept(self)?;
+            let return_type = expr_obj.clone().accept_expr(self)?;
             Ok(return_type)
         }
     }
@@ -152,14 +152,14 @@ impl<'a> TypeCheckerVisitor<'a> {
 
         let range_obj = self.core.expr_pool.get(range)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
-        let range_ty = range_obj.clone().accept(self)?;
+        let range_ty = range_obj.clone().accept_expr(self)?;
         let ty = Some(range_ty);
 
         self.process_val_type(init, &ty, &Some(*range))?;
 
         let body_obj = self.core.expr_pool.get(body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
-        let res = body_obj.clone().accept(self);
+        let res = body_obj.clone().accept_expr(self);
 
         self.context.loop_label_stack.pop();
         self.pop_context();
@@ -171,7 +171,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Evaluate condition type first
         let cond_obj = self.core.expr_pool.get(cond)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
-        let cond_type = cond_obj.clone().accept(self)?;
+        let cond_type = cond_obj.clone().accept_expr(self)?;
 
         // Verify condition is boolean
         if cond_type != TypeDecl::Bool {
@@ -183,7 +183,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.context.loop_label_stack.push(label);
         let body_obj = self.core.expr_pool.get(body)
             .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
-        let res = body_obj.clone().accept(self);
+        let res = body_obj.clone().accept_expr(self);
         self.context.loop_label_stack.pop();
         self.pop_context();
         res

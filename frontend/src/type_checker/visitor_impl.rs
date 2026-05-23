@@ -2,15 +2,15 @@ use std::rc::Rc;
 use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::*;
-use crate::visitor::{AstVisitor, ProgramVisitor};
+use crate::visitor::{ExprVisitor, StmtVisitor, DeclVisitor, ProgramVisitor};
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError, TypeCheckContext, TypeInferenceState,
     CoreReferences, method,
 };
-use crate::type_checker::{Acceptable, TypeCheckerCore, TypeInferenceManager};
+use crate::type_checker::{AcceptableExpr, AcceptableStmt, AcceptableDecl, TypeCheckerCore, TypeInferenceManager};
 
-impl Acceptable for Expr {
-    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
+impl AcceptableExpr for Expr {
+    fn accept_expr(&mut self, visitor: &mut dyn ExprVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Expr::Binary(op, lhs, rhs) => visitor.visit_binary(op, lhs, rhs),
             Expr::Unary(op, operand) => visitor.visit_unary(op, operand),
@@ -64,8 +64,8 @@ impl Acceptable for Expr {
     }
 }
 
-impl Acceptable for Stmt {
-    fn accept(&mut self, visitor: &mut dyn AstVisitor) -> Result<TypeDecl, TypeCheckError> {
+impl AcceptableStmt for Stmt {
+    fn accept_stmt(&mut self, visitor: &mut dyn StmtVisitor) -> Result<TypeDecl, TypeCheckError> {
         match self {
             Stmt::Expression(expr) => visitor.visit_expression_stmt(expr),
             Stmt::Var(name, type_decl, expr) => visitor.visit_var(*name, type_decl, expr),
@@ -75,13 +75,26 @@ impl Acceptable for Stmt {
             Stmt::While(label, cond, body) => visitor.visit_while(*label, cond, body),
             Stmt::Break(label) => visitor.visit_break(*label),
             Stmt::Continue(label) => visitor.visit_continue(*label),
+            // Declarations are dispatched through DeclVisitor, not StmtVisitor.
+            // They return Unit at the statement level.
+            Stmt::StructDecl { .. } |
+            Stmt::ImplBlock { .. } |
+            Stmt::EnumDecl { .. } |
+            Stmt::TraitDecl { .. } |
+            Stmt::TypeAlias { .. } => Ok(TypeDecl::Unit),
+        }
+    }
+}
+
+impl AcceptableDecl for Stmt {
+    fn accept_decl(&mut self, visitor: &mut dyn DeclVisitor) -> Result<TypeDecl, TypeCheckError> {
+        match self {
             Stmt::StructDecl { name, generic_params, generic_bounds, fields, visibility } => visitor.visit_struct_decl(*name, generic_params, generic_bounds, fields, visibility),
             Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => visitor.visit_impl_block_with_trait_args(*target_type, target_type_args, methods, *trait_name, trait_type_args),
             Stmt::EnumDecl { name, generic_params, variants, visibility } => visitor.visit_enum_decl(*name, generic_params, variants, visibility),
             Stmt::TraitDecl { name, generic_params, methods, visibility } => visitor.visit_trait_decl_with_generics(*name, generic_params, methods, visibility),
-            // Aliases were already substituted during parsing; nothing
-            // for the type checker to do here.
-            Stmt::TypeAlias { .. } => Ok(TypeDecl::Unit),
+            // Non-declaration statements are no-ops at the declaration level.
+            _ => Ok(TypeDecl::Unit),
         }
     }
 }
@@ -173,7 +186,7 @@ impl<'a> ProgramVisitor for TypeCheckerVisitor<'a> {
     }
 }
 
-impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
+impl<'a> ExprVisitor for TypeCheckerVisitor<'a> {
     // =========================================================================
     // Core Visitor Methods
     // =========================================================================
@@ -181,14 +194,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.visit_expr(expr)
     }
-
-    fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_stmt(stmt)
-    }
-
-    // =========================================================================
-    // Expression Type Checking
-    // =========================================================================
 
     fn visit_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         self.visit_unary(op, operand)
@@ -391,110 +396,6 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
     // Statement Type Checking
     // =========================================================================
 
-    fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_expression_stmt(expr)
-    }
-
-    fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_var_impl(name, type_decl, expr)
-    }
-
-    fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_val_impl(name, type_decl, expr)
-    }
-
-    fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_return(expr)
-    }
-
-    // =========================================================================
-    // Control Flow Type Checking
-    // =========================================================================
-
-    fn visit_for(&mut self, label: Option<DefaultSymbol>, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_for_impl(label, init, _cond, range, body)
-    }
-
-    fn visit_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_while_impl(label, cond, body)
-    }
-
-    fn visit_break(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_break_impl(label)
-    }
-
-    fn visit_continue(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_continue_impl(label)
-    }
-
-    // =========================================================================
-    // Struct Type Checking
-    // =========================================================================
-
-    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_struct_decl_impl(name, generic_params, generic_bounds, fields, visibility)
-    }
-
-    fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name)
-    }
-
-    fn visit_impl_block_with_trait_args(
-        &mut self,
-        target_type: DefaultSymbol,
-        target_type_args: &Vec<TypeDecl>,
-        methods: &Vec<Rc<MethodFunction>>,
-        trait_name: Option<DefaultSymbol>,
-        trait_type_args: &Vec<TypeDecl>,
-    ) -> Result<TypeDecl, TypeCheckError> {
-        // ITER-PROTOCOL-TRAIT: stash the trait_type_args in the
-        // context so `visit_impl_block_impl` (called below) can
-        // route through `check_trait_conformance_with_args` when
-        // it gets to the conformance step.
-        let prev = std::mem::take(&mut self.context.pending_trait_type_args);
-        self.context.pending_trait_type_args = trait_type_args.clone();
-        let r = self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name);
-        self.context.pending_trait_type_args = prev;
-        r
-    }
-
-    fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_trait_decl_impl(name, methods)
-    }
-
-    fn visit_trait_decl_with_generics(
-        &mut self,
-        name: DefaultSymbol,
-        generic_params: &Vec<DefaultSymbol>,
-        methods: &Vec<TraitMethodSignature>,
-        _visibility: &Visibility,
-    ) -> Result<TypeDecl, TypeCheckError> {
-        self.visit_trait_decl_with_generic_params(name, generic_params, methods)
-    }
-
-    fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
-        // Reject duplicate enum names and duplicate variant names inside one enum.
-        if self.context.enum_definitions.contains_key(&name) {
-            let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-            return Err(TypeCheckError::new(format!("enum '{}' is already defined", name_str)));
-        }
-        let mut seen = std::collections::HashSet::new();
-        for v in variants {
-            if !seen.insert(v.name) {
-                let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
-                let v_str = self.core.string_interner.resolve(v.name).unwrap_or("?").to_string();
-                return Err(TypeCheckError::new(format!(
-                    "duplicate variant '{}' in enum '{}'", v_str, enum_str
-                )));
-            }
-        }
-        self.context.enum_definitions.insert(name, variants.clone());
-        if !generic_params.is_empty() {
-            self.context.enum_generic_params.insert(name, generic_params.clone());
-        }
-        Ok(TypeDecl::Unit)
-    }
-
     fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<MatchArm>) -> Result<TypeDecl, TypeCheckError> {
         self.visit_match_impl(scrutinee, arms)
     }
@@ -691,6 +592,123 @@ impl<'a> AstVisitor for TypeCheckerVisitor<'a> {
         }
     }
 }
+impl<'a> StmtVisitor for TypeCheckerVisitor<'a> {
+    fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_stmt(stmt)
+    }
+
+    // =========================================================================
+    // Expression Type Checking
+    // =========================================================================
+
+    fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_expression_stmt(expr)
+    }
+
+    fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_var_impl(name, type_decl, expr)
+    }
+
+    fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_val_impl(name, type_decl, expr)
+    }
+
+    fn visit_return(&mut self, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_return(expr)
+    }
+
+    // =========================================================================
+    // Control Flow Type Checking
+    // =========================================================================
+
+    fn visit_for(&mut self, label: Option<DefaultSymbol>, init: DefaultSymbol, _cond: &ExprRef, range: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_for_impl(label, init, _cond, range, body)
+    }
+
+    fn visit_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_while_impl(label, cond, body)
+    }
+
+    fn visit_break(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_break_impl(label)
+    }
+
+    fn visit_continue(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_continue_impl(label)
+    }
+
+    // =========================================================================
+    // Struct Type Checking
+    // =========================================================================
+
+}
+impl<'a> DeclVisitor for TypeCheckerVisitor<'a> {
+    fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_struct_decl_impl(name, generic_params, generic_bounds, fields, visibility)
+    }
+
+    fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name)
+    }
+
+    fn visit_impl_block_with_trait_args(
+        &mut self,
+        target_type: DefaultSymbol,
+        target_type_args: &Vec<TypeDecl>,
+        methods: &Vec<Rc<MethodFunction>>,
+        trait_name: Option<DefaultSymbol>,
+        trait_type_args: &Vec<TypeDecl>,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        // ITER-PROTOCOL-TRAIT: stash the trait_type_args in the
+        // context so `visit_impl_block_impl` (called below) can
+        // route through `check_trait_conformance_with_args` when
+        // it gets to the conformance step.
+        let prev = std::mem::take(&mut self.context.pending_trait_type_args);
+        self.context.pending_trait_type_args = trait_type_args.clone();
+        let r = self.visit_impl_block_impl(target_type, target_type_args, methods, trait_name);
+        self.context.pending_trait_type_args = prev;
+        r
+    }
+
+    fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_trait_decl_impl(name, methods)
+    }
+
+    fn visit_trait_decl_with_generics(
+        &mut self,
+        name: DefaultSymbol,
+        generic_params: &Vec<DefaultSymbol>,
+        methods: &Vec<TraitMethodSignature>,
+        _visibility: &Visibility,
+    ) -> Result<TypeDecl, TypeCheckError> {
+        self.visit_trait_decl_with_generic_params(name, generic_params, methods)
+    }
+
+    fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, _visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
+        // Reject duplicate enum names and duplicate variant names inside one enum.
+        if self.context.enum_definitions.contains_key(&name) {
+            let name_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+            return Err(TypeCheckError::new(format!("enum '{}' is already defined", name_str)));
+        }
+        let mut seen = std::collections::HashSet::new();
+        for v in variants {
+            if !seen.insert(v.name) {
+                let enum_str = self.core.string_interner.resolve(name).unwrap_or("?").to_string();
+                let v_str = self.core.string_interner.resolve(v.name).unwrap_or("?").to_string();
+                return Err(TypeCheckError::new(format!(
+                    "duplicate variant '{}' in enum '{}'", v_str, enum_str
+                )));
+            }
+        }
+        self.context.enum_definitions.insert(name, variants.clone());
+        if !generic_params.is_empty() {
+            self.context.enum_generic_params.insert(name, generic_params.clone());
+        }
+        Ok(TypeDecl::Unit)
+    }
+
+}
+
 
 // Core trait implementations
 impl<'a> TypeCheckerCore<'a> for TypeCheckerVisitor<'a> {

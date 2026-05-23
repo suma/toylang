@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::type_decl::TypeDecl;
-use frontend::visitor::AstVisitor;
+use frontend::visitor::{AstVisitor, DeclVisitor};
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;

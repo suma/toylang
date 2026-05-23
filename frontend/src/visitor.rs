@@ -11,11 +11,10 @@ pub trait ProgramVisitor {
     fn visit_import(&mut self, import_decl: &ImportDecl) -> Result<(), TypeCheckError>;
 }
 
-pub trait AstVisitor {
+/// Trait for visiting expression AST nodes.
+pub trait ExprVisitor {
     fn visit_expr(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
-    fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError>;
 
-    // Expr variants
     fn visit_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_block(&mut self, statements: &Vec<StmtRef>) -> Result<TypeDecl, TypeCheckError>;
@@ -70,11 +69,7 @@ pub trait AstVisitor {
     fn visit_with(&mut self, allocator: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_match(&mut self, scrutinee: &ExprRef, arms: &Vec<MatchArm>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_range(&mut self, start: &ExprRef, end: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
-    /// `fn(params) -> Ret { body }` — closure / lambda literal. The
-    /// default implementation returns `TypeDecl::Unknown` so that
-    /// frontend-only Phase 1 lands without forcing every existing
-    /// visitor to implement it; the type checker overrides this in
-    /// Phase 2.
+    /// `fn(params) -> Ret { body }` — closure / lambda literal.
     fn visit_closure(
         &mut self,
         _params: &ParameterList,
@@ -83,16 +78,16 @@ pub trait AstVisitor {
     ) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unknown)
     }
-    /// `expr?` — postfix early-return operator. The type checker
-    /// rewrites this into a `match` (over `Result` or `Option`) before
-    /// any backend sees the AST, so no backend visitor needs to
-    /// implement this. The default impl returns Unknown for any
-    /// visitor that does not override (only the type checker does).
+    /// `expr?` — postfix early-return operator.
     fn visit_try(&mut self, _inner: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         Ok(TypeDecl::Unknown)
     }
+}
 
-    // Stmt variants
+/// Trait for visiting statement AST nodes.
+pub trait StmtVisitor {
+    fn visit_stmt(&mut self, stmt: &StmtRef) -> Result<TypeDecl, TypeCheckError>;
+
     fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_var(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &Option<ExprRef>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_val(&mut self, name: DefaultSymbol, type_decl: &Option<TypeDecl>, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
@@ -101,23 +96,27 @@ pub trait AstVisitor {
     fn visit_while(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError>;
     fn visit_break(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     fn visit_continue(&mut self, label: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
+}
+
+/// Trait for visiting declaration AST nodes (struct, impl, enum, trait).
+pub trait DeclVisitor {
     fn visit_struct_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, generic_bounds: &std::collections::HashMap<DefaultSymbol, TypeDecl>, fields: &Vec<StructField>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_impl_block(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>) -> Result<TypeDecl, TypeCheckError>;
     /// ITER-PROTOCOL-TRAIT: extended visit method that also receives
     /// concrete trait type args (`<i64>` in `impl Iterator<i64> for ...`).
-    /// Default impl forwards to `visit_impl_block` for backward compat
-    /// with non-generic-trait impls; the type checker overrides this
-    /// to substitute the trait's generic params before conformance check.
     fn visit_impl_block_with_trait_args(&mut self, target_type: DefaultSymbol, target_type_args: &Vec<TypeDecl>, methods: &Vec<Rc<MethodFunction>>, trait_name: Option<DefaultSymbol>, _trait_type_args: &Vec<TypeDecl>) -> Result<TypeDecl, TypeCheckError> {
         self.visit_impl_block(target_type, target_type_args, methods, trait_name)
     }
     fn visit_enum_decl(&mut self, name: DefaultSymbol, generic_params: &Vec<DefaultSymbol>, variants: &Vec<EnumVariantDef>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     fn visit_trait_decl(&mut self, name: DefaultSymbol, methods: &Vec<TraitMethodSignature>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError>;
     /// ITER-PROTOCOL-TRAIT: extended visit method with `generic_params`.
-    /// Default impl forwards to `visit_trait_decl`; the type checker
-    /// overrides to register the trait's generic params in the
-    /// trait registry.
     fn visit_trait_decl_with_generics(&mut self, name: DefaultSymbol, _generic_params: &Vec<DefaultSymbol>, methods: &Vec<TraitMethodSignature>, visibility: &Visibility) -> Result<TypeDecl, TypeCheckError> {
         self.visit_trait_decl(name, methods, visibility)
     }
 }
+
+/// Backward-compatible alias: `AstVisitor` = all three sub-traits.
+/// New code should prefer the per-category traits; existing
+/// `dyn AstVisitor` bounds continue to work through this blanket.
+pub trait AstVisitor: ExprVisitor + StmtVisitor + DeclVisitor {}
+impl<T> AstVisitor for T where T: ExprVisitor + StmtVisitor + DeclVisitor {}

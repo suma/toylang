@@ -4,7 +4,7 @@ mod tuple_tests {
     use crate::type_checker::*;
     use crate::type_checker::error::TypeCheckErrorKind;
     use crate::type_decl::*;
-    use crate::visitor::AstVisitor;
+    use crate::visitor::ExprVisitor;
     use string_interner::DefaultStringInterner;
     
     fn create_test_ast_builder() -> AstBuilder {

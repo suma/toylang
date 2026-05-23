@@ -1,8 +1,8 @@
 use std::rc::Rc;
 use string_interner::DefaultSymbol;
-use crate::type_checker::{Acceptable, TypeCheckError, SourceLocation};
+use crate::type_checker::{AcceptableExpr, TypeCheckError, SourceLocation};
 use crate::type_decl::TypeDecl;
-use crate::visitor::AstVisitor;
+use crate::visitor::ExprVisitor;
 use super::{
     Expr, Stmt, Operator, UnaryOp, SliceInfo, MatchArm, EnumVariantDef,
     BuiltinMethod, BuiltinFunction,
@@ -713,10 +713,10 @@ impl ExprPool {
         self.populate_expr_slot(index, expr);
     }
 
-    pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn AstVisitor)
+    pub fn accept_expr(&self, expr_ref: &ExprRef, visitor: &mut dyn ExprVisitor)
                        -> Result<TypeDecl, TypeCheckError> {
         match self.get(expr_ref) {
-            Some(mut expr) => expr.accept(visitor),
+            Some(mut expr) => expr.accept_expr(visitor),
             None => Err(TypeCheckError::new(format!("Expression not found: {:?}", expr_ref))),
         }
     }

@@ -3,7 +3,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    Acceptable, TypeInferenceManager
+    AcceptableExpr, AcceptableStmt, TypeInferenceManager
 };
 use crate::type_checker::generics::GenericTypeChecking;
 
@@ -74,7 +74,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             return self.desugar_try_expr(*expr, *inner);
         }
 
-        let result = expr_obj.clone().accept(self);
+        let result = expr_obj.clone().accept_expr(self);
         
         // Add location information to errors if not already present
         let result = match result {
@@ -107,7 +107,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let operand_ty = {
             let operand_obj = self.core.expr_pool.get(&operand)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid operand expression reference"))?;
-            operand_obj.clone().accept(self)?
+            operand_obj.clone().accept_expr(self)?
         };
 
         // REF-Stage-2: explicit `&expr` / `&mut expr` short-circuit
@@ -278,13 +278,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
-            lhs_obj.clone().accept(self)?
+            lhs_obj.clone().accept_expr(self)?
         };
 
         let rhs_ty = {
             let rhs_obj = self.core.expr_pool.get(&rhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
-            rhs_obj.clone().accept(self)?
+            rhs_obj.clone().accept_expr(self)?
         };
 
         // Resolve concrete types from generics / Number placeholders.
@@ -593,7 +593,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                         let e = e;
                         let expr_obj = self.core.expr_pool.get(&e)
                             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
-                        let ty = expr_obj.clone().accept(self)?;
+                        let ty = expr_obj.clone().accept_expr(self)?;
                         if last_empty {
                             last_empty = false;
                             Ok(ty)
@@ -613,7 +613,7 @@ impl<'a> TypeCheckerVisitor<'a> {
                 _ => {
                     let stmt_obj = self.core.stmt_pool.get(s)
                         .ok_or_else(|| TypeCheckError::generic_error("Invalid statement reference"))?;
-                    stmt_obj.clone().accept(self)
+                    stmt_obj.clone().accept_stmt(self)
                 }
             };
 
@@ -647,7 +647,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if !is_if_empty {
             let if_expr = self.core.expr_pool.get(&if_block)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid if block expression reference"))?;
-            let if_ty = if_expr.clone().accept(self)?;
+            let if_ty = if_expr.clone().accept_expr(self)?;
             block_types.push(if_ty);
         }
 
@@ -662,7 +662,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !is_elif_empty {
                 let elif_expr = self.core.expr_pool.get(&elif_block)
                     .ok_or_else(|| TypeCheckError::generic_error("Invalid elif block expression reference"))?;
-                let elif_ty = elif_expr.clone().accept(self)?;
+                let elif_ty = elif_expr.clone().accept_expr(self)?;
                 block_types.push(elif_ty);
             }
         }
@@ -677,7 +677,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if !is_else_empty {
             let else_expr = self.core.expr_pool.get(&else_block)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid else block expression reference"))?;
-            let else_ty = else_expr.clone().accept(self)?;
+            let else_ty = else_expr.clone().accept_expr(self)?;
             block_types.push(else_ty);
         }
 
@@ -711,13 +711,13 @@ impl<'a> TypeCheckerVisitor<'a> {
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;
-            lhs_obj.clone().accept(self)?
+            lhs_obj.clone().accept_expr(self)?
         };
         
         let rhs_ty = {
             let rhs_obj = self.core.expr_pool.get(&rhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid right-hand expression reference"))?;
-            rhs_obj.clone().accept(self)?
+            rhs_obj.clone().accept_expr(self)?
         };
         
         // Allow assignment compatibility. `is_equivalent` covers the

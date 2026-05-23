@@ -1,4 +1,5 @@
 pub mod ast;
+#[cfg(feature = "serde")]
 pub mod cache;
 pub mod type_decl;
 pub mod token;

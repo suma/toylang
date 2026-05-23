@@ -9,7 +9,7 @@ description = ""
 [dependencies]
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
-string-interner = "0.19.0"
+string-interner = "0.20.0"
 cranelift = { version = "0.131", optional = true }
 cranelift-jit = { version = "0.131", optional = true }
 cranelift-module = { version = "0.131", optional = true }
@@ -34,6 +34,7 @@ test-logging = ["debug-logging"]
 proptest = "1.11"
 criterion = { version = "0.8", features = ["html_reports"] }
 serial_test = "3.4"
+tempfile = "3.27"
 
 [[bench]]
 name = "interpreter_bench"

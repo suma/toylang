@@ -1309,11 +1309,38 @@ pub fn integrate_module_into_program_with_options_full(
     module_path: Option<Vec<DefaultSymbol>>,
     shadowed_stdlib_types: std::collections::HashSet<String>,
 ) -> Result<(), String> {
-    // Parse the module with its own interner.
+    // === Phase 4 fast path: try the on-disk Full AST cache ===
+    //
+    // Cache hit: deserialize `File` + `DefaultStringInterner` and feed
+    // them into the same `AstIntegrationContext::integrate()` the cold
+    // path uses. Cross-interner symbol translation goes through
+    // `remap_symbol`, which is interner-source-agnostic — the cached
+    // interner is interchangeable with `ParserWithInterner`'s in that
+    // role. Result: warm-cache and cold runs emit identical
+    // `main_program` state by construction.
+    let cache_dir = frontend::cache::default_cache_dir();
+    if !is_cache_disabled() {
+        if let Some(cached) = frontend::cache::load_full_module(source, &cache_dir) {
+            return integrate_cached_module(
+                cached,
+                main_program,
+                main_string_interner,
+                module_path,
+                shadowed_stdlib_types,
+            );
+        }
+    }
+
+    // === Slow path: parse + integrate, then save to cache ===
     let mut parser = frontend::ParserWithInterner::new(source);
     let module_program = parser
         .parse_program()
         .map_err(|e| format!("Parse error in module: {}", e))?;
+
+    // Snapshot the module-local interner before handing the mutable
+    // borrow to `AstIntegrationContext`. Phase 4 caches the snapshot
+    // alongside the parsed AST so warm starts can replay both.
+    let module_interner_snapshot = parser.get_string_interner().clone();
     let module_string_interner = parser.get_string_interner();
 
     let mut integration_context = AstIntegrationContext::new(
@@ -1340,5 +1367,54 @@ pub fn integrate_module_into_program_with_options_full(
             .function_module_paths
             .push(module_path.clone());
     }
+
+    if !is_cache_disabled() {
+        let cached = frontend::cache::CachedModule {
+            schema_version: frontend::cache::FULL_AST_CACHE_SCHEMA_VERSION,
+            interner: module_interner_snapshot,
+            file: module_program,
+        };
+        if let Err(e) = frontend::cache::save_full_module(source, &cached, &cache_dir) {
+            eprintln!("toylang: warning: failed to save module cache: {}", e);
+        }
+    }
+
     Ok(())
+}
+
+/// Phase 4 fast path: integrate a `CachedModule` deserialized from
+/// disk into `main_program`. Mirrors the slow path's tail but skips
+/// parsing.
+fn integrate_cached_module(
+    cached: frontend::cache::CachedModule,
+    main_program: &mut File,
+    main_string_interner: &mut DefaultStringInterner,
+    module_path: Option<Vec<DefaultSymbol>>,
+    shadowed_stdlib_types: std::collections::HashSet<String>,
+) -> Result<(), String> {
+    let mut integration_context = AstIntegrationContext::new(
+        main_program,
+        &cached.file,
+        main_string_interner,
+        &cached.interner,
+        shadowed_stdlib_types,
+    );
+    let integrated_functions = integration_context.integrate()?;
+    for function in integrated_functions {
+        main_program.function.push(function);
+        main_program
+            .function_module_paths
+            .push(module_path.clone());
+    }
+    Ok(())
+}
+
+/// `TOY_CACHE_DISABLE=<non-empty>` turns the Phase 4 warm-cache fast
+/// path off (cold parse, no save). Used by tests that need
+/// deterministic parse counts and as an escape hatch when a cache
+/// entry is suspected of being stale.
+fn is_cache_disabled() -> bool {
+    std::env::var("TOY_CACHE_DISABLE")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }

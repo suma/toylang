@@ -4,12 +4,14 @@ use crate::type_decl::TypeDecl;
 use super::{ExprRef, StmtRef, StructField, Visibility, MethodFunction, TraitMethodSignature, ParameterList};
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SliceType {
     SingleElement,    // a[index]
     RangeSlice,       // a[start..end], a[start..], a[..end], a[..]
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SliceInfo {
     pub start: Option<ExprRef>,
     pub end: Option<ExprRef>,
@@ -45,6 +47,7 @@ impl SliceInfo {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Stmt {
     Expression(ExprRef),
     Val(DefaultSymbol, Option<TypeDecl>, ExprRef),
@@ -144,6 +147,7 @@ pub struct EnumVariantDef {
 /// sub-patterns can themselves be any Pattern, enabling nested matches such
 /// as `Some(Some(x))` or `Some(Color::Red)`.
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Pattern {
     /// `Enum::Variant` for unit variants, or `Enum::Variant(p, q, r)` for
     /// tuple variants. The sub-pattern vector is empty for unit variants.
@@ -167,6 +171,7 @@ pub enum Pattern {
 /// guarded arms count as refutable for exhaustiveness regardless of
 /// pattern shape.
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<ExprRef>,
@@ -174,6 +179,7 @@ pub struct MatchArm {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Expr {
     Assign(ExprRef, ExprRef),   // lhs = rhs
     IfElifElse(ExprRef, ExprRef, Vec<(ExprRef, ExprRef)>, ExprRef), // if_cond, if_block, elif_pairs, else_block
@@ -270,6 +276,7 @@ impl Expr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinFunction {
     // Memory management
     HeapAlloc,    // __builtin_heap_alloc(size: u64) -> ptr
@@ -524,6 +531,7 @@ impl BuiltinFunctionSymbols {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BuiltinMethod {
     // Universal methods (available for all types)
     IsNull,       // any.is_null() -> bool
@@ -548,6 +556,7 @@ pub enum BuiltinMethod {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnaryOp {
     BitwiseNot,  // ~
     LogicalNot,  // !
@@ -562,6 +571,7 @@ pub enum UnaryOp {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Operator {
     IAdd,
     ISub,

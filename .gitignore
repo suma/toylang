@@ -8,6 +8,10 @@ interpreter/.idea
 interpreter/target
 interpreter/proptest-regressions
 
+# Incremental compilation cache (ModuleInterface + Full AST). Per-user
+# build artifact; safe to delete at any time.
+.toycache/
+
 # Claude Code per-session state (scheduled tasks lock, local settings).
 # Per-user config; should not be tracked.
 .claude/

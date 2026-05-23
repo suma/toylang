@@ -6,11 +6,25 @@ Enable toylang to avoid re-parsing and re-type-checking unchanged core
 modules on every compilation, reducing startup latency for programs that
 import the standard library.
 
-## Current State (Post Phase 1 & 2)
+## Current State (Post Phase 1-4)
 
 - `ModuleInterface` — pool-reference-free public surface of a module
 - `bincode` serialization / deserialization for `ModuleInterface`
 - Cache directory layout: `.toycache/<hash_prefix>/<source_hash>.interface`
+- **Phase 4 (2026-05-23): Full AST cache landed.** `CachedModule {
+  schema_version, interner, file }` is serialized to
+  `.toycache/<hash_prefix>/<source_hash>.full`. The fast path lives at
+  the entry of `integrate_module_into_program_with_options_full` —
+  cache hit deserializes a `File` + module-local
+  `DefaultStringInterner` and feeds them into the same
+  `AstIntegrationContext::integrate()` the cold path uses, so
+  cross-interner symbol translation flows through the existing
+  `remap_symbol`. `TOY_CACHE_DISABLE=1` skips both load and save.
+- Bincode uses `with_varint_encoding()` (mandatory) — `string_interner
+  0.20`'s `SymbolU32` has asymmetric serde (writes `usize`, reads
+  `u32`); varint encoding produces the same byte sequence for both
+  widths and dodges the misalignment.
+- Measured speedup on `fib.t`: warm 0.01s vs cold 0.04s (~4x).
 
 ## Remaining Work for Full Incremental Compilation
 

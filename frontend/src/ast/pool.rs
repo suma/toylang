@@ -10,6 +10,7 @@ use super::{
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExprRef(pub u32);
 
 impl ExprRef {
@@ -19,6 +20,7 @@ impl ExprRef {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StmtRef(pub u32);
 
 impl StmtRef {
@@ -28,6 +30,7 @@ impl StmtRef {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExprType {
     Assign = 0,
     IfElifElse = 1,
@@ -82,6 +85,7 @@ pub enum ExprType {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum StmtType {
     Expression = 0,
     Val = 1,
@@ -99,6 +103,7 @@ pub enum StmtType {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExprPool {
     // Multiarray list - each field has its own Vec
     // Expression type discriminant
@@ -718,6 +723,7 @@ impl ExprPool {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StmtPool {
     // Multiarray list - each field has its own Vec
     // Statement type discriminant
@@ -1099,6 +1105,7 @@ impl StmtPool {
 
 /// Location information storage for AST nodes
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocationPool {
     pub expr_locations: Vec<Option<SourceLocation>>,
     pub stmt_locations: Vec<Option<SourceLocation>>,

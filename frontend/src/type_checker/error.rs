@@ -1,6 +1,7 @@
 use crate::type_decl::TypeDecl;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SourceLocation {
     pub line: u32,
     pub column: u32,

@@ -6,6 +6,7 @@ use crate::type_checker::SourceLocation;
 use super::{StmtRef, ExprRef, StmtPool, ExprPool, LocationPool, Expr};
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct File {
     pub node: Node,
     pub package_decl: Option<PackageDecl>,
@@ -36,6 +37,7 @@ pub struct File {
 /// expression lives in the same `ExprPool` as everything else; the
 /// interpreter evaluates it once at startup with no parameters in scope.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConstDecl {
     pub node: Node,
     pub name: DefaultSymbol,
@@ -55,6 +57,7 @@ impl File {
 }
 
 #[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Function {
     pub node: Node,
     pub name: DefaultSymbol,
@@ -108,6 +111,7 @@ pub enum Visibility {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImplBlock {
     pub target_type: String,
     pub methods: Vec<Rc<MethodFunction>>,
@@ -122,6 +126,7 @@ pub struct ImplBlock {
 /// non-body portion of `MethodFunction` so registering a trait impl as an
 /// inherent method is straightforward.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TraitMethodSignature {
     pub node: Node,
     pub name: DefaultSymbol,
@@ -148,6 +153,7 @@ pub struct TraitMethodSignature {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MethodFunction {
     pub node: Node,
     pub name: DefaultSymbol,

@@ -10,7 +10,39 @@
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+use bincode::Options;
+use string_interner::DefaultStringInterner;
+
+use crate::ast::File;
 use crate::ast::module_interface::ModuleInterface;
+
+/// Schema version for the on-disk Full AST cache (`.full` files).
+///
+/// Bump on any breaking change to:
+/// - the layout of `File`, `ExprPool`, `StmtPool`, `LocationPool`
+/// - the `Expr` / `Stmt` / `Pattern` / `MatchArm` enums
+/// - the `Function` / `MethodFunction` / `ConstDecl` structs
+/// - the bincode options used by [`cache_bincode_options`]
+///
+/// Mismatched versions are treated as a cache miss by
+/// [`load_full_module`].
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 1;
+
+/// Bincode options for the AST cache.
+///
+/// **Varint encoding is mandatory** because `string_interner::SymbolU32`
+/// has asymmetric `Serialize` / `Deserialize` impls (writes a `usize`,
+/// reads a `u32`). Under fixed-width encoding the byte stream
+/// misaligns at every symbol; varint encoding produces an identical
+/// byte sequence for small values regardless of the source integer
+/// width, dodging the asymmetry. See `string-interner` 0.20.0
+/// `src/serde_impl.rs::impl_serde_for_symbol`.
+///
+/// Both the `ModuleInterface` cache and the Full AST cache use the
+/// same options so their on-disk encodings stay consistent.
+fn cache_bincode_options() -> impl Options {
+    bincode::DefaultOptions::new().with_varint_encoding()
+}
 
 /// Compute a simple hash of a source string.
 fn source_hash(source: &str) -> String {
@@ -44,7 +76,7 @@ pub fn load_interface(source: &str, cache_dir: &std::path::Path) -> Option<Modul
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).ok()?;
 
-    bincode::deserialize(&bytes).ok()
+    cache_bincode_options().deserialize(&bytes).ok()
 }
 
 /// Save a `ModuleInterface` to the cache for the given source.
@@ -62,7 +94,76 @@ pub fn save_interface(
     std::fs::create_dir_all(&dir)?;
 
     let path = dir.join(format!("{}.interface", hash));
-    let bytes = bincode::serialize(interface)
+    let bytes = cache_bincode_options()
+        .serialize(interface)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+    let mut file = std::fs::File::create(&path)?;
+    file.write_all(&bytes)?;
+    Ok(())
+}
+
+// --- Full AST cache -----------------------------------------------
+
+/// A parsed module's AST paired with the `DefaultStringInterner`
+/// that minted its symbols.
+///
+/// The interner is essential: every `DefaultSymbol` in the `File`
+/// belongs to that interner's id space and resolves to its strings.
+/// On load, downstream code (e.g. `AstIntegrationContext`) translates
+/// each symbol into the main interner via `resolve + get_or_intern`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CachedModule {
+    /// Schema fingerprint — see [`FULL_AST_CACHE_SCHEMA_VERSION`].
+    /// Stored first so [`load_full_module`] can reject mismatches
+    /// before walking any further fields.
+    pub schema_version: u32,
+    pub interner: DefaultStringInterner,
+    pub file: File,
+}
+
+/// Load a cached `CachedModule` for the given source.
+///
+/// Returns `None` if no cache entry exists, the file is corrupt,
+/// or the on-disk schema version does not match
+/// [`FULL_AST_CACHE_SCHEMA_VERSION`]. Both deserialization failure
+/// and version mismatch are silent — they degrade to a cache miss
+/// so the caller can fall back to a normal parse.
+pub fn load_full_module(source: &str, cache_dir: &std::path::Path) -> Option<CachedModule> {
+    let hash = source_hash(source);
+    let prefix = &hash[..2];
+    let path = cache_dir.join(prefix).join(format!("{}.full", hash));
+
+    let mut file = std::fs::File::open(&path).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+
+    let cached: CachedModule = cache_bincode_options().deserialize(&bytes).ok()?;
+    if cached.schema_version != FULL_AST_CACHE_SCHEMA_VERSION {
+        return None;
+    }
+    Some(cached)
+}
+
+/// Save a `CachedModule` to the cache for the given source.
+///
+/// Creates parent directories as needed. Overwrites any existing
+/// entry for the same source hash. Callers should treat I/O
+/// failure as non-fatal: the warm-cache fast path is a
+/// best-effort optimization.
+pub fn save_full_module(
+    source: &str,
+    cached: &CachedModule,
+    cache_dir: &std::path::Path,
+) -> std::io::Result<()> {
+    let hash = source_hash(source);
+    let prefix = &hash[..2];
+    let dir = cache_dir.join(prefix);
+    std::fs::create_dir_all(&dir)?;
+
+    let path = dir.join(format!("{}.full", hash));
+    let bytes = cache_bincode_options()
+        .serialize(cached)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     let mut file = std::fs::File::create(&path)?;

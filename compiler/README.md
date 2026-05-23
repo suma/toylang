@@ -1,245 +1,108 @@
 # compiler
 
-AOT コンパイラ。toylang のソースから native の実行可能バイナリを生成する。
-
-## ステータス
-
-MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (34 件) + `compiler/tests/e2e_batched.rs` (12 件、巨大プログラムにケース ID dispatch をまとめたバッチ版) + `compiler/tests/consistency.rs` (178 件、interpreter / JIT / AOT 3 経路一致) + `compiler/tests/jit_smoke.rs` (15 件) が緑のものはすべて使える。
-
-サポート:
-
-- 型: `i64`, `u64`, `f64`, `bool`, `Unit`、`u8` / `u16` / `u32` / `i8` / `i16` / `i32` (NUM-W、narrow integer)、`str`、`ptr`、`Allocator`、`Self`、scalar / compound フィールドの struct、scalar / compound 要素の tuple、enum (unit / tuple variant)、配列 `[T; N]`
-- 式: リテラル、算術 (`+ - * / %`)、比較 (`== != < <= > >=`)、短絡論理 (`&& ||`)、ビット演算 (`& | ^ ~ << >>`)、unary (`- ! ~`)、char literal (`'A'` / `'\n'` / `'\xHH'` / `'\u{HEX}'` — すべて `u32` 値)、string literal escape (`"line1\nline2"` / `"\xHH"` / `"\u{HEX}"`)
-- 文: `val` / `var`（型注釈あり）、代入、`if`/`elif`/`else`、`while`、`for ... in start..end`、`break` / `continue`、`return`、`type Name = TargetType` / `type Pair<T> = Box<T>` (型エイリアス、cross-module / forward-reference / generic alias chain すべて対応)
-- 同一プログラム内の関数呼び出し（`main` のみ C ABI でエクスポート、それ以外は `toy_<name>` プレフィックス）
-- **ジェネリック関数 (Phase L)**: `fn id<T>(x: T) -> T { x }` を宣言可能。各呼び出しサイトで型引数を引数の型から推論し、`(template_name, type_args)` ごとに新しい IR Function を monomorphise。`fn unwrap_or<T>(o: Option<T>, default: T) -> T` のようにジェネリック enum / struct と組み合わせ可、ジェネリック関数からジェネリック関数を呼ぶチェーンも自動展開（pending work queue で処理）
-- **`as` キャスト**: `i64 ↔ u64`（identity）、`{i64, u64} ↔ f64`（cranelift の `fcvt_*_sat` で truncating saturation）。bool との cast や Unit との cast は不可
-- **`f64`**: 算術（`+ - * /`）、比較、unary `-`。`%` (mod) は cranelift に native fmod が無いため reject。print 用ヘルパー (`toy_print_f64` / `toy_println_f64`) は `%g` か `%.1f` で出力
-- **`panic("literal")` / `assert(cond, "literal")`**: メッセージは文字列リテラル限定。`puts` + `exit(1)` で実装
-- **`print(x)` / `println(x)`**: `i64` / `u64` / `f64` / `bool` / 文字列リテラル / **struct binding / tuple binding / enum binding** / **(Phase P 以降) struct / tuple / enum のリテラル直接** を受け取る。compound 値は表記 (`Point { x: 3, y: 4 }`、`(3, 4)`、1-tuple は `(x,)`、`Color::Red`、`Shape::Circle(5)`、`Shape::Rect(3, 7)`) に展開される。**ジェネリック instantiation は型引数も表示** (`Y<i64> { b: 2 }`、`Cell<u64> { data: 7 }`、`Option<i64>::Some(5)`、`Option<Option<i64>>::Some(Option<i64>::Some(7))`) — interpreter は型引数を落として表示するため、ジェネリック型では出力が異なる (interpreter は `Y { b: 2 }`)。struct のフィールドはアルファベット順にソート、enum はランタイムで tag を見て該当 variant の表示パスを brif chain で選ぶ（`n - 1` 個の比較、最後の variant は無条件 fallthrough）。ネストした struct も再帰的に整形。リテラル直接の場合は scratch binding を allocate してから既存の `emit_print_*` ヘルパに routed。実体は `compiler/runtime/toylang_rt.c` の `toy_print_*` / `toy_println_*` ヘルパー経由で stdout に出力（driver が `cc` で同時にコンパイル＋リンク）。**制約**: struct/tuple-returning call の結果や generic struct/enum リテラル（型引数推論手段が無い）は依然 `val` で受ける必要がある
-- **struct**: `struct Name { field: Type, ... }` 宣言、`Name { field: value, ... }` リテラル、`obj.field` 読み取り、`obj.field = value` 書き込み、**関数引数として struct 値を渡せる**、**関数戻り値として struct 値を返せる**（codegen が境界で per-field cranelift param / multi-return に展開）、**ジェネリック struct (Phase K)** をサポート (`struct Cell<T> { data: T }`、`val c: Cell<u64> = ...`、`fn make() -> Cell<u64> { ... }`、`Cell<u64>` と `Cell<i64>` は別の `StructId` として独立)。**制約**: フィールドは scalar (i64/u64/f64/bool) または別 struct のみ、struct binding 全体の再代入は不可、struct-returning call を式位置で使えない（必ず `val` で受ける）、ジェネリック struct リテラルの単独構築 (`Cell { data: ... }`) は型注釈必須
-- **tuple**: `(a, b, c)` リテラル、`t.0` / `t.1` 要素アクセス、`t.N = value` 要素書き込み、`val (a, b) = (x, y)` 分解（パーサが desugar）、**関数引数 / 戻り値として tuple 値を渡せる**（codegen が境界で per-element cranelift param / multi-return に展開）、`val (a, b) = make_pair()` 形式の tuple-returning call も動作。**制約**: scalar 要素のみ、ネストした tuple は未対応、tuple-returning call は式位置で使えない（必ず `val` で受ける）
-- **トップレベル `const`**: `const NAME: Type = expr` を定義、起動時の値（リテラル / 既存 const 参照 / 単純な算術 fold）として利用可能。複雑な初期化式や文字列定数は未対応
-- **DbC (`requires` / `ensures`)**: 関数の事前 / 事後条件を実行時にチェック。違反時は `panic: requires violation` / `panic: ensures violation` で停止。`ensures` 内の `result` は scalar 戻り値にのみ bind される（struct 戻り値は最初の field を bind）。`--release` フラグで全 contract チェックを skip
-- **ネストした struct**: struct のフィールドが別の struct でも可。`a.b.c` のような chain access、`outer.inner.x = v` のような chain assignment、`Outer { inner: Inner { x: 1 } }` の入れ子リテラルがすべて動作。関数引数として渡せば codegen が leaf scalar まで再帰展開
-- **compound-returning method を val/var rhs に (Phase W)**: `val q = p.swap()` のように struct / tuple / enum を返す method 呼び出しを val/var rhs として直接受理。`lower_let` に MethodCall + compound return パスを追加し、新ヘルパ `resolve_method_target` で receiver と method (inherent / generic 両方) を解決、`CallStruct` / `CallTuple` / `CallEnum` で multi-result call を emit して binding に入れる。これで Phase R / R3 で残っていた compound 戻り値の制限が val rhs では解消
-- **compound-returning call の直接 print (Phase U)**: `println(make_point())` / `println(p.doubled())` のように、struct / tuple / enum を返す関数 / メソッド呼び出しを print 引数として直接書ける。print path は callee の戻り型に応じて scratch binding を allocate し、`CallStruct` / `CallTuple` / `CallEnum` で受けてから既存の `emit_print_*` ヘルパに routed
-- **str 値 (Phase T + STR-PTR-LEN)**: `str` を val/var、関数引数 / 戻り値、struct field、tuple element に持てる。`Type::Str` は cranelift `i64` 1 個分のポインタで、runtime 表現は `.rodata` 上の **u64 len フィールド**へのアドレス (詳細は [str runtime layout](#str-runtime-layout-stage-t--str-ptr-len) を参照)。`s.as_ptr()` で byte ポインタ、`s.len()` で O(1) byte 長が取れる。`println(s)` は `value_ty == Type::Str` で `toy_println_str` に dispatch。**制約**: 文字列同士の連結 / 比較などのメソッドは未対応 (interpreter 側のみ)
-- **配列要素に tuple (Phase Y3)**: `[(1, 2), (3, 4)]` 形式の tuple 要素も struct と同じ leaf-index addressing で動作。`val t: (i64, i64) = arr[i]` は新しい `Binding::Tuple` を allocate して各 leaf を ArrayLoad で読む。runtime index も対応
-- **配列の compound 要素 + range slicing (Phase Y2)**: 要素に struct (`[Point { ... }, Point { ... }]`) を許可。スライドは leaf-index addressing で扱い、各要素は `leaf_count` 個の連続する 8 バイトスロットを占有。`val p: Point = arr[i]` は新しい `Binding::Struct` を allocate し、各 leaf を ArrayLoad で読んで対応する local に store。`arr[start..end]` (両端 const) は新規 ArraySlot を確保して各 leaf を ArrayLoad+ArrayStore でコピー。**制約**: tuple / enum 要素は未対応、range slicing は const bound のみ
-- **配列 (Phase S + Y)**: `[a, b, c]` リテラルと `arr[idx]` の read / write をサポート。`Binding::Array` が `ArraySlotId` を保持し、IR の `ArrayLoad` / `ArrayStore` で `(slot, index, elem_ty)` を渡す。codegen は per-IR-slot で cranelift `StackSlot` (length × stride バイト、現状 stride は 8 バイト固定) を確保、index は `iadd(stack_addr, idx * stride)` + `load`/`store`。const index も runtime index も同一の IR 命令で扱われる (cranelift の最適化で const index は折りたたまれる)。print 出力は `[1, 2, 3]` 形式 (interpreter 一致)。**制約**: 要素は scalar (i64/u64/f64/bool) のみ、range slicing は未対応
-- **method-only generic params (Phase X)**: `impl Box { fn pick<U>(self, a: U, b: U) -> U }` のように impl の generic params とは独立した method 自身の generic params を許可。frontend parser が `<U>` を実際に parse、type-checker が arg type から U を substitute、compiler は `instantiate_generic_method_with_args` で receiver の type_args (impl-level) と call args の型 (method-only) の両方から subst を組み立ててモノモル化
-- **method dispatch (Phase R)**: `impl <Type> { ... }` の inherent method、`impl <Trait> for <Type>` の trait conformance method、`fn f<T: Trait>(x: T) { x.method() }` の bound 経由 generic 呼び出しすべて対応。impl ブロックを pre-scan して `(target_struct_symbol, method_name) → MethodFunction` の registry を構築、各メソッドを mangled name `toy_<Type>__<method>` で declare。`Self` は impl 対象に substitute。call site は receiver 識別子を struct/enum binding に解決し、`(target, method)` で `FuncId` を引いて receiver の leaf scalar 列を call args の先頭に prepend。Phase L (generic monomorphisation) と組み合わせることで trait dispatch も静的に解決される (vtable 不要)。**Phase R3** で `impl<T> Cell<T> { fn get(self: Self) -> T }` のような generic method も lazy monomorphisation 対応 (call site で receiver の type_args から impl の generic param を bind して fresh `FuncId` を declare、queue で body lowering)。**制約**: dynamic `dyn Trait` は未対応
-- **extension trait over primitives (Step A〜F)**: `impl <Trait> for i64 / f64 / u64 / bool / str / ptr` をユーザが書ける。`primitive_type_decl_for_target_sym` ヘルパで `Self` を対応する primitive `TypeDecl` に解決、`lower_method_call` の冒頭に `value_scalar` driven の primitive-receiver dispatch arm を追加 (struct path より先に走るので chained call `x.abs().abs()` も lower 可能)。impl method は `toy_<TypeName>__<method>` (例: `toy_i64__neg`、`toy_f64__abs`) として declare。stdlib の `i64.abs()` / `f64.abs()` / `f64.sqrt()` も `core/std/{i64,f64}.t` の extension trait impl として配信、`BuiltinMethod::{I64Abs, F64Abs, F64Sqrt}` の hardcoded fast path は削除済み
-- **`extern fn` 宣言 (Math externalisation Phase 1〜4)**: `extern fn name(params) -> ret` で signature だけ宣言、body は backend が提供。Compiler は `lower/program.rs::libm_import_name_for` で `__extern_sin_f64` → `sin` 等を libm symbol 名にマップし、IR の `Linkage::Import` で declare、`build_object_module` / `emit_clif_text` は body 定義を skip。リンカが libm から解決。math intrinsic (sin/cos/tan/log/log2/exp/floor/ceil/sqrt/abs/pow) はすべてこの仕組み経由で interpreter / JIT と対称。`extern fn name<T>(x: T) -> T` のように generic params も parser で受理されるが、AOT 側は per-instance シンボル名を持たないため未対応 (interpreter のみ動作)
-- **core modules auto-load**: `<repo>/core/` 配下を起動時に再帰 integrate (詳細は上記 *core modules*)。`compile_file` が `interpreter::check_typing_with_core_modules` 経由で frontend に core dir を forward、AOT 経路でも `math::sin(x)` 等が import 行なしで呼べる
-- **stdlib Option / Result (#96)**: `core/std/option.t` の `enum Option<T> { None, Some(T) }` + `impl<T> Option<T>` (is_some / is_none / unwrap_or / expect)、`core/std/result.t` の `enum Result<T, E> { Ok(T), Err(E) }` + `impl<T, E> Result<T, E>` (is_ok / is_err / unwrap_or / expect) が auto-load 経由で利用可能。enum receiver method は `instantiate_generic_method_with_self_type` + `peek_method_return_type_with_self` で struct receiver と同じ monomorph パイプラインを通る。ユーザが同名の enum / struct を inline 宣言した場合は module integration が silent skip するので衝突しない (ユーザ版が優先)
-- **per-module function namespacing (#193 / #193b)**: IR の `function_index` を `(Option<DefaultSymbol> qualifier, DefaultSymbol name)` キー化。qualifier は originating module の dotted path の **last segment** (`Some("math")` for `core/std/math.t`) または `None` (user-authored)。`Module::lookup_function(qualifier, name)` がバレ呼び (None 優先 + 一意な (Some(_), name) fallback) と qualified call (Some(m), name 直接) を統一処理。`declare_function_with_module` は collision を panic で表面化 (silent overwrite を不可能に)。同一プログラム内で複数モジュールが同名 `pub fn` を持っても安全に共存し、export name も `toy_<qualifier>__<name>` で mangle されるので cranelift の declare 衝突も発生しない
-- **struct field / tuple element に compound 型 (Phase Q1 + Q2)**: `struct Outer { inner: (i64, i64) }` の struct-of-tuple、`((a, b), c)` の nested tuple、`(Point, i64)` の tuple-of-struct がすべて動作。`FieldShape::Tuple` と `TupleElementShape::{Scalar, Struct, Tuple}` が再帰的な shape を表現し、`outer.inner.0` / `t.0.1` / `t.0.x` などの chain access が `resolve_field_chain` と `resolve_tuple_chain_elements` で walk される。print 出力は `Outer { inner: (3, 7) }` / `((3, 4), 5)` / `(Point { x: 1, y: 2 }, 3)` のように再帰整形。関数 param / return も `flatten_tuple_element_locals` 経由で leaf scalar まで再帰展開し boundary 通過可
-- **enum + match (Phase A1 + A2)**: 非ジェネリックな `enum E { Unit, Tuple(i64, u64), ... }` 宣言、`E::Unit` / `E::Tuple(args)` 構築、`match` で variant 分岐。各 variant の payload は `i64` / `u64` / `f64` / `bool` / 別 enum / struct / tuple を受理。
-  - **トップレベルパターン**: `Enum::Variant(...)` / `Wildcard (_)` / `Literal(...)`（scalar scrutinee に対してのみ）
-  - **scrutinee**: enum binding に加え、scalar 値を返す任意の式（`match n { 0u64 => ..., _ => ... }` のように integer / bool 直接 match 可能）
-  - **variant サブパターン**: `Name(sym)` で payload を fresh scalar local に bind、`_` で discard、`Literal` で payload にリテラル等価チェック追加（`Shape::Circle(0i64) => ...` のように）
-  - **guard**: `Pat if cond => body` をサポート。bindings は guard 評価時にスコープ内
-  - **関数境界 (Phase B + E)**: enum を関数引数 / 戻り値の双方で受け取り / 返せる（`fn area(s: Shape) -> i64`、`fn make() -> Shape { ... }`）。codegen が `[tag, variant0_payload..., variant1_payload..., ...]` の canonical 順で per-slot cranelift param / 多値 Return に展開し、caller / callee の per-variant payload locals が同順で allocate されるので boundary が一致。enum 戻り型の関数 body は tail が if-chain / match / 単一の `Enum::Variant(args)` 構築 / 既存 enum binding の identifier いずれでも OK（`lower_body` が target locals を pre-allocate して `lower_into_enum_target` 経由で書き込む）。frontend type-checker の return-type 比較も `Identifier <-> Enum(name, [])` および `Struct(name, args) <-> Enum(name, args)` を unify するよう拡張済み
-  - **ジェネリック enum (Phase F + G)**: `enum Option<T> { None, Some(T) }` を宣言可能。各使用サイト（型注釈、関数引数 / 戻り値、`val x: Option<i64> = ...`）で型引数を取り出してモノモル化（`(base_name, type_args) → EnumId` の dedup）。型引数は (1) val/var の型注釈、(2) 関数 param / return 型から決定、(3) `Option::Some(42i64)` のように tuple variant の引数型から推論（型注釈なしのケース）。`Option<i64>` と `Option<u64>` は別の `EnumId` として管理されるので衝突しない。**ネストしたジェネリック** (`Option<Option<i64>>`) もサポート。**制約**: `f64` は引き続き payload 不可、ジェネリックパラメータは i64/u64/bool/別 enum に解決されるもののみ
-  - **ネストした enum payload + サブパターン (Phase G)**: enum payload に enum を許容（`enum Box<T> { Put(T) }` で `Box<Box<u64>>` も可）。`val x: Option<Option<i64>> = Option::Some(Option::Some(42i64))` の構築、`match x { Option::Some(Option::Some(v)) => ... }` のネストパターン、`println(x)` の再帰的出力すべて動作。`EnumStorage` は `PayloadSlot::Scalar { local, ty }` または `PayloadSlot::Enum(Box<EnumStorage>)` を持つ recursive 構造で、function boundary flatten / load / copy / dispatch すべて再帰
-  - **`print` / `println`**: enum binding（`val` / `var` 由来 または関数引数）を受け取って interpreter と同形式に出力（unit variant: `Color::Red`、tuple variant: `Shape::Circle(5)` / `Shape::Rect(3, 7)`）。runtime tag dispatch で variant ごとの分岐を brif chain で生成。enum リテラル直接（`println(Enum::Variant(args))`）は不可、`val` で受ける必要あり
-  - **enum 構築を `if` / `match` 等の式位置で (Phase D)**: `val s = if cond { Pick::A(n) } elif ... { Pick::B } else { Pick::C(m) }` や `val s = match n { 0u64 => Pick::Zero, _ => Pick::Big(n) }` のように、複数分岐の各 tail で enum を構築するパターンを受理。`detect_enum_result` で全分岐が同じ enum を返すか静的に判定し、`lower_into_enum_target` 経由で各分岐が同じ tag/payload locals に書き込む（cranelift の `def_var` walk で merge 時に SSA 化）。ネストした if-chain、`match` arm の guard、blocks (`{ stmt; tail }`) も再帰で動作。tail 位置で既存の enum binding identifier を返すケースも copy 経路で動作
-  - **enum 再代入 (Phase I)**: `var p = Pick::A(5u64); p = Pick::B; p = Pick::C(7u64)` のように enum binding 全体の再代入が可能（既存の tag/payload locals に書き込む、cranelift の def_var が再 binding 担当）
-  - **tuple payload (Phase O)**: `enum Pair { Both((i64, i64)), None }` のように tuple 値を payload に取れる。`PayloadSlot::Tuple { tuple_id, elements }` で per-element local を保持し、`emit_print_tuple` 経由で `Pair::Both((3, 4))` のように出力。`Option<(i64, i64)>` のような generic 経由も `substitute_payload_type` の Tuple アームで処理。要素は scalar (i64/u64/f64/bool) のみ
-  - **str payload**: `Result<u64, str>::Err("boom")` のように `str` 値を payload に取れる。Phase T の opaque-pointer 表現 (`Type::Str = i64-sized`) をそのまま再利用、`flatten_struct_to_cranelift_tys` の enum アームと `allocate_payload_slot` の default scalar branch がカバー。`is_supported_enum_payload` の allow-list に `Type::Str` を追加するだけで全機能 (val/var binding, match, method dispatch) が通る
-  - **制約**: tuple 要素にネストした compound (struct / 別 tuple / enum) は不可
-  - **スコープ**: 全 arm の body は同じ scalar 型を返す必要あり
-
-**注意**: `panic` / `print` / `println` は stdout に出力する（interpreter / JIT は `panic` を stderr に出力する点が既知の挙動差）
-
-未対応（明確なエラーで reject される）:
-
-- (廃止) 任意の文字列値 — **Phase T 以降**: `str` 型を val/var、関数引数 / 戻り値、struct field に渡せる
-- (廃止) 文字列操作 — `core/std/string.t::type String = Vec<u8>` + `impl Vec<u8> { from_str / eq / push_str / push_char / extend_bytes }` で `String` (= `Vec<u8>`) ベースの操作が全 backend で動作
-- dict はインタープリタ専用 (`core/std/dict.t::Dict<K, V>` は AOT で動かないため 3-way テストから除外)
-- 配列要素に enum、range slicing で variable bound — リテラル `[a, b, c]`、const/runtime index、struct/tuple 要素、const-bound range slicing は **Phase S/Y/Y2/Y3 以降対応**
-- (廃止) trait — **Phase R 以降**: inherent method, `impl <Trait> for <Type>` 経由のメソッド呼び出し、`<T: Greet>` bound 経由の generic method 呼び出しすべて対応 (monomorphisation 経由)。`dyn Trait` の動的 dispatch は対象外
-- (廃止) allocator — `with allocator = ...` の lexical scope、`__builtin_heap_alloc/realloc/free/ptr_read/ptr_write/mem_copy` builtins、stdlib `Arena::new()` / `FixedBuffer::new(cap)` wrapper struct (`core/std/allocator.t`) すべて 3-way 動作。Arena / FixedBuffer の policy (no-op free / quota / bulk-free on reset) は toylang stdlib 側で実装され、底に default allocator が居る。runtime arena/fixed_buffer 専用 builtin (`__builtin_arena_allocator` / `__builtin_fixed_buffer_allocator(cap)` / `__builtin_arena_drop` / `__builtin_fixed_buffer_drop`) と registry は撤去済み — wrapper struct を介した named-binding / inline-temporary 両方が user-Drop 経由で auto-cleanup
-- (廃止) generics（→ struct / enum / 関数とも対応済）
-- (廃止) 関数戻り値 / メソッド戻り値の compound 値を直接 `print` / `println` する — **Phase U 以降**: `println(make_point())` / `println(p.doubled())` のように直接呼べる
-- struct / tuple binding 全体の再代入
-- (廃止) ネストした tuple 要素 / tuple-of-struct / struct-of-tuple — **Phase Q 以降すべて対応**
-- 文字列 const、複雑な const 初期化式（リテラル / 単純算術 fold のみ）
-- `ensures` 内で struct field を個別に参照する
-- ネストしたフィールド全体への代入（`p.inner = Inner { ... }` 不可、leaf scalar への代入は可）
-- `f64` の `%` (mod) — cranelift に native fmod が無い
-- bool との `as` キャスト、Unit との `as` キャスト
-- narrow int (u8/u16/u32/i8/i16/i32) ↔ f64 の `as` キャスト (中間 widen 経路が未実装)
+toylang の AOT コンパイラ。`.t` ソースから cranelift 経由で native 実行
+ファイルを生成する。
 
 ## 使い方
 
 ```bash
-# 実行ファイルを生成
 cargo run -p compiler -- input.t -o output
-
-# DbC チェックを無効化（`INTERPRETER_CONTRACTS=off` 相当）
-cargo run -p compiler -- input.t --release -o output
-
-# .o だけ生成
-cargo run -p compiler -- input.t --emit=obj -o input.o
-
-# Cranelift IR をテキストで dump
-cargo run -p compiler -- input.t --emit=clif -o input.clif
-
-# 中間 IR をテキストで dump
-cargo run -p compiler -- input.t --emit=ir -o input.ir
-
-# core modules ディレクトリを指定
-cargo run -p compiler -- input.t --core-modules /path/to/my-core -o output
-
-# 進行ログ
-cargo run -p compiler -- input.t -v -o output
+./output; echo $?
 ```
+
+`main` の戻り値 (`u64` / `i64`) がプロセス終了コードになる。POSIX シェル
+は下位 8 bit に切り詰めるので 256 以上は wrap する。
 
 ### CLI フラグ
 
 | フラグ | 意味 |
 |---|---|
-| `<file>` | 入力ソース。必須。 |
-| `-o <path>` | 出力パス。`--emit=exe` のときは実行ファイル、それ以外は対応する中間生成物。 |
-| `--emit <kind>` (`--emit=<kind>` も可) | `exe`(default) / `obj` / `ir` / `clif` を選択。 |
-| `--release` | 全 DbC (`requires` / `ensures`) チェックを skip。`INTERPRETER_CONTRACTS=off` 相当。 |
-| `-v` / `--verbose` | コンパイル進行と core modules dir 解決結果を stderr に出す。 |
-| `--core-modules <DIR>` (`--core-modules=<DIR>` も可) | core modules ディレクトリを上書き。下記参照。 |
+| `<file>` | 入力ソース (必須) |
+| `-o <path>` | 出力パス |
+| `--emit <kind>` | `exe`(default) / `obj` / `ir` / `clif` |
+| `--release` | DbC (`requires` / `ensures`) を skip (= `INTERPRETER_CONTRACTS=off`) |
+| `-v` / `--verbose` | 進行ログを stderr に出す |
+| `--core-modules <DIR>` | core modules ディレクトリを上書き |
+
+### 環境変数
+
+| 変数 | 意味 |
+|---|---|
+| `TOYLANG_CORE_MODULES` | core modules ディレクトリ (空文字で opt-out) |
+| `TOY_CACHE_DIR` | インクリメンタル cache のルート (default `.toycache/`) |
+| `TOY_CACHE_DISABLE=<non-empty>` | cache の load / save を両方 skip |
+| `TOYLANG_CRANELIFT_OPT_LEVEL` | `speed`(default) / `none` / `speed_and_size` |
 
 ### core modules (auto-load)
 
-interpreter と同じく compiler も起動時に `core/` 配下を再帰的に
-auto-load し、`math::sin(x)` 等を `import` 行なしで呼べるように
-する。解決順:
+起動時に `core/` 配下を再帰 integrate して `math::sin(x)` 等を `import`
+行なしで呼べるようにする。解決順:
 
-1. `--core-modules <DIR>` フラグ
-2. `TOYLANG_CORE_MODULES` 環境変数 (空文字で opt-out)
-3. 実行ファイル相対探索 (`<exe>/core/` →
-   `<exe>/../share/toylang/core/` → `<exe>/../../core/`)
+1. `--core-modules` フラグ
+2. `TOYLANG_CORE_MODULES` 環境変数
+3. 実行ファイル相対探索 (`<exe>/core/` → `<exe>/../share/toylang/core/`
+   → `<exe>/../../core/`)
 
 dev tree から `target/debug/compiler` を直接実行する場合は最後の
-fallback (`<repo>/core/`) で見つかる。`-v` で実際に拾った path が
-出る。
+fallback (`<repo>/core/`) で見つかる。
 
-### インクリメンタルコンパイル cache (Phase 4)
+### インクリメンタルコンパイル cache
 
-compiler は `interpreter::check_typing_with_core_modules` 経由で
-frontend を呼ぶため、`integrate_module_into_program_with_options_full`
-の Phase 4 cache 経路が **そのまま compiler バイナリにも効く**。
+`interpreter::check_typing_with_core_modules` 経由で frontend を呼ぶため、
+Phase 4 で入った Full AST cache がそのまま効く。各 core module の `File` +
+module-local interner を `<cache_dir>/<hash_prefix>/<source_hash>.full` に
+保存し、二回目以降は parse を skip。schema mismatch / corrupt / missing
+は silent fall-back。設計詳細は
+[`design-docs/INCREMENTAL_COMPILATION.md`](../design-docs/INCREMENTAL_COMPILATION.md)。
 
-- 初回コンパイル時に各 core module (`core/std/*.t` 等) の `File` +
-  module-local `DefaultStringInterner` を bincode で
-  `<cache_dir>/<hash_prefix>/<source_hash>.full` に保存。
-- 次回以降は parse を完全に skip、cached AST を
-  `AstIntegrationContext::integrate()` にそのまま流し込み、既存の
-  `remap_symbol` 経由で main interner にリンクする。cold path と
-  warm path は同じ integrate を共有するので結果は bit-identical。
-- ModuleInterface cache (Phase 1-3) は将来の per-module IR work 用に
-  残置。Full AST cache とは独立に `.interface` 拡張子で並存する。
+## サポート状況
 
-| 環境変数 | 意味 |
-|---|---|
-| `TOY_CACHE_DIR` | cache のルートディレクトリ。未設定時は `.toycache/`。CI / sandboxed build では `/tmp/.toycache-$USER` 等に逃がすと便利。 |
-| `TOY_CACHE_DISABLE=<non-empty>` | fast path の load と save を両方 skip。トラブルシューティング、stale entry の疑い、ベンチで cold を強制したい時に。 |
+interpreter と (`dict` と `dyn Trait` JIT 経路を除き) ほぼ同等の言語機能を
+カバー。型 / 式 / 文 / struct / tuple / enum / match / trait / generics /
+配列 / `extern fn` / DbC / allocator / `str` / closure などすべて動作する。
+言語仕様は [`docs/language.md`](../docs/language.md)、Phase 別の実装履歴は
+[`design-docs/todo.md`](../design-docs/todo.md) を参照。
 
-cache schema が変更された場合は `FULL_AST_CACHE_SCHEMA_VERSION`
-(`frontend/src/cache.rs`) が bump され、古い `.full` ファイルは
-silent cache miss として扱われる。corrupt / truncated ファイルも
-同様に miss 扱いで cold path に fall back する。
+明確なエラーで reject される主な制約:
 
-`main` の戻り値（`u64` または `i64`）はプロセス終了コードになる。POSIX
-シェルは下位 8 bit に切り詰める点に注意。
-
-例:
-
-```bash
-cargo run -p compiler -- compiler/example/fib.t -o /tmp/fib
-/tmp/fib; echo $?    # 21 (= fib(8))
-```
+- struct / tuple binding 全体の再代入は不可 (leaf field への代入は可)
+- compound を返す関数 / メソッド呼び出しを式位置で直接使えない場合がある —
+  `val` で受ければ動く
+- dict はインタープリタ専用 (3-way テストから除外)
+- `dyn Trait` の interpreter JIT は silent fallback (AOT は MVP-A〜F 対応)
+- `f64` の `%` (mod) — cranelift に native fmod がない
+- bool / Unit との `as` キャスト、narrow int ↔ f64 cast
+- 文字列 / 複雑な式の `const` 初期化 (リテラル / 単純算術 fold のみ)
 
 ## 設計
 
-パイプラインは **AST → IR → Cranelift IR → object bytes** の3段。
-中間 IR を挟むことで、AST に直接バックエンドの都合を持ち込まず、
-将来の `AllocatorBinding` 配線・定数伝搬・devirtualize 等の解析を
-IR レイヤで完結できる構成にしてある。
+パイプラインは **AST → IR → Cranelift IR → object bytes** の 3 段。中間
+IR を挟むことで AST に直接バックエンドの都合を持ち込まず、定数伝搬・
+インライン化・devirtualize などを IR レイヤで完結できる構造。
 
-- `src/main.rs` — CLI
-- `src/lib.rs` — `compile_file()` パブリック API + `resolve_core_modules_dir()`
-- `src/options.rs` — `CompilerOptions` (`core_modules_dir` / `release` / `emit` / `verbose`) / `EmitKind`
-- `src/ir.rs` — 中間 IR 定義（`Module` / `Function` / `Block` / `Instruction` / `Terminator` / `Type` / `ValueId` / `LocalId` / `BlockId` / `FuncId`、`Linkage::{Export, Local, Import}`）と `Display` 実装
-- `src/lower/` — AST → IR の lowering pass。Phase Z refactor で 24 ファイル / mod.rs 265 行に分割: `consts` / `array_layout` / `types` / `method_registry` / `templates` / `bindings` / `type_inference` / `method_call` / `print` / `array_access` / `compound_storage` / `call` / `match_lowering` / `field_access` / `compound_literal` / `expr_ops` / `type_resolution` / `assign` / `let_lowering` / `loops` / `stmt` / `expr` / `program` (top-level driver、`extern fn` を `Linkage::Import` で declare、`libm_import_name_for` で `__extern_*_f64` → libm symbol を解決)
-- `src/codegen.rs` — IR → Cranelift IR の codegen pass + `.o` 出力
-- `src/driver.rs` — `cc` を呼んで `.o` を実行ファイルにリンク。runtime の `toylang_rt.c` は `build.rs` で 1 度だけ pre-build され、driver は `include_bytes!` した `.o` を `.rt.o` として書き出すだけ
-- `build.rs` — `cc -c -O2 -fPIC runtime/toylang_rt.c -o $OUT_DIR/toylang_rt.o` を実行 (各テストの `cc` 起動コストを削るため)
+| ファイル | 役割 |
+|---|---|
+| `src/main.rs` | CLI |
+| `src/lib.rs` | `compile_file()` / `resolve_core_modules_dir()` |
+| `src/options.rs` | `CompilerOptions` / `EmitKind` |
+| `src/ir.rs` | 中間 IR 定義 (`Module` / `Function` / `Type` / `Linkage`) |
+| `src/lower/` | AST → IR (24 ファイル分割、`program.rs` が top-level) |
+| `src/codegen.rs` | IR → Cranelift IR + `.o` 出力 |
+| `src/driver.rs` | `cc` 経由のリンク |
+| `build.rs` | `runtime/toylang_rt.c` を pre-build して `.o` を同梱 |
 
-IR の値モデルは「型付きローカルスロット + 関数ローカルな SSA 値」の
-組み合わせで、`val` / `var` / 関数引数は `LocalId` 経由で `LoadLocal` /
-`StoreLocal` する。SSA 構築は Cranelift の `FunctionBuilder` に任せる。
+frontend / type checker は `compiler_core::CompilerSession` と
+`interpreter::check_typing_with_core_modules` を再利用するため、
+interpreter / JIT と同じフロントエンド検査を経由する。
 
-frontend と type_checker は既存の `compiler_core::CompilerSession` と
-`interpreter::check_typing` を再利用しており、interpreter / JIT と同じ
-フロントエンド検査を経由する。
+`str` runtime layout (NUL 終端 + 末尾の `u64 len` を指す opaque pointer
+表現) や Phase 別の codegen 詳細は `src/lower/*.rs` と
+`design-docs/todo.md` の各 Phase エントリを参照。
 
-### str runtime layout (Phase T + STR-PTR-LEN)
-
-`Type::Str` は cranelift `i64` 1 個分の opaque ポインタで、`.rodata`
-に置かれた以下のレイアウトを指す:
-
-```
-[N bytes (UTF-8)] [1 byte NUL] [u64 len LE (8 bytes)]
-^                                ^
-+0 = byte_start                  +N+1 = len field address
-                                 ↑
-                                 str runtime value points here
-```
-
-ポイントは **str 値が len フィールドを指す** こと (byte_start
-ではない)。理由は:
-
-- `__builtin_str_len(s) -> u64` を **O(1)** にしたいから (`load.i64(s, 0)`
-  だけで取れる)。`strlen` を呼ぶ必要がない。
-- `__builtin_str_to_ptr(s) -> ptr` (= byte_start) は逆算する:
-  `s - 1 - load.i64(s, 0)` (NUL の 1 byte + bytes 全長を引く)。
-  3 IR ops、O(1)。
-- 末尾 NUL は `puts` / `fputs` 等の libc 経路でそのまま使えるよう
-  保持。`println(s)` の codegen では byte_start を上記計算で出して
-  `toy_print_str` (cstring API) に渡している。
-- `bytes_len` は literal の場合 codegen 時に静的に既知なので
-  `InstKind::ConstStr { message, bytes_len }` に埋めておき、
-  `iadd_imm(symbol_value, bytes_len + 1)` で len フィールドへの
-  ポインタを materialize する (lowering 層が interner にアクセス
-  できるので bytes_len はそこで計算)。
-
-ユーザー API (`core/std/str.t` 経由):
-
-```toylang
-val s = "hello"
-val n: u64 = s.len()           # 5 — O(1) load
-val p: ptr = s.as_ptr()        # byte_start
-val first: u8 = __builtin_ptr_read(p, 0u64)  # 'h' = 104
-```
-
-低層 builtin: `__builtin_str_to_ptr(s)` / `__builtin_str_len(s)`。
-extension trait は `core/std/str.t::AsPtr` / `Length`。
-
-literal print (`println("hi")`) は `InstKind::PrintStr` 経由で
-`symbol_value`（= byte_start）を直接 helper に渡すので上記の
-逆算オーバーヘッドはかからない (literal path のみの最適化)。
-
-### `--emit=ir` の出力例
-
-```bash
-cargo run -p compiler -- compiler/example/fib.t --emit=ir -o /tmp/fib.ir
-```
+### `--emit=ir` 出力例
 
 ```
 local function toy_fib(@l0: u64) -> u64 {
-  locals:
-    @l1: u64
   bb0:
     %v0: u64 = load @l0
     %v1: u64 = const 1u64
@@ -256,114 +119,25 @@ export function main() -> u64 {
 }
 ```
 
-`--emit=clif` は IR lowering 後の Cranelift IR を、`--emit=obj` は
-リンク前の `.o`、`--emit=exe`（default）は最終バイナリを出力する。
-
 ## テスト
 
-### 構成
-
-`compiler/tests/` 配下に主要 4 ファイル：
-
-- **`e2e.rs`** (34 テスト) — toylang ソース文字列から `compile_and_run`
-  ヘルパで実行可能ファイルを生成 → spawn → exit code を assert する
-  end-to-end テスト。各機能フラグ（`val` / `if` / `for` / 関数呼び出し
-  / struct / tuple / enum / match / trait method / generics / `print`
-  / `panic` / `requires` / `ensures` / `as` cast / array / `extern fn`
-  / extension trait など）ごとに最小再現プログラムが並んでいる。サンプルは
-  ほぼすべて `fn main() -> u64 { ... }` で値を return し、終了コードを
-  突き合わせる方式。
-- **`e2e_batched.rs`** (12 テスト) — `e2e.rs` の小さい `fn main() -> u64`
-  サンプルを巨大プログラムにまとめ、ケース ID で dispatch して 1 spawn で
-  10 サブテストを走らせる省 spawn 版。
-- **`consistency.rs`** (178 テスト) — 同じソースを **interpreter (lib API)
-  / AOT compiler (compile + spawn) / JIT (`INTERPRETER_JIT=1` で
-  interpreter binary を spawn)** の 3 経路に流し、`main` の戻り値が
-  3 経路で一致することを確認する横並びテスト。仕様の解釈差を早期に
-  検知するセーフティネット。interpreter binary は OnceLock で 1 回だけ
-  `cargo build` する。
-- **`jit_smoke.rs`** (15 テスト) — compiler crate 側の cranelift JIT
-  (`compiler/src/jit.rs`) を直接叩いて `fn() -> u64` を実行する in-process
-  テスト。`dyn Trait` の MVP-A〜F や recursive fib など、AOT 経路と
-  共有する codegen を JIT モードで通すための回帰検査。
-
-両ファイルとも `COMPILER_E2E=skip` を環境変数に渡すと early return
-してスキップする（`cc` が無いサンドボックス環境向けの opt-out）。
-
-### 実行
+| ファイル | 件数 | 内容 |
+|---|---:|---|
+| `tests/e2e.rs` | 34 | source → compile → spawn → exit code 比較 |
+| `tests/e2e_batched.rs` | 12 | 小サンプルを 1 spawn にまとめる省 spawn 版 |
+| `tests/consistency.rs` | 178 | interpreter / AOT / JIT の 3 経路一致 |
+| `tests/jit_smoke.rs` | 15 | compiler 側 cranelift JIT の in-process テスト |
 
 ```bash
-# nextest（推奨、並列実行）
-cargo nextest run -p compiler
-
-# cargo test（1プロセスにまとめる）
-cargo test -p compiler
-
-# 単一テスト
-cargo nextest run -p compiler -E 'test(returns_literal_exit_code)'
+cargo nextest run -p compiler                      # 並列実行 (推奨)
+cargo nextest run -p compiler -E 'test(name)'      # 単一テスト
+COMPILER_E2E=skip cargo nextest run -p compiler    # cc が無い環境で skip
 ```
 
-テスト全体の wall-clock は 20 コアの macOS で約 60〜70 秒。
+テスト時は `.config/nextest.toml` で `TOYLANG_CRANELIFT_OPT_LEVEL=none` を
+注入して codegen を約 3 倍高速化している。CLI から直接呼ぶ本番経路は
+`speed` がデフォルト。
 
-#### Cranelift `opt_level`
-
-cranelift の `opt_level` は環境変数
-`TOYLANG_CRANELIFT_OPT_LEVEL` で切り替えられる
-(`compiler/src/codegen/mod.rs::cranelift_opt_level`)。プロダクション
-（CLI から直接 `cargo run -p compiler -- foo.t` で実行）は `"speed"`
-（デフォルト）、テスト実行時は `.config/nextest.toml` で `"none"` を
-注入している。`opt_level=none` だと cranelift の最適化パスが無効化
-され codegen 時間がおよそ **3 倍** 速くなる：
-
-| 計測 | `speed` | `none` | 改善 |
-|---|---|---|---|
-| nextest summary | 150s | 54s | **2.77x** |
-| `time real` | 231s | 60s | **3.86x** |
-| 205 テスト pass | ✅ | ✅ | — |
-
-テスト時に意図的に `speed` を使いたい (perf 検証など) ときは
-`TOYLANG_CRANELIFT_OPT_LEVEL=speed cargo nextest run -p compiler` で
-override する。`speed_and_size` も accept する。
-
-### パフォーマンス
-
-各テストが `compile_file(... emit=Executable)` → 生成された binary の
-spawn を行う構造のため、
-
-- compile 部分（parse + type-check + IR lowering + Cranelift codegen
-  + リンク）：1テストあたり ≈ 50ms（debug build）
-- 生成バイナリの新規 exec：macOS では新規 Mach-O ごとにコード署名検証
-  が走り、≈ 150〜300ms
-
-の二段構成。**並列 wall-clock の支配項は後者** で、署名検証は path /
-content / `cc` / `ld` / `dlopen` / 事前 `codesign --sign -` いずれの
-工夫でも回避できないことを実測済み（同じパスで内容を上書きしても
-再検証される）。
-
-すでに入っている最適化：
-
-- **`compiler/build.rs`** が `cc -c -O2 -fPIC runtime/toylang_rt.c
-  -o $OUT_DIR/toylang_rt.o` をビルド時に 1 度だけ実行し、driver は
-  その `.o` を `include_bytes!` で取り込む。これにより各テストの
-  `cc` 呼び出しは「2 つの `.o` をリンクするだけ」となり、C
-  コンパイル分（〜数百ms）を完全に削減。
-
-並列 wall-clock を更に縮める余地としては、
-
-- cranelift-jit を compiler crate に取り込み、テスト用 API
-  `compile_to_jit_main(source) -> fn() -> u64` で **新規 Mach-O を
-  ディスクに書かない経路** を提供する。これで macOS 検証を完全に
-  回避できる（in-process で executable memory を確保するため）。
-  codegen.rs を `Module` trait で generic 化する作業がそれなりに
-  あるため別タスク扱い。
-- `e2e.rs` の小さい `fn main() -> u64 { ... }` 系テストを「1 つの
-  巨大プログラムにまとめてケース ID で dispatch」する形に再構成し、
-  spawn 回数を減らす。テスト分離度が落ちるトレードオフがある。
-
-## 次のフェーズ（design-docs/todo.md #183 参照）
-
-- Phase A: `toy_ir` の新設、`AllocatorBinding` 配線、AST → IR lowering
-- Phase B: 拡張（文字列、struct、tuple、enum、trait のサポート）
-- Phase C: 呼び出し規約（隠し allocator パラメータ）、ランタイムを C ABI `.o` で提供
-- Phase D: interpreter / JIT / コンパイラの 3 経路一致テスト
-- Phase E: 定数伝搬・インライン化・devirtualize による最適化
+並列 wall-clock の支配項は macOS の Mach-O コード署名検証 (新規バイナリ
+ごとに 150〜300ms)。`build.rs` で `toylang_rt.c` を 1 度だけ pre-build
+して各テストの `cc` 起動コストを削っている。

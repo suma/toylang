@@ -6,7 +6,7 @@ use crate::type_decl::*;
 use crate::module_resolver::ModuleResolver;
 use crate::visitor::ProgramVisitor;
 use crate::type_checker::{
-    AcceptableExpr, AcceptableStmt, AcceptableDecl, BuiltinFunctionSignature, CoreReferences, TypeCheckContext, TypeCheckError,
+    AcceptableExpr, AcceptableStmt, BuiltinFunctionSignature, CoreReferences, TypeCheckContext, TypeCheckError,
     TypeInferenceState, FunctionCheckingState, PerformanceOptimization,
 };
 
@@ -537,17 +537,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return res;
             } else {
                 last = res?;
-            }
-            // Declaration statements (struct, impl, enum, trait) are
-            // dispatched through DeclVisitor so their definitions are
-            // registered in the type-check context.  accept_stmt
-            // already returned Unit for them; we just need the
-            // side-effects of accept_decl.
-            match stmt_obj {
-                Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
-                    let _ = stmt_obj.clone().accept_decl(self)?;
-                }
-                _ => {}
             }
         }
         self.pop_context();

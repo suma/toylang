@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    AcceptableStmt, AcceptableExpr,
+    AcceptableStmt, AcceptableExpr, AcceptableDecl,
 };
 
 /// Statement type checking implementation
@@ -16,13 +16,28 @@ impl<'a> TypeCheckerVisitor<'a> {
         let result = stmt_val.accept_stmt(self);
         
         // If an error occurred, try to add location information if not already present
-        match result {
+        let result = match result {
             Err(mut error) if error.location.is_none() => {
                 error.location = self.get_stmt_location(stmt);
                 Err(error)
             }
             other => other,
+        };
+        
+        // Declaration statements also need to be dispatched through DeclVisitor
+        // so their definitions are registered in the type-check context.
+        if result.is_ok() {
+            match &stmt_val {
+                Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
+                    if let Err(e) = stmt_val.accept_decl(self) {
+                        return Err(e);
+                    }
+                }
+                _ => {}
+            }
         }
+        
+        result
     }
 
     /// Type check expression statements

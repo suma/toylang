@@ -4,7 +4,7 @@ AOT コンパイラ。toylang のソースから native の実行可能バイナ
 
 ## ステータス
 
-MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (34 件) + `compiler/tests/e2e_batched.rs` (8 件、巨大プログラムにケース ID dispatch をまとめたバッチ版) + `compiler/tests/consistency.rs` (83 件、interpreter / JIT / AOT 3 経路一致) + `compiler/tests/jit_smoke.rs` (9 件) が緑のものはすべて使える。
+MVP として始まったが、Phase A〜Z の段階的拡張で interpreter とほぼ同等の表面をカバーするまで成長している。下記サポート一覧は実装順 (Phase A → 最近のもの) に並んでいる。`compiler/tests/e2e.rs` (34 件) + `compiler/tests/e2e_batched.rs` (12 件、巨大プログラムにケース ID dispatch をまとめたバッチ版) + `compiler/tests/consistency.rs` (178 件、interpreter / JIT / AOT 3 経路一致) + `compiler/tests/jit_smoke.rs` (15 件) が緑のものはすべて使える。
 
 サポート:
 
@@ -124,6 +124,32 @@ dev tree から `target/debug/compiler` を直接実行する場合は最後の
 fallback (`<repo>/core/`) で見つかる。`-v` で実際に拾った path が
 出る。
 
+### インクリメンタルコンパイル cache (Phase 4)
+
+compiler は `interpreter::check_typing_with_core_modules` 経由で
+frontend を呼ぶため、`integrate_module_into_program_with_options_full`
+の Phase 4 cache 経路が **そのまま compiler バイナリにも効く**。
+
+- 初回コンパイル時に各 core module (`core/std/*.t` 等) の `File` +
+  module-local `DefaultStringInterner` を bincode で
+  `<cache_dir>/<hash_prefix>/<source_hash>.full` に保存。
+- 次回以降は parse を完全に skip、cached AST を
+  `AstIntegrationContext::integrate()` にそのまま流し込み、既存の
+  `remap_symbol` 経由で main interner にリンクする。cold path と
+  warm path は同じ integrate を共有するので結果は bit-identical。
+- ModuleInterface cache (Phase 1-3) は将来の per-module IR work 用に
+  残置。Full AST cache とは独立に `.interface` 拡張子で並存する。
+
+| 環境変数 | 意味 |
+|---|---|
+| `TOY_CACHE_DIR` | cache のルートディレクトリ。未設定時は `.toycache/`。CI / sandboxed build では `/tmp/.toycache-$USER` 等に逃がすと便利。 |
+| `TOY_CACHE_DISABLE=<non-empty>` | fast path の load と save を両方 skip。トラブルシューティング、stale entry の疑い、ベンチで cold を強制したい時に。 |
+
+cache schema が変更された場合は `FULL_AST_CACHE_SCHEMA_VERSION`
+(`frontend/src/cache.rs`) が bump され、古い `.full` ファイルは
+silent cache miss として扱われる。corrupt / truncated ファイルも
+同様に miss 扱いで cold path に fall back する。
+
 `main` の戻り値（`u64` または `i64`）はプロセス終了コードになる。POSIX
 シェルは下位 8 bit に切り詰める点に注意。
 
@@ -237,9 +263,9 @@ export function main() -> u64 {
 
 ### 構成
 
-`compiler/tests/` 配下に 2 ファイル：
+`compiler/tests/` 配下に主要 4 ファイル：
 
-- **`e2e.rs`** (191 テスト) — toylang ソース文字列から `compile_and_run`
+- **`e2e.rs`** (34 テスト) — toylang ソース文字列から `compile_and_run`
   ヘルパで実行可能ファイルを生成 → spawn → exit code を assert する
   end-to-end テスト。各機能フラグ（`val` / `if` / `for` / 関数呼び出し
   / struct / tuple / enum / match / trait method / generics / `print`
@@ -247,12 +273,19 @@ export function main() -> u64 {
   / extension trait など）ごとに最小再現プログラムが並んでいる。サンプルは
   ほぼすべて `fn main() -> u64 { ... }` で値を return し、終了コードを
   突き合わせる方式。
-- **`consistency.rs`** (23 テスト) — 同じソースを **interpreter (lib API)
+- **`e2e_batched.rs`** (12 テスト) — `e2e.rs` の小さい `fn main() -> u64`
+  サンプルを巨大プログラムにまとめ、ケース ID で dispatch して 1 spawn で
+  10 サブテストを走らせる省 spawn 版。
+- **`consistency.rs`** (178 テスト) — 同じソースを **interpreter (lib API)
   / AOT compiler (compile + spawn) / JIT (`INTERPRETER_JIT=1` で
   interpreter binary を spawn)** の 3 経路に流し、`main` の戻り値が
   3 経路で一致することを確認する横並びテスト。仕様の解釈差を早期に
   検知するセーフティネット。interpreter binary は OnceLock で 1 回だけ
   `cargo build` する。
+- **`jit_smoke.rs`** (15 テスト) — compiler crate 側の cranelift JIT
+  (`compiler/src/jit.rs`) を直接叩いて `fn() -> u64` を実行する in-process
+  テスト。`dyn Trait` の MVP-A〜F や recursive fib など、AOT 経路と
+  共有する codegen を JIT モードで通すための回帰検査。
 
 両ファイルとも `COMPILER_E2E=skip` を環境変数に渡すと early return
 してスキップする（`cc` が無いサンドボックス環境向けの opt-out）。

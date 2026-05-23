@@ -93,124 +93,7 @@ impl AstBuilder {
         (self.expr_pool, self.stmt_pool, self.location_pool)
     }
 
-    // Expression builders
-    pub fn uint64_expr(&mut self, value: u64, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::UInt64(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn int64_expr(&mut self, value: i64, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Int64(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn float64_expr(&mut self, value: f64, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Float64(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    // NUM-W narrow-integer literal builders. Same shape as
-    // int64_expr / uint64_expr; the parser hands the lexer-validated
-    // value straight into the pool.
-    pub fn int8_expr(&mut self, value: i8, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Int8(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    pub fn int16_expr(&mut self, value: i16, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Int16(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    pub fn int32_expr(&mut self, value: i32, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Int32(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    pub fn uint8_expr(&mut self, value: u8, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::UInt8(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    pub fn uint16_expr(&mut self, value: u16, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::UInt16(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-    pub fn uint32_expr(&mut self, value: u32, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::UInt32(value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn bool_true_expr(&mut self, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::True);
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn bool_false_expr(&mut self, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::False);
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn null_expr(&mut self, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Null);
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn identifier_expr(&mut self, symbol: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Identifier(symbol));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn string_expr(&mut self, symbol: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::String(symbol));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn number_expr(&mut self, symbol: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Number(symbol));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn binary_expr(&mut self, op: Operator, lhs: ExprRef, rhs: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Binary(op, lhs, rhs));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn unary_expr(&mut self, op: UnaryOp, operand: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Unary(op, operand));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn assign_expr(&mut self, lhs: ExprRef, rhs: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Assign(lhs, rhs));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn if_elif_else_expr(&mut self, cond: ExprRef, if_block: ExprRef, elif_pairs: Vec<(ExprRef, ExprRef)>, else_block: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::IfElifElse(cond, if_block, elif_pairs, else_block));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn block_expr(&mut self, statements: Vec<StmtRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Block(statements));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
+    // --- Variants that need custom body (not macro-friendly) ---
 
     pub fn call_expr(&mut self, fn_name: DefaultSymbol, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
         let args_ref = self.expr_pool.add(Expr::ExprList(args));
@@ -222,60 +105,6 @@ impl AstBuilder {
 
     pub fn expr_list(&mut self, exprs: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
         let expr_ref = self.expr_pool.add(Expr::ExprList(exprs));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn array_literal_expr(&mut self, elements: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::ArrayLiteral(elements));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn slice_assign_expr(&mut self, object: ExprRef, start: Option<ExprRef>, end: Option<ExprRef>, value: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::SliceAssign(object, start, end, value));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn associated_function_call_expr(&mut self, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::AssociatedFunctionCall(struct_name, function_name, args));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn slice_access_expr(&mut self, object: ExprRef, slice_info: SliceInfo, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::SliceAccess(object, slice_info));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn dict_literal_expr(&mut self, entries: Vec<(ExprRef, ExprRef)>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::DictLiteral(entries));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn tuple_literal_expr(&mut self, elements: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::TupleLiteral(elements));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn tuple_access_expr(&mut self, tuple: ExprRef, index: usize, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::TupleAccess(tuple, index));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn cast_expr(&mut self, expr: ExprRef, target_type: TypeDecl, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::Cast(expr, target_type));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn with_expr(&mut self, allocator: ExprRef, body: ExprRef, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::With(allocator, body));
         self.location_pool.add_expr_location(location);
         expr_ref
     }
@@ -312,110 +141,7 @@ impl AstBuilder {
         expr_ref
     }
 
-    pub fn field_access_expr(&mut self, object: ExprRef, field: DefaultSymbol, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::FieldAccess(object, field));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn method_call_expr(&mut self, object: ExprRef, method: DefaultSymbol, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::MethodCall(object, method, args));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn struct_literal_expr(&mut self, type_name: DefaultSymbol, fields: Vec<(DefaultSymbol, ExprRef)>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::StructLiteral(type_name, fields));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn qualified_identifier_expr(&mut self, path: Vec<DefaultSymbol>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::QualifiedIdentifier(path));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn builtin_method_call_expr(&mut self, receiver: ExprRef, method: BuiltinMethod, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::BuiltinMethodCall(receiver, method, args));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    pub fn builtin_call_expr(&mut self, func: BuiltinFunction, args: Vec<ExprRef>, location: Option<SourceLocation>) -> ExprRef {
-        let expr_ref = self.expr_pool.add(Expr::BuiltinCall(func, args));
-        self.location_pool.add_expr_location(location);
-        expr_ref
-    }
-
-    // Statement builders
-    pub fn expression_stmt(&mut self, expr: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Expression(expr));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn val_stmt(&mut self, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Val(name, type_decl, value));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn var_stmt(&mut self, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: Option<ExprRef>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Var(name, type_decl, value));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn return_stmt(&mut self, value: Option<ExprRef>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Return(value));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn break_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
-        self.break_stmt_with_label(None, location)
-    }
-
-    /// LABEL: emit `break` with an optional target label (`break @outer`).
-    pub fn break_stmt_with_label(&mut self, label: Option<DefaultSymbol>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Break(label));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn continue_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
-        self.continue_stmt_with_label(None, location)
-    }
-
-    /// LABEL: emit `continue` with an optional target label (`continue @outer`).
-    pub fn continue_stmt_with_label(&mut self, label: Option<DefaultSymbol>, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::Continue(label));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn for_stmt(&mut self, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        self.for_stmt_with_label(None, var, start, end, block, location)
-    }
-
-    /// LABEL: emit `@label: for var in start..end { block }`.
-    pub fn for_stmt_with_label(&mut self, label: Option<DefaultSymbol>, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::For(label, var, start, end, block));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
-
-    pub fn while_stmt(&mut self, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        self.while_stmt_with_label(None, cond, block, location)
-    }
-
-    /// LABEL: emit `@label: while cond { block }`.
-    pub fn while_stmt_with_label(&mut self, label: Option<DefaultSymbol>, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
-        let stmt_ref = self.stmt_pool.add(Stmt::While(label, cond, block));
-        self.location_pool.add_stmt_location(location);
-        stmt_ref
-    }
+    // --- Complex statement builders that need custom body ---
 
     pub fn struct_decl_stmt(
         &mut self,
@@ -516,5 +242,151 @@ impl AstBuilder {
         });
         self.location_pool.add_stmt_location(location);
         stmt_ref
+    }
+}
+
+// ------------------------------------------------------------------
+//  Declarative macros for boilerplate-free builder methods
+//  Defined at module level so they are visible to other crates,
+//  but invoked inside the `impl AstBuilder` block above.
+// ------------------------------------------------------------------
+
+/// Unit variant expression (no payload): `Expr::True`, `Expr::Null`, …
+macro_rules! unit_expr_builder {
+    ($method:ident, $variant:ident) => {
+        pub fn $method(&mut self, location: Option<SourceLocation>) -> ExprRef {
+            let expr_ref = self.expr_pool.add(Expr::$variant);
+            self.location_pool.add_expr_location(location);
+            expr_ref
+        }
+    };
+}
+
+/// Single-argument tuple-variant expression: `Expr::UInt64(v)`, …
+macro_rules! simple_expr_builder {
+    ($method:ident, $variant:ident, $ty:ty) => {
+        pub fn $method(&mut self, value: $ty, location: Option<SourceLocation>) -> ExprRef {
+            let expr_ref = self.expr_pool.add(Expr::$variant(value));
+            self.location_pool.add_expr_location(location);
+            expr_ref
+        }
+    };
+}
+
+/// Multi-argument expression where every parameter is forwarded in
+/// the same order to the `Expr` variant.
+macro_rules! multi_arg_expr_builder {
+    ($method:ident, $variant:ident, $($param:ident: $ty:ty),+ $(,)?) => {
+        pub fn $method(&mut self, $($param: $ty,)+ location: Option<SourceLocation>) -> ExprRef {
+            let expr_ref = self.expr_pool.add(Expr::$variant($($param),+));
+            self.location_pool.add_expr_location(location);
+            expr_ref
+        }
+    };
+}
+
+/// Single-argument tuple-variant statement: `Stmt::Expression(e)`, …
+macro_rules! simple_stmt_builder {
+    ($method:ident, $variant:ident, $ty:ty) => {
+        pub fn $method(&mut self, value: $ty, location: Option<SourceLocation>) -> StmtRef {
+            let stmt_ref = self.stmt_pool.add(Stmt::$variant(value));
+            self.location_pool.add_stmt_location(location);
+            stmt_ref
+        }
+    };
+}
+
+/// Multi-argument statement where every parameter is forwarded in
+/// the same order to the `Stmt` variant.
+macro_rules! multi_arg_stmt_builder {
+    ($method:ident, $variant:ident, $($param:ident: $ty:ty),+ $(,)?) => {
+        pub fn $method(&mut self, $($param: $ty,)+ location: Option<SourceLocation>) -> StmtRef {
+            let stmt_ref = self.stmt_pool.add(Stmt::$variant($($param),+));
+            self.location_pool.add_stmt_location(location);
+            stmt_ref
+        }
+    };
+}
+
+// Re-invoke the macros to generate the methods inside the impl block.
+// These must appear *after* the `impl AstBuilder { ... }` block and
+// *after* the macro definitions so the compiler sees them.
+// NOTE: This pattern generates items at module scope; we therefore
+// wrap the generated methods in a second `impl AstBuilder` block.
+impl AstBuilder {
+    // --- Literal / unit variants ---
+    simple_expr_builder!(uint64_expr, UInt64, u64);
+    simple_expr_builder!(int64_expr,  Int64,  i64);
+    simple_expr_builder!(float64_expr, Float64, f64);
+
+    // NUM-W narrow-integer literal builders. Same shape as
+    // int64_expr / uint64_expr; the parser hands the lexer-validated
+    // value straight into the pool.
+    simple_expr_builder!(int8_expr,   Int8,   i8);
+    simple_expr_builder!(int16_expr,  Int16,  i16);
+    simple_expr_builder!(int32_expr,  Int32,  i32);
+    simple_expr_builder!(uint8_expr,  UInt8,  u8);
+    simple_expr_builder!(uint16_expr, UInt16, u16);
+    simple_expr_builder!(uint32_expr, UInt32, u32);
+
+    unit_expr_builder!(bool_true_expr,  True);
+    unit_expr_builder!(bool_false_expr, False);
+    unit_expr_builder!(null_expr,       Null);
+
+    // --- Single-argument identifier-like variants ---
+    simple_expr_builder!(identifier_expr, Identifier, DefaultSymbol);
+    simple_expr_builder!(string_expr,     String,     DefaultSymbol);
+    simple_expr_builder!(number_expr,     Number,     DefaultSymbol);
+
+    // --- Multi-argument expression variants ---
+    multi_arg_expr_builder!(binary_expr, Binary, op: Operator, lhs: ExprRef, rhs: ExprRef);
+    multi_arg_expr_builder!(unary_expr, Unary, op: UnaryOp, operand: ExprRef);
+    multi_arg_expr_builder!(assign_expr, Assign, lhs: ExprRef, rhs: ExprRef);
+    multi_arg_expr_builder!(if_elif_else_expr, IfElifElse, cond: ExprRef, if_block: ExprRef, elif_pairs: Vec<(ExprRef, ExprRef)>, else_block: ExprRef);
+    multi_arg_expr_builder!(block_expr, Block, statements: Vec<StmtRef>);
+    multi_arg_expr_builder!(array_literal_expr, ArrayLiteral, elements: Vec<ExprRef>);
+    multi_arg_expr_builder!(slice_assign_expr, SliceAssign, object: ExprRef, start: Option<ExprRef>, end: Option<ExprRef>, value: ExprRef);
+    multi_arg_expr_builder!(associated_function_call_expr, AssociatedFunctionCall, struct_name: DefaultSymbol, function_name: DefaultSymbol, args: Vec<ExprRef>);
+    multi_arg_expr_builder!(slice_access_expr, SliceAccess, object: ExprRef, slice_info: SliceInfo);
+    multi_arg_expr_builder!(dict_literal_expr, DictLiteral, entries: Vec<(ExprRef, ExprRef)>);
+    multi_arg_expr_builder!(tuple_literal_expr, TupleLiteral, elements: Vec<ExprRef>);
+    multi_arg_expr_builder!(tuple_access_expr, TupleAccess, tuple: ExprRef, index: usize);
+    multi_arg_expr_builder!(cast_expr, Cast, expr: ExprRef, target_type: TypeDecl);
+    multi_arg_expr_builder!(with_expr, With, allocator: ExprRef, body: ExprRef);
+    multi_arg_expr_builder!(field_access_expr, FieldAccess, object: ExprRef, field: DefaultSymbol);
+    multi_arg_expr_builder!(method_call_expr, MethodCall, object: ExprRef, method: DefaultSymbol, args: Vec<ExprRef>);
+    multi_arg_expr_builder!(struct_literal_expr, StructLiteral, type_name: DefaultSymbol, fields: Vec<(DefaultSymbol, ExprRef)>);
+    multi_arg_expr_builder!(qualified_identifier_expr, QualifiedIdentifier, path: Vec<DefaultSymbol>);
+    multi_arg_expr_builder!(builtin_method_call_expr, BuiltinMethodCall, receiver: ExprRef, method: BuiltinMethod, args: Vec<ExprRef>);
+    multi_arg_expr_builder!(builtin_call_expr, BuiltinCall, func: BuiltinFunction, args: Vec<ExprRef>);
+
+    // ------------------------------------------------------------------
+    //  Statement builders (generated via macros where possible)
+    // ------------------------------------------------------------------
+
+    simple_stmt_builder!(expression_stmt, Expression, ExprRef);
+    simple_stmt_builder!(return_stmt, Return, Option<ExprRef>);
+
+    multi_arg_stmt_builder!(val_stmt, Val, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: ExprRef);
+    multi_arg_stmt_builder!(var_stmt, Var, name: DefaultSymbol, type_decl: Option<TypeDecl>, value: Option<ExprRef>);
+    multi_arg_stmt_builder!(break_stmt_with_label, Break, label: Option<DefaultSymbol>);
+    multi_arg_stmt_builder!(continue_stmt_with_label, Continue, label: Option<DefaultSymbol>);
+    multi_arg_stmt_builder!(for_stmt_with_label, For, label: Option<DefaultSymbol>, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef);
+    multi_arg_stmt_builder!(while_stmt_with_label, While, label: Option<DefaultSymbol>, cond: ExprRef, block: ExprRef);
+
+    pub fn break_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
+        self.break_stmt_with_label(None, location)
+    }
+
+    pub fn continue_stmt(&mut self, location: Option<SourceLocation>) -> StmtRef {
+        self.continue_stmt_with_label(None, location)
+    }
+
+    pub fn for_stmt(&mut self, var: DefaultSymbol, start: ExprRef, end: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
+        self.for_stmt_with_label(None, var, start, end, block, location)
+    }
+
+    pub fn while_stmt(&mut self, cond: ExprRef, block: ExprRef, location: Option<SourceLocation>) -> StmtRef {
+        self.while_stmt_with_label(None, cond, block, location)
     }
 }

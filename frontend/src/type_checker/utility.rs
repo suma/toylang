@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-use std::rc::Rc;
-use string_interner::{DefaultSymbol, DefaultStringInterner};
+use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::*;
-use crate::type_checker::{TypeCheckerVisitor, TypeCheckError, SourceLocation};
+use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
 
 /// Utility methods for TypeCheckerVisitor
 impl<'a> TypeCheckerVisitor<'a> {
@@ -82,51 +80,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         }
     }
 
-    /// Calculate line and column from offset position in source code
-    pub fn calculate_line_col_from_offset(&self, offset: usize) -> (u32, u32) {
-        if let Some(source) = self.source_code {
-            let mut line = 1u32;
-            let mut column = 1u32;
-            
-            for (i, ch) in source.char_indices() {
-                if i >= offset {
-                    break;
-                }
-                if ch == '\n' {
-                    line += 1;
-                    column = 1;
-                } else {
-                    column += 1;
-                }
-            }
-            
-            (line, column)
-        } else {
-            // Fallback if source code is not available
-            (1, 1)
-        }
-    }
-    
-    /// Create SourceLocation from Node with calculated line and column
-    pub fn node_to_source_location(&self, node: &Node) -> SourceLocation {
-        let (line, column) = self.calculate_line_col_from_offset(node.start);
-        SourceLocation {
-            line,
-            column,
-            offset: node.start as u32,
-        }
-    }
-    
-    /// Get expression location from pool
-    pub fn get_expr_location(&self, expr_ref: &ExprRef) -> Option<SourceLocation> {
-        self.core.location_pool.get_expr_location(expr_ref).cloned()
-    }
-    
-    /// Get statement location from pool
-    pub fn get_stmt_location(&self, stmt_ref: &StmtRef) -> Option<SourceLocation> {
-        self.core.location_pool.get_stmt_location(stmt_ref).cloned()
-    }
-    
     /// Helper method to resolve symbol names safely.
     /// Returns an owned String to avoid holding an immutable borrow of `self` across
     /// subsequent mutable operations (common in error-reporting code paths).
@@ -224,15 +177,6 @@ impl<'a> TypeCheckerVisitor<'a> {
         };
         
         (resolved_lhs, resolved_rhs)
-    }
-    
-    /// Add location information to an error if available
-    pub fn error_with_location(&self, mut error: TypeCheckError, expr: &ExprRef) -> TypeCheckError {
-        if error.location.is_none()
-            && let Some(location) = self.get_expr_location(expr) {
-                error = error.with_location(location);
-            }
-        error
     }
     
     /// Check if two types are compatible for assignment/operations
@@ -353,156 +297,4 @@ impl<'a> TypeCheckerVisitor<'a> {
         None
     }
 
-    /// Context management utilities
-    pub fn push_context(&mut self) {
-        self.context.vars.push(HashMap::new());
-    }
-
-    pub fn pop_context(&mut self) {
-        self.context.vars.pop();
-    }
-
-    pub fn add_function(&mut self, f: Rc<Function>) {
-        self.context.set_fn(f.name, f.clone());
-    }
-
-    /// Module-aware variant: register with a specific module
-    /// qualifier (last segment of the originating module's dotted
-    /// path) so two modules each defining `pub fn foo` can coexist
-    /// in `context.functions` (#193b).
-    pub fn add_function_with_module(
-        &mut self,
-        qualifier: Option<string_interner::DefaultSymbol>,
-        f: Rc<Function>,
-    ) {
-        self.context.set_fn_with_module(qualifier, f.name, f.clone());
-    }
-    
-    /// Extract expression type mappings after type checking
-    pub fn get_expr_types(&self) -> HashMap<crate::ast::ExprRef, crate::type_decl::TypeDecl> {
-        // Return a clone of the comprehensive expr_types mapping
-        self.type_inference.expr_types.clone()
-    }
-    
-    /// Get human-readable type name for error messages
-    pub fn type_name_for_error(&self, type_decl: &TypeDecl) -> String {
-        match type_decl {
-            TypeDecl::Bool => "bool".to_string(),
-            TypeDecl::UInt64 => "u64".to_string(),
-            TypeDecl::Int64 => "i64".to_string(),
-            TypeDecl::String => "string".to_string(),
-            TypeDecl::Number => "number".to_string(),
-            TypeDecl::Unit => "unit".to_string(),
-            TypeDecl::Unknown => "unknown".to_string(),
-            TypeDecl::Array(element_types, size) => {
-                if element_types.len() == 1 {
-                    format!("[{}; {}]", self.type_name_for_error(&element_types[0]), size)
-                } else {
-                    format!("[{:?}; {}]", element_types, size)
-                }
-            },
-            TypeDecl::Struct(name, _) => {
-                self.core.string_interner.resolve(*name)
-                    .unwrap_or("struct")
-                    .to_string()
-            },
-            TypeDecl::Dict(key_type, value_type) => {
-                format!("dict<{}, {}>", 
-                    self.type_name_for_error(key_type), 
-                    self.type_name_for_error(value_type))
-            },
-            _ => format!("{:?}", type_decl).to_lowercase(),
-        }
-    }
-    
-    /// Get struct variable mappings for debugging/analysis
-    pub fn get_struct_var_mappings(&self, interner: &DefaultStringInterner) -> HashMap<DefaultSymbol, String> {
-        let mut mappings = HashMap::new();
-
-        // Iterate through all struct definitions
-        for (struct_symbol, struct_def) in &self.context.struct_definitions {
-            if let Some(struct_name) = interner.resolve(*struct_symbol) {
-                for field in &struct_def.fields {
-                    if let Some(field_symbol) = interner.get(&field.name) {
-                        mappings.insert(field_symbol, format!("{}.{}", struct_name, field.name));
-                    }
-                }
-            }
-        }
-
-        mappings
-    }
-
-    /// Create type parameter mapping from generic parameters to concrete types
-    ///
-    /// Given a struct like `Container<T>` and concrete type parameters `[UInt64]`,
-    /// creates a mapping `{T -> UInt64}`.
-    pub fn create_type_param_mapping(
-        &self,
-        struct_symbol: DefaultSymbol,
-        type_params: &Vec<TypeDecl>
-    ) -> HashMap<DefaultSymbol, TypeDecl> {
-        let mut mapping = HashMap::new();
-
-        // Get the generic parameter names for this struct
-        if let Some(generic_param_names) = self.context.get_struct_generic_params(struct_symbol) {
-            // Create mappings from parameter names to concrete types
-            for (param_name, concrete_type) in generic_param_names.iter().zip(type_params.iter()) {
-                mapping.insert(*param_name, concrete_type.clone());
-            }
-        }
-
-        mapping
-    }
-
-    /// Substitute generic type parameters with concrete types
-    ///
-    /// Given a type like `Generic(T)` and a mapping `{T -> UInt64}`,
-    /// returns `UInt64`. Handles nested types recursively.
-    pub fn substitute_type_params(
-        &self,
-        type_decl: &TypeDecl,
-        mapping: &HashMap<DefaultSymbol, TypeDecl>
-    ) -> TypeDecl {
-        match type_decl {
-            // Generic type parameter - substitute with concrete type
-            TypeDecl::Generic(param_name) => {
-                mapping.get(param_name).cloned().unwrap_or_else(|| type_decl.clone())
-            }
-
-            // Struct with type parameters - recursively substitute
-            TypeDecl::Struct(name, type_params) => {
-                let substituted_params: Vec<TypeDecl> = type_params.iter()
-                    .map(|param| self.substitute_type_params(param, mapping))
-                    .collect();
-                TypeDecl::Struct(*name, substituted_params)
-            }
-
-            // Array with generic element type
-            TypeDecl::Array(element_types, size) => {
-                let substituted_elements: Vec<TypeDecl> = element_types.iter()
-                    .map(|elem| self.substitute_type_params(elem, mapping))
-                    .collect();
-                TypeDecl::Array(substituted_elements, *size)
-            }
-
-            // Dict with generic key/value types
-            TypeDecl::Dict(key_type, value_type) => {
-                let substituted_key = self.substitute_type_params(key_type, mapping);
-                let substituted_value = self.substitute_type_params(value_type, mapping);
-                TypeDecl::Dict(Box::new(substituted_key), Box::new(substituted_value))
-            }
-
-            // Tuple with generic element types
-            TypeDecl::Tuple(element_types) => {
-                let substituted_elements: Vec<TypeDecl> = element_types.iter()
-                    .map(|elem| self.substitute_type_params(elem, mapping))
-                    .collect();
-                TypeDecl::Tuple(substituted_elements)
-            }
-
-            // Other types remain unchanged
-            _ => type_decl.clone()
-        }
-    }
 }

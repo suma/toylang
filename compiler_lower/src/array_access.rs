@@ -15,7 +15,7 @@
 //! constant-index access can hit the same `ArrayLoad` instruction
 //! as runtime index without a redundant runtime `Const` round-trip.
 
-use frontend::ast::{Expr, ExprRef};
+use frontend::ast::{Expr, ExprRef, UnaryOp};
 
 use super::array_layout::leaf_scalar_count;
 use super::bindings::{
@@ -24,6 +24,16 @@ use super::bindings::{
 };
 use super::FunctionLower;
 use crate::ir::{ArraySlotId, BinOp, Const, InstKind, LocalId, Type, ValueId};
+
+/// Result of folding a constant array index against the array length.
+pub(super) enum ConstIndex {
+    /// Folded, negative-adjusted, in-bounds index.
+    Valid(usize),
+    /// Constant but out of bounds (compile-time error).
+    OutOfBounds,
+    /// Not a compile-time constant — lower as a runtime value.
+    NotConstant,
+}
 
 impl<'a> FunctionLower<'a> {
 
@@ -260,18 +270,17 @@ impl<'a> FunctionLower<'a> {
                 _ => unreachable!(),
             }
             // Element-base leaf index: const-fold or `imul(idx, leaf_count)`.
-            let base_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
-                if idx_const >= length {
-                    return Err(format!(
-                        "array index {idx_const} out of bounds (length {length})"
-                    ));
+            let base_v = match self.resolve_const_index(index_ref, length) {
+                ConstIndex::Valid(i) => self
+                    .emit(
+                        InstKind::Const(Const::U64((i * leaf_count) as u64)),
+                        Some(Type::U64),
+                    )
+                    .expect("Const returns a value"),
+                ConstIndex::OutOfBounds => {
+                    return Err(format!("array index out of bounds (length {length})"));
                 }
-                self.emit(
-                    InstKind::Const(Const::U64((idx_const * leaf_count) as u64)),
-                    Some(Type::U64),
-                )
-                .expect("Const returns a value")
-            } else {
+                ConstIndex::NotConstant => {
                 let raw_idx = self
                     .lower_expr(index_ref)?
                     .ok_or_else(|| "array index produced no value".to_string())?;
@@ -290,6 +299,7 @@ impl<'a> FunctionLower<'a> {
                     Some(Type::U64),
                 )
                 .expect("imul returns")
+                }
             };
             for (j, (local, ty)) in leaves.iter().enumerate() {
                 let leaf_idx_v = if j == 0 {
@@ -332,17 +342,16 @@ impl<'a> FunctionLower<'a> {
         // Both forms hit the same `ArrayLoad` instruction so codegen
         // treats them uniformly. Constant-index out-of-bounds is
         // caught here.
-        let idx_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
-            if idx_const >= length {
-                return Err(format!(
-                    "array index {idx_const} out of bounds (length {length})"
-                ));
+        let idx_v = match self.resolve_const_index(index_ref, length) {
+            ConstIndex::Valid(i) => self
+                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                .expect("Const returns a value"),
+            ConstIndex::OutOfBounds => {
+                return Err(format!("array index out of bounds (length {length})"));
             }
-            self.emit(InstKind::Const(Const::U64(idx_const as u64)), Some(Type::U64))
-                .expect("Const returns a value")
-        } else {
-            self.lower_expr(index_ref)?
-                .ok_or_else(|| "array index produced no value".to_string())?
+            ConstIndex::NotConstant => self
+                .lower_expr(index_ref)?
+                .ok_or_else(|| "array index produced no value".to_string())?,
         };
         Ok(self.emit(
             InstKind::ArrayLoad { slot, index: idx_v, elem_ty: element_ty },
@@ -395,17 +404,16 @@ impl<'a> FunctionLower<'a> {
                 ));
             }
         };
-        let idx_v = if let Some(idx_const) = self.try_constant_index(index_ref) {
-            if idx_const >= length {
-                return Err(format!(
-                    "array index {idx_const} out of bounds (length {length})"
-                ));
+        let idx_v = match self.resolve_const_index(index_ref, length) {
+            ConstIndex::Valid(i) => self
+                .emit(InstKind::Const(Const::U64(i as u64)), Some(Type::U64))
+                .expect("Const returns a value"),
+            ConstIndex::OutOfBounds => {
+                return Err(format!("array index out of bounds (length {length})"));
             }
-            self.emit(InstKind::Const(Const::U64(idx_const as u64)), Some(Type::U64))
-                .expect("Const returns a value")
-        } else {
-            self.lower_expr(index_ref)?
-                .ok_or_else(|| "array index produced no value".to_string())?
+            ConstIndex::NotConstant => self
+                .lower_expr(index_ref)?
+                .ok_or_else(|| "array index produced no value".to_string())?,
         };
         let v = self
             .lower_expr(value)?
@@ -434,6 +442,43 @@ impl<'a> FunctionLower<'a> {
             Expr::Identifier(sym) => self.const_values.get(&sym).and_then(|c| match c {
                 Const::U64(v) => Some(*v as usize),
                 Const::I64(v) if *v >= 0 => Some(*v as usize),
+                _ => None,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Resolve a constant array index against a known `length`, applying
+    /// Python-style negative indexing (`-1` → last element, `arr[len + i]`).
+    /// Mirrors the tree-walker so `a[-1i64]` / `a[-2i64]` work on all
+    /// backends; a constant out-of-bounds (positive or negative) is reported
+    /// so the caller emits the same compile-time error positive OOB already
+    /// produces. Returns `NotConstant` for runtime indices.
+    pub(super) fn resolve_const_index(&self, expr_ref: &ExprRef, length: usize) -> ConstIndex {
+        let Some(raw) = self.const_signed_index(expr_ref) else {
+            return ConstIndex::NotConstant;
+        };
+        let adjusted = if raw < 0 { raw + length as i128 } else { raw };
+        if adjusted >= 0 && (adjusted as u128) < length as u128 {
+            ConstIndex::Valid(adjusted as usize)
+        } else {
+            ConstIndex::OutOfBounds
+        }
+    }
+
+    /// Fold a constant index expression to a signed `i128`, accepting
+    /// `Int64` / `UInt64` / `Number` literals, `-<literal>`
+    /// (`Unary::Negate`), and top-level `const` references.
+    fn const_signed_index(&self, expr_ref: &ExprRef) -> Option<i128> {
+        let e = self.program.expression.get(expr_ref)?;
+        match e {
+            Expr::UInt64(v) => Some(v as i128),
+            Expr::Int64(v) => Some(v as i128),
+            Expr::Number(sym) => self.interner.resolve(sym)?.parse::<i128>().ok(),
+            Expr::Unary(UnaryOp::Negate, inner) => self.const_signed_index(&inner).map(|x| -x),
+            Expr::Identifier(sym) => self.const_values.get(&sym).and_then(|c| match c {
+                Const::U64(v) => Some(*v as i128),
+                Const::I64(v) => Some(*v as i128),
                 _ => None,
             }),
             _ => None,

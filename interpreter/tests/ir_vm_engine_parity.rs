@@ -148,6 +148,19 @@ fn parity_contract_passing() {
 }
 
 #[test]
+fn parity_negative_array_index() {
+    // Python-style negative indexing: a[-1] = last, a[-2] = second-last.
+    assert!(assert_engine_parity(
+        r#"
+        fn main() -> u64 {
+            val a: [u64; 5] = [10, 20, 30, 40, 50]
+            a[-1i64] + a[-2i64]
+        }
+    "#
+    ));
+}
+
+#[test]
 fn parity_str_returning_main() {
     // `main` returning a `str` — the IR VM captures the heap bytes before
     // teardown and reconstructs an Object::String matching the tree-walker.

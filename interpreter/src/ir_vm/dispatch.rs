@@ -77,7 +77,11 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             }
         }
         InstKind::PrintStr { message, newline } => {
-            let text = format!("printstr #{}", message.to_usize());
+            let text = vm
+                .interner()
+                .and_then(|i| i.resolve(*message))
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("printstr #{}", message.to_usize()));
             if *newline {
                 crate::output::println_text(&text);
             } else {

@@ -4967,8 +4967,12 @@ fn dyn_trait_mut_self_struct_return_round_trip() {
     assert_consistent(src, "dyn_mut_self_struct_return");
 }
 
+// Design-by-Contract: `requires` / `ensures` lower to plain
+// `Branch` + `Panic` blocks, so a contract-satisfying program runs
+// identically on all backends including the IR VM lane (the panic
+// arm is simply never branched to). These pin the passing path 4-way.
 #[test]
-fn debug_dbc_ir() {
+fn contract_requires_and_ensures_round_trip() {
     let src = r#"
         fn divide(a: i64, b: i64) -> i64
             requires b != 0i64
@@ -4981,6 +4985,43 @@ fn debug_dbc_ir() {
             q as u64
         }
     "#;
-    assert_consistent(src, "dbc_passing_match");
+    assert_consistent(src, "contract_requires_and_ensures");
+}
+
+#[test]
+fn contract_multiple_requires_clauses_round_trip() {
+    let src = r#"
+        fn clamp_add(a: i64, b: i64) -> i64
+            requires a >= 0i64
+            requires b >= 0i64
+            ensures result >= a
+        {
+            a + b
+        }
+        fn main() -> u64 {
+            clamp_add(30i64, 12i64) as u64
+        }
+    "#;
+    assert_consistent(src, "contract_multiple_requires");
+}
+
+#[test]
+fn contract_method_requires_round_trip() {
+    let src = r#"
+        struct Counter { n: i64 }
+        impl Counter {
+            fn bumped(self: Self, by: i64) -> i64
+                requires by > 0i64
+                ensures result > self.n
+            {
+                self.n + by
+            }
+        }
+        fn main() -> u64 {
+            val c = Counter { n: 40i64 }
+            c.bumped(2i64) as u64
+        }
+    "#;
+    assert_consistent(src, "contract_method_requires");
 }
 

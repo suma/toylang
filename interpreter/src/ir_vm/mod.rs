@@ -154,9 +154,12 @@ impl<'a> Vm<'a> {
                         }
                     }
                     Terminator::Panic { message } => {
-                        return VmResult::Diverged {
-                            message: format!("panic #{}", message.to_usize()),
-                        };
+                        let text = self
+                            .interner
+                            .and_then(|i| i.resolve(message))
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("panic #{}", message.to_usize()));
+                        return VmResult::Diverged { message: text };
                     }
                     Terminator::Unreachable => {
                         return VmResult::Diverged {
@@ -1564,5 +1567,54 @@ mod tests {
 
         let result = run_module(&module).unwrap();
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn vm_panic_resolves_message_via_interner() {
+        // A failing `requires`-style guard panics; the VM should surface
+        // the interned message text, not a `panic #N` placeholder.
+        use compiler_ir::InstKind;
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let msg_sym = interner.get_or_intern("requires violated: b != 0");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        let entry = func.add_block();
+        let fail = func.add_block();
+        func.entry = entry;
+        // entry: cond = false; br cond, <unused>, fail
+        let e = func.block_mut(entry);
+        e.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::Bool)),
+            kind: InstKind::Const(Const::Bool(false)),
+        });
+        e.terminator = Some(Terminator::Branch { cond: ValueId(0), then_blk: entry, else_blk: fail });
+        let f = func.block_mut(fail);
+        f.terminator = Some(Terminator::Panic { message: msg_sym });
+
+        // Run with interner so the panic message resolves.
+        crate::runtime_state::RT.with(|s| {
+            *s.borrow_mut() = Some(RuntimeState::new());
+        });
+        let mut vm = Vm::with_interner(&module, &interner);
+        vm.call_function(main_id, Vec::new(), None, Vec::new());
+        let res = vm.run_loop();
+        crate::runtime_state::RT.with(|s| {
+            *s.borrow_mut() = None;
+        });
+        match res {
+            VmResult::Diverged { message } => {
+                assert_eq!(message, "requires violated: b != 0");
+            }
+            _ => panic!("expected divergence"),
+        }
     }
 }

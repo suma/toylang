@@ -50,9 +50,11 @@ pub fn run_main_via_ir_vm(
     interner: &DefaultStringInterner,
 ) -> Option<RcObject> {
     let main_fn = crate::find_main_function(program, interner).ok()?;
-    // Only scalar (non-heap) `main` returns survive the VM's RuntimeState
-    // teardown as a plain value; bail on str / struct / etc.
-    if !is_scalar_return(&main_fn.return_type) {
+    // Scalar (non-heap) and `str` `main` returns can be reconstructed after
+    // the VM's RuntimeState teardown (`str` bytes are captured first). Other
+    // compound returns (struct / tuple / enum) bail to the tree-walker.
+    let returns_str = matches!(main_fn.return_type, Some(TypeDecl::String));
+    if !is_scalar_return(&main_fn.return_type) && !returns_str {
         return None;
     }
 
@@ -67,8 +69,13 @@ pub fn run_main_via_ir_vm(
     if !super::eligibility::ir_vm_supported(&module) {
         return None;
     }
-    let bits = super::run_module_with_interner(&module, Some(&interner_owned)).ok()?;
-    Some(wrap_scalar(bits, &main_fn))
+    let (bits, captured_str) =
+        super::run_module_capturing(&module, Some(&interner_owned), returns_str).ok()?;
+    if returns_str {
+        Some(Rc::new(RefCell::new(Object::String(captured_str))))
+    } else {
+        Some(wrap_scalar(bits, &main_fn))
+    }
 }
 
 /// Whether a scalar `main` return type can be faithfully wrapped from the

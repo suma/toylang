@@ -346,6 +346,19 @@ pub fn run_module_with_interner(
     module: &Module,
     interner: Option<&DefaultStringInterner>,
 ) -> Result<i64, String> {
+    run_module_capturing(module, interner, false).map(|(code, _)| code)
+}
+
+/// Like [`run_module_with_interner`] but, when `want_str` is set, also reads
+/// the `main` exit value as a `str` (the heap-backed bytes are read **before**
+/// the runtime state is torn down). `want_str` must only be set when `main`
+/// genuinely returns `str` — otherwise a scalar value would be misread as a
+/// string handle (garbage length).
+pub fn run_module_capturing(
+    module: &Module,
+    interner: Option<&DefaultStringInterner>,
+    want_str: bool,
+) -> Result<(i64, String), String> {
     // Find main by export_name (works for both single-function and multi-function modules).
     let main_id = module.functions.iter().enumerate().find(|(_, f)| f.export_name == "main").map(|(i, _)| FuncId(i as u32)).ok_or("no main function")?;
 
@@ -360,7 +373,16 @@ pub fn run_module_with_interner(
         };
         vm.call_function(main_id, Vec::new(), None, Vec::new());
         match vm.run_loop() {
-            VmResult::ExitCode(code) => Ok(code),
+            VmResult::ExitCode(code) => {
+                // Read the value as a str (only when requested) while the
+                // heap is still alive.
+                let s = if want_str {
+                    heap::read_str(code as u64)
+                } else {
+                    String::new()
+                };
+                Ok((code, s))
+            }
             VmResult::Diverged { message } => Err(message),
         }
     };

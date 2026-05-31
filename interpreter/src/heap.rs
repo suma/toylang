@@ -209,10 +209,12 @@ impl HeapManager {
             return None;
         }
         let off = addr - 1;
-        if off + len > self.memory.len() {
-            return None;
+        // Checked add: a misread length (e.g. interpreting a scalar as a str
+        // handle) must not overflow-panic — fail the bounds check instead.
+        match off.checked_add(len) {
+            Some(end) if end <= self.memory.len() => Some(self.memory[off..end].to_vec()),
+            _ => None,
         }
-        Some(self.memory[off..off + len].to_vec())
     }
 
     /// Raw, base-agnostic u64 read (little-endian) from an interior address.

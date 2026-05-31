@@ -148,6 +148,18 @@ fn parity_contract_passing() {
 }
 
 #[test]
+fn parity_str_returning_main() {
+    // `main` returning a `str` — the IR VM captures the heap bytes before
+    // teardown and reconstructs an Object::String matching the tree-walker.
+    assert!(assert_engine_parity(
+        r#"
+        fn greet(name: str) -> str { "hello ".concat(name) }
+        fn main() -> str { greet("world") }
+    "#
+    ));
+}
+
+#[test]
 fn parity_string_literal_match() {
     // str equality in `match` compares content, not the handle pointer.
     assert!(assert_engine_parity(

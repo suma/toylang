@@ -340,9 +340,21 @@ divergence は **2 件**（`__builtin_sizeof`）まで縮小：
 `Array` を再構築。`execute_program` は IR VM をデフォルトに変更し、tree-walker は
 `fb_lower_err` / `fb_ineligible` 等の最後の fallback に。
 
-`fb_lower_err` は compiler MVP の真のカバレッジギャップ（dict 等、および closure print /
-closure binding copy 等の lower 制限）。tree-walker 撤去（Phase 4 完了）にはこれらの
-解消が前提。
+`fb_lower_err` は compiler MVP の真のカバレッジギャップ。主なカテゴリ（2026-06-01 時点、
+`TOY_IR_VM_TRACE=1` で計測、合計 ~176 件）:
+- **dict**: `DictLiteral` 未 lower（16 件）
+- **array return**: `Array([...], N)` を関数の param/return type に書けない（18 件）
+- **ptr_read expression**: 注釈なし `__builtin_ptr_read` の型推論不可（13 件）
+- **`self: Self` method param**: generic struct の method で by-value self が不可（11 件）
+- **match enum**: enum scrutinee の `match` が i64/u64/bool 以外に未対応（9 件）
+- **assert computed message**: `assert(cond, computed_str)` のメッセージがリテラル必須（6 件）
+- **println compound**: struct/tuple/enum/clojure 等を `println` に渡せない（6 件）
+- **generic struct annotation**: `val x = Container::new()` の型注釈必須（8 件）
+- **その他**: `MemSet` / ネスト tuple param / method-only generic inference 等
+
+**解消済み**: closure print (`<closure/N>`) + closure binding copy (`val g = f`) は
+2026-06-01 に `compiler_lower` 側を修正して IR VM lane へ昇格。tree-walker 撤去
+（Phase 4 完了）には残り ~176 件の解消が前提。
 
 ## 関連ドキュメント
 

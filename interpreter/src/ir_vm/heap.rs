@@ -99,53 +99,69 @@ pub fn mem_copy(src: u64, dest: u64, size: u64) {
     let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
 }
 
-/// Allocate a string object on the heap and return its handle (u64 address).
-pub fn alloc_string(text: String) -> u64 {
-    let addr = heap_alloc(8);
+/// Allocate a `str` on the heap using the AOT runtime layout
+/// `[bytes...][NUL][u64 len LE]` and return the str value — a pointer to
+/// the trailing `u64 len` field (so `byte_start = value - len - 1`). This
+/// keeps the IR VM byte-uniform with AOT / `__builtin_str_to_ptr`, so
+/// `as_ptr` + `PtrRead(U8)` and `mem_copy` over string buffers work.
+pub fn alloc_str_bytes(bytes: &[u8]) -> u64 {
+    let len = bytes.len();
+    let base = heap_alloc((len + 1 + 8) as u64);
+    if base == 0 {
+        return 0;
+    }
     with_heap(|h| {
-        h.typed_write(addr as usize, 0, RcObject::new(RefCell::new(Object::String(text))));
+        h.write_bytes_raw(base as usize, bytes); // [0..len]
+        h.write_bytes_raw(base as usize + len, &[0u8]); // NUL at [len]
+        h.write_bytes_raw(base as usize + len + 1, &(len as u64).to_le_bytes());
     });
-    addr
+    base + len as u64 + 1
 }
 
-/// Get the length of a string at the given address.
-pub fn string_len(addr: u64) -> u64 {
-    with_heap(|h| {
-        h.typed_read(addr as usize, 0)
-            .map(|rc| match &*rc.borrow() {
-                Object::String(s) => s.len() as u64,
-                Object::ConstString(sym) => 0, // Would need interner; fallback
-                _ => 0,
-            })
-            .unwrap_or(0)
-    })
-    .unwrap_or(0)
+/// Allocate a `str` from owned text.
+pub fn alloc_string(text: String) -> u64 {
+    alloc_str_bytes(text.as_bytes())
 }
 
-/// Concatenate two strings and return the new string's handle.
-pub fn concat_strings(addr1: u64, addr2: u64) -> u64 {
-    let s1 = with_heap(|h| {
-        h.typed_read(addr1 as usize, 0)
-            .map(|rc| match &*rc.borrow() {
-                Object::String(s) => s.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default()
+/// Read the bytes of a `str` value (pointer to the len field) into a String.
+pub fn read_str(value: u64) -> String {
+    if value == 0 {
+        return String::new();
+    }
+    let len = string_len(value) as usize;
+    let byte_start = value.wrapping_sub(len as u64 + 1);
+    let bytes = with_heap(|h| h.read_bytes_raw(byte_start as usize, len))
+        .flatten()
+        .unwrap_or_default();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Length of the `str` at `value` (read the trailing u64 len field).
+pub fn string_len(value: u64) -> u64 {
+    with_heap(|h| h.read_u64_raw(value as usize))
+        .flatten()
+        .unwrap_or(0)
+}
+
+/// Concatenate two `str` values, returning a fresh handle (AOT layout).
+pub fn concat_strings(a: u64, b: u64) -> u64 {
+    let la = string_len(a) as usize;
+    let lb = string_len(b) as usize;
+    let a_start = a.wrapping_sub(la as u64 + 1);
+    let b_start = b.wrapping_sub(lb as u64 + 1);
+    let (mut ab, bb) = with_heap(|h| {
+        let aa = h.read_bytes_raw(a_start as usize, la).unwrap_or_default();
+        let bb = h.read_bytes_raw(b_start as usize, lb).unwrap_or_default();
+        (aa, bb)
     })
     .unwrap_or_default();
-    let s2 = with_heap(|h| {
-        h.typed_read(addr2 as usize, 0)
-            .map(|rc| match &*rc.borrow() {
-                Object::String(s) => s.clone(),
-                _ => String::new(),
-            })
-            .unwrap_or_default()
-    })
-    .unwrap_or_default();
-    alloc_string(s1 + &s2)
+    ab.extend_from_slice(&bb);
+    alloc_str_bytes(&ab)
 }
 
-/// Format a scalar value as a string and return its handle.
+/// Format a scalar value as a string and return its handle. `Str` is
+/// identity (mirrors the AOT `toy_to_string_str`), so interpolating an
+/// already-`str` value reuses its handle.
 pub fn to_string_value(slot: RawSlot, ty: Type) -> u64 {
     let text = match ty {
         Type::I64 => format!("{}", unsafe { slot.i64 }),
@@ -156,11 +172,23 @@ pub fn to_string_value(slot: RawSlot, ty: Type) -> u64 {
         Type::U16 => format!("{}", unsafe { slot.u64 as u16 }),
         Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
         Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
-        Type::F64 => format!("{}", unsafe { slot.f64 }),
+        Type::F64 => format_f64(unsafe { slot.f64 }),
         Type::Bool => format!("{}", unsafe { slot.bool }),
+        Type::Str => return unsafe { slot.u64 }, // identity
         _ => format!("{:?}", unsafe { slot.u64 }),
     };
     alloc_string(text)
+}
+
+/// Mirror the AOT `toy_to_string_f64` / interpreter f64 display: integral
+/// values render with a trailing `.0`, everything else uses the shortest
+/// round-trippable form.
+pub fn format_f64(v: f64) -> String {
+    if v == v.trunc() && v.is_finite() {
+        format!("{v:.1}")
+    } else {
+        format!("{v}")
+    }
 }
 
 fn slot_to_object(slot: RawSlot, ty: Type) -> Object {

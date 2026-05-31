@@ -105,8 +105,7 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             }
         }
         InstKind::ConstStrBytes { bytes } => {
-            let text = String::from_utf8_lossy(bytes).to_string();
-            let addr = heap::alloc_string(text);
+            let addr = heap::alloc_str_bytes(bytes);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
@@ -528,8 +527,9 @@ fn format_scalar(slot: RawSlot, ty: Type) -> String {
         Type::U16 => format!("{}", unsafe { slot.u64 as u16 }),
         Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
         Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
-        Type::F64 => format!("{}", unsafe { slot.f64 }),
+        Type::F64 => heap::format_f64(unsafe { slot.f64 }),
         Type::Bool => format!("{}", unsafe { slot.bool }),
+        Type::Str => heap::read_str(unsafe { slot.u64 }),
         _ => format!("{:?}", unsafe { slot.u64 }),
     }
 }

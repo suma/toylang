@@ -1617,4 +1617,31 @@ mod tests {
             _ => panic!("expected divergence"),
         }
     }
+
+    #[test]
+    fn vm_str_raw_byte_layout_round_trip() {
+        // Pin the AOT-compatible `[bytes][NUL][u64 len]` layout: a str value
+        // points at the len field, byte_start = value - len - 1, and the
+        // bytes are readable from the raw buffer (as `__builtin_str_to_ptr`
+        // + PtrRead(U8) would do).
+        crate::runtime_state::RT.with(|s| {
+            *s.borrow_mut() = Some(RuntimeState::new());
+        });
+        let v = super::heap::alloc_str_bytes(b"hi!");
+        assert_eq!(super::heap::string_len(v), 3);
+        assert_eq!(super::heap::read_str(v), "hi!");
+        let byte_start = v - 3 - 1;
+        // Byte-level reads through the same path PtrRead(U8) uses.
+        let b0 = super::heap::ptr_read(byte_start, 0, compiler_ir::Type::U8).unwrap();
+        let b2 = super::heap::ptr_read(byte_start, 2, compiler_ir::Type::U8).unwrap();
+        assert_eq!(unsafe { b0.u64 }, b'h' as u64);
+        assert_eq!(unsafe { b2.u64 }, b'!' as u64);
+        // Concatenation preserves bytes and length.
+        let w = super::heap::alloc_str_bytes(b"yo");
+        let cat = super::heap::concat_strings(v, w);
+        assert_eq!(super::heap::read_str(cat), "hi!yo");
+        crate::runtime_state::RT.with(|s| {
+            *s.borrow_mut() = None;
+        });
+    }
 }

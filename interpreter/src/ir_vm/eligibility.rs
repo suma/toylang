@@ -79,13 +79,11 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::CallWithSelfWritebackCompound { .. }
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
-        | InstKind::StoreRef { .. } => true,
-        // `MemCopy` is the entry point for byte-level `str` / `String`
-        // buffer construction, whose VM representation (`Object::String`
-        // in a typed slot) diverges from the AOT raw-byte layout. Keep it
-        // ineligible so those programs fall back to the tree-walker, the
-        // same limitation Phase 2 documented for `__builtin_str_to_ptr`.
-        InstKind::MemCopy { .. } => false,
+        | InstKind::StoreRef { .. }
+        // Phase 3e: `str` now uses the AOT raw-byte layout
+        // (`[bytes][NUL][u64 len]`), so byte-level string construction
+        // via `MemCopy` round-trips correctly.
+        | InstKind::MemCopy { .. } => true,
     }
 }
 

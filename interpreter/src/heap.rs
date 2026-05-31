@@ -199,6 +199,42 @@ impl HeapManager {
         Some(u64::from_le_bytes(buf))
     }
 
+    /// Raw, base-agnostic byte read. Unlike `read_scalar_bytes`, `addr`
+    /// need not be an allocation base — any interior address works because
+    /// the byte buffer is contiguous and 1-based (`memory_offset = addr-1`).
+    /// Used by the `str` runtime layout, whose value points at the trailing
+    /// `u64 len` field (interior to its allocation).
+    pub fn read_bytes_raw(&self, addr: usize, len: usize) -> Option<Vec<u8>> {
+        if addr == 0 {
+            return None;
+        }
+        let off = addr - 1;
+        if off + len > self.memory.len() {
+            return None;
+        }
+        Some(self.memory[off..off + len].to_vec())
+    }
+
+    /// Raw, base-agnostic u64 read (little-endian) from an interior address.
+    pub fn read_u64_raw(&self, addr: usize) -> Option<u64> {
+        let bytes = self.read_bytes_raw(addr, 8)?;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    /// Raw, base-agnostic byte write. `addr` may be interior; the caller is
+    /// responsible for the region being within an allocation it owns.
+    pub fn write_bytes_raw(&mut self, addr: usize, bytes: &[u8]) -> bool {
+        if addr == 0 {
+            return false;
+        }
+        let off = addr - 1;
+        if off + bytes.len() > self.memory.len() {
+            return false;
+        }
+        self.memory[off..off + bytes.len()].copy_from_slice(bytes);
+        true
+    }
+
     /// Write u64 to memory at address + offset
     pub fn write_u64(&mut self, addr: usize, offset: usize, value: u64) -> bool {
         if addr == 0 {

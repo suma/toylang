@@ -9,6 +9,8 @@ pub mod heap;
 pub mod jit;
 pub mod module_integration;
 pub mod output;
+pub mod runtime_state;
+pub mod ir_vm;
 
 use std::rc::Rc;
 use std::collections::HashMap;

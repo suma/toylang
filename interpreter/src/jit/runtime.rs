@@ -17,6 +17,7 @@ use string_interner::DefaultStringInterner;
 
 use crate::heap::{Allocator, GlobalAllocator, HeapManager};
 use crate::object::{Object, RcObject};
+use crate::runtime_state::{with_active_allocator, with_heap, RT};
 
 use super::codegen;
 use super::eligibility::{self, EligibleSet, MonoKey, ScalarTy};
@@ -43,28 +44,7 @@ fn mono_display_name(interner: &DefaultStringInterner, key: &MonoKey) -> String 
     }
 }
 
-// JIT host helpers share a HeapManager + allocator stack with whoever
-// called us. Both live in a thread-local for the duration of
-// try_execute_main; extern "C" callbacks reach in to read/mutate.
-//
-// The runtime stores every allocator we've ever materialized (the
-// "registry") plus the active allocator stack. Heap builtins dispatch
-// through `active.last()`, so `with allocator = expr { … }` simply
-// pushes / pops a registry index on entry / exit.
-struct JitRuntime {
-    heap: Rc<RefCell<HeapManager>>,
-    /// Every allocator created during this JIT run. Index 0 is the
-    /// `GlobalAllocator`; arenas allocated via `__builtin_arena_allocator`
-    /// land at later indices. Codegen treats indices as opaque u64
-    /// handles.
-    registry: Vec<Rc<dyn Allocator>>,
-    /// Active allocator stack — indices into `registry`. The bottom is
-    /// always the global allocator (index 0).
-    active: Vec<usize>,
-}
-
 thread_local! {
-    static JIT_RT: RefCell<Option<JitRuntime>> = const { RefCell::new(None) };
     /// Raw pointer to the program's `DefaultStringInterner`, valid only
     /// while `try_execute_main` is on the stack. The `jit_panic` helper
     /// dereferences this to resolve a `DefaultSymbol` (passed as `u64`)
@@ -74,24 +54,6 @@ thread_local! {
     /// returning so the pointer can never outlive the borrow.
     static JIT_STRING_INTERNER: RefCell<Option<*const DefaultStringInterner>> =
         const { RefCell::new(None) };
-}
-
-fn with_heap<R>(f: impl FnOnce(&mut HeapManager) -> R) -> Option<R> {
-    JIT_RT.with(|slot| {
-        let borrowed = slot.borrow();
-        borrowed.as_ref().map(|rt| f(&mut rt.heap.borrow_mut()))
-    })
-}
-
-/// Look up the active allocator (top of stack); falls back to None
-/// when the runtime hasn't been installed.
-fn with_active_allocator<R>(f: impl FnOnce(&Rc<dyn Allocator>) -> R) -> Option<R> {
-    JIT_RT.with(|slot| {
-        let borrowed = slot.borrow();
-        let rt = borrowed.as_ref()?;
-        let idx = rt.active.last().copied()?;
-        rt.registry.get(idx).map(f)
-    })
 }
 
 // =============================================================================
@@ -299,26 +261,23 @@ extern "C" fn jit_exp_f64(x: f64) -> f64 {
 }
 
 extern "C" fn jit_current_allocator() -> u64 {
-    JIT_RT
-        .with(|slot| {
-            let borrowed = slot.borrow();
-            borrowed.as_ref().and_then(|rt| rt.active.last().copied())
-        })
-        .map(|i| i as u64)
-        .unwrap_or(0)
+    RT.with(|slot| {
+        let borrowed = slot.borrow();
+        borrowed.as_ref().map(|rt| rt.alloc_current()).unwrap_or(0)
+    })
 }
 
 extern "C" fn jit_with_allocator_push(handle: u64) {
-    JIT_RT.with(|slot| {
+    RT.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         if let Some(rt) = borrowed.as_mut() {
-            rt.active.push(handle as usize);
+            rt.alloc_push(handle);
         }
     });
 }
 
 extern "C" fn jit_with_allocator_pop() {
-    JIT_RT.with(|slot| {
+    RT.with(|slot| {
         let mut borrowed = slot.borrow_mut();
         if let Some(rt) = borrowed.as_mut() {
             // The bottom of the stack (default allocator) must always
@@ -1212,12 +1171,12 @@ fn execute_cached(
 ) -> RcObject {
     let heap = Rc::new(RefCell::new(HeapManager::new()));
     let global: Rc<dyn Allocator> = Rc::new(GlobalAllocator::new(heap.clone()));
-    let rt = JitRuntime {
+    let rt = crate::runtime_state::RuntimeState {
         heap,
         registry: vec![global],
         active: vec![0],
     };
-    JIT_RT.with(|s| *s.borrow_mut() = Some(rt));
+    RT.with(|s| *s.borrow_mut() = Some(rt));
     // Hand the helper layer a stable pointer to the program's interner
     // so `jit_panic` can resolve a `DefaultSymbol` (passed as u64) into
     // the user's panic message text. The pointer stays valid for as long
@@ -1226,7 +1185,7 @@ fn execute_cached(
     struct HeapGuard;
     impl Drop for HeapGuard {
         fn drop(&mut self) {
-            JIT_RT.with(|s| *s.borrow_mut() = None);
+            RT.with(|s| *s.borrow_mut() = None);
             JIT_STRING_INTERNER.with(|s| *s.borrow_mut() = None);
         }
     }

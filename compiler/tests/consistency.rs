@@ -218,42 +218,68 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
     result
 }
 
+/// Run `source` through the IR VM (AST → lowering → execute).
+/// Returns `None` when lowering fails, type-check fails, or the
+/// lowered IR contains instructions outside the Phase 1 scalar subset.
+fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    let mut program = parser.parse_program().ok()?;
+    let interner = parser.get_string_interner();
+    interpreter::check_typing_with_core_modules(
+        &mut program,
+        interner,
+        Some(source),
+        Some("test.t"),
+        if with_core { Some(core_modules_dir()) } else { None }.as_deref(),
+    )
+    .ok()?;
+    let contract_msgs = compiler::ContractMessages::intern(interner);
+    let ir_module = compiler::lower::lower_program(&program, interner, &contract_msgs, false).ok()?;
+    if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
+        return None;
+    }
+    interpreter::ir_vm::run_module(&ir_module).ok()
+}
+
 /// Assert that the interpreter result, the JIT-compiled binary's exit
 /// code, and the AOT-compiled binary's exit code all agree, with `&
 /// 0xff` shell truncation applied uniformly so test programs need not
 /// stay below 256 to pass. Any divergence pinpoints which pair drifted.
 ///
 /// Each path tries to compile / run *without* auto-loading the core
-/// modules first. When all three paths agree under that lite
+/// modules first. When all three backends agree under that lite
 /// configuration the test stays on the fast path and saves roughly
 /// 150 ms × 3 spawns per sub-test. Any failure (e.g. the source
 /// references a stdlib symbol) falls back to the full core-aware
 /// path, so the visible semantics never change.
+///
+/// Phase 1+: when the IR VM lane is eligible, a 4-way agreement
+/// (interpreter / compiler / JIT / IR VM) is required on the fast path.
 fn assert_consistent(source: &str, stem: &str) {
     if skip_e2e() {
         return;
     }
-    // Fast path: if all three backends succeed without
-    // auto-loading core modules, we use in-process drivers
-    // (`interpreter::execute_program`, `compile_file`, and
-    // `compile_to_jit_main_with_options`) to skip both the
-    // stdlib type-check (~150 ms) AND the JIT spawn (~1-2 s of
-    // interpreter binary startup). The compiler-side JIT shares
-    // codegen with AOT, so the in-process JIT check still
-    // exercises the cranelift pipeline end-to-end.
+    // Fast path: if all backends succeed without auto-loading core
+    // modules, we use in-process drivers to skip both the stdlib
+    // type-check (~150 ms) AND the JIT spawn (~1-2 s of interpreter
+    // binary startup).
     if let Some(interp) = interpreter_value_with_core(source, None)
         && let Some(compiled) = try_compiler_exit_code(source, stem, false)
-            && let Ok(jit_prog) = compile_jit_lazy_core(source) {
-                let jit = jit_prog.run();
-                let compiled = compiled as u64;
-                if interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff {
-                    return;
-                }
-            }
-            // Disagreement on the lite path falls through to the
-            // canonical full path below, so the diagnostic the
-            // user sees is the one from the configuration that
-            // matches the production binaries.
+        && let Ok(jit_prog) = compile_jit_lazy_core(source)
+    {
+        let jit = jit_prog.run();
+        let compiled = compiled as u64;
+        let mut all_match = interp & 0xff == compiled & 0xff && interp & 0xff == jit & 0xff;
+        if let Some(ir_vm) = ir_vm_exit_code(source, false) {
+            all_match &= interp & 0xff == (ir_vm as u64) & 0xff;
+        }
+        if all_match {
+            return;
+        }
+    }
+    // Disagreement on the lite path falls through to the canonical
+    // full path below, so the diagnostic the user sees is from the
+    // configuration that matches the production binaries.
     let interp = interpreter_value(source);
     let compiled = compiler_exit_code(source, stem, true) as u64;
     let jit = jit_exit_code(source, stem, true) as u64;
@@ -267,6 +293,13 @@ fn assert_consistent(source: &str, stem: &str) {
         jit & 0xff,
         "interpreter={interp} jit={jit} for source:\n{source}",
     );
+    if let Some(ir_vm) = ir_vm_exit_code(source, true) {
+        assert_eq!(
+            interp & 0xff,
+            (ir_vm as u64) & 0xff,
+            "interpreter={interp} ir_vm={ir_vm} for source:\n{source}",
+        );
+    }
 }
 
 /// Run `source` through the in-process interpreter (tree-walker) and

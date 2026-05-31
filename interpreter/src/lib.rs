@@ -805,16 +805,13 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         }
     }
 
-    // Opt-in IR VM execution path (`TOY_IR_VM=1`). Runs the type-checked
-    // program through the shared IR (compiler_lower → ir_vm) instead of the
-    // tree-walker. Placed *after* the JIT fast-path so that when the JIT is
-    // also enabled it wins (the IR VM does not shadow JIT-specific tests);
-    // the IR VM is the validation engine when the JIT is off. Transparently
-    // falls through to the tree-walker when the program is ineligible /
-    // non-scalar-returning / diverges, so enabling it never changes a
-    // successful run's result — only which engine produced it. Default-off
-    // keeps every existing path unchanged.
-    if let Some(obj) = ir_vm::lift::try_execute_main(program, string_interner) {
+    // Phase 4: IR VM is the default execution engine.  It runs the
+    // type-checked program through the shared IR (compiler_lower →
+    // ir_vm).  When the program is ineligible / non-scalar-returning /
+    // lower fails / diverges, we fall back to the tree-walker so that
+    // compiler MVP gaps do not break existing tests.  Placed *after*
+    // the JIT fast-path so JIT-specific tests are not shadowed.
+    if let Some(obj) = ir_vm::lift::run_main_via_ir_vm(program, string_interner) {
         return Ok(obj);
     }
 

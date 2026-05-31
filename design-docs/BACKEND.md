@@ -257,16 +257,16 @@ lowering 時に埋め込まれるため、バックエンドは Branch / Panic �
 
 ```
 execute_program(File, interner, ...) -> RcObject
-  1. find main
-  2. #[cfg(jit)]  jit::try_execute_main      （INTERPRETER_JIT=1 のとき。JIT が勝つ）
-  3.              ir_vm::lift::try_execute_main（TOY_IR_VM=1 のとき。scalar/str 戻りのみ）
-  4.              tree-walker（eval.evaluate_function）   ← デフォルト
+  1. #[cfg(jit)]  jit::try_execute_main      （INTERPRETER_JIT=1 のとき。JIT が勝つ）
+  2.              ir_vm::lift::run_main_via_ir_vm（Phase 4 デフォルト。compound 戻りも対応）
+  3.              tree-walker（eval.evaluate_function）   ← fb_lower_err / ineligible の fallback
 ```
 
 - JIT を先に試すことで「JIT 有効時は JIT が勝つ（JIT 固有テストを shadow しない）、
-  JIT 無効時は IR VM が validation engine」という優先順位（Phase 4-step4）。
-- いずれの opt-in 経路も `Some` を返せば早期 return、`None` なら次へ fall through。
-- **デフォルト（環境変数なし）は tree-walker のみ** = 既存挙動は完全不変。
+  JIT 無効時は IR VM がデフォルト」という優先順位（Phase 4-step10）。
+- IR VM は env 非依存 (`run_main_via_ir_vm`) で常に最初に試行。`Some` を返せば早期 return、
+  `None` なら tree-walker へ fall through（compiler MVP gap / ineligible プログラムの救済）。
+- **tree-walker は fallback のみ**。新規テストは IR VM lane で pin する。
 
 ## 共有ランタイム（`interpreter/src/runtime_state.rs`）
 
@@ -334,9 +334,15 @@ divergence は **2 件**（`__builtin_sizeof`）まで縮小：
   （by-value）。該当テストを spec 準拠の `&mut self` に修正し 4-way 一致（tree-walker の
   `self: Self` 過剰共有は削除時に解消）。
 
-`fb_nonscalar_return`（struct/tuple/enum を返す main）は leaf 再構築が未実装で fallback。
-`fb_lower_err` は compiler MVP の真のカバレッジギャップ（dict 等）。tree-walker 撤去
-（Phase 4 完了）にはこれらの解消が前提。
+`fb_nonscalar_return`（struct/tuple/enum/array を返す main）は **2026-06-01 に解消**。
+`lift.rs` の `reconstruct_object` で `compiler_ir::Module` の `struct_defs` / `enum_defs` /
+`tuple_defs` を参照し、flat leaf slots から `Object::Struct` / `Tuple` / `EnumVariant` /
+`Array` を再構築。`execute_program` は IR VM をデフォルトに変更し、tree-walker は
+`fb_lower_err` / `fb_ineligible` 等の最後の fallback に。
+
+`fb_lower_err` は compiler MVP の真のカバレッジギャップ（dict 等、および closure print /
+closure binding copy 等の lower 制限）。tree-walker 撤去（Phase 4 完了）にはこれらの
+解消が前提。
 
 ## 関連ドキュメント
 

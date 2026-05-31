@@ -46,6 +46,10 @@ pub struct Vm<'a> {
     /// trait declaration order), matching the AOT vtable layout so a
     /// `PtrRead(vtable_ptr, idx*8, U64)` recovers the dispatch FuncId.
     vtable_addrs: HashMap<(DefaultSymbol, DefaultSymbol), u64>,
+    /// When `main` returns a compound value, the full flat leaf list is
+    /// preserved here so the caller can reconstruct `Object::Struct` /
+    /// `Tuple` / `EnumVariant`.
+    pub(crate) main_return_slots: Vec<RawSlot>,
 }
 
 impl<'a> Vm<'a> {
@@ -55,6 +59,7 @@ impl<'a> Vm<'a> {
             frames: Vec::new(),
             interner: None,
             vtable_addrs: HashMap::new(),
+            main_return_slots: Vec::new(),
         }
     }
 
@@ -64,6 +69,7 @@ impl<'a> Vm<'a> {
             frames: Vec::new(),
             interner: Some(interner),
             vtable_addrs: HashMap::new(),
+            main_return_slots: Vec::new(),
         }
     }
 
@@ -140,6 +146,7 @@ impl<'a> Vm<'a> {
                             } else {
                                 unsafe { ret_slots[0].i64 }
                             };
+                            self.main_return_slots = ret_slots;
                             return VmResult::ExitCode(code);
                         }
                         // Wire the scalar return into the caller's value map.
@@ -357,7 +364,7 @@ pub fn run_module_with_interner(
     module: &Module,
     interner: Option<&DefaultStringInterner>,
 ) -> Result<i64, String> {
-    run_module_capturing(module, interner, false).map(|(code, _)| code)
+    run_module_capturing(module, interner, false).map(|(code, _, _)| code)
 }
 
 /// Like [`run_module_with_interner`] but, when `want_str` is set, also reads
@@ -365,11 +372,14 @@ pub fn run_module_with_interner(
 /// the runtime state is torn down). `want_str` must only be set when `main`
 /// genuinely returns `str` — otherwise a scalar value would be misread as a
 /// string handle (garbage length).
+///
+/// Also returns the full flat leaf list (`main_return_slots`) so compound
+/// main returns can be reconstructed by the caller.
 pub fn run_module_capturing(
     module: &Module,
     interner: Option<&DefaultStringInterner>,
     want_str: bool,
-) -> Result<(i64, String), String> {
+) -> Result<(i64, String, Vec<RawSlot>), String> {
     // Find main by export_name (works for both single-function and multi-function modules).
     let main_id = module.functions.iter().enumerate().find(|(_, f)| f.export_name == "main").map(|(i, _)| FuncId(i as u32)).ok_or("no main function")?;
 
@@ -392,7 +402,7 @@ pub fn run_module_capturing(
                 } else {
                     String::new()
                 };
-                Ok((code, s))
+                Ok((code, s, vm.main_return_slots))
             }
             VmResult::Diverged { message } => Err(message),
         }

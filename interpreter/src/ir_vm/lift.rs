@@ -96,7 +96,19 @@ pub fn run_main_via_ir_vm(
         };
     trace("ran");
     if returns_str {
-        Some(Rc::new(RefCell::new(Object::String(captured_str))))
+        // Mirror the tree-walker's str representation: a *plain string
+        // literal* stays an interned `Object::ConstString` (it was interned
+        // at parse time, so it's already present in the interner), while a
+        // *computed* string (concat / interpolation) is an owned
+        // `Object::String`. We can't see which expression produced the value
+        // here, so approximate by content: an already-interned byte sequence
+        // is treated as a literal. (A computed string that coincidentally
+        // equals an existing literal is the only mismatch — rare and benign.)
+        let obj = match interner_owned.get(captured_str.as_str()) {
+            Some(sym) => Object::ConstString(sym),
+            None => Object::String(captured_str),
+        };
+        Some(Rc::new(RefCell::new(obj)))
     } else {
         Some(wrap_scalar(bits, &main_fn))
     }

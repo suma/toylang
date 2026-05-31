@@ -1047,15 +1047,18 @@ fn main() -> u64 {
 
     #[test]
     fn test_field_assign_visible_through_method() {
-        // Because Object::Struct is shared via Rc<RefCell<_>>, mutating a
-        // field inside a method must be observable on the caller's binding.
+        // Per docs/language.md, mutation through a method propagates to the
+        // caller only with a `&mut self` receiver (Self-out-parameter
+        // writeback); `self: Self` is by-value and its mutations stay local.
+        // Use `&mut self` so the behaviour matches on every backend
+        // (tree-walker / AOT / IR VM), not just the tree-walker's Rc sharing.
         let program = r#"
 struct Counter {
     count: u64,
 }
 
 impl Counter {
-    fn inc(self: Self) -> u64 {
+    fn inc(&mut self) -> u64 {
         self.count = self.count + 1u64
         self.count
     }
@@ -1139,7 +1142,7 @@ impl Counter {
         Counter { count: 0u64 }
     }
 
-    fn inc(self: Self) -> u64 {
+    fn inc(&mut self) -> u64 {
         self.count = self.count + 1u64
         self.count
     }

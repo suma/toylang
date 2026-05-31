@@ -313,14 +313,26 @@ TOY_IR_VM=1 PROPTEST_CASES=16 cargo nextest run -p interpreter
 
 IR VM は Phase 3 で全 `InstKind` を実装済み。Phase 4 で crate 再編 + fallback 配線 +
 reachability eligibility + 各種ギャップ解消を実施し、`TOY_IR_VM=1` での tree-walker との
-divergence は 4 件まで縮小：
+divergence は **2 件**（`__builtin_sizeof`）まで縮小：
 
-1. **`__builtin_sizeof`（enum / generic）×2**: tree-walker は runtime 値ベース（variant 固有、
-   `None=1` / `Some=9`）、compiler/IR VM は型ベース（`max variant=9`）。**型ベースが canonical**
-   と決定済み（C/Rust `size_of` と一致、`List<T>` の要素サイズ算出に必須）。frontend 定数畳み込み
-   pass か tree-walker 削除時に自然解消。generic 経由の `sizeof(bool)=8` は別途 compiler
-   monomorphization のバグ。
-2. **struct field mutation の method 越し可視性 ×2**: 調査中。
+- **`__builtin_sizeof`（enum / generic）×2**: tree-walker は runtime 値ベース（variant 固有、
+  `None=1` / `Some=9`）、compiler/IR VM は型ベース（`max variant=9`）。**型ベースが canonical**
+  と決定済み（C/Rust `size_of` と一致、`List<T>` の要素サイズ算出に必須）。frontend 定数畳み込み
+  pass か tree-walker 削除時に自然解消。generic 経由の `sizeof(bool)=8` は別途 compiler
+  monomorphization のバグ。
+
+解消済みの主な意味差（参考）：
+
+- **`val` 再代入**: frontend type checker で compile-time error 化（spec 準拠）。
+- **負数 array index**（`a[-1]`）: `compiler_lower` の `resolve_const_index` で定数 index を
+  負数調整。AOT / IR VM 共通。
+- **str repr**（`ConstString` / `String`）: str-returning main で interner 既存判定により
+  literal は `ConstString`、computed は `String` を返す近似。
+- **struct field mutation の method 越し可視性**: spec（docs/language.md）は `self: Self` を
+  by-value（mutation は local）、`&mut self` のみ writeback で伝播と規定。tree-walker は
+  `Rc<RefCell>` 共有で `self: Self` も伝播させていた（spec 違反）。AOT / IR VM は spec 準拠
+  （by-value）。該当テストを spec 準拠の `&mut self` に修正し 4-way 一致（tree-walker の
+  `self: Self` 過剰共有は削除時に解消）。
 
 `fb_nonscalar_return`（struct/tuple/enum を返す main）は leaf 再構築が未実装で fallback。
 `fb_lower_err` は compiler MVP の真のカバレッジギャップ（dict 等）。tree-walker 撤去

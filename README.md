@@ -482,6 +482,7 @@ The implementation includes comprehensive documentation, extensive testing, and 
 - **Generic Type System**: Generic functions / structures / impls with constraint-based inference and `<A: Allocator>` bounds
 - **Allocator system**: `with allocator = expr { … }` lexically-scoped allocator binding, ambient sugar, Arena / FixedBuffer / Global allocators (see [`design-docs/ALLOCATOR_PLAN.md`](design-docs/ALLOCATOR_PLAN.md))
 - **Cranelift JIT** (default-on cargo feature, `INTERPRETER_JIT=1` to opt in at runtime): native-code compilation for numeric / bool / struct / tuple / `f64` subsets, with `panic("literal")` and `assert(cond, "literal")` lowered through a host helper + `trap` (see [`design-docs/JIT.md`](design-docs/JIT.md))
+- **Multi-backend Architecture**: Tree-walker (reference oracle) + AOT compiler (IR → cranelift → object file) + Cranelift JIT (AST direct) + IR VM (shared IR flat-slot interpreter). 4-way consistency is continuously validated via `compiler/tests/consistency.rs` (see [`design-docs/BACKEND.md`](design-docs/BACKEND.md) for the full backend technical specification)
 - **Design by Contract**: `requires` / `ensures` clauses with `result` binding and an `INTERPRETER_CONTRACTS=all|pre|post|off` runtime gate (D `-release` equivalent)
 - **Efficient Memory Management**: Append-only `StmtPool` / `ExprPool` plus automatic destruction with custom `drop` methods
 - **Production-quality Testing**: Comprehensive test suite (970+ tests) with full pass rate

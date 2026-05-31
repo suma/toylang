@@ -4,6 +4,7 @@ members = [
     "frontend",
     "interpreter",
     "compiler_core",
+    "compiler_ir",
     "compiler",
 ]
 

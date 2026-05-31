@@ -37,6 +37,7 @@ use string_interner::{DefaultStringInterner, DefaultSymbol};
 use crate::ir::{
     Block, BlockId, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type, ValueId,
 };
+use compiler_ir::layout::flatten_compound_leaf_types;
 
 mod consts;
 use consts::ConstValues;
@@ -989,7 +990,7 @@ impl<'a> FunctionLower<'a> {
         kind: CompoundReturnCallKind,
     ) -> Result<(), String> {
         let mut leaf_types: Vec<Type> = Vec::new();
-        program::flatten_compound_leaf_types(self.module, ret_compound_ty, &mut leaf_types);
+        flatten_compound_leaf_types(self.module, ret_compound_ty, &mut leaf_types);
         let mut dest_locals: Vec<crate::ir::LocalId> = Vec::with_capacity(leaf_types.len());
         for leaf_ty in &leaf_types {
             let local = self.module.function_mut(self.func_id).add_local(*leaf_ty);
@@ -1172,7 +1173,7 @@ impl<'a> FunctionLower<'a> {
             // return the `ret_dest` leaves through the multi-value
             // Return terminator.
             let mut ret_leaf_types: Vec<Type> = Vec::new();
-            program::flatten_compound_leaf_types(self.module, ret_ty, &mut ret_leaf_types);
+            flatten_compound_leaf_types(self.module, ret_ty, &mut ret_leaf_types);
             let mut ret_dest_locals: Vec<crate::ir::LocalId> =
                 Vec::with_capacity(ret_leaf_types.len());
             for leaf_ty in &ret_leaf_types {

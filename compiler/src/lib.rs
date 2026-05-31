@@ -29,7 +29,7 @@
 pub mod cache;
 pub mod codegen;
 pub mod driver;
-pub mod ir;
+pub use compiler_ir as ir;
 pub mod jit;
 pub mod lower;
 pub mod options;

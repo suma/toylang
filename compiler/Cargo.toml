@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
+compiler_ir = { path = "../compiler_ir" }
 interpreter = { path = "../interpreter", default-features = false }
 string-interner.workspace = true
 

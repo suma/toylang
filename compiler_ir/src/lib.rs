@@ -1,4 +1,4 @@
-//! Mid-level intermediate representation for the AOT compiler.
+//! Mid-level intermediate representation for toylang backends.
 //!
 //! ## Why an IR layer
 //!
@@ -6,15 +6,14 @@
 //! pass. That worked while the supported feature surface was tiny, but it
 //! conflated three concerns: shaping the program for codegen, dealing with
 //! Cranelift's specific API, and managing per-function bookkeeping. As the
-//! roadmap (`design-docs/todo.md` #183) calls for `AllocatorBinding`, constant
-//! propagation passes, and eventually devirtualization, lumping all of that
-//! into a single AST-walker would not scale.
+//! roadmap calls for `AllocatorBinding`, constant propagation passes,
+//! and eventually devirtualization, lumping all of that into a single
+//! AST-walker would not scale.
 //!
-//! This IR sits between the AST and Cranelift. Lowering passes and
-//! analyses live on this representation (see `lower.rs` for AST → IR and
-//! `codegen.rs` for IR → Cranelift). Cranelift remains the backend, but
-//! the moments where we *think about toylang semantics* are confined to
-//! this layer.
+//! This IR sits between the AST and Cranelift (and now the interpreter VM).
+//! Lowering passes and analyses live on this representation.
+//! Cranelift remains one backend, but the moments where we *think about
+//! toylang semantics* are confined to this layer.
 //!
 //! ## Shape
 //!
@@ -49,6 +48,8 @@ use std::collections::HashMap;
 use std::fmt;
 
 use string_interner::{DefaultSymbol, Symbol};
+
+pub mod layout;
 
 /// Top-level container. One IR module corresponds to one toylang program.
 #[derive(Debug, Default)]
@@ -703,7 +704,7 @@ pub enum InstKind {
     },
     /// Same shape as `CallStruct` but for enum-returning functions.
     /// Codegen lays the multi-return out as
-    /// `[tag, variant0_payload0, variant0_payload1, ..., variantN_payloadM]`
+    /// `[tag, variant0_payload0, ..., variantN_payloadM]`
     /// in canonical declaration order — the caller's per-variant
     /// payload locals must be allocated in the same order so the
     /// flat `dests[i]` mapping is stable across the function
@@ -938,7 +939,7 @@ pub enum InstKind {
     /// Closures Phase 5b: indirect call through a function-pointer
     /// value. The callee is a `Type::U64` value (typically loaded
     /// from a `Binding::FunctionPtr` local or produced by
-    /// `FuncAddr`). `param_tys` and `ret_ty` describe the callee's
+    /// `InstKind::FuncAddr`). `param_tys` and `ret_ty` describe the callee's
     /// signature so cranelift codegen can `import_signature` and
     /// `call_indirect` against it. The instruction's `result` slot
     /// carries the return value (None when `ret_ty` is `Type::Unit`).

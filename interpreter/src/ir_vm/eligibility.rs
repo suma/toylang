@@ -38,23 +38,25 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::LoadLocal(_)
         | InstKind::StoreLocal { .. }
         | InstKind::Call { .. }
-        | InstKind::Cast { .. }
-        | InstKind::Print { .. }
-        | InstKind::PrintStr { .. }
-        | InstKind::PrintRaw { .. } => true,
-        // Phase 2+ instructions are not yet supported.
-        InstKind::ConstStr { .. }
-        | InstKind::ConstStrBytes { .. }
         | InstKind::CallStruct { .. }
         | InstKind::CallTuple { .. }
         | InstKind::CallEnum { .. }
-        | InstKind::ArrayLoad { .. }
-        | InstKind::ArrayStore { .. }
+        | InstKind::Cast { .. }
+        | InstKind::Print { .. }
+        | InstKind::PrintStr { .. }
+        | InstKind::PrintRaw { .. }
         | InstKind::HeapAlloc { .. }
         | InstKind::HeapRealloc { .. }
         | InstKind::HeapFree { .. }
         | InstKind::PtrRead { .. }
         | InstKind::PtrWrite { .. }
+        | InstKind::PtrIsNull { .. }
+        | InstKind::PtrEq { .. } => true,
+        // Phase 3+ instructions are not yet supported.
+        InstKind::ConstStr { .. }
+        | InstKind::ConstStrBytes { .. }
+        | InstKind::ArrayLoad { .. }
+        | InstKind::ArrayStore { .. }
         | InstKind::StrLen { .. }
         | InstKind::StrConcat { .. }
         | InstKind::ToString { .. }
@@ -64,8 +66,6 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::AllocPush { .. }
         | InstKind::AllocPop
         | InstKind::AllocCurrent
-        | InstKind::PtrIsNull { .. }
-        | InstKind::PtrEq { .. }
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
         | InstKind::StoreRef { .. }
@@ -95,8 +95,8 @@ fn terminator_supported(term: &compiler_ir::Terminator) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_ir::{Const, Function, Instruction, Linkage, Module, Terminator, Type, ValueId};
-    use string_interner::{DefaultStringInterner, Symbol};
+    use compiler_ir::{Const, Instruction, Linkage, LocalId, Module, Terminator, Type, ValueId};
+    use string_interner::DefaultStringInterner;
 
     #[test]
     fn empty_module_is_supported() {
@@ -129,7 +129,37 @@ mod tests {
     }
 
     #[test]
-    fn heap_alloc_is_not_supported() {
+    fn address_of_is_not_supported() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        let entry = func.add_block();
+        func.entry = entry;
+        let block = func.block_mut(entry);
+        block.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(8)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::U64)),
+            kind: compiler_ir::InstKind::AddressOf {
+                local: LocalId(0),
+            },
+        });
+        block.terminator = Some(Terminator::Return(vec![ValueId(1)]));
+        assert!(!ir_vm_supported(&module));
+    }
+
+    #[test]
+    fn heap_alloc_is_now_supported() {
         let mut interner = DefaultStringInterner::default();
         let main_sym = interner.get_or_intern("main");
         let mut module = Module::new();
@@ -156,6 +186,6 @@ mod tests {
             },
         });
         block.terminator = Some(Terminator::Return(vec![ValueId(1)]));
-        assert!(!ir_vm_supported(&module));
+        assert!(ir_vm_supported(&module));
     }
 }

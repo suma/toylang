@@ -4,6 +4,8 @@
 //! The frame owns the flat `locals` array (`LocalId`-indexed) and tracks
 //! the current `BlockId` + instruction offset (`pc`) within the function.
 
+use std::collections::HashMap;
+
 use compiler_ir::{BlockId, FuncId, LocalId, ValueId};
 
 use super::slot::RawSlot;
@@ -21,17 +23,24 @@ pub struct CallFrame {
     /// receive the scalar return value. `None` for Unit returns or when
     /// the caller doesn't bind the result.
     pub return_dest: Option<ValueId>,
+    /// When this frame is a callee for `CallStruct`/`CallTuple`/`CallEnum`,
+    /// the caller's `LocalId`s that should receive the compound return
+    /// values (one per scalar leaf). Empty for scalar returns.
+    pub return_dests: Vec<LocalId>,
+    /// SSA value pool for this function.
+    pub values: HashMap<ValueId, RawSlot>,
 }
 
 impl CallFrame {
-    pub fn new(func_id: FuncId, param_count: usize, local_count: usize) -> Self {
-        let total = param_count.max(local_count);
+    pub fn new(func_id: FuncId, total_locals: usize) -> Self {
         Self {
             func_id,
-            locals: vec![RawSlot::default(); total],
+            locals: vec![RawSlot::default(); total_locals],
             block: BlockId(0),
             pc: 0,
             return_dest: None,
+            return_dests: Vec::new(),
+            values: HashMap::new(),
         }
     }
 

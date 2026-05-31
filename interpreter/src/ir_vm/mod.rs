@@ -12,15 +12,13 @@ mod call;
 mod dispatch;
 pub mod eligibility;
 pub mod frame;
+mod heap;
 mod lift;
 pub mod slot;
 
-use std::collections::HashMap;
-
-use compiler_ir::{BlockId, Const, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type, ValueId};
+use compiler_ir::{FuncId, LocalId, Module, Terminator, ValueId};
 use string_interner::Symbol;
 
-use crate::object::Object;
 use crate::runtime_state::RuntimeState;
 
 use frame::CallFrame;
@@ -39,9 +37,6 @@ pub struct Vm<'a> {
     module: &'a Module,
     /// Call stack. The bottom frame is `main`.
     frames: Vec<CallFrame>,
-    /// Value pool for the current function's SSA values.
-    /// Flushed on every cross-block jump (simplest correct model).
-    values: HashMap<ValueId, RawSlot>,
 }
 
 impl<'a> Vm<'a> {
@@ -49,11 +44,13 @@ impl<'a> Vm<'a> {
         Self {
             module,
             frames: Vec::new(),
-            values: HashMap::new(),
         }
     }
 
-    /// Execute the module starting from `main` (FuncId 0 by convention).
+        /// Execute the module starting from `main` (FuncId 0 by convention).
+    ///
+    /// **Deprecated for multi-function modules**: `run_module` finds `main`
+    /// by name and wires the correct `FuncId`. Use `run_module` instead.
     pub fn run(&mut self) -> VmResult {
         let main_id = FuncId(0);
         // Verify main exists
@@ -62,7 +59,7 @@ impl<'a> Vm<'a> {
                 message: "no main function".to_string(),
             };
         }
-        self.call_function(main_id, Vec::new(), None);
+        self.call_function(main_id, Vec::new(), None, Vec::new());
         self.run_loop()
     }
 
@@ -92,7 +89,10 @@ impl<'a> Vm<'a> {
                             .iter()
                             .map(|v| self.read_value(*v))
                             .collect();
-                        let caller_dest = self.frames.last().and_then(|f| f.return_dest);
+                        let (caller_dest, caller_dests) = {
+                            let frame = self.frames.last().expect("no active frame");
+                            (frame.return_dest, frame.return_dests.clone())
+                        };
                         self.frames.pop();
                         if self.frames.is_empty() {
                             // main returned — compute exit code
@@ -107,6 +107,15 @@ impl<'a> Vm<'a> {
                         if let (Some(dest), Some(slot)) = (caller_dest, ret_slots.first()) {
                             self.write_value(dest, *slot);
                         }
+                        // Wire compound return into the caller's locals.
+                        if !caller_dests.is_empty() {
+                            let frame = self.frames.last_mut().expect("no active frame");
+                            for (i, dest) in caller_dests.iter().enumerate() {
+                                if let Some(slot) = ret_slots.get(i) {
+                                    frame.write_local(*dest, *slot);
+                                }
+                            }
+                        }
                     }
                     Terminator::Jump(target) => {
                         {
@@ -114,7 +123,6 @@ impl<'a> Vm<'a> {
                             frame.block = target;
                             frame.pc = 0;
                         }
-                        self.values.clear();
                     }
                     Terminator::Branch { cond, then_blk, else_blk } => {
                         let cond_slot = self.read_value(cond);
@@ -125,7 +133,6 @@ impl<'a> Vm<'a> {
                             frame.block = target;
                             frame.pc = 0;
                         }
-                        self.values.clear();
                     }
                     Terminator::Panic { message } => {
                         return VmResult::Diverged {
@@ -148,11 +155,13 @@ impl<'a> Vm<'a> {
     }
 
     fn read_value(&self, id: ValueId) -> RawSlot {
-        *self.values.get(&id).expect("value not defined")
+        let frame = self.frames.last().expect("no active frame");
+        *frame.values.get(&id).expect("value not defined")
     }
 
     fn write_value(&mut self, id: ValueId, slot: RawSlot) {
-        self.values.insert(id, slot);
+        let frame = self.frames.last_mut().expect("no active frame");
+        frame.values.insert(id, slot);
     }
 
     fn read_local(&self, local: LocalId) -> RawSlot {
@@ -167,11 +176,20 @@ impl<'a> Vm<'a> {
 
     /// Push a new call frame for `func_id` with `args` as the initial
     /// parameter locals. `return_dest` is the caller's `ValueId` that
-    /// will receive the scalar return value.
-    fn call_function(&mut self, func_id: FuncId, args: Vec<RawSlot>, return_dest: Option<ValueId>) {
+    /// will receive the scalar return value. `return_dests` is used for
+    /// `CallStruct`/`CallTuple`/`CallEnum` compound returns.
+    fn call_function(
+        &mut self,
+        func_id: FuncId,
+        args: Vec<RawSlot>,
+        return_dest: Option<ValueId>,
+        return_dests: Vec<LocalId>,
+    ) {
         let func = &self.module.functions[func_id.0 as usize];
-        let mut frame = CallFrame::new(func_id, func.params.len(), func.locals.len());
+        let total_locals = func.locals.len().max(func.params.len());
+        let mut frame = CallFrame::new(func_id, total_locals);
         frame.return_dest = return_dest;
+        frame.return_dests = return_dests;
         for (i, arg) in args.into_iter().enumerate() {
             frame.write_local(LocalId(i as u32), arg);
         }
@@ -182,13 +200,17 @@ impl<'a> Vm<'a> {
 /// High-level entry: run a lowered IR module and return the exit code.
 /// This is the IR VM path; the caller is responsible for AST → IR lowering.
 pub fn run_module(module: &Module) -> Result<i64, String> {
+    // Find main by export_name (works for both single-function and multi-function modules).
+    let main_id = module.functions.iter().enumerate().find(|(_, f)| f.export_name == "main").map(|(i, _)| FuncId(i as u32)).ok_or("no main function")?;
+
     // Install a fresh runtime state for this execution.
     crate::runtime_state::RT.with(|s| {
         *s.borrow_mut() = Some(RuntimeState::new());
     });
     let result = {
         let mut vm = Vm::new(module);
-        match vm.run() {
+        vm.call_function(main_id, Vec::new(), None, Vec::new());
+        match vm.run_loop() {
             VmResult::ExitCode(code) => Ok(code),
             VmResult::Diverged { message } => Err(message),
         }
@@ -202,8 +224,8 @@ pub fn run_module(module: &Module) -> Result<i64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use compiler_ir::{Const, Instruction, Linkage, Module, Terminator, Type, ValueId};
-    use string_interner::{DefaultStringInterner, Symbol};
+    use compiler_ir::{Const, Instruction, Linkage, Module, StructId, Terminator, Type, ValueId};
+    use string_interner::DefaultStringInterner;
 
     #[test]
     fn vm_returns_constant_u64() {
@@ -418,6 +440,710 @@ mod tests {
             });
             block.terminator = Some(Terminator::Return(vec![ValueId(2)]));
         }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn vm_while_loop_counts_down() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        // Register locals so CallFrame allocates slots for them.
+        let _acc = func.add_local(Type::U64);
+        let _n = func.add_local(Type::U64);
+
+        let entry = func.add_block();
+        let body = func.add_block();
+        let _exit = func.add_block();
+        func.entry = entry;
+
+        // entry: acc = 0; n = 5; jump body
+        let entry_block = func.block_mut(entry);
+        entry_block.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(0)),
+        });
+        entry_block.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(5)),
+        });
+        entry_block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(0),
+            },
+        });
+        entry_block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(1),
+                src: ValueId(1),
+            },
+        });
+        entry_block.terminator = Some(Terminator::Jump(body));
+
+        let loop_body = func.add_block();
+        let after_loop = func.add_block();
+
+        // body: load n; cond = n > 0; br cond, loop_body, after_loop
+        let body_block = func.block_mut(body);
+        body_block.instructions.push(Instruction {
+            result: Some((ValueId(2), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        body_block.instructions.push(Instruction {
+            result: Some((ValueId(3), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(0)),
+        });
+        body_block.instructions.push(Instruction {
+            result: Some((ValueId(4), Type::Bool)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Gt,
+                lhs: ValueId(2),
+                rhs: ValueId(3),
+            },
+        });
+        body_block.terminator = Some(Terminator::Branch {
+            cond: ValueId(4),
+            then_blk: loop_body,
+            else_blk: after_loop,
+        });
+
+        // loop_body: acc = acc + n; n = n - 1; jump body
+        let lb = func.block_mut(loop_body);
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(5), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(6), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(7), Type::U64)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Add,
+                lhs: ValueId(5),
+                rhs: ValueId(6),
+            },
+        });
+        lb.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(7),
+            },
+        });
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(8), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(9), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(1)),
+        });
+        lb.instructions.push(Instruction {
+            result: Some((ValueId(10), Type::U64)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Sub,
+                lhs: ValueId(8),
+                rhs: ValueId(9),
+            },
+        });
+        lb.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(1),
+                src: ValueId(10),
+            },
+        });
+        lb.terminator = Some(Terminator::Jump(body));
+
+        // after_loop: load acc; return acc
+        let al = func.block_mut(after_loop);
+        al.instructions.push(Instruction {
+            result: Some((ValueId(11), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        al.terminator = Some(Terminator::Return(vec![ValueId(11)]));
+
+        let result = run_module(&module).unwrap();
+        // sum of 5+4+3+2+1 = 15
+        assert_eq!(result, 15);
+    }
+
+    #[test]
+    fn vm_factorial_via_loop() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        let _result = func.add_local(Type::U64);
+        let _i = func.add_local(Type::U64);
+        let entry = func.add_block();
+        let header = func.add_block();
+        let body = func.add_block();
+        let exit = func.add_block();
+        func.entry = entry;
+
+        // entry: result = 1; i = 5; jump header
+        let e = func.block_mut(entry);
+        e.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(1)),
+        });
+        e.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(5)),
+        });
+        e.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(0),
+            },
+        });
+        e.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(1),
+                src: ValueId(1),
+            },
+        });
+        e.terminator = Some(Terminator::Jump(header));
+
+        // header: load i; cond = i > 0; br cond, body, exit
+        let h = func.block_mut(header);
+        h.instructions.push(Instruction {
+            result: Some((ValueId(2), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        h.instructions.push(Instruction {
+            result: Some((ValueId(3), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(0)),
+        });
+        h.instructions.push(Instruction {
+            result: Some((ValueId(4), Type::Bool)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Gt,
+                lhs: ValueId(2),
+                rhs: ValueId(3),
+            },
+        });
+        h.terminator = Some(Terminator::Branch {
+            cond: ValueId(4),
+            then_blk: body,
+            else_blk: exit,
+        });
+
+        // body: result = result * i; i = i - 1; jump header
+        let b = func.block_mut(body);
+        b.instructions.push(Instruction {
+            result: Some((ValueId(5), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        b.instructions.push(Instruction {
+            result: Some((ValueId(6), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        b.instructions.push(Instruction {
+            result: Some((ValueId(7), Type::U64)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Mul,
+                lhs: ValueId(5),
+                rhs: ValueId(6),
+            },
+        });
+        b.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(7),
+            },
+        });
+        b.instructions.push(Instruction {
+            result: Some((ValueId(8), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+        });
+        b.instructions.push(Instruction {
+            result: Some((ValueId(9), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(1)),
+        });
+        b.instructions.push(Instruction {
+            result: Some((ValueId(10), Type::U64)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Sub,
+                lhs: ValueId(8),
+                rhs: ValueId(9),
+            },
+        });
+        b.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(1),
+                src: ValueId(10),
+            },
+        });
+        b.terminator = Some(Terminator::Jump(header));
+
+        // exit: load result; return result
+        let x = func.block_mut(exit);
+        x.instructions.push(Instruction {
+            result: Some((ValueId(11), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        x.terminator = Some(Terminator::Return(vec![ValueId(11)]));
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 120);
+    }
+
+    #[test]
+    fn vm_store_local_and_reload() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        let _x = func.add_local(Type::U64);
+        let entry = func.add_block();
+        func.entry = entry;
+        let block = func.block_mut(entry);
+        block.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(7)),
+        });
+        block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(0),
+            },
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(2), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(3)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(3), Type::U64)),
+            kind: compiler_ir::InstKind::BinOp {
+                op: compiler_ir::BinOp::Add,
+                lhs: ValueId(1),
+                rhs: ValueId(2),
+            },
+        });
+        block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(3),
+            },
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(4), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        block.terminator = Some(Terminator::Return(vec![ValueId(4)]));
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 10);
+    }
+
+    #[test]
+    fn vm_cast_i64_to_f64_and_back() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::I64,
+        );
+        let func = module.function_mut(main_id);
+        let entry = func.add_block();
+        func.entry = entry;
+        let block = func.block_mut(entry);
+        block.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::I64)),
+            kind: compiler_ir::InstKind::Const(Const::I64(42)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::F64)),
+            kind: compiler_ir::InstKind::Cast {
+                value: ValueId(0),
+                from: Type::I64,
+                to: Type::F64,
+            },
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(2), Type::I64)),
+            kind: compiler_ir::InstKind::Cast {
+                value: ValueId(1),
+                from: Type::F64,
+                to: Type::I64,
+            },
+        });
+        block.terminator = Some(Terminator::Return(vec![ValueId(2)]));
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn vm_recursive_fib() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let fib_sym = interner.get_or_intern("fib");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let fib_id = module.declare_function(
+            fib_sym,
+            "fib".to_string(),
+            Linkage::Local,
+            vec![Type::U64],
+            Type::U64,
+        );
+
+        // fib(n):
+        {
+            let func = module.function_mut(fib_id);
+            // No body locals needed — all computation uses values directly.
+            let entry = func.add_block();
+            let recurse = func.add_block();
+            let base = func.add_block();
+            func.entry = entry;
+
+            let e = func.block_mut(entry);
+            e.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            e.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(1)),
+            });
+            e.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::Bool)),
+                kind: compiler_ir::InstKind::BinOp {
+                    op: compiler_ir::BinOp::Le,
+                    lhs: ValueId(0),
+                    rhs: ValueId(1),
+                },
+            });
+            e.terminator = Some(Terminator::Branch {
+                cond: ValueId(2),
+                then_blk: base,
+                else_blk: recurse,
+            });
+
+            let b = func.block_mut(base);
+            b.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            b.terminator = Some(Terminator::Return(vec![ValueId(3)]));
+
+            let r = func.block_mut(recurse);
+            r.instructions.push(Instruction {
+                result: Some((ValueId(4), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(5), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(1)),
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(6), Type::U64)),
+                kind: compiler_ir::InstKind::BinOp {
+                    op: compiler_ir::BinOp::Sub,
+                    lhs: ValueId(4),
+                    rhs: ValueId(5),
+                },
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(7), Type::U64)),
+                kind: compiler_ir::InstKind::Call {
+                    target: fib_id,
+                    args: vec![ValueId(6)],
+                },
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(8), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(9), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(2)),
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(10), Type::U64)),
+                kind: compiler_ir::InstKind::BinOp {
+                    op: compiler_ir::BinOp::Sub,
+                    lhs: ValueId(8),
+                    rhs: ValueId(9),
+                },
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(11), Type::U64)),
+                kind: compiler_ir::InstKind::Call {
+                    target: fib_id,
+                    args: vec![ValueId(10)],
+                },
+            });
+            r.instructions.push(Instruction {
+                result: Some((ValueId(12), Type::U64)),
+                kind: compiler_ir::InstKind::BinOp {
+                    op: compiler_ir::BinOp::Add,
+                    lhs: ValueId(7),
+                    rhs: ValueId(11),
+                },
+            });
+            r.terminator = Some(Terminator::Return(vec![ValueId(12)]));
+        }
+
+        // main: return fib(6)
+        {
+            let func = module.function_mut(main_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let block = func.block_mut(entry);
+            block.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(6)),
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: compiler_ir::InstKind::Call {
+                    target: fib_id,
+                    args: vec![ValueId(0)],
+                },
+            });
+            block.terminator = Some(Terminator::Return(vec![ValueId(1)]));
+        }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 8);
+    }
+
+    #[test]
+    fn vm_call_struct_returns_two_fields() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let make_sym = interner.get_or_intern("make_point");
+
+        let mut module = Module::new();
+        let make_id = module.declare_function(
+            make_sym,
+            "make_point".to_string(),
+            Linkage::Local,
+            vec![],
+            Type::Struct(StructId(0)),
+        );
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+
+        // make_point(): return Point { x: 10, y: 20 }
+        {
+            let func = module.function_mut(make_id);
+            func.add_local(Type::U64); // x
+            func.add_local(Type::U64); // y
+            let entry = func.add_block();
+            func.entry = entry;
+            let block = func.block_mut(entry);
+            block.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(10)),
+            });
+            block.instructions.push(Instruction {
+                result: None,
+                kind: compiler_ir::InstKind::StoreLocal {
+                    dst: LocalId(0),
+                    src: ValueId(0),
+                },
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: compiler_ir::InstKind::Const(Const::U64(20)),
+            });
+            block.instructions.push(Instruction {
+                result: None,
+                kind: compiler_ir::InstKind::StoreLocal {
+                    dst: LocalId(1),
+                    src: ValueId(1),
+                },
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+            });
+            block.terminator = Some(Terminator::Return(vec![ValueId(2), ValueId(3)]));
+        }
+
+        // main(): val p = make_point(); return p.x + p.y
+        {
+            let func = module.function_mut(main_id);
+            func.add_local(Type::U64); // p.x
+            func.add_local(Type::U64); // p.y
+            let entry = func.add_block();
+            func.entry = entry;
+            let block = func.block_mut(entry);
+            block.instructions.push(Instruction {
+                result: None,
+                kind: compiler_ir::InstKind::CallStruct {
+                    target: make_id,
+                    args: vec![],
+                    dests: vec![LocalId(0), LocalId(1)],
+                },
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: compiler_ir::InstKind::LoadLocal(LocalId(1)),
+            });
+            block.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::U64)),
+                kind: compiler_ir::InstKind::BinOp {
+                    op: compiler_ir::BinOp::Add,
+                    lhs: ValueId(0),
+                    rhs: ValueId(1),
+                },
+            });
+            block.terminator = Some(Terminator::Return(vec![ValueId(2)]));
+        }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 30);
+    }
+
+    #[test]
+    fn vm_heap_alloc_ptr_write_read() {
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+
+        let mut module = Module::new();
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::U64,
+        );
+        let func = module.function_mut(main_id);
+        func.add_local(Type::U64); // ptr
+        let entry = func.add_block();
+        func.entry = entry;
+        let block = func.block_mut(entry);
+
+        // ptr = heap_alloc(8)
+        block.instructions.push(Instruction {
+            result: Some((ValueId(0), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(8)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(1), Type::U64)),
+            kind: compiler_ir::InstKind::HeapAlloc {
+                size: ValueId(0),
+                binding: compiler_ir::AllocatorBinding::Ambient,
+            },
+        });
+        block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::StoreLocal {
+                dst: LocalId(0),
+                src: ValueId(1),
+            },
+        });
+
+        // ptr_write(ptr, 0, 42u64)
+        block.instructions.push(Instruction {
+            result: Some((ValueId(2), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(42)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(3), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(0)),
+        });
+        block.instructions.push(Instruction {
+            result: None,
+            kind: compiler_ir::InstKind::PtrWrite {
+                ptr: ValueId(1),
+                offset: ValueId(3),
+                value: ValueId(2),
+                value_ty: Type::U64,
+            },
+        });
+
+        // val = ptr_read(ptr, 0, U64)
+        block.instructions.push(Instruction {
+            result: Some((ValueId(4), Type::U64)),
+            kind: compiler_ir::InstKind::LoadLocal(LocalId(0)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(5), Type::U64)),
+            kind: compiler_ir::InstKind::Const(Const::U64(0)),
+        });
+        block.instructions.push(Instruction {
+            result: Some((ValueId(6), Type::U64)),
+            kind: compiler_ir::InstKind::PtrRead {
+                ptr: ValueId(4),
+                offset: ValueId(5),
+                elem_ty: Type::U64,
+            },
+        });
+        block.terminator = Some(Terminator::Return(vec![ValueId(6)]));
 
         let result = run_module(&module).unwrap();
         assert_eq!(result, 42);

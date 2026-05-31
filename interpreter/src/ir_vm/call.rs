@@ -4,7 +4,9 @@
 //! indirect calls (`CallIndirect`, `CallIndirectFn`, …) are handled here.
 //! Phase 1 only supports scalar direct calls.
 
-use compiler_ir::{FuncId, InstKind, LocalId, ValueId};
+#![allow(dead_code)]
+
+use compiler_ir::{FuncId, ValueId};
 
 use crate::ir_vm::{RawSlot, Vm};
 
@@ -12,7 +14,7 @@ use crate::ir_vm::{RawSlot, Vm};
 /// will be filled when the callee reaches `Terminator::Return`.
 pub fn handle_call(vm: &mut Vm, target: FuncId, args: &[ValueId]) {
     let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
-    vm.call_function(target, arg_slots, None);
+    vm.call_function(target, arg_slots, None, Vec::new());
 }
 
 /// When a `Return` terminator is reached, copy the returned scalar

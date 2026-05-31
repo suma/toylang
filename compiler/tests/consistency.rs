@@ -4961,3 +4961,20 @@ fn dyn_trait_mut_self_struct_return_round_trip() {
     "#;
     assert_consistent(src, "dyn_mut_self_struct_return");
 }
+
+#[test]
+fn debug_dbc_ir() {
+    let src = r#"
+        fn divide(a: i64, b: i64) -> i64
+            requires b != 0i64
+            ensures result * b == a
+        {
+            a / b
+        }
+        fn main() -> u64 {
+            val q: i64 = divide(20i64, 4i64)
+            q as u64
+        }
+    "#;
+    assert_consistent(src, "dbc_passing_match");
+}

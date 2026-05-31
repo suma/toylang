@@ -7,7 +7,7 @@
 use compiler_ir::{BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp, ValueId};
 use string_interner::Symbol;
 
-use crate::ir_vm::{RawSlot, Vm};
+use crate::ir_vm::{heap, RawSlot, Vm};
 
 /// Execute a single non-terminator instruction.
 pub fn execute(vm: &mut Vm, inst: &Instruction) {
@@ -46,7 +46,19 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::Call { target, args } => {
             let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
             let return_dest = inst.result.map(|(vid, _)| vid);
-            vm.call_function(*target, arg_slots, return_dest);
+            vm.call_function(*target, arg_slots, return_dest, Vec::new());
+        }
+        InstKind::CallStruct { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
+        }
+        InstKind::CallTuple { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
+        }
+        InstKind::CallEnum { target, args, dests } => {
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(*target, arg_slots, None, dests.clone());
         }
         InstKind::Cast { value, from, to } => {
             let v = vm.read_value(*value);
@@ -91,20 +103,40 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::ArrayStore { .. } => {
             // Phase 2: compound type support.
         }
-        InstKind::HeapAlloc { .. } => {
-            // Phase 2: heap support.
+        InstKind::HeapAlloc { size, .. } => {
+            let sz = vm.read_value(*size);
+            let addr = heap::heap_alloc(unsafe { sz.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::HeapRealloc { .. } => {
-            // Phase 2: heap support.
+        InstKind::HeapRealloc { ptr, new_size, .. } => {
+            let p = vm.read_value(*ptr);
+            let ns = vm.read_value(*new_size);
+            let addr = heap::heap_realloc(unsafe { p.u64 }, unsafe { ns.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::HeapFree { .. } => {
-            // Phase 2: heap support.
+        InstKind::HeapFree { ptr, .. } => {
+            let p = vm.read_value(*ptr);
+            heap::heap_free(unsafe { p.u64 });
         }
-        InstKind::PtrRead { .. } => {
-            // Phase 2: pointer support.
+        InstKind::PtrRead { ptr, offset, elem_ty } => {
+            let p = vm.read_value(*ptr);
+            let off = vm.read_value(*offset);
+            let result = heap::ptr_read(unsafe { p.u64 }, unsafe { off.u64 }, *elem_ty);
+            if let Some((vid, _)) = inst.result {
+                if let Some(slot) = result {
+                    vm.write_value(vid, slot);
+                }
+            }
         }
-        InstKind::PtrWrite { .. } => {
-            // Phase 2: pointer support.
+        InstKind::PtrWrite { ptr, offset, value, value_ty } => {
+            let p = vm.read_value(*ptr);
+            let off = vm.read_value(*offset);
+            let v = vm.read_value(*value);
+            heap::ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
         }
         InstKind::StrLen { .. } => {
             // Phase 2: string support.

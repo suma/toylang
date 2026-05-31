@@ -72,7 +72,6 @@ impl<'a> Vm<'a> {
             };
             let func = &self.module.functions[func_id.0 as usize];
             let block = &func.blocks[block_id.0 as usize];
-
             if pc < block.instructions.len() {
                 let inst = block.instructions[pc].clone();
                 // Advance pc while we have a mutable borrow.
@@ -174,6 +173,14 @@ impl<'a> Vm<'a> {
         frame.write_local(local, slot);
     }
 
+    pub(super) fn current_frame(&self) -> &CallFrame {
+        self.frames.last().expect("no active frame")
+    }
+
+    pub(super) fn current_frame_mut(&mut self) -> &mut CallFrame {
+        self.frames.last_mut().expect("no active frame")
+    }
+
     /// Push a new call frame for `func_id` with `args` as the initial
     /// parameter locals. `return_dest` is the caller's `ValueId` that
     /// will receive the scalar return value. `return_dests` is used for
@@ -190,6 +197,12 @@ impl<'a> Vm<'a> {
         let mut frame = CallFrame::new(func_id, total_locals);
         frame.return_dest = return_dest;
         frame.return_dests = return_dests;
+        // Allocate each array slot from the shared heap.
+        for slot_info in &func.array_slots {
+            let size = (slot_info.length as u64) * (slot_info.elem_stride_bytes as u64);
+            let base = heap::heap_alloc(size);
+            frame.array_bases.push(base);
+        }
         for (i, arg) in args.into_iter().enumerate() {
             frame.write_local(LocalId(i as u32), arg);
         }

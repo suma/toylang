@@ -4,7 +4,7 @@
 //! Terminators are handled by the caller (`run_loop`) so this
 //! function only processes non-terminator instructions.
 
-use compiler_ir::{BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp, ValueId};
+use compiler_ir::{ArraySlotId, BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp, ValueId};
 use string_interner::Symbol;
 
 use crate::ir_vm::{heap, RawSlot, Vm};
@@ -97,11 +97,25 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::ConstStrBytes { .. } => {
             // Phase 2: string support.
         }
-        InstKind::ArrayLoad { .. } => {
-            // Phase 2: compound type support.
+        InstKind::ArrayLoad { slot, index, elem_ty } => {
+            let idx = vm.read_value(*index);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = scalar_size_bytes(*elem_ty);
+            let addr = base + unsafe { idx.u64 } * stride as u64;
+            if let Some((vid, _)) = inst.result {
+                let result = heap::ptr_read(addr, 0, *elem_ty);
+                if let Some(slot_val) = result {
+                    vm.write_value(vid, slot_val);
+                }
+            }
         }
-        InstKind::ArrayStore { .. } => {
-            // Phase 2: compound type support.
+        InstKind::ArrayStore { slot, index, value, elem_ty } => {
+            let idx = vm.read_value(*index);
+            let val = vm.read_value(*value);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = scalar_size_bytes(*elem_ty);
+            let addr = base + unsafe { idx.u64 } * stride as u64;
+            heap::ptr_write(addr, 0, val, *elem_ty);
         }
         InstKind::HeapAlloc { size, .. } => {
             let sz = vm.read_value(*size);
@@ -165,20 +179,43 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::CallWithSelfWritebackCompound { .. } => {
             // Phase 3: reference support.
         }
-        InstKind::AllocPush { .. } => {
-            // Phase 2: allocator support.
+        InstKind::AllocPush { handle } => {
+            let h = vm.read_value(*handle);
+            crate::runtime_state::RT.with(|s| {
+                if let Some(ref mut rt) = *s.borrow_mut() {
+                    rt.alloc_push(unsafe { h.u64 });
+                }
+            });
         }
         InstKind::AllocPop => {
-            // Phase 2: allocator support.
+            crate::runtime_state::RT.with(|s| {
+                if let Some(ref mut rt) = *s.borrow_mut() {
+                    rt.alloc_pop();
+                }
+            });
         }
         InstKind::AllocCurrent => {
-            // Phase 2: allocator support.
+            let handle = crate::runtime_state::RT.with(|s| {
+                s.borrow().as_ref().map(|rt| rt.alloc_current()).unwrap_or(0)
+            });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(handle));
+            }
         }
-        InstKind::PtrIsNull { .. } => {
-            // Phase 2: pointer support.
+        InstKind::PtrIsNull { ptr } => {
+            let p = vm.read_value(*ptr);
+            let is_null = unsafe { p.u64 } == 0;
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(is_null));
+            }
         }
-        InstKind::PtrEq { .. } => {
-            // Phase 2: pointer support.
+        InstKind::PtrEq { a, b } => {
+            let pa = vm.read_value(*a);
+            let pb = vm.read_value(*b);
+            let eq = unsafe { pa.u64 } == unsafe { pb.u64 };
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_bool(eq));
+            }
         }
         InstKind::AddressOf { .. } => {
             // Phase 3: reference support.
@@ -189,8 +226,14 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::StoreRef { .. } => {
             // Phase 3: reference support.
         }
-        InstKind::ArrayElemAddr { .. } => {
-            // Phase 2: array support.
+        InstKind::ArrayElemAddr { slot, index, elem_ty } => {
+            let idx = vm.read_value(*index);
+            let base = vm.current_frame().array_bases[slot.0 as usize];
+            let stride = scalar_size_bytes(*elem_ty);
+            let addr = base + unsafe { idx.u64 } * stride as u64;
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
         InstKind::FuncAddr { .. } => {
             // Phase 3: closure support.
@@ -337,5 +380,18 @@ fn format_scalar(slot: RawSlot, ty: Type) -> String {
         Type::F64 => format!("{}", unsafe { slot.f64 }),
         Type::Bool => format!("{}", unsafe { slot.bool }),
         _ => format!("{:?}", unsafe { slot.u64 }),
+    }
+}
+
+/// Byte size for scalar types. Compound types return 8 (pointer-sized)
+/// because the IR VM stores them as opaque handles in RawSlot.
+fn scalar_size_bytes(ty: Type) -> u32 {
+    match ty {
+        Type::I8 | Type::U8 => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 => 4,
+        Type::I64 | Type::U64 | Type::F64 | Type::Bool | Type::Str => 8,
+        Type::Unit => 0,
+        _ => 8, // Struct / Tuple / Enum stored as pointer-sized handles
     }
 }

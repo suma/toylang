@@ -27,6 +27,8 @@ pub struct CallFrame {
     /// the caller's `LocalId`s that should receive the compound return
     /// values (one per scalar leaf). Empty for scalar returns.
     pub return_dests: Vec<LocalId>,
+    /// Per-array-slot base addresses (heap-allocated). Indexed by `ArraySlotId.0`.
+    pub array_bases: Vec<u64>,
     /// SSA value pool for this function.
     pub values: HashMap<ValueId, RawSlot>,
 }
@@ -40,6 +42,7 @@ impl CallFrame {
             pc: 0,
             return_dest: None,
             return_dests: Vec::new(),
+            array_bases: Vec::new(),
             values: HashMap::new(),
         }
     }

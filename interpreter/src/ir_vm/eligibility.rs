@@ -51,25 +51,25 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::PtrRead { .. }
         | InstKind::PtrWrite { .. }
         | InstKind::PtrIsNull { .. }
-        | InstKind::PtrEq { .. } => true,
+        | InstKind::PtrEq { .. }
+        | InstKind::ArrayLoad { .. }
+        | InstKind::ArrayStore { .. }
+        | InstKind::ArrayElemAddr { .. }
+        | InstKind::AllocPush { .. }
+        | InstKind::AllocPop
+        | InstKind::AllocCurrent => true,
         // Phase 3+ instructions are not yet supported.
         InstKind::ConstStr { .. }
         | InstKind::ConstStrBytes { .. }
-        | InstKind::ArrayLoad { .. }
-        | InstKind::ArrayStore { .. }
         | InstKind::StrLen { .. }
         | InstKind::StrConcat { .. }
         | InstKind::ToString { .. }
         | InstKind::MemCopy { .. }
         | InstKind::CallWithSelfWriteback { .. }
         | InstKind::CallWithSelfWritebackCompound { .. }
-        | InstKind::AllocPush { .. }
-        | InstKind::AllocPop
-        | InstKind::AllocCurrent
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
         | InstKind::StoreRef { .. }
-        | InstKind::ArrayElemAddr { .. }
         | InstKind::FuncAddr { .. }
         | InstKind::CallIndirect { .. }
         | InstKind::MakeClosure { .. }

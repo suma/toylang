@@ -4978,3 +4978,4 @@ fn debug_dbc_ir() {
     "#;
     assert_consistent(src, "dbc_passing_match");
 }
+

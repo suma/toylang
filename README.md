@@ -133,6 +133,19 @@ cd interpreter && cargo test destruction_tests custom_destructor_tests
 cd interpreter && cargo test --features test-logging
 ```
 
+### Linting
+
+The workspace uses `[workspace.lints.clippy]` in `Cargo.toml` for consistent lint rules. Run clippy across the entire workspace:
+
+```bash
+# All crates at once
+cargo clippy --workspace --all-targets --all-features
+
+# Per crate
+cd frontend && cargo clippy --all-targets --all-features
+cd interpreter && cargo clippy --all-targets --all-features
+```
+
 ## Language Syntax
 
 ### Basic Program Structure

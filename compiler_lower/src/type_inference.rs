@@ -66,6 +66,11 @@ impl<'a> FunctionLower<'a> {
                     None
                 }
                 Some(Binding::Enum(storage)) => Some(Type::Enum(storage.enum_id)),
+                // Closure / function-pointer values are U64-sized
+                // pointers in the IR (the env address). This lets
+                // `val g = f` infer the correct slot type when `f`
+                // is a closure binding.
+                Some(Binding::FunctionPtr { .. }) => Some(Type::U64),
                 Some(_) => None,
                 None => self.const_values.get(&sym).map(|c| c.ty()),
             },

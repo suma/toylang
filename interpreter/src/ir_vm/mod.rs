@@ -17,7 +17,7 @@ mod lift;
 pub mod slot;
 
 use compiler_ir::{FuncId, LocalId, Module, Terminator, ValueId};
-use string_interner::Symbol;
+use string_interner::{DefaultStringInterner, Symbol};
 
 use crate::runtime_state::RuntimeState;
 
@@ -37,6 +37,8 @@ pub struct Vm<'a> {
     module: &'a Module,
     /// Call stack. The bottom frame is `main`.
     frames: Vec<CallFrame>,
+    /// Optional interner for resolving string symbols.
+    interner: Option<&'a DefaultStringInterner>,
 }
 
 impl<'a> Vm<'a> {
@@ -44,6 +46,15 @@ impl<'a> Vm<'a> {
         Self {
             module,
             frames: Vec::new(),
+            interner: None,
+        }
+    }
+
+    pub fn with_interner(module: &'a Module, interner: &'a DefaultStringInterner) -> Self {
+        Self {
+            module,
+            frames: Vec::new(),
+            interner: Some(interner),
         }
     }
 
@@ -181,6 +192,10 @@ impl<'a> Vm<'a> {
         self.frames.last_mut().expect("no active frame")
     }
 
+    pub(super) fn interner(&self) -> Option<&DefaultStringInterner> {
+        self.interner
+    }
+
     /// Push a new call frame for `func_id` with `args` as the initial
     /// parameter locals. `return_dest` is the caller's `ValueId` that
     /// will receive the scalar return value. `return_dests` is used for
@@ -213,6 +228,14 @@ impl<'a> Vm<'a> {
 /// High-level entry: run a lowered IR module and return the exit code.
 /// This is the IR VM path; the caller is responsible for AST → IR lowering.
 pub fn run_module(module: &Module) -> Result<i64, String> {
+    run_module_with_interner(module, None)
+}
+
+/// Run a lowered IR module with an optional interner for string resolution.
+pub fn run_module_with_interner(
+    module: &Module,
+    interner: Option<&DefaultStringInterner>,
+) -> Result<i64, String> {
     // Find main by export_name (works for both single-function and multi-function modules).
     let main_id = module.functions.iter().enumerate().find(|(_, f)| f.export_name == "main").map(|(i, _)| FuncId(i as u32)).ok_or("no main function")?;
 
@@ -221,7 +244,10 @@ pub fn run_module(module: &Module) -> Result<i64, String> {
         *s.borrow_mut() = Some(RuntimeState::new());
     });
     let result = {
-        let mut vm = Vm::new(module);
+        let mut vm = match interner {
+            Some(i) => Vm::with_interner(module, i),
+            None => Vm::new(module),
+        };
         vm.call_function(main_id, Vec::new(), None, Vec::new());
         match vm.run_loop() {
             VmResult::ExitCode(code) => Ok(code),

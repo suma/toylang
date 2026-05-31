@@ -91,11 +91,21 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 crate::output::print_text(text);
             }
         }
-        InstKind::ConstStr { .. } => {
-            // Phase 2: string support.
+        InstKind::ConstStr { message, .. } => {
+            if let Some(interner) = vm.interner() {
+                let text = interner.resolve(*message).unwrap_or("").to_string();
+                let addr = heap::alloc_string(text);
+                if let Some((vid, _)) = inst.result {
+                    vm.write_value(vid, RawSlot::from_u64(addr));
+                }
+            }
         }
-        InstKind::ConstStrBytes { .. } => {
-            // Phase 2: string support.
+        InstKind::ConstStrBytes { bytes } => {
+            let text = String::from_utf8_lossy(bytes).to_string();
+            let addr = heap::alloc_string(text);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
         InstKind::ArrayLoad { slot, index, elem_ty } => {
             let idx = vm.read_value(*index);
@@ -152,14 +162,27 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let v = vm.read_value(*value);
             heap::ptr_write(unsafe { p.u64 }, unsafe { off.u64 }, v, *value_ty);
         }
-        InstKind::StrLen { .. } => {
-            // Phase 2: string support.
+        InstKind::StrLen { value } => {
+            let v = vm.read_value(*value);
+            let len = heap::string_len(unsafe { v.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(len));
+            }
         }
-        InstKind::StrConcat { .. } => {
-            // Phase 2: string support.
+        InstKind::StrConcat { a, b } => {
+            let l = vm.read_value(*a);
+            let r = vm.read_value(*b);
+            let addr = heap::concat_strings(unsafe { l.u64 }, unsafe { r.u64 });
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::ToString { .. } => {
-            // Phase 2: string support.
+        InstKind::ToString { value, value_ty } => {
+            let v = vm.read_value(*value);
+            let addr = heap::to_string_value(v, *value_ty);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
         InstKind::MemCopy { .. } => {
             // Phase 2: memory support.

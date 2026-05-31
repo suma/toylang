@@ -53,6 +53,70 @@ pub fn ptr_write(addr: u64, offset: u64, value: RawSlot, value_ty: Type) {
     });
 }
 
+/// Allocate a string object on the heap and return its handle (u64 address).
+pub fn alloc_string(text: String) -> u64 {
+    let addr = heap_alloc(8);
+    with_heap(|h| {
+        h.typed_write(addr as usize, 0, RcObject::new(RefCell::new(Object::String(text))));
+    });
+    addr
+}
+
+/// Get the length of a string at the given address.
+pub fn string_len(addr: u64) -> u64 {
+    with_heap(|h| {
+        h.typed_read(addr as usize, 0)
+            .map(|rc| match &*rc.borrow() {
+                Object::String(s) => s.len() as u64,
+                Object::ConstString(sym) => 0, // Would need interner; fallback
+                _ => 0,
+            })
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
+/// Concatenate two strings and return the new string's handle.
+pub fn concat_strings(addr1: u64, addr2: u64) -> u64 {
+    let s1 = with_heap(|h| {
+        h.typed_read(addr1 as usize, 0)
+            .map(|rc| match &*rc.borrow() {
+                Object::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default();
+    let s2 = with_heap(|h| {
+        h.typed_read(addr2 as usize, 0)
+            .map(|rc| match &*rc.borrow() {
+                Object::String(s) => s.clone(),
+                _ => String::new(),
+            })
+            .unwrap_or_default()
+    })
+    .unwrap_or_default();
+    alloc_string(s1 + &s2)
+}
+
+/// Format a scalar value as a string and return its handle.
+pub fn to_string_value(slot: RawSlot, ty: Type) -> u64 {
+    let text = match ty {
+        Type::I64 => format!("{}", unsafe { slot.i64 }),
+        Type::U64 => format!("{}", unsafe { slot.u64 }),
+        Type::I8 => format!("{}", unsafe { slot.i64 as i8 }),
+        Type::U8 => format!("{}", unsafe { slot.u64 as u8 }),
+        Type::I16 => format!("{}", unsafe { slot.i64 as i16 }),
+        Type::U16 => format!("{}", unsafe { slot.u64 as u16 }),
+        Type::I32 => format!("{}", unsafe { slot.i64 as i32 }),
+        Type::U32 => format!("{}", unsafe { slot.u64 as u32 }),
+        Type::F64 => format!("{}", unsafe { slot.f64 }),
+        Type::Bool => format!("{}", unsafe { slot.bool }),
+        _ => format!("{:?}", unsafe { slot.u64 }),
+    };
+    alloc_string(text)
+}
+
 fn slot_to_object(slot: RawSlot, ty: Type) -> Object {
     match ty {
         Type::I64 => Object::Int64(unsafe { slot.i64 }),

@@ -57,14 +57,14 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::ArrayElemAddr { .. }
         | InstKind::AllocPush { .. }
         | InstKind::AllocPop
-        | InstKind::AllocCurrent => true,
-        // Phase 3+ instructions are not yet supported.
-        InstKind::ConstStr { .. }
+        | InstKind::AllocCurrent
+        | InstKind::ConstStr { .. }
         | InstKind::ConstStrBytes { .. }
         | InstKind::StrLen { .. }
         | InstKind::StrConcat { .. }
-        | InstKind::ToString { .. }
-        | InstKind::MemCopy { .. }
+        | InstKind::ToString { .. } => true,
+        // Phase 3+ instructions are not yet supported.
+        InstKind::MemCopy { .. }
         | InstKind::CallWithSelfWriteback { .. }
         | InstKind::CallWithSelfWritebackCompound { .. }
         | InstKind::AddressOf { .. }

@@ -222,6 +222,11 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
 /// Returns `None` when lowering fails, type-check fails, or the
 /// lowered IR contains instructions outside the Phase 1 scalar subset.
 fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
+    // IR VM string representation (typed-slot heap) does not match the
+    // `[bytes][NUL][u64 len LE]` layout that `__builtin_str_to_ptr` expects.
+    if source.contains("__builtin_str_to_ptr") {
+        return None;
+    }
     let mut parser = frontend::ParserWithInterner::new(source);
     let mut program = parser.parse_program().ok()?;
     let interner = parser.get_string_interner();
@@ -238,7 +243,7 @@ fn ir_vm_exit_code(source: &str, with_core: bool) -> Option<i64> {
     if !interpreter::ir_vm::eligibility::ir_vm_supported(&ir_module) {
         return None;
     }
-    interpreter::ir_vm::run_module(&ir_module).ok()
+    interpreter::ir_vm::run_module_with_interner(&ir_module, Some(interner)).ok()
 }
 
 /// Assert that the interpreter result, the JIT-compiled binary's exit

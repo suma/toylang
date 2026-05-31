@@ -713,16 +713,6 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         Err(e) => return Err(format!("Runtime Error: {e}")),
     };
 
-    // Opt-in IR VM execution path (`TOY_IR_VM=1`). Runs the type-checked
-    // program through the shared IR (compiler_lower → ir_vm) instead of the
-    // tree-walker. Transparently falls through to the tree-walker when the
-    // program is ineligible / non-scalar-returning / diverges, so enabling
-    // it never changes a successful run's result — only which engine
-    // produced it. Default-off keeps every existing path unchanged.
-    if let Some(obj) = ir_vm::lift::try_execute_main(program, string_interner) {
-        return Ok(obj);
-    }
-
     let func_map = build_function_map(program, string_interner);
     let func_qualified = build_function_qualified_map(program);
     let mut string_interner_mut = string_interner.clone();
@@ -813,6 +803,19 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         if let Some(result) = jit::try_execute_main(program, string_interner) {
             return Ok(result);
         }
+    }
+
+    // Opt-in IR VM execution path (`TOY_IR_VM=1`). Runs the type-checked
+    // program through the shared IR (compiler_lower → ir_vm) instead of the
+    // tree-walker. Placed *after* the JIT fast-path so that when the JIT is
+    // also enabled it wins (the IR VM does not shadow JIT-specific tests);
+    // the IR VM is the validation engine when the JIT is off. Transparently
+    // falls through to the tree-walker when the program is ineligible /
+    // non-scalar-returning / diverges, so enabling it never changes a
+    // successful run's result — only which engine produced it. Default-off
+    // keeps every existing path unchanged.
+    if let Some(obj) = ir_vm::lift::try_execute_main(program, string_interner) {
+        return Ok(obj);
     }
 
     let no_args = vec![];

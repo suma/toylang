@@ -5,6 +5,7 @@ members = [
     "interpreter",
     "compiler_core",
     "compiler_ir",
+    "compiler_lower",
     "compiler",
 ]
 

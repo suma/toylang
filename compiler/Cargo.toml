@@ -14,6 +14,7 @@ path = "src/main.rs"
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
 compiler_ir = { path = "../compiler_ir" }
+compiler_lower = { path = "../compiler_lower" }
 interpreter = { path = "../interpreter", default-features = false }
 string-interner.workspace = true
 

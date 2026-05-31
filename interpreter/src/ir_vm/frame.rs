@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use compiler_ir::{BlockId, FuncId, LocalId, ValueId};
+use compiler_ir::{BlockId, FuncId, LocalId, Type, ValueId};
 
 use super::slot::RawSlot;
 
@@ -42,6 +42,11 @@ pub struct CallFrame {
     pub addr_cells: HashMap<LocalId, u64>,
     /// SSA value pool for this function.
     pub values: HashMap<ValueId, RawSlot>,
+    /// Static type of each defined SSA value (from the instruction's
+    /// `result` annotation). Used to dispatch type-polymorphic ops like
+    /// `BinOp` (e.g. f64 vs i64 vs u64 arithmetic / comparison) since the
+    /// `RawSlot` itself is untyped.
+    pub value_types: HashMap<ValueId, Type>,
 }
 
 impl CallFrame {
@@ -57,6 +62,7 @@ impl CallFrame {
             dyn_coerce_addrs: HashMap::new(),
             addr_cells: HashMap::new(),
             values: HashMap::new(),
+            value_types: HashMap::new(),
         }
     }
 

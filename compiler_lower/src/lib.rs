@@ -34,10 +34,32 @@ use std::collections::HashMap;
 use frontend::ast::ExprRef;
 use string_interner::{DefaultStringInterner, DefaultSymbol};
 
+/// Re-export the IR crate as `ir` so the moved lowering files keep
+/// using `crate::ir::*` unchanged after relocation from `compiler`.
+pub use compiler_ir as ir;
+
 use crate::ir::{
     Block, BlockId, FuncId, InstKind, Instruction, LocalId, Module, Terminator, Type, ValueId,
 };
 use compiler_ir::layout::flatten_compound_leaf_types;
+
+/// Pre-interned canonical contract-violation messages. Lowering attaches
+/// these symbols to `requires` / `ensures` `Terminator::Panic` arms without
+/// needing mutable interner access of its own. (Moved here from `compiler`
+/// so both the compiler and the interpreter can drive lowering.)
+pub struct ContractMessages {
+    pub requires_violation: DefaultSymbol,
+    pub ensures_violation: DefaultSymbol,
+}
+
+impl ContractMessages {
+    pub fn intern(interner: &mut DefaultStringInterner) -> Self {
+        Self {
+            requires_violation: interner.get_or_intern("requires violation"),
+            ensures_violation: interner.get_or_intern("ensures violation"),
+        }
+    }
+}
 
 mod consts;
 use consts::ConstValues;
@@ -97,9 +119,9 @@ mod expr;
 /// locals (so we can emit the matching `CallWithSelfWriteback`
 /// pattern that `&mut self` method calls already use).
 #[derive(Debug, Clone)]
-pub(super) struct DropTarget {
-    pub(super) struct_id: crate::ir::StructId,
-    pub(super) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
+pub(crate) struct DropTarget {
+    pub(crate) struct_id: crate::ir::StructId,
+    pub(crate) field_locals: Vec<(crate::ir::LocalId, crate::ir::Type)>,
 }
 
 /// Per-`with` scope marker. The runtime arena / fixed_buffer
@@ -110,7 +132,7 @@ pub(super) struct DropTarget {
 /// Kept as a one-variant enum for now in case future allocator
 /// kinds want to stash side-data alongside the with-scope.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum WithScopeCleanup {
+pub(crate) enum WithScopeCleanup {
     None,
 }
 
@@ -321,11 +343,11 @@ struct FunctionLower<'a> {
 /// non-empty means the body must read each capture from the
 /// env pointer at lower time, and the IR signature has an extra
 /// implicit `env: Type::U64` parameter at position 0.
-pub(super) struct PendingClosureBody {
-    pub(super) func_id: FuncId,
-    pub(super) parameter: frontend::ast::ParameterList,
-    pub(super) body: frontend::ast::ExprRef,
-    pub(super) captures: Vec<(DefaultSymbol, Type)>,
+pub(crate) struct PendingClosureBody {
+    pub(crate) func_id: FuncId,
+    pub(crate) parameter: frontend::ast::ParameterList,
+    pub(crate) body: frontend::ast::ExprRef,
+    pub(crate) captures: Vec<(DefaultSymbol, Type)>,
 }
 
 /// A5-P2-MVP-E: which multi-result IR variant a compound-returning
@@ -335,7 +357,7 @@ pub(super) struct PendingClosureBody {
 /// always comes from `flatten_compound_leaf_types`, so kind
 /// selection is purely about which `InstKind` to emit).
 #[derive(Debug, Clone, Copy)]
-pub(super) enum CompoundReturnCallKind {
+pub(crate) enum CompoundReturnCallKind {
     Struct,
     Tuple,
     Enum,
@@ -348,10 +370,10 @@ pub(super) enum CompoundReturnCallKind {
 /// local. `dest_locals` parallels `struct_leaves` in order so a
 /// single zip drives both sides.
 #[derive(Debug, Clone)]
-pub(super) struct DynMutWriteback {
-    pub(super) slot_addr: crate::ir::ValueId,
-    pub(super) struct_leaves: Vec<(u64, Type)>,
-    pub(super) dest_locals: Vec<crate::ir::LocalId>,
+pub(crate) struct DynMutWriteback {
+    pub(crate) slot_addr: crate::ir::ValueId,
+    pub(crate) struct_leaves: Vec<(u64, Type)>,
+    pub(crate) dest_locals: Vec<crate::ir::LocalId>,
 }
 
 /// A5-P2-MVP-B: one queued dyn-trait dispatch thunk awaiting body
@@ -365,26 +387,26 @@ pub(super) struct DynMutWriteback {
 /// `FunctionLower::compute_leaf_layout`), so the thunk reads
 /// the bytes the coercion-site `PtrWrite`s wrote.
 #[derive(Debug, Clone)]
-pub(super) struct PendingThunkBody {
-    pub(super) thunk_func_id: FuncId,
-    pub(super) impl_func_id: FuncId,
+pub(crate) struct PendingThunkBody {
+    pub(crate) thunk_func_id: FuncId,
+    pub(crate) impl_func_id: FuncId,
     /// Leaf layout for the receiver struct, in
     /// `compute_leaf_layout` order. Empty for empty-struct impls
     /// (the thunk still exists for ABI uniformity but reads
     /// zero leaves and forwards an empty arg list).
-    pub(super) struct_leaves: Vec<(u64, Type)>,
+    pub(crate) struct_leaves: Vec<(u64, Type)>,
     /// Trait-method user-arg types (excluding `self`, excluding
     /// the prepended `data_ptr`). The thunk's IR signature is
     /// `(U64, ...user_param_tys) -> ret_ty`.
-    pub(super) user_param_tys: Vec<Type>,
-    pub(super) ret_ty: Type,
+    pub(crate) user_param_tys: Vec<Type>,
+    pub(crate) ret_ty: Type,
     /// A5-P2-MVP-C: when `true`, the trait method declared
     /// `&mut self`, so the underlying impl's cranelift signature
     /// has trailing writeback returns (one per struct leaf). The
     /// thunk uses `CallWithSelfWriteback` to capture them and
     /// writes each back to `data_ptr` at its natural-sum offset
     /// so the caller's stack slot reflects the mutation.
-    pub(super) self_is_mut: bool,
+    pub(crate) self_is_mut: bool,
 }
 
 /// Closures Phase 5a/6: linkage info for a `val name = fn(...)`
@@ -396,9 +418,9 @@ pub(super) struct PendingThunkBody {
 /// IR signature has only the user-visible params, direct Call
 /// emits args verbatim).
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ClosureBindingLink {
-    pub(super) func_id: FuncId,
-    pub(super) env_ptr: Option<crate::ir::ValueId>,
+pub(crate) struct ClosureBindingLink {
+    pub(crate) func_id: FuncId,
+    pub(crate) env_ptr: Option<crate::ir::ValueId>,
 }
 
 impl<'a> FunctionLower<'a> {
@@ -413,7 +435,7 @@ impl<'a> FunctionLower<'a> {
     /// body lowering will fail at that point" — which gives a
     /// clear error message even without an explicit capture
     /// scan.
-    pub(super) fn lift_closure_binding(
+    pub(crate) fn lift_closure_binding(
         &mut self,
         name: DefaultSymbol,
         params: &frontend::ast::ParameterList,
@@ -771,7 +793,7 @@ impl<'a> FunctionLower<'a> {
     /// body) — the only difference is we don't register the
     /// closure under any `closure_bindings` name because there
     /// is none.
-    pub(super) fn lift_closure_inline(
+    pub(crate) fn lift_closure_inline(
         &mut self,
         params: &frontend::ast::ParameterList,
         return_type: &Option<frontend::type_decl::TypeDecl>,
@@ -902,7 +924,7 @@ impl<'a> FunctionLower<'a> {
     /// no writebacks are pending. Must be called immediately
     /// after the outer call instruction that consumed the args,
     /// so the slot still holds the post-mutation bytes.
-    pub(super) fn drain_dyn_mut_writebacks(&mut self) -> Result<(), String> {
+    pub(crate) fn drain_dyn_mut_writebacks(&mut self) -> Result<(), String> {
         let pending: Vec<DynMutWriteback> =
             std::mem::take(&mut self.pending_dyn_mut_writebacks);
         for wb in pending {
@@ -1031,7 +1053,7 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_dyn_thunk_body(
+    pub(crate) fn lower_dyn_thunk_body(
         &mut self,
         impl_func_id: crate::ir::FuncId,
         struct_leaves: &[(u64, Type)],
@@ -1280,7 +1302,7 @@ impl<'a> FunctionLower<'a> {
         Ok(())
     }
 
-    pub(super) fn lower_closure_body(
+    pub(crate) fn lower_closure_body(
         &mut self,
         parameter: &frontend::ast::ParameterList,
         body_expr_ref: &frontend::ast::ExprRef,
@@ -1458,7 +1480,7 @@ impl<'a> FunctionLower<'a> {
     /// `Stmt::Break` / `Stmt::Continue` (target=loop entry depth)
     /// so control flow that exits a `with allocator = ...` body
     /// early still leaves the stack balanced.
-    pub(super) fn emit_with_scope_cleanup(&mut self, target_depth: usize) {
+    pub(crate) fn emit_with_scope_cleanup(&mut self, target_depth: usize) {
         if self.current_block.is_none() {
             return;
         }
@@ -1482,7 +1504,7 @@ impl<'a> FunctionLower<'a> {
     /// Push a fresh drop scope on entry to a `{ ... }` block.
     /// Mirrors `with_scope_arena_drops` for `with` blocks but
     /// scoped to user-struct `Binding`s.
-    pub(super) fn enter_drop_scope(&mut self) {
+    pub(crate) fn enter_drop_scope(&mut self) {
         self.drop_scopes.push(Vec::new());
     }
 
@@ -1492,7 +1514,7 @@ impl<'a> FunctionLower<'a> {
     /// without `return` / `break` / `continue`); the early-exit
     /// paths emit drops via `emit_drop_scopes_to_depth` before
     /// terminating.
-    pub(super) fn pop_and_emit_drops(&mut self) -> Result<(), String> {
+    pub(crate) fn pop_and_emit_drops(&mut self) -> Result<(), String> {
         let targets = self.drop_scopes.pop().unwrap_or_default();
         if self.is_unreachable() {
             return Ok(());
@@ -1511,7 +1533,7 @@ impl<'a> FunctionLower<'a> {
     /// the loop body but not yet closed). Doesn't pop the stack
     /// — the linear-exit path's `pop_and_emit_drops` is the
     /// authoritative pop point.
-    pub(super) fn emit_drop_scopes_to_depth(
+    pub(crate) fn emit_drop_scopes_to_depth(
         &mut self,
         target_depth: usize,
     ) -> Result<(), String> {
@@ -1543,7 +1565,7 @@ impl<'a> FunctionLower<'a> {
     /// `DropTarget` to the current top scope. Called from
     /// `lower_let`'s struct-binding paths right after
     /// `self.bindings.insert`.
-    pub(super) fn register_drop_for_struct_binding(
+    pub(crate) fn register_drop_for_struct_binding(
         &mut self,
         struct_id: crate::ir::StructId,
         fields: &[bindings::FieldBinding],
@@ -1642,7 +1664,7 @@ impl<'a> FunctionLower<'a> {
     /// detect the `Arena::new()` temporary by walking the
     /// `with_scope_arena_drops` snapshot and emit a `Local` /
     /// `Static` annotation.
-    pub(super) fn classify_active_allocator_binding(
+    pub(crate) fn classify_active_allocator_binding(
         &self,
     ) -> crate::ir::AllocatorBinding {
         // Future-friendly hook — for now everything is Ambient.

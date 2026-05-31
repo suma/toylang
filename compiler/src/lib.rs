@@ -31,32 +31,17 @@ pub mod codegen;
 pub mod driver;
 pub use compiler_ir as ir;
 pub mod jit;
-pub mod lower;
+/// The AST → IR lowering pass now lives in the `compiler_lower` crate so
+/// the interpreter can drive it too (it cannot depend on `compiler`, which
+/// depends on it). Re-exported as `compiler::lower` for source compat.
+pub use compiler_lower as lower;
+pub use compiler_lower::ContractMessages;
 pub mod options;
 
 pub use jit::{compile_to_jit_main, compile_to_jit_main_with_options, JitMainFn, JitProgram};
 pub use options::{CompilerOptions, EmitKind};
 
 use std::path::Path;
-
-/// Pre-interned panic messages used by the lowering pass to attach
-/// clause-specific text to contract-violation panics. We intern these
-/// once up front so the lowering code can pass `DefaultSymbol`s
-/// straight through to `Terminator::Panic` without ever needing
-/// mutable access to the interner itself.
-pub struct ContractMessages {
-    pub requires_violation: string_interner::DefaultSymbol,
-    pub ensures_violation: string_interner::DefaultSymbol,
-}
-
-impl ContractMessages {
-    pub fn intern(interner: &mut string_interner::DefaultStringInterner) -> Self {
-        Self {
-            requires_violation: interner.get_or_intern("requires violation"),
-            ensures_violation: interner.get_or_intern("ensures violation"),
-        }
-    }
-}
 
 /// Top-level entry point used by both the CLI and the integration tests.
 /// Returns `Ok(())` after writing whichever artefact `options.emit`

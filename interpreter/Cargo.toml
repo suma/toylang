@@ -10,6 +10,7 @@ description = ""
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_core = { path = "../compiler_core" }
 compiler_ir = { path = "../compiler_ir" }
+compiler_lower = { path = "../compiler_lower" }
 string-interner = "0.20.0"
 rayon = "1.12"
 cranelift = { version = "0.131", optional = true }

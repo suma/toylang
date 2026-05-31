@@ -32,7 +32,11 @@ impl RawSlot {
         Self { f64: v }
     }
     pub fn from_bool(v: bool) -> Self {
-        Self { bool: v }
+        // Zero-extend into the full 8 bytes so reads via `.u64` / `.i64`
+        // (e.g. exit-code extraction, scalar-result wrapping) see a clean
+        // 0/1 instead of garbage in the upper 7 bytes of the union. `.bool`
+        // still reads byte 0 correctly.
+        Self { u64: v as u64 }
     }
     pub fn from_ptr(v: u64) -> Self {
         Self { ptr: v }

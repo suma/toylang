@@ -21,14 +21,25 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
         InstKind::BinOp { op, lhs, rhs } => {
             let l = vm.read_value(*lhs);
             let r = vm.read_value(*rhs);
-            let result = eval_binop(*op, l, r);
+            // Operand type drives f64 / signed / unsigned dispatch. Prefer
+            // the recorded lhs type; fall back to the result type (correct
+            // for arithmetic, where result type == operand type).
+            let ty = vm
+                .value_type(*lhs)
+                .or_else(|| inst.result.map(|(_, t)| t))
+                .unwrap_or(Type::I64);
+            let result = eval_binop(*op, l, r, ty);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, result);
             }
         }
         InstKind::UnaryOp { op, operand } => {
             let v = vm.read_value(*operand);
-            let result = eval_unaryop(*op, v);
+            let ty = vm
+                .value_type(*operand)
+                .or_else(|| inst.result.map(|(_, t)| t))
+                .unwrap_or(Type::I64);
+            let result = eval_unaryop(*op, v, ty);
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, result);
             }
@@ -378,55 +389,72 @@ fn const_to_slot(c: Const) -> RawSlot {
     }
 }
 
-fn eval_binop(op: BinOp, lhs: RawSlot, rhs: RawSlot) -> RawSlot {
+/// Whether `ty` is an unsigned integer (drives Div/Rem signedness and
+/// comparison interpretation).
+fn is_unsigned(ty: Type) -> bool {
+    matches!(ty, Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::Bool)
+}
+
+fn eval_binop(op: BinOp, lhs: RawSlot, rhs: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::BinOp::*;
-    // Phase 1: dispatch by the most common scalar types.
-    // We read both sides as i64/u64/f64 and let the caller's type
-    // knowledge decide which union arm matters.
+    let is_f64 = matches!(ty, Type::F64);
+    let unsigned = is_unsigned(ty);
     match op {
-        Add => {
-            // Try i64 first, then u64, then f64.
-            RawSlot::from_i64(unsafe { lhs.i64.wrapping_add(rhs.i64) })
-        }
+        // Arithmetic: result type == operand type.
+        Add if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 + rhs.f64 }),
+        Sub if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 - rhs.f64 }),
+        Mul if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 * rhs.f64 }),
+        Div if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 / rhs.f64 }),
+        Rem if is_f64 => RawSlot::from_f64(unsafe { lhs.f64 % rhs.f64 }),
+        Add => RawSlot::from_i64(unsafe { lhs.i64.wrapping_add(rhs.i64) }),
         Sub => RawSlot::from_i64(unsafe { lhs.i64.wrapping_sub(rhs.i64) }),
         Mul => RawSlot::from_i64(unsafe { lhs.i64.wrapping_mul(rhs.i64) }),
+        Div if unsigned => RawSlot::from_u64(unsafe { lhs.u64.wrapping_div(rhs.u64) }),
+        Rem if unsigned => RawSlot::from_u64(unsafe { lhs.u64.wrapping_rem(rhs.u64) }),
         Div => RawSlot::from_i64(unsafe { lhs.i64.wrapping_div(rhs.i64) }),
         Rem => RawSlot::from_i64(unsafe { lhs.i64.wrapping_rem(rhs.i64) }),
-        Eq => RawSlot::from_bool(unsafe { lhs.i64 == rhs.i64 }),
-        Ne => RawSlot::from_bool(unsafe { lhs.i64 != rhs.i64 }),
+        // Comparisons: dispatch on operand type, result is bool.
+        Eq if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 == rhs.f64 }),
+        Ne if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 != rhs.f64 }),
+        Lt if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 < rhs.f64 }),
+        Le if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 <= rhs.f64 }),
+        Gt if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 > rhs.f64 }),
+        Ge if is_f64 => RawSlot::from_bool(unsafe { lhs.f64 >= rhs.f64 }),
+        Eq => RawSlot::from_bool(unsafe { lhs.u64 == rhs.u64 }),
+        Ne => RawSlot::from_bool(unsafe { lhs.u64 != rhs.u64 }),
+        Lt if unsigned => RawSlot::from_bool(unsafe { lhs.u64 < rhs.u64 }),
+        Le if unsigned => RawSlot::from_bool(unsafe { lhs.u64 <= rhs.u64 }),
+        Gt if unsigned => RawSlot::from_bool(unsafe { lhs.u64 > rhs.u64 }),
+        Ge if unsigned => RawSlot::from_bool(unsafe { lhs.u64 >= rhs.u64 }),
         Lt => RawSlot::from_bool(unsafe { lhs.i64 < rhs.i64 }),
         Le => RawSlot::from_bool(unsafe { lhs.i64 <= rhs.i64 }),
         Gt => RawSlot::from_bool(unsafe { lhs.i64 > rhs.i64 }),
         Ge => RawSlot::from_bool(unsafe { lhs.i64 >= rhs.i64 }),
+        // Bitwise / shift: integer, width-agnostic on the raw bits.
         BitAnd => RawSlot::from_u64(unsafe { lhs.u64 & rhs.u64 }),
         BitOr => RawSlot::from_u64(unsafe { lhs.u64 | rhs.u64 }),
         BitXor => RawSlot::from_u64(unsafe { lhs.u64 ^ rhs.u64 }),
         Shl => RawSlot::from_u64(unsafe { lhs.u64.wrapping_shl(rhs.u64 as u32) }),
-        Shr => RawSlot::from_u64(unsafe { lhs.u64.wrapping_shr(rhs.u64 as u32) }),
-        Min => {
-            let a = unsafe { lhs.i64 };
-            let b = unsafe { rhs.i64 };
-            RawSlot::from_i64(if a < b { a } else { b })
-        }
-        Max => {
-            let a = unsafe { lhs.i64 };
-            let b = unsafe { rhs.i64 };
-            RawSlot::from_i64(if a > b { a } else { b })
-        }
-        Pow => {
-            let base = unsafe { lhs.f64 };
-            let exp = unsafe { rhs.f64 };
-            RawSlot::from_f64(base.powf(exp))
-        }
+        Shr if unsigned => RawSlot::from_u64(unsafe { lhs.u64.wrapping_shr(rhs.u64 as u32) }),
+        Shr => RawSlot::from_i64(unsafe { lhs.i64.wrapping_shr(rhs.u64 as u32) }),
+        Min if is_f64 => RawSlot::from_f64(unsafe { lhs.f64.min(rhs.f64) }),
+        Max if is_f64 => RawSlot::from_f64(unsafe { lhs.f64.max(rhs.f64) }),
+        Min if unsigned => RawSlot::from_u64(unsafe { lhs.u64.min(rhs.u64) }),
+        Max if unsigned => RawSlot::from_u64(unsafe { lhs.u64.max(rhs.u64) }),
+        Min => RawSlot::from_i64(unsafe { lhs.i64.min(rhs.i64) }),
+        Max => RawSlot::from_i64(unsafe { lhs.i64.max(rhs.i64) }),
+        Pow => RawSlot::from_f64(unsafe { lhs.f64.powf(rhs.f64) }),
     }
 }
 
-fn eval_unaryop(op: UnaryOp, operand: RawSlot) -> RawSlot {
+fn eval_unaryop(op: UnaryOp, operand: RawSlot, ty: Type) -> RawSlot {
     use compiler_ir::UnaryOp::*;
     match op {
+        Neg if matches!(ty, Type::F64) => RawSlot::from_f64(unsafe { -(operand.f64) }),
         Neg => RawSlot::from_i64(unsafe { -(operand.i64) }),
         BitNot => RawSlot::from_u64(unsafe { !(operand.u64) }),
         LogicalNot => RawSlot::from_bool(unsafe { !(operand.bool) }),
+        Abs if matches!(ty, Type::F64) => RawSlot::from_f64(unsafe { operand.f64.abs() }),
         Abs => RawSlot::from_i64(unsafe { operand.i64.wrapping_abs() }),
         Sqrt => RawSlot::from_f64(unsafe { operand.f64.sqrt() }),
         Floor => RawSlot::from_f64(unsafe { operand.f64.floor() }),

@@ -13,7 +13,7 @@ mod dispatch;
 pub mod eligibility;
 pub mod frame;
 mod heap;
-mod lift;
+pub mod lift;
 pub mod slot;
 
 use std::collections::HashMap;
@@ -101,6 +101,15 @@ impl<'a> Vm<'a> {
                 }
                 // Ordinary instruction — dispatch only, no terminator.
                 dispatch::execute(self, &inst);
+                // Record the result's static type so later type-polymorphic
+                // ops (BinOp f64/i64/u64) can recover operand types.
+                if let Some((vid, ty)) = inst.result {
+                    self.frames
+                        .last_mut()
+                        .expect("frame vanished")
+                        .value_types
+                        .insert(vid, ty);
+                }
             } else if let Some(term) = block.terminator.clone() {
                 match term {
                     Terminator::Return(values) => {
@@ -179,6 +188,11 @@ impl<'a> Vm<'a> {
     fn read_value(&self, id: ValueId) -> RawSlot {
         let frame = self.frames.last().expect("no active frame");
         *frame.values.get(&id).expect("value not defined")
+    }
+
+    /// Static type of a defined SSA value, if recorded.
+    pub(super) fn value_type(&self, id: ValueId) -> Option<compiler_ir::Type> {
+        self.frames.last().and_then(|f| f.value_types.get(&id).copied())
     }
 
     fn write_value(&mut self, id: ValueId, slot: RawSlot) {

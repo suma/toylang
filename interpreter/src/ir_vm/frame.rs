@@ -29,6 +29,11 @@ pub struct CallFrame {
     pub return_dests: Vec<LocalId>,
     /// Per-array-slot base addresses (heap-allocated). Indexed by `ArraySlotId.0`.
     pub array_bases: Vec<u64>,
+    /// Lazily materialised `&dyn Trait` coercion buffers, keyed by
+    /// `Function::dyn_coerce_slots` index. Mirrors the AOT `StackSlot`
+    /// reuse so repeated `DynCoerceSlotAddr` for the same slot returns a
+    /// stable address within a frame.
+    pub dyn_coerce_addrs: HashMap<u32, u64>,
     /// SSA value pool for this function.
     pub values: HashMap<ValueId, RawSlot>,
 }
@@ -43,6 +48,7 @@ impl CallFrame {
             return_dest: None,
             return_dests: Vec::new(),
             array_bases: Vec::new(),
+            dyn_coerce_addrs: HashMap::new(),
             values: HashMap::new(),
         }
     }

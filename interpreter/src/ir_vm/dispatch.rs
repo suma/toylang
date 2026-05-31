@@ -299,23 +299,40 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
             let return_dest = inst.result.map(|(vid, _)| vid);
             vm.call_function(target, arg_slots, return_dest, Vec::new());
         }
-        InstKind::VtableAddr { .. } => {
-            // Phase 3: dyn trait support.
+        InstKind::VtableAddr { trait_sym, struct_sym } => {
+            // Phase 3b: materialise the vtable on the heap and yield its
+            // address (a U64). A later PtrRead recovers the per-method
+            // dispatch FuncId.
+            let addr = vm.vtable_addr(*trait_sym, *struct_sym);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::CallIndirectFn { .. } => {
-            // Phase 3: dyn trait support.
+        InstKind::DynCoerceSlotAddr { slot_idx } => {
+            // Phase 3b: yield the address of a caller-frame coercion buffer
+            // for a field-bearing struct passed through `&dyn Trait`.
+            let addr = vm.dyn_coerce_addr(*slot_idx);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::CallIndirectFnStruct { .. } => {
-            // Phase 3: dyn trait support.
+        InstKind::CallIndirectFn { callee, args, .. } => {
+            // Phase 3b: raw fn-pointer indirect call (no implicit env).
+            // `callee` is already a FuncId (loaded out of a vtable slot).
+            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let return_dest = inst.result.map(|(vid, _)| vid);
+            vm.call_function(target, arg_slots, return_dest, Vec::new());
         }
-        InstKind::CallIndirectFnTuple { .. } => {
-            // Phase 3: dyn trait support.
-        }
-        InstKind::CallIndirectFnEnum { .. } => {
-            // Phase 3: dyn trait support.
-        }
-        InstKind::DynCoerceSlotAddr { .. } => {
-            // Phase 3: dyn trait support.
+        InstKind::CallIndirectFnStruct { callee, args, dests, .. }
+        | InstKind::CallIndirectFnTuple { callee, args, dests, .. }
+        | InstKind::CallIndirectFnEnum { callee, args, dests, .. } => {
+            // Phase 3b: indirect call returning a compound (struct/tuple/
+            // enum). The compound leaves fan out into `dests`, mirroring
+            // the direct-call CallStruct/CallTuple/CallEnum lowering.
+            let target = compiler_ir::FuncId(unsafe { vm.read_value(*callee).u64 } as u32);
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            vm.call_function(target, arg_slots, None, dests.clone());
         }
     }
 }

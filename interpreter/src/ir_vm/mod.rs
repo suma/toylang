@@ -16,8 +16,10 @@ mod heap;
 mod lift;
 pub mod slot;
 
+use std::collections::HashMap;
+
 use compiler_ir::{FuncId, LocalId, Module, Terminator, ValueId};
-use string_interner::{DefaultStringInterner, Symbol};
+use string_interner::{DefaultStringInterner, DefaultSymbol, Symbol};
 
 use crate::runtime_state::RuntimeState;
 
@@ -39,6 +41,11 @@ pub struct Vm<'a> {
     frames: Vec<CallFrame>,
     /// Optional interner for resolving string symbols.
     interner: Option<&'a DefaultStringInterner>,
+    /// Materialised vtables, keyed by `(trait_sym, struct_sym)`. Each is a
+    /// heap address holding `Vec<FuncId>` entries (one U64 per method, in
+    /// trait declaration order), matching the AOT vtable layout so a
+    /// `PtrRead(vtable_ptr, idx*8, U64)` recovers the dispatch FuncId.
+    vtable_addrs: HashMap<(DefaultSymbol, DefaultSymbol), u64>,
 }
 
 impl<'a> Vm<'a> {
@@ -47,6 +54,7 @@ impl<'a> Vm<'a> {
             module,
             frames: Vec::new(),
             interner: None,
+            vtable_addrs: HashMap::new(),
         }
     }
 
@@ -55,6 +63,7 @@ impl<'a> Vm<'a> {
             module,
             frames: Vec::new(),
             interner: Some(interner),
+            vtable_addrs: HashMap::new(),
         }
     }
 
@@ -222,6 +231,50 @@ impl<'a> Vm<'a> {
             frame.write_local(LocalId(i as u32), arg);
         }
         self.frames.push(frame);
+    }
+
+    pub(super) fn module(&self) -> &Module {
+        self.module
+    }
+
+    /// Materialise (and cache) the vtable for `(trait_sym, struct_sym)` as a
+    /// heap buffer of FuncId entries, returning its address. Mirrors the AOT
+    /// `toy_vtable_<trait>_<struct>` global: method `i` lives at offset `i*8`
+    /// as a U64 holding the dispatch FuncId.
+    pub(super) fn vtable_addr(&mut self, trait_sym: DefaultSymbol, struct_sym: DefaultSymbol) -> u64 {
+        if let Some(addr) = self.vtable_addrs.get(&(trait_sym, struct_sym)) {
+            return *addr;
+        }
+        let func_ids = self
+            .module
+            .vtables
+            .get(&(trait_sym, struct_sym))
+            .cloned()
+            .unwrap_or_default();
+        let addr = heap::heap_alloc((func_ids.len().max(1) as u64) * 8);
+        for (i, fid) in func_ids.iter().enumerate() {
+            heap::ptr_write(addr, (i * 8) as u64, RawSlot::from_u64(fid.0 as u64), compiler_ir::Type::U64);
+        }
+        self.vtable_addrs.insert((trait_sym, struct_sym), addr);
+        addr
+    }
+
+    /// Materialise (and cache per-frame) the `&dyn Trait` coercion buffer for
+    /// `slot_idx`, returning its heap address. The buffer is sized from the
+    /// current function's `dyn_coerce_slots[slot_idx]` byte size.
+    pub(super) fn dyn_coerce_addr(&mut self, slot_idx: u32) -> u64 {
+        if let Some(addr) = self.current_frame().dyn_coerce_addrs.get(&slot_idx) {
+            return *addr;
+        }
+        let func_id = self.current_frame().func_id;
+        let size = self.module.functions[func_id.0 as usize]
+            .dyn_coerce_slots
+            .get(slot_idx as usize)
+            .copied()
+            .unwrap_or(0);
+        let addr = heap::heap_alloc(size.max(1) as u64);
+        self.current_frame_mut().dyn_coerce_addrs.insert(slot_idx, addr);
+        addr
     }
 }
 
@@ -1287,5 +1340,95 @@ mod tests {
 
         let result = run_module(&module).unwrap();
         assert_eq!(result, 15);
+    }
+
+    #[test]
+    fn vm_dyn_dispatch_via_vtable() {
+        use compiler_ir::{BinOp, FuncId, InstKind};
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let thunk_sym = interner.get_or_intern("thunk_sound");
+        let trait_sym = interner.get_or_intern("Animal");
+        let struct_sym = interner.get_or_intern("Dog");
+
+        let mut module = Module::new();
+        // Thunk: fn(data_ptr: u64) -> i64 { 7 + (data_ptr & 0) }
+        // (uses data_ptr trivially so the unused-arg path is exercised)
+        let thunk_id = module.declare_function(
+            thunk_sym,
+            "thunk_sound".to_string(),
+            Linkage::Local,
+            vec![Type::U64],
+            Type::I64,
+        );
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::I64,
+        );
+        // Register the vtable + method order, mirroring the AOT module.
+        module
+            .vtables
+            .insert((trait_sym, struct_sym), vec![thunk_id]);
+        module
+            .trait_method_order
+            .insert(trait_sym, vec![interner.get_or_intern("sound")]);
+
+        {
+            let func = module.function_mut(thunk_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let b = func.block_mut(entry);
+            b.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::I64)),
+                kind: InstKind::Const(Const::I64(7)),
+            });
+            b.terminator = Some(Terminator::Return(vec![ValueId(0)]));
+        }
+
+        // main: vtable = VtableAddr; fn_ptr = *(vtable+0); fn_ptr(data_ptr=0)
+        {
+            let func = module.function_mut(main_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let m = func.block_mut(entry);
+            m.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: InstKind::VtableAddr { trait_sym, struct_sym },
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: InstKind::Const(Const::U64(0)),
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::U64)),
+                kind: InstKind::PtrRead {
+                    ptr: ValueId(0),
+                    offset: ValueId(1),
+                    elem_ty: Type::U64,
+                },
+            });
+            // data_ptr = 0 (empty struct sentinel)
+            m.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::U64)),
+                kind: InstKind::Const(Const::U64(0)),
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(4), Type::I64)),
+                kind: InstKind::CallIndirectFn {
+                    callee: ValueId(2),
+                    args: vec![ValueId(3)],
+                    param_tys: vec![Type::U64],
+                    ret_ty: Type::I64,
+                },
+            });
+            m.terminator = Some(Terminator::Return(vec![ValueId(4)]));
+            let _ = (BinOp::Add, FuncId(0));
+        }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 7);
     }
 }

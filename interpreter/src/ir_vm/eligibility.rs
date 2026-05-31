@@ -66,20 +66,21 @@ fn inst_supported(kind: &InstKind) -> bool {
         // Phase 3a: closures (function pointers + env-based indirect call).
         | InstKind::FuncAddr { .. }
         | InstKind::CallIndirect { .. }
-        | InstKind::MakeClosure { .. } => true,
-        // Phase 3b+ instructions are not yet supported.
+        | InstKind::MakeClosure { .. }
+        // Phase 3b: read-only `&dyn Trait` dispatch (vtable + thunk call).
+        | InstKind::VtableAddr { .. }
+        | InstKind::DynCoerceSlotAddr { .. }
+        | InstKind::CallIndirectFn { .. }
+        | InstKind::CallIndirectFnStruct { .. }
+        | InstKind::CallIndirectFnTuple { .. }
+        | InstKind::CallIndirectFnEnum { .. } => true,
+        // Later phases: `&mut dyn` writeback + references.
         InstKind::MemCopy { .. }
         | InstKind::CallWithSelfWriteback { .. }
         | InstKind::CallWithSelfWritebackCompound { .. }
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
-        | InstKind::StoreRef { .. }
-        | InstKind::VtableAddr { .. }
-        | InstKind::CallIndirectFn { .. }
-        | InstKind::CallIndirectFnStruct { .. }
-        | InstKind::CallIndirectFnTuple { .. }
-        | InstKind::CallIndirectFnEnum { .. }
-        | InstKind::DynCoerceSlotAddr { .. } => false,
+        | InstKind::StoreRef { .. } => false,
     }
 }
 

@@ -28,7 +28,19 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 .value_type(*lhs)
                 .or_else(|| inst.result.map(|(_, t)| t))
                 .unwrap_or(Type::I64);
-            let result = eval_binop(*op, l, r, ty);
+            // `str` equality compares content, not the handle pointer
+            // (each `ConstStr` allocates a fresh str, so identical literals
+            // have distinct handles — pointer eq would always be false,
+            // matching the tree-walker which compares bytes). Used by
+            // `match s { "lit" => .. }` and `==` / `!=` on `str`.
+            let result = if matches!(ty, Type::Str)
+                && matches!(*op, BinOp::Eq | BinOp::Ne)
+            {
+                let eq = heap::read_str(unsafe { l.u64 }) == heap::read_str(unsafe { r.u64 });
+                RawSlot::from_bool(if matches!(*op, BinOp::Eq) { eq } else { !eq })
+            } else {
+                eval_binop(*op, l, r, ty)
+            };
             if let Some((vid, _)) = inst.result {
                 vm.write_value(vid, result);
             }

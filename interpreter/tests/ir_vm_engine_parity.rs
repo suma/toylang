@@ -148,6 +148,62 @@ fn parity_contract_passing() {
 }
 
 #[test]
+fn parity_string_literal_match() {
+    // str equality in `match` compares content, not the handle pointer.
+    assert!(assert_engine_parity(
+        r#"
+        fn classify(s: str) -> i64 {
+            match s {
+                "zero" => 0i64,
+                "one" => 1i64,
+                "two" => 2i64,
+                _ => -1i64,
+            }
+        }
+        fn main() -> i64 {
+            classify("one") + classify("two") + classify("unknown")
+        }
+    "#
+    ));
+}
+
+#[test]
+fn parity_f64_arithmetic_and_compare() {
+    // Pins the f64 BinOp / UnaryOp dispatch (add/sub/mul/div, compare, neg).
+    assert!(assert_engine_parity(
+        r#"
+        fn main() -> u64 {
+            val a: f64 = 7.5f64
+            val b: f64 = 2.0f64
+            val s = a + b
+            val d = a - b
+            val m = a * b
+            val q = a / b
+            var acc: u64 = 0u64
+            if s > 9.0f64 { acc = acc + 1u64 }
+            if d < 6.0f64 { acc = acc + 2u64 }
+            if -a < 0.0f64 { acc = acc + 4u64 }
+            acc + (m as u64) + (q as u64)
+        }
+    "#
+    ));
+}
+
+#[test]
+fn parity_bool_logic() {
+    // Pins RawSlot::from_bool zero-extension (no garbage upper bytes).
+    assert!(assert_engine_parity(
+        r#"
+        fn main() -> bool {
+            val t = true
+            val f = false
+            !t || (f == false)
+        }
+    "#
+    ));
+}
+
+#[test]
 fn parity_narrow_int_cast() {
     assert!(assert_engine_parity(
         r#"

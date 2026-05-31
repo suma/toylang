@@ -14,6 +14,15 @@ use compiler_ir::{InstKind, Module};
 /// etc.) returns `false`.
 pub fn ir_vm_supported(module: &Module) -> bool {
     for func in &module.functions {
+        // The VM cannot execute a function with no body: `Import`-linkage
+        // externs (libm / C runtime — Phase 5 FFI territory) and any other
+        // block-less function would index-OOB in `run_loop`. Reject the
+        // whole module so it falls back to the tree-walker. This covers
+        // `x.abs()` / `x.sqrt()` and friends, which lower to a prelude
+        // wrapper that forwards to an `__extern_*` libm symbol.
+        if matches!(func.linkage, compiler_ir::Linkage::Import) || func.blocks.is_empty() {
+            return false;
+        }
         for block in &func.blocks {
             for inst in &block.instructions {
                 if !inst_supported(&inst.kind) {

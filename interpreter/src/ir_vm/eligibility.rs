@@ -73,14 +73,19 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::CallIndirectFn { .. }
         | InstKind::CallIndirectFnStruct { .. }
         | InstKind::CallIndirectFnTuple { .. }
-        | InstKind::CallIndirectFnEnum { .. } => true,
-        // Later phases: `&mut dyn` writeback + references.
-        InstKind::MemCopy { .. }
+        | InstKind::CallIndirectFnEnum { .. }
+        // Phase 3c: references + `&mut self` writeback.
         | InstKind::CallWithSelfWriteback { .. }
         | InstKind::CallWithSelfWritebackCompound { .. }
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
-        | InstKind::StoreRef { .. } => false,
+        | InstKind::StoreRef { .. } => true,
+        // `MemCopy` is the entry point for byte-level `str` / `String`
+        // buffer construction, whose VM representation (`Object::String`
+        // in a typed slot) diverges from the AOT raw-byte layout. Keep it
+        // ineligible so those programs fall back to the tree-walker, the
+        // same limitation Phase 2 documented for `__builtin_str_to_ptr`.
+        InstKind::MemCopy { .. } => false,
     }
 }
 
@@ -131,7 +136,7 @@ mod tests {
     }
 
     #[test]
-    fn address_of_is_not_supported() {
+    fn address_of_is_now_supported() {
         let mut interner = DefaultStringInterner::default();
         let main_sym = interner.get_or_intern("main");
         let mut module = Module::new();
@@ -157,7 +162,7 @@ mod tests {
             },
         });
         block.terminator = Some(Terminator::Return(vec![ValueId(1)]));
-        assert!(!ir_vm_supported(&module));
+        assert!(ir_vm_supported(&module));
     }
 
     #[test]

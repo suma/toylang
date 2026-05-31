@@ -184,6 +184,21 @@ impl HeapManager {
         Some(u64::from_le_bytes(slice.try_into().ok()?))
     }
     
+    /// Read `width` (1/2/4/8) bytes little-endian from the raw byte buffer
+    /// at `addr + offset`, zero-extended into a u64. Returns `None` on null
+    /// or out-of-bounds. Used as a fallback when no typed slot exists (e.g.
+    /// bytes written via `copy_memory` into a fresh destination buffer).
+    pub fn read_scalar_bytes(&self, addr: usize, offset: usize, width: usize) -> Option<u64> {
+        if addr == 0 || width == 0 {
+            return None;
+        }
+        let slice = self.get_memory_slice(addr, offset + width)?;
+        let bytes = &slice[offset..offset + width];
+        let mut buf = [0u8; 8];
+        buf[..width].copy_from_slice(bytes);
+        Some(u64::from_le_bytes(buf))
+    }
+
     /// Write u64 to memory at address + offset
     pub fn write_u64(&mut self, addr: usize, offset: usize, value: u64) -> bool {
         if addr == 0 {

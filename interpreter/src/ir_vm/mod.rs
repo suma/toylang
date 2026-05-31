@@ -185,12 +185,32 @@ impl<'a> Vm<'a> {
 
     fn read_local(&self, local: LocalId) -> RawSlot {
         let frame = self.frames.last().expect("no active frame");
+        if let Some(&addr) = frame.addr_cells.get(&local) {
+            let ty = self.local_ty(frame.func_id, local);
+            return heap::ptr_read(addr, 0, ty).unwrap_or_default();
+        }
         frame.read_local(local)
     }
 
     fn write_local(&mut self, local: LocalId, slot: RawSlot) {
+        let frame = self.frames.last().expect("no active frame");
+        if let Some(&addr) = frame.addr_cells.get(&local) {
+            let ty = self.local_ty(frame.func_id, local);
+            heap::ptr_write(addr, 0, slot, ty);
+            return;
+        }
         let frame = self.frames.last_mut().expect("no active frame");
         frame.write_local(local, slot);
+    }
+
+    /// Type of `local` in `func_id`, defaulting to `U64` when out of range
+    /// (e.g. parameter-only indices not mirrored into `locals`).
+    fn local_ty(&self, func_id: FuncId, local: LocalId) -> compiler_ir::Type {
+        self.module.functions[func_id.0 as usize]
+            .locals
+            .get(local.0 as usize)
+            .copied()
+            .unwrap_or(compiler_ir::Type::U64)
     }
 
     pub(super) fn current_frame(&self) -> &CallFrame {
@@ -227,14 +247,34 @@ impl<'a> Vm<'a> {
             let base = heap::heap_alloc(size);
             frame.array_bases.push(base);
         }
-        for (i, arg) in args.into_iter().enumerate() {
-            frame.write_local(LocalId(i as u32), arg);
+        // Back each address-taken local with a heap cell so `AddressOf`
+        // yields a stable pointer and `&mut T` mutations propagate.
+        for local in &func.address_taken_locals {
+            let addr = heap::heap_alloc(8);
+            frame.addr_cells.insert(*local, addr);
         }
         self.frames.push(frame);
+        // Write params via the cell-aware path so address-taken params
+        // land in their backing cells.
+        for (i, arg) in args.into_iter().enumerate() {
+            self.write_local(LocalId(i as u32), arg);
+        }
     }
 
     pub(super) fn module(&self) -> &Module {
         self.module
+    }
+
+    /// Address of an address-taken local's backing heap cell. Allocates one
+    /// lazily if the local wasn't pre-registered (defensive; `call_function`
+    /// normally pre-allocates all `address_taken_locals`).
+    pub(super) fn addr_of_local(&mut self, local: LocalId) -> u64 {
+        if let Some(&addr) = self.current_frame().addr_cells.get(&local) {
+            return addr;
+        }
+        let addr = heap::heap_alloc(8);
+        self.current_frame_mut().addr_cells.insert(local, addr);
+        addr
     }
 
     /// Materialise (and cache) the vtable for `(trait_sym, struct_sym)` as a
@@ -1430,5 +1470,99 @@ mod tests {
 
         let result = run_module(&module).unwrap();
         assert_eq!(result, 7);
+    }
+
+    #[test]
+    fn vm_mut_ref_propagates_across_call() {
+        // fn inc(p: &mut i64) { *p = *p + 1 }   (p is LocalId(0), a U64 ptr)
+        // fn main() -> i64 { var v = 41; inc(&mut v); v }
+        use compiler_ir::{BinOp, FuncId, InstKind};
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let inc_sym = interner.get_or_intern("inc");
+
+        let mut module = Module::new();
+        let inc_id = module.declare_function(
+            inc_sym,
+            "inc".to_string(),
+            Linkage::Local,
+            vec![Type::U64],
+            Type::Unit,
+        );
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::I64,
+        );
+
+        // inc: *p = *p + 1
+        {
+            let func = module.function_mut(inc_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let b = func.block_mut(entry);
+            b.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: InstKind::LoadLocal(LocalId(0)),
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::I64)),
+                kind: InstKind::LoadRef { ptr: ValueId(0), ty: Type::I64 },
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::I64)),
+                kind: InstKind::Const(Const::I64(1)),
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::I64)),
+                kind: InstKind::BinOp { op: BinOp::Add, lhs: ValueId(1), rhs: ValueId(2) },
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(4), Type::U64)),
+                kind: InstKind::LoadLocal(LocalId(0)),
+            });
+            b.instructions.push(Instruction {
+                result: None,
+                kind: InstKind::StoreRef { ptr: ValueId(4), value: ValueId(3), ty: Type::I64 },
+            });
+            b.terminator = Some(Terminator::Return(vec![]));
+        }
+
+        // main: var v = 41 (address-taken); inc(&mut v); return v
+        {
+            let func = module.function_mut(main_id);
+            let v = func.add_local(Type::I64); // LocalId(0)
+            func.address_taken_locals.insert(v);
+            let entry = func.add_block();
+            func.entry = entry;
+            let m = func.block_mut(entry);
+            m.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::I64)),
+                kind: InstKind::Const(Const::I64(41)),
+            });
+            m.instructions.push(Instruction {
+                result: None,
+                kind: InstKind::StoreLocal { dst: v, src: ValueId(0) },
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: InstKind::AddressOf { local: v },
+            });
+            m.instructions.push(Instruction {
+                result: None,
+                kind: InstKind::Call { target: inc_id, args: vec![ValueId(1)] },
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::I64)),
+                kind: InstKind::LoadLocal(v),
+            });
+            m.terminator = Some(Terminator::Return(vec![ValueId(2)]));
+            let _ = FuncId(0);
+        }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 42);
     }
 }

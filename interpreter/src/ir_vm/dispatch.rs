@@ -184,23 +184,34 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
-        InstKind::MemCopy { .. } => {
-            // Phase 2: memory support.
+        InstKind::MemCopy { src, dest, size } => {
+            // Phase 3c: libc memcpy (toylang arg order src, dest, size).
+            let s = unsafe { vm.read_value(*src).u64 };
+            let d = unsafe { vm.read_value(*dest).u64 };
+            let n = unsafe { vm.read_value(*size).u64 };
+            heap::mem_copy(s, d, n);
         }
-        InstKind::CallStruct { .. } => {
-            // Phase 2: compound return support.
+        InstKind::CallWithSelfWriteback { target, args, ret_dest, self_dests, .. } => {
+            // Phase 3c: `&mut self` call. The callee returns
+            // `[ret_leaf?, self_writeback_leaves...]`; route every
+            // returned leaf into the combined dest list so the existing
+            // multi-result return wiring distributes them.
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let mut dests: Vec<LocalId> = Vec::with_capacity(self_dests.len() + 1);
+            if let Some(local) = ret_dest {
+                dests.push(*local);
+            }
+            dests.extend_from_slice(self_dests);
+            vm.call_function(*target, arg_slots, None, dests);
         }
-        InstKind::CallTuple { .. } => {
-            // Phase 2: compound return support.
-        }
-        InstKind::CallEnum { .. } => {
-            // Phase 2: compound return support.
-        }
-        InstKind::CallWithSelfWriteback { .. } => {
-            // Phase 3: reference support.
-        }
-        InstKind::CallWithSelfWritebackCompound { .. } => {
-            // Phase 3: reference support.
+        InstKind::CallWithSelfWritebackCompound { target, args, ret_dests, self_dests } => {
+            // Phase 3c: writeback + compound user return. Results come
+            // back as `[ret_leaves..., self_writeback_leaves...]`.
+            let arg_slots: Vec<RawSlot> = args.iter().map(|a| vm.read_value(*a)).collect();
+            let mut dests: Vec<LocalId> = Vec::with_capacity(ret_dests.len() + self_dests.len());
+            dests.extend_from_slice(ret_dests);
+            dests.extend_from_slice(self_dests);
+            vm.call_function(*target, arg_slots, None, dests);
         }
         InstKind::AllocPush { handle } => {
             let h = vm.read_value(*handle);
@@ -240,14 +251,26 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_bool(eq));
             }
         }
-        InstKind::AddressOf { .. } => {
-            // Phase 3: reference support.
+        InstKind::AddressOf { local } => {
+            // Phase 3c: pointer to an address-taken local's backing cell.
+            let addr = vm.addr_of_local(*local);
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::LoadRef { .. } => {
-            // Phase 3: reference support.
+        InstKind::LoadRef { ptr, ty } => {
+            // Phase 3c: dereference a pointer to read a scalar of `ty`.
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let result = heap::ptr_read(p, 0, *ty).unwrap_or_default();
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, result);
+            }
         }
-        InstKind::StoreRef { .. } => {
-            // Phase 3: reference support.
+        InstKind::StoreRef { ptr, value, ty } => {
+            // Phase 3c: write a scalar through a pointer.
+            let p = unsafe { vm.read_value(*ptr).u64 };
+            let v = vm.read_value(*value);
+            heap::ptr_write(p, 0, v, *ty);
         }
         InstKind::ArrayElemAddr { slot, index, elem_ty } => {
             let idx = vm.read_value(*index);
@@ -414,27 +437,79 @@ fn eval_unaryop(op: UnaryOp, operand: RawSlot) -> RawSlot {
     }
 }
 
+/// Integer type descriptor: `(bit_width, is_signed)`. `None` for
+/// non-integer types (handled separately or passed through).
+fn int_desc(ty: Type) -> Option<(u32, bool)> {
+    match ty {
+        Type::I8 => Some((8, true)),
+        Type::U8 => Some((8, false)),
+        Type::I16 => Some((16, true)),
+        Type::U16 => Some((16, false)),
+        Type::I32 => Some((32, true)),
+        Type::U32 => Some((32, false)),
+        Type::I64 => Some((64, true)),
+        Type::U64 => Some((64, false)),
+        Type::Bool => Some((8, false)),
+        _ => None,
+    }
+}
+
+/// Truncate `raw` low bits to `bits` and interpret per `signed`.
+fn decode_int(raw: u64, bits: u32, signed: bool) -> i128 {
+    if bits >= 64 {
+        return if signed { raw as i64 as i128 } else { raw as i128 };
+    }
+    let mask = (1u64 << bits) - 1;
+    let low = raw & mask;
+    if signed && (low >> (bits - 1)) & 1 == 1 {
+        // sign-extend
+        (low as i128) - (1i128 << bits)
+    } else {
+        low as i128
+    }
+}
+
+/// Encode integer `v` into a `RawSlot` of integer type `(bits, signed)`.
+fn encode_int(v: i128, bits: u32, signed: bool) -> RawSlot {
+    if bits >= 64 {
+        return if signed {
+            RawSlot::from_i64(v as i64)
+        } else {
+            RawSlot::from_u64(v as u64)
+        };
+    }
+    let mask = (1u128 << bits) - 1;
+    let low = (v as u128) & mask;
+    if signed {
+        // sign-extend the masked low bits to i64
+        let sign = (low >> (bits - 1)) & 1 == 1;
+        let ext = if sign { (low as i128) - (1i128 << bits) } else { low as i128 };
+        RawSlot::from_i64(ext as i64)
+    } else {
+        RawSlot::from_u64(low as u64)
+    }
+}
+
 fn eval_cast(value: RawSlot, from: Type, to: Type) -> RawSlot {
-    match (from, to) {
-        (Type::I64, Type::F64) => RawSlot::from_f64(unsafe { value.i64 as f64 }),
-        (Type::U64, Type::F64) => RawSlot::from_f64(unsafe { value.u64 as f64 }),
-        (Type::F64, Type::I64) => RawSlot::from_i64(unsafe { value.f64 as i64 }),
-        (Type::F64, Type::U64) => RawSlot::from_u64(unsafe { value.f64 as u64 }),
-        (Type::I64, Type::U64) => RawSlot::from_u64(unsafe { value.i64 as u64 }),
-        (Type::U64, Type::I64) => RawSlot::from_i64(unsafe { value.u64 as i64 }),
-        (Type::I8, Type::I64) => RawSlot::from_i64(unsafe { value.i64 }),
-        (Type::U8, Type::U64) => RawSlot::from_u64(unsafe { value.u64 }),
-        (Type::I16, Type::I64) => RawSlot::from_i64(unsafe { value.i64 }),
-        (Type::U16, Type::U64) => RawSlot::from_u64(unsafe { value.u64 }),
-        (Type::I32, Type::I64) => RawSlot::from_i64(unsafe { value.i64 }),
-        (Type::U32, Type::U64) => RawSlot::from_u64(unsafe { value.u64 }),
-        (Type::Bool, Type::Bool) => value,
-        (Type::I64, Type::I8) => RawSlot::from_i64(unsafe { value.i64 as i8 as i64 }),
-        (Type::U64, Type::U8) => RawSlot::from_u64(unsafe { value.u64 as u8 as u64 }),
-        (Type::I64, Type::I16) => RawSlot::from_i64(unsafe { value.i64 as i16 as i64 }),
-        (Type::U64, Type::U16) => RawSlot::from_u64(unsafe { value.u64 as u16 as u64 }),
-        (Type::I64, Type::I32) => RawSlot::from_i64(unsafe { value.i64 as i32 as i64 }),
-        (Type::U64, Type::U32) => RawSlot::from_u64(unsafe { value.u64 as u32 as u64 }),
+    // Float involvement is handled explicitly; everything else is an
+    // integer-to-integer width/signedness conversion.
+    match (int_desc(from), int_desc(to), from, to) {
+        // int -> int (covers widening, narrowing, signed/unsigned reinterpret)
+        (Some((fb, fs)), Some((tb, ts)), _, _) => {
+            let v = decode_int(unsafe { value.u64 }, fb, fs);
+            encode_int(v, tb, ts)
+        }
+        // int -> f64
+        (Some((fb, fs)), None, _, Type::F64) => {
+            let v = decode_int(unsafe { value.u64 }, fb, fs);
+            RawSlot::from_f64(v as f64)
+        }
+        // f64 -> int (truncate toward zero)
+        (None, Some((tb, ts)), Type::F64, _) => {
+            let f = unsafe { value.f64 };
+            encode_int(f as i128, tb, ts)
+        }
+        // f64 -> f64 and any other shape: pass through.
         _ => value,
     }
 }

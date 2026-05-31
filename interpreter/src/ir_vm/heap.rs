@@ -30,13 +30,52 @@ pub fn heap_free(ptr: u64) {
 }
 
 /// Read a typed value from the heap at `addr + offset`.
+///
+/// Prefers the typed-slot value (written by `ptr_write` / string helpers);
+/// falls back to a width-aware read from the raw byte buffer for scalars
+/// whose bytes only live there (e.g. copied in via `mem_copy`).
 pub fn ptr_read(addr: u64, offset: u64, ty: Type) -> Option<RawSlot> {
     with_heap(|h| {
-        let rc = h.typed_read(addr as usize, offset as usize)?;
-        let obj = rc.borrow();
-        Some(object_to_slot(&*obj, ty))
+        if let Some(rc) = h.typed_read(addr as usize, offset as usize) {
+            let obj = rc.borrow();
+            return Some(object_to_slot(&*obj, ty));
+        }
+        // Fallback: read the scalar's bytes directly from the buffer.
+        let width = scalar_byte_width(ty);
+        if width > 0 {
+            if let Some(raw) = h.read_scalar_bytes(addr as usize, offset as usize, width) {
+                return Some(byte_value_to_slot(raw, ty));
+            }
+        }
+        None
     })
     .flatten()
+}
+
+/// Byte width of a scalar type for raw-buffer reads. Returns 0 for
+/// non-scalar / pointer-sized opaque handles (handled via typed slots).
+fn scalar_byte_width(ty: Type) -> usize {
+    match ty {
+        Type::I8 | Type::U8 | Type::Bool => 1,
+        Type::I16 | Type::U16 => 2,
+        Type::I32 | Type::U32 => 4,
+        Type::I64 | Type::U64 | Type::F64 => 8,
+        _ => 0,
+    }
+}
+
+/// Reinterpret `raw` (zero-extended LE bytes) as a `RawSlot` of `ty`.
+fn byte_value_to_slot(raw: u64, ty: Type) -> RawSlot {
+    match ty {
+        Type::I8 => RawSlot::from_i64(raw as u8 as i8 as i64),
+        Type::I16 => RawSlot::from_i64(raw as u16 as i16 as i64),
+        Type::I32 => RawSlot::from_i64(raw as u32 as i32 as i64),
+        Type::I64 => RawSlot::from_i64(raw as i64),
+        Type::U8 | Type::U16 | Type::U32 | Type::U64 => RawSlot::from_u64(raw),
+        Type::F64 => RawSlot::from_f64(f64::from_bits(raw)),
+        Type::Bool => RawSlot::from_bool(raw != 0),
+        _ => RawSlot::from_u64(raw),
+    }
 }
 
 /// Write a typed value to the heap at `addr + offset`.
@@ -51,6 +90,13 @@ pub fn ptr_write(addr: u64, offset: u64, value: RawSlot, value_ty: Type) {
             h.write_u64(addr as usize, offset as usize, v);
         }
     });
+}
+
+/// Copy `size` bytes from `src` to `dest` (libc memcpy semantics). Covers
+/// both the raw byte buffer and the typed-slot range, matching the
+/// tree-walker's `__builtin_mem_copy` behaviour.
+pub fn mem_copy(src: u64, dest: u64, size: u64) {
+    let _ = with_heap(|h| h.copy_memory(src as usize, dest as usize, size as usize));
 }
 
 /// Allocate a string object on the heap and return its handle (u64 address).

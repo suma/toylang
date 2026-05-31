@@ -13,13 +13,28 @@ use compiler_ir::{InstKind, Module};
 /// Anything else (compound types, heap, pointers, closures, dyn trait,
 /// etc.) returns `false`.
 pub fn ir_vm_supported(module: &Module) -> bool {
-    for func in &module.functions {
-        // The VM cannot execute a function with no body: `Import`-linkage
-        // externs (libm / C runtime — Phase 5 FFI territory) and any other
-        // block-less function would index-OOB in `run_loop`. Reject the
-        // whole module so it falls back to the tree-walker. This covers
-        // `x.abs()` / `x.sqrt()` and friends, which lower to a prelude
-        // wrapper that forwards to an `__extern_*` libm symbol.
+    // Only functions *reachable from `main`* matter. The auto-loaded prelude
+    // drags in lots of dead functions — including `extern` libm wrappers —
+    // that would otherwise disqualify every module. We walk the static call
+    // graph (direct calls + closure / vtable function targets) from `main`
+    // and check only the reachable set:
+    //   - a reachable body-less function (`Import` extern, Phase 5 FFI) would
+    //     be executed → reject up-front so the program falls back to the
+    //     tree-walker before any side effects, instead of diverging mid-run;
+    //   - a reachable instruction the VM can't model → reject.
+    // `run_loop` keeps a runtime guard for any body-less callee that slips
+    // through an indirect edge.
+    let Some(main_id) = module
+        .functions
+        .iter()
+        .position(|f| f.export_name == "main")
+    else {
+        return false;
+    };
+
+    let reachable = reachable_functions(module, main_id as u32);
+    for fid in &reachable {
+        let func = &module.functions[*fid as usize];
         if matches!(func.linkage, compiler_ir::Linkage::Import) || func.blocks.is_empty() {
             return false;
         }
@@ -37,6 +52,54 @@ pub fn ir_vm_supported(module: &Module) -> bool {
         }
     }
     true
+}
+
+/// Functions reachable from `start` via static call edges: direct calls
+/// (`Call` family), closure construction (`FuncAddr` / `MakeClosure`), and
+/// dynamic dispatch (`VtableAddr` → the vtable's thunk `FuncId`s). Indirect
+/// calls through a runtime value have no static edge.
+fn reachable_functions(module: &Module, start: u32) -> std::collections::HashSet<u32> {
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![start];
+    while let Some(fid) = stack.pop() {
+        if !seen.insert(fid) {
+            continue;
+        }
+        let Some(func) = module.functions.get(fid as usize) else {
+            continue;
+        };
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                for callee in call_edges(&inst.kind, module) {
+                    if !seen.contains(&callee) {
+                        stack.push(callee);
+                    }
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// The `FuncId`s an instruction can transfer control to (statically).
+fn call_edges(kind: &InstKind, module: &Module) -> Vec<u32> {
+    match kind {
+        InstKind::Call { target, .. }
+        | InstKind::CallStruct { target, .. }
+        | InstKind::CallTuple { target, .. }
+        | InstKind::CallEnum { target, .. }
+        | InstKind::CallWithSelfWriteback { target, .. }
+        | InstKind::CallWithSelfWritebackCompound { target, .. }
+        | InstKind::FuncAddr { target }
+        | InstKind::MakeClosure { target, .. } => vec![target.0],
+        // Dynamic dispatch: every thunk in the referenced vtable is callable.
+        InstKind::VtableAddr { trait_sym, struct_sym } => module
+            .vtables
+            .get(&(*trait_sym, *struct_sym))
+            .map(|ids| ids.iter().map(|f| f.0).collect())
+            .unwrap_or_default(),
+        _ => vec![],
+    }
 }
 
 fn inst_supported(kind: &InstKind) -> bool {
@@ -113,9 +176,12 @@ mod tests {
     use string_interner::DefaultStringInterner;
 
     #[test]
-    fn empty_module_is_supported() {
+    fn empty_module_without_main_is_unsupported() {
+        // Eligibility is now reachability-from-`main`; a module with no main
+        // has nothing to run and is not VM-eligible (run_module errors on it
+        // anyway).
         let module = Module::new();
-        assert!(ir_vm_supported(&module));
+        assert!(!ir_vm_supported(&module));
     }
 
     #[test]

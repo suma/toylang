@@ -28,6 +28,15 @@ pub fn ir_vm_enabled_via_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Emit a one-line coverage marker (`IRVM_TRACE <category>`) to stderr when
+/// `TOY_IR_VM_TRACE` is set. Used to quantify how often `run_main_via_ir_vm`
+/// actually runs vs. falls back (and why) across a test corpus.
+fn trace(category: &str) {
+    if std::env::var_os("TOY_IR_VM_TRACE").is_some() {
+        eprintln!("IRVM_TRACE {category}");
+    }
+}
+
 /// Attempt to run `program`'s `main` through the IR VM, returning the
 /// wrapped scalar result. Returns `None` (→ tree-walker fallback) when the
 /// path is disabled, `main` returns a non-scalar / heap-backed value, the
@@ -55,6 +64,7 @@ pub fn run_main_via_ir_vm(
     // compound returns (struct / tuple / enum) bail to the tree-walker.
     let returns_str = matches!(main_fn.return_type, Some(TypeDecl::String));
     if !is_scalar_return(&main_fn.return_type) && !returns_str {
+        trace("fb_nonscalar_return");
         return None;
     }
 
@@ -64,13 +74,27 @@ pub fn run_main_via_ir_vm(
     // ones, and is handed to the VM for panic / print symbol resolution.
     let mut interner_owned = interner.clone();
     let contract_msgs = compiler_lower::ContractMessages::intern(&mut interner_owned);
-    let module =
-        compiler_lower::lower_program(program, &interner_owned, &contract_msgs, false).ok()?;
+    let module = match compiler_lower::lower_program(program, &interner_owned, &contract_msgs, false)
+    {
+        Ok(m) => m,
+        Err(_) => {
+            trace("fb_lower_err");
+            return None;
+        }
+    };
     if !super::eligibility::ir_vm_supported(&module) {
+        trace("fb_ineligible");
         return None;
     }
     let (bits, captured_str) =
-        super::run_module_capturing(&module, Some(&interner_owned), returns_str).ok()?;
+        match super::run_module_capturing(&module, Some(&interner_owned), returns_str) {
+            Ok(v) => v,
+            Err(_) => {
+                trace("fb_diverge");
+                return None;
+            }
+        };
+    trace("ran");
     if returns_str {
         Some(Rc::new(RefCell::new(Object::String(captured_str))))
     } else {

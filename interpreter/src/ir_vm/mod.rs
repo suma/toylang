@@ -91,7 +91,18 @@ impl<'a> Vm<'a> {
                 None => return VmResult::ExitCode(0),
             };
             let func = &self.module.functions[func_id.0 as usize];
-            let block = &func.blocks[block_id.0 as usize];
+            // A body-less callee (extern / `Import` linkage) cannot be
+            // executed: diverge cleanly so the caller falls back to the
+            // tree-walker for this program. Indexing an empty `blocks`
+            // would otherwise panic.
+            let Some(block) = func.blocks.get(block_id.0 as usize) else {
+                return VmResult::Diverged {
+                    message: format!(
+                        "ir_vm: cannot execute body-less function `{}` (extern?)",
+                        func.export_name
+                    ),
+                };
+            };
             if pc < block.instructions.len() {
                 let inst = block.instructions[pc].clone();
                 // Advance pc while we have a mutable borrow.

@@ -62,17 +62,18 @@ fn inst_supported(kind: &InstKind) -> bool {
         | InstKind::ConstStrBytes { .. }
         | InstKind::StrLen { .. }
         | InstKind::StrConcat { .. }
-        | InstKind::ToString { .. } => true,
-        // Phase 3+ instructions are not yet supported.
+        | InstKind::ToString { .. }
+        // Phase 3a: closures (function pointers + env-based indirect call).
+        | InstKind::FuncAddr { .. }
+        | InstKind::CallIndirect { .. }
+        | InstKind::MakeClosure { .. } => true,
+        // Phase 3b+ instructions are not yet supported.
         InstKind::MemCopy { .. }
         | InstKind::CallWithSelfWriteback { .. }
         | InstKind::CallWithSelfWritebackCompound { .. }
         | InstKind::AddressOf { .. }
         | InstKind::LoadRef { .. }
         | InstKind::StoreRef { .. }
-        | InstKind::FuncAddr { .. }
-        | InstKind::CallIndirect { .. }
-        | InstKind::MakeClosure { .. }
         | InstKind::VtableAddr { .. }
         | InstKind::CallIndirectFn { .. }
         | InstKind::CallIndirectFnStruct { .. }

@@ -1187,4 +1187,105 @@ mod tests {
         let result = run_module(&module).unwrap();
         assert_eq!(result, 42);
     }
+
+    #[test]
+    fn vm_capturing_closure_via_make_and_call_indirect() {
+        use compiler_ir::{AllocatorBinding, BinOp, FuncId, InstKind};
+        let mut interner = DefaultStringInterner::default();
+        let main_sym = interner.get_or_intern("main");
+        let body_sym = interner.get_or_intern("add_n_closure");
+
+        let mut module = Module::new();
+        // Lifted closure body: fn(env: u64, x: i64) -> i64 { x + *(env+8) }
+        let body_id = module.declare_function(
+            body_sym,
+            "add_n_closure".to_string(),
+            Linkage::Local,
+            vec![Type::U64, Type::I64],
+            Type::I64,
+        );
+        let main_id = module.declare_function(
+            main_sym,
+            "main".to_string(),
+            Linkage::Export,
+            vec![],
+            Type::I64,
+        );
+
+        // body: param[0] = env, param[1] = x; n = ptr_read(env, 8, I64); x + n
+        {
+            let func = module.function_mut(body_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let b = func.block_mut(entry);
+            b.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::U64)),
+                kind: InstKind::LoadLocal(LocalId(0)),
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: InstKind::Const(Const::U64(8)),
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::I64)),
+                kind: InstKind::PtrRead {
+                    ptr: ValueId(0),
+                    offset: ValueId(1),
+                    elem_ty: Type::I64,
+                },
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::I64)),
+                kind: InstKind::LoadLocal(LocalId(1)),
+            });
+            b.instructions.push(Instruction {
+                result: Some((ValueId(4), Type::I64)),
+                kind: InstKind::BinOp {
+                    op: BinOp::Add,
+                    lhs: ValueId(3),
+                    rhs: ValueId(2),
+                },
+            });
+            b.terminator = Some(Terminator::Return(vec![ValueId(4)]));
+        }
+
+        // main: n = 10; cl = MakeClosure(add_n_closure, [n]); cl(5)
+        {
+            let func = module.function_mut(main_id);
+            let entry = func.add_block();
+            func.entry = entry;
+            let m = func.block_mut(entry);
+            m.instructions.push(Instruction {
+                result: Some((ValueId(0), Type::I64)),
+                kind: InstKind::Const(Const::I64(10)),
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(1), Type::U64)),
+                kind: InstKind::MakeClosure {
+                    target: body_id,
+                    captures: vec![ValueId(0)],
+                    capture_tys: vec![Type::I64],
+                },
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(2), Type::I64)),
+                kind: InstKind::Const(Const::I64(5)),
+            });
+            m.instructions.push(Instruction {
+                result: Some((ValueId(3), Type::I64)),
+                kind: InstKind::CallIndirect {
+                    callee: ValueId(1),
+                    args: vec![ValueId(2)],
+                    param_tys: vec![Type::I64],
+                    ret_ty: Type::I64,
+                },
+            });
+            m.terminator = Some(Terminator::Return(vec![ValueId(3)]));
+            let _ = AllocatorBinding::Ambient;
+            let _ = FuncId(0);
+        }
+
+        let result = run_module(&module).unwrap();
+        assert_eq!(result, 15);
+    }
 }

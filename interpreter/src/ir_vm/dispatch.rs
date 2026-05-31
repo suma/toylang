@@ -258,14 +258,46 @@ pub fn execute(vm: &mut Vm, inst: &Instruction) {
                 vm.write_value(vid, RawSlot::from_u64(addr));
             }
         }
-        InstKind::FuncAddr { .. } => {
-            // Phase 3: closure support.
+        InstKind::FuncAddr { target } => {
+            // Phase 3a: a function pointer is represented in the VM as the
+            // raw FuncId index encoded into a u64. `CallIndirect` /
+            // `MakeClosure` recover it as `FuncId(slot.u64 as u32)`.
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(target.0 as u64));
+            }
         }
-        InstKind::CallIndirect { .. } => {
-            // Phase 3: closure support.
+        InstKind::MakeClosure { target, captures, capture_tys } => {
+            // Phase 3a: heap-allocate the env `[fn_ptr][cap0][cap1]...`,
+            // mirroring the AOT layout (8-byte slots, fn_ptr at +0,
+            // capture `i` at +(i+1)*8). The fn_ptr stores the FuncId so
+            // CallIndirect can dispatch back into the VM.
+            let env_size = ((1 + captures.len()) as u64) * 8;
+            let addr = heap::heap_alloc(env_size);
+            heap::ptr_write(addr, 0, RawSlot::from_u64(target.0 as u64), Type::U64);
+            for (i, (cap, cap_ty)) in captures.iter().zip(capture_tys.iter()).enumerate() {
+                let v = vm.read_value(*cap);
+                heap::ptr_write(addr, ((i + 1) * 8) as u64, v, *cap_ty);
+            }
+            if let Some((vid, _)) = inst.result {
+                vm.write_value(vid, RawSlot::from_u64(addr));
+            }
         }
-        InstKind::MakeClosure { .. } => {
-            // Phase 3: closure support.
+        InstKind::CallIndirect { callee, args, .. } => {
+            // Phase 3a: env-based indirect call. `callee` is an env_ptr;
+            // fn_ptr lives at env+0. The lifted closure body's first
+            // parameter is the env_ptr, so prepend it to the user args.
+            let env_ptr = unsafe { vm.read_value(*callee).u64 };
+            let fn_ptr = heap::ptr_read(env_ptr, 0, Type::U64)
+                .map(|s| unsafe { s.u64 })
+                .unwrap_or(0);
+            let target = compiler_ir::FuncId(fn_ptr as u32);
+            let mut arg_slots: Vec<RawSlot> = Vec::with_capacity(args.len() + 1);
+            arg_slots.push(RawSlot::from_u64(env_ptr));
+            for a in args {
+                arg_slots.push(vm.read_value(*a));
+            }
+            let return_dest = inst.result.map(|(vid, _)| vid);
+            vm.call_function(target, arg_slots, return_dest, Vec::new());
         }
         InstKind::VtableAddr { .. } => {
             // Phase 3: dyn trait support.

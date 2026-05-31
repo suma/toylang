@@ -707,7 +707,22 @@ impl<'a> TypeCheckerVisitor<'a> {
     pub fn visit_assign(&mut self, lhs: &ExprRef, rhs: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         let lhs = *lhs;
         let rhs = *rhs;
-        
+
+        // Reject assignment to an immutable (`val`) binding at type-check
+        // time. The tree-walker enforces this at runtime; hoisting it to
+        // the frontend makes every backend (interpreter / compiler / IR VM)
+        // reject it uniformly, before execution. Only bare-identifier
+        // targets are checked here — field / slice assignment mutability is
+        // handled on their own paths.
+        if let Some(Expr::Identifier(name)) = self.core.expr_pool.get(&lhs)
+            && self.context.is_var_mutable(name) == Some(false)
+        {
+            let name_str = self.resolve_symbol_name(name);
+            return Err(TypeCheckError::generic_error(&format!(
+                "cannot assign to `{name_str}`: binding is immutable (declared with `val`; use `var` to allow reassignment)"
+            )));
+        }
+
         let lhs_ty = {
             let lhs_obj = self.core.expr_pool.get(&lhs)
                 .ok_or_else(|| TypeCheckError::generic_error("Invalid left-hand expression reference"))?;

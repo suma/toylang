@@ -10,11 +10,10 @@ impl<'a> TypeCheckerVisitor<'a> {
         mut error: TypeCheckError,
         expr: &ExprRef,
     ) -> TypeCheckError {
-        if error.location.is_none() {
-            if let Some(location) = self.get_expr_location(expr) {
+        if error.location.is_none()
+            && let Some(location) = self.get_expr_location(expr) {
                 error = error.with_location(location);
             }
-        }
         error
     }
 

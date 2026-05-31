@@ -303,7 +303,7 @@ impl<'a> Parser<'a> {
                         name: alias_name,
                         generic_params: alias_generic_params,
                         target: target_ty,
-                        visibility: visibility.clone(),
+                        visibility,
                     }, Some(location));
                 }
                 Some(Kind::Struct) => {
@@ -415,7 +415,7 @@ impl<'a> Parser<'a> {
                                 name: enum_symbol,
                                 generic_params,
                                 variants,
-                                visibility: visibility.clone(),
+                                visibility,
                             }, Some(location));
                         }
                         _ => {

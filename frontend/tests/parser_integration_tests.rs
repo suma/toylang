@@ -1030,9 +1030,10 @@ mod error_detection {
     fn test_missing_operator() {
         let input = "1u64 2u64";
         let mut parser = ParserWithInterner::new(input);
-        let result = parser.parse_expr_impl();
-        // Should handle gracefully - either error or skip
-        assert!(result.is_err() || parser.errors.len() >= 0);
+        let _result = parser.parse_expr_impl();
+        // Should handle gracefully without panicking.
+        // The original assertion was always true (>= 0), so this test
+        // effectively just verifies the parser doesn't panic on this input.
     }
 
     #[test]
@@ -1053,7 +1054,6 @@ mod syntax_file_tests {
     fn test_syntax_files(#[case] _pattern: &str) {
         // Note: This test would load actual syntax files from the test directory
         // For now, we verify that the test infrastructure can be set up
-        assert!(true, "Syntax file test infrastructure is set up");
     }
 }
 

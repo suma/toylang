@@ -11,6 +11,7 @@ use crate::type_checker::generics::GenericTypeChecking;
 /// `params[i] -> args[i]`, resolving each arg through the enclosing `outer`
 /// substitution so nested generics (`Option<Option<T>>`) compose. Used by
 /// `typedecl_byte_size` to size generic compound types under concrete args.
+#[allow(dead_code)]
 fn build_size_subst(
     params: &[DefaultSymbol],
     args: &[TypeDecl],
@@ -36,6 +37,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     ///   - `Expr::FieldAccess(obj, _)` -> recurse on `obj`
     ///   - `Expr::TupleAccess(obj, _)` -> recurse on `obj`
     ///   - `Expr::SliceAccess(obj, SingleElement{..})` -> recurse on `obj`
+    ///
     /// Range-slice access (`&mut arr[a..b]`) and other non-place
     /// shapes are rejected.
     fn find_borrow_lvalue_root(
@@ -126,6 +128,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// parameters to concrete types. Returns `None` for types that can't be
     /// sized at type-check time (unresolved generics, arrays, fn types, ...),
     /// in which case `__builtin_sizeof` is left for the backend.
+    #[allow(dead_code)]
     fn typedecl_byte_size(
         &self,
         ty: &TypeDecl,
@@ -679,7 +682,6 @@ impl<'a> TypeCheckerVisitor<'a> {
                 Stmt::Return(None) => Ok(TypeDecl::Unit),
                 Stmt::Return(ret_ty) => {
                     if let Some(e) = ret_ty {
-                        let e = e;
                         let expr_obj = self.core.expr_pool.get(&e)
                             .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
                         let ty = expr_obj.clone().accept_expr(self)?;
@@ -910,6 +912,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// values (e.g. `String` / `Vec<u8>`). Generic struct args must also
     /// match so `Vec<u8> == Vec<u8>` compares but `Vec<u8> == Vec<i64>`
     /// continues to bail with the standard mismatch error.
+    #[allow(dead_code)]
     fn struct_eq_compatible(&self, lhs: &TypeDecl, rhs: &TypeDecl) -> bool {
         self.struct_method_compatible(lhs, rhs, "eq")
     }

@@ -1055,7 +1055,7 @@ impl StmtPool {
                     generic_params: self.struct_generic_params[index].clone()?,
                     generic_bounds: self.struct_generic_bounds[index].clone()?,
                     fields: self.struct_fields[index].clone()?,
-                    visibility: self.visibility[index].clone()?,
+                    visibility: self.visibility[index]?,
                 })
             }
             StmtType::ImplBlock => {
@@ -1072,7 +1072,7 @@ impl StmtPool {
                     name: self.struct_name[index]?,
                     generic_params: self.enum_generic_params[index].clone()?,
                     variants: self.enum_variants[index].clone()?,
-                    visibility: self.visibility[index].clone()?,
+                    visibility: self.visibility[index]?,
                 })
             }
             StmtType::TraitDecl => {
@@ -1080,7 +1080,7 @@ impl StmtPool {
                     name: self.struct_name[index]?,
                     generic_params: self.trait_generic_params[index].clone().unwrap_or_default(),
                     methods: self.trait_methods[index].clone()?,
-                    visibility: self.visibility[index].clone()?,
+                    visibility: self.visibility[index]?,
                 })
             }
             StmtType::TypeAlias => {
@@ -1088,7 +1088,7 @@ impl StmtPool {
                     name: self.symbol_val[index]?,
                     generic_params: self.struct_generic_params[index].clone().unwrap_or_default(),
                     target: self.type_decl[index].clone()?,
-                    visibility: self.visibility[index].clone()?,
+                    visibility: self.visibility[index]?,
                 })
             }
         }

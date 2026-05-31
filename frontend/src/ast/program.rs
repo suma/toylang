@@ -17,6 +17,7 @@ pub struct File {
     ///   - `None` if the function was authored in the user's source file.
     ///   - `Some(path)` if it came in via integration; `path` is the
     ///     dotted module path (`["std", "math"]` for `core/std/math.t`).
+    ///
     /// Used to disambiguate same-name `pub fn`s across modules at the IR
     /// `function_index` level (see compiler todo #193). Empty before
     /// integration; `module_integration` pushes one entry per integrated
@@ -53,6 +54,10 @@ impl File {
 
     pub fn len(&self) -> usize {
         self.expression.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.expression.is_empty()
     }
 }
 

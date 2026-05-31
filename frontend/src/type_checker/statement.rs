@@ -29,9 +29,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if result.is_ok() {
             match &stmt_val {
                 Stmt::StructDecl { .. } | Stmt::ImplBlock { .. } | Stmt::EnumDecl { .. } | Stmt::TraitDecl { .. } => {
-                    if let Err(e) = stmt_val.accept_decl(self) {
-                        return Err(e);
-                    }
+                    stmt_val.accept_decl(self)?;
                 }
                 _ => {}
             }

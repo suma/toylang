@@ -122,7 +122,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         let struct_symbol = name;
         let struct_def = crate::type_checker::context::StructDefinition {
             fields: fields.clone(),
-            visibility: visibility.clone(),
+            visibility: *visibility,
         };
         
         // Store the struct definition for later type checking and access control

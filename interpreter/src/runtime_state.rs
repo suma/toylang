@@ -23,6 +23,12 @@ pub struct RuntimeState {
     pub active: Vec<usize>,
 }
 
+impl Default for RuntimeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RuntimeState {
     pub fn new() -> Self {
         let heap = Rc::new(RefCell::new(HeapManager::new()));

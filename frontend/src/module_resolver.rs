@@ -33,10 +33,7 @@ pub struct ModuleResolver {
 impl ModuleResolver {
     /// Create a new module resolver with default search paths
     pub fn new() -> Self {
-        let mut search_paths = Vec::new();
-        
-        // Add current directory as default search path
-        search_paths.push(PathBuf::from("."));
+        let search_paths = vec![PathBuf::from(".")];
         
         Self {
             loaded_modules: HashMap::new(),

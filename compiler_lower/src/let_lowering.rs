@@ -692,8 +692,8 @@ impl<'a> FunctionLower<'a> {
         // `lower_dyn_method_call`, which sets the matching pending
         // channel based on the trait method's return type.
         self.lower_method_call(&recv, method_sym, &method_args)?;
-        if !had_struct {
-            if let Some(fields) = self.pending_struct_value.take() {
+        if !had_struct
+            && let Some(fields) = self.pending_struct_value.take() {
                 let outer_struct_id =
                     self.recover_last_dyn_struct_return_id().ok_or_else(|| {
                         "A5-P2-MVP-D: could not recover struct id for dyn method's struct return"
@@ -708,20 +708,17 @@ impl<'a> FunctionLower<'a> {
                 );
                 return Ok(Some(None));
             }
-        }
-        if !had_tuple {
-            if let Some(elements) = self.pending_tuple_value.take() {
+        if !had_tuple
+            && let Some(elements) = self.pending_tuple_value.take() {
                 self.bindings
                     .insert(name, Binding::Tuple { elements });
                 return Ok(Some(None));
             }
-        }
-        if !had_enum {
-            if let Some(storage) = self.pending_enum_value.take() {
+        if !had_enum
+            && let Some(storage) = self.pending_enum_value.take() {
                 self.bindings.insert(name, Binding::Enum(storage));
                 return Ok(Some(None));
             }
-        }
         // The trait method returned a scalar / Unit; no compound
         // pending channel was set by our call. Fall back to the
         // regular scalar path by signalling "didn't handle".
@@ -797,13 +794,7 @@ impl<'a> FunctionLower<'a> {
                     // (the value is held in the binding's leaf
                     // locals, not in the IR value graph).
                     let arg_expr_ref = match self.program.expression.get(a) {
-                        Some(Expr::Unary(op, inner))
-                            if matches!(
-                                op,
-                                frontend::ast::UnaryOp::Borrow
-                                    | frontend::ast::UnaryOp::BorrowMut
-                            ) =>
-                        {
+                        Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
                             inner
                         }
                         _ => *a,
@@ -990,13 +981,7 @@ impl<'a> FunctionLower<'a> {
                         let mut all_args: Vec<ValueId> = vec![recv_value];
                         for a in method_args {
                             let arg_expr_ref = match self.program.expression.get(a) {
-                                Some(Expr::Unary(op, inner))
-                                    if matches!(
-                                        op,
-                                        frontend::ast::UnaryOp::Borrow
-                                            | frontend::ast::UnaryOp::BorrowMut
-                                    ) =>
-                                {
+                                Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
                                     inner
                                 }
                                 _ => *a,

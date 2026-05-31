@@ -4,7 +4,7 @@
 //! so struct / tuple / enum leaf ordering stays identical across
 //! all backends.
 
-use crate::{EnumId, Module, StructId, TupleId, Type};
+use crate::{Module, Type};
 
 /// Flatten an IR `Type` (struct / tuple / enum / scalar) to the leaf
 /// scalar types in canonical declaration order.

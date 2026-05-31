@@ -1,4 +1,5 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tuple_tests {
     use crate::ast::*;
     use crate::type_checker::*;

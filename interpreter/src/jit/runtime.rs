@@ -289,18 +289,6 @@ extern "C" fn jit_with_allocator_pop() {
     });
 }
 
-/// Helper invoked by JIT-emitted code when a `panic("literal")` fires.
-/// `sym_id` is the u32 representation of the message's `DefaultSymbol`,
-/// widened to u64 for the C ABI. We resolve it through the interner
-/// pointer that `execute_cached` parked in `JIT_STRING_INTERNER`,
-/// format the diagnostic to match the tree-walker's output (so
-/// integration tests stay byte-identical), and exit the process.
-///
-/// Calling `process::exit(1)` aborts cleanly without unwinding the
-/// JIT-compiled frames — they have no DWARF unwind info, so a Rust
-/// panic would be undefined behaviour. The cranelift `trap` emitted
-/// after this call is dead code; it exists only so the basic block
-/// has a recognised terminator.
 // ---------------------------------------------------------------------------
 // STR-INTERP-INTERP-JIT: heap-allocated str helpers — JIT-side mirror
 // of `compiler/runtime/toylang_rt.c::toy_str_*` and `toy_to_string_*`.
@@ -471,6 +459,18 @@ extern "C" fn jit_println_str(s: u64) {
     }
 }
 
+/// Helper invoked by JIT-emitted code when a `panic("literal")` fires.
+/// `sym_id` is the u32 representation of the message's `DefaultSymbol`,
+/// widened to u64 for the C ABI. We resolve it through the interner
+/// pointer that `execute_cached` parked in `JIT_STRING_INTERNER`,
+/// format the diagnostic to match the tree-walker's output (so
+/// integration tests stay byte-identical), and exit the process.
+///
+/// Calling `process::exit(1)` aborts cleanly without unwinding the
+/// JIT-compiled frames — they have no DWARF unwind info, so a Rust
+/// panic would be undefined behaviour. The cranelift `trap` emitted
+/// after this call is dead code; it exists only so the basic block
+/// has a recognised terminator.
 extern "C" fn jit_panic(sym_id: u64) {
     let resolved = JIT_STRING_INTERNER.with(|slot| {
         let p = *slot.borrow();

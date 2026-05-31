@@ -396,6 +396,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Skip tokens until matching '>' is found (for generic argument parsing)
+    #[allow(dead_code)]
     pub(super) fn skip_until_matching_gt(&mut self) {
         let mut depth = 1;
         self.next(); // Skip the initial '<'

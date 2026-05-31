@@ -387,6 +387,7 @@ pub(crate) struct DynMutWriteback {
 /// `FunctionLower::compute_leaf_layout`), so the thunk reads
 /// the bytes the coercion-site `PtrWrite`s wrote.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct PendingThunkBody {
     pub(crate) thunk_func_id: FuncId,
     pub(crate) impl_func_id: FuncId,

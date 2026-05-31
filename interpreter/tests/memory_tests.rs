@@ -341,8 +341,8 @@ fn test_function_multiple_arguments_type_check() {
         }
     "#;
     let result = test_program(program);
-    if result.is_err() {
-        println!("Error: {}", result.as_ref().unwrap_err());
+    if let Err(e) = &result {
+        println!("Error: {}", e);
     }
     assert!(result.is_ok());
     let value = result.unwrap().borrow().unwrap_int64();

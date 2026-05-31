@@ -92,6 +92,7 @@ impl EnumLayout {
     /// Number of cranelift slots the enum value occupies. `1` for
     /// unit-only (just the tag); `2` when any variant carries a
     /// payload (tag + payload).
+    #[allow(dead_code)]
     pub fn slot_count(&self) -> usize {
         if self.variant_payloads.iter().any(|v| v.is_some()) {
             2

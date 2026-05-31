@@ -762,8 +762,7 @@ pub fn lower_program(
                 let sref = frontend::ast::StmtRef(j as u32);
                 if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
                     program.statement.get(&sref)
-                {
-                    if name == trait_sym {
+                    && name == trait_sym {
                         for sig in &methods {
                             let mut user_param_tys: Vec<Type> = Vec::new();
                             let mut user_resolved = true;
@@ -809,7 +808,6 @@ pub fn lower_program(
                         }
                         break;
                     }
-                }
             }
             sigs
         };
@@ -1369,7 +1367,7 @@ impl<'a> FunctionLower<'a> {
             ensures: method.ensures.clone(),
             code: method.code,
             is_extern: false,
-            visibility: method.visibility.clone(),
+            visibility: method.visibility,
         };
         // Stage 1 of `&` references: remember whether this body
         // is a `&mut self` method. After parameter binding (in
@@ -1476,17 +1474,20 @@ impl<'a> FunctionLower<'a> {
                     }
                 }
                 let ir_ret_ty = super::types::lower_scalar(r_ty);
-                if ok && ir_ret_ty.is_some() {
-                    let local = self.module.function_mut(self.func_id).add_local(Type::U64);
-                    self.bindings.insert(
-                        *name,
-                        Binding::FunctionPtr {
-                            local,
-                            param_tys: ir_param_tys,
-                            ret_ty: ir_ret_ty.unwrap(),
-                        },
-                    );
-                    continue;
+                #[allow(clippy::collapsible_if)]
+                if ok {
+                    if let Some(ret_ty) = ir_ret_ty {
+                        let local = self.module.function_mut(self.func_id).add_local(Type::U64);
+                        self.bindings.insert(
+                            *name,
+                            Binding::FunctionPtr {
+                                local,
+                                param_tys: ir_param_tys,
+                                ret_ty,
+                            },
+                        );
+                        continue;
+                    }
                 }
                 return Err(format!(
                     "compiler MVP: function-typed parameter `{}: {:?}` requires primitive scalar param/return types",

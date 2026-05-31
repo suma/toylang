@@ -61,8 +61,9 @@ pub(super) type GenericMethods =
 /// receiver's concrete type args. Lookup priority:
 ///   1. exact match on `target_type_args`;
 ///   2. generic-parameterised impl with empty args (matches anything);
-///   3. lone-spec fallback (single spec wins regardless of args).
-/// Mirrors `EvaluationContext::get_method` in the interpreter.
+    ///   3. lone-spec fallback (single spec wins regardless of args).
+    ///
+    /// Mirrors `EvaluationContext::get_method` in the interpreter.
 pub(super) fn lookup_method_func(
     method_func_ids: &MethodFuncIds,
     target_sym: DefaultSymbol,

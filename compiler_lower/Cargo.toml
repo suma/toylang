@@ -7,3 +7,6 @@ edition = "2024"
 frontend = { path = "../frontend", features = ["serde"] }
 compiler_ir = { path = "../compiler_ir" }
 string-interner.workspace = true
+
+[lints]
+workspace = true

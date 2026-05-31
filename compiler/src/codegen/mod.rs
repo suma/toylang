@@ -1027,6 +1027,7 @@ impl<M: Module> CodegenSession<M> {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn cranelift_signature(
         &self,
         ir_module: &IrModule,
@@ -1277,6 +1278,7 @@ impl<M: Module> CodegenSession<M> {
 /// codegen needs while lowering a single function. Built once per
 /// function definition by `CodegenSession::declare_runtime_refs` and
 /// borrowed by `LowerCtx`.
+#[allow(dead_code)]
 struct RuntimeRefs {
     puts: cranelift_codegen::ir::FuncRef,
     exit: cranelift_codegen::ir::FuncRef,

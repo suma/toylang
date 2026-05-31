@@ -207,7 +207,7 @@ pub fn extract_interface(file: &super::File) -> ModuleInterface {
                 } => {
                     if visibility == Visibility::Public {
                         interface.structs.push(StructDecl {
-                            name: name,
+                            name,
                             generic_params: generic_params.clone(),
                             generic_bounds: generic_bounds.clone(),
                             fields: fields.clone(),
@@ -223,7 +223,7 @@ pub fn extract_interface(file: &super::File) -> ModuleInterface {
                 } => {
                     if visibility == Visibility::Public {
                         interface.enums.push(EnumDecl {
-                            name: name,
+                            name,
                             generic_params: generic_params.clone(),
                             variants: variants.clone(),
                             visibility: Visibility::Public,
@@ -254,7 +254,7 @@ pub fn extract_interface(file: &super::File) -> ModuleInterface {
                             })
                             .collect();
                         interface.traits.push(TraitDecl {
-                            name: name,
+                            name,
                             generic_params: generic_params.clone(),
                             methods: sig_methods,
                             visibility: Visibility::Public,
@@ -290,10 +290,10 @@ pub fn extract_interface(file: &super::File) -> ModuleInterface {
                         .collect();
                     if !sig_methods.is_empty() || trait_name.is_some() {
                         interface.impl_blocks.push(ImplBlockSig {
-                            target_type: target_type,
+                            target_type,
                             target_type_args: target_type_args.clone(),
                             methods: sig_methods,
-                            trait_name: trait_name,
+                            trait_name,
                             trait_type_args: trait_type_args.clone(),
                         });
                     }
@@ -302,16 +302,14 @@ pub fn extract_interface(file: &super::File) -> ModuleInterface {
                     name,
                     generic_params,
                     target,
-                    visibility,
+                    visibility: Visibility::Public,
                 } => {
-                    if visibility == Visibility::Public {
-                        interface.type_aliases.push(TypeAliasDecl {
-                            name: name,
-                            generic_params: generic_params.clone(),
-                            target: target.clone(),
-                            visibility: Visibility::Public,
-                        });
-                    }
+                    interface.type_aliases.push(TypeAliasDecl {
+                        name,
+                        generic_params: generic_params.clone(),
+                        target: target.clone(),
+                        visibility: Visibility::Public,
+                    });
                 }
                 _ => {}
             }

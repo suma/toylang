@@ -325,6 +325,7 @@ fn extract_simple_e2e_tests() -> Vec<SubTest> {
 /// monolithic loop into 4 shards lets nextest run them on 4
 /// separate threads, cutting the test's wall-clock contribution
 /// from ~15 s to ~4 s without changing per-sub-test coverage.
+#[allow(dead_code)]
 fn run_extracted_shard(start: usize, end: usize, label: &str) {
     if skip_e2e() {
         return;

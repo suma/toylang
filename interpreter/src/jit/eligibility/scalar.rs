@@ -119,6 +119,7 @@ impl ScalarTy {
 /// Generic enums use `Some(Generic(param))` so each instantiation
 /// can supply a concrete `ty`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
 pub enum PayloadRepr {
     None,
     Concrete(ScalarTy),
@@ -138,6 +139,7 @@ impl PayloadRepr {
         }
     }
 
+    #[allow(dead_code)]
     pub fn is_some(&self) -> bool {
         !matches!(self, PayloadRepr::None)
     }

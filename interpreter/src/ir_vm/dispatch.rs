@@ -4,7 +4,7 @@
 //! Terminators are handled by the caller (`run_loop`) so this
 //! function only processes non-terminator instructions.
 
-use compiler_ir::{ArraySlotId, BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp, ValueId};
+use compiler_ir::{BinOp, Const, InstKind, Instruction, LocalId, Type, UnaryOp};
 use string_interner::Symbol;
 
 use crate::ir_vm::{heap, RawSlot, Vm};

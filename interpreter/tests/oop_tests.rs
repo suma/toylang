@@ -2,13 +2,13 @@ mod common;
 
 use common::test_program;
 
-/// OOP (Object-Oriented Programming) integration tests.
-///
-/// This file consolidates the following test files:
-/// - associated_function_tests.rs (5 tests) -> mod associated_functions
-/// - self_keyword_tests.rs (8 tests) -> mod self_keyword
-/// - custom_destructor_tests.rs (6 tests) -> mod custom_destructor
-/// - destruction_tests.rs (8 tests) -> mod destruction
+// OOP (Object-Oriented Programming) integration tests.
+//
+// This file consolidates the following test files:
+// - associated_function_tests.rs (5 tests) -> mod associated_functions
+// - self_keyword_tests.rs (8 tests) -> mod self_keyword
+// - custom_destructor_tests.rs (6 tests) -> mod custom_destructor
+// - destruction_tests.rs (8 tests) -> mod destruction
 
 // =============================================================================
 // Associated Functions
@@ -711,6 +711,7 @@ mod destruction {
 
     #[test]
     #[serial]
+    #[allow(clippy::mutable_key_type)]
     fn test_dict_destruction_logging() {
         clear_destruction_log();
 

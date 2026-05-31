@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use frontend::ast::*;
 use frontend::type_checker::*;
 use frontend::type_decl::TypeDecl;
-use frontend::visitor::{AstVisitor, DeclVisitor};
+use frontend::visitor::DeclVisitor;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
 use crate::object::RcObject;
 use crate::evaluation::EvaluationContext;
@@ -40,7 +40,7 @@ fn setup_type_checker<'a>(program: &'a mut File, string_interner: &'a mut Defaul
         let stmt_ref = StmtRef(i as u32);
         if let Some(stmt) = program.statement.get(&stmt_ref) {
             if let frontend::ast::Stmt::StructDecl { name, generic_params, generic_bounds: _, fields, visibility } = &stmt {
-                struct_definitions.push((*name, fields.clone(), visibility.clone()));
+                struct_definitions.push((*name, fields.clone(), *visibility));
                 
                 // Store generic parameters for later registration
                 if !generic_params.is_empty() {

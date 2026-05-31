@@ -492,6 +492,7 @@ mod basic_execution {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)]
     fn test_const_f64_value() {
         common::assert_program_result_f64(
             r"

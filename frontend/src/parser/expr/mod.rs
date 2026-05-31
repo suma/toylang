@@ -141,7 +141,6 @@ pub fn parse_assign(parser: &mut Parser, mut lhs: ExprRef) -> ParserResult<ExprR
 
                 // Check if lhs is a SliceAccess expression and convert to SliceAssign
                 if let Some(Expr::SliceAccess(object, slice_info)) = parser.ast_builder.expr_pool.get(&lhs) {
-                    let object = object;
                     let start = slice_info.start;
                     let end = slice_info.end;
                     lhs = parser.ast_builder.slice_assign_expr(object, start, end, new_rhs, Some(location));
@@ -391,8 +390,7 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
         *rhs0,
         Some(location),
     );
-    for i in 1..comparisons.len() {
-        let (lhs_i, op_i, rhs_i) = &comparisons[i];
+    for (lhs_i, op_i, rhs_i) in comparisons.iter().skip(1) {
         let cmp = parser.ast_builder.binary_expr(
             op_i.clone(),
             *lhs_i,

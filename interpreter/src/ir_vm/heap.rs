@@ -38,7 +38,7 @@ pub fn ptr_read(addr: u64, offset: u64, ty: Type) -> Option<RawSlot> {
     with_heap(|h| {
         if let Some(rc) = h.typed_read(addr as usize, offset as usize) {
             let obj = rc.borrow();
-            return Some(object_to_slot(&*obj, ty));
+            return Some(object_to_slot(&obj, ty));
         }
         // Fallback: read the scalar's bytes directly from the buffer.
         let width = scalar_byte_width(ty);

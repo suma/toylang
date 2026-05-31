@@ -40,3 +40,6 @@ tempfile = "3.27"
 # link of two pre-built objects.
 [build-dependencies]
 cc = "1"
+
+[lints]
+workspace = true

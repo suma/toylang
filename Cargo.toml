@@ -39,3 +39,15 @@ opt-level = 3
 inherits = "release"
 debug = "line-tables-only"
 strip = "none"
+
+# Workspace-wide clippy lints — large-scale structural refactors that
+# require dedicated PRs are allowed here so day-to-day clippy stays
+# actionable.
+[workspace.lints.clippy]
+ptr_arg = "allow"
+collapsible_match = "allow"
+collapsible_if_let = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+if_same_then_else = "allow"
+manual_find = "allow"

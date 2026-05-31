@@ -296,6 +296,7 @@ impl<'a> Vm<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn module(&self) -> &Module {
         self.module
     }

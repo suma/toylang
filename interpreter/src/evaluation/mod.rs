@@ -81,6 +81,7 @@ impl ContractMode {
     ///   - `pre`: only `requires` runs; `ensures` is skipped
     ///   - `post`: only `ensures` runs; `requires` is skipped
     ///   - `off`: neither runs (D's `-release` equivalent)
+    ///
     /// Any other value falls back to `all` and prints a warning to stderr,
     /// matching the philosophy of `INTERPRETER_JIT` (typos shouldn't
     /// silently disable safety).
@@ -213,6 +214,7 @@ pub struct EvaluationContext<'a> {
 /// mutations the body made via field access (`s.field = ...`)
 /// are visible inside the synthesized `drop(&mut self)` body.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(super) struct DropEntry {
     pub(super) name: DefaultSymbol,
     pub(super) struct_sym: DefaultSymbol,
@@ -270,6 +272,7 @@ impl<'a> EvaluationContext<'a> {
     /// - `None` (bare call) prefers `(None, name)`, then falls back to
     ///   the unique `(Some(_), name)` entry; ambiguous bare calls
     ///   return `None` so the caller can surface a clean error.
+    ///
     /// Returns `None` if `function_qualified` is empty (legacy
     /// constructor path) — in that case callers fall back to the
     /// flat `function` map.
@@ -359,6 +362,7 @@ impl<'a> EvaluationContext<'a> {
     ///    receiver and no annotation hint to feed concrete args
     ///    into the lookup. Phase 2b will thread annotation hints
     ///    through so this fallback can become stricter.
+    ///
     /// Pass `&[]` when the receiver has no type args (inherent impls,
     /// non-generic structs, primitive receivers).
     pub fn get_method(

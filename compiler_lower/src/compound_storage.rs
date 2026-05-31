@@ -441,6 +441,7 @@ impl<'a> FunctionLower<'a> {
 
     /// Common store: write the variant tag and (optionally) evaluate
     /// + store the payload args into the target's per-variant slots.
+    ///
     /// (deprecated — kept temporarily during the refactor)
     #[allow(dead_code)]
     pub(super) fn write_enum_into_target(

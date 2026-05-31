@@ -1,3 +1,5 @@
+#![allow(clippy::manual_c_str_literals)]
+
 //! In-process JIT entry point for the AOT compiler.
 //!
 //! Same lower → declare → define pipeline as `compile_file` /

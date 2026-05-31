@@ -46,3 +46,6 @@ harness = false
 [[bench]]
 name = "jit_bench"
 harness = false
+
+[lints]
+workspace = true

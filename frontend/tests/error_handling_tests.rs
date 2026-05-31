@@ -287,7 +287,6 @@ mod error_handling_tests {
                 }
                 Err(_) => {
                     // Parse error is also acceptable for undefined variables
-                    assert!(true, "Parse error for undefined variable is acceptable");
                 }
             }
         }

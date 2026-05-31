@@ -2662,7 +2662,7 @@ impl<'a, 'b> State<'a, 'b> {
             // register the enum local. Routed through call_targets +
             // gather_call_args so the arg expansion shares the
             // boundary helper above.
-            Expr::Call(_, _) | Expr::MethodCall(_, _, _) | Expr::AssociatedFunctionCall(_, _, _) => {
+            Expr::Call(_, _) | Expr::MethodCall(_, _, _) => {
                 let target_key = match self.call_targets.get(value_ref) {
                     Some(k) => k.clone(),
                     None => return Ok(false),

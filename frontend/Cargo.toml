@@ -24,3 +24,6 @@ tempfile = "3.27"
 [build-dependencies]
 failure = "0.1.5"
 rflex = "0.9.0"
+
+[lints]
+workspace = true

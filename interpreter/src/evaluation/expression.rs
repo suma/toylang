@@ -578,6 +578,7 @@ impl EvaluationContext<'_> {
         Ok(EvaluationResult::Value(Object::Array(Box::new(array_objects)).into()))
     }
 
+    #[allow(clippy::mutable_key_type)]
     pub(super) fn evaluate_dict_literal(&mut self, entries: &[(ExprRef, ExprRef)]) -> Result<EvaluationResult, InterpreterError> {
         let mut dict = HashMap::new();
 

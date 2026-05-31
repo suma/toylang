@@ -455,7 +455,7 @@ impl<'a> FunctionLower<'a> {
             // recover the struct's base name from the binding and
             // look up the vtable through `module.vtables`.
             if let Some((trait_sym, is_mut_dyn)) =
-                param_dyn_trait.get(arg_idx).and_then(|t| t.clone())
+                param_dyn_trait.get(arg_idx).and_then(|t| *t)
             {
                 let _ = is_mut_dyn; // used below for the post-call writeback path
                 // Unwrap an explicit `&<ident>` borrow if present —
@@ -463,9 +463,7 @@ impl<'a> FunctionLower<'a> {
                 // explicit form (`describe(&d)`) reach the same
                 // coercion path.
                 let inner_expr_ref = match self.program.expression.get(a) {
-                    Some(Expr::Unary(op, inner))
-                        if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) =>
-                    {
+                    Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => {
                         inner
                     }
                     _ => *a,
@@ -497,9 +495,7 @@ impl<'a> FunctionLower<'a> {
                     .vtables
                     .contains_key(&(trait_sym, struct_sym))
                 {
-                    return Err(format!(
-                        "A5-P2: no vtable for the &dyn arg's `impl <trait> for <struct>` pair"
-                    ));
+                    return Err("A5-P2: no vtable for the &dyn arg's `impl <trait> for <struct>` pair".to_string());
                 }
                 // A5-P2-MVP-B: construct the data_ptr leaf. Two cases:
                 //   * struct has zero leaves → sentinel `data_ptr = 0`.
@@ -733,9 +729,7 @@ impl<'a> FunctionLower<'a> {
             // same identifier-expansion path below runs (compound
             // borrows / non-identifier operands).
             let arg_expr_ref = match self.program.expression.get(a) {
-                Some(Expr::Unary(op, inner))
-                    if matches!(op, UnaryOp::Borrow | UnaryOp::BorrowMut) =>
-                {
+                Some(Expr::Unary(UnaryOp::Borrow | UnaryOp::BorrowMut, inner)) => {
                     inner
                 }
                 _ => *a,

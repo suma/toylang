@@ -494,12 +494,7 @@ impl<'a> FunctionLower<'a> {
         let mut dests: Vec<LocalId> = Vec::new();
         for a in items {
             let inner = match self.program.expression.get(a) {
-                Some(frontend::ast::Expr::Unary(op, inner))
-                    if matches!(
-                        op,
-                        frontend::ast::UnaryOp::BorrowMut
-                    ) =>
-                {
+                Some(frontend::ast::Expr::Unary(frontend::ast::UnaryOp::BorrowMut, inner)) => {
                     inner
                 }
                 _ => continue,

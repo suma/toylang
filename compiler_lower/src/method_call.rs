@@ -455,7 +455,7 @@ impl<'a> FunctionLower<'a> {
             .iter()
             .find(|fb| fb.name == method_name)
             .and_then(|fb| match &fb.shape {
-                super::bindings::FieldShape::Scalar { local, ty } if matches!(ty, Type::U64) => {
+                super::bindings::FieldShape::Scalar { local, ty: Type::U64 } => {
                     Some(*local)
                 }
                 _ => None,
@@ -994,12 +994,7 @@ impl<'a> FunctionLower<'a> {
             // (`&p` / `&mut p` of a struct/tuple/enum binding) flow
             // through the identifier-expansion path below.
             let arg_expr_ref = match self.program.expression.get(a) {
-                Some(Expr::Unary(op, inner))
-                    if matches!(
-                        op,
-                        frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut
-                    ) =>
-                {
+                Some(Expr::Unary(frontend::ast::UnaryOp::Borrow | frontend::ast::UnaryOp::BorrowMut, inner)) => {
                     inner
                 }
                 _ => *a,
@@ -1084,8 +1079,7 @@ impl<'a> FunctionLower<'a> {
             let stmt_ref = frontend::ast::StmtRef(i as u32);
             if let Some(frontend::ast::Stmt::TraitDecl { name, methods, .. }) =
                 self.program.statement.get(&stmt_ref)
-            {
-                if name == trait_sym {
+                && name == trait_sym {
                     for sig in &methods {
                         if sig.name == method {
                             method_param_decls = Some(
@@ -1104,7 +1098,6 @@ impl<'a> FunctionLower<'a> {
                     }
                     break;
                 }
-            }
         }
         let method_param_decls = method_param_decls.ok_or_else(|| {
             format!(

@@ -523,7 +523,7 @@ impl<'a> AstIntegrationContext<'a> {
                     new_fields.push(StructField {
                         name: f.name.clone(),
                         type_decl: self.remap_type_decl(&f.type_decl)?,
-                        visibility: f.visibility.clone(),
+                        visibility: f.visibility,
                     });
                 }
                 Ok(Stmt::StructDecl {
@@ -531,7 +531,7 @@ impl<'a> AstIntegrationContext<'a> {
                     generic_params: new_generic_params,
                     generic_bounds: new_generic_bounds,
                     fields: new_fields,
-                    visibility: visibility.clone(),
+                    visibility: *visibility,
                 })
             }
             Stmt::ImplBlock { target_type, target_type_args, methods, trait_name, trait_type_args } => {
@@ -624,7 +624,7 @@ impl<'a> AstIntegrationContext<'a> {
                     name: new_name,
                     generic_params: new_generics,
                     variants: new_variants,
-                    visibility: visibility.clone(),
+                    visibility: *visibility,
                 })
             }
             Stmt::TraitDecl { name, generic_params, methods, visibility } => {
@@ -697,7 +697,7 @@ impl<'a> AstIntegrationContext<'a> {
                     name: new_name,
                     generic_params: new_generic_params,
                     methods: new_methods,
-                    visibility: visibility.clone(),
+                    visibility: *visibility,
                 })
             }
             Stmt::TypeAlias { name, generic_params, target, visibility } => {
@@ -717,7 +717,7 @@ impl<'a> AstIntegrationContext<'a> {
                     name: new_name,
                     generic_params: new_params,
                     target: new_target,
-                    visibility: visibility.clone(),
+                    visibility: *visibility,
                 })
             }
         }
@@ -834,7 +834,7 @@ impl<'a> AstIntegrationContext<'a> {
             ensures: new_ensures,
             code: new_code,
             is_extern: function.is_extern,
-            visibility: function.visibility.clone()
+            visibility: function.visibility
         })
     }
 
@@ -895,7 +895,7 @@ impl<'a> AstIntegrationContext<'a> {
             code: new_code,
             has_self_param: method.has_self_param,
             self_is_mut: method.self_is_mut,
-            visibility: method.visibility.clone()
+            visibility: method.visibility
         }))
     }
 

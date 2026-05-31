@@ -146,7 +146,6 @@ pub(super) fn check_callable_body(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn check_struct_returning_body(
     program: &File,
     body_stmt_ref: &StmtRef,
@@ -281,7 +280,6 @@ fn check_struct_returning_body(
 /// Tuple-returning analog of `check_struct_returning_body`. The body's
 /// last expression must be either a TupleLiteral with the declared
 /// element types or an Identifier of a tuple local with the same shape.
-#[allow(clippy::too_many_arguments)]
 /// Phase JE-2d: enum-returning function body validator. The body's
 /// tail expression must be an enum producer that codegen's
 /// `gather_enum_values` can lower:
@@ -290,7 +288,6 @@ fn check_struct_returning_body(
 ///   - `AssociatedFunctionCall(enum, variant, [arg])` for tuple constructors
 ///   - `Match` whose every arm body is itself a valid enum producer
 ///     for `enum_name` (recursive).
-#[allow(clippy::too_many_arguments)]
 fn check_enum_returning_body(
     program: &File,
     body_stmt_ref: &StmtRef,
@@ -368,7 +365,6 @@ fn check_enum_returning_body(
 /// Phase JE-2d: validate an enum-producing expression for a target
 /// enum type. Recurses through `Match` so each arm body is checked
 /// against the same target.
-#[allow(clippy::too_many_arguments)]
 fn check_enum_producing_expr(
     program: &File,
     expr_ref: &ExprRef,
@@ -633,7 +629,6 @@ fn check_tuple_returning_body(
 /// Validate every element of a tuple literal against the expected
 /// element types. Records callees / ptr_read hints encountered while
 /// typing the individual element initializers.
-#[allow(clippy::too_many_arguments)]
 fn check_tuple_literal_fields(
     program: &File,
     elements: &[ExprRef],
@@ -686,7 +681,6 @@ fn check_tuple_literal_fields(
 /// If `value_ref` is a `TupleLiteral`, derive its element types by
 /// type-checking each child expression. Returns the shape only when all
 /// elements are JIT scalars.
-#[allow(clippy::too_many_arguments)]
 fn tuple_literal_target(
     program: &File,
     value_ref: &ExprRef,
@@ -734,7 +728,6 @@ fn tuple_literal_target(
 /// scalar tuple, validate args and record the call site, returning the
 /// tuple's element-type vector for the caller to register as a tuple
 /// local.
-#[allow(clippy::too_many_arguments)]
 fn check_tuple_returning_call(
     program: &File,
     value_ref: &ExprRef,
@@ -849,7 +842,6 @@ fn struct_literal_target(
 /// (Identifier-of-struct-local for struct params; ScalarTy for scalar
 /// params), record the monomorphization, and return the resulting
 /// struct's name. Caller registers the struct local.
-#[allow(clippy::too_many_arguments)]
 fn check_struct_returning_call(
     program: &File,
     value_ref: &ExprRef,
@@ -923,7 +915,6 @@ fn check_struct_returning_call(
 /// — recurse into `check_expr` so the call's args are validated and
 /// `callees` is populated, then return the enum-type-name when the
 /// call's return is `ParamTy::Enum`.
-#[allow(clippy::too_many_arguments)]
 fn check_enum_returning_call(
     program: &File,
     value_ref: &ExprRef,
@@ -1008,16 +999,16 @@ fn check_enum_returning_call(
 ///   - `Expr::QualifiedIdentifier([enum, variant])` — unit constructor
 ///   - `Expr::AssociatedFunctionCall(enum, variant, args)` — tuple
 ///     constructor; the single arg's type must match the enum's
-///     payload_repr (Concrete or Generic resolved per call-site).
-/// Returns `None` for everything else (the regular check_expr path
-/// runs). Side effect: validates the payload arg via `check_expr`,
-/// which recursively records callees / ptr_read hints.
+    ///     payload_repr (Concrete or Generic resolved per call-site).
+    ///
+    /// Returns `None` for everything else (the regular check_expr path
+    /// runs). Side effect: validates the payload arg via `check_expr`,
+    /// which recursively records callees / ptr_read hints.
 ///
 /// `annotation_hint` is the val/var annotation if available (the
 /// declared enum type with type args). Used when the rhs is a unit
 /// constructor of a generic enum (e.g. `val o: Option<i64> = Option::None`)
 /// — the payload_ty has to come from somewhere.
-#[allow(clippy::too_many_arguments)]
 fn check_enum_constructor_rhs(
     program: &File,
     value_ref: &ExprRef,
@@ -1136,7 +1127,6 @@ fn check_enum_constructor_rhs(
 /// Validate every field of a struct literal against the registered
 /// layout. Records callees / ptr_read hints encountered while typing the
 /// individual field initializers.
-#[allow(clippy::too_many_arguments)]
 fn check_struct_literal_fields(
     program: &File,
     value_ref: &ExprRef,
@@ -1244,14 +1234,16 @@ fn body_has_ptr_read(program: &File, stmt_ref: &StmtRef) -> bool {
 ///     matches the scrutinee
 ///   - `EnumVariant(enum, variant, [])` — accepted when the enum is
 ///     in `enum_layouts`, the variant is unit, and the scrutinee is
-///     a U64 tag (the JIT representation of unit-only enums)
-/// Tuple patterns and named bindings (which require payload
-/// extraction) are rejected.
-/// Returns `Ok(payload_binding)` when the pattern is accepted.
-/// `payload_binding` is `Some((name, ty))` when an EnumVariant
-/// pattern carries a single Pattern::Name sub-pattern (JE-2b
-/// payload binding); otherwise `None`. Caller installs the
-/// binding in `locals` for the arm body and removes it after.
+    ///     a U64 tag (the JIT representation of unit-only enums)
+    ///
+    /// Tuple patterns and named bindings (which require payload
+    /// extraction) are rejected.
+    ///
+    /// Returns `Ok(payload_binding)` when the pattern is accepted.
+    /// `payload_binding` is `Some((name, ty))` when an EnumVariant
+    /// pattern carries a single Pattern::Name sub-pattern (JE-2b
+    /// payload binding); otherwise `None`. Caller installs the
+    /// binding in `locals` for the arm body and removes it after.
 ///
 /// `scrut_enum` carries the per-local enum info when the
 /// scrutinee is an enum identifier — the per-local `payload_ty`
@@ -3032,7 +3024,6 @@ pub(crate) fn check_expr(
                     }
                     None => return Some(ScalarTy::Unit),
                 };
-                ();
             }
             let struct_name = match compound_locals.structs.get(&recv_name).copied() {
                 Some(s) => s,
@@ -3329,7 +3320,6 @@ pub(crate) fn check_expr(
 /// of-tuple-local, inline tuple literal, and scalar fall-throughs),
 /// records the monomorphisation key, and returns the substituted
 /// callee return type.
-#[allow(clippy::too_many_arguments)]
 fn check_plain_call(
     program: &File,
     expr_ref: &ExprRef,

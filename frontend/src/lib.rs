@@ -1,3 +1,6 @@
+#![allow(clippy::slow_vector_initialization)]
+#![allow(clippy::upper_case_acronyms)]
+
 pub mod ast;
 #[cfg(feature = "serde")]
 pub mod cache;

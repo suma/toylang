@@ -41,8 +41,8 @@ const LINK_CACHE_VERSION: u32 = 1;
 /// `TOY_LINK_CACHE_DIR` env var is set, `link_executable` first
 /// hashes its inputs (toylang object bytes + runtime object bytes
 /// + cc selection + platform flag + cache version), looks up
-/// `<dir>/<hash>.bin`, and — on hit — copies the cached binary
-/// directly to `output` instead of invoking `cc`.
+///   `<dir>/<hash>.bin`, and — on hit — copies the cached binary
+///   directly to `output` instead of invoking `cc`.
 ///
 /// The dominant savings on macOS is the Mach-O ad-hoc code
 /// signing pass that runs on every link (~150-300 ms per binary

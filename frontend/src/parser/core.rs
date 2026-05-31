@@ -10,6 +10,7 @@ use super::token_source::{TokenProvider, LexerTokenSource, TokenNormalizationCon
 use string_interner::DefaultStringInterner;
 use crate::parser::error::{ParserError, ParserResult, MultipleParserResult};
 
+#[allow(clippy::slow_vector_initialization)]
 pub mod lexer {
     include!(concat!(env!("OUT_DIR"), "/lexer.rs"));
 }
@@ -96,6 +97,7 @@ impl ParserWithInterner {
         self.get_parser().peek_n(pos)
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Kind> {
         let token = self.get_parser().peek().cloned();
         self.get_parser().next();

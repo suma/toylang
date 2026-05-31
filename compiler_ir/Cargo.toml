@@ -8,3 +8,6 @@ description = "Shared intermediate representation for toylang backends"
 
 [dependencies]
 string-interner.workspace = true
+
+[lints]
+workspace = true

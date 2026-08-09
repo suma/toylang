@@ -326,7 +326,14 @@ fn test_function_argument_type_check_error() {
     let result = test_program(program);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    assert!(error.contains("type mismatch") || error.contains("TypeError"));
+    // Case-insensitive: the assertion is that the mismatch is reported
+    // and says which argument, not how the sentence is capitalised.
+    let lower = error.to_lowercase();
+    assert!(
+        lower.contains("type mismatch") || lower.contains("typeerror"),
+        "{error}"
+    );
+    assert!(lower.contains("argument 1"), "{error}");
 }
 
 #[test]

@@ -1255,10 +1255,17 @@ impl<'a> TypeCheckerVisitor<'a> {
                 // this the error inherits the call's location and points
                 // at the callee, which says nothing about *which*
                 // argument to change.
-                let err = TypeCheckError::generic_error(&format!(
-                    "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
-                    expected_type, arg_type, fn_name_str, arg_index + 1
-                ));
+                // A wrong argument type is a type mismatch, so it gets
+                // E0001 rather than the E0010 catch-all it used to fall
+                // into -- it is one of the most common errors in the
+                // language, and a code the reader can look up is the
+                // point of having codes at all.
+                let err = TypeCheckError::type_mismatch(expected_type.clone(), arg_type.clone())
+                    .with_context(&format!(
+                        "argument {} of function '{}'",
+                        arg_index + 1,
+                        fn_name_str
+                    ));
                 let err = self.error_with_location(err, arg);
                 return Err(self.suggest_numeric_cast(err, arg, &arg_type, expected_type));
             }

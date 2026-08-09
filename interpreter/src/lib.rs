@@ -13,6 +13,21 @@ pub mod property;
 pub mod runtime_state;
 pub mod ir_vm;
 
+/// Whether this build actually has the JIT compiled in.
+///
+/// `RunOptions::jit` is accepted unconditionally and ignored when the
+/// `jit` feature is off, which is right for a caller that just wants
+/// the program run. It is wrong for a caller comparing *backends*:
+/// `compiler/tests/example_consistency.rs` and `consistency.rs` set
+/// the flag to get a JIT column, and a dependent that turns the
+/// feature off (as `compiler` does for its non-test build) silently
+/// turns that column into a second tree-walker run — a backend
+/// agreeing with itself, reported as agreement. Those suites assert on
+/// this so the degradation is loud instead of invisible.
+pub const fn jit_available() -> bool {
+    cfg!(feature = "jit")
+}
+
 use std::rc::Rc;
 use std::collections::HashMap;
 use frontend::ast::*;

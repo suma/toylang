@@ -80,9 +80,10 @@ exposes it as `suggestions[].replacement`. When they are not (`u64`
 reaching a `bool`, as above) no suggestion is offered, because no cast
 would fix it: the value itself is wrong.
 
-An argument that does not match its parameter reports the same problem
-under E0010 rather than here, with the message `Function 'f' argument N
-type mismatch`.
+An argument that does not match its parameter reports the same code,
+with the offending argument named in the context: `(in argument 2 of
+function 'f')`. There *is* no implicit conversion at a call site, so
+that form always needs an explicit `as`.
 
 Two shapes that reach this code without looking numeric:
 
@@ -292,9 +293,6 @@ bucket, not a rare one.
 
 Frequent members, with what each actually means:
 
-  * `Function 'f' argument N type mismatch` -- an argument does not fit
-    its parameter. There is no implicit conversion at a call site, so
-    cast the argument: `f(a as i64)`.
   * `Cannot cast X to Y` -- `as` is defined between numeric types only.
     For a bool, write `if b { 1u64 } else { 0u64 }`.
   * `Cannot access index N on non-tuple type ...` -- usually a float

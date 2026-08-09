@@ -321,14 +321,19 @@ pub fn parse_relational(parser: &mut Parser) -> ParserResult<ExprRef> {
         _ => return Ok(lhs),
     };
 
-    let location = parser.current_source_location();
+    let op_location = parser.current_source_location();
     parser.next();
     let rhs1 = parse_shift(parser)?;
 
-    // Single comparison: no chain → plain binary expr.
+    // Single comparison: no chain → plain binary expr. Spanned over the
+    // whole comparison for the same reason as `parse_binary_impl`.
     if !matches!(parser.peek(), Some(Kind::LT) | Some(Kind::LE) | Some(Kind::GT) | Some(Kind::GE)) {
+        let location = expr_start(parser, lhs)
+            .map(|start| parser.span_to_cursor(start))
+            .unwrap_or(op_location);
         return Ok(parser.ast_builder.binary_expr(op1, lhs, rhs1, Some(location)));
     }
+    let location = op_location;
 
     // Comparison chain `a < b < c < d` desugars to:
     //   {
@@ -425,6 +430,17 @@ pub fn parse_shift(parser: &mut Parser) -> ParserResult<ExprRef> {
     parse_binary(parser, &group)
 }
 
+/// Where an already-parsed expression starts, if it was given a
+/// location. Used to widen an enclosing node's span to cover its left
+/// operand.
+fn expr_start(parser: &Parser, expr: ExprRef) -> Option<crate::type_checker::SourceLocation> {
+    parser
+        .ast_builder
+        .get_location_pool()
+        .get_expr_location(&expr)
+        .copied()
+}
+
 pub fn parse_binary<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> ParserResult<ExprRef> {
     // Add recursion protection
     parser.check_and_increment_recursion()?;
@@ -452,9 +468,18 @@ fn parse_binary_impl<'a>(parser: &mut Parser<'a>, group: &OperatorGroup<'a>) -> 
                 if matches!(kind, Kind::ISub) && parser.has_newline_before_current_token() {
                     return Ok(lhs);
                 }
-                let location = parser.current_source_location();
+                let op_location = parser.current_source_location();
                 parser.next();
                 let rhs = (group.next_precedence)(parser)?;
+                // Span the whole operation, not just the operator.
+                // Located at the operator, `a + b` quotes as `+`, and
+                // any diagnostic that builds a replacement out of the
+                // span text (the `as <T>` cast fix) emits nonsense.
+                // Falls back to the operator's own location when the
+                // lhs has none to start from.
+                let location = expr_start(parser, lhs)
+                    .map(|start| parser.span_to_cursor(start))
+                    .unwrap_or(op_location);
                 lhs = parser.ast_builder.binary_expr(op.clone(), lhs, rhs, Some(location));
             }
             None => return Ok(lhs),

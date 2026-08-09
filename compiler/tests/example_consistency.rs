@@ -288,6 +288,15 @@ fn check_shard(shard: usize, shards: usize) {
     if skip_e2e() {
         return;
     }
+    // Without the feature, `RunOptions::jit = true` is silently ignored
+    // and the JIT column below is a second tree-walker run — a third of
+    // the sweep comparing a backend against itself and always agreeing.
+    // See the `interpreter` dev-dependency in `compiler/Cargo.toml`.
+    assert!(
+        interpreter::jit_available(),
+        "the interpreter was built without its `jit` feature, so the JIT column of this \
+         sweep would silently be a second tree-walker run"
+    );
     let failures: Vec<String> = all_examples()
         .into_iter()
         .enumerate()

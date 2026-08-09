@@ -15,10 +15,13 @@
 //!
 //! **Which three.** The interpreter (tree-walker), this crate's
 //! Cranelift JIT, and the AOT compiler. The interpreter crate's *own*
-//! JIT is deliberately not one of them: it is behind a cargo feature
-//! that this crate turns off, so driving it from here would silently
-//! run the tree-walker a second time and report agreement between a
-//! backend and itself.
+//! JIT is deliberately not one of them: this crate's binary depends on
+//! `interpreter` with default features off, which drops that JIT, and
+//! `RunOptions::jit` is silently ignored when it is absent — so
+//! driving it from here would run the tree-walker a second time and
+//! report a backend agreeing with itself. (The cross-backend test
+//! suites do use it, and ask for the feature explicitly in
+//! `[dev-dependencies]` plus assert `interpreter::jit_available()`.)
 
 use std::path::PathBuf;
 use std::process::Command;

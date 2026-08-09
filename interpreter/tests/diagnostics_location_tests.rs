@@ -97,10 +97,16 @@ fn argument_mismatch_is_anchored_at_the_argument() {
         }",
     );
     // The offending value is the argument, not the callee: pointing at
-    // `takes_i64` would not say which argument to change.
+    // `takes_i64` would not say which argument to change. E0001 rather
+    // than the E0010 catch-all -- a wrong argument type is a type
+    // mismatch, and one of the most common errors in the language.
     assert!(
-        diags.contains("^^^^ [E0010] Type error"),
+        diags.contains("^^^^ [E0001] Type mismatch"),
         "caret should cover the argument `1u64`:\n{diags}"
+    );
+    assert!(
+        diags.contains("argument 1 of function 'takes_i64'"),
+        "the message should say which argument:\n{diags}"
     );
 }
 

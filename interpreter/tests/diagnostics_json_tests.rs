@@ -142,6 +142,66 @@ fn main() -> u64 {
 }
 
 #[test]
+fn a_cast_suggestion_is_either_correct_or_absent_whatever_the_argument_looks_like() {
+    // The literal case above passed while every other argument shape was
+    // broken, because a literal is the one expression whose recorded
+    // location happens to be its full extent. An identifier was located
+    // at the *next* token, so the edit came out as `f(a) as i64` — which
+    // compiles, resolves nothing, and was advertised as
+    // machine-applicable. A binary operand was located at its operator,
+    // so `a + b` produced `+ as i64`.
+    //
+    // So the property is per-shape: whatever suggestion is offered must
+    // resolve the diagnostic, and a shape we cannot quote correctly must
+    // offer none at all. Silence is free; a wrong edit is not.
+    let cases = [
+        ("identifier", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a)\n    0u64\n}"),
+        ("binary", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a + 2u64)\n    0u64\n}"),
+        ("nested binary", "fn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(a * 2u64 + 3u64)\n    0u64\n}"),
+        ("second argument", "fn f(n: i64, m: i64) -> i64 { n }\nfn main() -> u64 {\n    val a: u64 = 1u64\n    val x = f(1i64, a)\n    0u64\n}"),
+        ("call result", "fn g() -> u64 { 3u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val x = f(g())\n    0u64\n}"),
+        ("field access", "struct P { x: u64 }\nfn f(n: i64) -> i64 { n }\nfn main() -> u64 {\n    val p = P { x: 1u64 }\n    val y = f(p.x)\n    0u64\n}"),
+        ("unary", "fn f(n: u64) -> u64 { n }\nfn main() -> u64 {\n    val a: i64 = 1i64\n    val y = f(-a)\n    0u64\n}"),
+    ];
+    for (shape, source) in cases {
+        let diagnostics = diagnose(source);
+        assert!(!diagnostics.is_empty(), "{shape}: expected a diagnostic");
+        if diagnostics.iter().all(|d| d.suggestions.is_empty()) {
+            continue;
+        }
+        let fixed = apply_suggestions(source, &diagnostics);
+        test_program(&fixed).unwrap_or_else(|e| {
+            panic!("{shape}: the suggested fix does not compile: {e}\n{fixed}")
+        });
+        // Compiling is necessary but not sufficient — `f(a) as i64`
+        // compiled too. The diagnostic itself has to be gone.
+        assert!(
+            diagnose_ok(&fixed),
+            "{shape}: the suggested fix compiles but the diagnostic remains:\n{fixed}"
+        );
+    }
+}
+
+/// Whether `source` type checks cleanly.
+fn diagnose_ok(source: &str) -> bool {
+    let mut parser = frontend::ParserWithInterner::new(source);
+    parser.set_source_file("test.t");
+    let Ok(mut program) = parser.parse_program() else {
+        return false;
+    };
+    let string_interner = parser.get_string_interner();
+    let core = core_modules_dir();
+    interpreter::check_typing_diagnostics(
+        &mut program,
+        string_interner,
+        Some(source),
+        Some("test.t"),
+        Some(core.as_path()),
+    )
+    .is_ok()
+}
+
+#[test]
 fn binding_annotation_mismatch_suggests_a_cast_that_compiles() {
     // `u64` into an `i64` slot is accepted, so the mismatch has to be
     // one the checker actually rejects: integer into `f64`.
@@ -220,7 +280,7 @@ fn diagnostics_serialise_to_json() {
     let parsed: serde_json::Value = serde_json::from_str(&json).expect("round trip");
     let first = &parsed[0];
     assert_eq!(first["severity"], "error");
-    assert_eq!(first["code"], "E0010");
+    assert_eq!(first["code"], "E0001");
     assert_eq!(first["file"], "test.t");
     assert_eq!(first["suggestions"][0]["applicability"], "machine-applicable");
     assert_eq!(first["suggestions"][0]["replacement"], "1u64 as i64");

@@ -288,6 +288,31 @@ impl<'a> Parser<'a> {
         self.token_provider.peek_position_at(0)
     }
 
+    /// A span running from `start` to wherever the cursor now sits.
+    ///
+    /// A node's own location is the token that *names* it — a binary
+    /// expression is located at its operator, a qualified path at its
+    /// first segment. That is enough to point a caret at, but not
+    /// enough to quote: `suggest_numeric_cast` builds its replacement
+    /// out of the span's source text, so a span narrower than the
+    /// expression yields an edit that does not mean what it says
+    /// (`a + b` produced `+ as i64`). Callers that have just finished
+    /// consuming a construct widen its location with this.
+    ///
+    /// The end is the *start* of the following token, so trailing
+    /// whitespace can fall inside the span. Harmless for both uses —
+    /// the caret covers a space and a replacement carries one — and
+    /// the alternative is tracking the previous token's end through
+    /// the token source for no gain.
+    pub fn span_to_cursor(&mut self, start: SourceLocation) -> SourceLocation {
+        let end = self
+            .current_position()
+            .map(|p| p.start as u32)
+            .unwrap_or(start.end_offset)
+            .max(start.end_offset);
+        SourceLocation::new(start.line, start.column, start.offset, end)
+    }
+
     /// Get current source location with line and column information
     pub fn current_source_location(&mut self) -> SourceLocation {
         if let Some(position) = self.current_position() {

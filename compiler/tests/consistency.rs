@@ -149,6 +149,17 @@ fn interpreter_value_with_core(
 /// the per-call JIT toggle (no env-var race under threaded test
 /// execution).
 fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
+    // `RunOptions::jit` is a no-op when the interpreter was built
+    // without its `jit` feature, which would turn every call here into
+    // a plain tree-walker run and make this whole column agree with the
+    // interpreter column by construction. The dev-dependency in
+    // `compiler/Cargo.toml` asks for the feature; this is the check
+    // that it is actually there.
+    assert!(
+        interpreter::jit_available(),
+        "the interpreter was built without its `jit` feature, so this would compare the \
+         tree-walker against itself"
+    );
     let key = (source.to_string(), with_core);
     {
         let cache = JIT_CACHE.lock().unwrap();

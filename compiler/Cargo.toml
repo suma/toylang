@@ -32,6 +32,17 @@ rayon = "1.12"
 
 [dev-dependencies]
 tempfile = "3.27"
+# The cross-backend suites (`consistency.rs`, `example_consistency.rs`)
+# get their JIT column from `interpreter` with `RunOptions::jit = true`.
+# The normal dependency above turns default features off, which drops
+# the interpreter's `jit` feature and makes that flag a no-op — the
+# suites would then run the tree-walker twice and call it agreement.
+# Whole-workspace runs hid this because feature unification pulled `jit`
+# back in via the interpreter's own tests; `cargo test -p compiler`
+# alone did not. Asking for it here makes the test build honest on its
+# own, and `interpreter::jit_available()` is asserted in both suites so
+# a future change cannot quietly undo it.
+interpreter = { path = "../interpreter", features = ["jit"] }
 
 # Runtime is pre-compiled at compiler-build time so each
 # `compile_file(... emit=Executable)` only links rather than

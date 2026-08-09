@@ -964,8 +964,10 @@ mod dyn_trait {
             }
         "#;
         let err = test_program(source).expect_err("expected error");
+        // Case-insensitive: the claim is that the argument is rejected,
+        // not how the sentence reads.
         assert!(
-            err.contains("type mismatch") || err.contains("Type error"),
+            err.to_lowercase().contains("type mismatch") || err.contains("Type error"),
             "expected dyn-trait conformance rejection, got: {}",
             err
         );

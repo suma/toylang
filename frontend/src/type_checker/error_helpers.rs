@@ -2,6 +2,13 @@ use crate::ast::{ExprRef, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
 use crate::type_checker::{AcceptableExpr, TypeCheckerVisitor, TypeCheckError};
 
+/// Whether a cast suggestion has to parenthesise what it quotes.
+#[derive(Clone, Copy)]
+enum CastForm {
+    Bare,
+    Parenthesised,
+}
+
 /// Error-reporting helpers for `TypeCheckerVisitor`.
 impl<'a> TypeCheckerVisitor<'a> {
     /// Add location information to an error if available.
@@ -79,12 +86,66 @@ impl<'a> TypeCheckerVisitor<'a> {
         let Some(text) = self.source_text(&location) else {
             return error;
         };
+        let Some(form) = self.cast_suggestion_form(expr) else {
+            return error;
+        };
+        let text = text.trim();
+        let replacement = match form {
+            // `as` binds tighter than every binary operator, so casting
+            // a compound expression without parentheses casts only its
+            // right operand: `a + b as i64` leaves the mismatch in
+            // place while looking like a fix.
+            CastForm::Parenthesised => format!("({text}) as {target}"),
+            CastForm::Bare => format!("{text} as {target}"),
+        };
         error.suggestions.push(crate::diagnostic::Suggestion::machine_applicable(
             &format!("cast the value to `{target}`"),
-            format!("{text} as {target}"),
+            replacement,
             location.into(),
         ));
         error
+    }
+
+    /// How to spell a cast of `expr`, or `None` when no suggestion can
+    /// be made for it.
+    ///
+    /// The gate is not syntax but **whether the expression's recorded
+    /// location covers the expression**. Most nodes are located at the
+    /// token that *names* them, deliberately: a call is located at its
+    /// callee so "function not found" points at the name, a field
+    /// access at the `.`, an index at the `[`. Quoting those spans and
+    /// appending ` as i64` produces `g as i64()` — an edit that does
+    /// not compile, offered as machine-applicable.
+    ///
+    /// So only the forms whose span is known to be their full extent
+    /// get a suggestion. The rest keep the message, which already names
+    /// both types; a missing suggestion costs a reader nothing, and a
+    /// wrong one costs them a round trip plus their trust in the next.
+    fn cast_suggestion_form(&self, expr: &ExprRef) -> Option<CastForm> {
+        use crate::ast::Expr;
+        match self.core.expr_pool.get(expr)? {
+            // Single-token values: the span is the token.
+            Expr::True
+            | Expr::False
+            | Expr::Null
+            | Expr::Int64(_)
+            | Expr::UInt64(_)
+            | Expr::Int8(_)
+            | Expr::Int16(_)
+            | Expr::Int32(_)
+            | Expr::UInt8(_)
+            | Expr::UInt16(_)
+            | Expr::UInt32(_)
+            | Expr::Float64(_)
+            | Expr::Number(_)
+            | Expr::String(_)
+            | Expr::Identifier(_)
+            | Expr::QualifiedIdentifier(_) => Some(CastForm::Bare),
+            // The parser widens a binary node's span over both operands
+            // (`parse_binary_impl`), so the whole operation is quotable.
+            Expr::Binary(..) => Some(CastForm::Parenthesised),
+            _ => None,
+        }
     }
 
     /// The source text a location spans, when the checker was given the

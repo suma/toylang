@@ -240,7 +240,9 @@ fn parse_primary_after_identifier(
                 }
             }
             _ => {
-                let location = parser.current_source_location();
+                // Span the whole path (`math::add`), not the token
+                // after it — same defect as the bare-identifier arm.
+                let location = parser.span_to_cursor(name_location);
                 Ok(parser.ast_builder.qualified_identifier_expr(qualified_path, Some(location)))
             }
         };
@@ -276,8 +278,14 @@ fn parse_primary_after_identifier(
             Ok(parser.ast_builder.struct_literal_expr(name, fields, Some(location)))
         }
         _ => {
-            let location = parser.current_source_location();
-            Ok(parser.ast_builder.identifier_expr(name, Some(location)))
+            // LLM-LOOP P2 (completing it): the name was consumed by the
+            // caller, so `current_source_location()` here is the *next*
+            // token — every diagnostic about a bare identifier pointed
+            // one token to the right. The call / index / struct-literal
+            // arms above were already fixed to use `name_location`;
+            // this one was missed, which is what made an argument type
+            // mismatch on `f(a)` anchor at the `)`.
+            Ok(parser.ast_builder.identifier_expr(name, Some(name_location)))
         }
     }
 }

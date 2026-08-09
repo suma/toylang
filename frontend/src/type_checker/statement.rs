@@ -4,7 +4,7 @@ use crate::ast::*;
 use crate::type_decl::*;
 use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError,
-    AcceptableStmt, AcceptableExpr, AcceptableDecl,
+    AcceptableStmt, AcceptableDecl,
 };
 
 /// Statement type checking implementation
@@ -40,9 +40,7 @@ impl<'a> TypeCheckerVisitor<'a> {
 
     /// Type check expression statements
     pub fn visit_expression_stmt(&mut self, expr: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
-        let expr_obj = self.core.expr_pool.get(expr)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in statement"))?;
-        expr_obj.clone().accept_expr(self)
+        self.check_expr_located(expr)
     }
 
     /// Type check variable declarations (var) - internal implementation
@@ -95,10 +93,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !self.are_types_compatible(&normalized, &expr_ty) {
                 let declared_name = self.type_name_for_error(&normalized);
                 let expr_name = self.type_name_for_error(&expr_ty);
-                return Err(TypeCheckError::type_mismatch(
+                // LLM-LOOP P2: anchor at the initializer, not at the
+                // statement. The offending value is the rhs; pointing
+                // the caret at `val` tells the reader nothing about
+                // which part of the line to change.
+                let err = TypeCheckError::type_mismatch(
                     normalized,
                     expr_ty.clone()
-                ).with_context(&format!("Cannot convert '{}' to '{}'", expr_name, declared_name)));
+                ).with_context(&format!("Cannot convert '{}' to '{}'", expr_name, declared_name));
+                return Err(self.error_with_location(err, &expr_ref));
             }
         }
         
@@ -151,9 +154,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         } else {
             let e = expr.as_ref()
                 .ok_or_else(|| TypeCheckError::generic_error("Expected expression in return"))?;
-            let expr_obj = self.core.expr_pool.get(e)
-                .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference in return"))?;
-            let return_type = expr_obj.clone().accept_expr(self)?;
+            let return_type = self.check_expr_located(e)?;
             Ok(return_type)
         }
     }
@@ -163,16 +164,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         self.push_context();
         self.context.loop_label_stack.push(label);
 
-        let range_obj = self.core.expr_pool.get(range)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid range expression reference"))?;
-        let range_ty = range_obj.clone().accept_expr(self)?;
+        let range_ty = self.check_expr_located(range)?;
         let ty = Some(range_ty);
 
         self.process_val_type(init, &ty, &Some(*range))?;
 
-        let body_obj = self.core.expr_pool.get(body)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference"))?;
-        let res = body_obj.clone().accept_expr(self);
+        let res = self.check_expr_located(body);
 
         self.context.loop_label_stack.pop();
         self.pop_context();
@@ -182,9 +179,7 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Type check while loops - internal implementation
     pub fn visit_while_impl(&mut self, label: Option<DefaultSymbol>, cond: &ExprRef, body: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
         // Evaluate condition type first
-        let cond_obj = self.core.expr_pool.get(cond)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid condition expression reference in while"))?;
-        let cond_type = cond_obj.clone().accept_expr(self)?;
+        let cond_type = self.check_expr_located(cond)?;
 
         // Verify condition is boolean
         if cond_type != TypeDecl::Bool {
@@ -194,9 +189,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         // Create new scope for while body
         self.push_context();
         self.context.loop_label_stack.push(label);
-        let body_obj = self.core.expr_pool.get(body)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid body expression reference in while"))?;
-        let res = body_obj.clone().accept_expr(self);
+        let res = self.check_expr_located(body);
         self.context.loop_label_stack.pop();
         self.pop_context();
         res

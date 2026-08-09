@@ -6,6 +6,26 @@ pub struct SourceLocation {
     pub line: u32,
     pub column: u32,
     pub offset: u32,
+    /// Byte offset one past the end of the span this location covers.
+    ///
+    /// LLM-LOOP P2: a location used to be a single point, so a
+    /// diagnostic could say *where* it started but not *how much* it
+    /// covered. The formatter compensated by guessing -- it scanned the
+    /// source line for an identifier lifted out of the error message --
+    /// which worked only for messages that happened to quote a name and
+    /// silently pointed at the wrong thing otherwise. With an end offset
+    /// the caret is derived, not guessed.
+    ///
+    /// Always `>= offset`; equal when the extent is unknown, in which
+    /// case the formatter falls back to a one-column caret.
+    pub end_offset: u32,
+}
+
+impl SourceLocation {
+    /// Width of the span in bytes, at least 1 so a caret is always drawn.
+    pub fn width(&self) -> usize {
+        (self.end_offset.saturating_sub(self.offset)).max(1) as usize
+    }
 }
 
 #[derive(Debug)]
@@ -71,115 +91,139 @@ pub struct MethodErrorData {
 
 #[derive(Debug, Clone)]
 pub struct TypeCheckError {
-    pub kind: TypeCheckErrorKind,
+    /// Boxed so `Result<_, TypeCheckError>` -- which is the return type
+    /// of essentially every type-checker function -- stays small. The
+    /// kind is only read when an error is actually rendered.
+    pub kind: Box<TypeCheckErrorKind>,
     pub context: Option<String>,
     pub location: Option<SourceLocation>,
+    /// Name of the imported module whose source this error's `location`
+    /// refers to, when that is not the file being compiled.
+    ///
+    /// LLM-LOOP P2: offsets from integrated modules land in the same
+    /// pool as the user's own, with nothing to tell them apart. A
+    /// diagnostic raised inside `core/std/option.t` would therefore be
+    /// rendered against the *user's* file and underline whatever
+    /// happened to sit at that offset — a confidently wrong location
+    /// pointing at innocent code. Set this and the formatter knows to
+    /// name the module instead of quoting a line it cannot trust.
+    pub origin_module: Option<String>,
 }
 
 impl TypeCheckError {
     pub fn type_mismatch(expected: TypeDecl, actual: TypeDecl) -> Self {
         Self {
-            kind: TypeCheckErrorKind::TypeMismatch { expected, actual },
+            kind: Box::new(TypeCheckErrorKind::TypeMismatch { expected, actual }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn type_mismatch_operation(operation: &str, left: TypeDecl, right: TypeDecl) -> Self {
         Self {
-            kind: TypeCheckErrorKind::TypeMismatchOperation(Box::new(TypeMismatchOperationError {
+            kind: Box::new(TypeCheckErrorKind::TypeMismatchOperation(Box::new(TypeMismatchOperationError {
                 operation: operation.to_string(),
                 left,
                 right,
-            })),
+            }))),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn not_found(item_type: &str, name: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::NotFound {
+            kind: Box::new(TypeCheckErrorKind::NotFound {
                 item_type: item_type.to_string(),
                 name: name.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn unsupported_operation(operation: &str, type_name: TypeDecl) -> Self {
         Self {
-            kind: TypeCheckErrorKind::UnsupportedOperation {
+            kind: Box::new(TypeCheckErrorKind::UnsupportedOperation {
                 operation: operation.to_string(),
                 type_name,
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn conversion_error(from: &str, to: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::ConversionError {
+            kind: Box::new(TypeCheckErrorKind::ConversionError {
                 from: from.to_string(),
                 to: to.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn array_error(message: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::ArrayError {
+            kind: Box::new(TypeCheckErrorKind::ArrayError {
                 message: message.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn method_error(method: &str, type_name: TypeDecl, reason: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::MethodError(Box::new(MethodErrorData {
+            kind: Box::new(TypeCheckErrorKind::MethodError(Box::new(MethodErrorData {
                 method: method.to_string(),
                 type_name,
                 reason: reason.to_string(),
-            })),
+            }))),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn invalid_literal(value: &str, expected_type: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::InvalidLiteral {
+            kind: Box::new(TypeCheckErrorKind::InvalidLiteral {
                 value: value.to_string(),
                 expected_type: expected_type.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn access_denied(message: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::AccessDenied {
+            kind: Box::new(TypeCheckErrorKind::AccessDenied {
                 message: message.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
     pub fn generic_error(message: &str) -> Self {
         Self {
-            kind: TypeCheckErrorKind::GenericError {
+            kind: Box::new(TypeCheckErrorKind::GenericError {
                 message: message.to_string(),
-            },
+            }),
             context: None,
             location: None,
+            origin_module: None,
         }
     }
 
@@ -200,7 +244,7 @@ impl TypeCheckError {
 
 impl std::fmt::Display for TypeCheckError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let base_message = match &self.kind {
+        let base_message = match &*self.kind {
             TypeCheckErrorKind::TypeMismatch { expected, actual } => {
                 format!("Type mismatch: expected {:?}, but got {:?}", expected, actual)
             }
@@ -233,11 +277,13 @@ impl std::fmt::Display for TypeCheckError {
             }
         };
 
+        // LLM-LOOP P2: `Display` is the message and nothing else.
+        // It used to prefix `line:column:offset:`, which duplicated the
+        // `Error at <file>:<line>:<col>` header the formatter already
+        // prints and leaked `offset` -- a byte index into the source
+        // that is meaningless to a reader and pure noise to an agent.
+        // Callers that need a position read `self.location`.
         let mut result = base_message;
-
-        if let Some(location) = &self.location {
-            result = format!("{}:{}:{}: {}", location.line, location.column, location.offset, result);
-        }
 
         if let Some(context) = &self.context {
             result = format!("{} (in {})", result, context);

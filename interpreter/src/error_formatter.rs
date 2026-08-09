@@ -47,6 +47,22 @@ impl<'a> ErrorFormatter<'a> {
     }
 
     pub fn format_type_check_error(&self, error: &TypeCheckError) -> String {
+        // LLM-LOOP P2: an error raised inside an imported module carries
+        // a location into *that* module's source. Quoting the line at
+        // that offset from the file being compiled produces a confident
+        // pointer at unrelated code -- worse than no location at all,
+        // because it sends the reader somewhere specific and wrong. Name
+        // the module and drop the snippet.
+        if let Some(module) = &error.origin_module {
+            let position = error
+                .location
+                .map(|loc| format!(" (line {} of that module)", loc.line))
+                .unwrap_or_default();
+            return format!(
+                "Error in imported module `{module}`{position}: {error}\n   \
+                 = note: this comes from module `{module}`, not from the file being compiled"
+            );
+        }
         if let Some(location) = &error.location {
             self.format_error_with_location(&error.to_string(), location)
         } else {
@@ -65,7 +81,7 @@ impl<'a> ErrorFormatter<'a> {
     fn format_error_with_location(&self, error_msg: &str, location: &SourceLocation) -> String {
         let line_number = location.line;
         let column = location.column;
-        
+
         // Get the source line
         let lines: Vec<&str> = self.source_code.lines().collect();
         let source_line = if (line_number as usize) <= lines.len() && line_number > 0 {
@@ -73,27 +89,19 @@ impl<'a> ErrorFormatter<'a> {
         } else {
             "<line not available>"
         };
-        
+
         // Create line number display
         let line_display = format!("{line_number:2}");
-        
-        // Create the caret indicator
-        let caret = if column > 0 {
-            // Try to extract identifier from error message and find its position
-            let actual_position = self.find_error_position_in_line(error_msg, source_line)
-                .unwrap_or_else(|| {
-                    // Fallback to the reported column, adjusted
-                    if (column as usize) > source_line.len() {
-                        source_line.len().saturating_sub(1)
-                    } else {
-                        (column as usize).saturating_sub(1)
-                    }
-                });
-            format!("{:width$}^^", "", width = actual_position)
-        } else {
-            "^".to_string()
-        };
-        
+
+        // LLM-LOOP P2: the caret is derived from the location's span.
+        // This used to guess -- it pulled the first single-quoted name
+        // out of the message and searched the source line for it, so a
+        // message that quoted nothing (most type mismatches) fell back
+        // to a fixed two-column marker at the reported column, and a
+        // message that quoted a name appearing twice underlined the
+        // wrong one.
+        let caret = Self::caret_for(source_line, column, location.width());
+
         format!(
             "Error at {}:{}:{}:\n   |\n{} | {}\n   | {} {}\n   |",
             self.filename,
@@ -104,6 +112,19 @@ impl<'a> ErrorFormatter<'a> {
             caret,
             error_msg
         )
+    }
+
+    /// Build the `   ^^^^` marker: `column` (1-based) spaces of padding
+    /// followed by `width` carets, clamped so the marker never runs past
+    /// the end of the line it annotates.
+    fn caret_for(source_line: &str, column: u32, width: usize) -> String {
+        if column == 0 {
+            return "^".to_string();
+        }
+        let line_len = source_line.chars().count();
+        let start = (column as usize).saturating_sub(1).min(line_len);
+        let width = width.min(line_len.saturating_sub(start)).max(1);
+        format!("{:pad$}{}", "", "^".repeat(width), pad = start)
     }
 
     pub fn format_simple_error(&self, error_msg: &str) -> String {
@@ -157,16 +178,6 @@ impl<'a> ErrorFormatter<'a> {
         }
     }
 
-    fn find_error_position_in_line(&self, error_msg: &str, source_line: &str) -> Option<usize> {
-        // Extract identifier from error messages like "Identifier 'undefined_variable' not found"
-        if let Some(start) = error_msg.find("'") {
-            if let Some(end) = error_msg[start + 1..].find("'") {
-                let identifier = &error_msg[start + 1..start + 1 + end];
-                return source_line.find(identifier);
-            }
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -187,12 +198,14 @@ mod tests {
             line: 2,
             column: 18,
             offset: 35,
+            // `"string"` — the caret should span the whole literal.
+            end_offset: 43,
         });
-        
+
         let formatted = formatter.format_type_check_error(&error);
         assert!(formatted.contains("Error at test.t:2:18:"));
         assert!(formatted.contains("val x: i64 = \"string\""));
-        assert!(formatted.contains("^^"));
+        assert!(formatted.contains("^^^^^^^^"), "caret should match the span width: {formatted}");
     }
 
     #[test] 
@@ -214,6 +227,7 @@ mod tests {
             line: 3,
             column: 5,
             offset: 58,
+            end_offset: 65,
         };
         
         let formatted = formatter.format_runtime_error("Index out of bounds", Some(&location));

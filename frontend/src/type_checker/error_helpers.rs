@@ -1,6 +1,6 @@
 use crate::ast::{ExprRef, Stmt, StmtRef};
 use crate::type_decl::TypeDecl;
-use crate::type_checker::{TypeCheckerVisitor, TypeCheckError};
+use crate::type_checker::{AcceptableExpr, TypeCheckerVisitor, TypeCheckError};
 
 /// Error-reporting helpers for `TypeCheckerVisitor`.
 impl<'a> TypeCheckerVisitor<'a> {
@@ -15,6 +15,43 @@ impl<'a> TypeCheckerVisitor<'a> {
                 error = error.with_location(location);
             }
         error
+    }
+
+    /// Best available position for a method-level diagnostic.
+    ///
+    /// LLM-LOOP P2: `MethodFunction::node` is not filled in with the
+    /// method's own span (it reports the enclosing declaration's start),
+    /// so anchoring on it underlines the wrong construct. The body
+    /// statement does have a recorded location, and for a return-type
+    /// complaint the body is the right thing to point at anyway.
+    pub fn method_body_location(
+        &self,
+        method: &std::rc::Rc<crate::ast::MethodFunction>,
+    ) -> crate::type_checker::SourceLocation {
+        self.get_stmt_location(&method.code)
+            .unwrap_or_else(|| self.node_to_source_location(&method.node))
+    }
+
+    /// Type check `expr_ref`, stamping the expression's own location
+    /// onto any error that doesn't already carry one.
+    ///
+    /// LLM-LOOP P2: `visit_expr` does this stamping, but plenty of
+    /// call sites reach an expression through `accept_expr` directly
+    /// (statement bodies, loop conditions, contract clauses, impl-block
+    /// method bodies). Errors raised under those escaped with no
+    /// location at all and were reported without so much as a line
+    /// number. This is the wrapper those sites use instead.
+    ///
+    /// Deliberately *not* routed through `visit_expr`: that one also
+    /// consults the type cache and rewrites `Expr::Try`, neither of
+    /// which every caller wants.
+    pub fn check_expr_located(&mut self, expr_ref: &ExprRef) -> Result<TypeDecl, TypeCheckError> {
+        let expr_obj = self.core.expr_pool.get(expr_ref)
+            .ok_or_else(|| TypeCheckError::generic_error("Invalid expression reference"))?;
+        match expr_obj.clone().accept_expr(self) {
+            Ok(ty) => Ok(ty),
+            Err(e) => Err(self.error_with_location(e, expr_ref)),
+        }
     }
 
     /// LLM-LOOP P1: absorb a statement-level error so the enclosing

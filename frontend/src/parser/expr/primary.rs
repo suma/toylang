@@ -191,15 +191,25 @@ fn parse_primary_impl(parser: &mut Parser) -> ParserResult<ExprRef> {
         Some(Kind::Identifier(s)) => {
             let s = s.to_string();
             let s = parser.string_interner.get_or_intern(s);
+            // LLM-LOOP P2: capture the identifier's own span before
+            // consuming it. Everything built below (calls, indexing,
+            // qualified paths) used to be located at whatever token
+            // followed the name -- so a `foo(...)` diagnostic pointed
+            // its caret at the `(` instead of at `foo`.
+            let name_location = parser.current_source_location();
             parser.next();
-            parse_primary_after_identifier(parser, s)
+            parse_primary_after_identifier(parser, s, name_location)
         }
         _ => parse_primary_atom_or_form(parser),
     }
 }
 
 /// Parse what follows an identifier head in primary position.
-fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> ParserResult<ExprRef> {
+fn parse_primary_after_identifier(
+    parser: &mut Parser,
+    name: DefaultSymbol,
+    name_location: crate::type_checker::SourceLocation,
+) -> ParserResult<ExprRef> {
     if parser.peek() == Some(&Kind::DoubleColon) {
         let mut qualified_path = vec![name];
         while parser.peek() == Some(&Kind::DoubleColon) {
@@ -216,7 +226,7 @@ fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> P
         }
         return match parser.peek() {
             Some(Kind::ParenOpen) => {
-                let location = parser.current_source_location();
+                let location = name_location;
                 parser.next();
                 let args = parse_expr_list(parser, vec![])?;
                 parser.expect_err(&Kind::ParenClose)?;
@@ -239,7 +249,7 @@ fn parse_primary_after_identifier(parser: &mut Parser, name: DefaultSymbol) -> P
     let struct_literal_allowed = parser.is_struct_literal_allowed();
     match parser.peek() {
         Some(Kind::ParenOpen) => {
-            let location = parser.current_source_location();
+            let location = name_location;
             if let Some(rewritten) = try_intercept_parser_macro(parser, name, location)? {
                 return Ok(rewritten);
             }

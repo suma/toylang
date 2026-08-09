@@ -137,7 +137,7 @@ mod tuple_tests {
         let access_result = type_checker.visit_tuple_access(&tuple_expr, 5);
         assert!(access_result.is_err());
         let error = access_result.unwrap_err();
-        match error.kind {
+        match *error.kind {
             TypeCheckErrorKind::GenericError { ref message } => {
                 assert!(message.contains("out of bounds"));
             },

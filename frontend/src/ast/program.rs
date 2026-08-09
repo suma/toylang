@@ -212,6 +212,7 @@ impl Node {
             line,
             column,
             offset: self.start as u32,
+            end_offset: self.end as u32,
         }
     }
 }

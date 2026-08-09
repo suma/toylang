@@ -183,6 +183,22 @@ impl TypeCheckContext {
         self.functions.insert((qualifier, name), f);
     }
 
+    /// Module qualifier this exact `Function` was registered under, or
+    /// `None` when it is user-authored (registered in the `(None, name)`
+    /// slot).
+    ///
+    /// LLM-LOOP P2: identity, not name, decides — a user function and an
+    /// imported one can share a name, and confusing the two is how a
+    /// diagnostic ends up blaming the wrong file. Only the slots for
+    /// this function's own name are examined, so the scan is over at
+    /// most a handful of entries.
+    pub fn module_qualifier_of(&self, f: &Rc<Function>) -> Option<DefaultSymbol> {
+        self.functions
+            .iter()
+            .find(|((_, name), candidate)| *name == f.name && Rc::ptr_eq(candidate, f))
+            .and_then(|((qualifier, _), _)| *qualifier)
+    }
+
     pub fn get_var(&self, name: DefaultSymbol) -> Option<TypeDecl> {
         for v in self.vars.iter().rev() {
             let v_val = v.get(&name);

@@ -288,11 +288,15 @@ impl<'a> Parser<'a> {
     pub fn current_source_location(&mut self) -> SourceLocation {
         if let Some(position) = self.current_position() {
             let offset = position.start;
+            // The current token's extent, so a diagnostic anchored here
+            // gets a caret the width of the token rather than a guess.
+            let end = position.end;
             let (line, column) = self.offset_to_line_col(offset);
             SourceLocation {
                 line,
                 column,
                 offset: offset as u32,
+                end_offset: end as u32,
             }
         } else {
             // Default location when no position is available (e.g., at EOF)
@@ -302,6 +306,8 @@ impl<'a> Parser<'a> {
                 line,
                 column,
                 offset: input_len as u32,
+                // Nothing left to underline at EOF.
+                end_offset: input_len as u32,
             }
         }
     }

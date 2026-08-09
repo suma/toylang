@@ -470,10 +470,18 @@ pub fn check_typing_with_core_modules(
         };
         if !value_ty.is_equivalent(&c.type_decl) && value_ty != TypeDecl::Number {
             let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
-            errors.push(format!(
+            let msg = format!(
                 "Const `{cname}` declared as {:?} but initializer has type {:?}",
                 c.type_decl, value_ty
-            ));
+            );
+            // LLM-LOOP P2: point at the initializer. This diagnostic
+            // used to be a bare string with no position, so a file with
+            // several consts gave no clue which one was wrong.
+            let located = tc
+                .get_expr_location(&c.value)
+                .zip(formatter.as_ref())
+                .map(|(loc, fmt)| fmt.format_runtime_error(&msg, Some(&loc)));
+            errors.push(located.unwrap_or(msg));
             continue;
         }
         tc.context.set_var(c.name, c.type_decl.clone());
@@ -521,6 +529,7 @@ pub fn check_typing_with_core_modules(
                 line,
                 column,
                 offset: location.offset,
+                end_offset: location.end_offset,
             });
         }
 

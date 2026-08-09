@@ -12,7 +12,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 |---|---|---|
 | **P0** | 致命的な診断バグの修正 (bare-name 解決順) | ✅ 2026-08-09 |
 | **P1** | 診断の一括報告 (文単位のエラー回復) | ✅ 2026-08-09 |
-| **P2** | Span 化 + 全診断への location 強制 | 未着手 |
+| **P2** | Span 化 + 全診断への location 強制 | ✅ 2026-08-09 |
 | **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | 未着手 |
 | **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | 未着手 |
 | **P5** | 契約ベース自動プロパティテスト (`toy check`) | 未着手 |
@@ -326,22 +326,107 @@ LLM にとっては「位置なし」より「間違った位置」の方が有�
 **非目標**: 式単位の回復 (1 つの式の中の複数エラー)。効果に対して
 カスケードエラー抑制の複雑さが見合わない。
 
-### P2 — Span 化 + 全診断への location 強制
+### P2 — Span 化 + 全診断への location 強制 (✅ 2026-08-09 完了)
 
-1. `SourceLocation` に終端を持たせる (`SourceSpan { start, end }` を新設し、
-   既存 `SourceLocation` は `start` として残す形が移行しやすい)。
-2. `TypeCheckError::location` を `Option<_>` から**必須**に変える。
-   これにより「付け忘れ」がコンパイルエラーになり、構造的に防げる。
-   移行コストが高い場合は、まず `generic_error()` / `not_found()` の
-   コンストラクタに span 引数を足して呼び出し側を潰していく。
-3. `ErrorFormatter::find_error_position_in_line` のヒューリスティックを削除し、
-   span から caret を引く。
-4. メッセージ本文から内部座標 `7:16:101:` を除去する。
-5. **stdlib 由来のエラーに `note:` を付ける** — エラー発生位置が
-   `core/std/` 配下なら、ユーザコード側の呼び出し位置を related span として
-   併記する。実測 4 のようなバグが再発しても、LLM が自力で解決できる。
+**目標**: すべての診断が位置を持ち、その位置が信用できること。
 
-**受け入れ基準**: location なしで出力される診断がゼロになる。
+実測 2 / 3 の通り、P2 以前は 3 つの異なる問題が同時に起きていた。
+
+#### (1) メッセージ本文への内部座標の混入
+
+`TypeCheckError` の `Display` が `line:column:offset:` を prefix していた。
+formatter は既に `Error at <file>:<line>:<col>` を出しているので**重複**であり、
+しかも `offset` (ソースへのバイト index) は読み手にとって無意味なノイズ。
+`Display` はメッセージ本文のみを返すようにした。位置が要る呼び出し側は
+`self.location` を読む。
+
+#### (2) caret の推測をやめて span から導出
+
+`SourceLocation` に `end_offset` を追加し、`width()` を生やした。
+parser は現在トークンの `Range` の `end` を、`Node` は `node.end` を渡す。
+
+これで `ErrorFormatter::find_error_position_in_line` を**削除**できた。
+この関数は「エラーメッセージから最初のシングルクォート囲みの名前を取り出し、
+ソース行を検索する」という推測をしていた。名前を引用しないメッセージ
+(型不一致の大半) では固定幅 `^^` に落ち、同じ名前が行内に 2 回出れば
+間違った方を指していた。
+
+#### (3) アンカー位置の修正
+
+位置が「付いている」だけでは足りず、**正しい構文要素**を指す必要がある。
+
+| 診断 | 修正前のアンカー | 修正後 |
+|---|---|---|
+| `val x: bool = 1u64` | `val` (文の位置) | `1u64` (初期化子) |
+| `foo(...)` が未定義 | `(` | `foo` (callee 名) |
+| 引数の型不一致 | callee 名 | 当該引数の式 |
+| method の戻り値型不一致 | 位置なし | method 本体 |
+
+callee 名のケースは parser 側の修正。`parse_primary_after_identifier` が
+識別子を消費した**後**に位置を取っていたため、`foo(...)` / `foo[...]` /
+`Foo::bar(...)` のすべてが次のトークンを指していた。識別子を消費する前に
+span を取って引数として渡すようにした。
+
+#### (4) location カバレッジ
+
+**根本原因**: `visit_expr` は失敗時に式の位置を stamp するが、
+**18 箇所が `accept_expr` を直接呼んで `visit_expr` を迂回していた** —
+文の本体、ループ条件、contract 節、impl block の method 本体など。
+これらの下で発生したエラーは位置ゼロで報告されていた。
+
+`check_expr_located` ヘルパを新設して該当箇所を差し替えた
+(`visit_expr` 自体は type cache 参照と `Expr::Try` の書き換えも行うため、
+そこには通さない)。加えて method 戻り値型と `const` 宣言に個別に位置を付けた。
+
+**実測**: 代表的な 10 種のエラーで位置ありが **5/10 → 10/10**。
+
+#### (5) import した module 由来のエラー
+
+**最も危険な問題**。integrated module の location は user のファイルと
+同じ pool に入り、区別する情報がない。したがって `core/std/option.t` 内で
+発生したエラーが**ユーザのファイルに対して描画され**、同じ offset に
+たまたま居た無関係なコードを自信満々に指す。
+
+実測 (P2 前):
+
+```
+# エラーの実体は modules/helper.t:3 の `pub fn broken(a: u64) -> bool`
+Error at main.t:3:6:
+ 3 | fn main() -> u64 {
+   |      ^ Type mismatch: expected Bool, but got UInt64 ...
+```
+
+`main.t` は完全に無実。**位置なしより有害** — 読み手を具体的な間違った
+場所に送り込む。これは P0 の `f` バグを解けなくしたのと同じ構図。
+
+`TypeCheckError::origin_module: Option<String>` を追加し、`type_check` を
+薄い wrapper (`type_check` → `type_check_body`) にして、
+imported function の body から出たエラー (return 経路・収集経路の両方) に
+module 名を stamp する。formatter は origin があればソース行を引用せず、
+module 名を明示する。
+
+```
+Error in imported module `helper` (line 3 of that module): Type mismatch: ...
+   = note: this comes from module `helper`, not from the file being compiled
+```
+
+qualifier の判定は**名前ではなく `Rc::ptr_eq` による同一性**で行う
+(user 関数と import 関数は同名になりうる。混同すると診断が別ファイルを
+誤って名指しする — まさに避けたい失敗)。lookup は error path でのみ実行する。
+
+#### 副産物: `TypeCheckError` の縮小
+
+`end_offset` (+4) と `origin_module` (+24) で構造体が 120 → 152 バイトになり、
+`Result<_, TypeCheckError>` を返す関数が clippy の `result_large_err`
+(閾値 128) に 206 件引っかかった。`kind` を `Box<TypeCheckErrorKind>` に
+変更して **80 バイト** まで縮小 — 元の 120 バイトより小さい。
+kind は診断を描画するときにしか読まないので、cold data を box するのは
+レイアウトとしても正しい。
+
+**回帰テスト**: `interpreter/tests/diagnostics_location_tests.rs` (12 件) —
+内部座標の非混入 / caret 幅 / 4 種のアンカー / 位置カバレッジ 7 種。
+
+**未実施 (P3 に送り)**: エラーコード体系 (`E0308` 等)。
 
 ### P3 — 構造化診断出力 + 修正提案
 

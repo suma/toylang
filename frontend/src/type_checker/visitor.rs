@@ -6,7 +6,7 @@ use crate::type_decl::*;
 use crate::module_resolver::ModuleResolver;
 use crate::visitor::ProgramVisitor;
 use crate::type_checker::{
-    AcceptableExpr, AcceptableStmt, BuiltinFunctionSignature, CoreReferences, TypeCheckContext, TypeCheckError,
+    AcceptableStmt, BuiltinFunctionSignature, CoreReferences, TypeCheckContext, TypeCheckError,
     TypeInferenceState, FunctionCheckingState, PerformanceOptimization,
 };
 
@@ -435,7 +435,45 @@ impl<'a> TypeCheckerVisitor<'a> {
         Ok(TypeDecl::Unit)
     }
 
+    /// Type check a function body, tagging anything that goes wrong with
+    /// the module the body came from.
+    ///
+    /// LLM-LOOP P2: an error raised while checking an imported function
+    /// carries a source location into *that module's* file. Rendered
+    /// against the file being compiled it points at whatever sits at the
+    /// same offset -- a confident pointer at innocent code. This wrapper
+    /// is where the origin gets attached because it is the only frame
+    /// that knows which function is being walked: a callee dragged in by
+    /// `type_check_forward_ref` runs its own `type_check` and so tags its
+    /// own errors.
     pub fn type_check(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
+        let errors_before = self.errors.len();
+        let result = self.type_check_body(func.clone());
+
+        // The qualifier lookup scans the function table, so only pay for
+        // it when there is actually something to tag.
+        if result.is_ok() && self.errors.len() == errors_before {
+            return result;
+        }
+        let Some(qualifier) = self.context.module_qualifier_of(&func) else {
+            return result;
+        };
+        let module = self.resolve_symbol_name(qualifier);
+
+        for error in &mut self.errors[errors_before..] {
+            if error.origin_module.is_none() {
+                error.origin_module = Some(module.clone());
+            }
+        }
+        result.map_err(|mut e| {
+            if e.origin_module.is_none() {
+                e.origin_module = Some(module);
+            }
+            e
+        })
+    }
+
+    fn type_check_body(&mut self, func: Rc<Function>) -> Result<TypeDecl, TypeCheckError> {
         let mut last = TypeDecl::Unit;
         let s = func.code;
 
@@ -714,13 +752,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         cond: &ExprRef,
         kind: &str,
     ) -> Result<(), TypeCheckError> {
-        let expr = self.core.expr_pool.get(cond)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid contract expression reference"))?;
-        let ty = expr.clone().accept_expr(self)?;
+        let ty = self.check_expr_located(cond)?;
         if ty != TypeDecl::Bool {
-            return Err(TypeCheckError::generic_error(
+            let err = TypeCheckError::generic_error(
                 &format!("`{kind}` clause must be of type bool, got {ty:?}")
-            ));
+            );
+            return Err(self.error_with_location(err, cond));
         }
         Ok(())
     }

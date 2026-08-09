@@ -128,7 +128,7 @@ mod tests {
         let error = result.unwrap_err();
         
         // Check that it's an array error about type mismatch
-        match error.kind {
+        match *error.kind {
             TypeCheckErrorKind::ArrayError { message } => {
                 assert!(message.contains("must have the same type"));
                 assert!(message.contains("Bool"));
@@ -155,7 +155,7 @@ mod tests {
         let error = result.unwrap_err();
         
         // Check that it's an array error about empty arrays
-        match error.kind {
+        match *error.kind {
             TypeCheckErrorKind::ArrayError { message } => {
                 assert!(message.contains("Empty array literals are not supported"));
             },
@@ -189,7 +189,7 @@ mod tests {
         let error = result.unwrap_err();
         
         // Check that it's an array error about type mismatch
-        match error.kind {
+        match *error.kind {
             TypeCheckErrorKind::ArrayError { message } => {
                 assert!(message.contains("Bool"));
                 assert!(message.contains("UInt64"));

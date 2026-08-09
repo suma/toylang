@@ -87,7 +87,7 @@ impl CompilerSession {
     pub fn parse_module_file<P: AsRef<Path>>(&mut self, file_path: P) -> ParserResult<File> {
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| frontend::parser::error::ParserError::io_error(
-                frontend::type_checker::SourceLocation { line: 0, column: 0, offset: 0 },
+                frontend::type_checker::SourceLocation { line: 0, column: 0, offset: 0, end_offset: 0 },
                 format!("Failed to read file: {}", e)
             ))?;
         

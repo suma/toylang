@@ -1219,10 +1219,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             if !self.is_arg_compatible_dyn_aware(&arg_type, expected_type) && arg_type != TypeDecl::Unknown {
                 self.type_inference.type_hint = original_hint;
                 let fn_name_str = self.resolve_symbol_name(fn_name);
-                return Err(TypeCheckError::generic_error(&format!(
+                // LLM-LOOP P2: anchor at the offending argument. Without
+                // this the error inherits the call's location and points
+                // at the callee, which says nothing about *which*
+                // argument to change.
+                let err = TypeCheckError::generic_error(&format!(
                     "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
                     expected_type, arg_type, fn_name_str, arg_index + 1
-                )));
+                ));
+                return Err(self.error_with_location(err, arg));
             }
         }
         self.type_inference.type_hint = original_hint;

@@ -6,7 +6,6 @@ use crate::type_checker::{
     TypeCheckerVisitor, TypeCheckError
 };
 use crate::type_checker::method::MethodProcessing;
-use crate::type_checker::traits::AcceptableExpr;
 
 /// Implementation block type checking
 impl<'a> TypeCheckerVisitor<'a> {
@@ -182,13 +181,12 @@ impl<'a> TypeCheckerVisitor<'a> {
         cond: &ExprRef,
         kind: &str,
     ) -> Result<(), TypeCheckError> {
-        let expr = self.core.expr_pool.get(cond)
-            .ok_or_else(|| TypeCheckError::generic_error("Invalid contract expression reference"))?;
-        let ty = expr.clone().accept_expr(self)?;
+        let ty = self.check_expr_located(cond)?;
         if ty != TypeDecl::Bool {
-            return Err(TypeCheckError::generic_error(
+            let err = TypeCheckError::generic_error(
                 &format!("`{kind}` clause must be of type bool, got {ty:?}")
-            ));
+            );
+            return Err(self.error_with_location(err, cond));
         }
         Ok(())
     }

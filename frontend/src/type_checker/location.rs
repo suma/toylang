@@ -36,6 +36,7 @@ impl<'a> TypeCheckerVisitor<'a> {
             line,
             column,
             offset: node.start as u32,
+            end_offset: node.end as u32,
         }
     }
 

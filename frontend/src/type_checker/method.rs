@@ -322,10 +322,14 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                                         self.type_inference.pop_generic_scope();
                                     }
                                     let method_name = self.resolve_symbol_name(method.name);
+                                    // LLM-LOOP P2: anchor at the method body
+                                    // so the report carries a line number
+                                    // instead of none at all.
+                                    let loc = self.method_body_location(method);
                                     return Err(TypeCheckError::generic_error(&format!(
                                         "method '{}' return type mismatch: expected {:?}, found {:?}",
                                         method_name, resolved_expected_type, actual_return_type
-                                    )));
+                                    )).with_location(loc));
                                 }
                             }
                         }
@@ -333,10 +337,11 @@ impl<'a> MethodProcessing for TypeCheckerVisitor<'a> {
                         // For non-generic methods, use strict type checking
                         if !self.are_types_compatible(&actual_return_type, &resolved_expected_type) {
                             let method_name = self.resolve_symbol_name(method.name);
+                            let loc = self.method_body_location(method);
                             return Err(TypeCheckError::generic_error(&format!(
                                 "method '{}' return type mismatch: expected {:?}, found {:?}",
                                 method_name, resolved_expected_type, actual_return_type
-                            )));
+                            )).with_location(loc));
                         }
                     }
                 },

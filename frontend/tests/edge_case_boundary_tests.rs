@@ -244,7 +244,7 @@ mod edge_case_boundary_tests {
                 fn get(&self) -> Value { Value { x: self.x } }
             }
             fn main() -> i64 {
-                val v = Value { x: 1i64 };
+                val v = Value { x: 1i64 }
                 v.get().get().get().get().get().x
             }
         "#;
@@ -344,11 +344,11 @@ mod edge_case_boundary_tests {
     fn test_variable_shadowing() {
         let input = r#"
             fn main() -> i64 {
-                val x = 1i64;
+                val x = 1i64
                 {
-                    val x = 2i64;
+                    val x = 2i64
                     {
-                        val x = 3i64;
+                        val x = 3i64
                         x
                     }
                 }

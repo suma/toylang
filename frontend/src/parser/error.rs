@@ -92,12 +92,14 @@ impl std::fmt::Display for ParserError {
             }
         };
 
-        let mut result = base_message;
-
-        let location = &self.location;
-        result = format!("{}:{}:{}: {}", location.line, location.column, location.offset, result);
-
-        write!(f, "{}", result)
+        // LLM-LOOP P2: the message is the message. The formatter already
+        // prints `Error at <file>:<line>:<col>` above it, so prefixing
+        // `line:column:offset` here duplicated the position and leaked
+        // `offset`, a byte index into the source that means nothing to a
+        // reader. `TypeCheckError` was cleaned up in P2; this is its
+        // parser-side twin. Callers that need a position read
+        // `self.location`.
+        write!(f, "{}", base_message)
     }
 }
 

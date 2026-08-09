@@ -2,8 +2,49 @@ use crate::ast::*;
 use crate::token::Kind;
 use crate::parser::core::Parser;
 use crate::parser::error::{ParserResult, ParserError};
+use crate::type_checker::SourceLocation;
 use crate::type_decl::TypeDecl;
 use super::{parse_logical_expr, parse_block, parse_match_pattern};
+
+/// Reject `else if`, which is not toylang syntax — `elif` is.
+///
+/// Called with the `else` already consumed and `else_location` pointing
+/// at it. Without this check the `else` arm hands an `if` token to
+/// `parse_block`, which fails, and the parser's error recovery swallows
+/// the rest of the file. The result is a diagnostic that blames
+/// something innocent:
+///
+///   * a function declared after the `else if` simply disappears, and
+///     the user is told `Function 'main' not found`
+///   * when nothing follows, the mis-parse survives to runtime and
+///     surfaces as `Internal error: Null reference error` — and only
+///     when the first condition is false, so it can sit undetected
+///
+/// The span covers `else if` as a unit so the caret marks exactly what
+/// has to be replaced.
+fn reject_else_if(parser: &mut Parser, else_location: SourceLocation) -> ParserResult<()> {
+    if !matches!(parser.peek(), Some(Kind::If)) {
+        return Ok(());
+    }
+    let if_location = parser.current_source_location();
+    let span = SourceLocation::new(
+        else_location.line,
+        else_location.column,
+        else_location.offset,
+        if_location.end_offset,
+    );
+    let error = ParserError::generic_error(
+        span,
+        "`else if` is not supported; write `elif` instead (`} elif cond {`)".to_string(),
+    );
+    // Recorded as well as returned. Expression parsing has recovery
+    // paths that swallow a returned `Err` and carry on, which would put
+    // us right back to a silent mis-parse; `parse_program` refuses to
+    // hand back a tree while `errors` is non-empty, so this is what
+    // makes the rejection stick.
+    parser.errors.push(error.clone());
+    Err(error)
+}
 
 /// Parse `dict{key: value, ...}` literal.
 pub fn parse_dict_literal(parser: &mut Parser) -> ParserResult<ExprRef> {
@@ -69,7 +110,9 @@ pub fn parse_if(parser: &mut Parser) -> ParserResult<ExprRef> {
     }
     let else_block: ExprRef = match parser.peek() {
         Some(Kind::Else) => {
+            let else_location = parser.current_source_location();
             parser.next();
+            reject_else_if(parser, else_location)?;
             parse_block(parser)?
         }
         _ => {
@@ -93,7 +136,9 @@ fn parse_if_val(parser: &mut Parser) -> ParserResult<ExprRef> {
     let then_block = parse_block(parser)?;
     let (then_arm_body, else_arm_body): (ExprRef, ExprRef) = match parser.peek() {
         Some(Kind::Else) => {
+            let else_location = parser.current_source_location();
             parser.next();
+            reject_else_if(parser, else_location)?;
             let else_block = parse_block(parser)?;
             (then_block, else_block)
         }

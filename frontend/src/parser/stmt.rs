@@ -60,6 +60,17 @@ pub fn parse_stmt(parser: &mut Parser) -> ParserResult<StmtRef> {
         Some(Kind::Return) => {
             parser.next();
             match parser.peek() {
+                // `return` as the last statement of a block. The `}` is
+                // the block parser's to consume, so peek only. Without
+                // this arm the `}` was taken as the start of a return
+                // *value*, which collected a bogus "expected expression"
+                // error — invisible for as long as `parse_program`
+                // discarded collected errors, and a hard failure once it
+                // stopped.
+                Some(&Kind::BraceClose) => {
+                    let location = parser.current_source_location();
+                    Ok(parser.ast_builder.return_stmt(None, Some(location)))
+                }
                 Some(&Kind::NewLine) | Some(&Kind::BracketClose) | Some(Kind::EOF) => {
                     let location = parser.current_source_location();
                     parser.next();

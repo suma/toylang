@@ -2188,7 +2188,7 @@ mod integration {
                 uint: u64,
                 int: i64,
                 boolean: bool,
-                text: "hello"
+                text: str
             }
 
             fn main() -> u64 {
@@ -2205,7 +2205,7 @@ mod integration {
         let source = r#"
             struct Message<T> {
                 content: T,
-                prefix: "MSG: "
+                prefix: str
             }
 
             fn main() -> u64 {

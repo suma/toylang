@@ -918,10 +918,12 @@ pub fn run_source(
     let mut program = match session.parse_program_with_source(source, filename) {
         Ok(p) => p,
         Err(err) => {
-            // Print the same diagnostic the binary used to emit, then
-            // hand a short summary back to the caller so it can decide
-            // how to surface it (e.g. test assertions vs. process exit).
-            formatter.format_parse_error(&err);
+            // Report it, then hand a short summary back to the caller so
+            // it can decide how to surface it (e.g. test assertions vs.
+            // process exit). The formatted diagnostic used to be built
+            // and then dropped on the floor, so a parse error produced
+            // no output at all — the process just exited non-zero.
+            formatter.display_parse_errors(std::slice::from_ref(&err));
             return Err(format!("parse error: {err:?}"));
         }
     };

@@ -221,3 +221,74 @@ fn a_correct_program_still_type_checks() {
         6,
     );
 }
+
+// --- syntax that must be rejected rather than mis-parsed -------------
+//
+// Both of these used to slip through: `parse_program` discarded every
+// collected parser error except "reserved keyword" ones, so a bad parse
+// produced an `Ok` over a tree that was not what the user wrote. The
+// damage then surfaced somewhere unrelated, or not until runtime.
+
+#[test]
+fn else_if_is_rejected_and_points_at_elif() {
+    let diags = diagnostics(
+        "fn classify(n: u64) -> u64 {
+            if n > 10u64 { 1u64 } else if n > 5u64 { 2u64 } else { 3u64 }
+        }
+        fn main() -> u64 { classify(20u64) }",
+    );
+    assert!(diags.contains("elif"), "the fix should be named:\n{diags}");
+    // The old failure mode: the rest of the file was swallowed and the
+    // user was told their `main` did not exist.
+    assert!(
+        !diags.contains("'main' not found"),
+        "error still blames an unrelated declaration:\n{diags}"
+    );
+}
+
+#[test]
+fn elif_still_parses() {
+    common::assert_program_result_u64(
+        "fn classify(n: u64) -> u64 {
+            if n > 10u64 { 1u64 } elif n > 5u64 { 2u64 } else { 3u64 }
+        }
+        fn main() -> u64 { classify(7u64) }",
+        2,
+    );
+}
+
+#[test]
+fn a_semicolon_is_a_parse_error_not_a_silent_recovery() {
+    // toylang separates statements by newline. A stray `;` used to be
+    // collected and dropped, leaving whatever the parser had recovered
+    // into.
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            val a = 1u64; val b = 2u64
+            a + b
+        }",
+    );
+    assert!(!diags.is_empty());
+}
+
+#[test]
+fn bare_return_before_a_closing_brace_is_accepted() {
+    // The `}` terminating the block is not the start of a return value.
+    // Getting this wrong collected a bogus "expected expression", which
+    // only became visible once parse errors stopped being discarded.
+    // The bare `return` needs a function with no declared return type —
+    // in a `-> u64` function it would be a genuine type error.
+    common::assert_program_result_u64(
+        "fn note(n: u64) {
+            if n > 0u64 {
+                return
+            }
+            println(n)
+        }
+        fn main() -> u64 {
+            note(1u64)
+            7u64
+        }",
+        7,
+    );
+}

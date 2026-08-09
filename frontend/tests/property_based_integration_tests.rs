@@ -185,7 +185,8 @@ mod collection_properties {
     proptest! {
         #[test]
         fn prop_string_literals_parse(s in "[a-zA-Z0-9 ]{0,50}") {
-            let input = format!(r#"fn main() -> i64 {{ val s = "{}"; 0i64 }}"#, s);
+            // No `;` — statements are newline-separated in toylang.
+            let input = format!("fn main() -> i64 {{ val s = \"{}\"\n 0i64 }}", s);
             let result = parse_program(&input);
             prop_assert!(result.is_ok(), "String literal should parse: {}", s);
         }
@@ -361,7 +362,10 @@ mod control_flow_properties {
                 if i == 0 {
                     if_chain.push_str(&format!("if {} > 0i64 {{ {}i64 }}", cond, i));
                 } else {
-                    if_chain.push_str(&format!(" else if {} > 0i64 {{ {}i64 }}", cond, i));
+                    // `elif`, not `else if` — this generator used to
+                    // emit the latter, and the resulting parse error was
+                    // discarded, so the property passed vacuously.
+                    if_chain.push_str(&format!(" elif {} > 0i64 {{ {}i64 }}", cond, i));
                 }
             }
             if_chain.push_str(" else { 999i64 }");

@@ -1,11 +1,32 @@
 use frontend::type_checker::TypeCheckerVisitor;
 use frontend::type_decl::TypeDecl;
 
+/// Wrap a bare expression / statement fragment in a `main` so it is a
+/// complete program.
+///
+/// Many cases below pass a fragment such as `dict{}` or `arr[0]`.
+/// `parse_program` expects top-level declarations, so those were never
+/// valid programs — they only appeared to parse because collected
+/// parser errors used to be discarded, leaving an empty `File` and an
+/// `Ok`. The assertions were vacuous. Wrapping restores what each test
+/// meant to check: that the *syntax* parses.
+fn as_program(source: &str) -> String {
+    const TOP_LEVEL: [&str; 9] = [
+        "fn ", "pub ", "struct ", "impl ", "enum ", "trait ", "package ", "import ", "const ",
+    ];
+    let head = source.trim_start();
+    if TOP_LEVEL.iter().any(|kw| head.starts_with(kw)) {
+        return source.to_string();
+    }
+    format!("fn main() -> u64 {{\n{source}\n0u64\n}}")
+}
+
 /// Test helper function to parse and type check a source string
 fn parse_and_check(source: &str) -> Result<TypeDecl, String> {
     use frontend::parser::core::ParserWithInterner;
-    
-    let mut parser = ParserWithInterner::new(source);
+
+    let source = as_program(source);
+    let mut parser = ParserWithInterner::new(&source);
     
     match parser.parse_program() {
         Ok(mut program) => {
@@ -36,8 +57,9 @@ fn parse_and_check(source: &str) -> Result<TypeDecl, String> {
 /// Test helper to check if parsing succeeds
 fn parse_succeeds(source: &str) -> bool {
     use frontend::parser::core::ParserWithInterner;
-    
-    let mut parser = ParserWithInterner::new(source);
+
+    let source = as_program(source);
+    let mut parser = ParserWithInterner::new(&source);
     parser.parse_program().is_ok()
 }
 
@@ -213,7 +235,9 @@ fn test_complex_index_expression_parsing() {
 
 #[test]
 fn test_index_with_expression() {
-    assert!(parse_succeeds(r#"dict[key + "suffix"]"#));
+    // Not `dict[...]`: `dict` is a keyword, which the very next test
+    // asserts cannot be used as a variable name.
+    assert!(parse_succeeds(r#"data[key + "suffix"]"#));
 }
 
 #[test]

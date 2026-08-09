@@ -241,30 +241,40 @@ impl<'a> TypeCheckerVisitor<'a> {
     /// Handle array slice assignment (both single element and range)
     pub fn handle_array_slice_assign(&mut self, element_types: &Vec<TypeDecl>, start: &Option<ExprRef>, end: &Option<ExprRef>, value_type: &TypeDecl) -> Result<TypeDecl, TypeCheckError> {
         if start.is_some() && end.is_none() {
-            // Single element assignment: arr[index] = value
-            if element_types.len() == 1 {
-                let element_type = &element_types[0];
-                if element_type != value_type && !self.are_types_compatible(element_type, value_type) {
-                    return Err(TypeCheckError::type_mismatch(
-                        element_type.clone(),
-                        value_type.clone()
-                    ));
-                }
+            // Single element assignment: arr[index] = value.
+            //
+            // Take the first element type rather than requiring exactly
+            // one: an array literal carries one entry per element
+            // (`[1u64, 2u64, 3u64]` is `Array([U64, U64, U64], 3)`), so a
+            // `len() == 1` guard skipped the check for every array of
+            // more than one element. Elements are homogeneous — the
+            // array-literal checker rejects mixed types — so the first
+            // entry stands for all of them.
+            if let Some(element_type) = element_types.first()
+                && element_type != value_type
+                && !self.are_types_compatible(element_type, value_type)
+            {
+                return Err(TypeCheckError::type_mismatch(
+                    element_type.clone(),
+                    value_type.clone()
+                ));
             }
         } else {
             // Range assignment: arr[start..end] = value or arr[start..] = value
             // Value must be an array with compatible element types
             match value_type {
                 TypeDecl::Array(value_elements, _) => {
-                    if element_types.len() == 1 && value_elements.len() == 1 {
-                        let element_type = &element_types[0];
-                        let value_element = &value_elements[0];
-                        if element_type != value_element && !self.are_types_compatible(element_type, value_element) {
-                            return Err(TypeCheckError::type_mismatch(
-                                element_type.clone(),
-                                value_element.clone()
-                            ));
-                        }
+                    // Same reasoning as above: compare representatives
+                    // rather than demanding single-entry element lists.
+                    if let (Some(element_type), Some(value_element)) =
+                        (element_types.first(), value_elements.first())
+                        && element_type != value_element
+                        && !self.are_types_compatible(element_type, value_element)
+                    {
+                        return Err(TypeCheckError::type_mismatch(
+                            element_type.clone(),
+                            value_element.clone()
+                        ));
                     }
                 }
                 _ => {

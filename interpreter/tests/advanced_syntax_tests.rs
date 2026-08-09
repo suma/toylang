@@ -416,8 +416,8 @@ fn test_multiline_comment_with_asterisks() {
     let program = r#"
 /*
  * This comment has asterisks: * * * *
- * But they don't end the comment
- * Only */ ends it
+ * But they do not end the comment - only the closing delimiter does,
+ * which cannot appear here without ending it.
  */
 fn main() -> u64 {
     val result: u64 = 7u64 * 6u64

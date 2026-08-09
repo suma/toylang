@@ -687,8 +687,10 @@ mod visibility_details {
         let mut parser = ParserWithInterner::new(source);
         let result = parser.parse_program();
 
-        // This should parse but with errors collected
-        assert!(result.is_ok());
+        // A collected parse error now fails the parse instead of being
+        // dropped on the floor, so a bare `pub` is reported rather than
+        // yielding an `Ok` over a tree that is not what was written.
+        assert!(result.is_err(), "bare `pub` should be a parse error");
         assert!(!parser.errors.is_empty(), "Should have collected errors for pub without fn");
     }
 

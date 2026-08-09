@@ -4,7 +4,7 @@ use string_interner::DefaultSymbol;
 use crate::ast::*;
 use crate::type_decl::TypeDecl;
 use crate::token::Kind;
-use crate::parser::error::{ParserErrorKind, ParserResult, MultipleParserResult};
+use crate::parser::error::{ParserResult, MultipleParserResult};
 use super::core::Parser;
 
 /// Map a primitive-type token to the canonical string it should be
@@ -611,20 +611,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // Check if there were critical errors during parsing (like keyword usage)
-        for error in &self.errors {
-            // Check both direct GenericError and nested errors in UnexpectedToken
-            match &error.kind {
-                ParserErrorKind::GenericError { message }
-                    if message.contains("reserved keyword") => {
-                        return Err(error.clone());
-                    }
-                ParserErrorKind::UnexpectedToken { expected }
-                    if expected.contains("reserved keyword") => {
-                        return Err(error.clone());
-                    }
-                _ => {}
-            }
+        // Any error collected while parsing means the AST below is not
+        // what the user wrote, so surface it rather than handing back a
+        // silently wrong tree. Only "reserved keyword" errors used to
+        // propagate; everything else was dropped, and the damage showed
+        // up later as an unrelated diagnostic (a function swallowed by a
+        // bad `else if` was reported as "Function 'main' not found") or
+        // not at all until runtime.
+        if let Some(error) = self.errors.first() {
+            return Err(error.clone());
         }
 
         let mut ast_builder = AstBuilder::new();

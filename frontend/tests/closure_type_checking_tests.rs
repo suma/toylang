@@ -193,8 +193,14 @@ fn closure_capturing_generic_param_typed_var_is_rejected() {
     // `outer<T>(x: T)` binds `x: T`; the closure captures `x` whose
     // type mentions enclosing generic `T` — currently rejected.
     let err = parse_and_type_check(
+        // No `;` — toylang separates statements by newline, and the
+        // parser now rejects the semicolon instead of silently
+        // recovering from it.
         "fn outer<T>(x: T) -> i64 {
-            val c = fn() -> i64 { x; 0i64 }
+            val c = fn() -> i64 {
+                x
+                0i64
+            }
             0i64
         }",
     )

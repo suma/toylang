@@ -21,68 +21,110 @@ The language supports functions, variables (val/var), control flow (if/else, for
 
 ## Commands
 
+> すべてリポジトリルートから実行する。`cd <crate> && cargo ...` は使わない —
+> `-p <crate>` で同じことができ、cd はツール実行時に余計な確認を挟む。
+
 ### Building and Running
 
 ```bash
-# Build frontend library
-cd frontend && cargo build
+# 型エラーだけ知りたいとき (最速。コード生成をしない)
+cargo check --workspace --message-format=short
 
-# Build interpreter  
-cd interpreter && cargo build
+# ビルド
+cargo build -p frontend
+cargo build -p interpreter
+cargo build -p compiler
 
-# Run the interpreter
-cd interpreter && cargo run <source_file.t>
+# インタプリタで実行
+cargo run -q -p interpreter -- <source_file.t>
+cargo run -q -p interpreter -- interpreter/example/fib.t
 
-# Example programs are available in interpreter/example/
-cd interpreter && cargo run example/fib.t
+# AOT コンパイル
+cargo run -q -p compiler -- <source_file.t> -o <output>
 ```
+
+**`--message-format=short`** を付けると診断が `path:line:col: error[CODE]: msg`
+の 1 行形式になる (デフォルトのスニペット付き形式は 1 エラーあたり ~11 行)。
+位置情報は保持されるので、機械的に読む場面ではこちらが適している。
+cargo の config / 環境変数では設定できないのでフラグで渡すこと。
 
 ### Testing
 
-**推奨**: `cargo nextest` を使用する。並列実行で速く、出力もパッケージ・テストごとに整理される。
-
-**重要**: `cargo nextest run` / `cargo test` を実行する際は、必ず環境変数 `PROPTEST_CASES=32` を設定すること。frontend / interpreter には proptest によるプロパティベーステストが多数含まれており、デフォルトの case 数 (256) では非常に時間がかかるため。
+**`cargo nextest` を使う。**
 
 ```bash
-# Run all tests across the workspace with nextest (preferred)
-PROPTEST_CASES=32 cargo nextest run
+# ワークスペース全体
+cargo nextest run
 
-# Filter by package / test name
-PROPTEST_CASES=32 cargo nextest run -p compiler
-PROPTEST_CASES=32 cargo nextest run -p interpreter proptest
-PROPTEST_CASES=32 cargo nextest run -E 'test(=basic_arithmetic)'
+# パッケージ / テスト名で絞る
+cargo nextest run -p compiler
+cargo nextest run -p interpreter proptest
+cargo nextest run -E 'test(=basic_arithmetic)'
+
+# 失敗の詳細だけでなく全テストの一覧が欲しいとき
+cargo nextest run --profile verbose
 ```
 
-`cargo test` も引き続き使用可能 (doc-tests は nextest が実行しないので必要なときは併用):
+**出力は失敗のみが既定** (`.config/nextest.toml`)。グリーンな全体実行は
+**7 行**で終わる (この設定を入れる前は 1641 行だった)。実行自体は ~4 秒なので、
+ボトルネックは速度ではなく出力量。全テストの一覧が要るとき
+(ハングの二分探索、フィルタが意図通りか確認するとき) だけ
+`--profile verbose` を使う。
+
+**環境変数は `.cargo/config.toml` の `[env]` で設定済み**なので、
+コマンドラインで前置する必要はない:
+
+| 変数 | 目的 |
+|---|---|
+| `PROPTEST_CASES=32` | proptest のケース数 (デフォルト 256 は 8x 遅い) |
+| `TOYLANG_CRANELIFT_OPT_LEVEL=none` | テスト用の cranelift codegen (~20x 速い) |
+| `TOY_LINK_CACHE_DIR` | AOT リンク結果の content-addressed キャッシュ |
+
+nextest の `[profile.*.env]` は**存在しないキー**なので、そこに書いても
+黙って無視される (毎回警告が出る)。テスト用の環境変数は必ず
+`.cargo/config.toml` の `[env]` に置くこと。
+
+`cargo test` も使用可能 (doc-tests は nextest が実行しないので必要なときに併用):
 
 ```bash
-# Run all tests in interpreter (includes property-based tests)
-cd interpreter && PROPTEST_CASES=32 cargo test
-
-# Run frontend tests
-cd frontend && PROPTEST_CASES=32 cargo test
-
-# Run property tests only
-cd interpreter && PROPTEST_CASES=32 cargo test proptest
+cargo test -p interpreter
+cargo test --doc --workspace
 ```
-
-**Note**: インタープリターの`cargo test`は3つのフェーズで実行されます：
-1. `src/lib.rs`のテスト
-2. `src/main.rs`のテスト (メインテストスイート)
-3. `doc-tests`
-
-テスト結果は各フェーズごとに`running X tests`と表示されます。
 
 ### Development
 
 ```bash
-# Frontend uses build script to generate lexer from lexer.l
-cd frontend && cargo build
-
-# Type check with clippy
-cd frontend && cargo clippy --all-targets --all-features
-cd interpreter && cargo clippy --all-targets --all-features
+# clippy (ワークスペース全体を 1 コマンドで)
+cargo clippy --workspace --all-targets --all-features --message-format=short
 ```
+
+clippy は**無警告が既定状態**。警告が出たら、それは今回の変更が入れたもの。
+
+`frontend` は build script で `lexer.l` から lexer を生成するため、
+`lexer.l` を変更したら `cargo build -p frontend` が必要。
+
+### 横断的な変更をするとき
+
+**同じ意味論が 3 バックエンド (tree-walker / IR VM・AOT / JIT) に独立実装されている。**
+型チェッカだけ直すと「型は通るが答えが間違う」状態になりうる。
+意味論を変える修正には `compiler/tests/consistency.rs` の
+`assert_consistent` を使ったテストを必ず追加すること —
+バックエンド間の一致を自動で検証する唯一の仕組み。
+
+設定用の構造体 (`CompilerOptions` / `RunOptions` / `SourceLocation`) は
+`#[non_exhaustive]` なので、構造体リテラルではなくコンストラクタを使う:
+
+```rust
+let mut options = CompilerOptions::new(input_path);
+options.emit = EmitKind::Object;
+
+let mut options = RunOptions::default();
+options.jit = true;
+
+let loc = SourceLocation::new(line, column, offset, end_offset);
+```
+
+フィールドを 1 つ足すたびにワークスペース中のリテラルが壊れるのを防ぐため。
 
 ## Language Syntax
 
@@ -333,12 +375,12 @@ toylang コンパイラ開発の包括的なテスト戦略と計画は `design-
 - エッジケース：境界条件、エラーハンドリング、互換性
 
 ### テスト実行
-```bash
-# 全テストを実行
-cd frontend && cargo test && cd ../interpreter && cargo test
 
-# 特定のテストスイートを実行
-cd interpreter && cargo test proptest
+上の「Commands → Testing」を参照。要点だけ再掲:
+
+```bash
+cargo nextest run                        # 全テスト (グリーンなら 7 行)
+cargo nextest run -p interpreter proptest # 絞り込み
 ```
 
 ### 将来のテスト計画

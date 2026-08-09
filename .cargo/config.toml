@@ -23,3 +23,18 @@ TOY_LINK_CACHE_DIR = { value = "target/toy_link_cache", relative = true }
 # (including IDE runs) stays fast. The full 256-case default
 # would make the property-based suites 8x slower.
 PROPTEST_CASES = "32"
+# Cranelift codegen quality for the test suite. Production / interactive
+# builds default to `"speed"` (see
+# `compiler/src/codegen/mod.rs::cranelift_opt_level`); the suite builds
+# hundreds of tiny programs and runs each once, so codegen quality buys
+# nothing and `"none"` is roughly 20x faster per compile.
+#
+# This lived in `.config/nextest.toml` as `[profile.default.env]`, which
+# nextest does not read — it warned "ignoring unknown configuration
+# keys" on every run and the setting never applied. Warm runs hide the
+# cost because `TOY_LINK_CACHE_DIR` above skips codegen entirely on a
+# cache hit; cold runs and CI paid it in full.
+#
+# Override with `TOYLANG_CRANELIFT_OPT_LEVEL=speed cargo nextest run` to
+# verify against the production setting.
+TOYLANG_CRANELIFT_OPT_LEVEL = "none"

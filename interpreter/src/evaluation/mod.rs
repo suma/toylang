@@ -150,6 +150,13 @@ pub struct EvaluationContext<'a> {
     pub environment: Environment,
     pub(super) method_registry: HashMap<DefaultSymbol, HashMap<DefaultSymbol, Vec<MethodSpec>>>, // struct_name -> method_name -> [specs by target_type_args]
     pub(super) null_object: RcObject, // Pre-created null object for reuse
+    /// Source locations for expressions, when the caller supplied them.
+    /// LLM-LOOP P6: the interpreter had no access to positions at all,
+    /// so a runtime failure could not say where it happened.
+    pub location_pool: Option<&'a frontend::ast::LocationPool>,
+    /// Toylang call stack, innermost last. Used to build panic
+    /// backtraces; empty when nothing is running.
+    pub(super) call_stack: Vec<crate::error::CallFrame>,
     pub(super) recursion_depth: u32,
     pub(super) max_recursion_depth: u32,
     // Shared heap state. The GlobalAllocator holds an Rc to this same cell so
@@ -222,6 +229,27 @@ pub(super) struct DropEntry {
 }
 
 impl<'a> EvaluationContext<'a> {
+    /// Source location of an expression, when locations are available.
+    pub fn expr_location(&self, expr: &ExprRef) -> Option<frontend::type_checker::SourceLocation> {
+        self.location_pool
+            .and_then(|pool| pool.get_expr_location(expr).cloned())
+    }
+
+    /// Build a `Panic` carrying where it happened and how it got there.
+    ///
+    /// The backtrace is reversed so the innermost call comes first —
+    /// the frame nearest the failure is the one a reader wants at the
+    /// top.
+    pub fn panic_error(
+        &self,
+        message: String,
+        location: Option<frontend::type_checker::SourceLocation>,
+    ) -> InterpreterError {
+        let mut backtrace = self.call_stack.clone();
+        backtrace.reverse();
+        InterpreterError::Panic { message, location, backtrace }
+    }
+
     pub fn new(stmt_pool: &'a StmtPool, expr_pool: &'a ExprPool, string_interner: &'a mut DefaultStringInterner, function: HashMap<DefaultSymbol, Rc<Function>>) -> Self {
         Self::new_with_qualified(stmt_pool, expr_pool, string_interner, function, HashMap::new())
     }
@@ -251,6 +279,8 @@ impl<'a> EvaluationContext<'a> {
             environment: Environment::new(),
             method_registry: HashMap::new(),
             null_object: Rc::new(RefCell::new(Object::null_unknown())),
+            location_pool: None,
+            call_stack: Vec::new(),
             recursion_depth: 0,
             max_recursion_depth: 1000, // Increased to support deeper recursion like fib(20)
             heap_manager,

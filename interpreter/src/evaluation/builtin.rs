@@ -255,7 +255,14 @@ impl EvaluationContext<'_> {
     }
 
     /// Evaluate builtin function calls
-    pub(super) fn evaluate_builtin_call(&mut self, func: &BuiltinFunction, args: &[ExprRef]) -> Result<EvaluationResult, InterpreterError> {
+    /// `site` is the location of the builtin call itself, so `panic`
+    /// and a failed `assert` can say where they fired.
+    pub(super) fn evaluate_builtin_call(
+        &mut self,
+        func: &BuiltinFunction,
+        args: &[ExprRef],
+        site: Option<frontend::type_checker::SourceLocation>,
+    ) -> Result<EvaluationResult, InterpreterError> {
         match func {
             // Memory management
             BuiltinFunction::HeapAlloc => {
@@ -722,7 +729,7 @@ impl EvaluationContext<'_> {
                 let value = self.evaluate(&args[0])?;
                 let value = try_value!(Ok(value));
                 let message = value.borrow().to_display_string(self.string_interner);
-                Err(InterpreterError::Panic { message })
+                Err(self.panic_error(message, site))
             }
 
             BuiltinFunction::Assert => {
@@ -748,7 +755,7 @@ impl EvaluationContext<'_> {
                 let msg_val = self.evaluate(&args[1])?;
                 let msg_val = try_value!(Ok(msg_val));
                 let message = msg_val.borrow().to_display_string(self.string_interner);
-                Err(InterpreterError::Panic { message })
+                Err(self.panic_error(message, site))
             }
 
             BuiltinFunction::Print | BuiltinFunction::Println => {

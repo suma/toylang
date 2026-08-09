@@ -67,7 +67,8 @@ impl EvaluationContext<'_> {
                 self.evaluate_builtin_method_call(&receiver, &method, &args)
             }
             Expr::BuiltinCall(func, args) => {
-                self.evaluate_builtin_call(&func, &args)
+                let site = self.expr_location(e);
+                self.evaluate_builtin_call(&func, &args, site)
             }
             Expr::StructLiteral(struct_name, fields) => {
                 self.evaluate_struct_literal(&struct_name, &fields)

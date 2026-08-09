@@ -16,7 +16,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 | **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | ✅ 2026-08-09 |
 | **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | 未着手 |
 | **P5** | 契約ベース自動プロパティテスト (`toy check`) | 未着手 |
-| **P6** | 実行時の観測性 (panic backtrace / 契約違反の値キャプチャ) | 未着手 |
+| **P6** | 実行時の観測性 (panic backtrace / 契約違反の値キャプチャ) | ✅ 2026-08-09 (1,2 完了 / 3 未着手) |
 | **P7** | 補助 CLI (型ホール / `toy api` / エラーコード解説) | 検討のみ |
 
 ## 設計原理 — ループを速くする 3 つの手段
@@ -343,7 +343,6 @@ P1 は型エラーだけを対象にしていたため、**構文エラーは 1 
 
 結果、`;` と `else if` を 1 つずつ含むファイルはちょうど 2 件を報告する。
 
-
 ### P2 — Span 化 + 全診断への location 強制 (✅ 2026-08-09 完了)
 
 **目標**: すべての診断が位置を持ち、その位置が信用できること。
@@ -598,19 +597,53 @@ $ toy check src/math.t
 `INTERPRETER_CONTRACTS` の既存機構と、`interpreter/` の proptest 資産
 (生成器・shrinker の考え方) を流用できる。
 
-### P6 — 実行時の観測性
+### P6 — 実行時の観測性 (✅ 2026-08-09、1 と 2 完了)
 
-1. **panic のバックトレース** — `panic: boom at g (main.t:1)` +
-   呼び出し元チェーン。実測 5 の通り現状は位置情報ゼロ。
-   `format_runtime_error` は既に `Option<&SourceLocation>` を受けられるので、
-   panic 経路で `Some` を渡すところから始める。
-2. **契約違反時の実引数値のキャプチャ** —
-   `requires b != 0i64 violated (b = 0i64)`。
-   値が出れば LLM は再現コードを書かずに原因を特定できる。
-   DbC を持っている強みを活かせる、コストの低い改善。
-3. **u64 アンダーフローの trap** — `0u64 - 1u64` は LLM の頻出バグ。
-   黙って wrap すると原因究明に何往復もかかる。デバッグビルドで明示的に
-   落とす (リリースでの挙動は別途決定)。
+#### P6-1 panic の位置 + backtrace (✅)
+
+**修正前**: `panic: boom` のみ。どの関数のどの行か、どこから呼ばれたかが不明。
+
+インタプリタは**実行時にソース位置へのアクセスを一切持っていなかった**
+(`EvaluationContext` に `LocationPool` が無い) ため、まずそこから。
+
+- `EvaluationContext` に `location_pool` と `call_stack: Vec<CallFrame>` を追加
+- `InterpreterError::Panic` が `location` と `backtrace` を持つ
+- `evaluate_function_call` で frame を push/pop。**エラー経路では pop しない** —
+  panic はトップまで unwind するので、失敗時点のスタックがそのまま欲しいもの
+
+```
+Error at assertloc.t:2:5:
+   |
+ 2 |     assert(n > 10u64, "n too small")
+   |     ^^^^^^ panic: n too small
+   |
+   = backtrace (innermost first):
+       check
+```
+
+`assert` の失敗も同じ経路を通る。
+
+#### P6-2 契約違反時の値キャプチャ (✅)
+
+**修正前**: `clause #1 of function 'divide' evaluated to false` —
+どの述語が落ちたかは分かるが、**なぜ落ちたかが分からない**。
+
+`ContractViolation` に `bindings: Vec<(String, String)>` を追加し、
+述語が見ていた値 (パラメータ全部、`ensures` では `result` も) を記録する。
+
+```
+Contract violation: `requires` clause #1 of function `divide` evaluated to false (with a = 20, b = 0)
+Contract violation: `ensures` clause #1 of function `buggy_abs` evaluated to false (with x = 5, result = -5)
+```
+
+**反例がそのまま出る**ので、呼び出しを instrument して再実行する往復が要らない。
+
+#### P6-3 u64 アンダーフローの trap (未着手)
+
+`0u64 - 1u64` は LLM の頻出バグ。黙って wrap すると原因究明に何往復もかかる。
+デバッグビルドで明示的に落とす (リリースでの挙動は別途決定)。
+
+**回帰テスト**: `interpreter/tests/runtime_observability_tests.rs` (7 件)。
 
 ### P7 — 補助 CLI (検討のみ)
 

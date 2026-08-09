@@ -390,7 +390,7 @@ impl EvaluationContext<'_> {
         }
 
         // Pre-body `requires` checks. `self` and named args are visible above.
-        if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires) {
+        if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
             self.environment.exit_block();
             return Err(e);
         }
@@ -404,7 +404,7 @@ impl EvaluationContext<'_> {
         // anyway, but we don't want to mask the original error).
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc()) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc(), &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -412,7 +412,7 @@ impl EvaluationContext<'_> {
             }
             Ok(EvaluationResult::Return(v)) => {
                 let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret, &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -437,6 +437,35 @@ impl EvaluationContext<'_> {
         result
     }
 
+    /// Values the failing predicate was looking at: every parameter,
+    /// plus `result` for an `ensures`.
+    ///
+    /// LLM-LOOP P6: `requires clause #0 violated` says which predicate
+    /// failed but not what made it fail; with `b = 0i64` the reader has
+    /// the counterexample without instrumenting the call.
+    fn capture_contract_bindings(
+        &mut self,
+        params: &ParameterList,
+        include_result: bool,
+    ) -> Vec<(String, String)> {
+        let mut names: Vec<DefaultSymbol> = params.iter().map(|(name, _)| *name).collect();
+        if include_result {
+            names.push(self.result_symbol);
+        }
+        names
+            .into_iter()
+            .filter_map(|sym| {
+                let value = self.environment.get_val(sym)?;
+                let name = self.string_interner.resolve(sym)?.to_string();
+                let rendered = value
+                    .into_rc()
+                    .borrow()
+                    .to_display_string(self.string_interner);
+                Some((name, rendered))
+            })
+            .collect()
+    }
+
     /// Evaluate every `requires` clause for the given callable against the
     /// current environment (parameters and, for methods, `self` already
     /// bound). Returns the first violation as a ContractViolation error.
@@ -447,6 +476,7 @@ impl EvaluationContext<'_> {
         &mut self,
         fn_name: DefaultSymbol,
         clauses: &[ExprRef],
+        params: &ParameterList,
     ) -> Result<(), InterpreterError> {
         if !self.contract_mode.check_pre || clauses.is_empty() {
             return Ok(());
@@ -463,6 +493,7 @@ impl EvaluationContext<'_> {
                     kind: "requires",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
+                    bindings: self.capture_contract_bindings(params, false),
                 });
             }
         }
@@ -478,6 +509,7 @@ impl EvaluationContext<'_> {
         fn_name: DefaultSymbol,
         clauses: &[ExprRef],
         return_value: RcObject,
+        params: &ParameterList,
     ) -> Result<(), InterpreterError> {
         if !self.contract_mode.check_post || clauses.is_empty() {
             return Ok(());
@@ -492,6 +524,7 @@ impl EvaluationContext<'_> {
                     kind: "ensures",
                     function: self.string_interner.resolve(fn_name).unwrap_or("<unknown>").to_string(),
                     clause_index: idx,
+                    bindings: self.capture_contract_bindings(params, true),
                 });
             }
         }
@@ -534,7 +567,7 @@ impl EvaluationContext<'_> {
         // Same contract evaluation flow as `call_method`. Associated functions
         // have no `self`, but `requires` / `ensures` predicates may still
         // reference the named parameters and `result`.
-        if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires) {
+        if let Err(e) = self.evaluate_requires_clauses(method.name, &method.requires, &method.parameter) {
             self.environment.exit_block();
             return Err(e);
         }
@@ -543,7 +576,7 @@ impl EvaluationContext<'_> {
 
         let result = match result {
             Ok(EvaluationResult::Value(v)) => {
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc()) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, v.clone_to_rc(), &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -551,7 +584,7 @@ impl EvaluationContext<'_> {
             }
             Ok(EvaluationResult::Return(v)) => {
                 let ret = v.clone().map(|val| val.into_rc()).unwrap_or_else(|| Rc::new(RefCell::new(Object::Unit)));
-                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret) {
+                if let Err(e) = self.evaluate_ensures_clauses(method.name, &method.ensures, ret, &method.parameter) {
                     self.environment.exit_block();
                     return Err(e);
                 }
@@ -590,6 +623,9 @@ impl EvaluationContext<'_> {
 
     /// Evaluates function calls
     pub(super) fn evaluate_function_call(&mut self, name: &DefaultSymbol, args: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Captured before `args` is shadowed by the destructured
+        // `Expr::ExprList` below; used for the panic backtrace.
+        let call_site = self.expr_location(args);
         // Lexical scoping: a local binding holding a closure shadows a
         // top-level function of the same name. Mirrors the resolution
         // order in the type checker's `visit_call` -- consulting the
@@ -688,10 +724,25 @@ impl EvaluationContext<'_> {
                         evaluated_args.push(arg_value);
                     }
 
+                    // LLM-LOOP P6: record the frame for panic backtraces.
+                    // Left in place on the error path on purpose — a
+                    // panic unwinds to the top and the stack captured at
+                    // the failure is exactly what the report needs.
+                    let fn_name = self
+                        .string_interner
+                        .resolve(*name)
+                        .unwrap_or("<unknown>")
+                        .to_string();
+                    self.call_stack.push(crate::error::CallFrame {
+                        function: fn_name,
+                        call_site,
+                    });
+
                     // Call function with pre-evaluated arguments and collect
                     // post-body `&mut T` parameter values.
                     let (ret_val, writebacks) = self
                         .evaluate_function_with_values_writeback(func, &evaluated_args)?;
+                    self.call_stack.pop();
 
                     // REF-Stage-2 (i)+(iii): apply writebacks. Each
                     // entry pairs the caller-side target (identifier
@@ -1465,7 +1516,7 @@ impl EvaluationContext<'_> {
         // Pre-body `requires` checks. Shares the same helper as the method
         // path, so contract evaluation behaves identically across function
         // and method calls.
-        if let Err(e) = self.evaluate_requires_clauses(function.name, &function.requires) {
+        if let Err(e) = self.evaluate_requires_clauses(function.name, &function.requires, &function.parameter) {
             self.environment.exit_block();
             return Err(e);
         }
@@ -1485,7 +1536,7 @@ impl EvaluationContext<'_> {
 
         // Post-body `ensures` checks with `result` bound to the return value.
         // The contract helper still takes `RcObject`; bridge the value once.
-        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone_to_rc()) {
+        if let Err(e) = self.evaluate_ensures_clauses(function.name, &function.ensures, return_value.clone_to_rc(), &function.parameter) {
             self.environment.exit_block();
             return Err(e);
         }

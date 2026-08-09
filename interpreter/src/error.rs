@@ -1,3 +1,4 @@
+use frontend::type_checker::SourceLocation;
 use frontend::type_decl::TypeDecl;
 use crate::object::ObjectError;
 use std::fmt;
@@ -17,14 +18,38 @@ pub enum InterpreterError {
     /// function name; `clause_index` identifies which clause (0-based) failed
     /// when multiple are declared. The original predicate text isn't kept,
     /// so the diagnostic refers to the clause by position.
+    /// LLM-LOOP P6: `bindings` carries the values the predicate saw —
+    /// the parameters, plus `result` for an `ensures`. Without them the
+    /// report says which clause failed but not why, so reproducing the
+    /// failure meant instrumenting the call and running again.
     ContractViolation {
         kind: &'static str,
         function: String,
         clause_index: usize,
+        bindings: Vec<(String, String)>,
     },
     /// Explicit user-triggered abort via the `panic("msg")` builtin.
     /// The message is exactly what the user passed.
-    Panic { message: String },
+    ///
+    /// LLM-LOOP P6: `location` is where the `panic` / failed `assert`
+    /// sits, and `backtrace` is the chain of toylang calls that reached
+    /// it, innermost first. Before this the diagnostic was the message
+    /// and nothing else — `panic: boom` gave no way to tell which of
+    /// several call paths had fired without adding prints and re-running.
+    Panic {
+        message: String,
+        location: Option<SourceLocation>,
+        backtrace: Vec<CallFrame>,
+    },
+}
+
+/// One toylang-level call, for panic backtraces.
+#[derive(Debug, Clone)]
+pub struct CallFrame {
+    /// Name of the function or method being entered.
+    pub function: String,
+    /// Where it was called from, when a location was recorded.
+    pub call_site: Option<SourceLocation>,
 }
 
 impl fmt::Display for InterpreterError {
@@ -54,11 +79,23 @@ impl fmt::Display for InterpreterError {
             InterpreterError::IndexOutOfBounds { index, size } => {
                 write!(f, "Array index {index} out of bounds for array of size {size}")
             }
-            InterpreterError::ContractViolation { kind, function, clause_index } => {
+            InterpreterError::ContractViolation { kind, function, clause_index, bindings } => {
                 write!(f, "Contract violation: `{kind}` clause #{idx} of function `{function}` evaluated to false",
-                       idx = clause_index + 1)
+                       idx = clause_index + 1)?;
+                // LLM-LOOP P6: the values the predicate saw. Which
+                // clause failed is only half the answer; this is the
+                // other half, and it is the half that says what to fix.
+                if !bindings.is_empty() {
+                    let rendered = bindings
+                        .iter()
+                        .map(|(name, value)| format!("{name} = {value}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    write!(f, " (with {rendered})")?;
+                }
+                Ok(())
             }
-            InterpreterError::Panic { message } => {
+            InterpreterError::Panic { message, .. } => {
                 write!(f, "panic: {message}")
             }
         }

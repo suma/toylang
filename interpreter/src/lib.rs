@@ -751,6 +751,10 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         func_qualified,
     );
 
+    // LLM-LOOP P6: give the runtime access to source positions so a
+    // panic can report where it happened.
+    eval.location_pool = Some(&program.location_pool);
+
     // Initialize module system
     initialize_module_environment(&mut eval, program);
 
@@ -842,17 +846,50 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
     match eval.evaluate_function(main_function, &no_args) {
         Ok(result) => Ok(result),
         Err(runtime_error) => {
-            // Format runtime error with source location if available
+            // LLM-LOOP P6: a runtime failure now says where it happened
+            // and how it got there. `panic: boom` on its own gave no way
+            // to tell which of several call paths fired without adding
+            // prints and re-running.
+            let (location, backtrace) = match &runtime_error {
+                InterpreterError::Panic { location, backtrace, .. } => {
+                    (*location, backtrace.as_slice())
+                }
+                _ => (None, [].as_slice()),
+            };
             let formatted_error = if let (Some(source), Some(file)) = (source_code, filename) {
                 let formatter = ErrorFormatter::new(source, file);
-                // Try to extract location from runtime error if possible
-                formatter.format_runtime_error(&runtime_error.to_string(), None)
+                let mut out = formatter
+                    .format_runtime_error(&runtime_error.to_string(), location.as_ref());
+                out.push_str(&render_backtrace(backtrace));
+                out
             } else {
-                format!("Runtime Error: {runtime_error}")
+                format!("Runtime Error: {runtime_error}{}", render_backtrace(backtrace))
             };
             Err(formatted_error)
         }
     }
+}
+
+/// Render a panic backtrace, innermost call first.
+///
+/// LLM-LOOP P6: names alone are enough to disambiguate which path
+/// reached the failure, which is the question a bare message leaves
+/// unanswered. Call-site lines are included when the frame recorded one.
+fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
+    if frames.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n   = backtrace (innermost first):");
+    for frame in frames {
+        match &frame.call_site {
+            Some(loc) => out.push_str(&format!(
+                "\n       {} (called at line {})",
+                frame.function, loc.line
+            )),
+            None => out.push_str(&format!("\n       {}", frame.function)),
+        }
+    }
+    out
 }
 
 /// Options for [`run_source`]: parameters that the `interpreter` binary

@@ -40,10 +40,31 @@ pub struct File {
     /// at program startup and bound as immutable globals so any function
     /// body (including `main`) can reference them.
     pub consts: Vec<ConstDecl>,
+    /// `test "name" { ... }` blocks (LLM-LOOP P4).
+    ///
+    /// Each one is lowered to an ordinary zero-argument function pushed
+    /// onto `function`, so type checking and every backend handle test
+    /// bodies with no special cases; this list only records which of
+    /// those functions are tests and what the author called them.
+    /// Normal execution never calls them.
+    pub tests: Vec<TestCase>,
 
     pub statement: StmtPool,
     pub expression: ExprPool,
     pub location_pool: LocationPool,
+}
+
+/// A `test "name" { ... }` block, paired with the synthesized function
+/// that holds its body.
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TestCase {
+    /// What the author wrote between the quotes; used in the report.
+    pub name: String,
+    /// The generated zero-argument function in `File::function`.
+    pub function: DefaultSymbol,
+    /// Where the `test` keyword is, so a failure can cite the block.
+    pub line: u32,
 }
 
 /// Top-level `const NAME: Type = expression` declaration. The `value`

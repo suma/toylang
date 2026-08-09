@@ -14,8 +14,8 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 | **P1** | 診断の一括報告 (文単位のエラー回復) | ✅ 2026-08-09 |
 | **P2** | Span 化 + 全診断への location 強制 | ✅ 2026-08-09 |
 | **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | ✅ 2026-08-09 |
-| **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | 未着手 |
-| **P5** | 契約ベース自動プロパティテスト (`toy check`) | 未着手 |
+| **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | ✅ 2026-08-09 |
+| **P5** | 契約ベース自動プロパティテスト (`--check`) | ✅ 2026-08-09 |
 | **P6** | 実行時の観測性 (panic backtrace / 契約違反の値キャプチャ) | ✅ 2026-08-09 (1,2 完了 / 3 未着手) |
 | **P7** | 補助 CLI (型ホール / `toy api` / エラーコード解説) | 検討のみ |
 
@@ -544,58 +544,96 @@ c as u64               # → "Cannot cast Unknown to UInt64"
 **未実施**: `toy explain <code>` (P7 に送り)、`maybe-incorrect` 提案
 (schema には存在するが現状 emit しない)。
 
-### P4 — 言語組み込みテスト
+### P4 — 言語組み込みテスト (✅ 2026-08-09)
 
-`design-docs/todo.md` の「検討中の機能 → 言語組み込みテスト機能」を具体化する。
-
-```rust
-test "add handles zero" {
-    assert_eq(add(0i64, 3i64), 3i64)
-}
-```
-
-- `test "name" { ... }` を新しいトップレベル宣言として parser に追加
-- 通常実行 (`main` の実行) では `test` ブロックを walk しない
-- `toy test <file>` で全件実行、結果を P3 の構造化診断で返す
-- テスト間は独立・決定論的
-
-**最重要は `assert_eq` の失敗時出力**:
+**着手時に判明**: **`assert_eq` / `assert_ne` は既に実装済み**だった
+(`frontend/src/parser/expr/macros.rs` のパーサマクロで、一時束縛 + 比較 +
+左右の値を含むメッセージに desugar される)。P4 の中で最も重要と書いた
+「失敗時に left/right を出す」部分は既に存在していた。
 
 ```
-✗ add handles zero (main.t:2)
-  assert_eq failed
-    left:  0i64
-    right: 3i64
+ 3 |     assert_eq(add(1i64, 2i64), 4i64)
+   |     ^^^^^^^^^ panic: assertion `left == right` failed at line 3
+  left:  3
+  right: 4
 ```
 
-実測 6 の通り、値が出ないと LLM は `print` デバッグの往復を強いられる。
-`assert_ne` / `assert` も同様に、失敗時に評価された部分式の値を出す。
+したがって残っていたのは `test` ブロックとランナー。
 
-**Phase 分割**: P4-A (interpreter のみ) → P4-B (AOT / JIT)。
-テスト実行は interpreter だけで実用上足りるので、P4-A で一旦止めてよい。
+**`test "name" { ... }`** — **contextual keyword** として実装した。
+`test` を予約語にすると既存の `fn test(...)` や `val test = ...` が壊れるため、
+トップレベルで `test <string> {` という形のときだけテストブロックとして扱う。
 
-### P5 — 契約ベース自動プロパティテスト
+**実装は既存の関数機構に載せた** — 各 test ブロックは
+`__test_N` という名前のゼロ引数関数に lower され、`File::function` に積まれる。
+これで**型検査もバックエンドも test 用の特別扱いが要らない**。
+`File::tests` はどの関数が test でユーザが何と名付けたかだけを記録する。
+通常実行では呼ばれない。
 
-`requires` を入力生成器の制約、`ensures` をオラクルとして扱い、
-ランダム入力で反例を探す。
+**`--test`** — 各テストは**独自の評価コンテキスト**で走る
+(`execute_entry` を切り出して再利用)。ヒープや allocator stack が
+テスト間で共有されないので、順序に依存しない。
+出力は D1 と同じく **failure-first**:
 
 ```
-$ toy check src/math.t
-✗ fn divide (math.t:15)
-  ensures result * b == a  violated
-  minimal counterexample: a = 1i64, b = 2i64  (result = 0i64)
-  seed: 0x8f3a91  (replay: toy check --seed 0x8f3a91)
+FAILED  add handles zero (t1.t:7)
+    Error at t1.t:8:5:
+     8 |     assert_eq(add(0i64, 3i64), 4i64)
+       |     ^^^^^^^^^ panic: assertion `left == right` failed at line 8
+      left:  3
+      right: 4
+1 passed, 1 failed
 ```
 
-- `requires` を満たす入力のみを生成 (満たさない入力は捨てる)
-- 違反したら **shrinking で最小反例まで縮小** する。
-  縮小されていない反例は LLM が読み解くのに追加の往復が要るので、
-  shrinking は「あれば嬉しい」ではなく**必須**
-- seed 固定でリプレイ可能に
-- 対象は当面スカラー引数 (`i64` / `u64` / `f64` / `bool`) の関数に限定
+### P5 — 契約ベース自動プロパティテスト (✅ 2026-08-09)
 
-`INTERPRETER_CONTRACTS` の既存機構と、`interpreter/` の proptest 資産
-(生成器・shrinker の考え方) を流用できる。
+`requires` を**入力フィルタ**、`ensures` を**オラクル**として読み替え、
+ユーザがテストを 1 行も書かずに反例を得る。`interpreter/src/property.rs`。
+
+```
+$ interpreter --check --seed=0x99 check1.t
+FAILED  divide
+    minimal counterexample: a = 1i64, b = 2i64
+    Contract violation: `ensures` clause #1 of function `divide` evaluated to false (with a = 1, b = 2, result = 0)
+2 contracted function(s) checked, 1 failed  (seed: 0x99; replay with --check --seed=0x99)
+```
+
+**P6-2 が土台**になっている — 契約違反時に述語が見ていた値を
+キャプチャする仕組みが既にあるので、反例の表示はそれをそのまま使える。
+
+設計上重要な 3 点:
+
+1. **shrinking は必須であって「あれば嬉しい」ではない。**
+   生の反例 `a = -6148914691236517206, b = 3` と縮小後の `a = 1, b = 2` では
+   読み手の負担が違う。前者を出すのは仕事を押し付けているだけ。
+   整数は **0 に向かう二分探索** で縮小する — 単純な半減だけでは
+   整数除算の例で `9` から動けなかった (`0` / `4` / `8` はいずれも契約を
+   満たすため)。二分探索にして `1` まで到達する。
+2. **`requires` 違反は失敗ではない。** 関数が扱うと約束していない入力を
+   生成しただけなので discard する。ただし**ほぼ全部 discard された実行を
+   pass と報告しない** — `Inconclusive` として別に出す。
+   `ensures` が一度も評価されていないのに合格と言うのは嘘になる。
+3. **seed を必ず出力する。** 50 回に 1 回落ちる property は、
+   再現できなければ無価値。`--seed=0x99` で replay できる。
+
+**その他の決定**:
+
+- PRNG は SplitMix64 を自前実装 (依存追加なし)。必要なのは
+  「seed から再現できること」だけで、統計的品質は要らない
+- 生成値は**境界に偏らせる** — 一様な 64bit ノイズは `0` / `1` / `-1` を
+  ほぼ引かないが、壊れるのはそこ。1/3 の確率で境界値集合から引く
+- seed は**関数ごとに混ぜる**ので、上流に関数を 1 つ足しても
+  他の関数の入力列は変わらない
+- 各 trial は**新しいコンテキスト**で走る。前の trial の副作用が残っていないと
+  再現できない反例は、報告しても意味がない
+- 現状はスカラー引数 (`i64` / `u64` / `f64` / `bool`) のみ。
+  それ以外は `Skipped` として理由付きで報告する
+
+**回帰テスト**: `interpreter/tests/builtin_test_and_check_tests.rs` (12 件) —
+P4 6 件 (通過 / 失敗時の両値と行 / テスト間独立 / 通常実行では走らない /
+`test` が識別子として使えること)、P5 6 件 (反例が出ること / 縮小されること /
+真の `ensures` は通ること / `requires` 拒否は失敗でないこと /
+充足不能な `requires` が `Inconclusive` になること / 同一 seed の再現性)。
 
 ### P6 — 実行時の観測性 (✅ 2026-08-09、1 と 2 完了)
 

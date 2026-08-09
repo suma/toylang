@@ -9,6 +9,7 @@ pub mod heap;
 pub mod jit;
 pub mod module_integration;
 pub mod output;
+pub mod property;
 pub mod runtime_state;
 pub mod ir_vm;
 
@@ -735,12 +736,64 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         Ok(func) => func,
         Err(e) => return Err(format!("Runtime Error: {e}")),
     };
+    execute_entry(program, string_interner, source_code, filename, main_function)
+}
+
+/// Run `entry` with a freshly built evaluation context.
+///
+/// LLM-LOOP P4: split out of `execute_program` so a `test` block can be
+/// run the same way `main` is. Each call builds its own context, which
+/// is what makes tests independent — one test's heap, allocator stack
+/// and globals cannot reach the next.
+fn execute_entry(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    main_function: Rc<Function>,
+) -> Result<RcObject, String> {
+    execute_entry_with_values(program, string_interner, source_code, filename, main_function, None)
+        .map_err(|e| e.either())
+}
+
+/// Error from [`execute_entry_with_values`]: either an already-rendered
+/// diagnostic, or the raw interpreter error when the caller asked for it.
+pub enum EntryError {
+    Rendered(String),
+    Raw(Box<InterpreterError>),
+}
+
+impl EntryError {
+    fn either(self) -> String {
+        match self {
+            EntryError::Rendered(s) => s,
+            EntryError::Raw(e) => format!("Runtime Error: {e}"),
+        }
+    }
+}
+
+/// Shared body of [`execute_entry`] and
+/// [`execute_function_with_values`].
+///
+/// `args` selects the calling convention: `None` runs the entry the way
+/// `main` is run (rendered diagnostics, JIT fast path); `Some(values)`
+/// calls it with pre-evaluated arguments and hands back the raw error,
+/// which the property checker needs to tell a `requires` rejection from
+/// an `ensures` failure.
+fn execute_entry_with_values(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    main_function: Rc<Function>,
+    args: Option<&[crate::value::Value]>,
+) -> Result<RcObject, EntryError> {
 
     let func_map = build_function_map(program, string_interner);
     let func_qualified = build_function_qualified_map(program);
     let mut string_interner_mut = string_interner.clone();
     let method_registry = build_method_registry(program, string_interner)
-        .map_err(|e| format!("Runtime Error: {}", e))?;
+        .map_err(|e| EntryError::Rendered(format!("Runtime Error: {}", e)))?;
     let drop_trait_structs = collect_drop_trait_structs(program, string_interner);
 
     let mut eval = EvaluationContext::new_with_qualified(
@@ -810,23 +863,25 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
         let value = match value_result {
             Ok(crate::evaluation::EvaluationResult::Value(v)) => v.into_rc(),
             Ok(_) => {
-                return Err(format!(
+                return Err(EntryError::Rendered(format!(
                     "Const initializer for `{}` produced a non-value result",
                     string_interner.resolve(c.name).unwrap_or("<unknown>")
-                ));
+                )));
             }
             Err(e) => {
-                return Err(format!(
+                return Err(EntryError::Rendered(format!(
                     "Const initializer for `{}` failed: {e}",
                     string_interner.resolve(c.name).unwrap_or("<unknown>")
-                ));
+                )));
             }
         };
         eval.environment.set_val(c.name, (value).into());
     }
 
+    // The `main` fast paths only apply to the argument-less entry;
+    // a property trial calls an arbitrary function with values.
     #[cfg(feature = "jit")]
-    {
+    if args.is_none() {
         if let Some(result) = jit::try_execute_main(program, string_interner) {
             return Ok(result);
         }
@@ -838,8 +893,17 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
     // lower fails / diverges, we fall back to the tree-walker so that
     // compiler MVP gaps do not break existing tests.  Placed *after*
     // the JIT fast-path so JIT-specific tests are not shadowed.
-    if let Some(obj) = ir_vm::lift::run_main_via_ir_vm(program, string_interner) {
-        return Ok(obj);
+    if args.is_none() {
+        if let Some(obj) = ir_vm::lift::run_main_via_ir_vm(program, string_interner) {
+            return Ok(obj);
+        }
+    }
+
+    if let Some(values) = args {
+        return eval
+            .evaluate_function_with_values(main_function, values)
+            .map(|v| v.into_rc())
+            .map_err(|e| EntryError::Raw(Box::new(e)));
     }
 
     let no_args = vec![];
@@ -865,7 +929,7 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
             } else {
                 format!("Runtime Error: {runtime_error}{}", render_backtrace(backtrace))
             };
-            Err(formatted_error)
+            Err(EntryError::Rendered(formatted_error))
         }
     }
 }
@@ -890,6 +954,116 @@ fn render_backtrace(frames: &[crate::error::CallFrame]) -> String {
         }
     }
     out
+}
+
+
+/// Call `function` with pre-evaluated argument values, in a freshly
+/// built context (LLM-LOOP P5).
+///
+/// The property checker needs to invoke a function directly with
+/// generated inputs; a fresh context per call is what makes a reported
+/// counterexample reproducible on its own.
+pub fn execute_function_with_values(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    function: Rc<Function>,
+    args: &[crate::value::Value],
+) -> Result<crate::value::Value, InterpreterError> {
+    execute_entry_with_values(program, string_interner, None, None, function, Some(args))
+        .map(crate::value::Value::from)
+        .map_err(|e| match e {
+            EntryError::Raw(err) => *err,
+            EntryError::Rendered(msg) => InterpreterError::InternalError(msg),
+        })
+}
+
+/// Outcome of one `test` block.
+#[derive(Debug, Clone)]
+pub struct TestOutcome {
+    pub name: String,
+    pub line: u32,
+    /// `None` when the test passed; the diagnostic when it did not.
+    pub failure: Option<String>,
+}
+
+/// Run every `test` block in `program` (LLM-LOOP P4).
+///
+/// Each test gets its own evaluation context, so they cannot influence
+/// one another through the heap or the allocator stack. A test fails by
+/// panicking — which is what `assert_eq` does, and why its diagnostic
+/// already carries the two values and the line.
+pub fn run_tests(
+    program: &File,
+    string_interner: &DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+) -> Vec<TestOutcome> {
+    program
+        .tests
+        .iter()
+        .map(|test| {
+            let entry = program
+                .function
+                .iter()
+                .find(|f| f.name == test.function)
+                .cloned();
+            let failure = match entry {
+                Some(entry) => {
+                    execute_entry(program, string_interner, source_code, filename, entry).err()
+                }
+                None => Some(format!(
+                    "internal error: test `{}` has no generated function",
+                    test.name
+                )),
+            };
+            TestOutcome {
+                name: test.name.clone(),
+                line: test.line,
+                failure,
+            }
+        })
+        .collect()
+}
+
+/// Parse, type check, and run the `test` blocks in `source`.
+///
+/// Returns `Ok(outcomes)` once the program is valid; parse / type
+/// errors are reported through the same formatter as a normal run and
+/// come back as `Err`.
+pub fn run_tests_from_source(
+    source: &str,
+    filename: &str,
+    options: &RunOptions<'_>,
+) -> Result<Vec<TestOutcome>, String> {
+    let formatter = ErrorFormatter::new(source, filename);
+    let mut session = compiler_core::CompilerSession::new();
+    let mut program = match session.parse_program_all_errors(source, filename) {
+        Ok(p) => p,
+        Err(errors) => {
+            formatter.display_parse_errors(&errors);
+            return Err(format!("{} parse error(s)", errors.len()));
+        }
+    };
+    if let Err(diagnostics) = check_typing_diagnostics(
+        &mut program,
+        session.string_interner_mut(),
+        Some(source),
+        Some(filename),
+        options.core_modules_dir,
+    ) {
+        let rendered: Vec<String> = diagnostics
+            .iter()
+            .map(|d| formatter.format_diagnostic(d))
+            .collect();
+        formatter.display_type_check_errors(&rendered);
+        return Err(format!("{} type-check error(s)", diagnostics.len()));
+    }
+    Ok(run_tests(
+        &program,
+        session.string_interner(),
+        Some(source),
+        Some(filename),
+    ))
 }
 
 /// Options for [`run_source`]: parameters that the `interpreter` binary

@@ -21,12 +21,17 @@ use crate::ast::module_interface::ModuleInterface;
 /// Bump on any breaking change to:
 /// - the layout of `File`, `ExprPool`, `StmtPool`, `LocationPool`
 /// - the `Expr` / `Stmt` / `Pattern` / `MatchArm` enums
-/// - the `Function` / `MethodFunction` / `ConstDecl` structs
+/// - the `Function` / `MethodFunction` / `ConstDecl` / `TestCase` structs
+/// - the `File` struct's own field list
 /// - the bincode options used by [`cache_bincode_options`]
 ///
 /// Mismatched versions are treated as a cache miss by
 /// [`load_full_module`].
-pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const FULL_AST_CACHE_SCHEMA_VERSION: u32 = 2;
+// v2: `File` gained `id` (JIT cache key) and `tests` (LLM-LOOP P4).
+// Forgetting this bump is not a subtle failure: stale entries
+// deserialize into the new layout and the program silently comes out
+// wrong — every stdlib trait reported "is not defined".
 
 /// Bincode options for the AST cache.
 ///

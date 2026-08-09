@@ -49,6 +49,7 @@ impl<'a> Parser<'a> {
         };
         let mut def_func = vec![];
         let mut consts: Vec<ConstDecl> = vec![];
+        let mut tests: Vec<TestCase> = vec![];
 
         // Parse package declaration (optional, at beginning of file)
         let package_decl = if matches!(self.peek(), Some(Kind::Package)) {
@@ -91,6 +92,54 @@ impl<'a> Parser<'a> {
             } else {
                 Visibility::Private
             };
+
+            // LLM-LOOP P4: `test "name" { ... }`. Recognised
+            // contextually — `test` stays an ordinary identifier
+            // everywhere else, so existing code with a `fn test(..)` or
+            // a variable named `test` keeps working. Only the exact
+            // shape `test <string> {` at top level is a test block.
+            if matches!(self.peek(), Some(Kind::Identifier(s)) if s == "test")
+                && matches!(self.peek_n(1), Some(Kind::String(_)))
+                && matches!(self.peek_n(2), Some(Kind::BraceOpen))
+            {
+                let test_start_pos = self.peek_position_n(0).unwrap().start;
+                let location = self.current_source_location();
+                update_start_pos(test_start_pos);
+                self.next(); // consume `test`
+                let display_name = match self.peek() {
+                    Some(Kind::String(s)) => s.clone(),
+                    _ => unreachable!("peeked above"),
+                };
+                self.next(); // consume the name
+                let block = super::expr::parse_block(self)?;
+                let test_end_pos = self.peek_position_n(0).unwrap_or(&(0..0)).end;
+                update_end_pos(test_end_pos);
+
+                // Lowered to a regular function so the type checker and
+                // every backend need no test-specific handling.
+                let fn_name = self
+                    .string_interner
+                    .get_or_intern(format!("__test_{}", tests.len()));
+                def_func.push(Rc::new(Function {
+                    node: Node::new(test_start_pos, test_end_pos),
+                    name: fn_name,
+                    generic_params: vec![],
+                    generic_bounds: std::collections::HashMap::new(),
+                    parameter: vec![],
+                    return_type: None,
+                    requires: vec![],
+                    ensures: vec![],
+                    code: self.ast_builder.expression_stmt(block, Some(location)),
+                    is_extern: false,
+                    visibility: Visibility::Private,
+                }));
+                tests.push(TestCase {
+                    name: display_name,
+                    function: fn_name,
+                    line: location.line,
+                });
+                continue;
+            }
 
             match self.peek() {
                 Some(Kind::Extern) => {
@@ -654,6 +703,7 @@ impl<'a> Parser<'a> {
             function: def_func,
             function_module_paths,
             consts,
+            tests,
             statement: stmt,
             expression: expr,
             location_pool,

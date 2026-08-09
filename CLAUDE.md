@@ -41,6 +41,14 @@ cargo run -q -p interpreter -- interpreter/example/fib.t
 
 # AOT コンパイル
 cargo run -q -p compiler -- <source_file.t> -o <output>
+
+# `test "name" { ... }` ブロックを実行 (LLM-LOOP P4)
+cargo run -q -p interpreter -- --test <source_file.t>
+
+# `requires` / `ensures` を入力フィルタ + オラクルとして
+# プロパティテストし、最小反例を出す (LLM-LOOP P5)
+cargo run -q -p interpreter -- --check <source_file.t>
+cargo run -q -p interpreter -- --check --seed=0x99 <source_file.t>   # 再現
 ```
 
 **`--message-format=short`** を付けると診断が `path:line:col: error[CODE]: msg`
@@ -195,6 +203,8 @@ fn main() -> u64 {
 - Don't use ';' symbol for end of statement. We can't use semicolon for separation of statements.
 - **トップレベル `const` 宣言**: `const NAME: Type = expr` を関数の外側に書ける。型注釈必須、起動時に 1 回評価して全関数から参照できる immutable な束縛になる。先行 const は参照可（前方参照は不可）。詳細は [`docs/language.md`](docs/language.md)
 - **`panic("msg")` ビルトイン**: 実行を中断するメッセージ付き panic。型検査では「Unknown」を返す扱いで、`if cond { panic("...") } else { value }` のような式位置でも使える。関数全体が panic で発散する場合も戻り型と関係なく型検査が通る
+- **`test "name" { ... }` ブロック**: トップレベルに書けるテスト。`test` は contextual keyword なので `fn test(...)` や `val test = ...` は従来どおり使える。各ブロックは内部でゼロ引数関数に lower されるため型検査・バックエンドは特別扱い不要。通常実行では呼ばれず、`--test` で実行する。テストごとに独立した評価コンテキストを持つ
+- **`assert_eq(a, b)` / `assert_ne(a, b)` ビルトイン**: 失敗時に **left / right の実値**と行番号を出す。パーサマクロで一時束縛 + 比較 + メッセージ組み立てに desugar される
 - **`assert(cond, "msg")` ビルトイン**: `cond` が false のときだけ `panic(msg)` する糖衣。`(bool, str) -> ()`。message は false 時にのみ評価される。JIT は `brif cond, cont, fail; fail: call jit_panic; trap` で lower（success path はオーバヘッド最小、failure path は panic と同じ helper）
 - **`?` (Try) 演算子**: postfix early-return。`expr?` は inner の型に応じて `Result<T, E>` か `Option<T>` の match に desugar し、success arm では unwrap 値を返し、error arm では enclosing 関数から `return` で伝播する。Parser が `Expr::Try { inner, .. }` を emit、type checker が in-place で `Block { val __try_t = inner; match __try_t { Ok(__try_v) => __try_v as T, Err(__try_e) => { return __try_t; panic("?-unreachable") } } }` に rewrite。backend (interpreter / AOT / JIT) は rewritten Match のみを観測。**制約**: inner は `Result` か `Option` 以外不可、AOT は `match` scrutinee 等の MVP 制約を継承 (function-call enum scrutinee は val-bind 経由)
 - **実行時例外 (try/catch/throw) は導入しない**: 言語仕様として例外機構を持たない。回復不能な失敗は `panic("...")` で即時停止 (process exit)、回復可能な失敗は `enum Result<T, E>` / `enum Option<T>` を戻り値で返して呼び出し側で `match` する。例外用の予約語 (`try` / `catch` / `throw` / `finally`) は parser で受理しない。`requires` / `ensures` 違反も `panic` 経路で停止する (例外として伝播しない)

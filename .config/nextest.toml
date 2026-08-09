@@ -14,6 +14,29 @@
 # Override locally with `TOYLANG_CRANELIFT_OPT_LEVEL=speed cargo
 # nextest run` if you want to verify against the production setting.
 
+## Output volume
+#
+# A green full-suite run printed **1641 lines** with nextest's stock
+# settings — one PASS line per test, 1634 of which say nothing. The run
+# itself takes ~4s, so wall-clock was never the problem; reading the
+# output was. `status-level = "fail"` cuts a green run to a handful of
+# lines and leaves failures rendered in full.
+#
+# Use `--profile verbose` when you actually want the per-test roll call
+# (bisecting a hang, checking that a filter matched what you meant).
+
 [profile.default]
+# Only report tests that failed while the run is in progress...
+status-level = "fail"
+# ...and only list failures in the final summary. The `Summary [...] N
+# tests run: N passed` line is printed either way, so a green run still
+# confirms how many tests ran.
+final-status-level = "fail"
+
+# Everything, including one line per passing test. The old default.
+[profile.verbose]
+status-level = "all"
+final-status-level = "all"
+
 [profile.default.env]
 TOYLANG_CRANELIFT_OPT_LEVEL = "none"

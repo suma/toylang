@@ -1,4 +1,5 @@
 use frontend::parser::error::ParserError;
+use frontend::diagnostic::Diagnostic;
 use frontend::type_checker::{SourceLocation, TypeCheckError};
 
 /// Enum for different types of errors that can occur
@@ -44,6 +45,43 @@ impl<'a> ErrorFormatter<'a> {
 
     pub fn format_parse_error(&self, error: &ParserError) -> String {
         self.format_error_with_location(&error.to_string(), &error.location)
+    }
+
+    /// Render a structured diagnostic as the human-readable form.
+    ///
+    /// LLM-LOOP P3: the text output is a projection of `Diagnostic`, so
+    /// what a reader sees and what a tool consumes cannot drift apart.
+    pub fn format_diagnostic(&self, diagnostic: &Diagnostic) -> String {
+        let mut out = if let Some(module) = &diagnostic.origin_module {
+            let position = diagnostic
+                .span
+                .map(|s| format!(" (line {} of that module)", s.line))
+                .unwrap_or_default();
+            format!(
+                "[{}] Error in imported module `{module}`{position}: {}\n   \
+                 = note: this comes from module `{module}`, not from the file being compiled",
+                diagnostic.code, diagnostic.message
+            )
+        } else if let Some(span) = diagnostic.span {
+            let location = SourceLocation {
+                line: span.line,
+                column: span.column,
+                offset: span.offset,
+                end_offset: span.end_offset,
+            };
+            let body = format!("[{}] {}", diagnostic.code, diagnostic.message);
+            self.format_error_with_location(&body, &location)
+        } else {
+            format!("Error: [{}] {}", diagnostic.code, diagnostic.message)
+        };
+
+        for suggestion in &diagnostic.suggestions {
+            out.push_str(&format!(
+                "\n   = help: {} — replace with `{}`",
+                suggestion.message, suggestion.replacement
+            ));
+        }
+        out
     }
 
     pub fn format_type_check_error(&self, error: &TypeCheckError) -> String {

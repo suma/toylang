@@ -723,6 +723,15 @@ impl<'a> TypeCheckerVisitor<'a> {
             return Ok(target_type.clone());
         }
         match (&expr_type, target_type) {
+            // LLM-LOOP P1/P3: `Unknown` marks an operand whose real type
+            // could not be determined -- it diverges, or its defining
+            // statement already reported an error and recovery bound it
+            // to `Unknown` to keep checking. Complaining about it here
+            // would add "Cannot cast Unknown to UInt64" on top of the
+            // real diagnostic, naming an internal type the user never
+            // wrote. Take the declared target and stay quiet.
+            (TypeDecl::Unknown, _) => Ok(target_type.clone()),
+
             // Allow Number to specific numeric types (parser
             // emits `Number` for unsuffixed integer literals
             // before type inference fixes them).

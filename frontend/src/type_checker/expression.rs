@@ -1156,7 +1156,39 @@ impl<'a> TypeCheckerVisitor<'a> {
                 return self.visit_indirect_call(fn_name, args_ref, &param_tys, &ret_ty);
             }
         let fn_name_str = self.resolve_symbol_name(fn_name);
-        Err(TypeCheckError::not_found("Function", &fn_name_str))
+        let error = TypeCheckError::not_found("Function", &fn_name_str);
+        Err(self.suggest_known_function_name(error, &fn_name_str))
+    }
+
+    /// LLM-LOOP P3: attach a "did you mean" replacement when exactly one
+    /// declared function is a near-miss for `name`. Built here because
+    /// this is where the candidate set lives.
+    ///
+    /// `closest_candidate` declines on ties, so a typo sitting between
+    /// two real names produces no suggestion at all -- picking one would
+    /// send the reader to the wrong function with full confidence.
+    fn suggest_known_function_name(
+        &self,
+        mut error: TypeCheckError,
+        name: &str,
+    ) -> TypeCheckError {
+        let candidates: Vec<&str> = self
+            .context
+            .functions
+            .keys()
+            .filter_map(|(_, sym)| self.core.string_interner.resolve(*sym))
+            .collect();
+        let Some(best) = crate::diagnostic::closest_candidate(name, candidates) else {
+            return error;
+        };
+        // The call site's span is stamped onto this error further up the
+        // stack, so the suggestion targets the diagnostic's own span
+        // rather than one resolved here.
+        error.suggestions.push(crate::diagnostic::Suggestion::over_primary_span(
+            &format!("a function named `{best}` exists"),
+            best.to_string(),
+        ));
+        error
     }
 
     /// Type-check the argument list of a non-generic direct call
@@ -1227,7 +1259,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     "Type error: expected {:?}, found {:?}. Function '{}' argument {} type mismatch",
                     expected_type, arg_type, fn_name_str, arg_index + 1
                 ));
-                return Err(self.error_with_location(err, arg));
+                let err = self.error_with_location(err, arg);
+                return Err(self.suggest_numeric_cast(err, arg, &arg_type, expected_type));
             }
         }
         self.type_inference.type_hint = original_hint;

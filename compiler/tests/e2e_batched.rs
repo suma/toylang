@@ -87,6 +87,7 @@ impl SubTest {
 /// type-checker rejects every such test as "method not found".
 fn jit_options_with_core() -> CompilerOptions {
     CompilerOptions {
+        diagnostics_json: false,
         input: PathBuf::from("<jit>"),
         output: None,
         emit: EmitKind::Executable,
@@ -113,6 +114,7 @@ fn compile_to_jit_lazy_core(
     full_opts: &CompilerOptions,
 ) -> Result<compiler::JitProgram, String> {
     let no_core = CompilerOptions {
+        diagnostics_json: false,
         core_modules_dir: None,
             link_cache_dir: None,
         ..full_opts.clone()

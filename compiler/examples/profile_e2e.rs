@@ -56,6 +56,7 @@ fn main() {
 
             // Phase 1: compile to object only (no linking).
             let obj_opts = CompilerOptions {
+        diagnostics_json: false,
                 input: src_path.clone(),
                 output: Some(obj_path.clone()),
                 emit: EmitKind::Object,
@@ -73,6 +74,7 @@ fn main() {
             // difference compile_file_exec - compile_file_obj
             // is the link cost (cc invocation, code-signing, etc.).
             let exe_opts = CompilerOptions {
+        diagnostics_json: false,
                 input: src_path.clone(),
                 output: Some(exe_path.clone()),
                 emit: EmitKind::Executable,

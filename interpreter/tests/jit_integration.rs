@@ -59,6 +59,7 @@ fn run(source_path: &str, jit: bool, verbose: bool) -> Run {
     let opts = interpreter::RunOptions {
         jit,
         core_modules_dir: Some(core.as_path()),
+        diagnostics_json: false,
     };
     let (result, stdout, stderr) = interpreter::output::with_stdout_stderr_capture(|| {
         interpreter::jit::with_jit_verbose_override(verbose, || {

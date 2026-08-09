@@ -37,6 +37,9 @@ pub struct CompilerOptions {
     /// `compiler::resolve_core_modules_dir`). Set explicitly via the
     /// `--core-modules <DIR>` CLI flag or by direct API consumers.
     pub core_modules_dir: Option<PathBuf>,
+    /// LLM-LOOP P3: emit type-check diagnostics as JSON on stderr
+    /// instead of the rendered text form.
+    pub diagnostics_json: bool,
     /// Content-addressed link cache directory. When `Some`, the linker
     /// driver looks up `<dir>/<hash>.bin` keyed on the toylang object
     /// bytes + cc + platform; cache hits skip the `cc` invocation and
@@ -57,6 +60,7 @@ impl CompilerOptions {
             verbose: false,
             release: false,
             core_modules_dir: None,
+            diagnostics_json: false,
             link_cache_dir: None,
         }
     }

@@ -98,6 +98,22 @@ fn undefined_function_and_type_mismatch_are_reported_together() {
 }
 
 #[test]
+fn a_failed_binding_does_not_cascade_through_a_cast() {
+    // `as` had the same leak as the binary operators: casting a
+    // recovery placeholder reported "Cannot cast Unknown to UInt64",
+    // naming an internal type the user never wrote.
+    let diags = diagnostics(
+        "fn helper(a: i64) -> i64 { a }
+        fn main() -> u64 {
+            val c = helper(1u64)
+            c as u64
+        }",
+    );
+    assert_eq!(error_count(&diags), 1, "{diags}");
+    assert!(!diags.contains("Unknown"), "internal poison type leaked:\n{diags}");
+}
+
+#[test]
 fn a_failed_binding_does_not_cascade_into_its_uses() {
     // `z` never got a type, but the user did declare it. Reporting
     // "variable not found" (or a mismatch against the internal

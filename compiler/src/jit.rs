@@ -178,6 +178,7 @@ pub fn compile_to_jit_main(source: &str) -> Result<JitProgram, String> {
     // `emit=...` by going straight into the codegen layer) but the
     // struct still requires it.
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: std::path::PathBuf::from("<jit>"),
         output: None,
         emit: EmitKind::Executable,

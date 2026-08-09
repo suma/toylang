@@ -1,0 +1,303 @@
+//! Structured diagnostics (LLM-LOOP P3).
+//!
+//! The human-readable rendering stays the primary output. This module
+//! adds the machine-readable shape behind it, so a tool driving the
+//! compiler can pick out the span it needs or apply a fix without
+//! scraping formatted text.
+//!
+//! Two rules shape what goes in here:
+//!
+//! * **A suggestion is only emitted when applying it is guaranteed to
+//!   compile.** A speculative "did you mean…?" that turns out to be
+//!   wrong costs an agent a full round trip *and* leaves it with less
+//!   trust in the next suggestion. Anything less than certain is left
+//!   to the message text.
+//! * **Codes are stable identifiers, not Rust's.** They look like
+//!   `E0001`, but they are toylang's own numbering — reusing Rust's
+//!   numbers for different meanings would be worse than having none.
+
+use crate::type_checker::{SourceLocation, TypeCheckError, TypeCheckErrorKind};
+use crate::type_decl::TypeDecl;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+impl Severity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        }
+    }
+}
+
+/// How safe it is to apply a suggestion without human review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum Applicability {
+    /// Applying the replacement verbatim resolves this diagnostic.
+    MachineApplicable,
+    /// Probably right, but verify. Never emitted today -- kept so the
+    /// distinction is explicit in the schema rather than implied.
+    MaybeIncorrect,
+}
+
+/// A byte range in a source file, with the line/column of its start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Span {
+    pub line: u32,
+    pub column: u32,
+    pub offset: u32,
+    pub end_offset: u32,
+}
+
+impl From<SourceLocation> for Span {
+    fn from(loc: SourceLocation) -> Self {
+        Span {
+            line: loc.line,
+            column: loc.column,
+            offset: loc.offset,
+            end_offset: loc.end_offset,
+        }
+    }
+}
+
+/// An edit that resolves the diagnostic: replace `span` with
+/// `replacement`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Suggestion {
+    pub message: String,
+    pub replacement: String,
+    /// Range to replace. `None` means "the diagnostic's own span" --
+    /// used by suggestions built before the error has been anchored,
+    /// which is the normal order for name-resolution failures.
+    pub span: Option<Span>,
+    pub applicability: Applicability,
+}
+
+impl Suggestion {
+    pub fn machine_applicable(message: &str, replacement: String, span: Span) -> Self {
+        Suggestion {
+            message: message.to_string(),
+            replacement,
+            span: Some(span),
+            applicability: Applicability::MachineApplicable,
+        }
+    }
+
+    /// A replacement for whatever the diagnostic itself points at.
+    pub fn over_primary_span(message: &str, replacement: String) -> Self {
+        Suggestion {
+            message: message.to_string(),
+            replacement,
+            span: None,
+            applicability: Applicability::MachineApplicable,
+        }
+    }
+
+    /// Resolve `span`, defaulting to the diagnostic's primary span.
+    pub fn effective_span(&self, primary: Option<Span>) -> Option<Span> {
+        self.span.or(primary)
+    }
+}
+
+/// One reported problem, in the shape a tool consumes.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+pub struct Diagnostic {
+    pub severity: Severity,
+    pub code: &'static str,
+    pub message: String,
+    pub file: String,
+    pub span: Option<Span>,
+    /// Set when `span` refers to an imported module's source rather than
+    /// `file`. Consumers must not resolve the span against `file`.
+    pub origin_module: Option<String>,
+    pub suggestions: Vec<Suggestion>,
+}
+
+impl Diagnostic {
+    /// A diagnostic that carries only prose -- used for the handful of
+    /// driver-level failures (module resolution, impl-block wiring) that
+    /// never produced a `TypeCheckError` to begin with.
+    pub fn message_only(message: String, file: &str) -> Self {
+        Diagnostic {
+            severity: Severity::Error,
+            code: codes::UNCATEGORISED,
+            message,
+            file: file.to_string(),
+            span: None,
+            origin_module: None,
+            suggestions: Vec::new(),
+        }
+    }
+
+    pub fn from_type_check_error(error: &TypeCheckError, file: &str) -> Self {
+        Diagnostic {
+            severity: Severity::Error,
+            code: code_for(&error.kind),
+            message: error.to_string(),
+            file: file.to_string(),
+            span: error.location.map(Span::from),
+            origin_module: error.origin_module.clone(),
+            suggestions: error.suggestions.clone(),
+        }
+    }
+}
+
+pub mod codes {
+    pub const TYPE_MISMATCH: &str = "E0001";
+    pub const TYPE_MISMATCH_OPERATION: &str = "E0002";
+    pub const NOT_FOUND: &str = "E0003";
+    pub const UNSUPPORTED_OPERATION: &str = "E0004";
+    pub const CONVERSION: &str = "E0005";
+    pub const ARRAY: &str = "E0006";
+    pub const METHOD: &str = "E0007";
+    pub const INVALID_LITERAL: &str = "E0008";
+    pub const ACCESS_DENIED: &str = "E0009";
+    pub const UNCATEGORISED: &str = "E0010";
+}
+
+fn code_for(kind: &TypeCheckErrorKind) -> &'static str {
+    match kind {
+        TypeCheckErrorKind::TypeMismatch { .. } => codes::TYPE_MISMATCH,
+        TypeCheckErrorKind::TypeMismatchOperation(_) => codes::TYPE_MISMATCH_OPERATION,
+        TypeCheckErrorKind::NotFound { .. } => codes::NOT_FOUND,
+        TypeCheckErrorKind::UnsupportedOperation { .. } => codes::UNSUPPORTED_OPERATION,
+        TypeCheckErrorKind::ConversionError { .. } => codes::CONVERSION,
+        TypeCheckErrorKind::ArrayError { .. } => codes::ARRAY,
+        TypeCheckErrorKind::MethodError(_) => codes::METHOD,
+        TypeCheckErrorKind::InvalidLiteral { .. } => codes::INVALID_LITERAL,
+        TypeCheckErrorKind::AccessDenied { .. } => codes::ACCESS_DENIED,
+        TypeCheckErrorKind::GenericError { .. } => codes::UNCATEGORISED,
+    }
+}
+
+/// Spelling of a type as it would be written in source, for types that
+/// can appear in an `as` cast. `None` for anything else -- a suggestion
+/// is only worth emitting when we can name the target exactly.
+pub fn castable_type_name(ty: &TypeDecl) -> Option<&'static str> {
+    Some(match ty {
+        TypeDecl::UInt64 => "u64",
+        TypeDecl::Int64 => "i64",
+        TypeDecl::Float64 => "f64",
+        TypeDecl::UInt8 => "u8",
+        TypeDecl::UInt16 => "u16",
+        TypeDecl::UInt32 => "u32",
+        TypeDecl::Int8 => "i8",
+        TypeDecl::Int16 => "i16",
+        TypeDecl::Int32 => "i32",
+        _ => return None,
+    })
+}
+
+/// Levenshtein distance, capped: returns `None` once the distance is
+/// certainly above `limit` so a long scan can bail early.
+fn edit_distance_within(a: &str, b: &str, limit: usize) -> Option<usize> {
+    if a.len().abs_diff(b.len()) > limit {
+        return None;
+    }
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    let d = prev[b.len()];
+    (d <= limit).then_some(d)
+}
+
+/// Pick a "did you mean" candidate for `name`.
+///
+/// Deliberately strict: a single best match, strictly closer than every
+/// other candidate, within a distance that scales with the name's
+/// length. A tie means we cannot tell which was meant, and guessing
+/// would send the reader down the wrong path -- so nothing is emitted.
+pub fn closest_candidate<'a, I>(name: &str, candidates: I) -> Option<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    // One edit for short names, two for longer ones. Anything looser
+    // starts matching unrelated identifiers.
+    let limit = if name.chars().count() <= 4 { 1 } else { 2 };
+    let mut best: Option<(usize, &str)> = None;
+    let mut tied = false;
+    for candidate in candidates {
+        if candidate == name {
+            continue;
+        }
+        let Some(d) = edit_distance_within(name, candidate, limit) else {
+            continue;
+        };
+        match best {
+            None => best = Some((d, candidate)),
+            Some((best_d, _)) if d < best_d => {
+                best = Some((d, candidate));
+                tied = false;
+            }
+            Some((best_d, _)) if d == best_d => tied = true,
+            _ => {}
+        }
+    }
+    if tied { None } else { best.map(|(_, c)| c) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suggests_the_single_close_match() {
+        let candidates = ["println", "panic"];
+        assert_eq!(closest_candidate("printlnn", candidates), Some("println"));
+    }
+
+    #[test]
+    fn declines_when_a_typo_sits_between_two_real_names() {
+        // `printn` is one edit from both `println` and `print`. Either
+        // could be what was meant, so neither is offered -- a wrong
+        // suggestion costs more than no suggestion.
+        let candidates = ["println", "print", "panic"];
+        assert_eq!(closest_candidate("printn", candidates), None);
+    }
+
+    #[test]
+    fn declines_when_two_candidates_are_equally_close() {
+        // `cat` is one edit from both; picking either would be a guess.
+        let candidates = ["bat", "hat"];
+        assert_eq!(closest_candidate("cat", candidates), None);
+    }
+
+    #[test]
+    fn declines_when_nothing_is_close() {
+        let candidates = ["println", "panic"];
+        assert_eq!(closest_candidate("completely_different", candidates), None);
+    }
+
+    #[test]
+    fn short_names_require_a_closer_match() {
+        // Two edits away, but `ab` is short enough that two edits could
+        // reach almost anything.
+        assert_eq!(closest_candidate("ab", ["xy"]), None);
+        assert_eq!(closest_candidate("ab", ["axb"]), Some("axb"));
+    }
+
+    #[test]
+    fn ignores_an_exact_match() {
+        assert_eq!(closest_candidate("print", ["print"]), None);
+    }
+}

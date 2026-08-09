@@ -16,6 +16,7 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use frontend::ast::*;
 use frontend::type_checker::*;
+use frontend::diagnostic::Diagnostic;
 use frontend::type_decl::TypeDecl;
 use frontend::visitor::DeclVisitor;
 use string_interner::{DefaultSymbol, DefaultStringInterner};
@@ -294,11 +295,13 @@ fn integrate_modules(
 }
 
 /// Process impl blocks and collect errors (extracted data version to avoid borrowing conflicts)
+/// LLM-LOOP P3: yields `TypeCheckError`s rather than pre-rendered text.
+/// Formatting here and again at the reporting boundary produced
+/// diagnostics wrapped in their own rendering.
 fn process_impl_blocks_extracted(
     tc: &mut TypeCheckerVisitor,
     impl_blocks: &[(DefaultSymbol, Vec<frontend::type_decl::TypeDecl>, Vec<std::rc::Rc<MethodFunction>>, Option<DefaultSymbol>, Vec<frontend::type_decl::TypeDecl>)],
-    formatter: &Option<ErrorFormatter>
-) -> Vec<String> {
+) -> Vec<TypeCheckError> {
     let mut errors = Vec::new();
 
     // ITER-PROTOCOL-TRAIT: route through the trait-args-aware
@@ -313,13 +316,7 @@ fn process_impl_blocks_extracted(
             *trait_name,
             trait_type_args,
         ) {
-            let formatted_error = if let Some(ref fmt) = formatter {
-                fmt.format_type_check_error(&err)
-            } else {
-                let target_type_str = tc.core.string_interner.resolve(*target_type).unwrap_or("<unknown>");
-                format!("Impl block error for {target_type_str}: {err}")
-            };
-            errors.push(formatted_error);
+            errors.push(err);
         }
     }
 
@@ -349,7 +346,30 @@ pub fn check_typing_with_core_modules(
     filename: Option<&str>,
     core_modules_dir: Option<&std::path::Path>,
 ) -> Result<(), Vec<String>> {
-    let mut errors: Vec<String> = vec![];
+    check_typing_diagnostics(program, string_interner, source_code, filename, core_modules_dir)
+        .map_err(|diagnostics| {
+            let formatter = ErrorFormatter::new(
+                source_code.unwrap_or(""),
+                filename.unwrap_or("<input>"),
+            );
+            diagnostics.iter().map(|d| formatter.format_diagnostic(d)).collect()
+        })
+}
+
+/// Structured form of [`check_typing_with_core_modules`].
+///
+/// LLM-LOOP P3: the text rendering is a projection of this, not the
+/// other way round. Tools that need a span, a code, or an applicable
+/// fix take this and skip parsing formatted output.
+pub fn check_typing_diagnostics(
+    program: &mut File,
+    string_interner: &mut DefaultStringInterner,
+    source_code: Option<&str>,
+    filename: Option<&str>,
+    core_modules_dir: Option<&std::path::Path>,
+) -> Result<(), Vec<Diagnostic>> {
+    let diag_file = filename.unwrap_or("<input>");
+    let mut errors: Vec<Diagnostic> = vec![];
 
     // Snapshot user-function count BEFORE integration so we can
     // re-extract the user-authored slice once integration + alias
@@ -366,7 +386,7 @@ pub fn check_typing_with_core_modules(
     // to `build_method_registry` so `x.abs()` resolves through the
     // extension-trait machinery.
     if let Err(module_errors) = integrate_modules(program, string_interner, core_modules_dir) {
-        errors.extend(module_errors);
+        errors.extend(module_errors.into_iter().map(|m| Diagnostic::message_only(m, diag_file)));
         return Err(errors);
     }
 
@@ -412,13 +432,10 @@ pub fn check_typing_with_core_modules(
 
     // Setup TypeChecker now that imports and prelude are integrated.
     let mut tc = setup_type_checker(program, string_interner);
+    // LLM-LOOP P3: a fix suggestion has to quote the text it replaces,
+    // so the checker needs the source to build one.
+    tc.source_code = source_code;
 
-    // Create error formatter if we have source code and filename
-    let formatter = if let (Some(source), Some(file)) = (source_code, filename) {
-        Some(ErrorFormatter::new(source, file))
-    } else {
-        None
-    };
 
     // Validate struct field types and register enum declarations. Running
     // visit_stmt on an EnumDecl populates `context.enum_definitions`, which
@@ -438,12 +455,7 @@ pub fn check_typing_with_core_modules(
                 .unwrap_or(false);
             if should_visit {
                 if let Err(err) = tc.visit_stmt(&stmt_ref) {
-                    let formatted_error = if let Some(ref fmt) = formatter {
-                        fmt.format_type_check_error(&err)
-                    } else {
-                        format!("Declaration validation error: {err}")
-                    };
-                    errors.push(formatted_error);
+                    errors.push(Diagnostic::from_type_check_error(&err, diag_file));
                 }
             }
         }
@@ -458,13 +470,7 @@ pub fn check_typing_with_core_modules(
         let value_ty = match tc.visit_expr(&c.value) {
             Ok(t) => t,
             Err(err) => {
-                let msg = if let Some(ref fmt) = formatter {
-                    fmt.format_type_check_error(&err)
-                } else {
-                    let cname = tc.core.string_interner.resolve(c.name).unwrap_or("<unknown>");
-                    format!("Const initializer error for `{cname}`: {err}")
-                };
-                errors.push(msg);
+                errors.push(Diagnostic::from_type_check_error(&err, diag_file));
                 continue;
             }
         };
@@ -477,11 +483,9 @@ pub fn check_typing_with_core_modules(
             // LLM-LOOP P2: point at the initializer. This diagnostic
             // used to be a bare string with no position, so a file with
             // several consts gave no clue which one was wrong.
-            let located = tc
-                .get_expr_location(&c.value)
-                .zip(formatter.as_ref())
-                .map(|(loc, fmt)| fmt.format_runtime_error(&msg, Some(&loc)));
-            errors.push(located.unwrap_or(msg));
+            let mut diagnostic = Diagnostic::message_only(msg, diag_file);
+            diagnostic.span = tc.get_expr_location(&c.value).map(Into::into);
+            errors.push(diagnostic);
             continue;
         }
         tc.context.set_var(c.name, c.type_decl.clone());
@@ -496,7 +500,11 @@ pub fn check_typing_with_core_modules(
     tc.recovery_enabled = true;
 
     // Process impl blocks and collect errors
-    errors.extend(process_impl_blocks_extracted(&mut tc, &impl_blocks, &formatter));
+    errors.extend(
+        process_impl_blocks_extracted(&mut tc, &impl_blocks)
+            .iter()
+            .map(|e| Diagnostic::from_type_check_error(e, diag_file)),
+    );
 
     // Process functions
     let mut fn_errors: Vec<frontend::type_checker::TypeCheckError> = Vec::new();
@@ -532,15 +540,7 @@ pub fn check_typing_with_core_modules(
                 end_offset: location.end_offset,
             });
         }
-
-        // Use formatter if available, otherwise fallback to simple format
-        let formatted_error = if let Some(ref fmt) = formatter {
-            fmt.format_type_check_error(&error)
-        } else {
-            format!("type_check failed: {error}")
-        };
-
-        errors.push(formatted_error);
+        errors.push(Diagnostic::from_type_check_error(&error, diag_file));
     }
 
     if errors.is_empty() {
@@ -871,6 +871,9 @@ pub fn execute_program(program: &File, string_interner: &DefaultStringInterner, 
 pub struct RunOptions<'a> {
     pub jit: bool,
     pub core_modules_dir: Option<&'a std::path::Path>,
+    /// LLM-LOOP P3: emit type-check diagnostics as a JSON array on
+    /// stderr instead of the rendered text form.
+    pub diagnostics_json: bool,
 }
 
 /// Outcome of [`run_source`]. `exit_code` mirrors the value the
@@ -880,6 +883,20 @@ pub struct RunOptions<'a> {
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub exit_code: Option<i32>,
+}
+
+/// Write diagnostics to stderr as a JSON array.
+///
+/// LLM-LOOP P3: stderr, not stdout, so a program's own `print` output
+/// stays usable in the same run.
+pub fn emit_diagnostics_json(diagnostics: &[Diagnostic]) {
+    match serde_json::to_string_pretty(diagnostics) {
+        Ok(json) => eprintln!("{json}"),
+        // Serialisation cannot realistically fail for these types, but
+        // swallowing the diagnostics entirely would be the worst
+        // possible outcome -- fall back to debug output.
+        Err(e) => eprintln!("failed to serialise diagnostics ({e}): {diagnostics:?}"),
+    }
 }
 
 /// Drive the same parse → type-check → execute pipeline as the
@@ -907,15 +924,23 @@ pub fn run_source(
             return Err(format!("parse error: {err:?}"));
         }
     };
-    if let Err(errors) = check_typing_with_core_modules(
+    if let Err(diagnostics) = check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
         Some(source),
         Some(filename),
         options.core_modules_dir,
     ) {
-        formatter.display_type_check_errors(&errors);
-        return Err(format!("{} type-check error(s)", errors.len()));
+        if options.diagnostics_json {
+            emit_diagnostics_json(&diagnostics);
+        } else {
+            let rendered: Vec<String> = diagnostics
+                .iter()
+                .map(|d| formatter.format_diagnostic(d))
+                .collect();
+            formatter.display_type_check_errors(&rendered);
+        }
+        return Err(format!("{} type-check error(s)", diagnostics.len()));
     }
 
     #[cfg(feature = "jit")]

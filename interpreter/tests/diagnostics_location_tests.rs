@@ -24,7 +24,7 @@ fn diagnostics(source: &str) -> String {
 /// Every reported diagnostic must carry a file:line:column header.
 fn assert_all_located(diags: &str) {
     assert!(
-        !diags.contains("Error: "),
+        !diags.contains("Error: ["),
         "a diagnostic was reported with no location:\n{diags}"
     );
     assert!(diags.contains("Error at"), "no diagnostics at all:\n{diags}");
@@ -66,7 +66,7 @@ fn caret_width_matches_the_offending_token() {
     // `1u64` is four characters, so four carets -- not the old fixed
     // two, and not the whole line.
     assert!(
-        diags.contains("^^^^ Type mismatch"),
+        diags.contains("^^^^ [E0001] Type mismatch"),
         "expected a 4-wide caret over `1u64`:\n{diags}"
     );
 }
@@ -82,7 +82,7 @@ fn undefined_call_is_anchored_at_the_callee_name() {
     // 14 characters of `not_a_function`, and the column must be the
     // start of the name rather than the `(` that follows it.
     assert!(
-        diags.contains("^^^^^^^^^^^^^^ Function 'not_a_function' not found"),
+        diags.contains("^^^^^^^^^^^^^^ [E0003] Function 'not_a_function' not found"),
         "caret should cover the callee name:\n{diags}"
     );
 }
@@ -99,7 +99,7 @@ fn argument_mismatch_is_anchored_at_the_argument() {
     // The offending value is the argument, not the callee: pointing at
     // `takes_i64` would not say which argument to change.
     assert!(
-        diags.contains("^^^^ Type error"),
+        diags.contains("^^^^ [E0010] Type error"),
         "caret should cover the argument `1u64`:\n{diags}"
     );
 }
@@ -113,7 +113,7 @@ fn binding_mismatch_is_anchored_at_the_initializer() {
         }",
     );
     assert!(
-        diags.contains("^^^^ Type mismatch"),
+        diags.contains("^^^^ [E0001] Type mismatch"),
         "caret should cover the initializer `7u64`:\n{diags}"
     );
 }

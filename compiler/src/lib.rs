@@ -73,14 +73,28 @@ pub fn compile_file(options: &CompilerOptions) -> Result<(), String> {
             eprintln!("core modules: <none> (auto-load disabled)");
         }
     }
-    interpreter::check_typing_with_core_modules(
+    let diagnostics_json = options.diagnostics_json;
+    interpreter::check_typing_diagnostics(
         &mut program,
         session.string_interner_mut(),
         Some(&source),
         Some(options.input.to_string_lossy().as_ref()),
         core_modules_dir.as_deref(),
     )
-    .map_err(|errors| format!("type-check failed:\n  {}", errors.join("\n  ")))?;
+    .map_err(|diagnostics| {
+        if diagnostics_json {
+            interpreter::emit_diagnostics_json(&diagnostics);
+            return format!("{} type-check error(s)", diagnostics.len());
+        }
+        let input_name = options.input.to_string_lossy();
+        let formatter =
+            interpreter::error_formatter::ErrorFormatter::new(&source, input_name.as_ref());
+        let rendered: Vec<String> = diagnostics
+            .iter()
+            .map(|d| formatter.format_diagnostic(d))
+            .collect();
+        format!("type-check failed:\n  {}", rendered.join("\n  "))
+    })?;
 
     // Intern the canonical contract-violation messages now while the
     // session's interner is still mutable. The lowering pass uses

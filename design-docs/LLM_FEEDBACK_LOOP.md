@@ -13,7 +13,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 | **P0** | 致命的な診断バグの修正 (bare-name 解決順) | ✅ 2026-08-09 |
 | **P1** | 診断の一括報告 (文単位のエラー回復) | ✅ 2026-08-09 |
 | **P2** | Span 化 + 全診断への location 強制 | ✅ 2026-08-09 |
-| **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | 未着手 |
+| **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | ✅ 2026-08-09 |
 | **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | 未着手 |
 | **P5** | 契約ベース自動プロパティテスト (`toy check`) | 未着手 |
 | **P6** | 実行時の観測性 (panic backtrace / 契約違反の値キャプチャ) | 未着手 |
@@ -428,29 +428,104 @@ kind は診断を描画するときにしか読まないので、cold data を b
 
 **未実施 (P3 に送り)**: エラーコード体系 (`E0308` 等)。
 
-### P3 — 構造化診断出力 + 修正提案
+### P3 — 構造化診断出力 + 修正提案 (✅ 2026-08-09 完了)
 
-`--diagnostics=json` で以下を出力する。
+**目標**: テキスト出力を正としたまま、機械可読なチャネルと
+「適用すれば必ず通る」修正提案を追加する。
+
+#### 構造 — テキストは Diagnostic の射影
+
+`frontend/src/diagnostic.rs` に `Diagnostic` / `Span` / `Suggestion` /
+`Applicability` / `Severity` を新設。**テキスト出力は `Diagnostic` を
+描画したもの**という関係にした (`ErrorFormatter::format_diagnostic`) ので、
+人が見るものと tool が読むものが乖離しない。
+
+driver (`check_typing_diagnostics`) が `Vec<Diagnostic>` を返し、
+既存の `check_typing_with_core_modules` はそれを描画して `Vec<String>` を
+返す薄い wrapper になった (既存 caller の signature 不変)。
+
+**この過程で二重描画のバグを 1 件検出** — impl block の経路が内部で
+formatter を通した String を返していたため、`Error: [E0010] Error at ...`
+のように自身の描画結果に包まれていた。`process_impl_blocks_extracted` を
+`Vec<TypeCheckError>` 返却に変更。
+
+#### エラーコード
+
+`TypeCheckErrorKind` の variant に `E0001`〜`E0010` を対応付けた。
+**Rust の番号は流用しない** — 見た目が同じで意味が違う識別子は、
+無いより悪い。
+
+#### CLI
+
+`--diagnostics=json` を interpreter / compiler の両方に追加。
+出力先は **stderr** (プログラム自身の `print` 出力を同一実行で
+使えるように)。`--diagnostics=text` が既定。
 
 ```json
 {
   "severity": "error",
-  "code": "E0308",
-  "message": "expected i64, found u64",
-  "primary_span": { "file": "main.t", "start": {...}, "end": {...} },
-  "related": [
-    { "message": "parameter declared here", "span": {...} }
-  ],
+  "code": "E0003",
+  "message": "Function 'calculate_totl' not found",
+  "file": "typo.t",
+  "span": { "line": 2, "column": 20, "offset": 59, "end_offset": 73 },
+  "origin_module": null,
   "suggestions": [
-    { "message": "cast the value", "applicability": "machine-applicable",
-      "replacement": "x as i64", "span": {...} }
+    { "message": "a function named `calculate_total` exists",
+      "replacement": "calculate_total",
+      "span": null,
+      "applicability": "machine-applicable" }
   ]
 }
 ```
 
-エラーコードは `TypeCheckErrorKind` の variant に対応させて機械的に採番する。
-`applicability` は `machine-applicable` / `maybe-incorrect` の 2 値
-(論点 3 の通り、前者のみを提案として出す)。
+`Suggestion::span` が `null` のときは **診断自身の span** を対象にする。
+名前解決の失敗は「エラーに位置が stamp される前」に提案が作られるので、
+この形が自然。
+
+#### 修正提案 — 確実なものだけ
+
+論点 3 の方針通り、**適用すれば必ず通るもの**に限定した。
+
+| 提案 | 条件 |
+|---|---|
+| `as <T>` キャスト挿入 | 両辺が `as` を受け付ける数値型のときのみ (`castable_type_name` が `Some`) |
+| did-you-mean (関数名) | 編集距離が閾値内の候補が**唯一**のときのみ |
+
+`u64` → `bool` のような `as` で書けない不一致には**提案を出さない** —
+出せば読み手を「2 つ目のエラー」に送り込むだけになる。
+
+did-you-mean の tie 判定は重要で、`printn` は `println` と `print` の
+両方から距離 1 なので**どちらも提案しない**。片方を選ぶのは推測であり、
+間違えると 1 往復失うだけでなく**以降の提案への信頼も失う**。
+
+#### カスケード抑制の追加修正
+
+P3 のテストが `as` キャストで P1 と同種の漏れを検出した:
+
+```
+val c = helper(1u64)   # 本物のエラー
+c as u64               # → "Cannot cast Unknown to UInt64"
+```
+
+`Unknown` を cast の source 型として受理し、宣言された target 型を
+返すようにした (binary operator と同じ poison 伝播規則)。
+
+#### テスト方針
+
+`interpreter/tests/diagnostics_json_tests.rs` (11 件)。
+検証しているのは「JSON にこのキーがある」ではなく、consumer が実際に
+依存する 2 つの性質:
+
+1. **span がバイト単位でソースに解決される** — 各診断の
+   `source[offset..end_offset]` が非難対象の文字列と一致すること
+2. **machine-applicable な提案を適用すると通る** — 提案を実際に
+   ソースへ適用し、型検査を再実行して成功を確認する
+
+(2) が提案を出す価値の根拠なので、テキストを眺めるのではなく
+適用して再実行する形にした。
+
+**未実施**: `toy explain <code>` (P7 に送り)、`maybe-incorrect` 提案
+(schema には存在するが現状 emit しない)。
 
 ### P4 — 言語組み込みテスト
 

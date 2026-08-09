@@ -17,6 +17,53 @@ impl<'a> TypeCheckerVisitor<'a> {
         error
     }
 
+    /// Attach an `as <T>` cast suggestion when the only thing wrong is
+    /// the numeric type of `expr`.
+    ///
+    /// LLM-LOOP P3: this is the single most common fix in toylang --
+    /// there is no implicit widening, so a `u64` reaching an `i64` slot
+    /// is a mechanical `as i64` away. The suggestion is only produced
+    /// when both sides are types an `as` cast accepts, which is exactly
+    /// the condition under which applying it is guaranteed to compile.
+    pub fn suggest_numeric_cast(
+        &self,
+        mut error: TypeCheckError,
+        expr: &ExprRef,
+        actual: &TypeDecl,
+        expected: &TypeDecl,
+    ) -> TypeCheckError {
+        let (Some(_), Some(target)) = (
+            crate::diagnostic::castable_type_name(actual),
+            crate::diagnostic::castable_type_name(expected),
+        ) else {
+            return error;
+        };
+        let Some(location) = self.get_expr_location(expr) else {
+            return error;
+        };
+        let Some(text) = self.source_text(&location) else {
+            return error;
+        };
+        error.suggestions.push(crate::diagnostic::Suggestion::machine_applicable(
+            &format!("cast the value to `{target}`"),
+            format!("{text} as {target}"),
+            location.into(),
+        ));
+        error
+    }
+
+    /// The source text a location spans, when the checker was given the
+    /// source. A replacement has to quote what it replaces, so without
+    /// this no suggestion can be built.
+    pub fn source_text(&self, location: &crate::type_checker::SourceLocation) -> Option<&'a str> {
+        let source = self.source_code?;
+        let (start, end) = (location.offset as usize, location.end_offset as usize);
+        if end <= start || end > source.len() {
+            return None;
+        }
+        source.get(start..end)
+    }
+
     /// Best available position for a method-level diagnostic.
     ///
     /// LLM-LOOP P2: `MethodFunction::node` is not filled in with the

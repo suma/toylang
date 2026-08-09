@@ -7,6 +7,7 @@ pub mod cache;
 pub mod type_decl;
 pub mod token;
 pub mod type_checker;
+pub mod diagnostic;
 pub mod parser;
 pub mod visitor;
 pub mod module_resolver;

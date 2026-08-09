@@ -108,6 +108,11 @@ pub struct TypeCheckError {
     /// pointing at innocent code. Set this and the formatter knows to
     /// name the module instead of quoting a line it cannot trust.
     pub origin_module: Option<String>,
+    /// Edits that would resolve this error, produced only where the fix
+    /// is certain (LLM-LOOP P3). Empty for almost every diagnostic --
+    /// see `crate::diagnostic` for why a wrong suggestion is worse than
+    /// none.
+    pub suggestions: Vec<crate::diagnostic::Suggestion>,
 }
 
 impl TypeCheckError {
@@ -117,6 +122,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -130,6 +136,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -142,6 +149,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -154,6 +162,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -166,6 +175,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -177,6 +187,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -190,6 +201,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -202,6 +214,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -213,6 +226,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -224,6 +238,7 @@ impl TypeCheckError {
             context: None,
             location: None,
             origin_module: None,
+            suggestions: Vec::new(),
         }
     }
 
@@ -234,6 +249,11 @@ impl TypeCheckError {
 
     pub fn with_location(mut self, location: SourceLocation) -> Self {
         self.location = Some(location);
+        self
+    }
+
+    pub fn with_suggestion(mut self, suggestion: crate::diagnostic::Suggestion) -> Self {
+        self.suggestions.push(suggestion);
         self
     }
 

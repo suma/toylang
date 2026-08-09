@@ -42,6 +42,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
     let mut verbose = false;
     let mut release = false;
     let mut core_modules_dir: Option<PathBuf> = None;
+    let mut diagnostics_json = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -72,6 +73,13 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
                     .ok_or_else(|| "--core-modules needs a path argument".to_string())?;
                 core_modules_dir = Some(PathBuf::from(v));
             }
+            s if s.starts_with("--diagnostics=") => {
+                match &s["--diagnostics=".len()..] {
+                    "json" => diagnostics_json = true,
+                    "text" => diagnostics_json = false,
+                    other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
+                }
+            }
             s if s.starts_with("--core-modules=") => {
                 core_modules_dir = Some(PathBuf::from(&s["--core-modules=".len()..]));
             }
@@ -95,6 +103,7 @@ fn parse_args(args: &[String]) -> Result<CompilerOptions, String> {
         verbose,
         release,
         core_modules_dir,
+        diagnostics_json,
         link_cache_dir: None,
     })
 }
@@ -111,6 +120,6 @@ fn parse_emit(s: &str) -> Result<EmitKind, String> {
 
 fn print_usage() {
     eprintln!(
-        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [-v]"
+        "usage: compiler <input.t> [-o <output>] [--emit exe|obj|ir|clif] [--release] [--diagnostics=text|json] [-v]"
     );
 }

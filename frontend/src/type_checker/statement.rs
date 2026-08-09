@@ -91,6 +91,7 @@ impl<'a> TypeCheckerVisitor<'a> {
         if let Some(declared_type) = &type_decl {
             let normalized = self.normalize_generic_identifier(declared_type);
             if !self.are_types_compatible(&normalized, &expr_ty) {
+                let normalized_for_suggestion = normalized.clone();
                 let declared_name = self.type_name_for_error(&normalized);
                 let expr_name = self.type_name_for_error(&expr_ty);
                 // LLM-LOOP P2: anchor at the initializer, not at the
@@ -101,7 +102,8 @@ impl<'a> TypeCheckerVisitor<'a> {
                     normalized,
                     expr_ty.clone()
                 ).with_context(&format!("Cannot convert '{}' to '{}'", expr_name, declared_name));
-                return Err(self.error_with_location(err, &expr_ref));
+                let err = self.error_with_location(err, &expr_ref);
+                return Err(self.suggest_numeric_cast(err, &expr_ref, &expr_ty, &normalized_for_suggestion));
             }
         }
         

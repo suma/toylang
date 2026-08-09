@@ -59,12 +59,17 @@ struct CliArgs {
     filename: String,
     verbose: bool,
     core_modules_cli: Option<PathBuf>,
+    /// LLM-LOOP P3: emit diagnostics as JSON on stderr instead of the
+    /// rendered text form, so a tool driving the compiler can read spans
+    /// and applicable fixes without scraping formatted output.
+    diagnostics_json: bool,
 }
 
 fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
     let mut filename: Option<String> = None;
     let mut verbose = false;
     let mut core_modules_cli: Option<PathBuf> = None;
+    let mut diagnostics_json = false;
     let mut iter = raw.iter().skip(1);
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -78,6 +83,13 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
             s if s.starts_with("--core-modules=") => {
                 core_modules_cli = Some(PathBuf::from(&s["--core-modules=".len()..]));
             }
+            s if s.starts_with("--diagnostics=") => {
+                match &s["--diagnostics=".len()..] {
+                    "json" => diagnostics_json = true,
+                    "text" => diagnostics_json = false,
+                    other => return Err(format!("--diagnostics expects `text` or `json`, got `{other}`")),
+                }
+            }
             s if s.starts_with('-') => {
                 return Err(format!("unknown flag: {s}"));
             }
@@ -90,7 +102,7 @@ fn parse_cli(raw: &[String]) -> Result<CliArgs, String> {
         }
     }
     let filename = filename.ok_or_else(|| "no input file".to_string())?;
-    Ok(CliArgs { filename, verbose, core_modules_cli })
+    Ok(CliArgs { filename, verbose, core_modules_cli, diagnostics_json })
 }
 
 fn main() {
@@ -101,11 +113,11 @@ fn main() {
             eprintln!("{msg}");
             println!("Usage:");
             println!("  {} <file>", raw.first().map(String::as_str).unwrap_or("interpreter"));
-            println!("  {} <file> [-v] [--core-modules <DIR>]", raw.first().map(String::as_str).unwrap_or("interpreter"));
+            println!("  {} <file> [-v] [--core-modules <DIR>] [--diagnostics=text|json]", raw.first().map(String::as_str).unwrap_or("interpreter"));
             return;
         }
     };
-    let CliArgs { filename, verbose, core_modules_cli } = cli;
+    let CliArgs { filename, verbose, core_modules_cli, diagnostics_json } = cli;
     let core_modules_dir = resolve_core_modules_dir(core_modules_cli);
     if verbose {
         if let Some(dir) = &core_modules_dir {
@@ -127,6 +139,7 @@ fn main() {
     let options = RunOptions {
         jit,
         core_modules_dir: core_modules_dir.as_deref(),
+        diagnostics_json,
     };
     match interpreter::run_source(&source, &filename, &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => process::exit(code),

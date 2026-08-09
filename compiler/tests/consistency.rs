@@ -45,6 +45,7 @@ static JIT_CACHE: LazyLock<Mutex<HashMap<(String, bool), i32>>> =
 /// `e2e_batched.rs::compile_to_jit_lazy_core`.
 fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
     let lite = CompilerOptions {
+        diagnostics_json: false,
         input: PathBuf::from("<jit>"),
         output: None,
         emit: EmitKind::Executable,
@@ -57,6 +58,7 @@ fn compile_jit_lazy_core(source: &str) -> Result<compiler::JitProgram, String> {
         return Ok(prog);
     }
     let full = CompilerOptions {
+        diagnostics_json: false,
         core_modules_dir: Some(core_modules_dir()),
         ..lite
     };
@@ -170,6 +172,7 @@ fn jit_exit_code(source: &str, _stem: &str, with_core: bool) -> i32 {
     let options = RunOptions {
         jit: true,
         core_modules_dir: core_dir.as_deref(),
+        diagnostics_json: false,
     };
     let result = match interpreter::run_source(source, "test.t", &options) {
         Ok(RunOutcome { exit_code: Some(code) }) => code & 0xff,
@@ -198,6 +201,7 @@ fn try_compiler_exit_code(source: &str, stem: &str, with_core: bool) -> Option<i
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
@@ -314,6 +318,7 @@ fn interpreter_stdout(source: &str, _stem: &str, with_core: bool) -> String {
     let options = RunOptions {
         jit: false,
         core_modules_dir: core_dir.as_deref(),
+        diagnostics_json: false,
     };
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "test.t", &options)
@@ -332,6 +337,7 @@ fn jit_stdout(source: &str, _stem: &str, with_core: bool) -> String {
     let options = RunOptions {
         jit: true,
         core_modules_dir: core_dir.as_deref(),
+        diagnostics_json: false,
     };
     let (result, captured) = interpreter::output::with_capture(|| {
         interpreter::run_source(source, "test.t", &options)
@@ -351,6 +357,7 @@ fn try_compiler_stdout(source: &str, stem: &str, with_core: bool) -> Option<Stri
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,

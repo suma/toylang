@@ -75,6 +75,7 @@ fn try_compile_and_run(
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
@@ -121,6 +122,7 @@ fn compile_and_capture(source: &str, stem: &str) -> Output {
     std::fs::write(&src_path, source).expect("write source");
     let exe_path = unique_path(stem);
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_path.clone()),
         emit: EmitKind::Executable,
@@ -606,6 +608,7 @@ fn release_flag_skips_requires_check() {
     std::fs::write(&src_path, src).unwrap();
     let exe_chk = unique_path("rel_chk");
     let opts_chk = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_chk.clone()),
         emit: EmitKind::Executable,
@@ -622,6 +625,7 @@ fn release_flag_skips_requires_check() {
     //    to u64 → 0xff... ; & 0xff = 0xff = 255).
     let exe_rel = unique_path("rel_rel");
     let opts_rel = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(exe_rel.clone()),
         emit: EmitKind::Executable,
@@ -776,6 +780,7 @@ fn emit_object_writes_o_file() {
     std::fs::write(&src_path, "fn main() -> u64 { 1u64 }\n").unwrap();
     let obj_path = unique_path("emit_obj.o");
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(obj_path.clone()),
         emit: EmitKind::Object,
@@ -803,6 +808,7 @@ fn emit_ir_writes_compiler_ir() {
     std::fs::write(&src_path, "fn main() -> u64 { 99u64 }\n").unwrap();
     let ir_path = unique_path("emit_ir.ir");
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(ir_path.clone()),
         emit: EmitKind::Ir,
@@ -830,6 +836,7 @@ fn emit_clif_writes_cranelift_ir() {
     std::fs::write(&src_path, "fn main() -> u64 { 7u64 }\n").unwrap();
     let clif_path = unique_path("emit_clif.clif");
     let options = CompilerOptions {
+        diagnostics_json: false,
         input: src_path.clone(),
         output: Some(clif_path.clone()),
         emit: EmitKind::Clif,

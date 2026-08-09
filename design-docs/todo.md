@@ -4,6 +4,9 @@
 
 > 詳細は git log / commit message を参照。本セクションは直近マイルストーンの 1 行サマリのみ保持する。
 
+### 2026-08-09
+- **LLM_FEEDBACK_LOOP.md 新設** — LLM エージェントの試行錯誤ループを速くするための設計文書 (`design-docs/LLM_FEEDBACK_LOOP.md`)。現状の診断品質を実測 (エラーの回復粒度が関数単位で 1 件しか出ない / location なしの診断が多数 / `SourceLocation` が span を持たない / stdlib 由来エラーがユーザに帰着しない / panic に位置情報なし) して P0〜P7 に Phase 分割。
+
 ### 2026-05-31
 - **Interpreter Bytecode IR 化 + FFI 統合 — Phase 0: IR クレート切り出し + Phase 1: Scalar IR VM** — `compiler_ir` 新クレートを workspace に追加し、`compiler/src/ir.rs` (1654 行) を `compiler_ir/src/lib.rs` に移管。**`compiler` は `pub use compiler_ir as ir;` で互換 re-export** — workspace 内の 28 ファイルの `crate::ir` / `compiler::ir` 参照は変更なしでそのまま動作。**`flatten_compound_leaf_types` を `compiler_ir/src/layout.rs` に共通化** — `compiler/src/lower/program.rs` から定義を削除し、`compiler_ir::layout::flatten_compound_leaf_types` を use。AOT codegen と将来の interpreter IR VM が同じ compound-type leaf flattening logic を共有。**`compiler_ir` の依存は最小** (`string-interner` のみ) — `frontend` / `compiler_core` / `interpreter` への依存を持たず、循環を防ぐ。
 - **Phase 1 (Scalar IR VM)** — `interpreter/src/ir_vm/` に VM engine を新規作成 (`slot.rs` / `frame.rs` / `dispatch.rs` / `call.rs` / `lift.rs` / `mod.rs` / `eligibility.rs`)。**`RuntimeState` を shared 化** — 木の walker / JIT / IR VM で heap + allocator registry + active stack を共有 (`interpreter/src/runtime_state.rs`)。**IR VM lane を consistency test に統合** — `compiler/tests/consistency.rs` の `assert_consistent` に `ir_vm_exit_code` を追加し、scalar プログラムで 4-way 一致 (interpreter / compiler / JIT / IR VM) を自動検証。unsupported プログラムは `ir_vm::eligibility::ir_vm_supported` で silent fallback。**Phase 1 subset**: scalar types (i64/u64/f64/bool + narrow ints)、arithmetic、comparison、if/while/for/return、direct function calls、cast、print。**unit tests 10 件 pass**: constant return、arithmetic、branch、cross-function call、while loop、factorial loop、local store/reload、i64↔f64 cast、recursive fibonacci。
@@ -204,6 +207,16 @@ TEST-PERF. **テスト実行時間改善** (2026-05-16 プロファイル):
   - `serial_test` (`oop_tests.rs`) を並列化可能にする（破壊ログのスレッドローカル化）。優先度 ★
 183. **コンパイラ MVP** — Phase A〜D + Phase E〜Z 系列まで全て完了 (詳細は git log `compiler/` 関連コミット)。残: lower 周辺の compound-returning method の expression position 制約、generic struct の JIT (`159`)、tuple JIT のネスト対応 (`160`)、CONCRETE-IMPL Phase 2c (annotation hint threading)、3+ part qualified call (`185残`)、extern fn の JIT/AOT monomorph 化 (`195b`)、NUM-W-AOT-pack Phase 3 (compound element packing) など個別エントリで継続管理。AOT live state の現在の制約は `compiler/README.md` を参照。
 
+
+LLM-LOOP. **LLM の試行錯誤ループ高速化** — 設計は `design-docs/LLM_FEEDBACK_LOOP.md`。
+   - **P0: bare-name 呼び出しのレキシカルスコープ修正** — 関数型のローカル束縛がグローバル関数テーブルより後に引かれるため、`fn f(..)` を定義しただけで stdlib (`core/std/option.t::map` 等) のクロージャ呼び出しを乗っ取ってしまう。優先度 ★★★ (ループが止まる)
+   - **P1: 診断の一括報告** — `check_program_multiple_errors` (`frontend/src/type_checker/module_access.rs:13`) の回復粒度が関数単位なので、1 関数に複数エラーがあっても 1 件しか出ない。文単位に下げると往復回数が N → 1 になる。優先度 ★★★
+   - **P2: Span 化 + 全診断への location 強制** — `SourceLocation` が点でしか位置を持たないため caret 幅が引けず、`ErrorFormatter::find_error_position_in_line` がメッセージ文字列から識別子を推測している。加えて `TypeCheckError::location` が `Option` なので付け忘れが構造的に起きる (エラー生成 209 箇所に対し `error_with_location` 呼び出しは 35 箇所)。優先度 ★★★
+   - **P3: 構造化診断出力 (`--diagnostics=json`) + machine-applicable な修正提案** — 優先度 ★★
+   - **P4: 言語組み込みテスト (`test` ブロック + 値を表示する `assert_eq`)** — 「検討中の機能」の同項目を具体化。優先度 ★★
+   - **P5: 契約ベース自動プロパティテスト (`toy check`)** — `requires` を入力生成器、`ensures` をオラクルとして再利用し、shrinking 付きの最小反例を出す。優先度 ★★
+   - **P6: 実行時の観測性** — panic の位置 + backtrace (現状 `panic: boom` のみ)、契約違反時の実引数値キャプチャ、u64 アンダーフローの trap。優先度 ★★
+   - **P7: 補助 CLI** — 型ホール `val x: _ = expr`、`toy api <module>`、`toy explain <code>`。優先度 ★
 
 ## 検討中の機能
 

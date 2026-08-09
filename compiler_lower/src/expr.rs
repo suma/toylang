@@ -945,6 +945,21 @@ impl<'a> FunctionLower<'a> {
     /// running drops — same panic-safety policy the interpreter uses.
     fn lower_expr_block(&mut self, stmts: &[StmtRef]) -> Result<Option<ValueId>, String> {
         self.enter_drop_scope();
+        // Restore any binding this block shadows. `bindings` is a flat
+        // map, so a `var x` inside a block was permanently overwriting
+        // an outer `x` — `interpreter/example/scope.t` returned 1011
+        // from the AOT (inner value + 1) against 101 from the
+        // interpreter and the JIT.
+        //
+        // Only *overwritten* entries are restored; bindings the block
+        // introduces are left in place. Dropping those as well is what
+        // scoping would really mean, but `let_lowering`'s scalar-type
+        // inference reaches for them after the block has been lowered
+        // (`val total: u64 = with allocator = a { ... x }` resolves `x`
+        // that way), so removing them breaks programs that work today.
+        // Narrowing to the shadowing case fixes the wrong answer
+        // without disturbing that.
+        let shadowed_bindings = self.bindings.clone();
         let mut last: Option<ValueId> = None;
         for s in stmts {
             last = self.lower_stmt(s)?;
@@ -953,6 +968,9 @@ impl<'a> FunctionLower<'a> {
             }
         }
         self.pop_and_emit_drops()?;
+        for (sym, binding) in shadowed_bindings {
+            self.bindings.insert(sym, binding);
+        }
         Ok(last)
     }
 

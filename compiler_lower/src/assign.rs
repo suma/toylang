@@ -308,7 +308,15 @@ impl<'a> FunctionLower<'a> {
                     }
                 };
                 self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
-                Ok(None)
+                // An assignment is an expression whose value is the
+                // assigned one — that is what the type checker records
+                // (`visit_assign` returns the lhs type) and what the
+                // tree-walker and JIT return. Yielding `None` here made
+                // the AOT the odd one out: a function ending in
+                // `x = x + 1u64` was rejected with "function falls
+                // through without producing a value", while the other
+                // two backends returned 101.
+                Ok(Some(rhs_val))
             }
             Expr::TupleAccess(tuple, index) => {
                 // `t.N = rhs`. Resolve to the tuple element local
@@ -318,7 +326,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(rhs)?
                     .ok_or_else(|| "tuple-element assignment rhs produced no value".to_string())?;
                 self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
-                Ok(None)
+                Ok(Some(rhs_val))
             }
             Expr::FieldAccess(obj, field) => {
                 // `obj.field = rhs`. Resolve obj statically to a struct
@@ -328,7 +336,7 @@ impl<'a> FunctionLower<'a> {
                     .lower_expr(rhs)?
                     .ok_or_else(|| "field assignment rhs produced no value".to_string())?;
                 self.emit(InstKind::StoreLocal { dst: local, src: rhs_val }, None);
-                Ok(None)
+                Ok(Some(rhs_val))
             }
             _ => Err("assignment to non-identifier / non-field-access is not supported yet".into()),
         }

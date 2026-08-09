@@ -89,12 +89,10 @@ const AOT_UNSUPPORTED: &[&str] = &[
     "match_tuple.t",
     "panic.t",
     "print_demo.t",
-    "scope.t",
     "struct_null_test.t",
     "trait_basic.t",
     "tuple_destructure_nested.t",
     "tuple_destructure.t",
-    "variable.t",
 ];
 
 /// Examples that make a backend panic rather than fail cleanly. Each

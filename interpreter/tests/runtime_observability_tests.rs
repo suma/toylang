@@ -126,3 +126,61 @@ fn a_satisfied_contract_stays_quiet() {
         5,
     );
 }
+
+// --- arithmetic guards (P6-3) ----------------------------------------
+
+#[test]
+fn u64_subtraction_underflow_traps_instead_of_wrapping() {
+    // `0u64 - 1u64` wrapping to 18446744073709551615 is a favourite way
+    // to lose an afternoon: the value looks like a plausible large
+    // number, so the symptom shows up far from the cause.
+    let diags = runtime_failure(
+        "fn main() -> u64 {
+            val a: u64 = 0u64
+            val b: u64 = 1u64
+            a - b
+        }",
+    );
+    assert!(diags.contains("underflow"), "{diags}");
+    // Values and position come from the panic path (P6-1 / P6-2).
+    assert!(diags.contains("0 - 1"), "operands should be named:\n{diags}");
+    assert!(diags.contains("test.t:4:"), "{diags}");
+}
+
+#[test]
+fn a_subtraction_that_fits_is_unaffected() {
+    common::assert_program_result_u64(
+        "fn main() -> u64 {
+            val a: u64 = 5u64
+            val b: u64 = 3u64
+            a - b
+        }",
+        2,
+    );
+}
+
+#[test]
+fn signed_subtraction_going_negative_is_not_an_error() {
+    // Only *unsigned* subtraction is guarded: `i64` has somewhere to go.
+    common::assert_program_result_i64(
+        "fn main() -> i64 {
+            val a: i64 = 3i64
+            val b: i64 = 10i64
+            a - b
+        }",
+        -7,
+    );
+}
+
+#[test]
+fn u64_addition_still_wraps() {
+    // Deliberately unguarded so far — this pins the current boundary of
+    // P6-3 rather than endorsing it. `u64::MAX + 5` wraps to 4.
+    common::assert_program_result_u64(
+        "fn main() -> u64 {
+            val a: u64 = 18446744073709551615u64
+            a + 5u64
+        }",
+        4,
+    );
+}

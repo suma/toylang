@@ -812,6 +812,21 @@ impl<'a, 'b> State<'a, 'b> {
                     return Ok(Some(v));
                 }
                 let signed = matches!(lhs_ty, ScalarTy::I64);
+                // LLM-LOOP P6-3: guard unsigned subtraction that would
+                // wrap, matching the lowered backends (the guard there
+                // is emitted in `compiler_lower`, which this JIT does
+                // not go through). Without it the JIT would be the one
+                // engine that silently produced 18446744073709551615.
+                if matches!(op, Operator::ISub) && matches!(lhs_ty, ScalarTy::U64) {
+                    let ok = self.builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, l, r);
+                    let fail_blk = self.builder.create_block();
+                    let cont_blk = self.builder.create_block();
+                    self.brif(ok, cont_blk, fail_blk);
+                    self.switch_to(fail_blk);
+                    self.call_helper(HelperKind::PanicU64Underflow, &[])?;
+                    self.builder.ins().trap(TrapCode::user(1).expect("non-zero"));
+                    self.switch_to(cont_blk);
+                }
                 let v = match op {
                     Operator::IAdd => self.builder.ins().iadd(l, r),
                     Operator::ISub => self.builder.ins().isub(l, r),

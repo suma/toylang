@@ -701,18 +701,44 @@ fn u64_wrapping_overflow_match() {
 }
 
 #[test]
-fn u64_wrapping_underflow_match() {
-    // 5 - 10 wraps under u64. Compiler gives `u64::MAX - 4`, which
-    // exits with `(u64::MAX - 4) & 0xff` = 0xfb = 251. Interpreter
-    // now matches.
+fn u64_underflow_traps_on_every_backend() {
+    // This used to pin *wrapping*: `5 - 10` gave `u64::MAX - 4` and the
+    // three backends agreed on that. LLM-LOOP P6-3 changed the
+    // semantics — a result of 18446744073709551615 looks like a
+    // plausible number, so the mistake surfaces far from its cause and
+    // costs an afternoon. The agreement being checked is now that every
+    // backend refuses the operation rather than inventing a value.
+    //
+    // Written out rather than run through `assert_consistent`, which
+    // asserts each backend *succeeds* before comparing results and so
+    // cannot express "they all fail the same way".
+    //
+    // Addition and multiplication still wrap (see `u64_overflow`
+    // above); only subtraction is guarded so far.
     let src = r#"
         fn main() -> u64 {
             val a: u64 = 5u64
             a - 10u64
         }
     "#;
-    assert_consistent(src, "u64_underflow");
+    let core = core_modules_dir();
+
+    let mut interp_opts = RunOptions::default();
+    interp_opts.core_modules_dir = Some(core.as_path());
+    assert!(
+        interpreter::run_source(src, "underflow.t", &interp_opts).is_err(),
+        "interpreter should refuse the subtraction"
+    );
+
+    // The JIT is checked in `interpreter/tests/jit_integration.rs`
+    // instead: its panic helper terminates via `process::exit(1)`, which
+    // would tear down this test runner along with the program.
+
+    let compiled = try_compiler_exit_code(src, "u64_underflow", true)
+        .expect("the program should still compile — the guard is a runtime trap");
+    assert_ne!(compiled, 0, "compiled binary should exit non-zero");
 }
+
 
 #[test]
 fn top_level_const_match() {

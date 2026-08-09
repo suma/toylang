@@ -1122,3 +1122,30 @@ fn string_interpolation_jit_logs_compiled_main() {
         r.stderr
     );
 }
+
+#[cfg(feature = "jit")]
+#[test]
+fn u64_underflow_traps_under_the_jit() {
+    // LLM-LOOP P6-3. Spawned rather than run in-process for the same
+    // reason as `assert_failure_routes_through_jit_panic_helper` above:
+    // the JIT panic helper exits the process.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("u64_underflow.t");
+    std::fs::write(
+        &path,
+        "fn main() -> u64 {\n    val a: u64 = 5u64\n    a - 10u64\n}\n",
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_interpreter"))
+        .arg(&path)
+        .env("INTERPRETER_JIT", "1")
+        .output()
+        .expect("spawn interpreter");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("underflow"),
+        "the JIT should refuse the subtraction rather than wrap, got: {stderr}"
+    );
+    assert_ne!(output.status.code(), Some(0));
+}

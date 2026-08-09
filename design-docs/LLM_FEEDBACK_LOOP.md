@@ -16,7 +16,7 @@ FFI_PLAN.md / ALLOCATOR_PLAN.md / DYN_TRAIT_AOT.md と同じく
 | **P3** | 構造化診断出力 (`--diagnostics=json`) + 修正提案 | ✅ 2026-08-09 |
 | **P4** | 言語組み込みテスト (`test` ブロック + `assert_eq`) | ✅ 2026-08-09 |
 | **P5** | 契約ベース自動プロパティテスト (`--check`) | ✅ 2026-08-09 |
-| **P6** | 実行時の観測性 (panic backtrace / 契約違反の値キャプチャ) | ✅ 2026-08-09 (1,2 完了 / 3 未着手) |
+| **P6** | 実行時の観測性 (panic backtrace / 契約違反の値 / 算術 trap) | ✅ 2026-08-10 |
 | **P7** | 補助 CLI (型ホール / `toy api` / エラーコード解説) | 検討のみ |
 
 ## 設計原理 — ループを速くする 3 つの手段
@@ -676,10 +676,42 @@ Contract violation: `ensures` clause #1 of function `buggy_abs` evaluated to fal
 
 **反例がそのまま出る**ので、呼び出しを instrument して再実行する往復が要らない。
 
-#### P6-3 u64 アンダーフローの trap (未着手)
+#### P6-3 u64 アンダーフローの trap (✅ 2026-08-10)
 
-`0u64 - 1u64` は LLM の頻出バグ。黙って wrap すると原因究明に何往復もかかる。
-デバッグビルドで明示的に落とす (リリースでの挙動は別途決定)。
+`0u64 - 1u64` が **18446744073709551615** に wrap するのは、LLM が
+午後を溶かす典型パターン。値が「それらしい大きな数」に見えるので、
+**症状が原因から遠く離れた場所で出る**。
+
+**着手前の実測**: 4 バックエンド (tree-walker / IR VM / JIT / AOT) すべてが
+一致して wrap していた。既存の consistency test
+`u64_wrapping_underflow_match` が**その挙動を仕様として pin していた**ので、
+意味論の変更として明示的に更新した (「全バックエンドが一致して trap する」を
+検証する形へ)。
+
+**影響範囲の測定を先にやった** — tree-walker だけに trap を入れて全テストを
+実行し、**0 failures** を確認してから本実装に入った。stdlib も example も
+u64 の wrapping 減算に依存していなかった。
+
+**実装の要点**: guard を **lowering (`compiler_lower`) に置いた**ので、
+同じ IR を消費する **AOT / IR VM / compiler 側 JIT の 3 つを 1 箇所で**賄える。
+残るのは (a) tree-walker と (b) interpreter 側 JIT の 2 経路だけ。
+
+| 経路 | 実装 | メッセージ |
+|---|---|---|
+| tree-walker | `operators.rs` で `panic_error` 経由 | `u64 subtraction underflowed: 0 - 1` (**値付き**) |
+| lowering (AOT / IR VM / compiler JIT) | `Branch` + `Terminator::Panic` | 静的メッセージ |
+| interpreter JIT | `icmp` + `brif` + 専用 helper | 静的メッセージ |
+
+**メッセージの非対称性は意図的**。`Terminator::Panic` は interned symbol を
+運ぶので、lowering 側でオペランド値を埋め込めない。値を持っている
+tree-walker はそれを出し、他は操作と位置を出す。**起きたことの説明は同じ**。
+
+**スコープ**: **符号なし減算のみ**。加算 / 乗算の overflow は現状 wrap のまま
+(`u64_addition_still_wraps` テストで現在の境界を pin してある — 是認では
+なく現状の記録)。narrow unsigned (u8/u16/u32) も未対応。
+`i64` の負値は正常なので対象外。
+
+**リリース時の挙動は未決定** — 現状は `--release` でも check する。
 
 **回帰テスト**: `interpreter/tests/runtime_observability_tests.rs` (7 件)。
 

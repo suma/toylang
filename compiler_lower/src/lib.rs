@@ -50,6 +50,9 @@ use compiler_ir::layout::flatten_compound_leaf_types;
 pub struct ContractMessages {
     pub requires_violation: DefaultSymbol,
     pub ensures_violation: DefaultSymbol,
+    /// LLM-LOOP P6-3. Interned here for the same reason as the two
+    /// above: lowering emits the guard but has no mutable interner.
+    pub u64_underflow: DefaultSymbol,
 }
 
 impl ContractMessages {
@@ -57,6 +60,8 @@ impl ContractMessages {
         Self {
             requires_violation: interner.get_or_intern("requires violation"),
             ensures_violation: interner.get_or_intern("ensures violation"),
+            u64_underflow: interner
+                .get_or_intern("u64 subtraction underflowed (left operand is smaller than the right)"),
         }
     }
 }

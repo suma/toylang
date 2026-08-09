@@ -494,6 +494,17 @@ extern "C" fn jit_panic(sym_id: u64) {
     std::process::exit(1);
 }
 
+/// LLM-LOOP P6-3: abort on unsigned subtraction that would wrap.
+///
+/// A fixed message rather than an interned symbol: the text is the
+/// compiler's, not the program's, so there is nothing in the interner
+/// to point at.
+extern "C" fn jit_panic_u64_underflow() {
+    eprintln!("Runtime error occurred:");
+    eprintln!("panic: u64 subtraction underflowed (left operand is smaller than the right)");
+    std::process::exit(1);
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HelperKind {
     PrintI64,
@@ -521,6 +532,7 @@ pub(crate) enum HelperKind {
     PrintU32,
     PrintlnU32,
     Panic,
+    PanicU64Underflow,
     HeapAlloc,
     HeapFree,
     HeapRealloc,
@@ -607,6 +619,7 @@ impl HelperKind {
             HelperKind::PrintU32 => "jit_print_u32",
             HelperKind::PrintlnU32 => "jit_println_u32",
             HelperKind::Panic => "jit_panic",
+            HelperKind::PanicU64Underflow => "jit_panic_u64_underflow",
             HelperKind::HeapAlloc => "jit_heap_alloc",
             HelperKind::HeapFree => "jit_heap_free",
             HelperKind::HeapRealloc => "jit_heap_realloc",
@@ -673,6 +686,7 @@ impl HelperKind {
             HelperKind::PrintU32 => jit_print_u32 as *const u8,
             HelperKind::PrintlnU32 => jit_println_u32 as *const u8,
             HelperKind::Panic => jit_panic as *const u8,
+            HelperKind::PanicU64Underflow => jit_panic_u64_underflow as *const u8,
             HelperKind::HeapAlloc => jit_heap_alloc as *const u8,
             HelperKind::HeapFree => jit_heap_free as *const u8,
             HelperKind::HeapRealloc => jit_heap_realloc as *const u8,
@@ -730,6 +744,7 @@ impl HelperKind {
             HelperKind::PrintI32 | HelperKind::PrintlnI32 => (vec![types::I32], None),
             HelperKind::PrintU32 | HelperKind::PrintlnU32 => (vec![types::I32], None),
             HelperKind::Panic => (vec![types::I64], None),
+            HelperKind::PanicU64Underflow => (vec![], None),
             HelperKind::HeapAlloc => (vec![types::I64], Some(types::I64)),
             HelperKind::HeapFree => (vec![types::I64], None),
             HelperKind::HeapRealloc => (vec![types::I64, types::I64], Some(types::I64)),
@@ -780,7 +795,7 @@ impl HelperKind {
         }
     }
 
-    pub(crate) const ALL: [HelperKind; 61] = [
+    pub(crate) const ALL: [HelperKind; 62] = [
         HelperKind::PrintI64,
         HelperKind::PrintlnI64,
         HelperKind::PrintU64,
@@ -802,6 +817,7 @@ impl HelperKind {
         HelperKind::PrintU32,
         HelperKind::PrintlnU32,
         HelperKind::Panic,
+        HelperKind::PanicU64Underflow,
         HelperKind::HeapAlloc,
         HelperKind::HeapFree,
         HelperKind::HeapRealloc,

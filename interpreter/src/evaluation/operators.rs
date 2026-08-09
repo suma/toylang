@@ -423,10 +423,33 @@ impl EvaluationContext<'_> {
         })
     }
 
-    fn evaluate_arithmetic_op_v(&self, lhs: &Value, rhs: &Value, op: ArithmeticOp) -> Result<Value, InterpreterError> {
+    /// `site` is where the operator was written, so an arithmetic trap
+    /// can point at it (LLM-LOOP P6-3). `None` when the caller has no
+    /// expression to attribute it to.
+    fn evaluate_arithmetic_op_v(
+        &self,
+        lhs: &Value,
+        rhs: &Value,
+        op: ArithmeticOp,
+        site: Option<frontend::type_checker::SourceLocation>,
+    ) -> Result<Value, InterpreterError> {
         Ok(match (lhs, rhs) {
             (Value::Int64(l), Value::Int64(r)) => Value::Int64(op.apply_i64(*l, *r)),
-            (Value::UInt64(l), Value::UInt64(r)) => Value::UInt64(op.apply_u64(*l, *r)),
+            (Value::UInt64(l), Value::UInt64(r)) => {
+                // LLM-LOOP P6-3: `0u64 - 1u64` wrapping to
+                // 18446744073709551615 is a favourite way to lose an
+                // afternoon — the value looks like a plausible large
+                // number, so the cause is nowhere near where the symptom
+                // shows up. Routed through the panic path so it arrives
+                // with the location and backtrace P6-1 added.
+                if matches!(op, ArithmeticOp::Sub) && *l < *r {
+                    return Err(self.panic_error(
+                        format!("u64 subtraction underflowed: {l} - {r}"),
+                        site,
+                    ));
+                }
+                Value::UInt64(op.apply_u64(*l, *r))
+            }
             // NUM-W narrow integer arithmetic: same-width only
             // (no implicit widening). Cast required to mix
             // widths, mirroring Rust's discipline. Wrap-on-
@@ -461,7 +484,7 @@ impl EvaluationContext<'_> {
     fn evaluate_arithmetic_op(&self, lhs: &Object, rhs: &Object, op: ArithmeticOp) -> Result<Object, InterpreterError> {
         let lv = object_ref_to_value(lhs);
         let rv = object_ref_to_value(rhs);
-        Ok(value_to_object(self.evaluate_arithmetic_op_v(&lv, &rv, op)?))
+        Ok(value_to_object(self.evaluate_arithmetic_op_v(&lv, &rv, op, None)?))
     }
 
     pub fn evaluate_unary(&mut self, op: &UnaryOp, operand: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
@@ -555,6 +578,8 @@ impl EvaluationContext<'_> {
     }
 
     pub fn evaluate_binary(&mut self, op: &Operator, lhs: &ExprRef, rhs: &ExprRef) -> Result<EvaluationResult, InterpreterError> {
+        // Where to point an arithmetic trap (LLM-LOOP P6-3).
+        let site = self.expr_location(lhs);
         // Short-circuit evaluation for logical operators
         match op {
             Operator::LogicalAnd => return self.evaluate_logical_and_short_circuit(lhs, rhs),
@@ -689,11 +714,11 @@ impl EvaluationContext<'_> {
         }
 
         let result_v = match op {
-            Operator::IAdd => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Add)?,
-            Operator::ISub => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Sub)?,
-            Operator::IMul => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Mul)?,
-            Operator::IDiv => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Div)?,
-            Operator::IMod => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Mod)?,
+            Operator::IAdd => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Add, site)?,
+            Operator::ISub => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Sub, site)?,
+            Operator::IMul => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Mul, site)?,
+            Operator::IDiv => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Div, site)?,
+            Operator::IMod => self.evaluate_arithmetic_op_v(&lhs_v, &rhs_v, ArithmeticOp::Mod, site)?,
             Operator::EQ => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Eq)?,
             Operator::NE => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Ne)?,
             Operator::LT => self.evaluate_comparison_op_v(&lhs_v, &rhs_v, ComparisonOp::Lt)?,

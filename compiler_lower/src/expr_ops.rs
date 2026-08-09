@@ -26,6 +26,36 @@ use crate::ir::{
 
 impl<'a> FunctionLower<'a> {
 
+    /// Branch to a panic when `lhs < rhs`, so the subtraction that
+    /// follows cannot wrap.
+    ///
+    /// The message is static — `Terminator::Panic` carries an interned
+    /// symbol, so the operand values cannot be formatted in. The
+    /// tree-walker, which has the values to hand, includes them; the
+    /// lowered backends report the operation and the location. Both say
+    /// the same thing about what happened.
+    fn emit_u64_underflow_guard(&mut self, lhs: ValueId, rhs: ValueId) -> Result<(), String> {
+        let ok = self
+            .emit(
+                InstKind::BinOp { op: BinOp::Ge, lhs, rhs },
+                Some(Type::Bool),
+            )
+            .ok_or_else(|| "underflow guard produced no value".to_string())?;
+        let pass = self.fresh_block();
+        let fail = self.fresh_block();
+        self.terminate(Terminator::Branch {
+            cond: ok,
+            then_blk: pass,
+            else_blk: fail,
+        });
+        self.switch_to(fail);
+        self.terminate(Terminator::Panic {
+            message: self.contract_msgs.u64_underflow,
+        });
+        self.switch_to(pass);
+        Ok(())
+    }
+
     pub(super) fn lower_binary(
         &mut self,
         op: &Operator,
@@ -91,6 +121,17 @@ impl<'a> FunctionLower<'a> {
             Operator::RightShift => (BinOp::Shr, lhs_ty),
             Operator::LogicalAnd | Operator::LogicalOr => unreachable!("handled above"),
         };
+        // LLM-LOOP P6-3: trap on unsigned subtraction that would wrap.
+        // `0u64 - 1u64` silently becoming 18446744073709551615 is a
+        // favourite way to lose an afternoon: the result looks like a
+        // plausible large number, so the symptom shows up far from the
+        // cause. Emitted here rather than in codegen so the AOT
+        // compiler, the IR VM and the compiler-side JIT — all of which
+        // consume this IR — get the check from one place.
+        if matches!(ir_op, BinOp::Sub) && matches!(lhs_ty, Type::U64) {
+            self.emit_u64_underflow_guard(l, r)?;
+        }
+
         Ok(self.emit(
             InstKind::BinOp {
                 op: ir_op,

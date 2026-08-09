@@ -377,6 +377,30 @@ impl<'a> TypeCheckerVisitor<'a> {
 
                 // Apply type transformations and get final type
                 self.apply_type_transformations_for_expr(type_decl, &ty, e)?;
+
+                // Check the annotation against the initializer. `val`
+                // has always done this in `visit_val_impl`; `var` came
+                // through here and skipped it, so `var w: bool = 1u64`
+                // type checked and ran while the identical `val` form
+                // was rejected. `determine_final_type_for_expr` below
+                // simply takes the annotation, so without this the
+                // binding silently claims a type its value does not have.
+                if let Some(declared_type) = type_decl.as_ref() {
+                    let normalized = self.normalize_generic_identifier(declared_type);
+                    if !self.are_types_compatible(&normalized, &ty) {
+                        self.type_inference.type_hint = old_hint;
+                        let declared_name = self.type_name_for_error(&normalized);
+                        let expr_name = self.type_name_for_error(&ty);
+                        let err = TypeCheckError::type_mismatch(normalized.clone(), ty.clone())
+                            .with_context(&format!(
+                                "Cannot convert '{}' to '{}'",
+                                expr_name, declared_name
+                            ));
+                        let err = self.error_with_location(err, e);
+                        return Err(self.suggest_numeric_cast(err, e, &ty, &normalized));
+                    }
+                }
+
                 let final_ty = self.determine_final_type_for_expr(type_decl, &ty);
 
                 // Restore previous hint

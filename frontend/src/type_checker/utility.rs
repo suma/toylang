@@ -221,6 +221,21 @@ impl<'a> TypeCheckerVisitor<'a> {
                     expected_elems.iter().all(|elem| self.are_types_compatible(elem, &actual_elems[0]))
                 }
 
+            // Tuples compare element-wise. Without this a `(Point, u64)`
+            // annotation never matched a `(Point { .. }, 7u64)` value:
+            // the parser writes the annotation's element as
+            // `Identifier(Point)` while the value carries
+            // `Struct(Point, [])`, and only the *top-level* pair was
+            // ever reconciled. `val` rejected the form outright; `var`
+            // appeared to work only because it skipped the check.
+            (TypeDecl::Tuple(expected_elems), TypeDecl::Tuple(actual_elems))
+                if expected_elems.len() == actual_elems.len() => {
+                    expected_elems
+                        .iter()
+                        .zip(actual_elems.iter())
+                        .all(|(e, a)| self.are_types_compatible(e, a))
+                }
+
             // Struct types - check using is_equivalent for better matching
             (TypeDecl::Struct(_, _), TypeDecl::Struct(_, _)) => {
                 // Already checked via is_equivalent above

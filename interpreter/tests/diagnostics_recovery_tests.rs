@@ -292,3 +292,78 @@ fn bare_return_before_a_closing_brace_is_accepted() {
         7,
     );
 }
+
+// --- `var` gets the same checks as `val` -----------------------------
+
+#[test]
+fn var_annotation_mismatch_is_rejected_like_val() {
+    // `visit_val_impl` checked the annotation against the initializer;
+    // `var` went through a different path that skipped it, so this
+    // program type checked and ran while the `val` form was rejected.
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            var w: bool = 1u64
+            0u64
+        }",
+    );
+    assert_eq!(error_count(&diags), 1, "{diags}");
+    assert!(diags.contains("Bool"), "{diags}");
+}
+
+#[test]
+fn var_annotation_mismatch_suggests_the_same_cast_as_val() {
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            var d: f64 = 5u64
+            0u64
+        }",
+    );
+    assert!(
+        diags.contains("5u64 as f64"),
+        "expected the same cast suggestion `val` gets:\n{diags}"
+    );
+}
+
+#[test]
+fn var_with_a_compatible_annotation_still_works() {
+    common::assert_program_result_u64(
+        "fn main() -> u64 {
+            var n: u64 = 41u64
+            n = n + 1u64
+            n
+        }",
+        42,
+    );
+}
+
+#[test]
+fn a_user_type_nested_in_a_tuple_annotation_is_accepted() {
+    // `(Point, u64)` reaches the checker as `Tuple([Identifier(Point),
+    // U64])` while the value is `Tuple([Struct(Point, []), U64])`. Only
+    // the top-level pair used to be reconciled, so the annotation was
+    // rejected outright under `val` — and silently unchecked under
+    // `var`.
+    common::assert_program_result_u64(
+        "struct Point { x: u64, y: u64 }
+        fn main() -> u64 {
+            val t: (Point, u64) = (Point { x: 1u64, y: 2u64 }, 40u64)
+            t.0.y + t.1
+        }",
+        42,
+    );
+}
+
+#[test]
+fn assigning_a_wrong_type_into_an_array_element_is_rejected() {
+    // The element-type check was guarded on `element_types.len() == 1`,
+    // but an array literal carries one entry per element — so the check
+    // was skipped for every array longer than one.
+    let diags = diagnostics(
+        "fn main() -> u64 {
+            var arr = [1u64, 2u64, 3u64]
+            arr[0u64] = \"text\"
+            0u64
+        }",
+    );
+    assert!(diags.contains("Type mismatch"), "{diags}");
+}

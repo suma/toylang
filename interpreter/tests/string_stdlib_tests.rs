@@ -730,9 +730,15 @@ fn string_split_empty_separator_panics() {
 fn push_char_appends_to_existing_buffer() {
     // push_char on a non-empty buffer keeps prior content intact
     // and appends the encoded bytes after.
+    //
+    // The binding is left un-annotated on purpose. `String` is a
+    // nominal struct, not an alias for `Vec<u8>`, so `var s: Vec<u8> =
+    // String::from_str(..)` is a type error — `val` has always rejected
+    // that form, and `var` only accepted it while skipping the
+    // annotation check.
     let src = r#"
         fn main() -> u64 {
-            var s: Vec<u8> = String::from_str("hi")
+            var s = String::from_str("hi")
             s.push_char(0x21u32)
             assert(s.size() == 3u64, "size after push_char")
             assert(s.get(0u64) == 104u8, "byte 0 = 'h'")
